@@ -1,0 +1,25 @@
+keys:
+- &nas1 age19hhgmqh66e5z8cs0vl5ny6h9s66fm2my3cv72amte04n7gpnsemqaqkreg
+- &hvn-hyp1 age1rxwhhtdvw9ep0snyqfhtt305zld6wngkf0x8wxk2kg9f6rlwt44s4en48w
+- &builder age1q5chdh7yt35w32qvjcpmyt6cwkf272wccwkw73zppg8n90a0nqas7xa8p9
+- &main age1w6m7pde7ngls54jr3mkjxllc0z59ppnhkjh9zq2nuzezahmp53uq4w0k9y
+- &all_keys [*main, *builder, *nas1, *hvn-hyp1]
+creation_rules:
+- path_regex: shared/secrets.yaml
+  key_groups:
+  - age: *all_keys
+- path_regex: modules/hosts/nas1/secrets.yaml
+  key_groups:
+  - age:
+    - *nas1
+    - *main
+- path_regex: modules/hosts/builder/secrets.yaml
+  key_groups:
+  - age:
+    - *builder
+    - *main
+- path_regex: modules/hosts/hvn-hyp1/secrets.yaml
+  key_groups:
+  - age:
+    - *hvn-hyp1
+    - *main
