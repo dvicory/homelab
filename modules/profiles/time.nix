@@ -34,8 +34,8 @@
 
         # Additional chrony configuration for better accuracy
         extraConfig = ''
-          # Allow chrony to step the clock on startup if offset is large
-          makestep 1 3
+          # Allow chrony to step the clock if step > 1 second
+          makestep 1 -1
 
           # Log measurements and statistics
           logdir ${logDir}
