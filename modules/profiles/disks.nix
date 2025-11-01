@@ -41,8 +41,6 @@
         disko.devices = {
           disk =
             let
-              hasRaid = hostCfg.rootPool.disk2 != null;
-
               mkRoot =
                 {
                   disk,
@@ -96,16 +94,11 @@
             in
             {
               root = mkRoot { disk = hostCfg.rootPool.disk1; };
-              # Second root must have id=-backup.
-              root1 = lib.mkIf hasRaid (mkRoot {
-                disk = hostCfg.rootPool.disk2;
-                id = "-backup";
-              });
             };
           zpool = {
             ${hostCfg.rootPool.name} = {
               type = "zpool";
-              mode = if hostCfg.rootPool.disk2 != null then "mirror" else "";
+              mode = "";
               options = {
                 ashift = "12";
                 autotrim = "on";
@@ -178,39 +171,18 @@
         ];
         boot.zfs.forceImportRoot = false;
 
-        # This is needed to make the /boot*/host_key and /persist runtime key available early
-        # enough to be able to decrypt the sops file on boot,
-        # when the /etc/shadow file is first generated.
-        # We assume mkRoot will always be called with at least id=1.
         fileSystems = {
           "/boot".neededForBoot = true;
-          "/boot-backup" = lib.mkIf (hostCfg.rootPool.disk2 != null) { neededForBoot = true; };
         };
 
-        # Setup Grub to support UEFI.
-        # nodev is for UEFI.
-        boot.loader.grub = {
+        # Setup systemd-boot to support UEFI booting
+        boot.loader.efi.canTouchEfiVariables = true;
+        boot.loader.systemd-boot = {
           enable = true;
-          efiSupport = true;
-          efiInstallAsRemovable = true;
-
-          mirroredBoots = lib.mkForce (
-            [
-              {
-                path = "/boot";
-                devices = [ "nodev" ];
-              }
-            ]
-            ++ (lib.optionals (hostCfg.rootPool.disk2 != null) [
-              {
-                path = "/boot-backup";
-                devices = [ "nodev" ];
-              }
-            ])
-          );
+          configurationLimit = 8;
         };
 
-        services.zfs.autoScrub.enable = true;
+        services.zfs.autoScrub.enable = lib.mkDefault true;
       };
     };
 }

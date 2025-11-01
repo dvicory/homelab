@@ -90,9 +90,6 @@
         ];
         hardware.enableAllHardware = false;
 
-        # GRUB configuration
-        boot.loader.grub.configurationLimit = 8; # Limit boot entries to prevent /boot from filling
-
         # Enable getty on VGA console
         systemd.services."getty@tty1".enable = true;
 
