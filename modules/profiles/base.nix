@@ -8,41 +8,23 @@
   flake.modules.nixos.profiles-base =
     { lib, pkgs, ... }:
     {
-      imports = with self.modules.nixos; [
-        # Hardware
-        profiles-disks
-        profiles-facter
+      imports =
+        with self.modules.nixos;
+        [
+          # Hardware
+          profiles-disks
+          profiles-facter
 
-        # Common
-        profiles-time
-        profiles-users
+          # Common
+          profiles-time
+          profiles-users
 
-        # Networking
-        profiles-networking
-      ];
-
-      nix.settings = {
-        experimental-features = [
-          "nix-command"
-          "flakes"
+          # Networking
+          profiles-networking
+        ]
+        ++ [
+          self.modules.generic.nix-common
         ];
-
-        trusted-users = [
-          "root"
-          "@wheel"
-        ];
-
-        extra-substituters = [
-          "https://nix-community.cachix.org"
-        ];
-        extra-trusted-public-keys = [
-          "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-        ];
-        download-buffer-size = 524288000; # 500 MiB
-      };
-
-      nix.optimise.automatic = true;
-      nix.optimise.dates = [ "05:00" ];
 
       # # systemd
       # systemd.additionalUpstreamSystemUnits = [
@@ -56,9 +38,11 @@
         bottom
         lnav
 
+        # Git is needed even for flakes
+        git
+
         # Editing
         vim
-        # git
         # htop
         # tree
       ];
