@@ -19,7 +19,7 @@
   - `system`: System architecture (e.g., "x86_64-linux", "aarch64-linux")
   - `tags`: List of strings for categorization (e.g., ["server", "storage"])
   - `networks`: Attrset of network configurations with per-interface settings (including initrd.enable for early networking)
-  - `rootPool`: ZFS root pool configuration (name, disk1, optional disk2 for mirroring)
+  - `rootPool`: ZFS root pool configuration (name, disk1)
   - `users`: Attrset of user accounts with groups, passwords, and SSH keys
   - `deploy`: Deployment target, user, and network reference
 
@@ -187,12 +187,6 @@ in
                   disk1 = lib.mkOption {
                     type = lib.types.str;
                     description = "Primary device path for root pool.";
-                  };
-
-                  disk2 = lib.mkOption {
-                    type = lib.types.nullOr lib.types.str;
-                    default = null;
-                    description = "Optional secondary mirror disk path.";
                   };
                 };
               };
@@ -426,8 +420,8 @@ in
       users = sharedUsers;
 
       deploy = {
-        target = "192.168.65.90";
-        user = "nixos";
+        target = "192.168.65.139";
+        user = "daniel";
         knownHostsPath = "modules/hosts/builder/known_hosts";
         bootHostKeyPath = "modules/hosts/builder/boot_host_key";
         runtimeHostKeyPath = "modules/hosts/builder/runtime_host_key";
