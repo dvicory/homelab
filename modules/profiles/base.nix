@@ -41,11 +41,15 @@
         # Git is needed even for flakes
         git
 
-        # Editing
-        vim
         # htop
         # tree
       ];
+
+      # Editing
+      programs.vim = {
+        enable = lib.mkDefault true;
+        defaultEditor = lib.mkDefault true;
+      };
 
       # Basic SSH configuration
       services.openssh = {
