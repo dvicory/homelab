@@ -53,6 +53,8 @@ let
           # autoRollback = false;
           # magicRollback = false;
           remoteBuild = true;
+          # TODO: any downside to being always true?
+          interactiveSudo = true;
 
           path = deployPkgs.deploy-rs.lib.activate.nixos nixosConfigurations.${name};
         };

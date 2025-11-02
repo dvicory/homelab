@@ -59,9 +59,6 @@
           HostKey /persist/etc/ssh/ssh_host_ed25519_key
         '';
       };
-
-      # Better to require, but requiring interferes with deploy-rs
-      security.sudo.wheelNeedsPassword = lib.mkDefault false;
     };
 
   # Future: darwin and homeManager profiles can be added here

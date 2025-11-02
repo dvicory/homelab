@@ -10,8 +10,6 @@
         max-free = 1000000000;
 
         download-buffer-size = 524288000; # 500 MiB
-
-        trusted-users = [ "@wheel" ];
       };
     };
   };
