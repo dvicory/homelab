@@ -5,12 +5,14 @@
       pkgs,
       config,
       inputs',
-      self',
       ...
     }:
     let
+      # TODO: this should be way better to avoid including non-nixos systems
       # Embed the hosts configuration as JSON for runtime lookup
-      hostsJson = builtins.toJSON self.dlab.hosts;
+      hostsJson = builtins.toJSON (
+        lib.filterAttrs (_: host: host.enable && lib.hasInfix "linux" host.system) self.dlab.hosts
+      );
     in
     {
       packages.install-on-envoy = pkgs.writeShellApplication {

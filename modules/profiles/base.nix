@@ -65,7 +65,12 @@
       };
     };
 
-  # Future: darwin and homeManager profiles can be added here
-  # flake.modules.darwin.profiles-base = { ... };
+  flake.modules.darwin.profiles-base = {
+    imports = [
+      self.modules.generic.nix-common
+    ];
+  };
+
+  # Future: homeManager profile can be added here
   # flake.modules.homeManager.profiles-base = { ... };
 }

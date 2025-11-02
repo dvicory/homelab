@@ -227,12 +227,6 @@ in
               );
               default = { };
               apply = v: deepMerge sharedUsers v;
-              # apply = users: lib.mapAttrs (uname: uattrs:
-              #   if lib.hasAttr uname sharedUsers then
-              #     lib.recursiveUpdate sharedUsers.${uname} uattrs
-              #   else
-              #     uattrs
-              # ) users;
               description = "Users available on this host.";
             };
 

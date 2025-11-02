@@ -52,7 +52,7 @@ let
             };
           }
           self.modules.nixos.${cls} # Class module (nixos, wsl, etc.)
-          self.modules.nixos.${system} # System-specific module (x86_64-linux, aarch64-linux, etc.)
+          self.modules.nixos.${system} # System-specific module (x86_64-linux, aarch64-linux)
           self.modules.nixos."hosts-${name}" # Host-specific module
         ];
       }
@@ -60,22 +60,37 @@ let
 
   mkDarwin =
     system: name:
-    inputs.nix-darwin.lib.darwinSystem {
-      inherit system;
-      modules = lib.flatten [
-        (withSystem system (
-          { pkgs, ... }:
+    withSystem system (
+      { pkgs, ... }:
+      inputs.nix-darwin.lib.darwinSystem {
+        inherit system pkgs;
+        modules = lib.flatten [
           {
-            nixpkgs = { inherit pkgs; };
-            # networking.hostName = lib.mkDefault name;
-            nixpkgs.hostPlatform = lib.mkDefault system;
-            system.stateVersion = 6;
+            options.dlab = {
+              hostName = lib.mkOption {
+                type = lib.types.str;
+              };
+              # TODO: I don't like this - find a better, safer, easier way to make hostCfg available?
+              hostCfg = lib.mkOption {
+                type = lib.types.anything;
+              };
+            };
+
+            config = {
+              dlab.hostName = lib.mkForce name;
+              dlab.hostCfg = lib.mkForce config.flake.dlab.hosts.${name};
+
+              # networking.hostName = lib.mkDefault name;
+              nixpkgs.hostPlatform = lib.mkDefault system;
+              system.stateVersion = 6;
+            };
           }
-        ))
-        self.modules.darwin.darwin # Base darwin module
-        self.modules.darwin.${name} # Host-specific module
-      ];
-    };
+          self.modules.darwin.darwin # Base darwin module
+          self.modules.darwin.${system} # System-specific module (aarch64-darwin, x86_64-darwin)
+          self.modules.darwin."hosts-${name}" # Host-specific module
+        ];
+      }
+    );
 
   # Convenience builders for common configurations (deprecated - use lazy.* instead)
   nixos-x86 = mkNixos "x86_64-linux" "nixos";
