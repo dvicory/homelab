@@ -40,6 +40,7 @@
       ) hostCfg.users;
     in
     {
+      users.mutableUsers = false;
       users.users = toNixosUsers;
       sops.secrets = secretsForNixosUsers;
     };

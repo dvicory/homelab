@@ -226,7 +226,7 @@ in
                 )
               );
               default = { };
-              apply = v: deepMerge sharedUsers v;
+              apply = v: deepMerge v sharedUsers;
               description = "Users available on this host.";
             };
 
