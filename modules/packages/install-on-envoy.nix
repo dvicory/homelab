@@ -8,10 +8,27 @@
       ...
     }:
     let
-      # TODO: this should be way better to avoid including non-nixos systems
-      # Embed the hosts configuration as JSON for runtime lookup
       hostsJson = builtins.toJSON (
-        lib.filterAttrs (_: host: host.enable && lib.hasInfix "linux" host.system) self.dlab.hosts
+        lib.mapAttrs (name: cfg: {
+          inherit name;
+          enable = true;
+          system = cfg.pkgs.system;
+          deploy = {
+            target = cfg.config.deployment.target or null;
+            user = cfg.config.deployment.sshUser or "root";
+            sshPort = cfg.config.deployment.sshPort or 22;
+            knownHostsPath = cfg.config.deployment.knownHostsPath or null;
+            bootHostKeyPath = cfg.config.deployment.bootHostKeyPath or null;
+            runtimeHostKeyPath = cfg.config.deployment.runtimeHostKeyPath or null;
+          };
+          secrets = {
+            hostSopsFile = "modules/hosts/${name}/secrets.yaml";
+            rootPassphraseSopsPath = "${name}/disks/rootPassphrase";
+          };
+          remoteUnlock = {
+            tailscaleClientSecretPath = "/boot/tailscale_client_secret";
+          };
+        }) (lib.filterAttrs (_: cfg: cfg.config.deployment.enable or false) self.nixosConfigurations)
       );
     in
     {

@@ -5,61 +5,50 @@
   ...
 }:
 let
-  # TODO: only supports nixos right now, so we filter to nixos hosts that have a configuration
-  nixosHosts = lib.filterAttrs (name: _: lib.hasAttr name self.nixosConfigurations) self.dlab.hosts;
+  nixosConfigs = lib.filterAttrs (_: cfg: cfg.config.deployment.enable or false) self.nixosConfigurations;
 
-  toDeployNodes =
-    hosts: nixosConfigurations:
-    lib.mapAttrs (
-      name: host:
+  toDeployNodes = lib.mapAttrs (name: _: let
+    cfg = self.nixosConfigurations.${name}.config.deployment;
+    system = self.nixosConfigurations.${name}.pkgs.system;
+
+    deployPkgs =
       let
-        deployPkgs =
-          let
-            pkgs' = import inputs.nixpkgs {
-              inherit (host) system;
-            };
-          in
-          import inputs.nixpkgs {
-            inherit (host) system;
-            overlays = [
-              inputs.deploy-rs.overlays.default
-              (self: super: {
-                deploy-rs = {
-                  inherit (pkgs') deploy-rs;
-                  lib = super.deploy-rs.lib;
-                };
-              })
-            ];
-          };
-
-        deploy = host.deploy or { };
-        hostname = deploy.target or name;
-        user = "root";
-        sshUser = deploy.user or "root";
+        pkgs' = import inputs.nixpkgs { inherit system; };
       in
-      {
-        inherit hostname;
-        profiles.system = {
-          sshUser = sshUser;
-          user = user;
-          sshOpts = [
-            "-o"
-            "StrictHostKeyChecking=yes"
-            "-o"
-            "UserKnownHostsFile=${deploy.knownHostsPath}"
-            "-o"
-            "Port=${toString (deploy.sshPort or 22)}"
-          ];
-          # autoRollback = false;
-          # magicRollback = false;
-          remoteBuild = true;
-          # TODO: any downside to being always true?
-          interactiveSudo = true;
+      import inputs.nixpkgs {
+        inherit system;
+        overlays = [
+          inputs.deploy-rs.overlays.default
+          (self: super: {
+            deploy-rs = {
+              inherit (pkgs') deploy-rs;
+              lib = super.deploy-rs.lib;
+            };
+          })
+        ];
+      };
+  in {
+    hostname = cfg.target or name;
 
-          path = deployPkgs.deploy-rs.lib.activate.nixos nixosConfigurations.${name};
-        };
-      }
-    ) hosts;
+    profiles.system = {
+      sshUser = cfg.sshUser or "root";
+      user = "root";
+
+      sshOpts = [
+        "-o"
+        "StrictHostKeyChecking=yes"
+        "-o"
+        "UserKnownHostsFile=${cfg.knownHostsPath or "/etc/ssh/ssh_known_hosts"}"
+        "-o"
+        "Port=${toString (cfg.sshPort or 22)}"
+      ];
+
+      remoteBuild = true;
+      interactiveSudo = true;
+
+      path = deployPkgs.deploy-rs.lib.activate.nixos self.nixosConfigurations.${name};
+    };
+  }) nixosConfigs;
 in
 {
   flake-file.inputs = {
@@ -75,5 +64,5 @@ in
       };
     };
 
-  flake.deploy.nodes = toDeployNodes nixosHosts self.nixosConfigurations;
+  flake.deploy.nodes = toDeployNodes;
 }

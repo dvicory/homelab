@@ -24,6 +24,32 @@
     nixos-anywhere.url = "github:nix-community/nixos-anywhere";
     nixos-anywhere.inputs.nixpkgs.follows = "nixpkgs";
 
+    # Den aspect-oriented framework
+    den.url = "github:denful/den";
+
+    # Secret management
+    sops-nix.url = "github:Mic92/sops-nix";
+    sops-nix.inputs.nixpkgs.follows = "nixpkgs";
+
+    # CrowdSec (Kampka's modules, not nixpkgs)
+    crowdsec.url = "git+https://codeberg.org/solitango/nix-flake-crowdsec";
+    crowdsec.inputs.nixpkgs.follows = "nixpkgs";
+
+    # Impermanence
+    impermanence.url = "github:dvicory/impermanence/systemd-requires";
+
+    # Hardware detection
+    nixos-facter-modules.url = "github:nix-community/nixos-facter-modules";
+
+    # Remote ZFS unlock
+    hoopsnake = {
+      url = "github:boinkor-net/hoopsnake/be96a49b7b212eef04f365bb75c8df947d96d1fd";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        flake-parts.follows = "flake-parts";
+      };
+    };
+
     # Flake root detection
     flake-root.url = "github:srid/flake-root";
   };
