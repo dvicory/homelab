@@ -3,7 +3,14 @@
 {
   description = "Homelab3 - Dendritic Architecture";
 
-  outputs = inputs: inputs.flake-parts.lib.mkFlake { inherit inputs; } (inputs.import-tree ./modules);
+  outputs =
+    inputs:
+    inputs.flake-parts.lib.mkFlake { inherit inputs; } (
+      inputs.import-tree [
+        ./nix
+        ./modules
+      ]
+    );
 
   nixConfig = {
     experimental-features = [
@@ -28,6 +35,9 @@
         };
       };
       url = "git+https://codeberg.org/solitango/nix-flake-crowdsec";
+    };
+    den = {
+      url = "github:denful/den";
     };
     deploy-rs = {
       inputs = {
@@ -63,7 +73,7 @@
           follows = "nixpkgs";
         };
       };
-      url = "github:boinkor-net/hoopsnake";
+      url = "github:boinkor-net/hoopsnake/be96a49b7b212eef04f365bb75c8df947d96d1fd";
     };
     impermanence = {
       url = "github:dvicory/impermanence/systemd-requires";
