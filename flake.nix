@@ -4,13 +4,7 @@
   description = "Homelab3 - Dendritic Architecture";
 
   outputs =
-    inputs:
-    inputs.flake-parts.lib.mkFlake { inherit inputs; } (
-      inputs.import-tree [
-        ./nix
-        ./modules
-      ]
-    );
+    inputs: inputs.flake-parts.lib.mkFlake { inherit inputs; } (inputs.import-tree [ ./modules ]);
 
   nixConfig = {
     experimental-features = [

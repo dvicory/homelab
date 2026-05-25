@@ -24,3 +24,6 @@ ssh
 # Backup/temporary files
 *.old
 *.backup
+
+/den/
+/den-examples/
