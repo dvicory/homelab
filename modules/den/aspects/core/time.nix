@@ -1,5 +1,14 @@
 { lib, ... }: {
-  den.aspects."core/time" = {
+  den.aspects.core.time = {
+    persist = { config, ... }: let
+      logDir = "/var/log/chrony";
+      user = config.users.users.chrony.name;
+      group = config.users.groups.chrony.name;
+    in [
+      { directories = [ config.services.chrony.directory ]; inherit user group; }
+      { directories = [ logDir ]; inherit user group; }
+    ];
+
     nixos = { config, lib, pkgs, ... }: let
       logDir = "/var/log/chrony";
       servers = [
@@ -10,13 +19,10 @@
       user = config.users.users.chrony.name;
       group = config.users.groups.chrony.name;
     in {
-      # Set timezone (can be overridden per-host)
       time.timeZone = lib.mkDefault "America/Los_Angeles";
 
-      # Disable systemd-timesyncd to avoid conflicts with chrony
       services.timesyncd.enable = lib.mkForce false;
 
-      # Use chrony for NTP with NTS support
       services.chrony = {
         inherit servers;
         enable = true;
@@ -24,16 +30,13 @@
         serverOption = "iburst";
 
         extraConfig = ''
-          # Allow chrony to step the clock if step > 1 second
           makestep 1 -1
 
-          # Log measurements and statistics
           logdir ${logDir}
           log measurements statistics tracking
         '';
       };
 
-      # Ensure log directory exists
       systemd.tmpfiles.rules = [
         "d ${logDir} 0755 ${user} ${group} -"
       ];
@@ -48,11 +51,6 @@
           ${pkgs.chrony}/bin/chronyc cyclelogs > /dev/null 2>&1 || true
         '';
       };
-
-      persist.directories = [
-        { directory = config.services.chrony.directory; inherit user group; }
-        { directory = logDir; inherit user group; }
-      ];
     };
   };
 }

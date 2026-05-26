@@ -1,5 +1,5 @@
 { lib, ... }: {
-  den.aspects."services/mergerfs" = {
+  den.aspects.services.mergerfs = {
     settings.options.pools = lib.mkOption {
       type = lib.types.attrsOf (lib.types.submodule {
         options = {

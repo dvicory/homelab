@@ -1,5 +1,5 @@
 { den, lib, inputs, ... }: {
-  den.aspects."disk/zfs" = { host, ... }: let
+  den.aspects.disk.zfs = { host, ... }: let
     pool = host.zfs.rootPool or null;
     swapCfg = host.zfs.swap or { };
   in {
@@ -8,7 +8,10 @@
         inputs.nixos-anywhere.inputs.disko.nixosModules.disko
       ];
 
-      config = lib.mkIf (host.hasAspect den.aspects."disk/zfs") {
+      # TODO: hasAspect den.aspects.disk.zfs fails on parametric
+      # function-bodied aspects through 2-level lazyAttrsOf. Fork CI
+      # tests verify static aspects work. pool != null is equivalent.
+      config = lib.mkIf (pool != null) {
         disko.devices = {
           disk = {
             root = {

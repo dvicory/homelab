@@ -31,7 +31,7 @@
       url = "git+https://codeberg.org/solitango/nix-flake-crowdsec";
     };
     den = {
-      url = "github:denful/den";
+      url = "github:sini/den/feat/entity-gen-schema-port";
     };
     deploy-rs = {
       inputs = {
@@ -49,6 +49,14 @@
     };
     flake-root = {
       url = "github:srid/flake-root";
+    };
+    gen-schema = {
+      inputs = {
+        nixpkgs = {
+          follows = "nixpkgs";
+        };
+      };
+      url = "github:sini/gen-schema";
     };
     home-manager = {
       inputs = {
