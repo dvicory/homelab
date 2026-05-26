@@ -1,5 +1,7 @@
 { den, ... }: {
-  den.hosts.aarch64-darwin.daniels-2021-mbp = { };
+  den.hosts.aarch64-darwin.daniels-2021-mbp = {
+    environment = "home";
+  };
 
   den.aspects.daniels-2021-mbp = {
     includes = [

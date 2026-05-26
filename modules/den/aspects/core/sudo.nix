@@ -1,5 +1,5 @@
 _: {
-  den.aspects."core/sudo" = {
+  den.aspects.core.sudo = {
     nixos = {
       security.sudo.enable = false;
       security.sudo-rs = {

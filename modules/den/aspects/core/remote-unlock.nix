@@ -14,7 +14,8 @@
     in {
       imports = [ inputs.hoopsnake.nixosModules.default ];
 
-      config = lib.mkIf (host.hasAspect den.aspects."disk/zfs") {
+      # TODO: hasAspect den.aspects.disk.zfs — see zfs.nix for details.
+      config = lib.mkIf (host.zfs.rootPool != null) {
         boot.initrd = {
           network.enable = true;
           systemd = {

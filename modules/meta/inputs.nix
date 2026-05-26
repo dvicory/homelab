@@ -24,8 +24,12 @@
     nixos-anywhere.url = "github:nix-community/nixos-anywhere";
     nixos-anywhere.inputs.nixpkgs.follows = "nixpkgs";
 
-    # Den aspect-oriented framework
-    den.url = "github:denful/den";
+    # Den aspect-oriented framework (sini fork with quirk pipes and dynamic settingsType)
+    den.url = "github:sini/den/feat/entity-gen-schema-port";
+
+    # gen-schema (entity schema library required by den fork)
+    gen-schema.url = "github:sini/gen-schema";
+    gen-schema.inputs.nixpkgs.follows = "nixpkgs";
 
     # Secret management
     sops-nix.url = "github:Mic92/sops-nix";

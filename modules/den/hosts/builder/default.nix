@@ -1,5 +1,6 @@
 { den, ... }: {
   den.hosts.aarch64-linux.builder = {
+    environment = "vms";
     settings.core.nix.gc.enable = false;
 
     users.daniel = {
@@ -25,10 +26,10 @@
   den.aspects.builder = {
     includes = [
       den.batteries.hostname
-      den.aspects."core/facter"
-      den.aspects."disk/zfs"
-      den.aspects."disk/impermanence"
-      den.aspects."roles/server"
+      den.aspects.core.facter
+      den.aspects.disk.zfs
+      den.aspects.disk.impermanence
+      den.aspects.roles.server
     ];
 
     nixos = { config, pkgs, ... }: {

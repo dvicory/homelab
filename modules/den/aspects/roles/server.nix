@@ -1,8 +1,8 @@
 { den, ... }: {
-  den.aspects."roles/server" = {
+  den.aspects.roles.server = {
     includes = [
-      den.aspects."services/crowdsec"
-      den.aspects."services/crowdsec".provides.bouncer
+      den.aspects.services.crowdsec
+      den.aspects.services.crowdsec.provides.bouncer
     ];
 
     nixos = { ... }: {

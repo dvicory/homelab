@@ -1,5 +1,5 @@
 { inputs, ... }: {
-  den.aspects."core/facter" = {
+  den.aspects.core.facter = {
     nixos = { config, ... }: {
       imports = [ inputs.nixos-facter-modules.nixosModules.facter ];
 

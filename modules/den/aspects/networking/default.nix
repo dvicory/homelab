@@ -1,5 +1,5 @@
 { lib, ... }: {
-  den.aspects."networking/default" = { host, ... }:
+  den.aspects.networking.default = { host, ... }:
   let
     interfaces = host.networking.interfaces or { };
 

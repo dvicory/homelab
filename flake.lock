@@ -44,15 +44,16 @@
     },
     "den": {
       "locked": {
-        "lastModified": 1779693278,
-        "narHash": "sha256-Er/DjUx8O/pOmyF9+u8MBLim4ZwMKCgbkEkAOh5oxS4=",
-        "owner": "denful",
+        "lastModified": 1779697336,
+        "narHash": "sha256-pysV5faQbiGxSPY+/Eu0uSpFGd327ggYXDVGDumruOw=",
+        "owner": "sini",
         "repo": "den",
-        "rev": "0b250e179282832e7ba9b7f95ffb8e6b87a973fe",
+        "rev": "06b4b76b14545f4f5785c3358895a4bbb407e2db",
         "type": "github"
       },
       "original": {
-        "owner": "denful",
+        "owner": "sini",
+        "ref": "feat/entity-gen-schema-port",
         "repo": "den",
         "type": "github"
       }
@@ -273,6 +274,26 @@
       "original": {
         "owner": "numtide",
         "repo": "flake-utils",
+        "type": "github"
+      }
+    },
+    "gen-schema": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1779700572,
+        "narHash": "sha256-FEYOvLBea2JvpJBc2NuiRiVix89m7dAC/9O0MdQuRQo=",
+        "owner": "sini",
+        "repo": "gen-schema",
+        "rev": "60118212f0d8b0b4c8fbba7c03df8669192144f9",
+        "type": "github"
+      },
+      "original": {
+        "owner": "sini",
+        "repo": "gen-schema",
         "type": "github"
       }
     },
@@ -693,6 +714,7 @@
         "flake-file": "flake-file",
         "flake-parts": "flake-parts",
         "flake-root": "flake-root",
+        "gen-schema": "gen-schema",
         "home-manager": "home-manager",
         "hoopsnake": "hoopsnake",
         "impermanence": "impermanence",
