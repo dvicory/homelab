@@ -1,5 +1,6 @@
 { den, ... }: {
   den.hosts.x86_64-linux.hvn-hyp1 = {
+    environment = "vms";
     users.daniel = {
       sshKeys = [ ../hvn-hyp1/ssh.pub ];
       extraGroups = [ "wheel" ];
@@ -30,13 +31,13 @@
   den.aspects.hvn-hyp1 = {
     includes = [
       den.batteries.hostname
-      den.aspects."core/facter"
-      den.aspects."hardware/hypervisor"
-      den.aspects."disk/zfs"
-      den.aspects."disk/impermanence"
-      den.aspects."roles/server"
+      den.aspects.core.facter
+      den.aspects.hardware.hypervisor
+      den.aspects.disk.zfs
+      den.aspects.disk.impermanence
+      den.aspects.roles.server
       den.aspects."core/remote-unlock"
-      den.aspects."services/mergerfs"
+      den.aspects.services.mergerfs
     ];
 
     nixos = { config, pkgs, ... }: {

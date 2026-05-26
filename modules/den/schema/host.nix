@@ -1,5 +1,11 @@
 { lib, ... }: {
   den.schema.host = { host, lib, ... }: {
+    options.environment = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "Environment grouping for this host (e.g. home, vms)";
+    };
+
     options.zfs = {
       rootPool = lib.mkOption {
         type = lib.types.nullOr (lib.types.submodule {

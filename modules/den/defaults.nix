@@ -1,5 +1,7 @@
 { den, lib, inputs, ... }:
 {
+  den.reservedKeys = [ "settings" ];
+
   den.default.includes = [
     den.batteries.hostname
     den.batteries.mutual-provider
@@ -31,22 +33,17 @@
   ];
 
   den.schema.host.includes = [
-    den.aspects."core/time"
-    den.aspects."networking/default"
-    den.aspects."core/nix"
-    den.aspects."core/sudo"
+    den.aspects."core/firewall-collector"
+    den.aspects.core.time
+    den.aspects.networking.default
+    den.aspects.core.nix
+    den.aspects.core.sudo
   ];
 
   den.default.nixos = { config, lib, pkgs, ... }: let
     inherit (lib) mkOption types;
   in {
     options = {
-      persist.directories = mkOption {
-        type = types.listOf (types.either types.str types.raw);
-        default = [ ];
-        description = "Additional directories to persist on impermanent systems.";
-      };
-
       deployment = {
         enable = mkOption {
           type = types.bool;

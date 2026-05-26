@@ -1,5 +1,5 @@
 { lib, ... }: {
-  den.aspects."core/nix" = {
+  den.aspects.core.nix = {
     os = { host, lib, ... }: {
       nix.settings = {
         experimental-features = [ "nix-command" "flakes" ];

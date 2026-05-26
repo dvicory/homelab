@@ -1,5 +1,5 @@
 { inputs, ... }: {
-  den.aspects."services/crowdsec" = {
+  den.aspects.services.crowdsec = {
     nixos = { config, lib, pkgs, ... }: let
       cfg = config.services.crowdsec;
       hostName = config.networking.hostName;
