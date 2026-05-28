@@ -1,5 +1,5 @@
 _: {
-  den.aspects."core/persist-collector" = {
+  den.aspects.core."persist-collector" = {
     nixos = { persist, cache, lib, ... }:
       let
         wrapPath = path: metadata:

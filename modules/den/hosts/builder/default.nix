@@ -28,6 +28,7 @@
       den.batteries.hostname
       den.aspects.core.facter
       den.aspects.disk.zfs
+      den.aspects.disk.zfs.provides.pool
       den.aspects.disk.impermanence
       den.aspects.roles.server
     ];

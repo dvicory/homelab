@@ -32,11 +32,12 @@
     includes = [
       den.batteries.hostname
       den.aspects.core.facter
-      den.aspects.hardware.hypervisor
+      den.aspects.virtualization.incus
       den.aspects.disk.zfs
+      den.aspects.disk.zfs.provides.pool
       den.aspects.disk.impermanence
       den.aspects.roles.server
-      den.aspects."core/remote-unlock"
+      den.aspects.core."remote-unlock"
       den.aspects.services.mergerfs
     ];
 

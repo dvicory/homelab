@@ -1,8 +1,7 @@
 { den, lib, inputs, ... }: {
-  den.aspects."core/remote-unlock" = { host, ... }: let
-    poolName = host.zfs.rootPool.name or null;
-  in {
-    nixos = { config, pkgs, ... }: let
+  den.aspects.core."remote-unlock" = {
+    nixos = { host, config, pkgs, ... }: let
+      poolName = host.zfs.rootPool.name or null;
       sshUserNames = host.settings.core.remote-unlock.sshUsers or [ "daniel" ];
       sshKeys = lib.concatLists (
         lib.mapAttrsToList (_name: userCfg: userCfg.sshKeys or [ ])
@@ -14,8 +13,7 @@
     in {
       imports = [ inputs.hoopsnake.nixosModules.default ];
 
-      # TODO: hasAspect den.aspects.disk.zfs — see zfs.nix for details.
-      config = lib.mkIf (host.zfs.rootPool != null) {
+      config = lib.mkIf (host.hasAspect den.aspects.disk.zfs) {
         boot.initrd = {
           network.enable = true;
           systemd = {
