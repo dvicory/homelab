@@ -54,6 +54,13 @@
       };
     };
 
+    # ZFS disk layout via disko
+    disko-zfs = {
+      url = "github:numtide/disko-zfs";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-parts.follows = "flake-parts";
+    };
+
     # Flake root detection
     flake-root.url = "github:srid/flake-root";
   };

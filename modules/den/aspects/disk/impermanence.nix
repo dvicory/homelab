@@ -1,7 +1,7 @@
 { den, lib, inputs, ... }: {
-  den.aspects.disk.impermanence = { host, ... }: {
+  den.aspects.disk.impermanence = {
     includes = [
-      den.aspects."core/persist-collector"
+      den.aspects.core."persist-collector"
     ];
 
     persist = [
@@ -9,13 +9,12 @@
       { files = [ "/etc/machine-id" ]; }
     ];
 
-    nixos = { config, pkgs, ... }: let
+    nixos = { host, config, pkgs, ... }: let
       poolName = host.zfs.rootPool.name or null;
     in {
       imports = [ inputs.impermanence.nixosModules.impermanence ];
 
-      # TODO: hasAspect den.aspects.disk.zfs — see zfs.nix for details.
-      config = lib.mkIf (host.zfs.rootPool != null) {
+      config = {
         fileSystems."/persist".neededForBoot = true;
 
         services.openssh = {
@@ -24,7 +23,8 @@
             HostKey /persist/etc/ssh/ssh_host_ed25519_key
           '';
         };
-
+      }
+      // lib.optionalAttrs (host.hasAspect den.aspects.disk.zfs) {
         boot.initrd = lib.mkIf config.boot.initrd.systemd.enable {
           systemd.storePaths = [ inputs.self.packages.${pkgs.system}.initrdZfsRollback ];
 

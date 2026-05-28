@@ -6,6 +6,12 @@
       description = "Environment grouping for this host (e.g. home, vms)";
     };
 
+    options.disk.device = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = host.zfs.rootPool.disk1 or null;
+      description = "Root disk device for disko layout (defaults to ZFS pool disk)";
+    };
+
     options.zfs = {
       rootPool = lib.mkOption {
         type = lib.types.nullOr (lib.types.submodule {

@@ -33,7 +33,8 @@
   ];
 
   den.schema.host.includes = [
-    den.aspects."core/firewall-collector"
+    den.aspects.disk
+    den.aspects.core."firewall-collector"
     den.aspects.core.time
     den.aspects.networking.default
     den.aspects.core.nix
