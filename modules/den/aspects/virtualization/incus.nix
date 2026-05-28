@@ -1,5 +1,5 @@
 { lib, ... }: {
-  den.aspects.hardware.hypervisor = {
+  den.aspects.virtualization.incus = {
     persist = [
       { directories = [ "/var/lib/incus" ]; user = "incus"; group = "incus"; }
     ];

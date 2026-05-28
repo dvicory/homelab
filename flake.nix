@@ -41,6 +41,17 @@
       };
       url = "github:serokell/deploy-rs";
     };
+    disko-zfs = {
+      inputs = {
+        flake-parts = {
+          follows = "flake-parts";
+        };
+        nixpkgs = {
+          follows = "nixpkgs";
+        };
+      };
+      url = "github:numtide/disko-zfs";
+    };
     flake-file = {
       url = "github:vic/flake-file";
     };
