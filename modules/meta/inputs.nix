@@ -35,10 +35,6 @@
     sops-nix.url = "github:Mic92/sops-nix";
     sops-nix.inputs.nixpkgs.follows = "nixpkgs";
 
-    # CrowdSec (Kampka's modules, not nixpkgs)
-    crowdsec.url = "git+https://codeberg.org/solitango/nix-flake-crowdsec";
-    crowdsec.inputs.nixpkgs.follows = "nixpkgs";
-
     # Impermanence
     impermanence.url = "github:dvicory/impermanence/systemd-requires";
 

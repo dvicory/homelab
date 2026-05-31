@@ -22,13 +22,8 @@
   };
 
   inputs = {
-    crowdsec = {
-      inputs = {
-        nixpkgs = {
-          follows = "nixpkgs";
-        };
-      };
-      url = "git+https://codeberg.org/solitango/nix-flake-crowdsec";
+    crowdsec-pr = {
+      url = "github:dvicory/nixpkgs/crowdsec";
     };
     den = {
       url = "github:sini/den/feat/entity-gen-schema-port";
