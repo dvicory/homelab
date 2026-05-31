@@ -37,7 +37,7 @@
         };
 
         environment.systemPackages = [
-          inputs.hoopsnake.packages.${pkgs.system}.hoopsnake
+          inputs.hoopsnake.packages.${pkgs.stdenv.hostPlatform.system}.hoopsnake
         ];
 
         boot.initrd.network.hoopsnake = {
