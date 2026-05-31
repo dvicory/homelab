@@ -9,7 +9,7 @@ let
 
   toDeployNodes = lib.mapAttrs (name: _: let
     cfg = self.nixosConfigurations.${name}.config.deployment;
-    system = self.nixosConfigurations.${name}.pkgs.system;
+    system = self.nixosConfigurations.${name}.pkgs.stdenv.hostPlatform.system;
 
     deployPkgs =
       let
