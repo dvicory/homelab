@@ -4,11 +4,14 @@
     let
       interfaces = host.networking.interfaces or { };
 
-      toSystemdNetwork = lib.mapAttrs (name: iface: {
-        matchConfig.Name = name;
-        address = lib.optional (iface ? ipv4 && iface.ipv4 != null) iface.ipv4;
-        gateway = lib.optional (iface ? gateway && iface.gateway != null) iface.gateway;
-        networkConfig.DHCP = if iface.dhcp or false then "yes" else "no";
+      toSystemdNetwork = lib.mapAttrs' (name: iface: {
+        name = "40-${name}";
+        value = {
+          matchConfig.Name = name;
+          address = lib.optional (iface ? ipv4 && iface.ipv4 != null) iface.ipv4;
+          gateway = lib.optional (iface ? gateway && iface.gateway != null) iface.gateway;
+          networkConfig.DHCP = if iface.dhcp or false then "yes" else "no";
+        };
       }) interfaces;
     in {
       environment.systemPackages = with pkgs; [
