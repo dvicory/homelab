@@ -1,130 +1,156 @@
 { inputs, ... }: {
+  flake-file.inputs = {
+    # CrowdSec PR refactor (based on TornaxO7's rewrite
+    # https://github.com/NixOS/nixpkgs/pull/446307).
+    # Reference config: https://github.com/1randomguy/nixconfig/blob/main/modules/nixos/homelab/services/crowdsec.nix
+    crowdsec-pr.url = "github:dvicory/nixpkgs/crowdsec";
+  };
+
   den.aspects.services.crowdsec = {
-    nixos = { config, lib, pkgs, ... }: let
-      cfg = config.services.crowdsec;
-      hostName = config.networking.hostName;
-    in {
-      disabledModules = [
-        "services/security/crowdsec.nix"
-      ];
+    nixos = { config, lib, pkgs, ... }:
+      let
+        cfg = config.services.crowdsec;
+        persistDataDir = "/persist/crowdsec/data";
+      in {
+        disabledModules = [
+          "services/security/crowdsec.nix"
+        ];
 
-      imports = [
-        inputs.crowdsec.nixosModules.crowdsec
-      ];
+        imports = [
+          "${inputs.crowdsec-pr}/nixos/modules/services/security/crowdsec.nix"
+        ];
 
-      config = lib.mkMerge [
-        {
-          secretRequests."crowdsec/bouncerApiKey" = {
-            mode = "0660";
-            owner = "crowdsec";
-            restartUnits = [
-              "crowdsec.service"
-              "crowdsec-firewall-bouncer.service"
-            ];
-          };
+        config = lib.mkMerge [
+          {
+            secretRequests."crowdsec/enrollmentKey" = {
+              mode = "0400";
+              owner = "root";
+              sopsFile = ../../../../shared/secrets.yaml;
+              key = "crowdsec/enrollment_key";
+              restartUnits = [ "crowdsec.service" ];
+            };
+          }
 
-          secretRequests."crowdsec/enrollmentKey" = {
-            mode = "0660";
-            owner = "crowdsec";
-            sopsFile = ../../../../shared/secrets.yaml;
-            key = "crowdsec/enrollment_key";
-            restartUnits = [ "crowdsec.service" ];
-          };
-        }
+          (lib.mkIf cfg.enable {
+            services.crowdsec = {
+              autoUpdateService = true;
 
-        (lib.mkIf cfg.enable {
-          services.crowdsec.allowLocalJournalAccess = true;
+              package = pkgs.callPackage "${inputs.crowdsec-pr}/pkgs/by-name/cr/crowdsec/package.nix" { };
 
-          services.crowdsec.settings =
-            let
-              yaml = (pkgs.formats.yaml { }).generate;
-              sshAcquisition = yaml "ssh-acquisition.yaml" {
-                source = "journalctl";
-                journalctl_filter = [ "_SYSTEMD_UNIT=sshd.service" ];
-                labels.type = "syslog";
+              hub.collections = [ "crowdsecurity/linux" ];
+
+              settings = {
+                config.api.server.online_client.credentials_path =
+                  "/var/lib/crowdsec/data/online_api_credentials.yaml";
+
+                acquisitions = [
+                  {
+                    labels.type = "syslog";
+                    source = "journalctl";
+                    journalctl_filter = [ "_SYSTEMD_UNIT=sshd.service" ];
+                  }
+                ];
+
+                console.enrollKeyFile = config.sops.secrets."crowdsec/enrollmentKey".path;
               };
-            in
-            {
-              api.server.listen_uri = "127.0.0.1:8080";
-              crowdsec_service.acquisition_path = sshAcquisition;
             };
 
-          services.crowdsec.enrollKeyFile = config.sops.secrets."crowdsec/enrollmentKey".path;
+            # DynamicUser + ZFS persist: ZFS doesn't support id-mapped
+            # mounts required for DynamicUser's user namespace setup. If a
+            # ZFS mount sits inside the StateDirectory path, systemd fails
+            # at step NAMESPACE with EBUSY.
+            #
+            # openzfs/zfs#12923 — FS_ALLOW_IDMAP not yet implemented.
+            #
+            # Workaround: persist data outside the StateDirectory
+            # (/persist/crowdsec/data) and symlink into it at runtime.
+            # The id-mapped mount covers only the symlink inode (on
+            # tmpfs/rootfs), not the ZFS data behind it. Ownership is
+            # fixed each boot via chown resolved through nss-systemd
+            # (dynamic users are visible to getpwnam).
+            systemd.services.crowdsec-setup = {
+              serviceConfig = {
+                ExecStartPre = [
+                  "+${pkgs.coreutils}/bin/mkdir -p ${persistDataDir}"
+                  "+${pkgs.coreutils}/bin/chown -R crowdsec:crowdsec ${persistDataDir}"
+                  "+${pkgs.coreutils}/bin/chmod -R 0750 ${persistDataDir}"
+                  "+${pkgs.coreutils}/bin/chown -R crowdsec:crowdsec /etc/crowdsec"
+                  "+${pkgs.coreutils}/bin/chmod 750 -R /etc/crowdsec"
+                  # Host-level symlink: survives oneshot namespace teardown.
+                  # StateDirectory is created AFTER +ExecStartPre, so we
+                  # mkdir the parent ourselves here.
+                  "+${pkgs.coreutils}/bin/mkdir -p /var/lib/private/crowdsec"
+                  "+${pkgs.coreutils}/bin/rm -rf /var/lib/private/crowdsec/data"
+                  "+${pkgs.coreutils}/bin/ln -sfn ${persistDataDir} /var/lib/private/crowdsec/data"
+                ];
+                ReadWritePaths = [ persistDataDir ];
+              };
+            };
 
-          systemd.services.crowdsec.serviceConfig.Type = "notify";
+            systemd.services.crowdsec.serviceConfig.ReadWritePaths = [
+              persistDataDir
+            ];
 
-          systemd.services.crowdsec.serviceConfig.ExecStartPre = lib.mkAfter (
-            let
-              setupCollectionsScript = pkgs.writeScriptBin "setup-crowdsec-collections" ''
-                #!${pkgs.runtimeShell}
-                set -eu
-                set -o pipefail
-                echo "Installing CrowdSec collections..."
-                ${pkgs.crowdsec}/bin/cscli collections install crowdsecurity/linux || true
-                echo "CrowdSec collections installed"
-                ${pkgs.crowdsec}/bin/cscli capi status
-              '';
-            in
-            [ "${setupCollectionsScript}/bin/setup-crowdsec-collections" ]
-          );
-        })
-      ];
-    };
+            systemd.services.crowdsec-update-hub.serviceConfig.ReadWritePaths = [
+              persistDataDir
+            ];
+
+            # PR module's cscli wrapper uses systemd-run for a transient
+            # DynamicUser unit. It's missing ReadWritePaths so interactive
+            # cscli commands fail to access the ZFS persist dir via the
+            # symlink. Override with the same wrapper plus the property.
+            environment.systemPackages = lib.mkBefore [
+              (pkgs.symlinkJoin {
+                name = "cscli";
+                paths = [
+                  (pkgs.writeShellScriptBin "cscli" ''
+                    exec ${pkgs.systemd}/bin/systemd-run \
+                      --quiet \
+                      --pty \
+                      --wait \
+                      --collect \
+                      --pipe \
+                      --service-type=exec \
+                      --working-directory=/var/lib/crowdsec/data/hub \
+                      --property=ExecPaths="${config.services.crowdsec.settings.config.config_paths.plugin_dir}" \
+                      --property=User=${config.services.crowdsec.user} \
+                      --property=Group=${config.services.crowdsec.group} \
+                      --property=DynamicUser=true \
+                      --property=StateDirectory="crowdsec" \
+                      --property=StateDirectoryMode="0750" \
+                      --property=ConfigurationDirectory="crowdsec" \
+                      --property=ConfigurationDirectoryMode="0750" \
+                      --property=ReadWritePaths=${persistDataDir} \
+                      --property=SupplementaryGroups=systemd-journal \
+                      -- \
+                      ${config.services.crowdsec.package}/bin/cscli "$@"
+                  '')
+                ];
+              })
+            ];
+          })
+        ];
+      };
 
     provides.bouncer = {
       nixos = { config, lib, pkgs, ... }: let
-        bouncerCfg = config.services.crowdsec-firewall-bouncer;
-        hostName = config.networking.hostName;
+        persistDataDir = "/persist/crowdsec/data";
       in {
         disabledModules = [
           "services/security/crowdsec-firewall-bouncer.nix"
         ];
 
         imports = [
-          inputs.crowdsec.nixosModules.crowdsec-firewall-bouncer
+          "${inputs.crowdsec-pr}/nixos/modules/services/security/crowdsec-firewall-bouncer.nix"
         ];
 
-        config = lib.mkIf bouncerCfg.enable {
-          services.crowdsec-firewall-bouncer.settings = {
-            api_url = "http://localhost:8080";
-          };
-
-          systemd.services.crowdsec-firewall-bouncer =
-            let
-              format = pkgs.formats.yaml { };
-              baseConfig = format.generate "crowdsec-base.yaml" bouncerCfg.settings;
-              runtimeConfigPath = "/run/crowdsec-firewall-bouncer/config.yaml";
-              setupApiKey = pkgs.writeScriptBin "setup-firewall-bouncer-api-key" ''
-                #!${pkgs.runtimeShell}
-                set -eu
-                set -o pipefail
-                mkdir -p /run/crowdsec-firewall-bouncer
-                API_KEY=$(cat ${config.sops.secrets."crowdsec/bouncerApiKey".path})
-                {
-                  echo "api_key: $API_KEY"
-                  cat ${baseConfig}
-                } > ${runtimeConfigPath}
-              '';
-
-              registerBouncerScript = pkgs.writeScriptBin "register-bouncer" ''
-                #!${pkgs.runtimeShell}
-                set -eu
-                set -o pipefail
-                BOUNCER_KEY=$(cat ${config.sops.secrets."crowdsec/bouncerApiKey".path})
-                if ! ${pkgs.crowdsec}/bin/cscli bouncers list | grep -q "${hostName}-firewall-bouncer"; then
-                  echo "Registering firewall bouncer..."
-                  ${pkgs.crowdsec}/bin/cscli bouncers add "${hostName}-firewall-bouncer" --key "$BOUNCER_KEY"
-                fi
-              '';
-            in
-            {
-              serviceConfig.ExecStart = lib.mkForce "${config.services.crowdsec-firewall-bouncer.package}/bin/cs-firewall-bouncer -c ${runtimeConfigPath}";
-              serviceConfig.ExecStartPre = lib.mkForce [
-                "${setupApiKey}/bin/setup-firewall-bouncer-api-key"
-                "${config.services.crowdsec-firewall-bouncer.package}/bin/cs-firewall-bouncer -t -c ${runtimeConfigPath}"
-                "${registerBouncerScript}/bin/register-bouncer"
-              ];
-            };
+        config = lib.mkIf config.services.crowdsec-firewall-bouncer.enable {
+          systemd.services.crowdsec-firewall-bouncer-register.serviceConfig.ReadWritePaths = [
+            persistDataDir
+          ];
+          systemd.services.crowdsec-firewall-bouncer.serviceConfig.ReadWritePaths = [
+            persistDataDir
+          ];
         };
       };
     };
