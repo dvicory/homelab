@@ -54,7 +54,7 @@
       }
       // lib.optionalAttrs (host.hasAspect den.aspects.disk.zfs) {
         boot.initrd = lib.mkIf config.boot.initrd.systemd.enable {
-          systemd.storePaths = [ inputs.self.packages.${pkgs.system}.initrdZfsRollback ];
+          systemd.storePaths = [ inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.initrdZfsRollback ];
 
           systemd.services.initrd-zfs-rollback = {
             description = "ZFS rollback for impermanence";
@@ -65,7 +65,7 @@
             serviceConfig = {
               Type = "oneshot";
               RemainAfterExit = true;
-              ExecStart = "${inputs.self.packages.${pkgs.system}.initrdZfsRollback}/bin/initrd-zfs-rollback";
+              ExecStart = "${inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.initrdZfsRollback}/bin/initrd-zfs-rollback";
               StandardOutput = "journal+console";
             };
 

@@ -12,7 +12,7 @@
         lib.mapAttrs (name: cfg: {
           inherit name;
           enable = true;
-          system = cfg.pkgs.system;
+          system = cfg.pkgs.stdenv.hostPlatform.system;
           deploy = {
             target = cfg.config.deployment.target or null;
             user = cfg.config.deployment.sshUser or "root";
