@@ -4,7 +4,9 @@
     settings.core.nix.gc.enable = false;
 
     users.daniel = {
-      sshKeys = [ ../builder/ssh.pub ];
+      sshKeys = [
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIItkbwb4903ks6RXq1AyRGRK3um1Wzo8tvo12lG9dete dvicory@mbp-2021-32gb"
+      ];
       extraGroups = [ "wheel" ];
     };
 

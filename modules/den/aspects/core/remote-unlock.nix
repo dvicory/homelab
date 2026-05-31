@@ -2,14 +2,12 @@
   den.aspects.core."remote-unlock" = {
     nixos = { host, config, pkgs, ... }: let
       poolName = host.zfs.rootPool.name or null;
-      sshUserNames = host.settings.core.remote-unlock.sshUsers or [ "daniel" ];
+      sshUserNames = host.settings.core.remote-unlock.sshUsers or [ ];
       sshKeys = lib.concatLists (
         lib.mapAttrsToList (_name: userCfg: userCfg.sshKeys or [ ])
           (lib.filterAttrs (n: _v: lib.elem n sshUserNames) host.users)
       );
-      authorizedKeysFile = pkgs.writeText "hoopsnake-keys" (
-        lib.concatStringsSep "\n" (lib.concatMap (path: lib.splitString "\n" (builtins.readFile path)) sshKeys)
-      );
+      authorizedKeysFile = pkgs.writeText "hoopsnake-keys" (lib.concatStringsSep "\n" sshKeys);
     in {
       imports = [ inputs.hoopsnake.nixosModules.default ];
 
@@ -19,11 +17,14 @@
           systemd = {
             enable = true;
             network.enable = true;
-            network.networks = lib.mapAttrs (name: iface: {
-              matchConfig.Name = name;
-              address = lib.optional (iface ? ipv4 && iface.ipv4 != null) iface.ipv4;
-              gateway = lib.optional (iface ? gateway && iface.gateway != null) iface.gateway;
-              networkConfig.DHCP = if iface.dhcp or false then "yes" else "no";
+            network.networks = lib.mapAttrs' (name: iface: {
+              name = "40-${name}";
+              value = {
+                matchConfig.Name = name;
+                address = lib.optional (iface ? ipv4 && iface.ipv4 != null) iface.ipv4;
+                gateway = lib.optional (iface ? gateway && iface.gateway != null) iface.gateway;
+                networkConfig.DHCP = if iface.dhcp or false then "yes" else "no";
+              };
             }) (lib.filterAttrs (_: iface: iface.initrd.enable or false) (host.networking.interfaces or { }));
             emergencyAccess = true;
             extraBin = {

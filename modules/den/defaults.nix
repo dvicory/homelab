@@ -6,13 +6,8 @@
     den.batteries.hostname
     den.batteries.mutual-provider
     den.batteries.define-user
-    ({ host, user }: let
-      readKeyFile = path:
-        lib.strings.trim (if builtins.isPath path then builtins.readFile path else path);
-      readAllKeys = keys:
-        lib.filter (k: k != "") (lib.concatMap (path: lib.splitString "\n" (readKeyFile path)) keys);
-    in lib.mkIf (user.sshKeys or [ ] != [ ]) {
-      nixos.users.users.${user.userName}.openssh.authorizedKeys.keys = readAllKeys user.sshKeys;
+    ({ user, ... }: {
+      nixos.users.users.${user.userName}.openssh.authorizedKeys.keys = user.sshKeys or [ ];
     })
     ({ host, user }: let
       secretPath = inputs.self + "/modules/den/hosts/${host.name}/secrets.yaml";
