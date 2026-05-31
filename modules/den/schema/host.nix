@@ -115,6 +115,11 @@
             type = lib.types.bool;
             default = true;
           };
+          core.remote-unlock.sshUsers = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ "daniel" ];
+            description = "Usernames whose SSH keys are authorized for remote-unlock (hoopsnake).";
+          };
           core.remote-unlock.tailscale.authKey = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
             default = null;
