@@ -145,7 +145,7 @@
       secretPath = lib.mkDefault (inputs.self + "/.secrets/hosts/${config.name}");
       public_key = lib.mkDefault (
         if config.secretPath != null
-        then inputs.self + "/modules/den/hosts/${config.name}/runtime_host_key.pub"
+        then config.secretPath + "/runtime_host_key.pub"
         else null
       );
     };
