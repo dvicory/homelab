@@ -2,7 +2,6 @@
 {
   imports = [
     inputs.flake-root.flakeModule
-    inputs.agenix-rekey.flakeModule
   ];
 
   # Define all flake inputs
@@ -36,11 +35,7 @@
     sops-nix.url = "github:Mic92/sops-nix";
     sops-nix.inputs.nixpkgs.follows = "nixpkgs";
 
-    agenix.url = "github:ryantm/agenix";
-    agenix.inputs.nixpkgs.follows = "nixpkgs";
-
-    agenix-rekey.url = "github:sini/agenix-rekey/feat/settings";
-    agenix-rekey.inputs.nixpkgs.follows = "nixpkgs";
+    # agenix + agenix-rekey declared by batteries/agenix.nix (self-contained)
 
     # Impermanence
     impermanence.url = "github:dvicory/impermanence/systemd-requires";
