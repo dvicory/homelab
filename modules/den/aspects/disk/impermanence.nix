@@ -6,7 +6,11 @@
 
     persist = [
       { directories = [ "/var/log" "/var/lib/nixos" "/var/lib/systemd" ]; }
-      { files = [ "/etc/machine-id" ]; }
+      { files = [
+        "/etc/machine-id"
+        "/etc/ssh/ssh_host_ed25519_key"
+        "/etc/ssh/ssh_host_ed25519_key.pub"
+      ]; }
     ];
 
     nixos = { host, config, pkgs, ... }: let
@@ -45,12 +49,6 @@
           };
         };
 
-        services.openssh = {
-          hostKeys = lib.mkForce [ ];
-          extraConfig = lib.mkAfter ''
-            HostKey /persist/etc/ssh/ssh_host_ed25519_key
-          '';
-        };
       }
       // lib.optionalAttrs (host.hasAspect den.aspects.disk.zfs) {
         boot.initrd = lib.mkIf config.boot.initrd.systemd.enable {
