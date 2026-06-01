@@ -1,87 +1,120 @@
 #!/usr/bin/env bash
-# rekey.sh — Generate boot keys and rekey all agenix secrets.
-# Runs rage directly (not inside a Nix derivation), so master identity
-# at ~/.config/agenix/master.age is accessible.
+# rekey.sh — Rekey all agenix secrets for all hosts.
+#
+# Decrypts each secret with the master identity, then re-encrypts to
+# the host's SSH public key. Stores rekeyed copies in:
+#   .secrets/hosts/<hostname>/rekeyed/<hash>-<name>.age
+#
+# The hash formula must match agenix-rekey's Nix implementation:
+#   sha256(sha256(hostPubkey) + sha256(rekeyFile))[:32]
+#
+# Usage: ./scripts/rekey.sh
+#
+# Requires:
+#   - AGENIX_MASTER_IDENTITY env var pointing to master age private key
+#     (or .secrets/priv/master.age present)
+#   - age CLI (github.com/FiloSottile/age, NOT rage)
+
 set -euo pipefail
-cd "$(git rev-parse --show-toplevel)"
 
-MASTER_ID="$HOME/.config/agenix/master.age"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
 
-# agenix-rekey computes the rekeyed file hash as:
-#   identHash = substring(0, 32, hashString("sha256", hashString("sha256", hostPubkey) + hashFile("sha256", rekeyFile)))
-# 
-# hostPubkey is read with builtins.readFile (keeps trailing newline).
-# hashString/hashFile use Nix's sha256 which matches sha256sum.
+MASTER_ID="${AGENIX_MASTER_IDENTITY:-$REPO_ROOT/.secrets/priv/master.age}"
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+[ -f "$MASTER_ID" ] || die "Master identity not found at $MASTER_ID (set AGENIX_MASTER_IDENTITY or create .secrets/priv/master.age)"
+
 age_rekey_hash() {
   local host_key_file=$1 rekey_file=$2
-  local pubkey_hash=$(cat "$host_key_file" | sha256sum | cut -d' ' -f1)
-  local file_hash=$(sha256sum "$rekey_file" | cut -d' ' -f1)
+  local pubkey_hash file_hash
+  pubkey_hash=$(cat "$host_key_file" | sha256sum | cut -d' ' -f1)
+  file_hash=$(sha256sum "$rekey_file" | cut -d' ' -f1)
   echo -n "${pubkey_hash}${file_hash}" | sha256sum | cut -c1-32
 }
 
-rekey_one() {
-  local host=$1 host_ssh_pub_file=$2
-  local host_ssh_pub=$(<"$host_ssh_pub_file")
+rekey_host() {
+  local host=$1
   local srcdir=".secrets/hosts/$host"
   local dstdir="$srcdir/rekeyed"
+  local ssh_pub="${srcdir}/runtime_host_key.pub"
+  local ssh_pub_content
 
-  rm -rf "$dstdir"; mkdir -p "$dstdir"
+  [ -f "$ssh_pub" ] || { echo "  $host: SKIP (no runtime_host_key.pub)"; return 0; }
+  ssh_pub_content=$(<"$ssh_pub")
 
-  # Rekey both source .age files and generated .age files
+  rm -rf "$dstdir"
+  mkdir -p "$dstdir"
+
+  echo "=== $host ==="
+
   for f in "$srcdir"/*.age "$srcdir"/generated/*.age; do
     [ -f "$f" ] || continue
-    local name=$(basename "$f" .age)
-    local hash=$(age_rekey_hash "$host_ssh_pub_file" "$f")
-    echo "  $host: $name"
 
-    local plaintext=""
-    if plaintext=$(rage -d -i "$MASTER_ID" -i sops.key "$f" 2>/dev/null); then
-      echo "$plaintext" | age -e -r "$host_ssh_pub" -o "$dstdir/${hash}-${name}.age"
+    local name hash plaintext
+    name=$(basename "$f" .age)
+    hash=$(age_rekey_hash "$ssh_pub" "$f")
+
+    echo "  ${hash}-${name}.age"
+
+    if plaintext=$(age -d -i "$MASTER_ID" "$f" 2>/dev/null); then
+      echo "$plaintext" | age -e -r "$ssh_pub_content" -o "$dstdir/${hash}-${name}.age"
     else
-      echo "    (can't decrypt with master keys, using source as-is)"
+      echo "    WARNING: cannot decrypt with master identity, copying as-is"
       cp "$f" "$dstdir/${hash}-${name}.age"
     fi
   done
 }
 
-generate_hoot_key() {
-  local host=$1 host_ssh_pub_file=$2
-  local host_ssh_pub=$(<"$host_ssh_pub_file")
-  local gendir=".secrets/hosts/$host/generated"
+rekey_shared() {
+  local srcdir=".secrets/shared"
+  local dstdir="$srcdir/rekeyed"
 
-  rm -rf "$gendir"; mkdir -p "$gendir"
+  [ -d "$srcdir" ] || return 0
 
-  local keyfile=$(mktemp -u)
-  ssh-keygen -t ed25519 -N "" -f "$keyfile" -C "$host:boot-host-key" >/dev/null 2>&1
-  rage -e -r "$host_ssh_pub" -o "$gendir/boot-host-key.age" < "$keyfile"
-  cp "$keyfile.pub" "$gendir/boot-host-key.pub"
-  rm -f "$keyfile" "$keyfile.pub"
-  echo "  $host: boot-host-key (generated)"
+  rm -rf "$dstdir"
+  mkdir -p "$dstdir"
+
+  echo "=== shared ==="
+
+  local recipients=""
+  for pubfile in .secrets/hosts/*/runtime_host_key.pub; do
+    [ -f "$pubfile" ] || continue
+    recipients="$recipients -r $(cat "$pubfile")"
+  done
+
+  [ -n "$recipients" ] || { echo "  (no host pubkeys found, skipping)"; return 0; }
+
+  for f in "$srcdir"/*.age; do
+    [ -f "$f" ] || continue
+
+    local name plaintext
+    name=$(basename "$f" .age)
+
+    echo "  ${name}.age"
+
+    if plaintext=$(age -d -i "$MASTER_ID" "$f" 2>/dev/null); then
+      # shellcheck disable=SC2086
+      echo "$plaintext" | age -e $recipients -o "$dstdir/${name}.age"
+    else
+      echo "    WARNING: cannot decrypt with master identity, copying as-is"
+      cp "$f" "$dstdir/${name}.age"
+    fi
+  done
 }
 
-echo "=== Boot keys ==="
-generate_hoot_key hvn-hyp1 modules/den/hosts/hvn-hyp1/runtime_host_key.pub
-generate_hoot_key builder modules/den/hosts/builder/runtime_host_key.pub
-
+echo "=== Rekeying all secrets ==="
+echo "Master identity: $MASTER_ID"
 echo ""
-echo "=== Rekeying ==="
-echo "=== hvn-hyp1 ==="
-rekey_one hvn-hyp1 modules/den/hosts/hvn-hyp1/runtime_host_key.pub
-echo "=== builder ==="
-rekey_one builder modules/den/hosts/builder/runtime_host_key.pub
 
-# Shared secrets: encrypt to both hosts
-echo "=== shared ==="
-rm -rf .secrets/shared/rekeyed; mkdir -p .secrets/shared/rekeyed
-for f in .secrets/shared/*.age; do
-  [ -f "$f" ] || continue
-  name=$(basename "$f" .age)
-  echo "  shared: $name"
-  rage -d -i "$MASTER_ID" -i sops.key "$f" | \
-    rage -e -r "$(cat modules/den/hosts/hvn-hyp1/runtime_host_key.pub)" \
-            -r "$(cat modules/den/hosts/builder/runtime_host_key.pub)" \
-            -o ".secrets/shared/rekeyed/${name}.age"
+for hostdir in .secrets/hosts/*/; do
+  host=$(basename "$hostdir")
+  rekey_host "$host"
+  echo ""
 done
 
+rekey_shared
+
 echo ""
-echo "Done. Run: git add -A .secrets/ && git commit -m 'agenix: rekey' && git push"
+echo "Done. Run: git add -A .secrets/ && git commit -m 'secrets: rekey'"
