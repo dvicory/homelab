@@ -26,4 +26,4 @@ ssh
 *.backup
 
 /den/
-/den-examples/
+.secrets/priv/

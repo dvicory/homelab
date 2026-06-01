@@ -22,6 +22,7 @@
           mode = "0400";
           owner = "root";
           neededForUsers = true;
+          ageFile = host.secretPath + "/hashedPassword-${user.userName}.age";
         };
       };
     })
@@ -61,6 +62,7 @@
         knownHostsPath = mkOption {
           type = types.nullOr types.str;
           default = null;
+          description = "Path to known_hosts file for deploy-rs SSH host key verification.";
         };
       };
     };

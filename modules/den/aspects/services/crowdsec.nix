@@ -27,6 +27,7 @@
               owner = "root";
               sopsFile = ../../../../shared/secrets.yaml;
               key = "crowdsec/enrollment_key";
+              ageFile = inputs.self + "/.secrets/shared/enrollmentKey.age";
               restartUnits = [ "crowdsec.service" ];
             };
           }

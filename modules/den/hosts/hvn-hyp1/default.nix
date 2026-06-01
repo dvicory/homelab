@@ -1,4 +1,4 @@
-{ den, ... }: {
+{ den, inputs, ... }: {
   den.hosts.x86_64-linux.hvn-hyp1 = {
     settings.core.nix.gc.enable = false;
 
@@ -53,6 +53,24 @@
       };
 
       sops.age.sshKeyPaths = [ "/persist/etc/ssh/ssh_host_ed25519_key" ];
+
+      secretRequests = {
+        "gocryptfs-media1" = {
+          provider = "agenix";
+          ageFile = inputs.self + "/.secrets/hosts/hvn-hyp1/gocryptfs-media1.age";
+          mode = "0400";
+        };
+        "gocryptfs-media2" = {
+          provider = "agenix";
+          ageFile = inputs.self + "/.secrets/hosts/hvn-hyp1/gocryptfs-media2.age";
+          mode = "0400";
+        };
+        "gocryptfs-media3" = {
+          provider = "agenix";
+          ageFile = inputs.self + "/.secrets/hosts/hvn-hyp1/gocryptfs-media3.age";
+          mode = "0400";
+        };
+      };
 
       boot.kernelParams = [
         "console=tty0"

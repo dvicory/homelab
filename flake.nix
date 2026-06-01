@@ -22,6 +22,22 @@
   };
 
   inputs = {
+    agenix = {
+      inputs = {
+        nixpkgs = {
+          follows = "nixpkgs";
+        };
+      };
+      url = "github:ryantm/agenix";
+    };
+    agenix-rekey = {
+      inputs = {
+        nixpkgs = {
+          follows = "nixpkgs";
+        };
+      };
+      url = "github:sini/agenix-rekey/feat/settings";
+    };
     crowdsec-pr = {
       url = "github:dvicory/nixpkgs/crowdsec";
     };
