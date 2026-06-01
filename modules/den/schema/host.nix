@@ -1,5 +1,5 @@
-{ lib, ... }: {
-  den.schema.host = { host, lib, ... }: {
+{ lib, inputs, ... }: {
+  den.schema.host = { host, lib, config, ... }: {
     options.environment = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -71,6 +71,18 @@
       description = "Network interface configurations for this host.";
     };
 
+    options.secretPath = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      description = "Path to per-host agenix secrets directory.";
+    };
+
+    options.public_key = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      description = "Path to host SSH public key for agenix-rekey hostPubkey.";
+    };
+
     options.settings = lib.mkOption {
       type = lib.types.submodule {
         freeformType = lib.types.attrsOf lib.types.anything;
@@ -127,6 +139,15 @@
         };
       };
       default = { };
+    };
+
+    config = {
+      secretPath = lib.mkDefault (inputs.self + "/.secrets/hosts/${config.name}");
+      public_key = lib.mkDefault (
+        if config.secretPath != null
+        then inputs.self + "/modules/den/hosts/${config.name}/runtime_host_key.pub"
+        else null
+      );
     };
   };
 }

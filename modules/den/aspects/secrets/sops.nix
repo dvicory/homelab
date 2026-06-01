@@ -23,7 +23,7 @@
         type = types.attrsOf (types.submodule ({ name, ... }: {
           options = {
             provider = mkOption {
-              type = types.enum [ "sops" "hardcoded" ];
+              type = types.enum [ "sops" "hardcoded" "agenix" ];
               default = "sops";
               description = "Secret provider to fulfill this request.";
             };
@@ -31,6 +31,11 @@
               type = types.nullOr types.path;
               default = null;
               description = "SOPS file this secret is encrypted in (defaults to host's sopsFile via sops.defaultSopsFile).";
+            };
+            ageFile = mkOption {
+              type = types.nullOr types.path;
+              default = null;
+              description = "Path to the age-encrypted secret file for agenix provider.";
             };
             key = mkOption {
               type = types.nullOr types.str;

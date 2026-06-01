@@ -1,5 +1,15 @@
 { den, lib, inputs, ... }: {
   den.aspects.core."remote-unlock" = {
+    age-secrets = { host, ... }: lib.optionalAttrs (host.hasAspect den.aspects.disk.zfs) {
+      age.secrets.boot-host-key = {
+        path = "/boot/boot_host_key";
+        mode = "0600";
+        owner = "root";
+        symlink = false;
+        generator.script = "ssh-key";
+      };
+    };
+
     nixos = { host, config, pkgs, ... }: let
       poolName = host.zfs.rootPool.name or null;
       sshUserNames = host.settings.core.remote-unlock.sshUsers or [ ];

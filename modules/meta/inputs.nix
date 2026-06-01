@@ -2,6 +2,7 @@
 {
   imports = [
     inputs.flake-root.flakeModule
+    inputs.agenix-rekey.flakeModule
   ];
 
   # Define all flake inputs
@@ -34,6 +35,12 @@
     # Secret management
     sops-nix.url = "github:Mic92/sops-nix";
     sops-nix.inputs.nixpkgs.follows = "nixpkgs";
+
+    agenix.url = "github:ryantm/agenix";
+    agenix.inputs.nixpkgs.follows = "nixpkgs";
+
+    agenix-rekey.url = "github:sini/agenix-rekey/feat/settings";
+    agenix-rekey.inputs.nixpkgs.follows = "nixpkgs";
 
     # Impermanence
     impermanence.url = "github:dvicory/impermanence/systemd-requires";
