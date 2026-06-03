@@ -45,7 +45,7 @@ let
               # inherit (secretsConfig) masterIdentities;
               masterIdentities = [
                 {
-                  identity = self + "/.secrets/identities/master.age";
+                  identity = self + "/.secrets/keys/master.age";
                   pubkey = self + "/.secrets/pub/master.pub";
                 }
               ];
@@ -111,7 +111,7 @@ let
               # inherit (secretsConfig) masterIdentities;
               masterIdentities = [
                 {
-                  identity = self + "/.secrets/identities/master.age";
+                  identity = self + "/.secrets/keys/master.age";
                   pubkey = self + "/.secrets/pub/master.pub";
                 }
               ];

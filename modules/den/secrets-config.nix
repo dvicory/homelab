@@ -39,7 +39,7 @@ in
   config.den.secretsConfig = {
     masterIdentities = [
       {
-        identity = self + "/.secrets/identities/master.age";
+        identity = self + "/.secrets/keys/master.age";
         pubkey = self + "/.secrets/pub/master.pub";
       }
     ];
