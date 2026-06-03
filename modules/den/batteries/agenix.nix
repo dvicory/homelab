@@ -16,7 +16,11 @@ let
   agenixGeneratorsModule = import ../aspects/secrets/_generators.nix;
 
   agenixHostAspect =
-    { host, ... }:
+    {
+      host,
+      secretsConfig,
+      ...
+    }:
     let
       hasImpermanence = host.hasAspect den.aspects.disk.impermanence;
       persistPrefix = lib.optionalString hasImpermanence "/persist";
@@ -38,12 +42,14 @@ let
             ];
 
             rekey = {
-              masterIdentities =
-                let
-                  envIdentity = builtins.getEnv "AGENIX_MASTER_IDENTITY";
-                in
-                  lib.optional (envIdentity != "") envIdentity
-                  ++ [ (self + "/.secrets/priv/master.age") ];
+              # inherit (secretsConfig) masterIdentities;
+              masterIdentities = [
+                {
+                  identity = self + "/.secrets/keys/master.age";
+                  pubkey = self + "/.secrets/pub/master.pub";
+                }
+              ];
+
               storageMode = "local";
               hostPubkey = builtins.readFile host.public_key;
               generatedSecretsDir = host.secretPath + "/generated";
@@ -51,13 +57,13 @@ let
             };
           };
 
-          system.activationScripts = lib.mkIf (
-            host.class == "nixos" && config.age.secrets != { }
-          ) {
+          # Remove agenix directory before switching if it's a dir instead of link
+          system.activationScripts = lib.mkIf (host.class == "nixos" && config.age.secrets != { }) {
             removeAgenixLink.text = "[[ ! -L /run/agenix ]] && [[ -d /run/agenix ]] && rm -rf /run/agenix";
             agenixNewGeneration.deps = [ "removeAgenixLink" ];
           };
 
+          # Make secrets paths available as module arg
           _module.args.secrets = lib.mapAttrs (_: v: v.path) config.age.secrets;
 
           home-manager.sharedModules = [
@@ -67,16 +73,59 @@ let
               { config, lib, ... }:
               {
                 _module.args.secrets = lib.mapAttrs (_: v: v.path) config.age.secrets;
-
-                age.rekey.masterIdentities =
-                  let
-                    envIdentity = builtins.getEnv "AGENIX_MASTER_IDENTITY";
-                  in
-                    lib.optional (envIdentity != "") envIdentity
-                    ++ [ (self + "/.secrets/priv/master.age") ];
               }
             )
           ];
+        };
+    };
+
+  agenixUserAspect =
+    {
+      user,
+      host,
+      secretsConfig,
+      ...
+    }:
+    {
+      name = "agenix-identity/${user.name}@${host.name}";
+      ${host.class} =
+        _:
+        {
+          age.secrets."user-identity-${user.name}" = {
+            rekeyFile = self + "/.secrets/users/${user.name}/id_agenix.age";
+            owner = user.name;
+            group = user.name;
+            mode = "600";
+            generator.script = "age-identity";
+          };
+        };
+      homeManager =
+        { osConfig, ... }:
+        {
+          age = {
+            identityPaths = lib.optionals (osConfig.age.secrets ? "user-identity-${user.name}") [
+              osConfig.age.secrets."user-identity-${user.name}".path
+            ];
+
+            rekey = {
+              # inherit (secretsConfig) masterIdentities;
+              masterIdentities = [
+                {
+                  identity = self + "/.secrets/keys/master.age";
+                  pubkey = self + "/.secrets/pub/master.pub";
+                }
+              ];
+
+              storageMode = "local";
+              hostPubkey =
+                if (osConfig.age.secrets ? "user-identity-${user.name}") then
+                  (self + "/.secrets/users/${user.name}/id_agenix.pub")
+                else
+                  osConfig.age.rekey.hostPubkey;
+              generatedSecretsDir = self + "/.secrets/generated/${user.name}/${host.name}";
+              localStorageDir = self + "/.secrets/rekeyed/${user.name}/${host.name}";
+            };
+          };
         };
     };
 in
@@ -101,18 +150,39 @@ in
     agenixHostAspect
     den.aspects.core.secrets-collector
   ];
+  den.schema.user.includes = [ agenixUserAspect ];
 
   perSystem =
-    { ... }:
+    {
+      config,
+      pkgs,
+      system,
+      ...
+    }:
     {
       agenix-rekey = {
-        nixosConfigurations = inputs.self.outputs.nixosConfigurations or { };
-        darwinConfigurations = { };
+        nixosConfigurations = inputs.self.outputs.nixosConfigurations;
+        darwinConfigurations = inputs.self.outputs.darwinConfigurations;
+        collectHomeManagerConfigurations = true;
+        extraConfigurations = { };
       };
 
-      # Set AGENIX_REKEY_ADD_TO_GIT=true when running agenix CLI commands
-      # so rekeyed files are auto-added to git. If using devshell /
-      # mission-control, add this to your shell env:
-      #   AGENIX_REKEY_ADD_TO_GIT=true
+      devshells.default = {
+        packages = [
+          pkgs.age
+        ];
+        commands = [
+          {
+            inherit (config.agenix-rekey) package;
+            help = "Manage agenix secrets (edit, view, generate, rekey)";
+          }
+        ];
+        env = [
+          {
+            name = "AGENIX_REKEY_ADD_TO_GIT";
+            value = "true";
+          }
+        ];
+      };
     };
 }

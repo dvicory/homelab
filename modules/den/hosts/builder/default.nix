@@ -1,6 +1,6 @@
 { den, ... }: {
   den.hosts.aarch64-linux.builder = {
-    environment = "vms";
+    environment = "dev";
     settings.core.nix.gc.enable = false;
 
     users.daniel = {
