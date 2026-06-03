@@ -2,7 +2,7 @@
   den.hosts.x86_64-linux.hvn-hyp1 = {
     settings.core.nix.gc.enable = false;
 
-    environment = "vms";
+    environment = "prod";
     users.daniel = {
       sshKeys = [
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIItkbwb4903ks6RXq1AyRGRK3um1Wzo8tvo12lG9dete dvicory@mbp-2021-32gb"
