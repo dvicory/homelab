@@ -109,11 +109,11 @@
     },
     "den": {
       "locked": {
-        "lastModified": 1780169520,
-        "narHash": "sha256-L3JaN8Vvjo06Fh987wDAR5NEPzzszl9OlxlBWbyoAIs=",
+        "lastModified": 1780448160,
+        "narHash": "sha256-jzN3irLrpz1qSoSQL1HhIo7I0XOXjwwcHPgWYMrS1Yg=",
         "owner": "sini",
         "repo": "den",
-        "rev": "d14dc0da457349cebb9659e2819ab212be029156",
+        "rev": "4200f372e72721b2c8fc657a2296a9e21adc5ca6",
         "type": "github"
       },
       "original": {
@@ -167,6 +167,26 @@
       }
     },
     "devshell_2": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1768818222,
+        "narHash": "sha256-460jc0+CZfyaO8+w8JNtlClB2n4ui1RbHfPTLkpwhU8=",
+        "owner": "numtide",
+        "repo": "devshell",
+        "rev": "255a2b1725a20d060f566e4755dbf571bbbb5f76",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "devshell",
+        "type": "github"
+      }
+    },
+    "devshell_3": {
       "inputs": {
         "nixpkgs": "nixpkgs_2"
       },
@@ -572,7 +592,7 @@
     },
     "hoopsnake": {
       "inputs": {
-        "devshell": "devshell_2",
+        "devshell": "devshell_3",
         "flake-parts": [
           "flake-parts"
         ],
@@ -943,6 +963,7 @@
         "crowdsec-pr": "crowdsec-pr",
         "den": "den",
         "deploy-rs": "deploy-rs",
+        "devshell": "devshell_2",
         "disko-zfs": "disko-zfs",
         "flake-file": "flake-file",
         "flake-parts": "flake-parts_2",
