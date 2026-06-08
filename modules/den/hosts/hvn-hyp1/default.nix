@@ -3,7 +3,16 @@
     environment = "prod";
     system-access-groups = [ "system-access" ];
 
-    settings.core.nix.gc.enable = false;
+    settings = {
+      core.nix.gc.enable = false;
+      services.mergerfs.pools."/mnt/storage/media" = {
+        branches = [
+          "/mnt/storage-clear/media1"
+          "/mnt/storage-clear/media2"
+          "/mnt/storage-clear/media3"
+        ];
+      };
+    };
 
     zfs = {
       rootPool = {
