@@ -2,7 +2,7 @@
   den.aspects.disk.zfs.provides.pool = {
     age-secrets = { host, ... }: {
       age.secrets.zfs-passphrase = {
-        rekeyFile = self + "/.secrets/hosts/${host.name}/rootPassphrase.age";
+        rekeyFile = self + "/.secrets/hosts/${host.name}/zfs-passphrase.age";
         mode = "0400";
         owner = "root";
         group = "root";
