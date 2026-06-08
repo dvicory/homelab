@@ -31,6 +31,11 @@
     gen-schema.url = "github:sini/gen-schema";
     gen-schema.inputs.nixpkgs.follows = "nixpkgs";
 
+    scope-engine.url = "github:sini/scope-engine";
+
+    # Algebraic validators for entity schemas
+    gen-algebra.url = "github:sini/gen-algebra";
+
     # Secret management
     sops-nix.url = "github:Mic92/sops-nix";
     sops-nix.inputs.nixpkgs.follows = "nixpkgs";

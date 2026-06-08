@@ -1,153 +1,371 @@
-{ lib, inputs, ... }: {
-  den.schema.host = { host, lib, config, ... }: {
-    options.environment = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      description = "Environment grouping for this host (e.g. home, vms)";
-    };
+{
+  lib,
+  inputs,
+  den,
+  self,
+  ...
+}:
+let
+  inherit (lib) mkOption types;
 
-    options.disk.device = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = host.zfs.rootPool.disk1 or null;
-      description = "Root disk device for disko layout (defaults to ZFS pool disk)";
-    };
-
-    options.zfs = {
-      rootPool = lib.mkOption {
-        type = lib.types.nullOr (lib.types.submodule {
-          options = {
-            name = lib.mkOption {
-              type = lib.types.str;
-              description = "ZFS pool name for the root pool.";
-            };
-            disk1 = lib.mkOption {
-              type = lib.types.str;
-              description = "Primary disk device for the root pool.";
-            };
-          };
-        });
+  interfaceType = types.submodule {
+    options = {
+      ipv4 = mkOption {
+        type = types.coercedTo types.str (s: [ s ]) (types.listOf types.str);
+        default = [ ];
+        description = "IPv4 addresses in CIDR notation";
+      };
+      ipv6 = mkOption {
+        type = types.coercedTo types.str (s: [ s ]) (types.listOf types.str);
+        default = [ ];
+        description = "IPv6 addresses in CIDR notation";
+      };
+      dhcp = mkOption {
+        type = types.nullOr (
+          types.coercedTo types.bool (v: if v then "yes" else null) (
+            types.enum [
+              "none"
+              "ipv4"
+              "ipv6"
+              "yes"
+            ]
+          )
+        );
         default = null;
-        description = "ZFS root pool configuration.";
+        description = "DHCP mode. null = auto, true = yes";
       };
-
-      swap = {
-        enable = lib.mkEnableOption "swap partition via disko";
-        size = lib.mkOption {
-          type = lib.types.str;
-          default = "8G";
-          description = "Size of the swap partition.";
+      gateway = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Default gateway for this interface";
+      };
+      initrd = {
+        enable = mkOption {
+          type = types.bool;
+          default = false;
+          description = "Enable this interface in initrd";
         };
       };
+      managed = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Apply environment gateway/DNS/subnet";
+      };
+      mtu = mkOption {
+        type = types.nullOr types.int;
+        default = null;
+        description = "MTU for this interface";
+      };
+      linkLocal = mkOption {
+        type = types.nullOr (
+          types.enum [
+            "ipv4"
+            "ipv6"
+            "yes"
+            "no"
+          ]
+        );
+        default = null;
+        description = "Link-local addressing";
+      };
+      requiredForOnline = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "RequiredForOnline value";
+      };
     };
+  };
 
-    options.networking.interfaces = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.submodule {
+  exporterType = types.submodule {
+    options = {
+      port = mkOption {
+        type = types.int;
+        description = "Port number";
+      };
+      path = mkOption {
+        type = types.str;
+        default = "/metrics";
+      };
+      interval = mkOption {
+        type = types.str;
+        default = "30s";
+      };
+    };
+  };
+
+  # Dynamic settings type — recursively discovers aspects that declare .settings.
+  # Mirrors the aspect tree: den.aspects.services.mergerfs.settings →
+  # host.settings.services.mergerfs.*
+  settingsType =
+    let
+      inherit (den.lib.aspects.fx.keyClassification) structuralKeysSet;
+      classKeys = den.classes or { };
+      quirkKeys = den.quirks or { };
+      skipKey = k: structuralKeysSet ? ${k} || classKeys ? ${k} || quirkKeys ? ${k};
+
+      reshapeSettings =
+        raw:
+        let
+          imports' = raw.imports or [ ];
+          config' = raw.config or { };
+        in
+        {
+          imports = imports';
+          config = config';
+          options = removeAttrs raw [
+            "imports"
+            "config"
+          ];
+        };
+
+      hasSettingsDeep =
+        node:
+        builtins.isAttrs node
+        && (
+          (node ? settings)
+          || lib.any (k: !(skipKey k) && hasSettingsDeep (node.${k} or null)) (builtins.attrNames node)
+        );
+
+      nodeModule =
+        node:
+        let
+          ownSettings =
+            if node ? settings then
+              reshapeSettings node.settings
+            else
+              {
+                imports = [ ];
+                config = { };
+                options = { };
+              };
+          settingChildren = lib.filterAttrs (
+            k: v: !(skipKey k) && builtins.isAttrs v && hasSettingsDeep v
+          ) node;
+          childOptions = lib.mapAttrs (
+            name: child:
+            mkOption {
+              type = types.submodule (nodeModule child);
+              default = { };
+              description = "Settings under ${name}";
+            }
+          ) settingChildren;
+          ownImports = ownSettings.imports or [ ];
+          ownConfig = ownSettings.config or { };
+        in
+        {
+          imports = ownImports;
+          config = ownConfig;
+          options = (ownSettings.options or { }) // childOptions;
+        };
+    in
+    types.submodule (nodeModule (den.aspects or { }));
+in
+{
+  den.schema.host = { lib, ... }: {
+    isEntity = true;
+
+    imports = [
+      ({ config, ... }: {
         options = {
-          ipv4 = lib.mkOption {
-            type = lib.types.nullOr lib.types.str;
+          channel = mkOption {
+            type = types.str;
+            default = "nixos-unstable";
+            description = "Nixpkgs channel for this host";
+          };
+
+          environment = mkOption {
+            type = types.str;
+            default = "prod";
+            description = "Environment name this host belongs to";
+          };
+
+          system-owner = mkOption {
+            type = types.nullOr types.str;
             default = null;
-            description = "IPv4 address with CIDR prefix.";
+            description = "Primary user for this host";
           };
-          gateway = lib.mkOption {
-            type = lib.types.nullOr lib.types.str;
-            default = null;
-            description = "Default gateway for this interface.";
+
+          system-access-groups = mkOption {
+            type = types.listOf types.str;
+            default = [ ];
+            description = "Groups granting Unix account creation on this host";
           };
-          dhcp = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
-            description = "Use DHCP on this interface.";
+
+          ipv4 = mkOption {
+            type = types.listOf types.str;
+            readOnly = true;
+            description = "Primary IPv4 addresses (derived from first interface with IPs, CIDR stripped)";
+            default =
+              let
+                ifaces = config.networking.interfaces or { };
+                ifaceList = lib.attrValues ifaces;
+                withIps = lib.findFirst (i: (i.ipv4 or [ ]) != [ ]) null ifaceList;
+                stripCidr = addr: builtins.head (lib.splitString "/" addr);
+              in
+              if withIps != null then map stripCidr withIps.ipv4 else [ ];
           };
-          initrd = {
-            enable = lib.mkOption {
-              type = lib.types.bool;
-              default = false;
-              description = "Enable this interface in initrd.";
+
+          ipv6 = mkOption {
+            type = types.listOf types.str;
+            readOnly = true;
+            description = "Primary IPv6 addresses (derived from first interface with IPs)";
+            default =
+              let
+                ifaces = config.networking.interfaces or { };
+                ifaceList = lib.attrValues ifaces;
+                withIps = lib.findFirst (i: (i.ipv6 or [ ]) != [ ]) null ifaceList;
+              in
+              if withIps != null then withIps.ipv6 else [ ];
+          };
+
+          networking =
+            mkOption {
+              type = types.submodule {
+                options = {
+                  interfaces = mkOption {
+                    type = types.attrsOf interfaceType;
+                    default = { };
+                    description = "Network interfaces";
+                  };
+                  bonds = mkOption {
+                    type = types.attrsOf (
+                      types.submodule {
+                        options = {
+                          interfaces = mkOption { type = types.listOf types.str; };
+                          mode = mkOption {
+                            type = types.str;
+                            default = "balance-rr";
+                          };
+                          transmitHashPolicy = mkOption {
+                            type = types.nullOr types.str;
+                            default = null;
+                          };
+                        };
+                      }
+                    );
+                    default = { };
+                    description = "Bond definitions";
+                  };
+                  autobridging = mkOption {
+                    type = types.bool;
+                    default = false;
+                  };
+                  bridges = mkOption {
+                    type = types.attrsOf (types.listOf types.str);
+                    default = { };
+                  };
+                };
+              };
+              default = { };
+            }
+            // {
+              identity = false;
+            };
+
+          zfs = {
+            rootPool = mkOption {
+              type = types.nullOr (
+                types.submodule {
+                  options = {
+                    name = mkOption {
+                      type = types.str;
+                      description = "ZFS pool name for the root pool";
+                    };
+                    disk1 = mkOption {
+                      type = types.str;
+                      description = "Primary disk device for the root pool";
+                    };
+                  };
+                }
+              );
+              default = null;
+              description = "ZFS root pool configuration";
+            };
+            swap = {
+              enable = mkOption {
+                type = types.bool;
+                default = false;
+                description = "Enable swap partition via disko";
+              };
+              size = mkOption {
+                type = types.str;
+                default = "8G";
+                description = "Size of the swap partition";
+              };
             };
           };
+
+          disk = {
+            device = mkOption {
+              type = types.nullOr types.str;
+              default = config.zfs.rootPool.disk1 or null;
+              description = "Root disk device for disko layout (defaults to ZFS pool disk)";
+            };
+          };
+
+          facts =
+            mkOption {
+              type = types.nullOr types.path;
+              default = null;
+              description = "Path to nixos-facter report for hardware detection";
+            }
+            // {
+              identity = false;
+            };
+
+          secretPath =
+            mkOption {
+              type = types.nullOr types.path;
+              default = null;
+              description = "Path to per-host agenix secrets directory";
+            }
+            // {
+              identity = false;
+            };
+
+          public_key =
+            mkOption {
+              type = types.nullOr types.path;
+              default = null;
+              description = "Path to host SSH public key for agenix-rekey hostPubkey";
+            }
+            // {
+              identity = false;
+            };
+
+          exporters =
+            mkOption {
+              type = types.attrsOf exporterType;
+              default = { };
+              description = "Prometheus exporter definitions for this host";
+            }
+            // {
+              identity = false;
+            };
+
+          settings =
+            mkOption {
+              type = settingsType;
+              default = { };
+              description = "Per-aspect typed settings (auto-discovered from aspect tree)";
+            }
+            // {
+              identity = false;
+            };
         };
-      });
-      default = { };
-      description = "Network interface configurations for this host.";
-    };
 
-    options.secretPath = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
-      default = null;
-      description = "Path to per-host agenix secrets directory.";
-    };
+        config = {
+          secretPath = lib.mkDefault (self + "/.secrets/hosts/${config.name}");
+          facts = lib.mkDefault (self + "/hosts/${config.name}/facter.json");
+          public_key = lib.mkDefault (
+            if config.secretPath != null then config.secretPath + "/runtime_host_key.pub" else null
+          );
 
-    options.public_key = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
-      default = null;
-      description = "Path to host SSH public key for agenix-rekey hostPubkey.";
-    };
+          instantiate = lib.mkDefault inputs.nixpkgs.lib.nixosSystem;
 
-    options.settings = lib.mkOption {
-      type = lib.types.submodule {
-        freeformType = lib.types.attrsOf lib.types.anything;
-        options = {
-          disk.backend = lib.mkOption {
-            type = lib.types.enum [ "zfs" "ext4" ];
-            default = "zfs";
-          };
-          disk.encryption.enable = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
-          };
-          disk.swap.size = lib.mkOption {
-            type = lib.types.str;
-            default = "8G";
-          };
-          networking.firewall.enable = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-          };
-          networking.dns.overTls = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-          };
-          hypervisor.incus.enable = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-          };
-          hypervisor.incus.webUiPort = lib.mkOption {
-            type = lib.types.int;
-            default = 8443;
-          };
-          time.chrony.servers = lib.mkOption {
-            type = lib.types.listOf lib.types.str;
-            default = [ "time.cloudflare.com" "time.google.com" ];
-          };
-          time.chrony.enableNts = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-          };
-          core.impermanence.rollback.enable = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-          };
-          core.remote-unlock.sshUsers = lib.mkOption {
-            type = lib.types.listOf lib.types.str;
-            default = [ "daniel" ];
-            description = "Usernames whose SSH keys are authorized for remote-unlock (hoopsnake).";
-          };
-          core.remote-unlock.tailscale.authKey = lib.mkOption {
-            type = lib.types.nullOr lib.types.str;
-            default = null;
-          };
+          home-manager.module = lib.mkDefault inputs.home-manager.nixosModules.home-manager;
         };
-      };
-      default = { };
-    };
-
-    config = {
-      secretPath = lib.mkDefault (inputs.self + "/.secrets/hosts/${config.name}");
-      public_key = lib.mkDefault (
-        if config.secretPath != null
-        then config.secretPath + "/runtime_host_key.pub"
-        else null
-      );
-    };
+      })
+    ];
   };
 }

@@ -1,14 +1,8 @@
 { den, ... }: {
   den.hosts.aarch64-linux.builder = {
     environment = "dev";
+    system-access-groups = [ "system-access" ];
     settings.core.nix.gc.enable = false;
-
-    users.daniel = {
-      sshKeys = [
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIItkbwb4903ks6RXq1AyRGRK3um1Wzo8tvo12lG9dete dvicory@mbp-2021-32gb"
-      ];
-      extraGroups = [ "wheel" ];
-    };
 
     zfs = {
       rootPool = {
@@ -27,12 +21,13 @@
 
   den.aspects.builder = {
     includes = [
-      den.batteries.hostname
       den.aspects.core.facter
+      den.aspects.core.base
       den.aspects.disk.zfs
       den.aspects.disk.zfs.provides.pool
       den.aspects.disk.impermanence
       den.aspects.roles.server
+      den.aspects.secrets.agenix
     ];
 
     nixos = { config, pkgs, ... }: {

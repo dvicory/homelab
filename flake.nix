@@ -80,6 +80,9 @@
     flake-root = {
       url = "github:srid/flake-root";
     };
+    gen-algebra = {
+      url = "github:sini/gen-algebra";
+    };
     gen-schema = {
       inputs = {
         nixpkgs = {
@@ -142,6 +145,9 @@
     };
     nixpkgs = {
       url = "https://channels.nixos.org/nixos-unstable/nixexprs.tar.xz";
+    };
+    scope-engine = {
+      url = "github:sini/scope-engine";
     };
     sops-nix = {
       inputs = {

@@ -21,6 +21,7 @@
       generate-secrets = callPackage (self + "/pkgs/by-name/generate-secrets/package.nix") { };
       rekey = callPackage (self + "/pkgs/by-name/rekey/package.nix") { };
       install = callPackage (self + "/pkgs/by-name/install/package.nix") { };
+      sops-to-agenix = callPackage (self + "/pkgs/by-name/sops-to-agenix/package.nix") { };
 
       provision-keys = callPackage (self + "/pkgs/by-name/provision-keys/package.nix") {
         inherit generate-secrets rekey;
@@ -28,7 +29,7 @@
     in
     {
       packages = {
-        inherit generate-secrets rekey provision-keys install;
+        inherit generate-secrets rekey provision-keys install sops-to-agenix;
       };
 
       devshells.default = {
@@ -55,6 +56,10 @@
           {
             package = install;
             help = "nixos-anywhere install helper";
+          }
+          {
+            package = sops-to-agenix;
+            help = "Migrate sops secrets to agenix format";
           }
         ];
       };

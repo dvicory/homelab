@@ -1,5 +1,7 @@
-{ lib, inputs, ... }: {
+{ den, lib, inputs, ... }: {
   den.aspects.disk.zfs = {
+    includes = [ den.aspects.disk ];
+
     nixos = _: {
       imports = [
         inputs.disko-zfs.nixosModules.default
