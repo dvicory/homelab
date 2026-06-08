@@ -59,7 +59,9 @@
         else
           mkUnmanagedNetworkConfig name ifCfg;
 
-      toSystemdNetwork = lib.mapAttrs mkNetworkConfig interfaces;
+      toSystemdNetwork = lib.mapAttrs' (name: ifCfg:
+        lib.nameValuePair "40-${name}" (mkNetworkConfig name ifCfg)
+      ) interfaces;
     in {
       environment.systemPackages = with pkgs; [
         curl
