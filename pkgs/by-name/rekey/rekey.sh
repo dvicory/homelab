@@ -24,7 +24,7 @@ MASTER_ID="${AGENIX_MASTER_IDENTITY:-$REPO_ROOT/.secrets/keys/master.age}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
-[ -f "$MASTER_ID" ] || die "Master identity not found at $MASTER_ID (set AGENIX_MASTER_IDENTITY or create .secrets/priv/master.age)"
+[ -e "$MASTER_ID" ] || die "Master identity not found at $MASTER_ID (set AGENIX_MASTER_IDENTITY or create .secrets/keys/master.age)"
 
 age_rekey_hash() {
   local host_key_file=$1 rekey_file=$2
