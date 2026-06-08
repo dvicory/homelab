@@ -85,11 +85,13 @@ if [ -f "$SOPS_FILE" ]; then
     echo "  crowdsec-bouncerApiKey.age ✓"
   fi
 
-  # hashed password
+  # hashed password → user-level (shared across hosts)
   val=$(yaml_get "$CONTENT" "$HOST.users.daniel.hashedPassword" || true)
   if [ -n "$val" ]; then
-    encrypt_value "$HOST_DIR/hashedPassword-daniel.age" "$val"
-    echo "  hashedPassword-daniel.age ✓"
+    USER_DIR=".secrets/users/daniel"
+    mkdir -p "$USER_DIR"
+    encrypt_value "$USER_DIR/hashed-password.age" "$val"
+    echo "  users/daniel/hashed-password.age ✓"
   fi
 
   # root passphrase (disk encryption)
@@ -120,11 +122,13 @@ if [ -f "$SOPS_FILE" ]; then
     echo "  crowdsec-bouncerApiKey.age ✓"
   fi
 
-  # hashed password
+  # hashed password → user-level (shared across hosts)
   val=$(yaml_get "$CONTENT" "$HOST.users.daniel.hashedPassword" || true)
   if [ -n "$val" ]; then
-    encrypt_value "$HOST_DIR/hashedPassword-daniel.age" "$val"
-    echo "  hashedPassword-daniel.age ✓"
+    USER_DIR=".secrets/users/daniel"
+    mkdir -p "$USER_DIR"
+    encrypt_value "$USER_DIR/hashed-password.age" "$val"
+    echo "  users/daniel/hashed-password.age ✓"
   fi
 
   # root passphrase

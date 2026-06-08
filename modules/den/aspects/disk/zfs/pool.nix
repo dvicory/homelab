@@ -1,5 +1,14 @@
-{ lib, ... }: {
+{ lib, self, ... }: {
   den.aspects.disk.zfs.provides.pool = {
+    age-secrets = { host, ... }: {
+      age.secrets.zfs-passphrase = {
+        rekeyFile = self + "/.secrets/hosts/${host.name}/rootPassphrase.age";
+        mode = "0400";
+        owner = "root";
+        group = "root";
+      };
+    };
+
     nixos = { host, ... }: let
       pool = host.zfs.rootPool or null;
       swapCfg = host.zfs.swap or { };
