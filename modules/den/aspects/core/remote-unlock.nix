@@ -41,7 +41,7 @@
                 matchConfig.Name = name;
                 address = lib.optional (iface ? ipv4 && iface.ipv4 != null) iface.ipv4;
                 gateway = lib.optional (iface ? gateway && iface.gateway != null) iface.gateway;
-                networkConfig.DHCP = if iface.dhcp or false then "yes" else "no";
+                networkConfig.DHCP = let v = iface.dhcp or null; in if v == null then "no" else v;
               };
             }) (lib.filterAttrs (_: iface: iface.initrd.enable or false) (host.networking.interfaces or { }));
             emergencyAccess = true;
