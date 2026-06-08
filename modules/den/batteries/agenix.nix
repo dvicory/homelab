@@ -144,8 +144,9 @@ in
     }:
     {
       agenix-rekey = {
+        agePackage = pkgs.age;
         nixosConfigurations = inputs.self.outputs.nixosConfigurations;
-        darwinConfigurations = inputs.self.outputs.darwinConfigurations;
+        # darwinConfigurations = inputs.self.outputs.darwinConfigurations;
         collectHomeManagerConfigurations = true;
         extraConfigurations = { };
       };
