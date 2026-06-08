@@ -5,14 +5,17 @@
         enable = true;
         enableCompletion = true;
       };
+
+      programs.fish.enable = true;
+
+      environment.enableAllTerminfo = true;
     };
 
     nixos =
       { pkgs, ... }:
       {
-        environment.enableAllTerminfo = true;
         users.users.root.shell = pkgs.bashInteractive;
-        users.defaultUserShell = pkgs.zsh;
+        users.defaultUserShell = pkgs.fish;
       };
   };
 }
