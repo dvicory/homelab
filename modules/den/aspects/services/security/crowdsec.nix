@@ -22,11 +22,11 @@
 
         config = lib.mkMerge [
           {
-            secretRequests."crowdsec/enrollmentKey" = {
+            secretRequests."crowdsec-enrollmentKey" = {
               provider = "agenix";
               mode = "0400";
               owner = "root";
-              ageFile = inputs.self + "/.secrets/shared/enrollmentKey.age";
+              ageFile = inputs.self + "/.secrets/hosts/${config.networking.hostName}/crowdsec-enrollmentKey.age";
               restartUnits = [ "crowdsec.service" ];
             };
           }
@@ -51,7 +51,7 @@
                   }
                 ];
 
-                console.enrollKeyFile = config.age.secrets."crowdsec/enrollmentKey".path;
+                console.enrollKeyFile = config.age.secrets."crowdsec-enrollmentKey".path;
               };
             };
 
