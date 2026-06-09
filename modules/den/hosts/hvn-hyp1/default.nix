@@ -49,8 +49,6 @@
         hostId = "2f618214";
       };
 
-      sops.age.sshKeyPaths = [ "/persist/etc/ssh/ssh_host_ed25519_key" ];
-
       secretRequests = {
         "gocryptfs-media1" = {
           provider = "agenix";
@@ -89,12 +87,10 @@
         options = [ "noatime" ];
       };
 
-      sops.secrets."hvn-hyp1/gocryptfs/media1" = {};
-
       fileSystems."/mnt/storage-clear/media1" = {
         device = "/mnt/storage-crypt/media1/crypt";
         fsType = "fuse.gocryptfs";
-        options = [ "rw" "allow_other" "-passfile=${config.sops.secrets."hvn-hyp1/gocryptfs/media1".path}" ];
+        options = [ "rw" "allow_other" "-passfile=${config.age.secrets."gocryptfs-media1".path}" ];
         depends = [ "/mnt/storage-crypt/media1" ];
       };
 
@@ -104,12 +100,10 @@
         options = [ "noatime" ];
       };
 
-      sops.secrets."hvn-hyp1/gocryptfs/media2" = {};
-
       fileSystems."/mnt/storage-clear/media2" = {
         device = "/mnt/storage-crypt/media2/crypt";
         fsType = "fuse.gocryptfs";
-        options = [ "rw" "allow_other" "-passfile=${config.sops.secrets."hvn-hyp1/gocryptfs/media2".path}" ];
+        options = [ "rw" "allow_other" "-passfile=${config.age.secrets."gocryptfs-media2".path}" ];
         depends = [ "/mnt/storage-crypt/media2" ];
       };
 
@@ -119,12 +113,10 @@
         options = [ "noatime" ];
       };
 
-      sops.secrets."hvn-hyp1/gocryptfs/media3" = {};
-
       fileSystems."/mnt/storage-clear/media3" = {
         device = "/mnt/storage-crypt/media3/crypt";
         fsType = "fuse.gocryptfs";
-        options = [ "rw" "allow_other" "-passfile=${config.sops.secrets."hvn-hyp1/gocryptfs/media3".path}" ];
+        options = [ "rw" "allow_other" "-passfile=${config.age.secrets."gocryptfs-media3".path}" ];
         depends = [ "/mnt/storage-crypt/media3" ];
       };
 

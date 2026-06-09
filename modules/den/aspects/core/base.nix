@@ -40,14 +40,6 @@
         programs.vim.enable = lib.mkDefault true;
 
         boot.initrd.systemd.emergencyAccess = true;
-
-        services.openssh = {
-          enable = lib.mkDefault true;
-          settings = {
-            PermitRootLogin = lib.mkDefault "no";
-            PasswordAuthentication = lib.mkDefault false;
-          };
-        };
       };
     };
   };
