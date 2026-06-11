@@ -157,6 +157,7 @@
           nscd = uidGid 603;
           polkituser = uidGid 604;
           chrony = uidGid 605;
+          mandb = uidGid 606;
 
           # ── Infrastructure services (650-699) ───────────────────────
           podman = uidGid 650;
