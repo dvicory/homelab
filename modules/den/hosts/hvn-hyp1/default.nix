@@ -51,15 +51,8 @@
           options = [ "noatime" ];
         };
 
-        fileSystems.${name} = {
-          device = "gocryptfs#${device}/crypt";
-          fsType = "fuse.gocryptfs";
-          options = [ "noauto" "allow_other" "-passfile=${passfile}" ];
-          depends = [ device ];
-        };
-
         systemd.services."gocryptfs-${baseNameOf name}" = {
-          description = "gocryptfs mount ${name} (test reload)";
+          description = "gocryptfs mount ${name}";
           wantedBy = [ "multi-user.target" ];
           reloadIfChanged = true;
           restartIfChanged = false;

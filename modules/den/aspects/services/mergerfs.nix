@@ -128,27 +128,6 @@
           "d ${path} 0755 root root -"
         ) cfg;
       }
-
-      {
-        assertions = lib.flatten (
-          lib.mapAttrsToList
-            (path: poolCfg:
-              lib.map
-                (branch:
-                  {
-                    assertion = config.fileSystems ? ${branch};
-                    message = ''
-                      MergerFS pool at ${path} references branch ${branch}
-                      which is not defined in fileSystems. Branches must be
-                      existing mount points in the system configuration.
-                    '';
-                  }
-                )
-                poolCfg.branches
-            )
-            cfg
-        );
-      }
     ]);
   };
 }
