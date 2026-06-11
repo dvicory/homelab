@@ -59,7 +59,7 @@
         };
 
         systemd.services."gocryptfs-${baseNameOf name}" = {
-          description = "gocryptfs mount ${name}";
+          description = "gocryptfs mount ${name} (test reload)";
           wantedBy = [ "multi-user.target" ];
           reloadIfChanged = true;
           restartIfChanged = false;
@@ -95,16 +95,19 @@
             provider = "agenix";
             ageFile = inputs.self + "/.secrets/hosts/hvn-hyp1/gocryptfs-media1.age";
             mode = "0400";
+            restartUnits = [ "gocryptfs-media1" ];
           };
           "gocryptfs-media2" = {
             provider = "agenix";
             ageFile = inputs.self + "/.secrets/hosts/hvn-hyp1/gocryptfs-media2.age";
             mode = "0400";
+            restartUnits = [ "gocryptfs-media2" ];
           };
           "gocryptfs-media3" = {
             provider = "agenix";
             ageFile = inputs.self + "/.secrets/hosts/hvn-hyp1/gocryptfs-media3.age";
             mode = "0400";
+            restartUnits = [ "gocryptfs-media3" ];
           };
         };
 
