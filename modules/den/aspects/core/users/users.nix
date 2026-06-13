@@ -23,7 +23,7 @@ let
       gid = if user.system.gid or null != null then user.system.gid else uid;
       subUidStart = if uid != null then 100000 + ((uid - 1000) * 65536) else null;
 
-      passwordPath = self + "/.secrets/users/${userName}/hashed-password.age";
+      passwordPath = self + "/.secrets/users/${userName}/user-${userName}-password.age";
       hasPasswordFile = builtins.pathExists passwordPath;
     in
     {

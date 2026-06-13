@@ -24,7 +24,7 @@ MASTER_ID="${AGENIX_MASTER_IDENTITY:-$REPO_ROOT/.secrets/keys/master.age}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
-[ -f "$MASTER_ID" ] || die "Master identity not found at $MASTER_ID (set AGENIX_MASTER_IDENTITY or create .secrets/priv/master.age)"
+[ -e "$MASTER_ID" ] || die "Master identity not found at $MASTER_ID (set AGENIX_MASTER_IDENTITY or create .secrets/keys/master.age)"
 
 age_rekey_hash() {
   local host_key_file=$1 rekey_file=$2
@@ -103,6 +103,48 @@ rekey_shared() {
   done
 }
 
+rekey_users() {
+  [ -d ".secrets/users" ] || return 0
+
+  for userdir in .secrets/users/*/; do
+    [ -d "$userdir" ] || continue
+    local username
+    username=$(basename "$userdir")
+
+    # Find the first host that has this user's rekeyed dir
+    # User secrets are rekeyed per-host (same secret, different host SSH keys)
+    for hostdir in .secrets/hosts/*/; do
+      [ -d "$hostdir" ] || continue
+      local host
+      host=$(basename "$hostdir")
+      local ssh_pub="${hostdir}runtime_host_key.pub"
+      [ -f "$ssh_pub" ] || continue
+
+      local ssh_pub_content
+      ssh_pub_content=$(<"$ssh_pub")
+
+      echo "=== users/$username ($host) ==="
+
+      for f in "$userdir"*.age; do
+        [ -f "$f" ] || continue
+
+        local name hash plaintext
+        name=$(basename "$f" .age)
+        hash=$(age_rekey_hash "$ssh_pub" "$f")
+
+        echo "  ${hash}-${name}.age"
+
+        if plaintext=$(age -d -i "$MASTER_ID" "$f" 2>/dev/null); then
+          echo "$plaintext" | age -e -r "$ssh_pub_content" -o "$hostdir/rekeyed/${hash}-${name}.age"
+        else
+          echo "    WARNING: cannot decrypt with master identity, copying as-is"
+          cp "$f" "$hostdir/rekeyed/${hash}-${name}.age"
+        fi
+      done
+    done
+  done
+}
+
 echo "=== Rekeying all secrets ==="
 echo "Master identity: $MASTER_ID"
 echo ""
@@ -114,6 +156,7 @@ for hostdir in .secrets/hosts/*/; do
 done
 
 rekey_shared
+rekey_users
 
 echo ""
 echo "Done. Run: git add -A .secrets/ && git commit -m 'secrets: rekey'"
