@@ -1,6 +1,6 @@
 { lib, ... }: {
   den.aspects.services.mergerfs = {
-    settings.options.pools = lib.mkOption {
+    settings.pools = lib.mkOption {
       type = lib.types.attrsOf (lib.types.submodule {
         options = {
           branches = lib.mkOption {

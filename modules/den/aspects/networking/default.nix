@@ -1,18 +1,65 @@
 { lib, ... }: {
   den.aspects.networking.default = {
-    nixos = { host, config, pkgs, ... }:
+    nixos = { host, config, pkgs, environment, ... }:
     let
       interfaces = host.networking.interfaces or { };
+      envNetworks = environment.networks or { };
+      defaultNet = envNetworks.default or { };
 
-      toSystemdNetwork = lib.mapAttrs' (name: iface: {
-        name = "40-${name}";
-        value = {
-          matchConfig.Name = name;
-          address = lib.optional (iface ? ipv4 && iface.ipv4 != null) iface.ipv4;
-          gateway = lib.optional (iface ? gateway && iface.gateway != null) iface.gateway;
-          networkConfig.DHCP = if iface.dhcp or false then "yes" else "no";
+      effectiveDhcp = ifCfg:
+        if ifCfg.dhcp or null != null then
+          ifCfg.dhcp
+        else if !(ifCfg.managed or true) then
+          "none"
+        else if (ifCfg.ipv4 or []) != [] then
+          "ipv6"
+        else
+          "yes";
+
+      mkManagedNetworkConfig = name: ifCfg: {
+        matchConfig.Name = name;
+        address = ifCfg.ipv4 or [] ++ ifCfg.ipv6 or [];
+        networkConfig = {
+          DHCP = effectiveDhcp ifCfg;
+          IPv6AcceptRA = true;
+          IPv6PrivacyExtensions = "yes";
+          DNSOverTLS = true;
+          DNSSEC = "allow-downgrade";
+        } // lib.optionalAttrs (defaultNet ? dnsServers) {
+          DNS = defaultNet.dnsServers;
         };
-      }) interfaces;
+        routes = lib.optionals (defaultNet ? gatewayIp) [
+          { Gateway = defaultNet.gatewayIp; }
+        ] ++ lib.optionals (defaultNet ? gatewayIpV6) [
+          { Gateway = defaultNet.gatewayIpV6; }
+        ];
+        linkConfig = lib.optionalAttrs (ifCfg ? mtu && ifCfg.mtu != null) {
+          MTUBytes = toString ifCfg.mtu;
+        };
+        routingPolicyRules = [];
+      };
+
+      mkUnmanagedNetworkConfig = name: ifCfg: {
+        matchConfig.Name = name;
+        address = ifCfg.ipv4 or [] ++ ifCfg.ipv6 or [];
+        networkConfig = {
+          DHCP = effectiveDhcp ifCfg;
+          LinkLocalAddressing = if ifCfg ? linkLocal then ifCfg.linkLocal else "no";
+        };
+        linkConfig = lib.optionalAttrs (ifCfg ? mtu && ifCfg.mtu != null) {
+          MTUBytes = toString ifCfg.mtu;
+        } // {
+          ActivationPolicy = "up";
+        };
+      };
+
+      mkNetworkConfig = name: ifCfg:
+        if (ifCfg.managed or true) then
+          mkManagedNetworkConfig name ifCfg
+        else
+          mkUnmanagedNetworkConfig name ifCfg;
+
+      toSystemdNetwork = lib.mapAttrs mkNetworkConfig interfaces;
     in {
       environment.systemPackages = with pkgs; [
         curl

@@ -1,22 +1,9 @@
 { den, inputs, ... }: {
   den.hosts.x86_64-linux.hvn-hyp1 = {
-    settings.core.nix.gc.enable = false;
-
     environment = "prod";
-    users.daniel = {
-      sshKeys = [
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIItkbwb4903ks6RXq1AyRGRK3um1Wzo8tvo12lG9dete dvicory@mbp-2021-32gb"
-      ];
-      extraGroups = [ "wheel" ];
-    };
+    system-access-groups = [ "system-access" ];
 
-    settings.services.mergerfs.pools."/mnt/storage/media" = {
-      branches = [
-        "/mnt/storage-clear/media1"
-        "/mnt/storage-clear/media2"
-        "/mnt/storage-clear/media3"
-      ];
-    };
+    settings.core.nix.gc.enable = false;
 
     zfs = {
       rootPool = {
@@ -35,8 +22,8 @@
 
   den.aspects.hvn-hyp1 = {
     includes = [
-      den.batteries.hostname
       den.aspects.core.facter
+      den.aspects.core.base
       den.aspects.virtualization.incus
       den.aspects.disk.zfs
       den.aspects.disk.zfs.provides.pool
@@ -44,6 +31,7 @@
       den.aspects.roles.server
       den.aspects.core."remote-unlock"
       den.aspects.services.mergerfs
+      den.aspects.secrets.agenix
     ];
 
     nixos = { config, pkgs, ... }: {

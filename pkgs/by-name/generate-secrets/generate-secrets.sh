@@ -2,7 +2,8 @@
 # generate-secrets.sh — Generate agenix secrets (boot keys, etc.) for a host.
 #
 # Idempotent: skips generation if the output file already exists.
-# Encrypts generated private keys to the host's SSH public key.
+# Encrypts generated private keys to both the host's SSH public key
+# and the master public key (so master can always decrypt for recovery).
 # Public keys are committed to git alongside the encrypted private key.
 #
 # Usage: ./scripts/generate-secrets.sh <hostname>
@@ -25,6 +26,7 @@ cd "$REPO_ROOT"
 SECRETS_DIR=".secrets/hosts/$HOST"
 GEN_DIR="$SECRETS_DIR/generated"
 SSH_PUB="$(cat "$SECRETS_DIR/runtime_host_key.pub")"
+MASTER_PUB="$(cat ".secrets/pub/master.pub")"
 
 mkdir -p "$GEN_DIR"
 
@@ -44,7 +46,7 @@ generate_boot_key() {
   keyfile=$(mktemp -u /tmp/ssh-key-XXXXXX)
   ssh-keygen -q -t ed25519 -N "" -C "${HOST}:${name}" -f "$keyfile" >/dev/null 2>&1
 
-  age -e -r "$SSH_PUB" -o "$age_file" < "$keyfile"
+  age -e -r "$SSH_PUB" -r "$MASTER_PUB" -o "$age_file" < "$keyfile"
   cp "$keyfile.pub" "$pub_file"
 
   rm -f "$keyfile" "$keyfile.pub"

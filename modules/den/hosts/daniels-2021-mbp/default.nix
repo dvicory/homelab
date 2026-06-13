@@ -4,10 +4,6 @@
   };
 
   den.aspects.daniels-2021-mbp = {
-    includes = [
-      den.batteries.hostname
-    ];
-
     darwin = { pkgs, ... }: {
       networking.hostName = "daniels-2021-mbp";
 

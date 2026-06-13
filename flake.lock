@@ -109,11 +109,11 @@
     },
     "den": {
       "locked": {
-        "lastModified": 1780448160,
-        "narHash": "sha256-jzN3irLrpz1qSoSQL1HhIo7I0XOXjwwcHPgWYMrS1Yg=",
+        "lastModified": 1780687873,
+        "narHash": "sha256-u0dBzZnXU6k9Lc/8JRuqab1IDGzRQjDYw27X+4ra+ss=",
         "owner": "sini",
         "repo": "den",
-        "rev": "4200f372e72721b2c8fc657a2296a9e21adc5ca6",
+        "rev": "1b562111c1a069b71c7b0029ff045b9479b9dba6",
         "type": "github"
       },
       "original": {
@@ -442,6 +442,21 @@
       "original": {
         "owner": "numtide",
         "repo": "flake-utils",
+        "type": "github"
+      }
+    },
+    "gen-algebra": {
+      "locked": {
+        "lastModified": 1780264808,
+        "narHash": "sha256-qH90aAoCXl4I94ZviyiVZBBLa/SlwheccvFIUJlgPR8=",
+        "owner": "sini",
+        "repo": "gen-algebra",
+        "rev": "49f6721bd314b38272bd6b1b26139569365c85a6",
+        "type": "github"
+      },
+      "original": {
+        "owner": "sini",
+        "repo": "gen-algebra",
         "type": "github"
       }
     },
@@ -968,6 +983,7 @@
         "flake-file": "flake-file",
         "flake-parts": "flake-parts_2",
         "flake-root": "flake-root",
+        "gen-algebra": "gen-algebra",
         "gen-schema": "gen-schema",
         "home-manager": "home-manager_2",
         "hoopsnake": "hoopsnake",
@@ -978,6 +994,7 @@
         "nixos-anywhere": "nixos-anywhere",
         "nixos-facter-modules": "nixos-facter-modules",
         "nixpkgs": "nixpkgs_5",
+        "scope-engine": "scope-engine",
         "sops-nix": "sops-nix",
         "systems": "systems_4"
       }
@@ -1004,6 +1021,21 @@
       "original": {
         "owner": "oxalica",
         "repo": "rust-overlay",
+        "type": "github"
+      }
+    },
+    "scope-engine": {
+      "locked": {
+        "lastModified": 1780184472,
+        "narHash": "sha256-JXioICR3vEc2rWPsoejiz1P1lwXm/bVDQQSqKEAM/kQ=",
+        "owner": "sini",
+        "repo": "scope-engine",
+        "rev": "7e301a5b0372a554ad1f57b080a9a8918f483ff8",
+        "type": "github"
+      },
+      "original": {
+        "owner": "sini",
+        "repo": "scope-engine",
         "type": "github"
       }
     },
