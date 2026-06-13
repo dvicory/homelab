@@ -83,7 +83,7 @@ let
         _:
         {
           age.secrets."user-identity-${user.name}" = {
-            rekeyFile = self + "/.secrets/users/${user.name}/id_agenix.age";
+            rekeyFile = self + "/.secrets/users/${user.name}/user-identity-${user.name}.age";
             owner = user.name;
             group = user.name;
             mode = "600";
@@ -103,7 +103,7 @@ let
               storageMode = "local";
               hostPubkey =
                 if (osConfig.age.secrets ? "user-identity-${user.name}") then
-                  (self + "/.secrets/users/${user.name}/id_agenix.pub")
+                  (self + "/.secrets/users/${user.name}/user-identity-${user.name}.pub")
                 else
                   osConfig.age.rekey.hostPubkey;
               generatedSecretsDir = self + "/.secrets/generated/${user.name}/${host.name}";
@@ -144,8 +144,9 @@ in
     }:
     {
       agenix-rekey = {
+        agePackage = pkgs.age;
         nixosConfigurations = inputs.self.outputs.nixosConfigurations;
-        darwinConfigurations = inputs.self.outputs.darwinConfigurations;
+        # darwinConfigurations = inputs.self.outputs.darwinConfigurations;
         collectHomeManagerConfigurations = true;
         extraConfigurations = { };
       };

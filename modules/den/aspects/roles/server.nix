@@ -1,11 +1,13 @@
 { den, ... }: {
   den.aspects.roles.server = {
-    includes = [
-      den.aspects.services.crowdsec
-      den.aspects.services.crowdsec.provides.bouncer
+    includes = with den.aspects; [
+      core.security.openssh
+
+      services.security.crowdsec
+      services.security.crowdsec.provides.bouncer
     ];
 
-    nixos = { ... }: {
+    nixos = {
       services.crowdsec.enable = true;
       services.crowdsec-firewall-bouncer.enable = true;
     };

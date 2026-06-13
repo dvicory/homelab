@@ -6,7 +6,7 @@
     crowdsec-pr.url = "github:dvicory/nixpkgs/crowdsec";
   };
 
-  den.aspects.services.crowdsec = {
+  den.aspects.services.security.crowdsec = {
     nixos = { config, lib, pkgs, ... }:
       let
         cfg = config.services.crowdsec;
@@ -22,12 +22,11 @@
 
         config = lib.mkMerge [
           {
-            secretRequests."crowdsec/enrollmentKey" = {
+            secretRequests."crowdsec-enrollmentKey" = {
+              provider = "agenix";
               mode = "0400";
               owner = "root";
-              sopsFile = ../../../../shared/secrets.yaml;
-              key = "crowdsec/enrollment_key";
-              ageFile = inputs.self + "/.secrets/shared/enrollmentKey.age";
+              ageFile = inputs.self + "/.secrets/hosts/${config.networking.hostName}/crowdsec-enrollmentKey.age";
               restartUnits = [ "crowdsec.service" ];
             };
           }
@@ -52,7 +51,7 @@
                   }
                 ];
 
-                console.enrollKeyFile = config.sops.secrets."crowdsec/enrollmentKey".path;
+                console.enrollKeyFile = config.age.secrets."crowdsec-enrollmentKey".path;
               };
             };
 

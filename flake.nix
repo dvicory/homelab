@@ -149,14 +149,6 @@
     scope-engine = {
       url = "github:sini/scope-engine";
     };
-    sops-nix = {
-      inputs = {
-        nixpkgs = {
-          follows = "nixpkgs";
-        };
-      };
-      url = "github:Mic92/sops-nix";
-    };
     systems = {
       url = "github:nix-systems/default";
     };

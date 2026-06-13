@@ -4,7 +4,7 @@
     let
       inherit (lib) mkIf mapAttrs' nameValuePair;
 
-      hardcodedReqs = lib.filterAttrs (_: req: req.provider or "sops" == "hardcoded") config.secretRequests;
+      hardcodedReqs = lib.filterAttrs (_: req: req.provider or "agenix" == "hardcoded") config.secretRequests;
     in
     mkIf (hardcodedReqs != { }) {
       systemd.services = mapAttrs' (name: req: let

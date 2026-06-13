@@ -36,8 +36,6 @@
         hostId = "0b0a39da";
       };
 
-      sops.age.sshKeyPaths = [ "/persist/etc/ssh/ssh_host_ed25519_key" ];
-
       boot.kernelParams = [
         "console=tty0"
         "console=hvc0"
