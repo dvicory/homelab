@@ -1,19 +1,19 @@
-# Agenix battery — self-contained agenix + agenix-rekey integration.
-#
-# Declares its own flake inputs, imports agenix-rekey's flakeModule,
-# and wires the host aspect for identity paths, rekey config, HM
-# shared modules, and activation script safety.
-#
-# Modeled on sini/den-examples modules/den/batteries/agenix.nix.
 {
   den,
   inputs,
   lib,
   self,
+  config,
   ...
 }:
 let
   agenixGeneratorsModule = import ../aspects/secrets/_generators.nix;
+
+  # Capture from top-level config so the per-host pipeline walk (triggered by
+  # host.mainModule's deferred default) has secretsConfig without requiring it
+  # in the scope context chain (fleet→environment→host), which only exists in
+  # the flake-level pipeline walk (outputs.nix) — disabled to avoid recursion.
+  # secretsConfig = config.den.secretsConfig;
 
   agenixHostAspect =
     {
@@ -42,14 +42,7 @@ let
             ];
 
             rekey = {
-              # inherit (secretsConfig) masterIdentities;
-              masterIdentities = [
-                {
-                  identity = self + "/.secrets/keys/master.age";
-                  pubkey = self + "/.secrets/pub/master.pub";
-                }
-              ];
-
+              inherit (secretsConfig) masterIdentities;
               storageMode = "local";
               hostPubkey = builtins.readFile host.public_key;
               generatedSecretsDir = host.secretPath + "/generated";
@@ -57,13 +50,11 @@ let
             };
           };
 
-          # Remove agenix directory before switching if it's a dir instead of link
           system.activationScripts = lib.mkIf (host.class == "nixos" && config.age.secrets != { }) {
             removeAgenixLink.text = "[[ ! -L /run/agenix ]] && [[ -d /run/agenix ]] && rm -rf /run/agenix";
             agenixNewGeneration.deps = [ "removeAgenixLink" ];
           };
 
-          # Make secrets paths available as module arg
           _module.args.secrets = lib.mapAttrs (_: v: v.path) config.age.secrets;
 
           home-manager.sharedModules = [
@@ -108,14 +99,7 @@ let
             ];
 
             rekey = {
-              # inherit (secretsConfig) masterIdentities;
-              masterIdentities = [
-                {
-                  identity = self + "/.secrets/keys/master.age";
-                  pubkey = self + "/.secrets/pub/master.pub";
-                }
-              ];
-
+              inherit (secretsConfig) masterIdentities;
               storageMode = "local";
               hostPubkey =
                 if (osConfig.age.secrets ? "user-identity-${user.name}") then
@@ -148,7 +132,6 @@ in
 
   den.schema.host.includes = [
     agenixHostAspect
-    den.aspects.core.secrets-collector
   ];
   den.schema.user.includes = [ agenixUserAspect ];
 

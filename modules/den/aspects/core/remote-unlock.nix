@@ -1,5 +1,13 @@
 { den, lib, inputs, ... }: {
   den.aspects.core."remote-unlock" = {
+    settings = {
+      sshUsers = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ "daniel" ];
+        description = "Usernames whose SSH keys are authorized for remote-unlock (hoopsnake)";
+      };
+    };
+
     age-secrets = { host, ... }: lib.optionalAttrs (host.hasAspect den.aspects.disk.zfs) {
       age.secrets.boot-host-key = {
         path = "/boot/boot_host_key";

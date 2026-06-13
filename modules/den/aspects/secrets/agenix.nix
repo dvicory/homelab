@@ -22,4 +22,10 @@
     {
       config.age.secrets = mapAttrs mkAgeSecret agenixReqs;
     };
+
+  den.aspects.secrets.agenix = {
+    persist = {
+      # Agenix-rekey generators state
+    };
+  };
 }

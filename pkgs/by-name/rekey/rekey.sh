@@ -20,7 +20,7 @@ set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
-MASTER_ID="${AGENIX_MASTER_IDENTITY:-$REPO_ROOT/.secrets/priv/master.age}"
+MASTER_ID="${AGENIX_MASTER_IDENTITY:-$REPO_ROOT/.secrets/keys/master.age}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -78,13 +78,13 @@ rekey_shared() {
 
   echo "=== shared ==="
 
-  local recipients=""
+  local -a recipient_args=()
   for pubfile in .secrets/hosts/*/runtime_host_key.pub; do
     [ -f "$pubfile" ] || continue
-    recipients="$recipients -r $(cat "$pubfile")"
+    recipient_args+=("-r" "$(<"$pubfile")")
   done
 
-  [ -n "$recipients" ] || { echo "  (no host pubkeys found, skipping)"; return 0; }
+  [ ${#recipient_args[@]} -gt 0 ] || { echo "  (no host pubkeys found, skipping)"; return 0; }
 
   for f in "$srcdir"/*.age; do
     [ -f "$f" ] || continue
@@ -95,8 +95,7 @@ rekey_shared() {
     echo "  ${name}.age"
 
     if plaintext=$(age -d -i "$MASTER_ID" "$f" 2>/dev/null); then
-      # shellcheck disable=SC2086
-      echo "$plaintext" | age -e $recipients -o "$dstdir/${name}.age"
+      echo "$plaintext" | age -e "${recipient_args[@]}" -o "$dstdir/${name}.age"
     else
       echo "    WARNING: cannot decrypt with master identity, copying as-is"
       cp "$f" "$dstdir/${name}.age"
