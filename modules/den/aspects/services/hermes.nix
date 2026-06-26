@@ -18,7 +18,8 @@
 #   journalctl -M hermes -u hermes-agent -f
 { inputs, lib, ... }: {
   flake-file.inputs.hermes-agent = {
-    url = "github:NousResearch/hermes-agent";
+    url = "github:NousResearch/hermes-agent/6dfb8326f58b2845a8b17134be00160fd69c9ddd";
+    inputs.nixpkgs.follows = "nixpkgs";
   };
 
   den.aspects.services.hermes = {

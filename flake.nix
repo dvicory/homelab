@@ -92,7 +92,12 @@
       url = "github:sini/gen-schema";
     };
     hermes-agent = {
-      url = "github:NousResearch/hermes-agent";
+      inputs = {
+        nixpkgs = {
+          follows = "nixpkgs";
+        };
+      };
+      url = "github:NousResearch/hermes-agent/6dfb8326f58b2845a8b17134be00160fd69c9ddd";
     };
     home-manager = {
       inputs = {
