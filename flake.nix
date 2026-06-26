@@ -91,6 +91,14 @@
       };
       url = "github:sini/gen-schema";
     };
+    hermes-agent = {
+      inputs = {
+        nixpkgs = {
+          follows = "nixpkgs";
+        };
+      };
+      url = "github:NousResearch/hermes-agent";
+    };
     home-manager = {
       inputs = {
         nixpkgs = {

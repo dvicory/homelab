@@ -12,6 +12,9 @@
           "/mnt/storage-clear/media3"
         ];
       };
+      services.hermes.agent = {
+        model.default = "opencode-go/mimo-v2.5-pro";
+      };
       disk.luks-storage.disks.media4 = {
         # Provisioning sequence (two deploys):
         #   1. On the workstation, with this config committed at
@@ -63,6 +66,8 @@
       den.aspects.core."remote-unlock"
       den.aspects.services.mergerfs
       den.aspects.secrets.agenix
+      den.aspects.core.network.tailscale
+      den.aspects.services.hermes
     ];
 
     nixos = { config, pkgs, lib, ... }: let
