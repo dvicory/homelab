@@ -14,14 +14,18 @@
   ];
 
   perSystem =
-    { pkgs, ... }:
+    { pkgs, lib, ... }:
     let
       callPackage = pkgs.callPackage;
+      isLinux = pkgs.stdenv.hostPlatform.isLinux;
 
       generate-secrets = callPackage (self + "/pkgs/by-name/generate-secrets/package.nix") { };
       rekey = callPackage (self + "/pkgs/by-name/rekey/package.nix") { };
       install = callPackage (self + "/pkgs/by-name/install/package.nix") { };
       sops-to-agenix = callPackage (self + "/pkgs/by-name/sops-to-agenix/package.nix") { };
+      prepare-luks-storage = lib.optionalAttrs isLinux {
+        prepare-luks-storage = callPackage (self + "/pkgs/by-name/prepare-luks-storage/package.nix") { };
+      };
 
       provision-keys = callPackage (self + "/pkgs/by-name/provision-keys/package.nix") {
         inherit generate-secrets rekey;
@@ -30,7 +34,7 @@
     {
       packages = {
         inherit generate-secrets rekey provision-keys install sops-to-agenix;
-      };
+      } // prepare-luks-storage;
 
       devshells.default = {
         packages = [
@@ -40,7 +44,12 @@
           pkgs.git
         ];
 
-        commands = [
+        commands = lib.optionals isLinux [
+          {
+            package = prepare-luks-storage.prepare-luks-storage;
+            help = "One-shot provisioner for a LUKS-encrypted btrfs data disk";
+          }
+        ] ++ [
           {
             package = generate-secrets;
             help = "Generate agenix secrets (boot keys) for a host";
