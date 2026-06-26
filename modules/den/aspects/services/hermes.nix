@@ -19,7 +19,6 @@
 { inputs, lib, ... }: {
   flake-file.inputs.hermes-agent = {
     url = "github:NousResearch/hermes-agent";
-    inputs.nixpkgs.follows = "nixpkgs";
   };
 
   den.aspects.services.hermes = {
