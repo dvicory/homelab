@@ -9,7 +9,9 @@
           rekeyFile = req.ageFile;
           mode = req.mode or "0400";
           owner = req.owner or "root";
-          group = req.group or "root";
+          group = req.owner or "root";
+        } // lib.optionalAttrs (req.generator ? script) {
+          generator.script = req.generator.script;
         };
 
       agenixReqs = filterAttrs (
@@ -54,12 +56,33 @@
               default = [ ];
               description = "Systemd units to restart when the secret file changes.";
             };
+            generator = mkOption {
+              type = types.nullOr (types.submodule {
+                options = {
+                  script = mkOption {
+                    type = types.either types.str (types.functionTo types.str);
+                    description = ''
+                      Name of a globally-defined agenix-rekey generator (e.g.
+                      "ssh-key", "passphrase", "hex") or a function returning
+                      a script. When set, `agenix generate` will produce the
+                      secret content if the .age file does not exist yet.
+                    '';
+                  };
+                };
+              });
+              default = null;
+              description = ''
+                Optional agenix-rekey generator. If set, the secret is
+                bootstrapped via `agenix generate` instead of requiring a
+                pre-existing master-key-encrypted .age file.
+              '';
+            };
           };
         }));
         default = { };
         description = ''
-          Provider-agnostic secret requests. Services declare what secrets they
-          need, and the agenix provider fulfills them.
+          Provider-agnostic secret requests. Services declare what secrets
+          they need, and the agenix provider fulfills them.
         '';
       };
 
