@@ -97,7 +97,7 @@
           follows = "nixpkgs";
         };
       };
-      url = "github:NousResearch/hermes-agent/6dfb8326f58b2845a8b17134be00160fd69c9ddd";
+      url = "github:NousResearch/hermes-agent/v2026.6.19";
     };
     home-manager = {
       inputs = {
