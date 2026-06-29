@@ -34,8 +34,19 @@
       '';
     };
 
+    settings.dependencyGroups = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = ''
+        Optional pyproject.toml dependency groups to build into the
+        sealed venv (passed to services.hermes-agent.extraDependencyGroups).
+        Set to [ "messaging" ] to enable Telegram/Discord/Slack.
+      '';
+    };
+
     nixos = { host, config, lib, ... }: let
       agentSettings = host.settings.services.hermes.agent or { };
+      dependencyGroups = host.settings.services.hermes.dependencyGroups or [ ];
       secretName = "hermes-env";
       ageFile = inputs.self + "/.secrets/hosts/${host.name}/hermes-env.age";
       provisioned = builtins.pathExists ageFile;
@@ -70,6 +81,7 @@
             # nspawn NixOS rather than as a nested OCI container.
             addToSystemPackages = true;
             settings = agentSettings;
+            extraDependencyGroups = dependencyGroups;
             environmentFiles = [ "/run/agenix/${secretName}" ];
           };
 

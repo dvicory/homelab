@@ -15,6 +15,7 @@
       services.hermes.agent = {
         model.default = "opencode-go/mimo-v2.5-pro";
       };
+      services.hermes.dependencyGroups = [ "messaging" ];
       disk.luks-storage.disks.media4 = {
         # Provisioning sequence (two deploys):
         #   1. On the workstation, with this config committed at
