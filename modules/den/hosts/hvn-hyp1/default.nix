@@ -3,6 +3,8 @@
     environment = "prod";
     system-access-groups = [ "system-access" ];
 
+    microvm.guests = [ ];
+
     settings = {
       core.nix.gc.enable = false;
       services.mergerfs.pools."/mnt/storage/media" = {
@@ -69,6 +71,7 @@
       den.aspects.secrets.agenix
       den.aspects.core.network.tailscale
       den.aspects.services.hermes
+      den.aspects.virtualization.microvm-host
     ];
 
     nixos = { config, pkgs, lib, ... }: let

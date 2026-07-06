@@ -132,6 +132,14 @@
       };
       url = "github:nix-community/lanzaboote/v0.4.1";
     };
+    microvm = {
+      inputs = {
+        nixpkgs = {
+          follows = "nixpkgs";
+        };
+      };
+      url = "github:microvm-nix/microvm.nix";
+    };
     nix-darwin = {
       inputs = {
         nixpkgs = {

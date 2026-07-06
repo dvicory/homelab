@@ -62,5 +62,11 @@
 
     # Flake root detection
     flake-root.url = "github:srid/flake-root";
+
+    # MicroVM (cloud-hypervisor-based VMs for Hermes isolation)
+    microvm = {
+      url = "github:microvm-nix/microvm.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 }
