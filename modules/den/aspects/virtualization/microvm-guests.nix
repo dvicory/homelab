@@ -41,10 +41,11 @@ in {
           # Host-side submodule options (e.g. pkgs) from the microvm class…
           g.microvmOpts // {
             # …and the guest's full NixOS toplevel from its host pipeline.
+            # The guest's nixos block includes microvm.shares, microvm.interfaces,
+            # etc. directly (not via the microvm class), so we just splice
+            # in the full resolved config.
             config = {
-              imports = [ g.osModules {
-                microvm.shares = lib.optional g.sharedNixStore roStoreShare;
-              }];
+              imports = [ g.osModules ];
             };
           }
         )

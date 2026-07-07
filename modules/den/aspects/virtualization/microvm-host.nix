@@ -10,9 +10,14 @@
 # - Adds br-microvm bridge + NAT (sini uses a bridge on the LAN; we use a
 #   private subnet behind NAT so VMs are not on the physical network)
 # - Adds per-VM agenix symlink farm for secret isolation
+# - Declares agenix-identity secret requests for each guest (the bootstrap
+#   secret that lets the guest decrypt its own secrets)
 { inputs, lib, ... }: {
   den.aspects.virtualization.microvm-host = {
-    nixos = { ... }: {
+    nixos = { config, host, pkgs, ... }: let
+      # Build the list of guest names from the host entity's microvm.guests
+      guestNames = map (g: g.name) host.microvm.guests;
+    in {
       imports = [ inputs.microvm.nixosModules.host ];
 
       microvm.host.enable = true;
@@ -43,6 +48,49 @@
         internalInterfaces = [ "br-microvm" ];
         externalInterface = "eno1";
       };
+
+      # Declare the guest's identity keypair secret on the parent.
+      # This is the bootstrap: encrypted to the PARENT's key, decrypted
+      # by the parent, delivered to the guest via virtiofs. The guest uses
+      # it as both its agenix identity (identityPaths) and SSH host key.
+      #
+      # The ssh-key generator produces an ed25519 keypair — the private key
+      # goes into runtime_host_key.age, the public key is written as
+      # runtime_host_key.pub alongside it. agenix-rekey reads that .pub to
+      # know which key to rekey the guest's other secrets to. Same filename
+      # as real hosts — migrating a guest to a standalone host is a file move.
+      secretRequests = lib.listToAttrs (map (guestName: lib.nameValuePair
+        "${guestName}-runtime-host-key"
+        {
+          provider = "agenix";
+          ageFile = inputs.self + "/.secrets/guests/${guestName}/runtime_host_key.age";
+          mode = "0400";
+          generator.script = "ssh-key";
+        }
+      ) guestNames);
+
+      # Per-VM agenix symlink farm: creates /run/agenix-vm/<vm-name>/
+      # with a symlink to the guest's runtime_host_key (decrypted by the
+      # parent). The guest's virtiofs "secrets" share delivers this to
+      # /run/agenix/runtime_host_key inside the VM, where the guest's
+      # agenix uses it as identityPaths and openssh uses it as the host key.
+      systemd.services.agenix-vm-secrets = {
+        description = "Create per-VM agenix symlink farms";
+        after = [ "agenix.service" ];
+        wantedBy = [ "multi-user.target" ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
+        script = ''
+          ${lib.concatMapStrings (guestName: ''
+            mkdir -p /run/agenix-vm/${guestName}
+            if [ -f /run/agenix/${guestName}-runtime-host-key ]; then
+              ln -sfn /run/agenix/${guestName}-runtime-host-key /run/agenix-vm/${guestName}/runtime_host_key
+            fi
+          '') guestNames}
+        '';
+      };
     };
 
     persist = [{
@@ -60,6 +108,21 @@
   # Schema extensions on every host entity for declaring guests.
   den.schema.host.imports = [
     ({ ... }: {
+      options.microvm.isGuest = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Marks this host as a MicroVM guest. When true:
+          - secretPath overrides to .secrets/guests/<name>/ instead of
+            .secrets/hosts/<name>/
+          - The agenix battery uses /run/agenix/runtime_host_key (delivered
+            via virtiofs from the parent) as identityPaths instead of the
+            host's SSH host key
+          - runtime_host_key serves as both the agenix identity and the
+            SSH host key (same as real hosts, just delivered via virtiofs
+            instead of persistent /etc/ssh/)
+        '';
+      };
       options.microvm.guests = lib.mkOption {
         type = lib.types.listOf lib.types.raw;
         default = [ ];

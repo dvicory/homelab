@@ -3,7 +3,9 @@
     environment = "prod";
     system-access-groups = [ "system-access" ];
 
-    microvm.guests = [ ];
+    microvm.guests = [
+      den.hosts.x86_64-linux.hermes-qa
+    ];
 
     settings = {
       core.nix.gc.enable = false;

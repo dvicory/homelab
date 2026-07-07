@@ -24,6 +24,7 @@ let
     let
       hasImpermanence = host.hasAspect den.aspects.disk.impermanence;
       persistPrefix = lib.optionalString hasImpermanence "/persist";
+      isGuest = host.microvm.isGuest or false;
     in
     {
       name = "agenix/${host.name}";
@@ -37,9 +38,15 @@ let
           ];
 
           age = {
-            identityPaths = [
-              "${persistPrefix}/etc/ssh/ssh_host_ed25519_key"
-            ];
+            # Guests receive their identity keypair via virtiofs from the
+            # parent host (the parent decrypts runtime_host_key.age and
+            # delivers it at /run/agenix/runtime_host_key). This same key
+            # serves as both the agenix identity and the SSH host key.
+            # Hosts use their own SSH host key from the persisted /etc/ssh.
+            identityPaths = if isGuest then
+              [ "/run/agenix/runtime_host_key" ]
+            else
+              [ "${persistPrefix}/etc/ssh/ssh_host_ed25519_key" ];
 
             rekey = {
               inherit (secretsConfig) masterIdentities;
