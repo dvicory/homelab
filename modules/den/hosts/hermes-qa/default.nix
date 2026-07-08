@@ -116,14 +116,14 @@
       };
 
       # Write daniel's authorized key via a systemd service that runs
-      # before sshd. The impermanence tmpfs root wipes /home on each
-      # boot, so the NixOS activation script's authorized_keys handling
-      # may not produce a file sshd can read.
+      # before sshd but AFTER sysinit.target (so the daniel user exists
+      # and chown can set the correct ownership — OpenSSH rejects
+      # authorized_keys not owned by the target user).
       systemd.services."ssh-authorized-keys-daniel" = {
         description = "Write daniel's authorized SSH key";
+        after = [ "sysinit.target" ];
         before = [ "sshd.service" ];
         wantedBy = [ "sshd.service" ];
-        unitConfig.DefaultDependencies = false;
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
