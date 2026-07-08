@@ -115,6 +115,16 @@
         };
       };
 
+      # Explicitly place the authorized_keys in /etc/ssh/authorized_keys.d/
+      # via environment.etc, which creates a Nix store symlink that survives
+      # the tmpfs root filesystem (impermanence wipes ~/.ssh/).
+      environment.etc."ssh/authorized_keys.d/daniel" = {
+        mode = "0600";
+        text = ''
+          ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIItkbwb4903ks6RXq1AyRGRK3um1Wzo8tvo12lG9dete dvicory@mbp-2021-32gb
+        '';
+      };
+
       networking.firewall.allowedTCPPorts = [ 22 ];
 
       # Pass the vsock notify socket path on the kernel command line since
