@@ -64,6 +64,12 @@
 
         shares = [
           {
+            tag = "ro-store";
+            source = "/nix/store";
+            mountPoint = "/nix/.ro-store";
+            proto = "virtiofs";
+          }
+          {
             tag = "persist";
             source = "/var/lib/microvms/hermes-qa/persist";
             mountPoint = "/persist";
@@ -72,7 +78,7 @@
           }
           {
             # Delivers agenix-identity (decrypted by parent, symlinked by
-            # the per-VM farm) to /run/agenix/agenix-identity inside the VM.
+            # the per-VM farm) to /run/agenix/runtime_host_key inside the VM.
             # The guest's agenix uses this as identityPaths to decrypt its
             # own secrets from the rekeyed files in the nix store.
             tag = "secrets";

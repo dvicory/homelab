@@ -1,3 +1,23 @@
+# Agenix battery — flake-level plumbing for agenix/agenix-rekey.
+#
+# This battery provides:
+# - flake-file.inputs (agenix, agenix-rekey)
+# - agenix-rekey.flakeModule (wires the `agenix` CLI in the devshell)
+# - perSystem config (devshell command, rekey targets)
+# - agenixUserAspect → den.schema.user.includes (per-user home-manager
+#   agenix identity, skipped for MicroVM guests)
+#
+# Sini puts ALL agenix config (module imports, secretRequests, age.rekey,
+# age.identityPaths) in an agenixHostAspect via den.schema.host.includes.
+# We deviate: that config lives in aspects/secrets/agenix.nix instead.
+# The reason is MicroVM guests. Sini's guests use intoAttr = [] so they're
+# never evaluated standalone — they only exist inside microvm.vms, where
+# den.schema.host.includes IS applied. Our guests need standalone
+# nixosConfiguration output (for microvm -u and nix eval), but when
+# spliced into microvm.vms by the guest resolver, den.schema.host.includes
+# are NOT applied (only explicit aspect includes are resolved by
+# den.lib.aspects.resolve). Moving agenix config into the secrets.agenix
+# aspect (an explicit include) ensures it works in both contexts.
 {
   den,
   inputs,

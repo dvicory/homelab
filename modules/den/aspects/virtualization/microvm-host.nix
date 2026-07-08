@@ -88,6 +88,8 @@
             if [ -f /run/agenix/${guestName}-runtime-host-key ]; then
               ln -sfn /run/agenix/${guestName}-runtime-host-key /run/agenix-vm/${guestName}/runtime_host_key
             fi
+            # Ensure persist directory exists for virtiofs share
+            mkdir -p /var/lib/microvms/${guestName}/persist
           '') guestNames}
         '';
       };
