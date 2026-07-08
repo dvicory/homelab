@@ -125,6 +125,9 @@
         hostKeys = [{
           path = "/run/agenix/runtime_host_key";
           type = "ed25519";
+          # Key is delivered via read-only virtiofs from the parent host.
+          # sshd-keygen can't write to a read-only filesystem.
+          noGen = true;
         }];
         settings = {
           PasswordAuthentication = false;
