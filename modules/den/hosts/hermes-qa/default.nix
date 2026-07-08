@@ -15,7 +15,7 @@
 
     microvm.isGuest = true;
 
-    networking.interfaces.enp0s0 = {
+    networking.interfaces.dummy = {
       ipv4 = "10.27.50.21/24";
       gateway = "10.27.50.1";
     };
@@ -127,6 +127,11 @@
 
       # Enable nix inside the VM for self-validation (nix eval, nix flake check)
       nix.enable = true;
+
+      # The networking aspect generates matchConfig.Name from the entity's
+      # interface attribute name, but we don't know the actual PCI slot
+      # that cloud-hypervisor assigns. Override with a wildcard.
+      systemd.network.networks."40-dummy".matchConfig.Name = lib.mkForce "en*";
     };
   };
 }
