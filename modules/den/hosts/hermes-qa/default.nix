@@ -56,6 +56,9 @@
         vcpu = 2;
         mem = 4096;
 
+        vsock.cid = 3;
+        vsock.ssh.enable = true;
+
         interfaces = [{
           id = "vm-hermes-qa";
           type = "tap";
