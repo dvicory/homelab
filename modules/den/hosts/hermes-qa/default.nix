@@ -11,7 +11,7 @@
 { den, inputs, ... }: {
   den.hosts.x86_64-linux.hermes-qa = {
     environment = "prod";
-    system-access-groups = [ ];
+    system-access-groups = [ "system-access" ];
 
     microvm.isGuest = true;
 
