@@ -115,13 +115,27 @@
         };
       };
 
-      # Explicitly place the authorized_keys in /etc/ssh/authorized_keys.d/
-      # via environment.etc, which creates a Nix store symlink that survives
-      # the tmpfs root filesystem (impermanence wipes ~/.ssh/).
-      environment.etc."ssh/authorized_keys.d/daniel" = {
-        text = ''
-          ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIItkbwb4903ks6RXq1AyRGRK3um1Wzo8tvo12lG9dete dvicory@mbp-2021-32gb
-        '';
+      # Write daniel's authorized key via a systemd service that runs
+      # before sshd. The impermanence tmpfs root wipes /home on each
+      # boot, so the NixOS activation script's authorized_keys handling
+      # may not produce a file sshd can read.
+      systemd.services."ssh-authorized-keys-daniel" = {
+        description = "Write daniel's authorized SSH key";
+        before = [ "sshd.service" ];
+        wantedBy = [ "sshd.service" ];
+        unitConfig.DefaultDependencies = false;
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = pkgs.writeShellScript "setup-ssh-authorized-keys" ''
+            mkdir -p /home/daniel/.ssh
+            chmod 0700 /home/daniel/.ssh
+            chown daniel:users /home/daniel/.ssh
+            echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIItkbwb4903ks6RXq1AyRGRK3um1Wzo8tvo12lG9dete dvicory@mbp-2021-32gb' > /home/daniel/.ssh/authorized_keys
+            chmod 0600 /home/daniel/.ssh/authorized_keys
+            chown daniel:users /home/daniel/.ssh/authorized_keys
+          '';
+        };
       };
 
       networking.firewall.allowedTCPPorts = [ 22 ];
