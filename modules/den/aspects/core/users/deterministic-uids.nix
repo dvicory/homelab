@@ -173,6 +173,7 @@
           tang = uidGid 660;
           crowdsec = uidGid 661;
           vault = uidGid 662;
+          hermes = uidGid 663;
 
           # ── Identity & security (700-749) ───────────────────────────
           kanidm = uidGid 700;

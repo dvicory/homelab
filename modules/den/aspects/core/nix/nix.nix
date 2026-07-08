@@ -9,7 +9,7 @@
       };
     };
 
-    os = {
+    os = { host, ... }: {
       nix.settings = {
         experimental-features = [
           "nix-command"
@@ -30,7 +30,8 @@
         min-free = 128000000;
         max-free = 1000000000;
         download-buffer-size = 524288000;
-        auto-optimise-store = true;
+        # auto-optimise-store is incompatible with microvm.writableStoreOverlay
+        auto-optimise-store = !(host.microvm.isGuest or false);
         builders-use-substitutes = true;
         fallback = true;
         keep-outputs = true;

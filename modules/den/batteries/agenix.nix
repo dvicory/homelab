@@ -7,76 +7,6 @@
   ...
 }:
 let
-  agenixGeneratorsModule = import ../aspects/secrets/_generators.nix;
-
-  # Capture from top-level config so the per-host pipeline walk (triggered by
-  # host.mainModule's deferred default) has secretsConfig without requiring it
-  # in the scope context chain (fleet→environment→host), which only exists in
-  # the flake-level pipeline walk (outputs.nix) — disabled to avoid recursion.
-  # secretsConfig = config.den.secretsConfig;
-
-  agenixHostAspect =
-    {
-      host,
-      secretsConfig,
-      ...
-    }:
-    let
-      hasImpermanence = host.hasAspect den.aspects.disk.impermanence;
-      persistPrefix = lib.optionalString hasImpermanence "/persist";
-      isGuest = host.microvm.isGuest or false;
-    in
-    {
-      name = "agenix/${host.name}";
-      ${host.class} =
-        { config, lib, ... }:
-        {
-          imports = [
-            inputs.agenix."${host.class}Modules".default
-            inputs.agenix-rekey."${host.class}Modules".default
-            agenixGeneratorsModule
-          ];
-
-          age = {
-            # Guests receive their identity keypair via virtiofs from the
-            # parent host (the parent decrypts runtime_host_key.age and
-            # delivers it at /run/agenix/runtime_host_key). This same key
-            # serves as both the agenix identity and the SSH host key.
-            # Hosts use their own SSH host key from the persisted /etc/ssh.
-            identityPaths = if isGuest then
-              [ "/run/agenix/runtime_host_key" ]
-            else
-              [ "${persistPrefix}/etc/ssh/ssh_host_ed25519_key" ];
-
-            rekey = {
-              inherit (secretsConfig) masterIdentities;
-              storageMode = "local";
-              hostPubkey = builtins.readFile host.public_key;
-              generatedSecretsDir = host.secretPath + "/generated";
-              localStorageDir = host.secretPath + "/rekeyed";
-            };
-          };
-
-          system.activationScripts = lib.mkIf (host.class == "nixos" && config.age.secrets != { }) {
-            removeAgenixLink.text = "[[ ! -L /run/agenix ]] && [[ -d /run/agenix ]] && rm -rf /run/agenix";
-            agenixNewGeneration.deps = [ "removeAgenixLink" ];
-          };
-
-          _module.args.secrets = lib.mapAttrs (_: v: v.path) config.age.secrets;
-
-          home-manager.sharedModules = [
-            inputs.agenix.homeManagerModules.default
-            inputs.agenix-rekey.homeManagerModules.default
-            (
-              { config, lib, ... }:
-              {
-                _module.args.secrets = lib.mapAttrs (_: v: v.path) config.age.secrets;
-              }
-            )
-          ];
-        };
-    };
-
   agenixUserAspect =
     {
       user,
@@ -84,6 +14,9 @@ let
       secretsConfig,
       ...
     }:
+    let
+      isGuest = host.microvm.isGuest or false;
+    in
     {
       name = "agenix-identity/${user.name}@${host.name}";
       ${host.class} =
@@ -97,6 +30,9 @@ let
             generator.script = "age-identity";
           };
         };
+    } // lib.optionalAttrs (!isGuest) {
+      # home-manager integration — skip for MicroVM guests (no home-manager
+      # module imported in the guest's spliced config).
       homeManager =
         { osConfig, ... }:
         {
@@ -137,9 +73,6 @@ in
     inputs.agenix-rekey.flakeModule
   ];
 
-  den.schema.host.includes = [
-    agenixHostAspect
-  ];
   den.schema.user.includes = [ agenixUserAspect ];
 
   perSystem =

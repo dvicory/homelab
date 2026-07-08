@@ -76,8 +76,6 @@
       gitName = host.settings.services.hermes-microvm.gitIdentity.name or "Hermes Agent";
       gitEmail = host.settings.services.hermes-microvm.gitIdentity.email or "hermes@localhost";
       secretName = "hermes-env";
-      # host.secretPath resolves to .secrets/guests/<name>/ for MicroVM guests
-      # (see the schema override in microvm-host.nix)
       ageFile = host.secretPath + "/hermes-env.age";
       patAgeFile = host.secretPath + "/hermes-github-pat.age";
       provisioned = builtins.pathExists ageFile;
