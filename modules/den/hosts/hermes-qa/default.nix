@@ -130,6 +130,14 @@
 
       networking.firewall.allowedTCPPorts = [ 22 ];
 
+      # Pass the vsock notify socket path on the kernel command line since
+      # systemd can't read SMBIOS credentials with direct kernel boot.
+      # This lets the guest send sd_notify("READY=1") over vsock so the
+      # host systemd knows the VM has booted (instead of timing out).
+      boot.kernelParams = [
+        "systemd.set_credential=vmm.notify_socket:vsock-stream:2:8888"
+      ];
+
       # Enable nix inside the VM for self-validation (nix eval, nix flake check)
       nix.enable = true;
     };
