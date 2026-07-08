@@ -7,7 +7,6 @@
     persist = [
       { directories = [ "/var/log" "/var/lib/nixos" "/var/lib/systemd" ]; }
       { files = [
-        "/etc/machine-id"
         "/etc/ssh/ssh_host_ed25519_key"
         "/etc/ssh/ssh_host_ed25519_key.pub"
       ]; }
@@ -48,6 +47,14 @@
             ExecStart = "${pkgs.coreutils}/bin/chmod 0700 /var/lib/private";
           };
         };
+
+        # Persist /etc/machine-id on bare-metal hosts only. MicroVM guests
+        # get a deterministic machine-id from the microvm module's machineId
+        # option (which defaults to sha256("microvm.nix:${hostName}")), so
+        # persisting it via bind mount conflicts with that non-empty file.
+        environment.persistence."/persist".files = lib.mkIf (!(host.microvm.isGuest or false)) [
+          "/etc/machine-id"
+        ];
 
       }
       // lib.optionalAttrs (host.hasAspect den.aspects.disk.zfs) {
