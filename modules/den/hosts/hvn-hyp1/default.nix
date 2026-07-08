@@ -137,6 +137,8 @@
           };
         };
 
+        systemd.services."microvm@hermes-qa".serviceConfig.Type = lib.mkForce "simple";
+
         boot.kernelParams = [
           "console=tty0"
           "random.trust_cpu=on"
