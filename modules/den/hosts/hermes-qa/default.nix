@@ -15,7 +15,7 @@
 
     microvm.isGuest = true;
 
-    networking.interfaces.eth0 = {
+    networking.interfaces.enp0s0 = {
       ipv4 = "10.27.50.21/24";
       gateway = "10.27.50.1";
     };
@@ -39,6 +39,7 @@
       disk.impermanence
       secrets.agenix
       core.security.openssh
+      networking.default
       core.network.tailscale
       services.hermes-microvm
     ];
@@ -100,20 +101,6 @@
           autoCreate = true;
         }];
         registerClosure = true;
-      };
-
-      # Static IP on the private bridge subnet
-      systemd.network = {
-        enable = true;
-        networks."20-eth0" = {
-          matchConfig.Name = "eth0";
-          networkConfig = {
-            Address = [ "10.27.50.21/24" ];
-            Gateway = "10.27.50.1";
-            DNS = [ "1.1.1.1" ];
-            DHCP = "no";
-          };
-        };
       };
 
       # SSH host key — use default paths (/etc/ssh/ssh_host_*) so sshd-keygen
