@@ -131,12 +131,6 @@
 
       networking.firewall.allowedTCPPorts = [ 22 ];
 
-      # Deterministic machine-id for stable Tailscale identity
-      environment.etc."machine-id" = {
-        mode = "0644";
-        text = (builtins.hashString "md5" "hermes-qa") + "\n";
-      };
-
       # Enable nix inside the VM for self-validation (nix eval, nix flake check)
       nix.enable = true;
     };
