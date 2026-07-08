@@ -116,19 +116,12 @@
         };
       };
 
-      # SSH host key — same keypair as the agenix identity (runtime_host_key,
-      # delivered via virtiofs from the parent). Using one key for both
-      # means migrating this guest to a standalone host is a file move, not
-      # a key rotation. Stable across reboots despite impermanence.
+      # SSH host key — use default paths (/etc/ssh/ssh_host_*) so sshd-keygen
+      # can write them through the impermanence symlink into the persist
+      # virtiofs (writable). This avoids the read-only /run/agenix virtiofs
+      # where the agenix identity key lives.
       services.openssh = {
         enable = true;
-        hostKeys = [{
-          path = "/run/agenix/runtime_host_key";
-          type = "ed25519";
-          # Key is delivered via read-only virtiofs from the parent host.
-          # sshd-keygen can't write to a read-only filesystem.
-          noGen = true;
-        }];
         settings = {
           PasswordAuthentication = false;
           PermitRootLogin = "prohibit-password";
