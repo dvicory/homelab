@@ -36,6 +36,13 @@
             unset PAT
           fi
 
+          # plugins/cron/ (incomplete plugin category) shadows
+          # site-packages/cron/ (complete package with
+          # scheduler_provider.py) because platform adapters do
+          # sys.path.insert(0, plugins_dir) at import time.
+          # Delete it from the overlay rootfs so the real cron resolves.
+          rm -rf ${hermesPackage}/share/hermes-agent/plugins/cron 2>/dev/null || true
+
           exec ${hermesPackage}/bin/hermes gateway "$@"
         ''} $out/entrypoint
       '';
@@ -65,7 +72,6 @@
         };
         fakeRootCommands = ''
           mkdir -p ./home/hermes-runner
-          rm -rf .${hermesPackage}/share/hermes-agent/plugins/cron
         '';
       };
     in
