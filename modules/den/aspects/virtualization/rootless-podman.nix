@@ -7,33 +7,35 @@
   perSystem = { system, pkgs, ... }:
     let
       hermesPackage = inputs.hermes-agent.packages.${system}.messaging;
-      entrypoint = pkgs.writeShellScript "hermes-entrypoint" ''
-        set -euo pipefail
+      entrypoint = pkgs.runCommand "hermes-entrypoint" {} ''
+        install -Dm555 ${pkgs.writeShellScript "hermes-entrypoint.sh" ''
+          set -euo pipefail
 
-        export HERMES_MANAGED=true
-        mkdir -p "$HERMES_HOME"
-        touch "$HERMES_HOME/.managed"
+          export HERMES_MANAGED=true
+          mkdir -p "$HERMES_HOME"
+          touch "$HERMES_HOME/.managed"
 
-        if [ -f "$SECRETS_DIR/hermes-env" ]; then
-          set -a; . "$SECRETS_DIR/hermes-env"; set +a
-        fi
-
-        if [ -f "$SECRETS_DIR/hermes-github-pat" ]; then
-          PAT=$(cat "$SECRETS_DIR/hermes-github-pat")
-          echo "$PAT" | gh auth login --with-token
-          gh auth setup-git
-          git config --global user.name "Hermes Agent"
-          git config --global user.email "hermes-agent@users.noreply.github.com"
-          if [ ! -d "$WORKSPACE_DIR/.git" ]; then
-            mkdir -p "$WORKSPACE_DIR"
-            git clone https://github.com/dvicory/homelab.git "$WORKSPACE_DIR"
+          if [ -f "$SECRETS_DIR/hermes-env" ]; then
+            set -a; . "$SECRETS_DIR/hermes-env"; set +a
           fi
-          cd "$WORKSPACE_DIR"
-          git fetch origin main || true
-          unset PAT
-        fi
 
-        exec ${hermesPackage}/bin/hermes gateway "$@"
+          if [ -f "$SECRETS_DIR/hermes-github-pat" ]; then
+            PAT=$(cat "$SECRETS_DIR/hermes-github-pat")
+            echo "$PAT" | gh auth login --with-token
+            gh auth setup-git
+            git config --global user.name "Hermes Agent"
+            git config --global user.email "hermes-agent@users.noreply.github.com"
+            if [ ! -d "$WORKSPACE_DIR/.git" ]; then
+              mkdir -p "$WORKSPACE_DIR"
+              git clone https://github.com/dvicory/homelab.git "$WORKSPACE_DIR"
+            fi
+            cd "$WORKSPACE_DIR"
+            git fetch origin main || true
+            unset PAT
+          fi
+
+          exec ${hermesPackage}/bin/hermes gateway "$@"
+        ''} $out/entrypoint
       '';
       image = pkgs.dockerTools.buildLayeredImage {
         name = "hermes-qa";
@@ -48,7 +50,7 @@
           entrypoint
         ];
         config = {
-          Entrypoint = [ "${entrypoint}" ];
+          Entrypoint = [ "/entrypoint" ];
           WorkingDir = "/home/hermes-runner";
           Env = [
             "HERMES_MANAGED=true"
