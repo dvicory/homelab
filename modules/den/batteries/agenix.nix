@@ -28,20 +28,20 @@ let
       ...
     }:
     let
-      base = {
-        name = "agenix-identity/${user.name}@${host.name}";
-        ${host.class} =
-          _:
-          {
-            age.secrets."user-identity-${user.name}" = {
-              rekeyFile = self + "/.secrets/users/${user.name}/user-identity-${user.name}.age";
-              owner = user.name;
-              group = user.name;
-              mode = "600";
-              generator.script = "age-identity";
-            };
-          };
+      hasIdentity = (user.identity.sshKeys or [ ]) != [ ];
+      identityFile = self + "/.secrets/users/${user.name}/user-identity-${user.name}.age";
+      identityPub = self + "/.secrets/users/${user.name}/user-identity-${user.name}.pub";
+
+      nixosSecret = lib.optionalAttrs hasIdentity {
+        age.secrets."user-identity-${user.name}" = {
+          rekeyFile = identityFile;
+          owner = user.name;
+          group = user.name;
+          mode = "600";
+          generator.script = "age-identity";
+        };
       };
+
       homeCfg = { osConfig, ... }: {
         age = {
           identityPaths = lib.optionals (osConfig.age.secrets ? "user-identity-${user.name}") [
@@ -52,7 +52,7 @@ let
             storageMode = "local";
             hostPubkey =
               if (osConfig.age.secrets ? "user-identity-${user.name}") then
-                (self + "/.secrets/users/${user.name}/user-identity-${user.name}.pub")
+                identityPub
               else
                 osConfig.age.rekey.hostPubkey;
             generatedSecretsDir = self + "/.secrets/generated/${user.name}/${host.name}";
@@ -61,7 +61,11 @@ let
         };
       };
     in
-    base // { homeManager = homeCfg; };
+    {
+      name = "agenix-identity/${user.name}@${host.name}";
+      ${host.class} = _: nixosSecret;
+      homeManager = homeCfg;
+    };
 in
 {
   flake-file.inputs = {
