@@ -3,10 +3,6 @@
     environment = "prod";
     system-access-groups = [ "system-access" ];
 
-    microvm.guests = [
-      den.hosts.x86_64-linux.hermes-qa
-    ];
-
     settings = {
       core.nix.gc.enable = false;
       services.mergerfs.pools."/mnt/storage/media" = {
@@ -73,7 +69,6 @@
       den.aspects.secrets.agenix
       den.aspects.core.network.tailscale
       den.aspects.services.hermes
-      den.aspects.virtualization.microvm-host
     ];
 
     nixos = { config, pkgs, lib, ... }: let
@@ -137,7 +132,6 @@
           };
         };
 
-        systemd.services."microvm@hermes-qa".serviceConfig.Type = lib.mkForce "simple";
 
         boot.kernelParams = [
           "console=tty0"

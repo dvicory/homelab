@@ -356,9 +356,7 @@ in
 
         config = {
           secretPath = lib.mkDefault (
-            if config.microvm.isGuest or false
-            then self + "/.secrets/guests/${config.name}"
-            else self + "/.secrets/hosts/${config.name}"
+            self + "/.secrets/hosts/${config.name}"
           );
           facts = lib.mkDefault (self + "/hosts/${config.name}/facter.json");
           public_key = lib.mkDefault (

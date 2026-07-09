@@ -163,7 +163,7 @@
           podman = uidGid 650;
           incus = uidGid 651;
           incus-admin = uidGid 652;
-          microvm = uidGid 653;
+
           nix-remote-build = uidGid 654;
           git = uidGid 655;
           acme = uidGid 656;

@@ -48,11 +48,7 @@
           };
         };
 
-        # Persist /etc/machine-id on bare-metal hosts only. MicroVM guests
-        # get a deterministic machine-id from the microvm module's machineId
-        # option (which defaults to sha256("microvm.nix:${hostName}")), so
-        # persisting it via bind mount conflicts with that non-empty file.
-        environment.persistence."/persist".files = lib.mkIf (!(host.microvm.isGuest or false)) [
+        environment.persistence."/persist".files = [
           "/etc/machine-id"
         ];
 

@@ -2,21 +2,15 @@
   # The secrets.agenix aspect provides all agenix configuration for a host:
   # - agenix + agenix-rekey NixOS module imports
   # - The secretRequests option + conversion to age.secrets
-  # - age.identityPaths (guest: virtiofs runtime_host_key, host: /persist SSH key)
+  # - age.identityPaths (SSH host key from /persist)
   # - age.rekey (masterIdentities, hostPubkey, storage paths)
-  # - home-manager sharedModules (non-guests only)
+  # - home-manager sharedModules
   # - The generators module (ssh-key, age-identity, etc.)
-  #
-  # Everything lives here (not in the battery or den.default) so it works in
-  # both standalone fleet evaluation AND microvm-spliced configs, since
-  # secrets.agenix is an explicit aspect include resolved by
-  # den.lib.aspects.resolve in both contexts.
   den.aspects.secrets.agenix = {
     nixos = { host, config, lib, ... }:
       let
         hasImpermanence = host.hasAspect den.aspects.disk.impermanence;
         persistPrefix = lib.optionalString hasImpermanence "/persist";
-        isGuest = host.microvm.isGuest or false;
 
         inherit (lib) filterAttrs mapAttrs mapAttrs' nameValuePair mkOption types;
 
@@ -109,12 +103,7 @@
 
         config = {
           age = {
-            # Guests receive their identity keypair via virtiofs from the
-            # parent host. Hosts use their own SSH host key from /persist.
-            identityPaths = if isGuest then
-              [ "/run/agenix/runtime_host_key" ]
-            else
-              [ "${persistPrefix}/etc/ssh/ssh_host_ed25519_key" ];
+            identityPaths = [ "${persistPrefix}/etc/ssh/ssh_host_ed25519_key" ];
 
             rekey = {
               masterIdentities = [
@@ -152,9 +141,7 @@
           };
 
           _module.args.secrets = lib.mapAttrs (_: v: v.path) config.age.secrets;
-        } // lib.optionalAttrs (!isGuest) {
-          # home-manager integration — only for hosts with human users.
-          # MicroVM guests don't include the home-manager module.
+        } // {
           home-manager.sharedModules = [
             inputs.agenix.homeManagerModules.default
             inputs.agenix-rekey.homeManagerModules.default

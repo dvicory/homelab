@@ -30,8 +30,7 @@
         min-free = 128000000;
         max-free = 1000000000;
         download-buffer-size = 524288000;
-        # auto-optimise-store is incompatible with microvm.writableStoreOverlay
-        auto-optimise-store = !(host.microvm.isGuest or false);
+        auto-optimise-store = true;
         builders-use-substitutes = true;
         fallback = true;
         keep-outputs = true;
