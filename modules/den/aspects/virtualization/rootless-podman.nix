@@ -16,9 +16,10 @@
           export HERMES_MANAGED=true
           mkdir -p "$HERMES_HOME"
           touch "$HERMES_HOME/.managed"
+          mkdir -p "$HERMES_HOME"/{cron,sessions,logs,memories,plugins}
 
           if [ -f "$SECRETS_DIR/hermes-env" ]; then
-            set -a; . "$SECRETS_DIR/hermes-env"; set +a
+            install -m 0600 "$SECRETS_DIR/hermes-env" "$HERMES_HOME/.env"
           fi
 
           if [ -f "$SECRETS_DIR/hermes-github-pat" ]; then
