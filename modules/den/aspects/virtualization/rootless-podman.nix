@@ -58,6 +58,7 @@
             "HERMES_HOME=/home/hermes-runner/.hermes"
             "WORKSPACE_DIR=/home/hermes-runner/workspace/homelab"
             "SECRETS_DIR=/run/secrets"
+            "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
           ];
         };
         fakeRootCommands = ''
