@@ -19,6 +19,8 @@
       users.users.hermes-runner = {
         useDefaultShell = lib.mkForce false;
       };
+
+      nix.settings.allowed-users = lib.mkForce [ "root" "@wheel" "hermes-runner" ];
     };
   };
 }
