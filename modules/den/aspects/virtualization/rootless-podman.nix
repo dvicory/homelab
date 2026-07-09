@@ -65,6 +65,7 @@
         };
         fakeRootCommands = ''
           mkdir -p ./home/hermes-runner
+          rm -rf .${hermesPackage}/share/hermes-agent/plugins/cron
         '';
       };
     in
