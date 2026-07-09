@@ -6,7 +6,9 @@
 
   perSystem = { system, pkgs, ... }:
     let
-      hermesPackage = inputs.hermes-agent.packages.${system}.full;
+      hermesPackage = (inputs.hermes-agent.packages.${system}.default).override {
+        extraDependencyGroups = [ "messaging" ];
+      };
       entrypoint = pkgs.runCommand "hermes-entrypoint" {} ''
         install -Dm555 ${pkgs.writeShellScript "hermes-entrypoint.sh" ''
           set -euo pipefail
