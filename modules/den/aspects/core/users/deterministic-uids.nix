@@ -15,7 +15,10 @@
 #   850-899   Monitoring and observability (50 slots)
 #   900-949   Networking (50 slots)
 #   950-999   Desktop, hardware, and runtime (50 slots)
-#   1000+     Human users
+#   1000-1099 Interactive human users (100 slots)
+#   1100-1199 Workload service users — normal accounts for container
+#             runners, CI agents, and other non-interactive workloads
+#             (100 slots)
 #
 # Each range has 50 slots for services and 100 for groups. When adding a new
 # entry, pick the appropriate range and assign the next sequential ID.
@@ -244,6 +247,9 @@
           pcscd = uidGid 966;
           msr = uidGid 967;
           nm-iodine = uidGid 968;
+
+          # ── Workload service users (1100-1199) ────────────────────
+          hermes-runner = uidGid 1100;
         };
 
         # Enforce that every user and group has a deterministic ID.

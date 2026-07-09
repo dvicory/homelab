@@ -53,6 +53,7 @@ let
           linger = user.system.linger or false;
         }
         // lib.optionalAttrs (uid != null) { inherit uid; }
+        // lib.optionalAttrs (gid != null) { group = userName; }
         // lib.optionalAttrs hasPasswordFile {
           hashedPasswordFile = "/run/agenix/user-${userName}-password";
         };

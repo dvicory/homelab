@@ -1,7 +1,7 @@
 { den, inputs, ... }: {
   den.hosts.x86_64-linux.hvn-hyp1 = {
     environment = "prod";
-    system-access-groups = [ "system-access" ];
+    system-access-groups = [ "system-access" "workload-access" ];
 
     settings = {
       core.nix.gc.enable = false;
@@ -69,6 +69,7 @@
       den.aspects.secrets.agenix
       den.aspects.core.network.tailscale
       den.aspects.services.hermes
+      den.aspects.virtualization.rootless-podman
     ];
 
     nixos = { config, pkgs, lib, ... }: let
