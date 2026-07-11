@@ -45,17 +45,6 @@ in
         description = "Primary branch fetched by hermes-deploy@main.";
       };
 
-      temporaryRefs = mkOption {
-        type = types.attrsOf types.str;
-        default = { };
-        description = ''
-          Explicit, temporary deploy aliases. For example,
-          { candidate = "feature/hermes-deploy"; } permits
-          `systemctl start hermes-deploy@candidate`. Remove an alias once
-          its branch has merged; arbitrary branch names are never accepted.
-        '';
-      };
-
       qa = mkOption {
         type = targetType;
         default = {
@@ -97,6 +86,63 @@ in
           description = "Command executed inside the running Hermes container for the functional canary.";
         };
       };
+
+      timeouts = {
+        gitSeconds = mkOption {
+          type = types.ints.positive;
+          default = 120;
+          description = "Timeout for each authenticated Git network operation.";
+        };
+        flakeCheckSeconds = mkOption {
+          type = types.ints.positive;
+          default = 900;
+          description = "Timeout for nix flake check.";
+        };
+        imageBuildSeconds = mkOption {
+          type = types.ints.positive;
+          default = 1800;
+          description = "Timeout for building the Hermes OCI archive.";
+        };
+        imageLoadSeconds = mkOption {
+          type = types.ints.positive;
+          default = 300;
+          description = "Timeout for loading the OCI archive into one user's Podman storage.";
+        };
+        homeManagerSeconds = mkOption {
+          type = types.ints.positive;
+          default = 600;
+          description = "Timeout for one standalone Home Manager activation.";
+        };
+        serviceStartSeconds = mkOption {
+          type = types.ints.positive;
+          default = 180;
+          description = "Timeout for ensuring one Quadlet service is started.";
+        };
+        canarySeconds = mkOption {
+          type = types.ints.positive;
+          default = 120;
+          description = "Timeout for the functional Hermes canary command.";
+        };
+        deploymentSeconds = mkOption {
+          type = types.ints.positive;
+          default = 3600;
+          description = "Hard systemd timeout for the complete QA-to-prod deployment.";
+        };
+      };
+
+      polling = {
+        enable = mkEnableOption "periodic deployment of new commits from the primary branch";
+        interval = mkOption {
+          type = types.str;
+          default = "2m";
+          description = "systemd duration between primary-branch polls.";
+        };
+        randomizedDelay = mkOption {
+          type = types.str;
+          default = "30s";
+          description = "Maximum randomized delay added to each poll.";
+        };
+      };
     };
 
     nixos =
@@ -107,13 +153,6 @@ in
         secretFile = host.secretPath + "/${secretName}.age";
         deployTokenPath = "/run/agenix/${secretName}";
         canaryArgs = lib.escapeShellArgs cfg.canary.command;
-        temporaryRefCases = lib.concatStringsSep "\n" (
-          lib.mapAttrsToList (
-            alias: ref: ''
-              ${lib.escapeShellArg alias}) deployRef=${lib.escapeShellArg ref} ;;
-            ''
-          ) cfg.temporaryRefs
-        );
         gitAskPass = pkgs.writeShellScript "hermes-deploy-git-askpass" ''
           case "$1" in
             *Username*) printf '%s' x-access-token ;;
@@ -140,6 +179,7 @@ in
             repo="$state_dir/homelab"
             images_dir="$state_dir/images"
             releases_dir="$state_dir/releases"
+            poll_hold="$state_dir/poll-hold.json"
             token_file=${lib.escapeShellArg deployTokenPath}
             repository=${lib.escapeShellArg cfg.repository}
             branch=${lib.escapeShellArg cfg.branch}
@@ -149,7 +189,25 @@ in
               printf 'hermes-deploy: %s\n' "$*" >&2
             }
 
+            write_poll_hold() {
+              local source=$1
+              local revision=$2
+              local reason=$3
+              jq -n \
+                --arg source "$source" \
+                --arg revision "$revision" \
+                --arg reason "$reason" \
+                --arg timestamp "$(date --iso-8601=seconds)" \
+                '{ source: $source, revision: $revision, reason: $reason, timestamp: $timestamp }' \
+                > "$poll_hold.tmp"
+              mv "$poll_hold.tmp" "$poll_hold"
+            }
+
             mkdir -p "$images_dir" "$releases_dir"
+            if [ "$requested" != main ] && [ ! -e "$poll_hold" ]; then
+              write_poll_hold "$requested" "" "manual non-main deployment requested"
+              log "placed polling on hold for manual deployment '$requested'"
+            fi
             exec 9>"$state_dir/deploy.lock"
             if ! flock -n 9; then
               log "another deployment already holds $state_dir/deploy.lock"
@@ -167,7 +225,8 @@ in
             trap 'unset GITHUB_TOKEN' EXIT
 
             git_auth() {
-              GIT_ASKPASS=${lib.escapeShellArg gitAskPass} GIT_TERMINAL_PROMPT=0 git "$@"
+              GIT_ASKPASS=${lib.escapeShellArg gitAskPass} GIT_TERMINAL_PROMPT=0 \
+                timeout --signal=TERM --kill-after=15s ${toString cfg.timeouts.gitSeconds}s git "$@"
             }
 
             if [ ! -d "$repo/.git" ]; then
@@ -175,26 +234,34 @@ in
               git_auth clone --no-checkout "$repository" "$repo"
             fi
             git -C "$repo" remote set-url origin "$repository"
-            deployRef=""
             case "$requested" in
-              main) deployRef="$branch" ;;
-              ${temporaryRefCases}
+              main)
+                log "fetching primary branch '$branch'"
+                git_auth -C "$repo" fetch --force origin "+refs/heads/$branch:refs/remotes/origin/$branch"
+                revision=$(git -C "$repo" rev-parse "origin/$branch^{commit}")
+                ;;
               *[!0123456789abcdefABCDEF]* | ? | ?? | ??? | ???? | ????? | ??????)
-                echo "Unknown deploy alias '$requested'. Use main or an explicitly configured temporary alias." >&2
+                echo "Deploy reference must be main or at least seven hexadecimal commit characters." >&2
                 exit 2
                 ;;
-              *) deployRef="$branch" ;;
+              *)
+                # A root-only wrapper resolves a branch to an immutable SHA
+                # before starting this service. Fetch every branch so that
+                # commit can be found even when it is not reachable from main.
+                log "resolving manual commit '$requested' across origin branches"
+                git_auth -C "$repo" fetch --force origin "+refs/heads/*:refs/remotes/origin/*"
+                revision=$(git -C "$repo" rev-parse --verify "$requested^{commit}")
+                ;;
             esac
-            if [ -n "$deployRef" ]; then
-              log "fetching deploy alias '$requested' from branch '$deployRef'"
-              git_auth -C "$repo" fetch --force origin "+refs/heads/$deployRef:refs/remotes/origin/$deployRef"
-              revision=$(git -C "$repo" rev-parse "origin/$deployRef^{commit}")
-            else
-              log "resolving commit '$requested' from primary branch '$branch'"
-              git_auth -C "$repo" fetch --force origin "+refs/heads/$branch:refs/remotes/origin/$branch"
-              revision=$(git -C "$repo" rev-parse --verify "$requested^{commit}")
-            fi
             log "resolved '$requested' to revision $revision"
+            if [ "$requested" != main ]; then
+              hold_source=$(jq -r '.source // empty' "$poll_hold" 2>/dev/null || true)
+              hold_revision=$(jq -r '.revision // empty' "$poll_hold" 2>/dev/null || true)
+              if [ -z "$hold_source" ] || [ -n "$hold_revision" ]; then
+                hold_source="$requested"
+              fi
+              write_poll_hold "$hold_source" "$revision" "manual non-main deployment in progress"
+            fi
 
             checkout_revision() {
               local target=$1
@@ -261,8 +328,10 @@ in
               fi
 
               log "$service: loading image into $user's Podman storage"
-              as_user "$user" podman load --input "$archive" || {
-                log "$service: image load failed for $user"
+              as_user "$user" ${pkgs.coreutils}/bin/timeout \
+                --signal=TERM --kill-after=15s ${toString cfg.timeouts.imageLoadSeconds}s \
+                podman load --input "$archive" || {
+                log "$service: image load failed or timed out for $user"
                 return 1
               }
               release_source=$(release_source_for "$target" "$user") || {
@@ -270,14 +339,17 @@ in
                 return 1
               }
               log "$service: switching Home Manager profile $home"
-              as_user "$user" "/etc/profiles/per-user/$user/bin/home-manager" \
+              as_user "$user" ${pkgs.coreutils}/bin/timeout \
+                --signal=TERM --kill-after=30s ${toString cfg.timeouts.homeManagerSeconds}s \
+                "/etc/profiles/per-user/$user/bin/home-manager" \
                 switch --flake "$release_source#$home" || {
-                log "$service: Home Manager activation failed for $user"
+                log "$service: Home Manager activation failed or timed out for $user"
                 return 1
               }
               log "$service: ensuring Quadlet service is active"
-              systemctl --machine="$user@" --user start "$service" || {
-                log "$service: systemd start failed"
+              timeout --signal=TERM --kill-after=15s ${toString cfg.timeouts.serviceStartSeconds}s \
+                systemctl --machine="$user@" --user start "$service" || {
+                log "$service: systemd start failed or timed out"
                 return 1
               }
             }
@@ -321,8 +393,10 @@ in
               fi
 
               log "$service: running functional canary in container $container"
-              canary_output=$(as_user "$user" podman exec "$container" ${canaryArgs}) || {
-                log "$service: functional canary command failed"
+              canary_output=$(as_user "$user" ${pkgs.coreutils}/bin/timeout \
+                --signal=TERM --kill-after=15s ${toString cfg.timeouts.canarySeconds}s \
+                podman exec "$container" ${canaryArgs}) || {
+                log "$service: functional canary command failed or timed out"
                 return 1
               }
               if [ "$canary_output" != "CANARY_OK" ]; then
@@ -340,8 +414,9 @@ in
                 --arg status "$status" \
                 --arg stage "$stage" \
                 --arg revision "$deployed_revision" \
+                --arg source "$requested" \
                 --arg timestamp "$(date --iso-8601=seconds)" \
-                '{ status: $status, stage: $stage, revision: $revision, timestamp: $timestamp }' \
+                '{ status: $status, stage: $stage, revision: $revision, source: $source, timestamp: $timestamp }' \
                 > "$state_dir/latest.json.tmp"
               mv "$state_dir/latest.json.tmp" "$state_dir/latest.json"
               printf '%s %s\n' "$deployed_revision" "$status" > "$state_dir/last-attempt"
@@ -366,12 +441,25 @@ in
               log "$role: rollback activation completed"
             }
 
-            checkout_revision "$revision"
+            if ! checkout_revision "$revision"; then
+              write_result failed checkout "$revision"
+              exit 1
+            fi
             log "running nix flake check (repo-provided nixConfig remains intentionally untrusted)"
-            nix flake check "$repo"
+            if ! timeout --signal=TERM --kill-after=30s ${toString cfg.timeouts.flakeCheckSeconds}s \
+              nix flake check "$repo"; then
+              log "nix flake check failed or timed out"
+              write_result failed flake-check "$revision"
+              exit 1
+            fi
             archive=$(archive_for "$revision")
             log "building Hermes OCI image once at $archive"
-            nix build --out-link "$archive" "$repo#hermes-agent-image"
+            if ! timeout --signal=TERM --kill-after=30s ${toString cfg.timeouts.imageBuildSeconds}s \
+              nix build --out-link "$archive" "$repo#hermes-agent-image"; then
+              log "Hermes OCI image build failed or timed out"
+              write_result failed image-build "$revision"
+              exit 1
+            fi
 
             if ! activate "$revision" ${lib.escapeShellArg cfg.qa.user} ${lib.escapeShellArg cfg.qa.home} ${lib.escapeShellArg cfg.qa.service}; then
               log "QA activation failed; production will not be touched"
@@ -402,7 +490,217 @@ in
             fi
             printf '%s\n' "$revision" > "$state_dir/prod-current"
             write_result success prod "$revision"
+            if [ "$requested" = main ] && [ -e "$poll_hold" ]; then
+              rm -f "$poll_hold"
+              log "cleared polling hold after successful main deployment"
+            fi
             log "deployment of $revision completed successfully"
+          '';
+        };
+
+        pollScript = pkgs.writeShellApplication {
+          name = "hermes-deploy-poll";
+          runtimeInputs = with pkgs; [
+            coreutils
+            git
+            jq
+            systemd
+            util-linux
+          ];
+          text = ''
+            set -euo pipefail
+
+            state_dir=/var/lib/hermes-deploy
+            poll_hold="$state_dir/poll-hold.json"
+            token_file=${lib.escapeShellArg deployTokenPath}
+            repository=${lib.escapeShellArg cfg.repository}
+            branch=${lib.escapeShellArg cfg.branch}
+
+            log() {
+              printf 'hermes-deploy-poll: %s\n' "$*" >&2
+            }
+
+            exec 9>"$state_dir/deploy.lock"
+            if ! flock -n 9; then
+              log "deployment already running; skipping this poll"
+              exit 0
+            fi
+            if [ -e "$poll_hold" ]; then
+              log "polling is held: $(cat "$poll_hold")"
+              exit 0
+            fi
+            if [ ! -r "$token_file" ]; then
+              log "missing deploy credential: $token_file"
+              exit 1
+            fi
+
+            export GITHUB_TOKEN
+            GITHUB_TOKEN=$(<"$token_file")
+            trap 'unset GITHUB_TOKEN' EXIT
+
+            remote_line=$(GIT_ASKPASS=${lib.escapeShellArg gitAskPass} GIT_TERMINAL_PROMPT=0 \
+              timeout --signal=TERM --kill-after=15s ${toString cfg.timeouts.gitSeconds}s \
+              git ls-remote "$repository" "refs/heads/$branch") || {
+              log "failed or timed out while reading origin/$branch"
+              exit 1
+            }
+            latest_revision="''${remote_line%%[[:space:]]*}"
+            if [[ ! "$latest_revision" =~ ^[0123456789abcdefABCDEF]{40}$ ]]; then
+              log "origin/$branch returned an invalid revision '$latest_revision'"
+              exit 1
+            fi
+
+            last_revision=""
+            if [ -s "$state_dir/last-attempt" ]; then
+              read -r last_revision _ < "$state_dir/last-attempt" || true
+            fi
+            if [ "$latest_revision" = "$last_revision" ]; then
+              log "origin/$branch remains at already-attempted revision $latest_revision"
+              exit 0
+            fi
+
+            log "origin/$branch advanced from ''${last_revision:-<none>} to $latest_revision"
+            flock -u 9
+            systemctl start --no-block hermes-deploy@main.service
+            log "queued hermes-deploy@main.service"
+          '';
+        };
+
+        deployCtl = pkgs.writeShellApplication {
+          name = "hermes-deployctl";
+          runtimeInputs = with pkgs; [
+            coreutils
+            git
+            jq
+            systemd
+          ];
+          text = ''
+            set -euo pipefail
+
+            state_dir=/var/lib/hermes-deploy
+            poll_hold="$state_dir/poll-hold.json"
+            token_file=${lib.escapeShellArg deployTokenPath}
+            repository=${lib.escapeShellArg cfg.repository}
+
+            require_root() {
+              if [ "$EUID" -ne 0 ]; then
+                echo "Run this command with sudo." >&2
+                exit 1
+              fi
+            }
+
+            write_poll_hold() {
+              local source=$1
+              local revision=$2
+              local reason=$3
+              mkdir -p "$state_dir"
+              jq -n \
+                --arg source "$source" \
+                --arg revision "$revision" \
+                --arg reason "$reason" \
+                --arg timestamp "$(date --iso-8601=seconds)" \
+                '{ source: $source, revision: $revision, reason: $reason, timestamp: $timestamp }' \
+                > "$poll_hold.tmp"
+              mv "$poll_hold.tmp" "$poll_hold"
+            }
+
+            resolve_branch() {
+              local source=$1
+              local remote_line
+              local revision
+
+              if [ ! -r "$token_file" ]; then
+                echo "Missing deploy credential: $token_file" >&2
+                return 1
+              fi
+              export GITHUB_TOKEN
+              GITHUB_TOKEN=$(<"$token_file")
+              remote_line=$(GIT_ASKPASS=${lib.escapeShellArg gitAskPass} GIT_TERMINAL_PROMPT=0 \
+                timeout --signal=TERM --kill-after=15s ${toString cfg.timeouts.gitSeconds}s \
+                git ls-remote "$repository" "refs/heads/$source") || return 1
+              revision="''${remote_line%%[[:space:]]*}"
+              if [[ ! "$revision" =~ ^[0123456789abcdefABCDEF]{40}$ ]]; then
+                echo "Branch '$source' was not found on origin." >&2
+                return 1
+              fi
+              printf '%s' "$revision"
+            }
+
+            usage() {
+              cat <<'EOF'
+            Usage:
+              hermes-deployctl deploy [main|branch]
+              hermes-deployctl hold [reason]
+              hermes-deployctl resume
+              hermes-deployctl status
+              hermes-deployctl logs [main|commit]
+              hermes-deployctl timer <start|stop|status>
+            EOF
+            }
+
+            command="''${1:-status}"
+            if [ "$#" -gt 0 ]; then shift; fi
+            case "$command" in
+              deploy)
+                require_root
+                ref="''${1:-main}"
+                if [[ ! "$ref" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+                  echo "Deploy branch contains unsupported characters." >&2
+                  exit 2
+                fi
+                if [ "$ref" = main ]; then
+                  deployment_ref=main
+                else
+                  deployment_ref=$(resolve_branch "$ref") || exit 1
+                  write_poll_hold "$ref" "$deployment_ref" "manual deployment queued by operator"
+                  echo "Polling is now held until a successful main deploy or 'hermes-deployctl resume'."
+                fi
+                systemctl start --no-block "hermes-deploy@$deployment_ref.service"
+                echo "Queued hermes-deploy@$deployment_ref.service"
+                ;;
+              hold)
+                require_root
+                reason="''${*:-manual operator hold}"
+                write_poll_hold operator "" "$reason"
+                echo "Polling is held."
+                ;;
+              resume)
+                require_root
+                rm -f "$poll_hold"
+                echo "Polling hold cleared."
+                ;;
+              status)
+                echo "Deployment state:"
+                for file in poll-hold.json latest.json last-attempt qa-current prod-current; do
+                  if [ -e "$state_dir/$file" ]; then
+                    printf '\n%s:\n' "$file"
+                    cat "$state_dir/$file"
+                  fi
+                done
+                printf '\n\nUnits:\n'
+                systemctl --no-pager --full status hermes-deploy@main.service hermes-deploy-poll.timer || true
+                ;;
+              logs)
+                ref="''${1:-main}"
+                exec journalctl -fu "hermes-deploy@$ref.service"
+                ;;
+              timer)
+                require_root
+                action="''${1:-status}"
+                case "$action" in
+                  start|stop|restart) systemctl "$action" hermes-deploy-poll.timer ;;
+                  status) systemctl --no-pager --full status hermes-deploy-poll.timer || true ;;
+                  *) usage; exit 2 ;;
+                esac
+                ;;
+              help|-h|--help)
+                usage
+                ;;
+              *)
+                usage
+                exit 2
+                ;;
+            esac
           '';
         };
       in
@@ -425,10 +723,39 @@ in
             Type = "oneshot";
             StateDirectory = "hermes-deploy";
             StateDirectoryMode = "0755";
+            TimeoutStartSec = "${toString cfg.timeouts.deploymentSeconds}s";
             UMask = "0022";
             ExecStart = "${deployScript}/bin/hermes-deploy %i";
           };
         };
+
+        systemd.services.hermes-deploy-poll = lib.mkIf cfg.polling.enable {
+          description = "Poll the primary Hermes branch for a new deployment";
+          after = [ "network-online.target" ];
+          wants = [ "network-online.target" ];
+          unitConfig.ConditionPathExists = deployTokenPath;
+          serviceConfig = {
+            Type = "oneshot";
+            StateDirectory = "hermes-deploy";
+            StateDirectoryMode = "0755";
+            TimeoutStartSec = "${toString (cfg.timeouts.gitSeconds + 30)}s";
+            UMask = "0022";
+            ExecStart = "${pollScript}/bin/hermes-deploy-poll";
+          };
+        };
+
+        systemd.timers.hermes-deploy-poll = lib.mkIf cfg.polling.enable {
+          description = "Periodically poll the primary Hermes deployment branch";
+          wantedBy = [ "timers.target" ];
+          timerConfig = {
+            OnBootSec = "5m";
+            OnUnitActiveSec = cfg.polling.interval;
+            RandomizedDelaySec = cfg.polling.randomizedDelay;
+            Persistent = true;
+          };
+        };
+
+        environment.systemPackages = [ deployCtl ];
       };
   };
 }

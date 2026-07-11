@@ -18,9 +18,8 @@
       services.hermes.dependencyGroups = [ "messaging" ];
       workloads.hermes.deploy = {
         enable = true;
-        # Temporary pre-merge deployment train. Remove this alias after the
-        # den migration lands on main; future branches can opt in explicitly.
-        temporaryRefs.candidate = "den-migration-with-hermes";
+        # Enable only after required CI and main branch protection are live.
+        polling.enable = false;
       };
       disk.luks-storage.disks.media4 = {
         # Provisioning sequence (two deploys):
