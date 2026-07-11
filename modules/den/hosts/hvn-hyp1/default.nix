@@ -63,6 +63,7 @@
       den.aspects.core."remote-unlock"
       den.aspects.services.mergerfs
       den.aspects.secrets.agenix
+      den.aspects.core.network.tailscale
     ];
 
     nixos = { config, pkgs, lib, ... }: let
