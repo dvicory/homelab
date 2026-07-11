@@ -154,6 +154,9 @@
     nixpkgs = {
       url = "https://channels.nixos.org/nixos-unstable/nixexprs.tar.xz";
     };
+    quadlet-nix = {
+      url = "github:SEIAROTg/quadlet-nix";
+    };
     scope-engine = {
       url = "github:sini/scope-engine";
     };

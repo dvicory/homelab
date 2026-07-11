@@ -1127,6 +1127,21 @@
         "type": "github"
       }
     },
+    "quadlet-nix": {
+      "locked": {
+        "lastModified": 1782004439,
+        "narHash": "sha256-OANOcPKJ3JThp2x/ccz4DDrGDY2hIgM5SBLI51swgfI=",
+        "owner": "SEIAROTg",
+        "repo": "quadlet-nix",
+        "rev": "f1652b490b812c4e0b2a36565cdbedf87f35e438",
+        "type": "github"
+      },
+      "original": {
+        "owner": "SEIAROTg",
+        "repo": "quadlet-nix",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "agenix": "agenix",
@@ -1151,6 +1166,7 @@
         "nixos-anywhere": "nixos-anywhere",
         "nixos-facter-modules": "nixos-facter-modules",
         "nixpkgs": "nixpkgs_5",
+        "quadlet-nix": "quadlet-nix",
         "scope-engine": "scope-engine",
         "systems": "systems_4"
       }
