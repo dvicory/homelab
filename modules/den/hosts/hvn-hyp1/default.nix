@@ -16,6 +16,12 @@
         model.default = "opencode-go/mimo-v2.5-pro";
       };
       services.hermes.dependencyGroups = [ "messaging" ];
+      workloads.hermes.deploy = {
+        enable = true;
+        # Temporary pre-merge deployment train. Remove this alias after the
+        # den migration lands on main; future branches can opt in explicitly.
+        temporaryRefs.candidate = "den-migration-with-hermes";
+      };
       disk.luks-storage.disks.media4 = {
         # Provisioning sequence (two deploys):
         #   1. On the workstation, with this config committed at
@@ -69,6 +75,7 @@
       den.aspects.secrets.agenix
       den.aspects.core.network.tailscale
       den.aspects.services.hermes
+      den.aspects.workloads.hermes.deploy
     ];
 
     nixos = { config, pkgs, lib, ... }: let
