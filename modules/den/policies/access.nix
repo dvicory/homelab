@@ -4,7 +4,7 @@
 {
   fleet.user-access = {
     by-environment = {
-      prod.groups = [ "system-access" ];
+      prod.groups = [ "system-access" "workload-access" ];
       dev.groups = [ "system-access" ];
     };
   };

@@ -49,10 +49,12 @@ let
           extraGroups = aclUser.systemGroups or [ ];
           isNormalUser = true;
           home = "/home/${userName}";
+          useDefaultShell = user.system.useDefaultShell or true;
           description = lib.mkDefault (user.identity.displayName or "");
           linger = user.system.linger or false;
         }
         // lib.optionalAttrs (uid != null) { inherit uid; }
+        // lib.optionalAttrs (gid != null) { group = userName; }
         // lib.optionalAttrs hasPasswordFile {
           hashedPasswordFile = "/run/agenix/user-${userName}-password";
         };

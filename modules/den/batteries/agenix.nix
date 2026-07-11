@@ -1,3 +1,16 @@
+# Agenix battery — flake-level plumbing for agenix/agenix-rekey.
+#
+# This battery provides:
+# - flake-file.inputs (agenix, agenix-rekey)
+# - agenix-rekey.flakeModule (wires the `agenix` CLI in the devshell)
+# - perSystem config (devshell command, rekey targets)
+# - agenixUserAspect → den.schema.user.includes (per-user home-manager
+#   agenix identity)
+#
+# Sini puts ALL agenix config (module imports, secretRequests, age.rekey,
+# age.identityPaths) in an agenixHostAspect via den.schema.host.includes.
+# We deviate: that config lives in aspects/secrets/agenix.nix instead,
+# keeping it as an explicit aspect include.
 {
   den,
   inputs,
@@ -7,69 +20,6 @@
   ...
 }:
 let
-  agenixGeneratorsModule = import ../aspects/secrets/_generators.nix;
-
-  # Capture from top-level config so the per-host pipeline walk (triggered by
-  # host.mainModule's deferred default) has secretsConfig without requiring it
-  # in the scope context chain (fleet→environment→host), which only exists in
-  # the flake-level pipeline walk (outputs.nix) — disabled to avoid recursion.
-  # secretsConfig = config.den.secretsConfig;
-
-  agenixHostAspect =
-    {
-      host,
-      secretsConfig,
-      ...
-    }:
-    let
-      hasImpermanence = host.hasAspect den.aspects.disk.impermanence;
-      persistPrefix = lib.optionalString hasImpermanence "/persist";
-    in
-    {
-      name = "agenix/${host.name}";
-      ${host.class} =
-        { config, lib, ... }:
-        {
-          imports = [
-            inputs.agenix."${host.class}Modules".default
-            inputs.agenix-rekey."${host.class}Modules".default
-            agenixGeneratorsModule
-          ];
-
-          age = {
-            identityPaths = [
-              "${persistPrefix}/etc/ssh/ssh_host_ed25519_key"
-            ];
-
-            rekey = {
-              inherit (secretsConfig) masterIdentities;
-              storageMode = "local";
-              hostPubkey = builtins.readFile host.public_key;
-              generatedSecretsDir = host.secretPath + "/generated";
-              localStorageDir = host.secretPath + "/rekeyed";
-            };
-          };
-
-          system.activationScripts = lib.mkIf (host.class == "nixos" && config.age.secrets != { }) {
-            removeAgenixLink.text = "[[ ! -L /run/agenix ]] && [[ -d /run/agenix ]] && rm -rf /run/agenix";
-            agenixNewGeneration.deps = [ "removeAgenixLink" ];
-          };
-
-          _module.args.secrets = lib.mapAttrs (_: v: v.path) config.age.secrets;
-
-          home-manager.sharedModules = [
-            inputs.agenix.homeManagerModules.default
-            inputs.agenix-rekey.homeManagerModules.default
-            (
-              { config, lib, ... }:
-              {
-                _module.args.secrets = lib.mapAttrs (_: v: v.path) config.age.secrets;
-              }
-            )
-          ];
-        };
-    };
-
   agenixUserAspect =
     {
       user,
@@ -77,40 +27,44 @@ let
       secretsConfig,
       ...
     }:
+    let
+      hasIdentity = (user.identity.sshKeys or [ ]) != [ ];
+      identityFile = self + "/.secrets/users/${user.name}/user-identity-${user.name}.age";
+      identityPub = self + "/.secrets/users/${user.name}/user-identity-${user.name}.pub";
+
+      nixosSecret = lib.optionalAttrs hasIdentity {
+        age.secrets."user-identity-${user.name}" = {
+          rekeyFile = identityFile;
+          owner = user.name;
+          group = user.name;
+          mode = "600";
+          generator.script = "age-identity";
+        };
+      };
+
+      homeCfg = { osConfig, ... }: {
+        age = {
+          identityPaths = lib.optionals (osConfig.age.secrets ? "user-identity-${user.name}") [
+            osConfig.age.secrets."user-identity-${user.name}".path
+          ];
+          rekey = {
+            inherit (secretsConfig) masterIdentities;
+            storageMode = "local";
+            hostPubkey =
+              if (osConfig.age.secrets ? "user-identity-${user.name}") then
+                identityPub
+              else
+                osConfig.age.rekey.hostPubkey;
+            generatedSecretsDir = self + "/.secrets/generated/${user.name}/${host.name}";
+            localStorageDir = self + "/.secrets/rekeyed/${user.name}/${host.name}";
+          };
+        };
+      };
+    in
     {
       name = "agenix-identity/${user.name}@${host.name}";
-      ${host.class} =
-        _:
-        {
-          age.secrets."user-identity-${user.name}" = {
-            rekeyFile = self + "/.secrets/users/${user.name}/user-identity-${user.name}.age";
-            owner = user.name;
-            group = user.name;
-            mode = "600";
-            generator.script = "age-identity";
-          };
-        };
-      homeManager =
-        { osConfig, ... }:
-        {
-          age = {
-            identityPaths = lib.optionals (osConfig.age.secrets ? "user-identity-${user.name}") [
-              osConfig.age.secrets."user-identity-${user.name}".path
-            ];
-
-            rekey = {
-              inherit (secretsConfig) masterIdentities;
-              storageMode = "local";
-              hostPubkey =
-                if (osConfig.age.secrets ? "user-identity-${user.name}") then
-                  (self + "/.secrets/users/${user.name}/user-identity-${user.name}.pub")
-                else
-                  osConfig.age.rekey.hostPubkey;
-              generatedSecretsDir = self + "/.secrets/generated/${user.name}/${host.name}";
-              localStorageDir = self + "/.secrets/rekeyed/${user.name}/${host.name}";
-            };
-          };
-        };
+      ${host.class} = _: nixosSecret;
+      homeManager = homeCfg;
     };
 in
 {
@@ -130,9 +84,6 @@ in
     inputs.agenix-rekey.flakeModule
   ];
 
-  den.schema.host.includes = [
-    agenixHostAspect
-  ];
   den.schema.user.includes = [ agenixUserAspect ];
 
   perSystem =

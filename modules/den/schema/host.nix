@@ -355,7 +355,9 @@ in
         };
 
         config = {
-          secretPath = lib.mkDefault (self + "/.secrets/hosts/${config.name}");
+          secretPath = lib.mkDefault (
+            self + "/.secrets/hosts/${config.name}"
+          );
           facts = lib.mkDefault (self + "/hosts/${config.name}/facter.json");
           public_key = lib.mkDefault (
             if config.secretPath != null then config.secretPath + "/runtime_host_key.pub" else null

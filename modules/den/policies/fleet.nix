@@ -73,10 +73,46 @@ in
       ) (builtins.attrNames (den.hosts.${system} or { }))
     ) (builtins.attrNames (den.hosts or { }));
 
+  # environment -> homes: instantiate standalone den.homes whose bound host
+  # is in this environment. Mirrors env-to-hosts.
+  den.policies.env-to-homes =
+    { environment, ... }:
+    let
+      envHostNames = lib.concatMap (
+        system:
+        lib.concatMap (
+          hostName:
+          let hostCfg = den.hosts.${system}.${hostName} or { };
+          in lib.optional ((hostCfg.environment or "prod") == environment.name) hostName
+        ) (builtins.attrNames (den.hosts.${system} or { }))
+      ) (builtins.attrNames (den.hosts or { }));
+
+      envHostSet = builtins.listToAttrs (map (n: { name = n; value = true; }) envHostNames);
+
+      envHomes = lib.concatMap (
+        system:
+        lib.filter (home: home.hostName != null && envHostSet ? ${home.hostName})
+          (builtins.attrValues (den.homes.${system} or { }))
+      ) (builtins.attrNames (den.homes or { }));
+    in
+    lib.concatMap (
+      home:
+      lib.optionals (home.intoAttr != [ ]) [
+        (resolve.to "home" {
+          inherit home;
+          account = config.den.users.registry.${home.userName} or null;
+        })
+        (den.lib.policy.instantiate home)
+      ]
+    ) envHomes;
+
   # Schema wiring.
   den.schema.flake.includes = [ den.policies.to-fleet ];
   den.schema.fleet.includes = [ den.policies.fleet-to-envs ];
-  den.schema.environment.includes = [ den.policies.env-to-hosts ];
+  den.schema.environment.includes = [
+    den.policies.env-to-hosts
+    den.policies.env-to-homes
+  ];
 
   # Fleet handles host instantiation -- exclude default walking policies.
   den.schema.flake-system.excludes = [

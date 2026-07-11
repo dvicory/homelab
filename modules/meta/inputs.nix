@@ -62,5 +62,6 @@
 
     # Flake root detection
     flake-root.url = "github:srid/flake-root";
+
   };
 }

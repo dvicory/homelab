@@ -7,7 +7,6 @@
     persist = [
       { directories = [ "/var/log" "/var/lib/nixos" "/var/lib/systemd" ]; }
       { files = [
-        "/etc/machine-id"
         "/etc/ssh/ssh_host_ed25519_key"
         "/etc/ssh/ssh_host_ed25519_key.pub"
       ]; }
@@ -48,6 +47,10 @@
             ExecStart = "${pkgs.coreutils}/bin/chmod 0700 /var/lib/private";
           };
         };
+
+        environment.persistence."/persist".files = [
+          "/etc/machine-id"
+        ];
 
       }
       // lib.optionalAttrs (host.hasAspect den.aspects.disk.zfs) {

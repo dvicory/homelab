@@ -41,5 +41,11 @@
       gid = 503;
       members = [ "system-access" ];
     };
+
+    workload-access = {
+      description = "Service account access for container runners and CI agents";
+      labels = [ "posix" ];
+      gid = 504;
+    };
   };
 }

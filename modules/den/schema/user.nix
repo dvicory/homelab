@@ -53,8 +53,13 @@ in
           };
 
           system = mkOption {
-            type = types.submodule {
+            type = types.submodule ({ config, ... }: {
               options = {
+                kind = mkOption {
+                  type = types.enum [ "interactive" "workload" ];
+                  default = "interactive";
+                  description = "Whether this is an interactive human account or a non-interactive workload account";
+                };
                 uid = mkOption {
                   type = types.nullOr types.int;
                   default = null;
@@ -69,6 +74,12 @@ in
                   type = types.bool;
                   default = false;
                   description = "Enable lingering for the user (systemd user services start without login)";
+                };
+                useDefaultShell = mkOption {
+                  type = types.bool;
+                  default = config.kind == "interactive";
+                  defaultText = lib.literalExpression ''config.kind == "interactive"'';
+                  description = "Whether the account receives the host's default interactive shell";
                 };
                 enableUnixAccount = mkOption {
                   type = types.bool;
@@ -96,7 +107,7 @@ in
                   description = "Per-user feature settings (freeform nested namespace)";
                 };
               };
-            };
+            });
             default = { };
             description = "Unix account defaults and system configuration";
           };

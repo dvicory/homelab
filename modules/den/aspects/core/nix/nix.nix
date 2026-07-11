@@ -9,7 +9,7 @@
       };
     };
 
-    os = {
+    os = { host, ... }: {
       nix.settings = {
         experimental-features = [
           "nix-command"
