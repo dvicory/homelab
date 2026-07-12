@@ -3,7 +3,8 @@
 {
   description = "Homelab3 - Dendritic Architecture";
 
-  outputs = inputs: inputs.flake-parts.lib.mkFlake { inherit inputs; } (inputs.import-tree ./modules);
+  outputs =
+    inputs: inputs.flake-parts.lib.mkFlake { inherit inputs; } (inputs.import-tree [ ./modules ]);
 
   nixConfig = {
     experimental-features = [
@@ -21,13 +22,27 @@
   };
 
   inputs = {
-    crowdsec = {
+    agenix = {
       inputs = {
         nixpkgs = {
           follows = "nixpkgs";
         };
       };
-      url = "git+https://codeberg.org/solitango/nix-flake-crowdsec";
+      url = "github:ryantm/agenix";
+    };
+    agenix-rekey = {
+      inputs = {
+        nixpkgs = {
+          follows = "nixpkgs";
+        };
+      };
+      url = "github:sini/agenix-rekey/feat/settings";
+    };
+    crowdsec-pr = {
+      url = "github:dvicory/nixpkgs/crowdsec";
+    };
+    den = {
+      url = "github:sini/den/feat/entity-gen-schema-port";
     };
     deploy-rs = {
       inputs = {
@@ -37,6 +52,25 @@
       };
       url = "github:serokell/deploy-rs";
     };
+    devshell = {
+      inputs = {
+        nixpkgs = {
+          follows = "nixpkgs";
+        };
+      };
+      url = "github:numtide/devshell";
+    };
+    disko-zfs = {
+      inputs = {
+        flake-parts = {
+          follows = "flake-parts";
+        };
+        nixpkgs = {
+          follows = "nixpkgs";
+        };
+      };
+      url = "github:numtide/disko-zfs";
+    };
     flake-file = {
       url = "github:vic/flake-file";
     };
@@ -45,6 +79,25 @@
     };
     flake-root = {
       url = "github:srid/flake-root";
+    };
+    gen-algebra = {
+      url = "github:sini/gen-algebra";
+    };
+    gen-schema = {
+      inputs = {
+        nixpkgs = {
+          follows = "nixpkgs";
+        };
+      };
+      url = "github:sini/gen-schema";
+    };
+    hermes-agent = {
+      inputs = {
+        nixpkgs = {
+          follows = "nixpkgs";
+        };
+      };
+      url = "github:NousResearch/hermes-agent/v2026.6.19";
     };
     home-manager = {
       inputs = {
@@ -63,7 +116,7 @@
           follows = "nixpkgs";
         };
       };
-      url = "github:boinkor-net/hoopsnake";
+      url = "github:boinkor-net/hoopsnake/be96a49b7b212eef04f365bb75c8df947d96d1fd";
     };
     impermanence = {
       url = "github:dvicory/impermanence/systemd-requires";
@@ -101,13 +154,11 @@
     nixpkgs = {
       url = "https://channels.nixos.org/nixos-unstable/nixexprs.tar.xz";
     };
-    sops-nix = {
-      inputs = {
-        nixpkgs = {
-          follows = "nixpkgs";
-        };
-      };
-      url = "github:Mic92/sops-nix";
+    quadlet-nix = {
+      url = "github:SEIAROTg/quadlet-nix";
+    };
+    scope-engine = {
+      url = "github:sini/scope-engine";
     };
     systems = {
       url = "github:nix-systems/default";

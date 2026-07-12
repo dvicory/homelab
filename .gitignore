@@ -18,9 +18,13 @@ result-*
 # SECRETS - DO NOT COMMIT
 sops.key
 ssh
-*host_key
-*client_secret
+*_host_key
+*_host_*_key
+!.secrets/hosts/**/*.pub
 
 # Backup/temporary files
 *.old
 *.backup
+
+/den/
+.secrets/priv/
