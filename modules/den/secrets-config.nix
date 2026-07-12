@@ -1,5 +1,5 @@
 # Canonical den.secretsConfig option — single source of truth for master
-# identity paths used by agenix, nixidy, and sops-config.
+# identity paths used by agenix and nixidy.
 #
 # NOTE: age.rekey.masterIdentities (per-host decryption identities at
 # rekey time) is set by the agenix battery in batteries/agenix.nix.

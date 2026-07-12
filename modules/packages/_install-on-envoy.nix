@@ -1,3 +1,8 @@
+# Disabled legacy installer retained as migration reference only.
+#
+# Its SOPS-based secret flow and pre-Den host paths are stale. The leading
+# underscore keeps import-tree from exposing `install-on-envoy` until this is
+# deliberately replaced with a tested agenix/nixos-anywhere workflow.
 { lib, self, ... }:
 {
   config.perSystem =

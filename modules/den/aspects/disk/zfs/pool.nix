@@ -103,7 +103,7 @@
 
                 postMountHook = ''
                   install -D -m 600 /tmp/runtime_host_key /mnt/persist/etc/ssh/ssh_host_ed25519_key
-                  echo "Installed runtime host key at /persist/etc/ssh/ssh_host_ed25519_key for SOPS decryption"
+                  echo "Installed runtime host key at /persist/etc/ssh/ssh_host_ed25519_key for agenix rekeying"
                 '';
               };
             };
