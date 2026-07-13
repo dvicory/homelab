@@ -155,8 +155,10 @@ let
         pkgs.git
         pkgs.gh
         pkgs.jq
+        pkgs.bash
         pkgs.cacert
         pkgs.coreutils
+        pkgs.curl
         entrypoint
       ];
       config = {
