@@ -165,6 +165,9 @@ let
       tag = imageTagFor system;
       contents = [
         hermesPackage
+        # Hermes uses this client to drive the configured Fortress CDP
+        # endpoint. Keeping it in the image avoids the mutable npx fallback.
+        pkgs.agent-browser
         pkgs.git
         pkgs.gh
         pkgs.jq
