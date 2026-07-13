@@ -103,22 +103,40 @@ let
             log "warning: declared project checkout is dirty; preserving it without reset"
           fi
 
-          # Board creation is an idempotent metadata update. Create it before
-          # binding so Hermes can also record the project's primary workdir in
-          # the board metadata on the first startup.
-          hermes kanban boards create "$HERMES_PROJECT_BOARD" \
-            --name "$HERMES_PROJECT_TITLE" \
-            --default-workdir "$HERMES_PROJECT_DIR"
-          if ! hermes project show "$HERMES_PROJECT_NAME" >/dev/null; then
-            hermes project create "$HERMES_PROJECT_TITLE" "$HERMES_PROJECT_DIR" \
-              --slug "$HERMES_PROJECT_NAME" \
-              --primary "$HERMES_PROJECT_DIR" \
-              --board "$HERMES_PROJECT_BOARD" \
-              --use
+          project_catalogue_marker="$HERMES_HOME/.managed-project-catalogue-v1"
+          if [ ! -e "$project_catalogue_marker" ]; then
+            # The Hermes CLI currently prints a not-found error but exits zero
+            # for `project show`. Parse the stable list output instead, then
+            # verify creation explicitly before treating bootstrap as complete.
+            project_exists() {
+              hermes project list --all | ${pkgs.gawk}/bin/awk \
+                -v slug="$HERMES_PROJECT_NAME" \
+                '$1 == slug || ($1 == "*" && $2 == slug) { found = 1 } END { exit !found }' \
+                || return 1
+            }
+
+            # Nix owns only the initial catalogue. Once this completes,
+            # Hermes owns the project record, board metadata, task history,
+            # active board, and any changes Daniel makes through its UI.
+            log "initializing managed project catalogue"
+            hermes kanban boards create "$HERMES_PROJECT_BOARD" \
+              --name "$HERMES_PROJECT_TITLE" \
+              --default-workdir "$HERMES_PROJECT_DIR" || exit 1
+            if ! project_exists; then
+              hermes project create "$HERMES_PROJECT_TITLE" "$HERMES_PROJECT_DIR" \
+                --slug "$HERMES_PROJECT_NAME" \
+                --primary "$HERMES_PROJECT_DIR" \
+                --board "$HERMES_PROJECT_BOARD" \
+                --use || exit 1
+            fi
+            if ! project_exists; then
+              log "project bootstrap did not create '$HERMES_PROJECT_NAME'"
+              exit 1
+            fi
+            hermes project bind-board "$HERMES_PROJECT_NAME" "$HERMES_PROJECT_BOARD" || exit 1
+            hermes kanban boards switch "$HERMES_PROJECT_BOARD" || exit 1
+            touch "$project_catalogue_marker"
           fi
-          # Preserve a pre-existing Project's folders and active selection;
-          # binding is the only reconciliation performed after its creation.
-          hermes project bind-board "$HERMES_PROJECT_NAME" "$HERMES_PROJECT_BOARD"
 
           # The bundled plugins/cron shadows Hermes' complete Python cron
           # package. Removing the colliding plugin keeps the built-in scheduler.
