@@ -320,6 +320,9 @@ in
               local service=$4
               local archive
               local release_source
+              local active_before
+              local active_after
+              local systemd_action
               archive=$(archive_for "$target")
 
               if [ ! -e "$archive" ]; then
@@ -338,6 +341,11 @@ in
                 log "$service: could not prepare a release source for $user"
                 return 1
               }
+              active_before=$(systemctl --machine="$user@" --user show \
+                --property=ActiveEnterTimestampMonotonic --value "$service") || {
+                log "$service: could not inspect service activation state"
+                return 1
+              }
               log "$service: switching Home Manager profile $home"
               as_user "$user" ${pkgs.coreutils}/bin/timeout \
                 --signal=TERM --kill-after=30s ${toString cfg.timeouts.homeManagerSeconds}s \
@@ -346,10 +354,28 @@ in
                 log "$service: Home Manager activation failed or timed out for $user"
                 return 1
               }
-              log "$service: ensuring Quadlet service is active"
+              # Home Manager restarts Quadlets when their generated unit
+              # changes. Avoid interrupting that fresh container a second time,
+              # but recreate an unchanged active container so an atomically
+              # replaced agenix secret bind mount is picked up as well.
+              if systemctl --machine="$user@" --user --quiet is-active "$service"; then
+                active_after=$(systemctl --machine="$user@" --user show \
+                  --property=ActiveEnterTimestampMonotonic --value "$service") || {
+                  log "$service: could not inspect service activation state"
+                  return 1
+                }
+                if [ "$active_before" != "$active_after" ]; then
+                  log "$service: Home Manager already started or restarted Quadlet"
+                  return 0
+                fi
+                systemd_action=restart
+              else
+                systemd_action=start
+              fi
+              log "$service: $systemd_action Quadlet service to apply deployment inputs"
               timeout --signal=TERM --kill-after=15s ${toString cfg.timeouts.serviceStartSeconds}s \
-                systemctl --machine="$user@" --user start "$service" || {
-                log "$service: systemd start failed or timed out"
+                systemctl --machine="$user@" --user "$systemd_action" "$service" || {
+                log "$service: systemd $systemd_action failed or timed out"
                 return 1
               }
             }
