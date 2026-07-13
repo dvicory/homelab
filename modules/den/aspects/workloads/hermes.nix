@@ -41,6 +41,19 @@ let
       hermesPackage = (inputs.hermes-agent.packages.${system}.default).override {
         extraDependencyGroups = [ "messaging" ];
       };
+      terminalBaseline = with pkgs; [
+        bash
+        coreutils
+        curl
+        file
+        findutils
+        gawk
+        gnugrep
+        gnused
+        gnutar
+        gzip
+        ripgrep
+      ];
 
       entrypoint = pkgs.runCommand "hermes-entrypoint" { } ''
         install -Dm555 ${pkgs.writeShellScript "hermes-entrypoint.sh" ''
@@ -155,12 +168,9 @@ let
         pkgs.git
         pkgs.gh
         pkgs.jq
-        pkgs.bash
         pkgs.cacert
-        pkgs.coreutils
-        pkgs.curl
         entrypoint
-      ];
+      ] ++ terminalBaseline;
       config = {
         Entrypoint = [ "/entrypoint" ];
         WorkingDir = "/home/hermes";
@@ -180,7 +190,10 @@ let
         ];
       };
       fakeRootCommands = ''
-        mkdir -p ./home/hermes/.hermes ./home/hermes/workspace
+        mkdir -p ./usr/bin ./home/hermes/.hermes ./home/hermes/workspace
+        # Coreutils provides /bin/env. Some third-party scripts use the
+        # conventional FHS location in their shebang instead.
+        ln -s /bin/env ./usr/bin/env
       '';
     };
 in
