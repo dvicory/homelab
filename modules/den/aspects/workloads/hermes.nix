@@ -20,7 +20,12 @@ let
       inherit cfg instance serviceName;
       inherit (account) userName;
       containerHome = "/home/hermes";
-      workspaceDir = "/home/hermes/workspace/homelab";
+      workspaceRoot = "/home/hermes/workspace";
+      project = {
+        name = "homelab";
+        title = "Homelab";
+        board = "homelab";
+      };
       secretNames = {
         env = "${serviceName}-env";
         githubPat = "${serviceName}-github-pat";
@@ -55,14 +60,65 @@ let
             gh auth setup-git
             git config --global user.name "Hermes Agent"
             git config --global user.email "hermes-agent@users.noreply.github.com"
-            if [ ! -d "$WORKSPACE_DIR/.git" ]; then
-              mkdir -p "$WORKSPACE_DIR"
-              git clone "$WORKSPACE_REPOSITORY" "$WORKSPACE_DIR"
-            fi
-            cd "$WORKSPACE_DIR"
-            git fetch origin main || true
             unset PAT
           fi
+
+          log() {
+            echo "[hermes-entrypoint] $*" >&2
+          }
+
+          # Nix owns this initial project catalogue, while Hermes owns the
+          # resulting project record, board history, and task state. Do not
+          # reset or move the canonical checkout: a task/worktree may have
+          # useful uncommitted work when the container restarts.
+          if [ ! -d "$HERMES_PROJECT_DIR/.git" ]; then
+            if [ -e "$HERMES_PROJECT_DIR" ] && [ -n "$(find "$HERMES_PROJECT_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+              log "refusing to clone into non-empty, non-Git project directory: $HERMES_PROJECT_DIR"
+              exit 1
+            fi
+            log "cloning declared project '$HERMES_PROJECT_NAME' into $HERMES_PROJECT_DIR"
+            mkdir -p "$(dirname "$HERMES_PROJECT_DIR")"
+            git clone "$HERMES_PROJECT_REPOSITORY" "$HERMES_PROJECT_DIR"
+          fi
+
+          # V1 cloned homelab directly under workspace/. It was never the
+          # canonical Project checkout and is deliberately removed after the
+          # V2 checkout exists, so an agent cannot accidentally choose it.
+          if [ -e "$HERMES_LEGACY_PROJECT_DIR" ]; then
+            log "removing obsolete pre-Project checkout: $HERMES_LEGACY_PROJECT_DIR"
+            rm -rf "$HERMES_LEGACY_PROJECT_DIR"
+          fi
+
+          if ! git -C "$HERMES_PROJECT_DIR" remote get-url origin >/dev/null; then
+            log "project checkout has no origin remote: $HERMES_PROJECT_DIR"
+            exit 1
+          fi
+          if ! git -C "$HERMES_PROJECT_DIR" fetch origin main; then
+            # A temporary network outage must not prevent the gateway from
+            # serving an already-cloned project, but it should be obvious in
+            # the service journal before Hermes acts on stale state.
+            log "warning: could not fetch origin/main for $HERMES_PROJECT_NAME; using existing checkout"
+          fi
+          if [ -n "$(git -C "$HERMES_PROJECT_DIR" status --porcelain)" ]; then
+            log "warning: declared project checkout is dirty; preserving it without reset"
+          fi
+
+          # Board creation is an idempotent metadata update. Create it before
+          # binding so Hermes can also record the project's primary workdir in
+          # the board metadata on the first startup.
+          hermes kanban boards create "$HERMES_PROJECT_BOARD" \
+            --name "$HERMES_PROJECT_TITLE" \
+            --default-workdir "$HERMES_PROJECT_DIR"
+          if ! hermes project show "$HERMES_PROJECT_NAME" >/dev/null; then
+            hermes project create "$HERMES_PROJECT_TITLE" "$HERMES_PROJECT_DIR" \
+              --slug "$HERMES_PROJECT_NAME" \
+              --primary "$HERMES_PROJECT_DIR" \
+              --board "$HERMES_PROJECT_BOARD" \
+              --use
+          fi
+          # Preserve a pre-existing Project's folders and active selection;
+          # binding is the only reconciliation performed after its creation.
+          hermes project bind-board "$HERMES_PROJECT_NAME" "$HERMES_PROJECT_BOARD"
 
           # The bundled plugins/cron shadows Hermes' complete Python cron
           # package. Removing the colliding plugin keeps the built-in scheduler.
@@ -91,8 +147,13 @@ let
           "HERMES_MANAGED=true"
           "HOME=/home/hermes"
           "HERMES_HOME=/home/hermes/.hermes"
-          "WORKSPACE_DIR=/home/hermes/workspace/homelab"
-          "WORKSPACE_REPOSITORY=https://github.com/dvicory/homelab.git"
+          "WORKSPACE_ROOT=/home/hermes/workspace"
+          "HERMES_PROJECT_NAME=homelab"
+          "HERMES_PROJECT_TITLE=Homelab"
+          "HERMES_PROJECT_BOARD=homelab"
+          "HERMES_PROJECT_DIR=/home/hermes/workspace/projects/homelab"
+          "HERMES_LEGACY_PROJECT_DIR=/home/hermes/workspace/homelab"
+          "HERMES_PROJECT_REPOSITORY=https://github.com/dvicory/homelab.git"
           "SECRETS_DIR=/run/secrets"
           "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
         ];
@@ -192,22 +253,75 @@ in
             secretNames
             serviceName
             tailscaleName
-            workspaceDir
+            workspaceRoot
             ;
           requiredSecrets = builtins.attrValues secretNames;
           hasRequiredSecrets = lib.all (
             name: lib.hasAttrByPath [ "age" "secrets" name ] osConfig
           ) requiredSecrets;
           image = cfg.image or "localhost/hermes-agent:${imageTagFor host.system}";
-          repository = cfg.repository or "https://github.com/dvicory/homelab.git";
+          project = profile.project // (cfg.project or { });
+          projectDir = "${workspaceRoot}/projects/${project.name}";
+          repository = project.repository or cfg.repository or "https://github.com/dvicory/homelab.git";
           tailscaleHostname = cfg.tailscale.hostname or serviceName;
           restartDrainTimeout = cfg.restartDrainTimeout or 120;
+          defaultConfig = {
+            # This is the config schema for the pinned Hermes release. Keeping
+            # it explicit avoids an interactive `doctor --fix` attempting to
+            # migrate the read-only Nix-managed config on every deployment.
+            _config_version = 33;
+            terminal = {
+              backend = "local";
+              cwd = workspaceRoot;
+              timeout = 180;
+            };
+            approvals = {
+              mode = "manual";
+              cron_mode = "deny";
+            };
+            tool_loop_guardrails = {
+              hard_stop_enabled = true;
+              hard_stop_after = {
+                exact_failure = 5;
+                same_tool_failure = 8;
+                idempotent_no_progress = 5;
+              };
+            };
+            kanban = {
+              # Keep workers opt-in until the full QA lifecycle (worktree,
+              # review, retry, and cleanup) has been exercised deliberately.
+              dispatch_in_gateway = false;
+              dispatch_interval_seconds = 60;
+              failure_limit = 2;
+              max_in_progress_per_profile = 1;
+            };
+          };
           configFile = (pkgs.formats.yaml { }).generate "${serviceName}-config.yaml" (
-            cfg.config or {
+            lib.recursiveUpdate defaultConfig (cfg.config or {
               model.default = "opencode-go/deepseek-v4-flash";
               agent.restart_drain_timeout = restartDrainTimeout;
-            }
+            })
           );
+          soulFile = pkgs.writeText "${serviceName}-SOUL.md" (cfg.soul or ''
+            # Hermes
+
+            You are Daniel's personal assistant for questions, research, and
+            homelab work. Be direct, explain uncertainty, and ask when an
+            action would create meaningful external effects.
+
+            Normal conversations are read-first and do not imply permission to
+            modify infrastructure. For a homelab change, create or continue an
+            explicit Kanban task on board `homelab` with project `homelab`.
+            Work in that task's worktree and branch; never make implementation
+            changes in the reference checkout or push directly to `main`.
+
+            Treat credentials, encrypted secrets, deployment controls, cron
+            jobs, skills, plugins, and new external integrations as
+            operator-controlled. Do not create, modify, expose, or bypass them
+            without Daniel's explicit approval. Run relevant checks, report
+            what changed, and leave deployment promotion to the established
+            reviewed workflow.
+          '');
         in
         {
           home.stateVersion = "26.05";
@@ -252,14 +366,20 @@ in
                   environments = {
                     HOME = containerHome;
                     HERMES_HOME = "${containerHome}/.hermes";
-                    WORKSPACE_DIR = workspaceDir;
-                    WORKSPACE_REPOSITORY = repository;
+                    WORKSPACE_ROOT = workspaceRoot;
+                    HERMES_PROJECT_NAME = project.name;
+                    HERMES_PROJECT_TITLE = project.title;
+                    HERMES_PROJECT_BOARD = project.board;
+                    HERMES_PROJECT_DIR = projectDir;
+                    HERMES_LEGACY_PROJECT_DIR = "${workspaceRoot}/homelab";
+                    HERMES_PROJECT_REPOSITORY = repository;
                     SECRETS_DIR = "/run/secrets";
                   };
                   volumes = [
                     "${serviceName}-state:${containerHome}/.hermes"
                     "${serviceName}-workspace:${containerHome}/workspace"
                     "${configFile}:${containerHome}/.hermes/config.yaml:ro"
+                    "${soulFile}:${containerHome}/.hermes/SOUL.md:ro"
                     "${osConfig.age.secrets.${secretNames.env}.path}:/run/secrets/hermes-env:ro"
                     "${osConfig.age.secrets.${secretNames.githubPat}.path}:/run/secrets/hermes-github-pat:ro"
                   ];
