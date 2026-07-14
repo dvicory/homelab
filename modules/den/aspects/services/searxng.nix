@@ -22,8 +22,9 @@
       };
 
       secretKeyFile = lib.mkOption {
-        type = lib.types.str;
-        description = "Path to agenix secret containing SEARXNG_SECRET_KEY.";
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Path to agenix secret containing SEARXNG_SECRET_KEY=...";
       };
     };
 
@@ -33,40 +34,42 @@
       dataVolume = "${svcName}-data";
       secretName = "searxng-secret-key";
       ageFile = cfg.secretKeyFile;
-      provisioned = builtins.pathExists ageFile;
-    in lib.mkMerge [
-      (lib.mkIf (cfg.enable or false) {
-        secretRequests.${secretName} = lib.mkIf provisioned {
-          provider = "agenix";
-          inherit ageFile;
-          mode = "0400";
-        };
+      provisioned = ageFile != null && builtins.pathExists ageFile;
+    in lib.mkIf (cfg.enable or false) {
 
-        warnings = lib.optional (!provisioned) ''
-          SearXNG (${svcName}) is enabled but no age secret found at ${ageFile}.
-          Create it with: echo "my-secret-key" | agenix -e ${ageFile}
-          Then run: agenix rekey
-        '';
+      secretRequests.${secretName} = lib.mkIf provisioned {
+        provider = "agenix";
+        inherit ageFile;
+        mode = "0400";
+      };
 
-        virtualisation.quadlet.containers.${svcName} = lib.mkIf provisioned {
-          autoStart = true;
-          containerConfig = {
-            image = "docker.io/searxng/searxng:latest";
-            publishPorts = [ "${toString cfg.port}:8080" ];
-            environments = {
-              SEARXNG_BASE_URL = cfg.baseUrl;
-              SEARXNG_SECRET_KEY = "file:/run/secrets/${secretName}";
-            };
-            volumes = [
-              "${dataVolume}:/etc/searxng:rw"
-            ];
+      warnings = lib.optional (!provisioned) ''
+        SearXNG (${svcName}) is enabled but no age secret found at ${builtins.toString ageFile}.
+        Create it with:
+          echo 'SEARXNG_SECRET_KEY=your-random-secret' | agenix -e ${builtins.toString ageFile}
+          agenix rekey
+          git add .secrets/ && git commit
+      '';
+
+      virtualisation.quadlet.containers.${svcName} = lib.mkIf provisioned {
+        autoStart = true;
+        containerConfig = {
+          image = "docker.io/searxng/searxng:latest";
+          publishPorts = [ "${toString cfg.port}:8080" ];
+          environmentFiles = [
+            "${config.age.secrets.${secretName}.path}"
+          ];
+          environments = {
+            SEARXNG_BASE_URL = cfg.baseUrl;
           };
-          serviceConfig.TimeoutStopSec = 30;
+          volumes = [
+            "${dataVolume}:/etc/searxng:rw"
+          ];
         };
-      })
-      {
-        environment.systemPackages = [ pkgs.curl ];
-      }
-    ];
+        serviceConfig.TimeoutStopSec = 30;
+      };
+
+      environment.systemPackages = lib.mkIf provisioned [ pkgs.curl ];
+    };
   };
 }
