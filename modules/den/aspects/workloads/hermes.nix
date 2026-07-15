@@ -48,6 +48,7 @@ let
       hermesPackage = (inputs.hermes-agent.packages.${system}.default).override {
         extraDependencyGroups = [ "messaging" ];
       };
+      codexPackage = codexPackageFor system;
       codexBridge = codexBridgeFor { inherit pkgs system; };
       terminalBaseline = with pkgs; [
         bash
@@ -182,6 +183,9 @@ let
         pkgs.cacert
         # This is inert unless a runner enables its Nix-managed MCP entry.
         # Keeping it in the shared image lets QA and prod use one artifact.
+        # Include Codex itself as well as the bridge so `podman exec ... codex`
+        # can perform the required out-of-band subscription login.
+        codexPackage
         codexBridge
         entrypoint
       ] ++ terminalBaseline;
