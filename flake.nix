@@ -132,6 +132,9 @@
       };
       url = "github:nix-community/lanzaboote/v0.4.1";
     };
+    llm-agents = {
+      url = "github:numtide/llm-agents.nix";
+    };
     nix-darwin = {
       inputs = {
         nixpkgs = {
