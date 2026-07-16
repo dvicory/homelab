@@ -28,8 +28,35 @@
         codexWorkerLane = pkgs.callPackage (
           self + "/pkgs/by-name/hermes-codex-worker-lane/package.nix"
         ) { };
+        customCodexWorkerLane =
+          pkgs.callPackage (self + "/pkgs/by-name/hermes-codex-worker-lane/package.nix")
+            {
+              lanes = [
+                {
+                  name = "architecture-review";
+                  useFor = "architecture decisions that require no file changes";
+                  approvalPolicy = "on-request";
+                  approvalsReviewer = "auto_review";
+                  sandboxMode = "read-only";
+                  networkAccess = false;
+                  maxConcurrency = 1;
+                }
+                {
+                  name = "code-with-network";
+                  useFor = "implementation that needs access to declared network services";
+                  approvalPolicy = "on-request";
+                  approvalsReviewer = "auto_review";
+                  sandboxMode = "workspace-write";
+                  networkAccess = true;
+                  maxConcurrency = 1;
+                }
+              ];
+            };
       in
       {
+        # Exercise non-default lane names and descriptions independently from
+        # the generic patched-Hermes/worker runtime test below.
+        checks.hermes-codex-worker-lane-custom-skill = customCodexWorkerLane;
         checks.hermes-worker-lane =
           pkgs.callPackage (self + "/pkgs/by-name/hermes-agent-with-worker-lanes/check.nix")
             {
