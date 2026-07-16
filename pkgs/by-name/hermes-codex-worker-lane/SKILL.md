@@ -39,18 +39,16 @@ to change those settings from a task.
 2. Write a self-contained task body with the objective, motivation, relevant
    context, constraints, acceptance criteria, and expected validation. Preserve
    any explicit limits the user gave Hermes.
-3. For new planning or implementation work, call `kanban_create` with the exact
-   lane assignee, the existing project slug, and `workspace_kind="worktree"`.
-   A project-backed worktree isolates the task from the canonical checkout and
-   gives it a deterministic branch.
+3. Every delegated Codex task uses its own project-backed worktree. Call
+   `kanban_create` with the exact lane assignee, the existing project slug, and
+   `workspace_kind="worktree"`. This isolates the task from canonical and other
+   task checkouts and gives it a deterministic branch.
 4. For a read-only review of an existing Kanban task, first inspect that task
-   with `kanban_show` and follow the generic Kanban parent-link guidance. If its
-   preserved worktree exists, use that absolute path with
-   `workspace_kind="dir"` so the reviewer sees the exact checkout. Otherwise
-   use a project worktree and tell the reviewer the exact source branch or
-   commit to inspect with read-only Git commands. Hermes creates and preserves
-   task worktrees, but a new task branches from the project's current `HEAD`;
-   Kanban parent links do not implicitly select a Git base revision.
+   with `kanban_show`, follow the generic Kanban parent-link guidance, and put
+   the exact source branch or commit in the review body. The reviewer should
+   inspect that ref with read-only Git commands from its own worktree rather
+   than checking it out or modifying the source task's checkout. A parent link
+   supplies lineage and handoff context; it does not select a Git revision.
 5. Report the returned task id and lane. Never invent an id or say Codex started
    unless `kanban_create` succeeded.
 
@@ -69,8 +67,8 @@ kanban_create(
   title="Review the cache invalidation implementation",
   assignee="<selected read-only lane name>",
   parents=["<source task id>"],
-  workspace_kind="dir",
-  workspace_path="<absolute preserved source-task worktree>",
+  project="existing-project",
+  workspace_kind="worktree",
   body="Review scope, acceptance criteria, expected findings, and the exact source revision. Do not modify files."
 )
 
@@ -87,9 +85,11 @@ kanban_create(
 
 - Never invoke the Codex CLI through the terminal, background processes, or a
   shell wrapper. The worker lane owns process launch and policy enforcement.
-- Never use a shared directory for modifying work. Use the declared project and
-  a task worktree.
+- Never use a shared directory for delegated work. Use the declared project and
+  a task-specific worktree.
 - Do not push, merge, deploy, expose credentials, or weaken sandboxing unless a
   separately established operator workflow explicitly authorizes it.
-- A worker that changes files normally blocks for review. Treat that as the
-  expected approval boundary, not as a failure to bypass.
+- A successful worker completes its Kanban task even when it changed files.
+  Completion does not merge, push, deploy, or copy the task worktree into the
+  canonical checkout. If the user requested review, create a separate review
+  task against the exact source branch or commit.
