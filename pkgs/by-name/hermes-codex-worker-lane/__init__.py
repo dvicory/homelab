@@ -108,7 +108,7 @@ def _declared_lanes() -> list[dict]:
             raise ValueError("each CODEX_WORKER_LANES entry must be an object")
         required = {
             "name",
-            "useFor",
+            "description",
             "approvalPolicy",
             "approvalsReviewer",
             "sandboxMode",
@@ -145,7 +145,7 @@ def register(ctx) -> None:
             WorkerLane(
                 name=name,
                 kind="codex-cli",
-                use_for=lane["useFor"],
+                description=lane["description"],
                 spawn_fn=spawn,
                 max_concurrency=int(lane.get("maxConcurrency", 1)),
             )

@@ -2,7 +2,7 @@
   lanes ? [
     {
       name = "codex-plan";
-      useFor = "read-only software architecture, investigation, planning, and code review";
+      description = "read-only software architecture, investigation, planning, and code review";
       approvalPolicy = "on-request";
       approvalsReviewer = "auto_review";
       sandboxMode = "read-only";
@@ -11,7 +11,7 @@
     }
     {
       name = "codex";
-      useFor = "implementation, debugging, refactoring, and verification that may modify files";
+      description = "implementation, debugging, refactoring, and verification that may modify files";
       approvalPolicy = "on-request";
       approvalsReviewer = "auto_review";
       sandboxMode = "workspace-write";
@@ -31,9 +31,9 @@ let
     && builtins.isString (lane.name or null)
     && builtins.match "[a-z0-9][a-z0-9_-]{0,63}" lane.name != null
     && lane.name != "default"
-    && builtins.isString (lane.useFor or null)
-    && lane.useFor != ""
-    && !lib.hasInfix "\n" lane.useFor
+    && builtins.isString (lane.description or null)
+    && lane.description != ""
+    && !lib.hasInfix "\n" lane.description
     && lib.elem (lane.sandboxMode or null) [
       "read-only"
       "workspace-write"
@@ -51,7 +51,7 @@ let
     && builtins.isInt (lane.maxConcurrency or null)
     && lane.maxConcurrency >= 1;
   laneGuide = lib.concatMapStringsSep "\n" (lane: ''
-    - `${lane.name}` — Use for ${lane.useFor}.
+    - `${lane.name}` — ${lane.description}.
       Operator policy: sandbox `${lane.sandboxMode}`, network ${
         if lane.networkAccess then "enabled" else "disabled"
       }, approvals `${lane.approvalPolicy}` reviewed by `${lane.approvalsReviewer}`.
@@ -91,13 +91,15 @@ stdenvNoCC.mkDerivation {
 
     grep -Fx 'name: codex' ${skillFile}
     grep -F 'kanban_create' ${skillFile}
+    grep -F 'a new task branches from the project' ${skillFile}
+    grep -F 'parent links do not implicitly select a Git base revision' ${skillFile}
     if grep -F '@lane-guide@' ${skillFile}; then
       echo "The managed Codex skill still contains an unsubstituted lane guide" >&2
       exit 1
     fi
     ${lib.concatMapStringsSep "\n" (lane: ''
       grep -F -- ${lib.escapeShellArg "`${lane.name}`"} ${skillFile}
-      grep -F -- ${lib.escapeShellArg lane.useFor} ${skillFile}
+      grep -F -- ${lib.escapeShellArg lane.description} ${skillFile}
     '') lanes}
 
     if grep -Eiq -- 'codex exec|--yolo|danger-full-access|terminal\(' ${skillFile}; then

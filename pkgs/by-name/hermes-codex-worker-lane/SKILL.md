@@ -39,10 +39,19 @@ to change those settings from a task.
 2. Write a self-contained task body with the objective, motivation, relevant
    context, constraints, acceptance criteria, and expected validation. Preserve
    any explicit limits the user gave Hermes.
-3. Call `kanban_create` with the exact lane assignee, the existing project slug,
-   and `workspace_kind="worktree"`. A project-backed worktree isolates the task
-   from the canonical checkout and gives it a deterministic branch.
-4. Report the returned task id and lane. Never invent an id or say Codex started
+3. For new planning or implementation work, call `kanban_create` with the exact
+   lane assignee, the existing project slug, and `workspace_kind="worktree"`.
+   A project-backed worktree isolates the task from the canonical checkout and
+   gives it a deterministic branch.
+4. For a read-only review of an existing Kanban task, first inspect that task
+   with `kanban_show` and follow the generic Kanban parent-link guidance. If its
+   preserved worktree exists, use that absolute path with
+   `workspace_kind="dir"` so the reviewer sees the exact checkout. Otherwise
+   use a project worktree and tell the reviewer the exact source branch or
+   commit to inspect with read-only Git commands. Hermes creates and preserves
+   task worktrees, but a new task branches from the project's current `HEAD`;
+   Kanban parent links do not implicitly select a Git base revision.
+5. Report the returned task id and lane. Never invent an id or say Codex started
    unless `kanban_create` succeeded.
 
 Example shapes (illustrative, not literal tool calls to repeat blindly):
@@ -57,6 +66,15 @@ kanban_create(
 )
 
 kanban_create(
+  title="Review the cache invalidation implementation",
+  assignee="<selected read-only lane name>",
+  parents=["<source task id>"],
+  workspace_kind="dir",
+  workspace_path="<absolute preserved source-task worktree>",
+  body="Review scope, acceptance criteria, expected findings, and the exact source revision. Do not modify files."
+)
+
+kanban_create(
   title="Implement bounded cache invalidation",
   assignee="<selected lane name>",
   project="existing-project",
@@ -64,10 +82,6 @@ kanban_create(
   body="Why this is needed, scoped implementation requirements, acceptance criteria, and checks to run."
 )
 ```
-
-When delegating from an existing Kanban task, pass the current task id in
-`parents` only when the new task should wait for that parent to complete. Model
-real dependencies in task metadata rather than prose.
 
 ## Boundaries
 

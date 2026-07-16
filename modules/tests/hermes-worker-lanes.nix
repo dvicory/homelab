@@ -34,7 +34,7 @@
               lanes = [
                 {
                   name = "architecture-review";
-                  useFor = "architecture decisions that require no file changes";
+                  description = "architecture decisions that require no file changes";
                   approvalPolicy = "on-request";
                   approvalsReviewer = "auto_review";
                   sandboxMode = "read-only";
@@ -43,7 +43,7 @@
                 }
                 {
                   name = "code-with-network";
-                  useFor = "implementation that needs access to declared network services";
+                  description = "implementation that needs access to declared network services";
                   approvalPolicy = "on-request";
                   approvalsReviewer = "auto_review";
                   sandboxMode = "workspace-write";
