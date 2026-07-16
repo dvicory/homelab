@@ -37,7 +37,7 @@ def test_declared_lanes_rejects_unsafe_sandbox(plugin, monkeypatch):
             [
                 {
                     "name": "codex",
-                    "useFor": "implementation that may modify files",
+                    "description": "implementation that may modify files",
                     "approvalPolicy": "on-request",
                     "approvalsReviewer": "auto_review",
                     "sandboxMode": "danger-full-access",
@@ -51,14 +51,14 @@ def test_declared_lanes_rejects_unsafe_sandbox(plugin, monkeypatch):
         plugin._declared_lanes()
 
 
-def test_register_passes_use_for_to_worker_lane(plugin, monkeypatch):
+def test_register_passes_description_to_worker_lane(plugin, monkeypatch):
     monkeypatch.setenv(
         "CODEX_WORKER_LANES",
         json.dumps(
             [
                 {
                     "name": "architecture-review",
-                    "useFor": "read-only architecture and code review",
+                    "description": "read-only architecture and code review",
                     "approvalPolicy": "on-request",
                     "approvalsReviewer": "auto_review",
                     "sandboxMode": "read-only",
@@ -75,7 +75,7 @@ def test_register_passes_use_for_to_worker_lane(plugin, monkeypatch):
 
     assert len(registered) == 1
     assert registered[0].name == "architecture-review"
-    assert registered[0].use_for == "read-only architecture and code review"
+    assert registered[0].description == "read-only architecture and code review"
 
 
 def test_worker_environment_does_not_forward_gateway_secrets(plugin, monkeypatch):

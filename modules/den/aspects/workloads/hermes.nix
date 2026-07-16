@@ -348,7 +348,9 @@ in
             lib.mapAttrsToList
               (name: lane: {
                 inherit name;
-                useFor = lane.useFor or (throw "${serviceName}: Codex worker lane '${name}' must declare useFor");
+                description =
+                  lane.description
+                    or (throw "${serviceName}: Codex worker lane '${name}' must declare description");
                 approvalPolicy = lane.approvalPolicy or codexApprovalPolicy;
                 approvalsReviewer = lane.approvalsReviewer or codexApprovalsReviewer;
                 sandboxMode = lane.sandboxMode;
@@ -358,12 +360,12 @@ in
               (
                 codex.lanes or {
                   codex-plan = {
-                    useFor = "read-only software architecture, investigation, planning, and code review";
+                    description = "read-only software architecture, investigation, planning, and code review";
                     sandboxMode = "read-only";
                     networkAccess = false;
                   };
                   codex = {
-                    useFor = "implementation, debugging, refactoring, and verification that may modify files";
+                    description = "implementation, debugging, refactoring, and verification that may modify files";
                     sandboxMode = "workspace-write";
                     networkAccess = false;
                   };
