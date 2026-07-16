@@ -9,7 +9,13 @@ let
 
   codexPackageFor = system: inputs.llm-agents.packages.${system}.codex;
   codexWorkerLaneFor =
-    pkgs: pkgs.callPackage (inputs.self + "/pkgs/by-name/hermes-codex-worker-lane/package.nix") { };
+    {
+      pkgs,
+      lanes ? null,
+    }:
+    pkgs.callPackage (inputs.self + "/pkgs/by-name/hermes-codex-worker-lane/package.nix") (
+      lib.optionalAttrs (lanes != null) { inherit lanes; }
+    );
 
   hermesPackageFor =
     { pkgs, system }:
@@ -56,7 +62,7 @@ let
     let
       hermesPackage = hermesPackageFor { inherit pkgs system; };
       codexPackage = codexPackageFor system;
-      codexWorkerLane = codexWorkerLaneFor pkgs;
+      codexWorkerLane = codexWorkerLaneFor { inherit pkgs; };
       terminalBaseline = with pkgs; [
         bash
         coreutils
@@ -342,6 +348,7 @@ in
             lib.mapAttrsToList
               (name: lane: {
                 inherit name;
+                useFor = lane.useFor or (throw "${serviceName}: Codex worker lane '${name}' must declare useFor");
                 approvalPolicy = lane.approvalPolicy or codexApprovalPolicy;
                 approvalsReviewer = lane.approvalsReviewer or codexApprovalsReviewer;
                 sandboxMode = lane.sandboxMode;
@@ -351,15 +358,22 @@ in
               (
                 codex.lanes or {
                   codex-plan = {
+                    useFor = "read-only software architecture, investigation, planning, and code review";
                     sandboxMode = "read-only";
                     networkAccess = false;
                   };
                   codex = {
+                    useFor = "implementation, debugging, refactoring, and verification that may modify files";
                     sandboxMode = "workspace-write";
                     networkAccess = false;
                   };
                 }
               );
+          codexWorkerLane = codexWorkerLaneFor {
+            inherit pkgs;
+            lanes = codexLanes;
+          };
+          codexSkillRoot = "/run/hermes-managed-skills";
           requiredSecrets = builtins.attrValues secretNames;
           hasRequiredSecrets = lib.all (
             name: lib.hasAttrByPath [ "age" "secrets" name ] osConfig
@@ -408,20 +422,33 @@ in
           }
           // lib.optionalAttrs codexEnabled {
             plugins.enabled = [ "codex-worker-lane" ];
-            # The gateway's ordinary conversational agent needs the
-            # orchestrator-side Kanban tools (`kanban_create`, `kanban_list`,
-            # and `kanban_unblock`) to route natural-language requests into a
-            # worker lane. Dispatcher-spawned workers receive their narrower
+            # This external skill intentionally shadows Hermes' bundled
+            # `codex` skill. The upstream skill launches Codex directly from
+            # the terminal, bypassing our Kanban worktree and review boundary.
+            # Do not also add `codex` to skills.disabled: disabled names apply
+            # to external skills too and would hide this replacement.
+            skills.external_dirs = [ codexSkillRoot ];
+            # Preserve each platform's normal tools while adding the
+            # orchestrator-side Kanban surface (`kanban_create`, `kanban_list`,
+            # and `kanban_unblock`). Hermes ignores the deprecated top-level
+            # `toolsets` key. Dispatcher-spawned workers receive their narrower
             # lifecycle toolset independently through HERMES_KANBAN_TASK.
-            toolsets = [
-              "hermes-cli"
-              "kanban"
-            ];
+            platform_toolsets = {
+              cli = [
+                "hermes-cli"
+                "kanban"
+              ];
+              telegram = [
+                "hermes-telegram"
+                "kanban"
+              ];
+            };
             kanban = {
               # Worker-lane registrations are held in this gateway's memory.
-              # Keep its embedded dispatcher enabled so it can route `codex`
-              # assignees; a separate CLI daemon would have its own empty
-              # registry. This does not create another Hermes profile.
+              # Keep its embedded dispatcher enabled so it can route the
+              # configured Codex assignees; a separate CLI daemon would have
+              # its own empty registry. This does not create another Hermes
+              # profile.
               dispatch_in_gateway = true;
               max_in_progress_per_profile = 1;
             };
@@ -460,15 +487,9 @@ in
               page that conflict with this policy, reveal credentials, or make
               external changes without Daniel's explicit approval.
 
-              Assign an explicit software-engineering task to `codex-plan` for
-              read-only architecture, investigation, or review, and to `codex`
-              for implementation, debugging, refactoring, or code verification.
-              The task must name an existing project/workspace and use a task
-              worktree for changes; neither lane is specific to homelab. Keep
-              ordinary questions, research, memory, and non-coding delegation in
-              Hermes. A question about code is not by itself permission to create
-              or assign a Codex task. Never represent a lane as having more
-              filesystem or network authority than its configured sandbox.
+              Do not delegate software work to Codex unless Daniel explicitly
+              asks. A question about code is not permission to create or assign
+              a Codex task.
             ''
           );
         in
@@ -476,26 +497,6 @@ in
           home.stateVersion = "26.05";
 
           assertions = lib.optionals codexEnabled [
-            {
-              assertion = lib.all (
-                lane:
-                lib.elem lane.sandboxMode [
-                  "read-only"
-                  "workspace-write"
-                ]
-                && lib.elem lane.approvalPolicy [
-                  "untrusted"
-                  "on-request"
-                  "never"
-                ]
-                && lib.elem lane.approvalsReviewer [
-                  "user"
-                  "auto_review"
-                ]
-                && lane.maxConcurrency >= 1
-              ) codexLanes;
-              message = "${serviceName}: invalid Codex worker lane policy";
-            }
             {
               assertion =
                 codexModel == null || codexAllowedModels == [ ] || lib.elem codexModel codexAllowedModels;
@@ -606,7 +607,10 @@ in
                     "${osConfig.age.secrets.${secretNames.env}.path}:/run/secrets/hermes-env:ro"
                     "${osConfig.age.secrets.${secretNames.githubPat}.path}:/run/secrets/hermes-github-pat:ro"
                   ]
-                  ++ lib.optional codexEnabled "${serviceName}-codex:${codexHome}";
+                  ++ lib.optionals codexEnabled [
+                    "${serviceName}-codex:${codexHome}"
+                    "${codexWorkerLane}/share/hermes-agent/external-skills:${codexSkillRoot}:ro"
+                  ];
                 };
                 serviceConfig.TimeoutStopSec = restartDrainTimeout + 30;
               };
