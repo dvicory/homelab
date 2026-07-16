@@ -1,6 +1,6 @@
 ---
 name: codex
-description: Route explicitly delegated software engineering, code review, debugging, and architecture work through the operator-managed Codex Kanban worker lanes. Use when the user asks Hermes to have Codex plan, review, investigate, or change code in an existing project.
+description: Route explicitly delegated software engineering, code review, debugging, and architecture tasks through operator-managed Kanban worker lanes. Use when the user asks Hermes to create or delegate a new software task, including requests to have Codex plan, review, investigate, or change code in an existing project.
 version: 1.0.0
 author: Daniel Vicory
 license: MIT
