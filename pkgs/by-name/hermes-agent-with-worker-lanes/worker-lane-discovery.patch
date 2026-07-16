@@ -1,0 +1,182 @@
+From 2fa63bd0378afd7e78ac14c7549c80912b80b383 Mon Sep 17 00:00:00 2001
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Thu, 16 Jul 2026 04:00:00 -0700
+Subject: [PATCH] feat(kanban): advertise registered worker lanes to agents
+
+External worker lanes are valid dispatcher assignees, but kanban_create still
+describes every assignee as a Hermes profile. Agents therefore cannot select a
+lane unless some separate prompt happens to teach them its routing key.
+
+Carry a generic use-for description on WorkerLane and render the process-local
+registry into kanban_create's dynamic schema. Profiles remain valid and the
+assignee stays an open string; the schema only adds the external choices that
+the owning gateway can actually dispatch.
+---
+ hermes_cli/worker_lanes.py                    |  5 ++++-
+ tests/hermes_cli/test_worker_lane_discovery.py | 70 +++++++++++++++++++++++++
+ tools/kanban_tools.py                         | 50 ++++++++++++++++--
+ 3 files changed, 121 insertions(+), 4 deletions(-)
+ create mode 100644 tests/hermes_cli/test_worker_lane_discovery.py
+
+diff --git a/hermes_cli/worker_lanes.py b/hermes_cli/worker_lanes.py
+index ee2a1b1..706bf5e 100644
+--- a/hermes_cli/worker_lanes.py
++++ b/hermes_cli/worker_lanes.py
+@@ -66 +66,2 @@ class WorkerLane:
+-    ``kind`` is an optional label for logs/telemetry; ``max_concurrency`` is an
++    ``kind`` is an optional label for logs/telemetry; ``use_for`` explains to
++    orchestrators when this lane should be selected; ``max_concurrency`` is an
+@@ -73,2 +74,3 @@ class WorkerLane:
+     kind: str = ""
++    use_for: str = ""
+     max_concurrency: Optional[int] = None
+@@ -80,2 +82,3 @@ class WorkerLane:
+         self.kind = str(self.kind or "").strip()
++        self.use_for = str(self.use_for or "").strip()
+         if self.max_concurrency is not None:
+diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
+index 6a1dc1f..1dc888a 100644
+--- a/tools/kanban_tools.py
++++ b/tools/kanban_tools.py
+@@ -846 +846,2 @@ def _handle_create(args: dict) -> str:
+-            "assignee is required — name the profile that should execute this "
++            "assignee is required — name the Hermes profile or registered "
++            "worker lane that should execute this "
+@@ -1398 +1399 @@ KANBAN_CREATE_SCHEMA = {
+-        "tasks on its next tick and spawns the assigned profiles."
++        "tasks on its next tick and spawns the assigned workers."
+@@ -1410,2 +1411,2 @@ KANBAN_CREATE_SCHEMA = {
+-                    "Profile name that should execute this task "
+-                    "(e.g. 'researcher-a', 'reviewer', 'writer'). "
++                    "Hermes profile or registered external worker lane that "
++                    "should execute this task. "
+@@ -1548,3 +1549,40 @@ KANBAN_CREATE_SCHEMA = {
+ }
+
++
++def _kanban_create_schema_overrides() -> dict:
++    """Advertise the external lanes registered in this gateway process."""
++    try:
++        from hermes_cli.worker_lanes import list_worker_lanes
++
++        lanes = list_worker_lanes()
++    except (ImportError, AttributeError):
++        # Worker lanes are an optional extension. Stock Hermes keeps the
++        # generic profile-or-lane wording without advertising any names.
++        lanes = []
++
++    if not lanes:
++        return {}
++
++    parameters = {**KANBAN_CREATE_SCHEMA["parameters"]}
++    parameters["properties"] = {
++        name: dict(schema)
++        for name, schema in KANBAN_CREATE_SCHEMA["parameters"]["properties"].items()
++    }
++    assignee = parameters["properties"]["assignee"]
++    lines = []
++    for lane in lanes:
++        use_for = str(getattr(lane, "use_for", "") or "").strip()
++        if use_for:
++            lines.append(f"- {lane.name}: {use_for}")
++        else:
++            lines.append(f"- {lane.name}")
++    assignee["description"] = (
++        assignee["description"]
++        + "\n\nRegistered external worker lanes in this gateway:\n"
++        + "\n".join(lines)
++        + "\nChoose a lane by its use description; Hermes profiles remain valid."
++    )
++    return {"parameters": parameters}
++
++
+ KANBAN_UNBLOCK_SCHEMA = {
+@@ -1653,2 +1691,3 @@ registry.register(
+     emoji="➕",
++    dynamic_schema_overrides=_kanban_create_schema_overrides,
+ )
+diff --git a/tests/hermes_cli/test_worker_lane_discovery.py b/tests/hermes_cli/test_worker_lane_discovery.py
+new file mode 100644
+index 0000000..3e87caf
+--- /dev/null
++++ b/tests/hermes_cli/test_worker_lane_discovery.py
+@@ -0,0 +1,70 @@
++"""Model-facing discovery tests for registered external worker lanes."""
++
++from __future__ import annotations
++
++import pytest
++
++from hermes_cli import worker_lanes as wl
++
++
++@pytest.fixture(autouse=True)
++def _isolated_worker_lanes(monkeypatch):
++    wl.clear_worker_lanes()
++    monkeypatch.setenv("HERMES_KANBAN_TASK", "schema-probe")
++    yield
++    wl.clear_worker_lanes()
++
++
++def _spawn(_task, _workspace, *, board=None):
++    del board
++    return 4242
++
++
++def _kanban_create_definition():
++    import tools.kanban_tools  # noqa: F401 -- ensure tool registration
++    from tools.registry import invalidate_check_fn_cache, registry
++    from toolsets import resolve_toolset
++
++    invalidate_check_fn_cache()
++    definitions = registry.get_definitions(
++        set(resolve_toolset("kanban")),
++        quiet=True,
++    )
++    return next(
++        definition["function"]
++        for definition in definitions
++        if definition["function"]["name"] == "kanban_create"
++    )
++
++
++def test_worker_lane_use_for_is_normalized():
++    lane = wl.WorkerLane(
++        name="review-lane",
++        spawn_fn=_spawn,
++        use_for="  read-only architecture and code review  ",
++    )
++
++    assert lane.use_for == "read-only architecture and code review"
++
++
++def test_kanban_create_advertises_registered_worker_lanes():
++    wl.register_worker_lane(
++        wl.WorkerLane(
++            name="review-lane",
++            spawn_fn=_spawn,
++            use_for="read-only architecture and code review",
++        )
++    )
++    wl.register_worker_lane(
++        wl.WorkerLane(
++            name="implementation-lane",
++            spawn_fn=_spawn,
++            use_for="implementation that may modify files",
++        )
++    )
++
++    definition = _kanban_create_definition()
++    description = definition["parameters"]["properties"]["assignee"]["description"]
++
++    assert "Hermes profile or registered external worker lane" in description
++    assert "- review-lane: read-only architecture and code review" in description
++    assert "- implementation-lane: implementation that may modify files" in description
++
++
++def test_kanban_create_without_registered_lanes_keeps_generic_schema():
++    definition = _kanban_create_definition()
++    description = definition["parameters"]["properties"]["assignee"]["description"]
++
++    assert "Hermes profile or registered external worker lane" in description
++    assert "Registered external worker lanes in this gateway" not in description
