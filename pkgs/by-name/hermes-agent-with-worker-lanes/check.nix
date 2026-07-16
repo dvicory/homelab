@@ -15,6 +15,7 @@ runCommand "hermes-worker-lane-check" { } ''
 
   "$python" -m pytest -q -o cache_dir=$TMPDIR/pytest-cache \
     ${patchedHermes.workerLanesSource}/tests/hermes_cli/test_worker_lanes.py \
+    ${patchedHermes.workerLanesSource}/tests/hermes_cli/test_worker_lane_discovery.py \
     ${patchedHermes.workerLanesSource}/tests/hermes_cli/test_kanban_worker_spawn_toolsets.py \
     ${patchedHermes.workerLanesSource}/tests/tools/test_kanban_tools.py \
     ${codexWorkerLane.testSource}/tests

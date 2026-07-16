@@ -10,6 +10,7 @@ let
     inherit src;
     patches = [
       ./worker-lanes.patch
+      ./worker-lane-discovery.patch
       ./kanban-platform-toolsets.patch
     ];
   };
