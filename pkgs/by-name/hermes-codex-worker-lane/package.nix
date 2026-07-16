@@ -91,8 +91,13 @@ stdenvNoCC.mkDerivation {
 
     grep -Fx 'name: codex' ${skillFile}
     grep -F 'kanban_create' ${skillFile}
-    grep -F 'a new task branches from the project' ${skillFile}
-    grep -F 'parent links do not implicitly select a Git base revision' ${skillFile}
+    grep -F 'Every delegated Codex task uses its own project-backed worktree' ${skillFile}
+    grep -F 'exact source branch or commit' ${skillFile}
+    grep -F 'it does not select a Git revision' ${skillFile}
+    if grep -F 'workspace_kind="dir"' ${skillFile}; then
+      echo "The managed Codex skill must not route delegated work into a shared directory" >&2
+      exit 1
+    fi
     if grep -F '@lane-guide@' ${skillFile}; then
       echo "The managed Codex skill still contains an unsubstituted lane guide" >&2
       exit 1
