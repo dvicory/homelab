@@ -8,7 +8,10 @@ let
   patchedSource = applyPatches {
     name = "hermes-agent-worker-lanes-source";
     inherit src;
-    patches = [ ./worker-lanes.patch ];
+    patches = [
+      ./worker-lanes.patch
+      ./kanban-platform-toolsets.patch
+    ];
   };
 in
 hermesAgent.overrideAttrs (old: {
