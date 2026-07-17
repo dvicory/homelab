@@ -6,12 +6,13 @@
 }:
 let
   patchedSource = applyPatches {
-    name = "hermes-agent-worker-lanes-source";
+    name = "hermes-agent-patched-source";
     inherit src;
     patches = [
       ./worker-lanes.patch
       ./worker-lane-discovery.patch
       ./kanban-platform-toolsets.patch
+      ./secure-terminal-isolation.patch
     ];
   };
 in
@@ -27,6 +28,9 @@ hermesAgent.overrideAttrs (old: {
     done
   '';
   passthru = (old.passthru or { }) // {
+    patchedSource = patchedSource;
+    # Compatibility alias for the worker-lane plugin/check while downstream
+    # consumers migrate to the capability-neutral package name.
     workerLanesSource = patchedSource;
   };
 })

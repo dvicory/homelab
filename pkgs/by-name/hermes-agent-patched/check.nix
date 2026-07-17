@@ -4,8 +4,8 @@
   patchedHermes,
   runCommand,
 }:
-runCommand "hermes-worker-lane-check" { } ''
-  export PYTHONPATH=${patchedHermes.workerLanesSource}
+runCommand "hermes-agent-patched-check" { } ''
+  export PYTHONPATH=${patchedHermes.patchedSource}
   export PYTHONPYCACHEPREFIX=$TMPDIR/pycache
   # Nix sets SSL_CERT_FILE=/no-cert-file.crt in pure builds. Two upstream
   # prompt-construction tests initialize an OpenAI client and validate the CA
@@ -14,10 +14,12 @@ runCommand "hermes-worker-lane-check" { } ''
   python=${patchedHermes.hermesVenv}/bin/python3
 
   "$python" -m pytest -q -o cache_dir=$TMPDIR/pytest-cache \
-    ${patchedHermes.workerLanesSource}/tests/hermes_cli/test_worker_lanes.py \
-    ${patchedHermes.workerLanesSource}/tests/hermes_cli/test_worker_lane_discovery.py \
-    ${patchedHermes.workerLanesSource}/tests/hermes_cli/test_kanban_worker_spawn_toolsets.py \
-    ${patchedHermes.workerLanesSource}/tests/tools/test_kanban_tools.py \
+    ${patchedHermes.patchedSource}/tests/hermes_cli/test_worker_lanes.py \
+    ${patchedHermes.patchedSource}/tests/hermes_cli/test_worker_lane_discovery.py \
+    ${patchedHermes.patchedSource}/tests/hermes_cli/test_kanban_worker_spawn_toolsets.py \
+    ${patchedHermes.patchedSource}/tests/tools/test_kanban_tools.py \
+    ${patchedHermes.patchedSource}/tests/tools/test_secure_terminal_scope.py \
+    ${patchedHermes.patchedSource}/tests/tools/test_secure_terminal_identity_integration.py \
     ${codexWorkerLane.testSource}/tests
   "$python" -m py_compile \
     ${codexWorkerLane}/share/hermes-agent/plugins/codex-worker-lane/__init__.py \
