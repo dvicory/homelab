@@ -1,0 +1,244 @@
+From 7f9beec9ddf34b12dc19d3c84958b39439bc398d Mon Sep 17 00:00:00 2001
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Thu, 16 Jul 2026 15:00:00 -0700
+Subject: [PATCH] feat(terminal): isolate Docker storage by conversation
+
+Keep Hermes' existing Docker backend and CLI contract, but add the two pieces
+needed by a remote, least-privilege container engine:
+
+* a conversation environment scope instead of the upstream global container;
+* engine-owned named volumes instead of gateway-side bind paths.
+
+Support-file mounts are independently suppressible because their source paths
+belong to the gateway filesystem and are neither meaningful nor safe when the
+Docker API is served by a different Unix account.
+---
+ tools/code_execution_tool.py             |  3 ++-
+ tools/environments/docker.py              | 47 ++++++++++++++++++++++++------
+ tools/file_tools.py                       | 14 ++++++---
+ tools/terminal_tool.py                    | 24 ++++++++++++---
+ tests/tools/test_secure_terminal_scope.py | 35 ++++++++++++++++++++++
+ 5 files changed, 105 insertions(+), 18 deletions(-)
+ create mode 100644 tests/tools/test_secure_terminal_scope.py
+
+diff --git a/tools/environments/docker.py b/tools/environments/docker.py
+index 6e8d21e..aa8f1cd 100644
+--- a/tools/environments/docker.py
++++ b/tools/environments/docker.py
+@@ -599,6 +599,8 @@ class DockerEnvironment(BaseEnvironment):
+         run_as_host_user: bool = False,
+         extra_args: list = None,
+         persist_across_processes: bool = True,
++        storage: str | None = None,
++        mount_support_files: bool | None = None,
+     ):
+         if cwd == "~":
+             cwd = "/root"
+@@ -606,6 +608,20 @@ class DockerEnvironment(BaseEnvironment):
+         self._persist_across_processes = persist_across_processes
+         self._task_id = task_id
+         self._forward_env = _normalize_forward_env_names(forward_env)
++        storage = (storage or os.getenv("TERMINAL_DOCKER_STORAGE", "bind")).strip().lower()
++        if storage not in {"bind", "named-volume"}:
++            raise ValueError(
++                "TERMINAL_DOCKER_STORAGE must be 'bind' or 'named-volume', "
++                f"not {storage!r}"
++            )
++        if mount_support_files is None:
++            mount_support_files = os.getenv(
++                "TERMINAL_DOCKER_MOUNT_SUPPORT_FILES", "true"
++            ).lower() in {"true", "1", "yes"}
++        self._storage = storage
++        self._mount_support_files = mount_support_files
++        profile_name = _sanitize_label_value(_get_active_profile_name())
++        task_label = _sanitize_label_value(task_id)
+         self._env = _normalize_env_dict(env)
+         self._container_id: Optional[str] = None
+         self._labels: dict[str, str] = {}
+@@ -677,18 +693,27 @@ class DockerEnvironment(BaseEnvironment):
+         self._home_dir: Optional[str] = None
+         writable_args = []
+         if self._persistent:
+-            sandbox = get_sandbox_dir() / "docker" / task_id
+-            self._home_dir = str(sandbox / "home")
+-            os.makedirs(self._home_dir, exist_ok=True)
+-            writable_args.extend([
+-                "-v", f"{self._home_dir}:/root",
+-            ])
+-            if not bind_host_cwd and not workspace_explicitly_mounted:
+-                self._workspace_dir = str(sandbox / "workspace")
+-                os.makedirs(self._workspace_dir, exist_ok=True)
+-                writable_args.extend([
+-                    "-v", f"{self._workspace_dir}:/workspace",
+-                ])
++            if storage == "named-volume":
++                # The Docker/Podman service owns these paths. This works when
++                # the API server is a different Unix account and prevents the
++                # gateway from needing any sandbox storage access.
++                volume_prefix = f"hermes-{profile_name}-{task_label}"
++                writable_args.extend([
++                    "-v", f"{volume_prefix}-home:/root",
++                ])
++                if not bind_host_cwd and not workspace_explicitly_mounted:
++                    writable_args.extend([
++                        "-v", f"{volume_prefix}-workspace:/workspace",
++                    ])
++            else:
++                sandbox = get_sandbox_dir() / "docker" / task_id
++                self._home_dir = str(sandbox / "home")
++                os.makedirs(self._home_dir, exist_ok=True)
++                writable_args.extend(["-v", f"{self._home_dir}:/root"])
++                if not bind_host_cwd and not workspace_explicitly_mounted:
++                    self._workspace_dir = str(sandbox / "workspace")
++                    os.makedirs(self._workspace_dir, exist_ok=True)
++                    writable_args.extend(["-v", f"{self._workspace_dir}:/workspace"])
+         else:
+             if not bind_host_cwd and not workspace_explicitly_mounted:
+                 writable_args.extend([
+@@ -713,6 +738,11 @@ class DockerEnvironment(BaseEnvironment):
+                 get_skills_directory_mount,
+                 get_cache_directory_mounts,
+             )
++            if not mount_support_files:
++                get_credential_file_mounts = lambda: []
++                get_skills_directory_mount = lambda: []
++                get_cache_directory_mounts = lambda: []
++                logger.info("Docker: gateway support-file mounts disabled")
+-
++
+             for mount_entry in get_credential_file_mounts():
+                 src = Path(mount_entry["host_path"])
+@@ -863,6 +893,4 @@ class DockerEnvironment(BaseEnvironment):
+         # Values are limited to the safe character set defined by
+         # _sanitize_label_value(); the active Hermes profile is captured at
+         # container-start time and never changes for the container's lifetime.
+-        profile_name = _sanitize_label_value(_get_active_profile_name())
+-        task_label = _sanitize_label_value(task_id)
+         label_args = [
+diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
+index 707e83c..74c96ad 100755
+--- a/tools/terminal_tool.py
++++ b/tools/terminal_tool.py
+@@ -24,4 +24,5 @@ Usage:
+ """
+-
++
++import hashlib
+ import importlib.util
+ import json
+@@ -1120,4 +1121,11 @@ def clear_task_env_overrides(task_id: str):
+     _task_env_overrides.pop(task_id, None)
+-
+-
++
++
++def _environment_task_id(task_id: Optional[str], session_id: Optional[str] = None) -> Optional[str]:
++    """Select the identity used for an execution environment."""
++    if os.getenv("TERMINAL_ISOLATION_SCOPE", "shared").strip().lower() == "conversation":
++        return session_id or task_id
++    return task_id
++
++
+ def _resolve_container_task_id(task_id: Optional[str]) -> str:
+@@ -1153,3 +1161,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
+         if set(overrides.keys()) & _ISOLATION_KEYS:
+             return task_id
++    if task_id and os.getenv("TERMINAL_ISOLATION_SCOPE", "shared").strip().lower() == "conversation":
++        # Do not expose a platform conversation identifier in engine metadata.
++        digest = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:24]
++        return f"conversation-{digest}"
+     return "default"
+diff --git a/tools/file_tools.py b/tools/file_tools.py
+index d27be08..7ebba7b 100644
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -2117,1 +2117,3 @@ SEARCH_FILES_SCHEMA = {
+-    tid = kw.get("task_id") or "default"
++    from tools.terminal_tool import _environment_task_id
++
++    tid = _environment_task_id(kw.get("task_id"), kw.get("session_id")) or "default"
+@@ -2122,1 +2124,3 @@ def _handle_read_file(args, **kw):
+-    tid = kw.get("task_id") or "default"
++    from tools.terminal_tool import _environment_task_id
++
++    tid = _environment_task_id(kw.get("task_id"), kw.get("session_id")) or "default"
+@@ -2149,1 +2153,3 @@ def _handle_write_file(args, **kw):
+-    tid = kw.get("task_id") or "default"
++    from tools.terminal_tool import _environment_task_id
++
++    tid = _environment_task_id(kw.get("task_id"), kw.get("session_id")) or "default"
+@@ -2160,1 +2166,3 @@ def _handle_patch(args, **kw):
+-    tid = kw.get("task_id") or "default"
++    from tools.terminal_tool import _environment_task_id
++
++    tid = _environment_task_id(kw.get("task_id"), kw.get("session_id")) or "default"
+diff --git a/tools/code_execution_tool.py b/tools/code_execution_tool.py
+index 728f9ca..5c1314b 100644
+--- a/tools/code_execution_tool.py
++++ b/tools/code_execution_tool.py
+@@ -1896,12 +1896,20 @@ EXECUTE_CODE_SCHEMA = build_execute_code_schema()
+ # --- Registry ---
+ from tools.registry import registry, tool_error
+-
++
++
++def _handle_execute_code(args, **kw):
++    from tools.terminal_tool import _environment_task_id
++
++    return execute_code(
++        code=args.get("code", ""),
++        task_id=_environment_task_id(kw.get("task_id"), kw.get("session_id")),
++        enabled_tools=kw.get("enabled_tools"),
++    )
++
++
+ registry.register(
+     name="execute_code",
+     toolset="code_execution",
+     schema=EXECUTE_CODE_SCHEMA,
+-    handler=lambda args, **kw: execute_code(
+-        code=args.get("code", ""),
+-        task_id=kw.get("task_id"),
+-        enabled_tools=kw.get("enabled_tools")),
++    handler=_handle_execute_code,
+     check_fn=check_sandbox_requirements,
+diff --git a/tests/tools/test_secure_terminal_scope.py b/tests/tools/test_secure_terminal_scope.py
+new file mode 100644
+index 0000000..da70515
+--- /dev/null
++++ b/tests/tools/test_secure_terminal_scope.py
+@@ -0,0 +1,34 @@
++"""Regression tests for deployment-selectable terminal isolation scope."""
++
++from tools.terminal_tool import _environment_task_id, _resolve_container_task_id
++
++
++def test_upstream_default_remains_shared(monkeypatch):
++    monkeypatch.delenv("TERMINAL_ISOLATION_SCOPE", raising=False)
++
++    assert _environment_task_id("turn-a", "conversation-a") == "turn-a"
++    assert _resolve_container_task_id("turn-a") == "default"
++    assert _resolve_container_task_id("turn-b") == "default"
++
++
++def test_conversation_scope_is_stable_and_separate(monkeypatch):
++    monkeypatch.setenv("TERMINAL_ISOLATION_SCOPE", "conversation")
++
++    raw_a = _environment_task_id("turn-a", "conversation-a")
++    raw_a_later = _environment_task_id("turn-b", "conversation-a")
++    raw_b = _environment_task_id("turn-c", "conversation-b")
++
++    key_a = _resolve_container_task_id(raw_a)
++    assert _resolve_container_task_id(raw_a_later) == key_a
++    assert _resolve_container_task_id(raw_b) != key_a
++    assert key_a.startswith("conversation-")
++    assert "conversation-a" not in key_a
++
++
++def test_conversation_scope_falls_back_to_task_without_session(monkeypatch):
++    monkeypatch.setenv("TERMINAL_ISOLATION_SCOPE", "conversation")
++
++    raw = _environment_task_id("task-a", None)
++
++    assert raw == "task-a"
++    assert _resolve_container_task_id(raw).startswith("conversation-")

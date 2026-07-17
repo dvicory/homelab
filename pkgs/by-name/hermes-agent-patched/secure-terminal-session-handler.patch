@@ -1,0 +1,24 @@
+From d3b8976466f84b32e1760863dd8d668667ab882f Mon Sep 17 00:00:00 2001
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Thu, 16 Jul 2026 16:00:00 -0700
+Subject: [PATCH] fix(terminal): pass conversation identity to terminal backend
+
+Keep this handler-only change separate so its hunk is applied after the main
+terminal module additions without depending on patch offset tracking.
+---
+ tools/terminal_tool.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
+index 74c96ad..ac7df01 100644
+--- a/tools/terminal_tool.py
++++ b/tools/terminal_tool.py
+@@ -3019,7 +3019,7 @@ def _handle_terminal(args, **kw):
+         command=args.get("command"),
+         background=args.get("background", False),
+         timeout=args.get("timeout"),
+-        task_id=kw.get("task_id"),
++        task_id=_environment_task_id(kw.get("task_id"), kw.get("session_id")),
+         session_id=kw.get("session_id"),
+         workdir=args.get("workdir"),
+         pty=args.get("pty", False),
