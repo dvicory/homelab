@@ -703,11 +703,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1784503331,
-        "narHash": "sha256-AxC5K9TewFmIMICD1PPGI0naCPvJomMuvG71LkOS7sU=",
+        "lastModified": 1784503487,
+        "narHash": "sha256-w01g2uGjbLBDu1rCeiZNZ2OZmcd6QlRRRPhpLvtK/Jo=",
         "owner": "dvicory",
         "repo": "gondolin-nix",
-        "rev": "0f8a5b62d56874a644d7f0821ff3683b7cbe0f00",
+        "rev": "6ac26361140294f85c8587f0365b0a5de3ea309f",
         "type": "github"
       },
       "original": {
