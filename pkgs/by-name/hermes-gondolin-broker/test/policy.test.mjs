@@ -72,6 +72,7 @@ function basePolicy() {
         allowedPairs: [
           { asset: "general", template: "project" },
           { asset: "minimal", template: "offline" },
+          { asset: "general", template: "offline" },
         ],
         maximum: {
           networkBundles: ["pypi-public"],
@@ -223,6 +224,20 @@ test("destination rules render to gondolin host patterns", () => {
     "pypi.org",
     "*.pypi.org",
   ]);
+});
+
+test("the allowed pair selects the asset; template.asset is only a default", () => {
+  const policy = parsePolicy(basePolicy());
+  // offline defaults to the minimal asset via template.asset
+  const minimal = composePolicy(policy, { profile: "hermes-qa", template: "offline" });
+  assert.equal(minimal.assetName, "minimal");
+  assert.equal(minimal.buildId, "build-minimal");
+  // the same template pairs with general when explicitly requested
+  const general = composePolicy(policy, { profile: "hermes-qa", template: "offline", asset: "general" });
+  assert.equal(general.assetName, "general");
+  assert.equal(general.buildId, "build-general");
+  // generations differ across the two assets
+  assert.notEqual(general.policyHash, minimal.policyHash);
 });
 
 test("generation-relevant identity changes the policy hash", () => {

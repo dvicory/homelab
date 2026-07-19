@@ -686,8 +686,8 @@ function validateCrossReferences(policy: PolicyFile): void {
           template: pair.template,
         });
       }
-      if (tpl.asset !== pair.asset) {
-        throw new BrokerError(REASONS.POLICY_PAIR_FORBIDDEN, `pair (${pair.asset}, ${pair.template}) does not match template asset`, {
+      if (!(pair.asset in policy.assets)) {
+        throw new BrokerError(REASONS.POLICY_UNKNOWN_ASSET, `pair references unknown asset`, {
           asset: pair.asset,
           template: pair.template,
         });
@@ -782,8 +782,13 @@ export function composePolicy(policy: PolicyFile, request: ComposeRequest): Effe
   }
 
   const templateName = request.template ?? worklane?.defaultTemplate ?? profile.defaultTemplate;
-  const assetName =
-    request.asset ?? policy.templates[templateName]?.asset;
+  const template = policy.templates[templateName];
+  if (!template) {
+    throw new BrokerError(REASONS.POLICY_UNKNOWN_TEMPLATE, `unknown template`, { template: templateName });
+  }
+  // The (asset, template) pair selects the asset; template.asset is only
+  // the default when the request does not name one (V3 §11.5).
+  const assetName = request.asset ?? template.asset;
   const pairs = worklane?.allowedPairs ?? profile.allowedPairs;
   const pairAllowed = pairs.some((p) => p.template === templateName && p.asset === assetName);
   if (!pairAllowed) {
@@ -794,14 +799,10 @@ export function composePolicy(policy: PolicyFile, request: ComposeRequest): Effe
       template: templateName,
     });
   }
-  const template = policy.templates[templateName];
-  if (!template) {
-    throw new BrokerError(REASONS.POLICY_UNKNOWN_TEMPLATE, `unknown template`, { template: templateName });
-  }
-  const asset = policy.assets[template.asset];
+  const asset = policy.assets[assetName];
   if (!asset || asset.buildId === undefined) {
     throw new BrokerError(REASONS.POLICY_UNKNOWN_ASSET, `unknown or unresolved asset`, {
-      asset: template.asset,
+      asset: assetName,
     });
   }
 
@@ -862,7 +863,7 @@ export function composePolicy(policy: PolicyFile, request: ComposeRequest): Effe
       worklane: worklaneName,
       template: templateName,
       templateVersion: template.version,
-      asset: template.asset,
+      asset: assetName,
       buildId: asset.buildId,
       network,
       resources,
@@ -875,7 +876,7 @@ export function composePolicy(policy: PolicyFile, request: ComposeRequest): Effe
   return {
     profile: request.profile,
     worklane: worklaneName,
-    assetName: template.asset,
+    assetName,
     assetPath: asset.path,
     buildId: asset.buildId,
     templateName,
