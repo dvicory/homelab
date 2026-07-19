@@ -406,7 +406,9 @@ const isMain = process.argv[1] !== undefined && import.meta.url === new URL(`fil
 if (isMain) {
   startBroker().catch((err: unknown) => {
     const brokerErr = asBrokerError(err, "broker startup failed");
-    process.stderr.write(`${brokerErr.reason}: ${brokerErr.message}\n`);
+    process.stderr.write(
+      `${brokerErr.reason}: ${brokerErr.message} ${JSON.stringify(brokerErr.details)}\n`,
+    );
     process.exit(1);
   });
 }

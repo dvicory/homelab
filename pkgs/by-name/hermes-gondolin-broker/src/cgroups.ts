@@ -74,12 +74,28 @@ export class CgroupManager {
     if (wanted.length === 0) {
       throw new BrokerError(REASONS.RESOURCE_CGROUP, "no cpu/memory/pids controllers delegated", {
         available,
+        basePath: this.#basePath,
       });
     }
+    // systemd pre-enables delegated controllers; re-writing a live
+    // subtree_control can trip cgroup v2's no-internal-process rule, so only
+    // write what is actually missing.
+    let alreadyEnabled: string[] = [];
     try {
-      writeFile(path.join(this.#basePath, "cgroup.subtree_control"), wanted.map((c) => `+${c}`).join(" "));
+      alreadyEnabled = readFile(path.join(this.#basePath, "cgroup.subtree_control")).split(/\s+/);
+    } catch {
+      alreadyEnabled = [];
+    }
+    const missing = wanted.filter((c) => !alreadyEnabled.includes(c));
+    if (missing.length === 0) return;
+    try {
+      writeFile(path.join(this.#basePath, "cgroup.subtree_control"), missing.map((c) => `+${c}`).join(" "));
     } catch (err) {
       throw new BrokerError(REASONS.RESOURCE_CGROUP, "cannot enable delegated controllers", {
+        basePath: this.#basePath,
+        available,
+        alreadyEnabled,
+        missing,
         error: err instanceof Error ? err.message : String(err),
       });
     }
