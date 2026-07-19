@@ -65,8 +65,6 @@ export interface VmHandle {
 export interface VmSpec {
   /** guest asset directory (contains manifest.json + kernel/initramfs/rootfs) */
   assetPath: string;
-  /** disposable writable overlay path for the VM root disk */
-  rootDiskPath: string;
   memoryMiB: number;
   cpus: number;
   /** guest path -> host directory, exposed through the VFS provider */
@@ -163,17 +161,19 @@ export async function createGondolinProvider(): Promise<VmProvider> {
     async createVm(spec: VmSpec): Promise<VmHandle> {
       const vm = await sdk.VM.create({
         sandbox: {
-          vmm: "qemu",
-          accel: "kvm",
+          // Production runs QEMU/KVM on Linux; dev hosts (darwin) use the
+          // SDK's default backend. KVM is mandatory in production, and the
+          // NixOS unit fails closed when /dev/kvm is absent.
+          ...(process.platform === "linux" ? { vmm: "qemu", accel: "kvm" } : {}),
           imagePath: spec.assetPath,
-          rootDiskPath: spec.rootDiskPath,
-          rootDiskFormat: "qcow2",
-          rootDiskDeleteOnClose: true,
           netEnabled: true,
           allowWebSockets: spec.allowWebSockets,
           httpHooks: spec.httpHooks,
           dns: spec.dns,
         },
+        // Disposable roots (V3 §7): the SDK materializes a qcow2 overlay
+        // over the immutable Nix base rootfs and deletes it on close.
+        rootfs: { mode: "cow" },
         memory: `${spec.memoryMiB}M`,
         cpus: spec.cpus,
         autoStart: true,

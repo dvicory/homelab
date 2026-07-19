@@ -45,8 +45,6 @@ interface LiveEnvironment {
   generation: string;
   policy: EffectivePolicy;
   vm: VmHandle;
-  cgroupPath: string;
-  rootDiskPath: string;
   workspaceGuestPath: string;
   workspaceHostPath: string | null;
 }
@@ -239,8 +237,6 @@ export class LifecycleManager {
 
   async #boot(row: EnvironmentRow, policy: EffectivePolicy, generation: string): Promise<void> {
     const network = await this.#buildNetwork(policy);
-    const rootDiskPath = path.join(this.#paths.runtimeDir, `root-${row.envKey}-${generation}.qcow2`);
-    fs.mkdirSync(this.#paths.runtimeDir, { recursive: true, mode: 0o700 });
 
     const cgroup = this.#cgroups.create(generation, {
       memoryMiB: policy.resources.memoryMiB,
@@ -251,7 +247,6 @@ export class LifecycleManager {
     try {
       const vm = await this.#provider.createVm({
         assetPath: policy.assetPath,
-        rootDiskPath,
         memoryMiB: policy.resources.memoryMiB,
         cpus: policy.resources.cpus,
         workspaceHostPath: row.workspacePath,
@@ -270,19 +265,12 @@ export class LifecycleManager {
         generation,
         policy,
         vm,
-        cgroupPath: cgroup.path,
-        rootDiskPath,
         workspaceGuestPath: WORKSPACE_GUEST_PATH,
         workspaceHostPath: row.workspacePath,
       });
       this.#cgroupHandles.set(row.envKey, cgroup);
     } catch (err) {
       cgroup.destroy();
-      try {
-        fs.rmSync(rootDiskPath, { force: true });
-      } catch {
-        // best effort
-      }
       throw err;
     }
   }
@@ -392,13 +380,6 @@ export class LifecycleManager {
     const cgroup = this.#cgroupHandles.get(envKey);
     this.#cgroupHandles.delete(envKey);
     cgroup?.destroy();
-    if (live) {
-      try {
-        fs.rmSync(live.rootDiskPath, { force: true });
-      } catch {
-        // best effort
-      }
-    }
   }
 
   /** Environment rows for reconciliation. */

@@ -99,25 +99,7 @@ export function reconcile(deps: ReconcilerDeps): ReconcileReport {
     }
   }
 
-  // 4. Drop runtime files of generations nothing tracks.
-  if (fs.existsSync(deps.runtimeDir)) {
-    const liveGenerations = new Set(
-      deps.registry.listEnvironments().map((row) => `${row.envKey}-${row.generation}`),
-    );
-    for (const entry of fs.readdirSync(deps.runtimeDir)) {
-      const match = entry.match(/^root-(.+)\.qcow2$/);
-      if (!match) continue;
-      const stem = match[1]!;
-      if ([...liveGenerations].some((g) => stem === g)) continue;
-      try {
-        fs.rmSync(path.join(deps.runtimeDir, entry), { force: true });
-      } catch {
-        // best effort
-      }
-    }
-  }
-
-  // 5. Audit retention.
+  // 4. Audit retention.
   report.prunedAuditRows = deps.pruneAudit();
 
   deps.audit.emit({
