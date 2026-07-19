@@ -23,7 +23,7 @@ new file mode 100644
 index 0000000..489ed02
 --- /dev/null
 +++ b/tests/tools/test_gondolin_backend.py
-@@ -0,0 +1,206 @@
+@@ -0,0 +1,238 @@
 +"""Tests for the Gondolin broker terminal backend.
 +
 +A fake broker implements the wire protocol (length-prefixed JSON over
@@ -230,12 +230,44 @@ index 0000000..489ed02
 +    broker = FakeBroker(short_sock())
 +    assert check_gondolin_available(broker.socket_path)
 +    assert not check_gondolin_available(str(tmp_path / "missing.sock"))
++
++
++def test_embed_stdin_heredoc_groups_command():
++    wrapped = GondolinEnvironment._embed_stdin_heredoc("a; b; c", "payload")
++    head, _, tail = wrapped.partition("\n")
++    assert head == "{"
++    delimiter = wrapped.split("'")[1]
++    assert delimiter.startswith("HERMES_STDIN_")
++    assert wrapped.rstrip().endswith(f"payload\n{delimiter}")
++    assert tail.startswith(f"a; b; c\n}} << '{delimiter}'")
++
++
++def test_stdin_heredoc_feeds_multi_command_scripts(tmp_path):
++    """Regression: write_file landed 0-byte files because the appended
++    heredoc bound to the pipeline's trailing ``trap - EXIT`` instead of
++    feeding ``cat``. The grouped form must deliver stdin to the reader."""
++    import subprocess
++
++    target = tmp_path / "out.txt"
++    script = (
++        "set -e; "
++        f"d={tmp_path}; t={target}; "
++        'tmp="$(mktemp -p "$d" .hermes-tmp.XXXXXX)"; '
++        "trap 'rm -f \"$tmp\"' EXIT; "
++        'cat > "$tmp"; '
++        'mv -f "$tmp" "$t"; '
++        "trap - EXIT"
++    )
++    wrapped = GondolinEnvironment._embed_stdin_heredoc(script, "hello Daniel")
++    result = subprocess.run(["/bin/sh", "-c", wrapped], capture_output=True, text=True)
++    assert result.returncode == 0, result.stderr
++    assert target.read_text() == "hello Daniel\n"
 diff --git a/tools/environments/gondolin.py b/tools/environments/gondolin.py
 new file mode 100644
 index 0000000..e0f113b
 --- /dev/null
 +++ b/tools/environments/gondolin.py
-@@ -0,0 +1,292 @@
+@@ -0,0 +1,308 @@
 +"""Gondolin broker terminal backend (V3 secure-terminal).
 +
 +Talks to the profile's Gondolin broker over its mode-0600 Unix socket
@@ -258,6 +290,7 @@ index 0000000..e0f113b
 +import socket
 +import struct
 +import threading
++import uuid
 +from typing import Any, Optional
 +
 +from tools.environments.base import BaseEnvironment, _ThreadedProcessHandle
@@ -391,6 +424,21 @@ index 0000000..e0f113b
 +    # stdin rides the command heredoc (same as Modal/Daytona); the broker
 +    # protocol's exec.stdin op exists for a future interactive path.
 +    _stdin_mode = "heredoc"
++
++    @staticmethod
++    def _embed_stdin_heredoc(command: str, stdin_data: str) -> str:
++        """Brace-group the command so the heredoc feeds the script's stdin.
++
++        The base implementation appends ``<< DELIM`` to the whole command
++        string, which binds the heredoc to the LAST command of a
++        multi-command script. The atomic write pipeline ends in
++        ``trap - EXIT``, so the heredoc fed ``trap`` while ``cat`` read an
++        empty stdin and every write_file landed as a 0-byte file.
++        Redirecting a brace group instead delivers the data to whichever
++        command inside actually reads stdin.
++        """
++        delimiter = f"HERMES_STDIN_{uuid.uuid4().hex[:12]}"
++        return f"{{\n{command}\n}} << '{delimiter}'\n{stdin_data}\n{delimiter}"
 +
 +    def __init__(
 +        self,
@@ -560,7 +608,7 @@ index 4694933..65f2a4f 100644
 +        return _GondolinEnvironment(
 +            cwd=cwd, timeout=timeout, task_id=task_id,
 +        )
-+    
++
      elif env_type == "singularity":
          return _SingularityEnvironment(
              image=image, cwd=cwd, timeout=timeout,
