@@ -169,11 +169,16 @@ in
                 UMask = "0077";
                 PrivateTmp = true;
                 ProtectHome = true;
+                # ProtectKernelTunables makes /sys read-only; the delegated
+                # cgroup v2 subtree must stay writable or the broker (which
+                # fails closed rather than run ungoverned) cannot create
+                # per-VM cgroups (V3 section 16).
                 ProtectSystem = "strict";
                 ReadWritePaths = [
                   "/var/lib/${sandboxUser}"
                   "/var/cache/${sandboxUser}"
                   "/run/${sandboxUser}"
+                  "/sys/fs/cgroup"
                 ];
 
                 DeviceAllow = "/dev/kvm";
