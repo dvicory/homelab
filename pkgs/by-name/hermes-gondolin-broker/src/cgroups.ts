@@ -69,7 +69,7 @@ export class CgroupManager {
   }
 
   #enableControllers(): void {
-    const available = readFile(path.join(this.#basePath, "cgroup.controllers")).split(/\s+/);
+    const available = readFile(path.join(this.#basePath, "cgroup.controllers")).split(/\s+/).filter(Boolean);
     const wanted = ["cpu", "memory", "pids"].filter((c) => available.includes(c));
     if (wanted.length === 0) {
       throw new BrokerError(REASONS.RESOURCE_CGROUP, "no cpu/memory/pids controllers delegated", {
@@ -77,17 +77,31 @@ export class CgroupManager {
         basePath: this.#basePath,
       });
     }
-    // systemd pre-enables delegated controllers; re-writing a live
-    // subtree_control can trip cgroup v2's no-internal-process rule, so only
-    // write what is actually missing.
     let alreadyEnabled: string[] = [];
     try {
-      alreadyEnabled = readFile(path.join(this.#basePath, "cgroup.subtree_control")).split(/\s+/);
+      alreadyEnabled = readFile(path.join(this.#basePath, "cgroup.subtree_control")).split(/\s+/).filter(Boolean);
     } catch {
       alreadyEnabled = [];
     }
     const missing = wanted.filter((c) => !alreadyEnabled.includes(c));
     if (missing.length === 0) return;
+
+    // cgroup v2 no-internal-process rule: a cgroup with processes cannot
+    // enable domain controllers in its subtree_control (EBUSY). systemd's
+    // Delegate=yes puts the broker in the delegated root without
+    // pre-enabling, so first move the broker's thread group into a child
+    // cgroup, leaving the root empty. Per-VM cgroups are siblings.
+    try {
+      const selfDir = path.join(this.#basePath, "broker-self");
+      if (!fs.existsSync(selfDir)) fs.mkdirSync(selfDir);
+      writeFile(path.join(selfDir, "cgroup.procs"), `${process.pid}`);
+    } catch (err) {
+      throw new BrokerError(REASONS.RESOURCE_CGROUP, "cannot relocate broker into child cgroup", {
+        basePath: this.#basePath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
     try {
       writeFile(path.join(this.#basePath, "cgroup.subtree_control"), missing.map((c) => `+${c}`).join(" "));
     } catch (err) {
