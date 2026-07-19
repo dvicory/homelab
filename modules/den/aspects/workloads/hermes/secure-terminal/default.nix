@@ -153,6 +153,10 @@ in
                 HERMES_BROKER_STATE_DIR = "/var/lib/${sandboxUser}";
                 HERMES_BROKER_CACHE_DIR = "/var/cache/${sandboxUser}";
                 HERMES_BROKER_RUNTIME_DIR = "/run/${sandboxUser}";
+                # Spike diagnostics: SDK component logs (boot, exec, vfs,
+                # net) land in the broker journal. Remove after the Phase 4
+                # decision (V3 section 19).
+                GONDOLIN_DEBUG = "all";
               };
               serviceConfig = {
                 Type = "exec";
