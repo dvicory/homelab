@@ -13,6 +13,7 @@ let
       ./worker-lane-discovery.patch
       ./kanban-platform-toolsets.patch
       ./secure-terminal-isolation.patch
+      ./gondolin-backend.patch
     ];
   };
 in
