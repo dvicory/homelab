@@ -87,6 +87,14 @@
       };
       url = "github:sini/gen-schema";
     };
+    gondolin-nix = {
+      inputs = {
+        nixpkgs = {
+          follows = "nixpkgs";
+        };
+      };
+      url = "github:dvicory/gondolin-nix/secure-terminal-v3";
+    };
     hermes-agent = {
       inputs = {
         nixpkgs = {
