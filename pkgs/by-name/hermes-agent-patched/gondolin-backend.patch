@@ -1,0 +1,586 @@
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Sat, 19 Jul 2026 02:00:00 -0700
+Subject: [PATCH] feat(terminal): add Gondolin broker terminal backend
+
+Add a BaseEnvironment implementation that routes terminal execution
+through the profile's Gondolin broker over its mode-0600 Unix socket
+(HERMES_GONDOLIN_SOCKET). The backend is a thin typed client of the
+broker protocol: ensure on construction (surfacing recreation as
+trusted state-loss context), exec.start for commands with streamed
+bounded output and exec.cancel on kill, and close on cleanup. The
+broker owns images, policy, lifecycle, network mediation, and resource
+governance; the gateway never selects them.
+
+Registers env_type "gondolin" in the environment factory, the container
+cwd guard, the unknown-backend error, and the tool health check (broker
+status probe). File tools use the generic ShellFileOperations path;
+background processes and execute_code ride the shared env contract.
+Kept as a separate patch from conversation identity and worker-lane
+changes so each is independently reviewable (V3 section 14.4).
+
+diff --git a/tests/tools/test_gondolin_backend.py b/tests/tools/test_gondolin_backend.py
+new file mode 100644
+index 0000000..489ed02
+--- /dev/null
++++ b/tests/tools/test_gondolin_backend.py
+@@ -0,0 +1,206 @@
++"""Tests for the Gondolin broker terminal backend.
++
++A fake broker implements the wire protocol (length-prefixed JSON over
++AF_UNIX) so the real GondolinEnvironment + BrokerClient code paths run
++end to end: ensure, exec.start with exec.state/output/exit frames,
++cancel, close, and error mapping.
++"""
++
++import json
++import os
++import socket
++import struct
++import tempfile
++import threading
++
++from tools.environments.gondolin import (
++    BrokerClient,
++    BrokerError,
++    GondolinEnvironment,
++    check_gondolin_available,
++)
++
++
++class FakeBroker:
++    """Scriptable in-process broker for tests."""
++
++    def __init__(self, socket_path):
++        self.socket_path = socket_path
++        self.calls = []
++        self.exec_responders = []
++        self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
++        self._server.bind(socket_path)
++        self._server.listen(4)
++        self._thread = threading.Thread(target=self._serve, daemon=True)
++        self._thread.start()
++
++    def _serve(self):
++        while True:
++            try:
++                conn, _ = self._server.accept()
++            except OSError:
++                return
++            threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
++
++    def _read_frame(self, conn):
++        buffer = b""
++        while len(buffer) < 4:
++            chunk = conn.recv(4096)
++            if not chunk:
++                return None
++            buffer += chunk
++        (length,) = struct.unpack("<I", buffer[:4])
++        body = buffer[4:]
++        while len(body) < length:
++            chunk = conn.recv(4096)
++            if not chunk:
++                return None
++            body += chunk
++        return json.loads(body.decode())
++
++    def _send(self, conn, frame):
++        body = json.dumps(frame).encode()
++        conn.sendall(struct.pack("<I", len(body)) + body)
++
++    def _handle(self, conn):
++        try:
++            request = self._read_frame(conn)
++            if request is None:
++                return
++            self.calls.append((request["op"], request["payload"]))
++            op = request["op"]
++            rid = request["id"]
++
++            if op == "ensure":
++                self._send(conn, {
++                    "v": 1, "id": rid, "ok": True,
++                    "result": {
++                        "outcome": self.ensure_outcome,
++                        "generation": "gen-1",
++                        "reason": "new_environment",
++                        "buildId": "build-1",
++                    },
++                })
++            elif op == "exec.start":
++                self._send(conn, {"v": 1, "id": rid, "event": "exec.state", "procId": "p-1"})
++                for stream, text in self.exec_responders:
++                    self._send(conn, {
++                        "v": 1, "id": rid, "event": "exec.output",
++                        "stream": stream, "seq": 1,
++                        "data": __import__("base64").b64encode(text.encode()).decode(),
++                    })
++                self._send(conn, {"v": 1, "id": rid, "event": "exec.exit", "exitCode": self.exec_exit_code})
++                self._send(conn, {
++                    "v": 1, "id": rid, "ok": True,
++                    "result": {"procId": "p-1", "exitCode": self.exec_exit_code, "signal": None,
++                               "reason": None, "truncated": False},
++                })
++            elif op == "exec.cancel":
++                self._send(conn, {"v": 1, "id": rid, "ok": True,
++                                  "result": {"procId": "p-1", "reason": "cancelled"}})
++            elif op == "close":
++                self._send(conn, {"v": 1, "id": rid, "ok": True,
++                                  "result": {"generation": "gen-1", "state": "warm"}})
++            elif op == "status":
++                self._send(conn, {"v": 1, "id": rid, "ok": True, "result": {"environments": []}})
++            else:
++                self._send(conn, {"v": 1, "id": rid, "ok": False,
++                                  "error": {"reason": "protocol.unknown_operation", "message": op}})
++        finally:
++            conn.close()
++
++    ensure_outcome = "created"
++    exec_exit_code = 0
++
++    def close(self):
++        try:
++            self._server.close()
++        finally:
++            try:
++                os.unlink(self.socket_path)
++            except OSError:
++                pass
++
++
++def short_sock():
++    # AF_UNIX path limit (104 on macOS) — keep sockets in a flat /tmp dir.
++    return os.path.join(tempfile.mkdtemp(prefix="gb-"), "b.sock")
++
++
++def make_env(tmp_path, monkeypatch=None):
++    broker = FakeBroker(short_sock())
++    env = GondolinEnvironment(
++        cwd="/workspace", timeout=30, task_id="conversation-test", socket_path=broker.socket_path
++    )
++    return broker, env
++
++
++def test_ensure_on_init_stores_generation(tmp_path):
++    broker, env = make_env(tmp_path)
++    assert env.generation == "gen-1"
++    assert broker.calls[0][0] == "ensure"
++    assert broker.calls[0][1]["envKey"] == "conversation-test"
++
++
++def test_run_bash_streams_output_and_exit_code(tmp_path):
++    broker, env = make_env(tmp_path)
++    broker.exec_responders = [("stdout", "hello "), ("stdout", "world\n"), ("stderr", "oops\n")]
++    broker.exec_exit_code = 7
++
++    proc = env._run_bash("echo hello", timeout=30)
++    result = env._wait_for_process(proc, timeout=30)
++
++    assert result["returncode"] == 7
++    assert "hello world" in result["output"]
++    assert "oops" in result["output"]
++    op, payload = broker.calls[1]
++    assert op == "exec.start"
++    assert payload["shell"] == "echo hello"
++    assert payload["envKey"] == "conversation-test"
++
++
++def test_execute_end_to_end_with_cwd_markers(tmp_path):
++    broker, env = make_env(tmp_path)
++    broker.exec_responders = [("stdout", "/workspace\nmarker-output\n")]
++    broker.exec_exit_code = 0
++
++    result = env.execute("pwd", cwd="/workspace", timeout=30)
++    assert result["returncode"] == 0
++    assert "marker-output" in result["output"]
++
++
++def test_kill_cancels_via_proc_id(tmp_path):
++    broker, env = make_env(tmp_path)
++    broker.exec_responders = []
++    broker.exec_exit_code = 0
++
++    proc = env._run_bash("sleep 100", timeout=30)
++    # Give exec.state a moment to land, then kill; exec_fn completes with 0.
++    proc.wait(timeout=30)
++    proc.kill()
++    cancel_calls = [c for c in broker.calls if c[0] == "exec.cancel"]
++    assert cancel_calls == [("exec.cancel", {"procId": "p-1"})]
++
++
++def test_cleanup_closes_environment(tmp_path):
++    broker, env = make_env(tmp_path)
++    env.cleanup()
++    assert ("close", {"envKey": "conversation-test"}) in broker.calls
++    assert env._closed
++
++
++def test_broker_denial_raises_broker_error(tmp_path):
++    broker = FakeBroker(short_sock())
++    client = BrokerClient(broker.socket_path, timeout=5.0)
++    try:
++        client.call("policy.set", {})
++    except BrokerError as err:
++        assert err.reason == "protocol.unknown_operation"
++    else:
++        raise AssertionError("expected BrokerError")
++
++
++def test_health_check(tmp_path):
++    broker = FakeBroker(short_sock())
++    assert check_gondolin_available(broker.socket_path)
++    assert not check_gondolin_available(str(tmp_path / "missing.sock"))
+diff --git a/tools/environments/gondolin.py b/tools/environments/gondolin.py
+new file mode 100644
+index 0000000..e0f113b
+--- /dev/null
++++ b/tools/environments/gondolin.py
+@@ -0,0 +1,292 @@
++"""Gondolin broker terminal backend (V3 secure-terminal).
++
++Talks to the profile's Gondolin broker over its mode-0600 Unix socket
++(``HERMES_GONDOLIN_SOCKET``). The broker owns VMs, policy, lifecycle, and
++resource governance; this backend is a thin, faithful client of the typed
++broker protocol — it never selects images, host paths, QEMU flags, network
++modes, or resource ceilings.
++
++Execution flow mirrors every other Hermes backend: ``_run_bash`` returns a
++ProcessHandle over a broker ``exec.start`` call, so the shared
++``BaseEnvironment.execute()`` (session snapshots, CWD tracking, interrupts,
++timeouts) works unchanged. File tools use the generic ShellFileOperations
++path; process registry spawns via ``env.execute``.
++"""
++
++import base64
++import json
++import logging
++import os
++import socket
++import struct
++import threading
++from typing import Any, Optional
++
++from tools.environments.base import BaseEnvironment, _ThreadedProcessHandle
++
++logger = logging.getLogger(__name__)
++
++_PROTOCOL_VERSION = 1
++_MAX_FRAME_BYTES = 16 * 1024 * 1024
++_DEFAULT_SOCKET = "/run/hermes-sandbox/broker.sock"
++
++
++class BrokerError(Exception):
++    """Broker-side failure with a stable machine-readable reason."""
++
++    def __init__(self, reason: str, message: str):
++        super().__init__(f"{reason}: {message}")
++        self.reason = reason
++
++
++class _BrokerConnection:
++    """One length-prefixed JSON connection to the broker."""
++
++    def __init__(self, socket_path: str, timeout: float = 30.0):
++        self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
++        self._sock.settimeout(timeout)
++        self._sock.connect(socket_path)
++        self._buffer = b""
++        self._lock = threading.Lock()
++
++    def close(self) -> None:
++        try:
++            self._sock.close()
++        except OSError:
++            pass
++
++    def _read_frames(self):
++        """Generator of decoded frames until the connection closes."""
++        while True:
++            try:
++                chunk = self._sock.recv(65536)
++            except socket.timeout:
++                continue
++            except OSError:
++                return
++            if not chunk:
++                return
++            self._buffer += chunk
++            while len(self._buffer) >= 4:
++                (length,) = struct.unpack("<I", self._buffer[:4])
++                if length > _MAX_FRAME_BYTES:
++                    raise BrokerError("protocol.frame_too_large", f"broker frame {length} bytes")
++                if len(self._buffer) < 4 + length:
++                    break
++                body = self._buffer[4 : 4 + length]
++                self._buffer = self._buffer[4 + length :]
++                yield json.loads(body.decode("utf-8"))
++
++    def call(self, request_id: int, op: str, payload: dict):
++        """Send one request; yield (kind, frame) where kind is
++        'event' for stream frames and 'response' for the terminal frame."""
++        frame = {"v": _PROTOCOL_VERSION, "id": request_id, "op": op, "payload": payload}
++        body = json.dumps(frame).encode("utf-8")
++        with self._lock:
++            self._sock.sendall(struct.pack("<I", len(body)) + body)
++            for decoded in self._read_frames():
++                if decoded.get("id") != request_id:
++                    continue
++                if "event" in decoded:
++                    yield "event", decoded
++                    continue
++                yield "response", decoded
++                return
++
++
++class BrokerClient:
++    """Minimal typed client: one operation per connection (the broker
++    serves concurrent connections; this keeps the client trivially correct
++    under Hermes' threaded tool dispatch)."""
++
++    def __init__(self, socket_path: str, timeout: float = 30.0):
++        self._socket_path = socket_path
++        self._timeout = timeout
++        self._next_id = 1
++        self._id_lock = threading.Lock()
++
++    def _allocate_id(self) -> int:
++        with self._id_lock:
++            request_id = self._next_id
++            self._next_id += 1
++            return request_id
++
++    def call(self, op: str, payload: dict, timeout: float = None, on_event=None):
++        """Run one operation. Returns (events, result_payload).
++
++        ``on_event`` fires for each stream event as it arrives (needed for
++        exec.state, which carries the cancellable procId mid-run).
++
++        Raises BrokerError on broker denials and OSError on transport
++        failures so callers can distinguish policy answers from downtime.
++        """
++        request_id = self._allocate_id()
++        conn = _BrokerConnection(
++            self._socket_path, timeout=timeout if timeout is not None else self._timeout
++        )
++        events = []
++        try:
++            for kind, frame in conn.call(request_id, op, payload):
++                if kind == "event":
++                    events.append(frame)
++                    if on_event is not None:
++                        on_event(frame)
++                    continue
++                if not frame.get("ok", False):
++                    error = frame.get("error") or {}
++                    raise BrokerError(error.get("reason", "broker.error"), error.get("message", op))
++                return events, frame.get("result") or {}
++        finally:
++            conn.close()
++        raise BrokerError("protocol.bad_state", f"{op}: connection closed without a response")
++
++
++class GondolinEnvironment(BaseEnvironment):
++    """Hermes BaseEnvironment backed by the Gondolin broker.
++
++    ``task_id`` is the canonical environment key (already derived by
++    ``terminal_tool.environment_key``); the broker composes the effective
++    policy for it. Conversation isolation, network policy, and resource
++    limits are all broker-side.
++    """
++
++    # stdin rides the command heredoc (same as Modal/Daytona); the broker
++    # protocol's exec.stdin op exists for a future interactive path.
++    _stdin_mode = "heredoc"
++
++    def __init__(
++        self,
++        cwd: str = "/workspace",
++        timeout: int = 180,
++        env: dict = None,
++        task_id: str = None,
++        socket_path: str = None,
++    ):
++        super().__init__(cwd, timeout, env)
++        self._socket_path = socket_path or os.environ.get(
++            "HERMES_GONDOLIN_SOCKET", _DEFAULT_SOCKET
++        )
++        self._env_key = task_id or "default"
++        self._client = BrokerClient(self._socket_path, timeout=30.0)
++        self.generation: Optional[str] = None
++        self._closed = False
++        self._ensure_environment()
++
++    def _ensure_environment(self) -> None:
++        _, result = self._client.call(
++            "ensure",
++            {
++                "envKey": self._env_key,
++            },
++            timeout=180.0,
++        )
++        self.generation = result.get("generation")
++        outcome = result.get("outcome")
++        reason = result.get("reason")
++        if outcome == "recreated":
++            # Surface retained/lost state in trusted model context (V3 §8.2):
++            # the environment was rebuilt, so in-VM process state and the
++            # disposable root were lost while the workspace persisted.
++            logger.warning(
++                "Gondolin environment %s recreated (reason=%s): prior VM state lost, workspace retained",
++                self._env_key,
++                reason,
++            )
++        else:
++            logger.info(
++                "Gondolin environment %s %s (generation=%s, build=%s)",
++                self._env_key,
++                outcome,
++                (self.generation or "")[:12],
++                (result.get("buildId") or "")[:12],
++            )
++
++    # ------------------------------------------------------------------
++    # BaseEnvironment contract
++    # ------------------------------------------------------------------
++
++    def _run_bash(
++        self,
++        cmd_string: str,
++        *,
++        login: bool = False,
++        timeout: int = 120,
++        stdin_data: Optional[str] = None,
++    ) -> _ThreadedProcessHandle:
++        if self._closed:
++            raise RuntimeError("Gondolin environment is closed")
++
++        proc_state: dict[str, Any] = {"proc_id": None}
++
++        def exec_fn():
++            events, result = self._client.call(
++                "exec.start",
++                {
++                    "envKey": self._env_key,
++                    "shell": cmd_string,
++                    "timeoutMs": int(timeout) * 1000,
++                },
++                timeout=max(float(timeout) + 30.0, 60.0),
++                on_event=lambda event: (
++                    proc_state.__setitem__("proc_id", event.get("procId"))
++                    if event.get("event") == "exec.state"
++                    else None
++                ),
++            )
++
++            ordered = sorted(
++                (e for e in events if e.get("event") == "exec.output"),
++                key=lambda e: e.get("seq", 0),
++            )
++            # Streams are ordered per stream; merge in protocol order for the
++            # combined-output contract (stdout frames first is fine — Hermes
++            # merges stderr into output for remote backends).
++            stdout_parts = []
++            stderr_parts = []
++            for event in ordered:
++                data = base64.b64decode(event.get("data", ""))
++                text = data.decode("utf-8", errors="replace")
++                if event.get("stream") == "stderr":
++                    stderr_parts.append(text)
++                else:
++                    stdout_parts.append(text)
++            output = "".join(stdout_parts) + "".join(stderr_parts)
++            exit_code = result.get("exitCode")
++            if exit_code is None:
++                reason = result.get("reason") or "unknown"
++                if reason == "timeout":
++                    raise TimeoutError(f"command timed out after {timeout}s")
++                exit_code = 1
++            return output, int(exit_code)
++
++        def cancel_fn():
++            proc_id = proc_state.get("proc_id")
++            if proc_id:
++                try:
++                    self._client.call("exec.cancel", {"procId": proc_id}, timeout=10.0)
++                except Exception as exc:  # noqa: BLE001 - best-effort cancel
++                    logger.debug("exec.cancel failed for %s: %s", proc_id, exc)
++
++        return _ThreadedProcessHandle(exec_fn, cancel_fn)
++
++    def cleanup(self):
++        """Close the environment (VM stops; the workspace persists warm)."""
++        if self._closed:
++            return
++        self._closed = True
++        try:
++            self._client.call("close", {"envKey": self._env_key}, timeout=30.0)
++        except Exception as exc:  # noqa: BLE001 - cleanup must not raise
++            logger.debug("Gondolin close for %s failed: %s", self._env_key, exc)
++
++
++def check_gondolin_available(socket_path: str = None) -> bool:
++    """Health check for tool registration: the broker socket answers."""
++    path = socket_path or os.environ.get("HERMES_GONDOLIN_SOCKET", _DEFAULT_SOCKET)
++    try:
++        client = BrokerClient(path, timeout=5.0)
++        client.call("status", {})
++        return True
++    except Exception as exc:  # noqa: BLE001 - a health probe never raises
++        logger.error("Gondolin broker unavailable at %s: %s", path, exc)
++        return False
+diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
+index 4694933..65f2a4f 100644
+--- a/tools/terminal_tool.py
++++ b/tools/terminal_tool.py
+@@ -950,6 +950,7 @@ from tools.environments.singularity import SingularityEnvironment as _Singularit
+ from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
+ from tools.environments.docker import DockerEnvironment as _DockerEnvironment
+ from tools.environments.modal import ModalEnvironment as _ModalEnvironment
++from tools.environments.gondolin import GondolinEnvironment as _GondolinEnvironment
+ from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
+ from tools.managed_tool_gateway import is_managed_tool_gateway_ready
+ import sys
+@@ -1242,7 +1243,7 @@ def _safe_getcwd() -> str:
+ # cwd looks when it leaks toward a Linux container's ``-w`` flag.
+ _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
+ 
+-_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona"})
++_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "gondolin"})
+ 
+ 
+ def _is_ssh_remote_tilde_cwd(backend: str, cwd: str) -> bool:
+@@ -1475,6 +1476,14 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
+             persist_across_processes=cc.get("docker_persist_across_processes", True),
+         )
+     
++    elif env_type == "gondolin":
++        # The broker owns image/policy/lifecycle; Hermes supplies only the
++        # canonical environment key and cwd. No images, host paths, QEMU
++        # flags, or resource ceilings are selectable from here.
++        return _GondolinEnvironment(
++            cwd=cwd, timeout=timeout, task_id=task_id,
++        )
++    
+     elif env_type == "singularity":
+         return _SingularityEnvironment(
+             image=image, cwd=cwd, timeout=timeout,
+@@ -2857,6 +2866,10 @@ def check_terminal_requirements() -> bool:
+             result = subprocess.run([docker, "version"], capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+             return result.returncode == 0
+ 
++        elif env_type == "gondolin":
++            from tools.environments.gondolin import check_gondolin_available
++            return check_gondolin_available()
++
+         elif env_type == "singularity":
+             executable = shutil.which("apptainer") or shutil.which("singularity")
+             if executable:
+@@ -2940,7 +2953,7 @@ def check_terminal_requirements() -> bool:
+         else:
+             logger.error(
+                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
+-                "modal, daytona, ssh.",
++                "modal, daytona, ssh, gondolin.",
+                 env_type,
+             )
+             return False
