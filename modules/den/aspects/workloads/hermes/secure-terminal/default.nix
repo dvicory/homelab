@@ -155,6 +155,9 @@ in
                 User = sandboxUser;
                 Group = sandboxUser;
                 ExecStart = "${brokerPackage}/bin/hermes-gondolin-broker";
+                # The SDK spawns qemu-img (overlay creation) and
+                # qemu-system-* (VM runner) from PATH.
+                path = [ pkgs.qemu ];
 
                 # Delegated cgroup v2 subtree for per-VM limits (§16).
                 Delegate = true;
