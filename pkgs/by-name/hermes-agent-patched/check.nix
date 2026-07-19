@@ -19,6 +19,7 @@ runCommand "hermes-agent-patched-check" { } ''
     ${patchedHermes.patchedSource}/tests/hermes_cli/test_kanban_worker_spawn_toolsets.py \
     ${patchedHermes.patchedSource}/tests/tools/test_kanban_tools.py \
     ${patchedHermes.patchedSource}/tests/tools/test_secure_terminal_scope.py \
+    ${patchedHermes.patchedSource}/tests/tools/test_secure_terminal_identity_integration.py \
     ${codexWorkerLane.testSource}/tests
   "$python" -m py_compile \
     ${codexWorkerLane}/share/hermes-agent/plugins/codex-worker-lane/__init__.py \

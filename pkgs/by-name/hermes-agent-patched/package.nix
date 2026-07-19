@@ -13,7 +13,6 @@ let
       ./worker-lane-discovery.patch
       ./kanban-platform-toolsets.patch
       ./secure-terminal-isolation.patch
-      ./secure-terminal-session-handler.patch
     ];
   };
 in
