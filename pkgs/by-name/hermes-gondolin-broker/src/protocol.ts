@@ -62,6 +62,8 @@ export interface StreamFrame {
   v: number;
   id: number;
   event: "exec.output" | "exec.exit" | "exec.state";
+  procId?: string;
+  generation?: string;
   stream?: "stdout" | "stderr";
   seq?: number;
   /** base64 payload for exec.output */

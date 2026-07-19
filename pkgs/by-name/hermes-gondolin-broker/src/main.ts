@@ -156,7 +156,16 @@ async function handleExecStart(
   if (background) {
     return { procId: start.procId, generation: start.generation, background: true };
   }
-  // Foreground: the response follows the exit event with the completion.
+  // Foreground: announce the handle before streaming so the client can
+  // address it (cancel/stdin) while output is in flight.
+  reply({
+    v: PROTOCOL_VERSION,
+    id: frame.id,
+    event: "exec.state",
+    procId: start.procId,
+    generation: start.generation,
+  });
+  // The response follows the exit event with the completion.
   const completion = await ctx.exec.wait(start.procId, 86_400_000);
   return {
     procId: start.procId,
