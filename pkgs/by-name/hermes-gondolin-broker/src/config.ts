@@ -12,6 +12,49 @@ import { BrokerError, REASONS } from "./errors.js";
 import { parsePolicy } from "./policy.js";
 import type { PolicyFile } from "./policy.js";
 
+interface AssetManifest {
+  version: number;
+  buildId?: string;
+}
+
+/**
+ * Resolve every catalog asset's content-derived buildId from the immutable
+ * asset directory's manifest.json (V3 §9.4). A policy-pinned buildId must
+ * match the manifest; anything missing or mismatched fails closed — an
+ * unverifiable asset never boots.
+ */
+export function resolveAssetBuildIds(policy: PolicyFile): PolicyFile {
+  const assets: PolicyFile["assets"] = {};
+  for (const [name, asset] of Object.entries(policy.assets)) {
+    const manifestPath = `${asset.path}/manifest.json`;
+    let manifest: AssetManifest;
+    try {
+      manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as AssetManifest;
+    } catch (err) {
+      throw new BrokerError(REASONS.POLICY_INVALID, `cannot read asset manifest`, {
+        asset: name,
+        path: manifestPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    if (typeof manifest.buildId !== "string" || manifest.buildId.length === 0) {
+      throw new BrokerError(REASONS.POLICY_INVALID, `asset manifest lacks a buildId`, {
+        asset: name,
+        path: manifestPath,
+      });
+    }
+    if (asset.buildId !== undefined && asset.buildId !== manifest.buildId) {
+      throw new BrokerError(REASONS.POLICY_INVALID, `policy buildId does not match asset manifest`, {
+        asset: name,
+        policyBuildId: asset.buildId,
+        manifestBuildId: manifest.buildId,
+      });
+    }
+    assets[name] = { path: asset.path, buildId: manifest.buildId };
+  }
+  return { ...policy, assets };
+}
+
 export interface BrokerConfig {
   policy: PolicyFile;
   /** profile this broker instance serves (one broker per profile) */
@@ -52,7 +95,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BrokerConfig {
       error: err instanceof Error ? err.message : String(err),
     });
   }
-  const policy = parsePolicy(raw);
+  const policy = resolveAssetBuildIds(parsePolicy(raw));
 
   const profile = env[ENV.PROFILE] ?? Object.keys(policy.profiles)[0];
   if (!profile || !(profile in policy.profiles)) {

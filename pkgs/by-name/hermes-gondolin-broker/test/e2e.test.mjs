@@ -17,6 +17,12 @@ import { FrameDecoder } from "../dist/protocol.js";
  */
 
 function writePolicy(dir) {
+  const assetDir = path.join(dir, "assets", "general");
+  fs.mkdirSync(assetDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(assetDir, "manifest.json"),
+    JSON.stringify({ version: 1, buildId: "b1", buildTime: "1970-01-01T00:00:01Z" }),
+  );
   const policy = {
     version: 1,
     policyId: "e2e",
@@ -31,7 +37,7 @@ function writePolicy(dir) {
       maxFrameBytes: 65536,
       maxInputBytes: 65536,
     },
-    assets: { general: { path: "/assets/general", buildId: "b1" } },
+    assets: { general: { path: assetDir } },
     bundles: { "pypi-public": { destinations: [{ kind: "exact", host: "pypi.org" }] } },
     credentialCapabilities: {},
     templates: {

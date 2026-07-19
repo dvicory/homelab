@@ -140,7 +140,14 @@ export interface PolicyFile {
   /** content-derived identifier of this rendered policy (set by Nix) */
   policyId: string;
   floor: FloorPolicy;
-  assets: Record<string, { path: string; buildId: string }>;
+  /**
+   * Immutable guest asset catalog. `buildId` is normally absent: the
+   * content-derived identity lives in the asset's own manifest.json and the
+   * broker reads it at startup (V3 §9.4). When a policy pins `buildId`
+   * explicitly, the broker verifies it against the manifest and fails
+   * closed on mismatch.
+   */
+  assets: Record<string, { path: string; buildId?: string }>;
   bundles: Record<string, NetworkBundle>;
   credentialCapabilities: Record<string, CredentialCapability>;
   templates: Record<string, SandboxTemplate>;
@@ -578,8 +585,11 @@ export function parsePolicy(raw: unknown): PolicyFile {
     assertObject(asset, ap);
     assertNoUnknownFields(asset, ASSET_FIELDS, ap);
     assertString(asset.path, `${ap}.path`);
-    assertString(asset.buildId, `${ap}.buildId`);
-    assets[name] = { path: asset.path, buildId: asset.buildId };
+    if (asset.buildId !== undefined) assertString(asset.buildId, `${ap}.buildId`);
+    assets[name] = {
+      path: asset.path,
+      ...(asset.buildId !== undefined ? { buildId: asset.buildId as string } : {}),
+    };
   }
   assertObject(raw.bundles, "policy.bundles");
   const bundles: PolicyFile["bundles"] = {};
@@ -789,8 +799,10 @@ export function composePolicy(policy: PolicyFile, request: ComposeRequest): Effe
     throw new BrokerError(REASONS.POLICY_UNKNOWN_TEMPLATE, `unknown template`, { template: templateName });
   }
   const asset = policy.assets[template.asset];
-  if (!asset) {
-    throw new BrokerError(REASONS.POLICY_UNKNOWN_ASSET, `unknown asset`, { asset: template.asset });
+  if (!asset || asset.buildId === undefined) {
+    throw new BrokerError(REASONS.POLICY_UNKNOWN_ASSET, `unknown or unresolved asset`, {
+      asset: template.asset,
+    });
   }
 
   // Network: template selection ∩ profile maximum ∩ worklane maximum.
