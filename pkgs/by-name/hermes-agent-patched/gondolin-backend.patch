@@ -23,7 +23,7 @@ new file mode 100644
 index 0000000..489ed02
 --- /dev/null
 +++ b/tests/tools/test_gondolin_backend.py
-@@ -0,0 +1,238 @@
+@@ -0,0 +1,246 @@
 +"""Tests for the Gondolin broker terminal backend.
 +
 +A fake broker implements the wire protocol (length-prefixed JSON over
@@ -168,6 +168,14 @@ index 0000000..489ed02
 +    assert broker.calls[0][1]["envKey"] == "conversation-test"
 +
 +
++def test_env_is_persistent_across_turns(tmp_path):
++    """terminal_tool's per-turn teardown spares only _persistent backends;
++    without the flag every agent turn closed the broker environment,
++    producing state_warm recreation churn (and a fresh /tmp) per call."""
++    _broker, env = make_env(tmp_path)
++    assert env._persistent is True
++
++
 +def test_run_bash_streams_output_and_exit_code(tmp_path):
 +    broker, env = make_env(tmp_path)
 +    broker.exec_responders = [("stdout", "hello "), ("stdout", "world\n"), ("stderr", "oops\n")]
@@ -267,7 +275,7 @@ new file mode 100644
 index 0000000..e0f113b
 --- /dev/null
 +++ b/tools/environments/gondolin.py
-@@ -0,0 +1,308 @@
+@@ -0,0 +1,314 @@
 +"""Gondolin broker terminal backend (V3 secure-terminal).
 +
 +Talks to the profile's Gondolin broker over its mode-0600 Unix socket
@@ -449,6 +457,12 @@ index 0000000..e0f113b
 +        socket_path: str = None,
 +    ):
 +        super().__init__(cwd, timeout, env)
++        # Conversation-scoped and warm-by-design: the VM must survive
++        # between agent turns; terminal_tool's per-turn teardown only
++        # spares backends that report _persistent (same flag Docker sets).
++        # Session close still closes the broker environment (VM stops,
++        # workspace persists warm per broker retention).
++        self._persistent = True
 +        self._socket_path = socket_path or os.environ.get(
 +            "HERMES_GONDOLIN_SOCKET", _DEFAULT_SOCKET
 +        )
