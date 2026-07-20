@@ -23,7 +23,7 @@ new file mode 100644
 index 0000000..489ed02
 --- /dev/null
 +++ b/tests/tools/test_gondolin_backend.py
-@@ -0,0 +1,246 @@
+@@ -0,0 +1,263 @@
 +"""Tests for the Gondolin broker terminal backend.
 +
 +A fake broker implements the wire protocol (length-prefixed JSON over
@@ -176,6 +176,23 @@ index 0000000..489ed02
 +    assert env._persistent is True
 +
 +
++def test_recreation_notice_injected_once(tmp_path):
++    """V3 §8.2: a recreated environment must surface its state loss in
++    model context — once, on the first execute after recreation."""
++    broker = FakeBroker(short_sock())
++    broker.ensure_outcome = "recreated"
++    env = GondolinEnvironment(
++        cwd="/workspace", timeout=30, task_id="conversation-test", socket_path=broker.socket_path
++    )
++    broker.exec_responders = [("stdout", "ok\n")]
++    first = env.execute("true")
++    assert first["output"].startswith("[sandbox notice]")
++    assert "ephemeral" in first["output"].lower()
++    broker.exec_responders = [("stdout", "ok\n")]
++    second = env.execute("true")
++    assert "[sandbox notice]" not in second["output"]
++
++
 +def test_run_bash_streams_output_and_exit_code(tmp_path):
 +    broker, env = make_env(tmp_path)
 +    broker.exec_responders = [("stdout", "hello "), ("stdout", "world\n"), ("stderr", "oops\n")]
@@ -275,7 +292,7 @@ new file mode 100644
 index 0000000..e0f113b
 --- /dev/null
 +++ b/tools/environments/gondolin.py
-@@ -0,0 +1,314 @@
+@@ -0,0 +1,330 @@
 +"""Gondolin broker terminal backend (V3 secure-terminal).
 +
 +Talks to the profile's Gondolin broker over its mode-0600 Unix socket
@@ -470,6 +487,7 @@ index 0000000..e0f113b
 +        self._client = BrokerClient(self._socket_path, timeout=30.0)
 +        self.generation: Optional[str] = None
 +        self._closed = False
++        self._state_loss_notice: Optional[str] = None
 +        self._ensure_environment()
 +
 +    def _ensure_environment(self) -> None:
@@ -486,11 +504,18 @@ index 0000000..e0f113b
 +        if outcome == "recreated":
 +            # Surface retained/lost state in trusted model context (V3 §8.2):
 +            # the environment was rebuilt, so in-VM process state and the
-+            # disposable root were lost while the workspace persisted.
++            # disposable root were lost while the workspace persisted. The
++            # notice rides the next execute() output into the conversation.
 +            logger.warning(
 +                "Gondolin environment %s recreated (reason=%s): prior VM state lost, workspace retained",
 +                self._env_key,
 +                reason,
++            )
++            self._state_loss_notice = (
++                "[sandbox notice] The sandbox VM was recreated since the last "
++                f"command (reason: {reason or 'unknown'}). Ephemeral state was "
++                "lost: files outside /workspace (e.g. /tmp), running processes, "
++                "and shell state (cwd, env vars). /workspace contents persist.\n"
 +            )
 +        else:
 +            logger.info(
@@ -504,6 +529,14 @@ index 0000000..e0f113b
 +    # ------------------------------------------------------------------
 +    # BaseEnvironment contract
 +    # ------------------------------------------------------------------
++
++    def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
++        """Execute, prepending any pending state-loss notice exactly once."""
++        result = super().execute(command, cwd, **kwargs)
++        if self._state_loss_notice:
++            notice, self._state_loss_notice = self._state_loss_notice, None
++            result["output"] = notice + result.get("output", "")
++        return result
 +
 +    def _run_bash(
 +        self,
