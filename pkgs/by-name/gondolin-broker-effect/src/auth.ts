@@ -25,7 +25,7 @@ export interface AuthorizationRequest {
 
 export interface AuthorizationResult {
   readonly decisionDigest: string;
-  readonly policyGeneration: number;
+  readonly policyDigest: string;
   readonly limits: Readonly<Record<string, number>>;
   readonly obligations: ReadonlyArray<Obligation>;
 }

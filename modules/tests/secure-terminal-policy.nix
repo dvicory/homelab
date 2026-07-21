@@ -123,49 +123,9 @@
             policyJson = "${policy.json}";
           }
           ''
-            cp $policyJson policy.json
-            node --input-type=module -e '
-              import fs from "node:fs";
-              import { parsePolicy, composePolicy } from "${broker}/lib/node_modules/hermes-gondolin-broker/dist/policy.js";
-              import { resolveAssetBuildIds } from "${broker}/lib/node_modules/hermes-gondolin-broker/dist/config.js";
-
-              const raw = JSON.parse(fs.readFileSync("policy.json", "utf8"));
-              const policy = resolveAssetBuildIds(parsePolicy(raw));
-
-              const checks = [
-                [{ profile: "hermes-qa" }, "general", "project"],
-                [{ profile: "hermes-qa", template: "research" }, "general", "research"],
-                [{ profile: "hermes-qa", template: "offline", asset: "general" }, "general", "offline"],
-                [{ profile: "hermes-qa", template: "offline" }, "minimal", "offline"],
-                [{ profile: "hermes-qa", worklane: "codex" }, "general", "project"],
-                [{ profile: "hermes-qa", worklane: "codex", template: "offline" }, "minimal", "offline"],
-              ];
-              for (const [req, asset, template] of checks) {
-                const eff = composePolicy(policy, req);
-                if (eff.assetName !== asset || eff.templateName !== template) {
-                  throw new Error(`compose ''${JSON.stringify(req)} -> ''${eff.assetName}/''${eff.templateName}, want ''${asset}/''${template}`);
-                }
-                if (typeof eff.policyHash !== "string" || eff.policyHash.length !== 64) {
-                  throw new Error("policyHash missing from effective policy");
-                }
-              }
-
-              // Hard floor invariants in the rendered document
-              if (policy.floor.maxVms <= 0 || policy.floor.maxFrameBytes <= 0) {
-                throw new Error("floor bounds missing");
-              }
-              for (const [name, bundle] of Object.entries(policy.bundles)) {
-                for (const flag of ["allowWebSockets", "allowConnect", "allowRawTcp", "allowSsh"]) {
-                  if (bundle[flag]) throw new Error(`bundle ''${name} lifts floor via ''${flag}`);
-                }
-              }
-              // No secret values anywhere in policy data (logical IDs only)
-              const text = fs.readFileSync("policy.json", "utf8");
-              for (const needle of ["ghp_", "github_pat_", "BEGIN PRIVATE", "BEGIN OPENSSH"]) {
-                if (text.includes(needle)) throw new Error(`secret-like content in policy: ''${needle}`);
-              }
-              console.log("policy golden: parse + compose + floor invariants OK");
-            '
+            HERMES_GONDOLIN_BROKER_LIB=${broker}/lib/node_modules/hermes-gondolin-broker/dist \
+              POLICY_JSON="$policyJson" \
+              node ${self + "/modules/tests/secure-terminal-policy-golden.mjs"}
             touch $out
           '';
       checks.secure-terminal-effect-policy-http =
@@ -193,93 +153,7 @@
             done
             [ -S "$GONDOLIN_EFFECT_SOCKET" ]
             [ -S "$GONDOLIN_EFFECT_CONTROL_SOCKET" ]
-            node --input-type=module -e '
-              import http from "node:http";
-              import fs from "node:fs";
-              const request = (socketPath, route, method = "GET", payload) =>
-                new Promise((resolve, reject) => {
-                  const encoded = payload === undefined ? undefined : Buffer.from(JSON.stringify(payload));
-                  const req = http.request({
-                    socketPath,
-                    path: route,
-                    method,
-                    headers: encoded === undefined ? {} : {
-                      "content-type": "application/json",
-                      "content-length": String(encoded.byteLength),
-                    },
-                  }, (response) => {
-                    const chunks = [];
-                    response.on("data", (chunk) => chunks.push(chunk));
-                    response.on("end", () => resolve({
-                      status: response.statusCode,
-                      body: Buffer.concat(chunks).toString("utf8"),
-                    }));
-                  });
-                  req.on("error", reject);
-                  if (encoded !== undefined) req.write(encoded);
-                  req.end();
-                });
-              const executionHealth = await request(process.env.GONDOLIN_EFFECT_SOCKET, "/v1/health");
-              const controlHealth = await request(process.env.GONDOLIN_EFFECT_CONTROL_SOCKET, "/v1/health");
-              if (executionHealth.status !== 200 || JSON.parse(executionHealth.body).plane !== "execution") {
-                throw new Error("execution health response is not ok");
-              }
-              if (controlHealth.status !== 200 || JSON.parse(controlHealth.body).plane !== "control") {
-                throw new Error("control health response is not ok");
-              }
-              const escapedControl = await request(
-                process.env.GONDOLIN_EFFECT_SOCKET,
-                "/v1/control/authority/status",
-                "POST",
-                { environmentKey: "nix-check" },
-              );
-              const escapedExecution = await request(
-                process.env.GONDOLIN_EFFECT_CONTROL_SOCKET,
-                "/v1/environments/ensure",
-                "POST",
-                { environmentKey: "nix-check" },
-              );
-              if (escapedControl.status !== 404 || escapedExecution.status !== 404) {
-                throw new Error("execution/control routes are not isolated");
-              }
-              const rendered = JSON.parse(fs.readFileSync(process.env.GONDOLIN_EFFECT_POLICY, "utf8"));
-              for (const lane of ["default", "codex"]) {
-                const resource = "worklane:" + lane + ":environment:*";
-                const statement = rendered.policy.statements.find(
-                  (candidate) =>
-                    candidate.actions.includes("environment.ensure") &&
-                    candidate.resources.includes(resource)
-                );
-                if (!statement) throw new Error("missing ensure authority for " + lane);
-                const obligations = statement.obligations?.filter(
-                  (obligation) => obligation.kind === "network"
-                ) ?? [];
-                if (obligations.length !== 1) {
-                  throw new Error("expected exactly one network obligation for " + lane);
-                }
-                const networkId = obligations[0].bundleId;
-                if (!networkId.startsWith("worklane:" + lane + ":") || !rendered.networkPolicies[networkId]) {
-                  throw new Error("network obligation is not content-bound for " + lane);
-                }
-              }
-              const policyFor = (lane) => {
-                const statement = rendered.policy.statements.find(
-                  (candidate) => candidate.resources.includes("worklane:" + lane + ":environment:*")
-                );
-                return rendered.networkPolicies[statement.obligations[0].bundleId];
-              };
-              const defaultHosts = new Set(policyFor("default").destinations.map((item) => item.host));
-              for (const host of ["github.com", "registry.npmjs.org", "pypi.org", "cache.nixos.org"]) {
-                if (!defaultHosts.has(host)) throw new Error("default lane missing reviewed host " + host);
-              }
-              const codexHosts = new Set(policyFor("codex").destinations.map((item) => item.host));
-              if (!codexHosts.has("github.com") || !codexHosts.has("pypi.org")) {
-                throw new Error("codex lane missing its reviewed network bundles");
-              }
-              if (codexHosts.has("cache.nixos.org")) {
-                throw new Error("codex lane exceeded its network maximum");
-              }
-            '
+            node ${self + "/modules/tests/secure-terminal-effect-policy-http.mjs"}
             kill "$broker_pid"
             wait "$broker_pid" || true
             trap - EXIT

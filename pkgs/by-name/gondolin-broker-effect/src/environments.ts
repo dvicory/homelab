@@ -25,7 +25,7 @@ export interface LiveEnvironment {
   readonly profile: string;
   readonly executor: string;
   readonly authorityClass: string;
-  readonly policyGeneration: number;
+  readonly policyDigest: string;
   readonly decisionDigest: string;
   readonly workspacePath: string;
   readonly workspaceGuestPath: string;
@@ -43,7 +43,7 @@ export interface EnsureResult {
   readonly profile: string;
   readonly executor: string;
   readonly authorityClass: string;
-  readonly policyGeneration: number;
+  readonly policyDigest: string;
   readonly decisionDigest: string;
 }
 
@@ -57,7 +57,7 @@ export interface EnvironmentService {
     readonly profile: string;
     readonly executor: string;
     readonly authorityClass: string;
-    readonly policyGeneration: number;
+    readonly policyDigest: string;
   }, BrokerError>;
   readonly lease: (reference: EnvironmentRef) => Effect.Effect<LiveEnvironment, BrokerError, Scope.Scope>;
   readonly close: (reference: EnvironmentRef) => Effect.Effect<void, BrokerError>;
@@ -141,7 +141,7 @@ const make = Effect.gen(function* () {
         profile: config.profile,
         executor: config.policyFile.defaultExecutor,
         authorityClass: config.policyFile.defaultAuthorityClass,
-        policyGeneration: config.policyFile.policyGeneration,
+        policyDigest: config.policyFile.policyDigest,
       });
       const worklaneName = binding.authorityClass;
       const worklane = config.policyFile.worklanes[worklaneName];
@@ -166,11 +166,11 @@ const make = Effect.gen(function* () {
           ...worklane.limits,
         },
       });
-      if (decision.policyGeneration !== binding.policyGeneration) {
-        return yield* brokerError("policy.indeterminate", "bound policy generation is unavailable", {
+      if (decision.policyDigest !== binding.policyDigest) {
+        return yield* brokerError("policy.indeterminate", "bound policy digest is unavailable", {
           authorityClass: binding.authorityClass,
-          boundPolicyGeneration: binding.policyGeneration,
-          activePolicyGeneration: decision.policyGeneration,
+          boundPolicyDigest: binding.policyDigest,
+          activePolicyDigest: decision.policyDigest,
         });
       }
       const networkObligations = decision.obligations.filter(
@@ -196,7 +196,7 @@ const make = Effect.gen(function* () {
       if (
         existing !== undefined &&
         existing.authorityClass === binding.authorityClass &&
-        existing.policyGeneration === decision.policyGeneration &&
+        existing.policyDigest === decision.policyDigest &&
         existing.decisionDigest === decision.decisionDigest
       ) {
         return {
@@ -206,7 +206,7 @@ const make = Effect.gen(function* () {
           profile: existing.profile,
           executor: existing.executor,
           authorityClass: existing.authorityClass,
-          policyGeneration: existing.policyGeneration,
+          policyDigest: existing.policyDigest,
           decisionDigest: existing.decisionDigest,
         };
       }
@@ -231,7 +231,7 @@ const make = Effect.gen(function* () {
       });
       const record = yield* registry.reserve({
         environmentKey: request.environmentKey,
-        policyGeneration: decision.policyGeneration,
+        policyDigest: decision.policyDigest,
         worklane: worklaneName,
         assetBuildId: asset.buildId,
         workspacePath,
@@ -264,7 +264,7 @@ const make = Effect.gen(function* () {
         profile: binding.profile,
         executor: binding.executor,
         authorityClass: binding.authorityClass,
-        policyGeneration: decision.policyGeneration,
+        policyDigest: decision.policyDigest,
         decisionDigest: decision.decisionDigest,
         workspacePath,
         workspaceGuestPath: worklane.workspaceGuestPath,
@@ -285,7 +285,7 @@ const make = Effect.gen(function* () {
         profile: binding.profile,
         executor: binding.executor,
         authorityClass: binding.authorityClass,
-        policyGeneration: decision.policyGeneration,
+        policyDigest: decision.policyDigest,
         decisionDigest: decision.decisionDigest,
       };
     });
@@ -317,7 +317,7 @@ const make = Effect.gen(function* () {
         profile: binding.profile,
         executor: binding.executor,
         authorityClass: binding.authorityClass,
-        policyGeneration: record.policyGeneration,
+        policyDigest: record.policyDigest,
       };
     });
 

@@ -6,8 +6,8 @@ The QA Gondolin broker currently treats a client-supplied worklane as policy aut
 
 - Replace client-selected worklane authority with broker-owned task/environment authority bindings.
 - Separate executor routing (Hermes profile or worker lane) from sandbox authority classes.
-- Add typed, batchable runtime capability requests with once, task, conversation, timed, profile, and worker-lane scopes where policy permits.
-- Add live activation, revocation, expiry, durable remembered grants, and policy-generation binding. Network grants take effect in the existing VM; structural changes recreate the VM.
+- Add typed, batchable runtime capability requests. The broker protocol supports once, task, conversation, timed, profile, and executor scopes, but the QA Hermes integration exposes only once and task where Nix policy permits.
+- Add live activation, revocation, expiry, immutable-policy-digest binding, and broker-side remembered-grant machinery for future management clients. QA Hermes cannot create durable remembered grants. Network grants take effect in the existing VM; structural changes recreate the VM.
 - Add structured requestable denials so the agent can learn which capability is missing and retry after approval.
 - Add approval-fatigue controls: one pending request per task, request coalescing, denial cooldowns, prompt budgets, and canonical broker-rendered policy diffs.
 - Add a privileged broker control channel for authority registration and grant mutation; the ordinary execution channel cannot select its own authority.
@@ -21,7 +21,7 @@ The QA Gondolin broker currently treats a client-supplied worklane as policy aut
 
 ### New Capabilities
 
-- `task-sandbox-authority`: Broker-owned binding of trusted profile, executor, task identity, environment identity, authority class, and policy generation.
+- `task-sandbox-authority`: Broker-owned binding of trusted profile, executor, task identity, environment identity, authority class, and immutable policy digest.
 - `runtime-capability-grants`: Typed activation, lookup, expiry, revocation, remembered rules, live network-policy evaluation, and structural-change generation behavior.
 - `sandbox-access-approval`: Agent discovery/request/retry flow, canonical approval presentation, grant scopes, batching, and approval-fatigue controls through a Hermes plugin.
 
@@ -54,7 +54,7 @@ None. This repository has no existing OpenSpec capability baseline for the exper
 - The paired Hermes user and configured local operator are trusted approval principals; model-authored text is not trusted approval evidence.
 - Hermes plugin handlers receive trusted task/session identity and can call the existing approval API without modifying every environment-backed tool.
 - The gateway dispatcher can register worker defaults before spawn through an existing task lifecycle hook.
-- Runtime grant state is persisted in the broker registry and remains subordinate to the current immutable Nix policy generation and broker enforcement capabilities.
+- Runtime grant state is persisted in the broker registry and remains subordinate to the current immutable Nix policy digest and broker enforcement capabilities.
 - Exact private HTTP(S) origins may be approved dynamically, but redirects, DNS answers, and resolved addresses remain bound to the approved origin and port.
 - Unsupported capability kinds fail closed and cannot become effective solely because a user clicked approve.
 

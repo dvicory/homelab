@@ -11,7 +11,7 @@
 ## 3. Dynamic Runtime Grants
 
 - [x] 3.1 Add closed `network-origin` capability decoding, canonical public/private origin preparation, private-address pin previews, batch deduplication, and stable unsupported-capability failures; run broker contract checks and commit.
-- [x] 3.2 Add strict SQLite access-request/runtime-grant tables, transactional scope/expiry/revocation/once-use behavior, remembered profile/executor rules, policy-generation invalidation, atomic in-memory snapshots, cooldown/coalescing/prompt-budget state, focused checks, and commit.
+- [x] 3.2 Add strict SQLite access-request/runtime-grant tables, transactional scope/expiry/revocation/once-use behavior, remembered profile/executor rules, policy-digest invalidation, atomic in-memory snapshots, cooldown/coalescing/prompt-budget state, focused checks, and commit.
 - [x] 3.3 Compose active grants into Gondolin DNS/HTTP hooks so approved public and pinned-private origins activate and revoke in the same VM while redirects and rebinding remain constrained; add structured requestable denials, run broker checks, and commit.
 
 ## 4. Minimal Hermes Integration
@@ -19,6 +19,7 @@
 - [x] 4.1 Add one generic infrastructure-only Hermes task authority binding hook to canonical environment identity, migrate no individual tool schemas, exercise concurrent task separation through the patched-source check, and commit.
 - [x] 4.2 Add a Nix-built sandbox-authority Hermes plugin with control client, `sandbox_request_access`, list/revoke tools, existing approval-provider integration, trusted session/Kanban registration, canonical batch prompts, suppressed-request handling, plugin contract checks, and commit.
 - [ ] 4.3 Wire the plugin, profile/executor defaults, allowed grant scopes, cooldowns, budgets, and control socket into `modules/den/aspects/workloads/hermes/secure-terminal/` for `hermes-qa`; rebuild the affected `hvn-hyp1` configuration and portable checks, then commit. No SOPS update is required.
+- [x] 4.4 Constrain the rendered QA broker policy to its Nix `maximum.grantScopes`, disable Hermes' permanent approval choice only for sandbox access, reject out-of-profile scopes at the broker, bind persisted state to the full immutable policy digest, and cover the contract with focused checks.
 
 ## 5. End-to-End Validation and Documentation
 

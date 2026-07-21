@@ -31,7 +31,7 @@ const bind = (registry, environmentKey, overrides = {}) => registry.bindAuthorit
   profile: "test",
   executor: "hermes-gateway",
   authorityClass: "default",
-  policyGeneration: 1,
+  policyDigest: "a".repeat(64),
   ...overrides
 })
 
@@ -276,13 +276,13 @@ test("restart restores only current non-expired grants", async () => {
   const changedPolicy = makeTestLayer(stateDir, {
     grantResolver: resolver,
     now: () => timestamp,
-    policyFile: { policyGeneration: 2 }
+    policyFile: { policyDigest: "b".repeat(64) }
   })
   await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const grants = yield* AccessGrants
     assert.equal(grants.snapshot().grants.length, 0)
     const all = yield* grants.list("task-restart")
     assert.deepEqual(all.map((grant) => grant.state).sort(), ["expired", "revoked"])
-    assert.equal(all.find((grant) => grant.state === "revoked").revokedBy, "policy-generation")
+    assert.equal(all.find((grant) => grant.state === "revoked").revokedBy, "policy-digest")
   }).pipe(Effect.provide(changedPolicy.layer))))
 })

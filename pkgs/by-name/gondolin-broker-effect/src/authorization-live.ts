@@ -76,7 +76,7 @@ const make = Effect.gen(function* () {
       }).pipe(
         Effect.map((authorized) => ({
           decisionDigest: authorized.decisionDigest,
-          policyGeneration: config.policyFile.policyGeneration,
+          policyDigest: config.policyFile.policyDigest,
           limits: authorized.authority.limits,
           obligations: authorized.authority.obligations,
         })),

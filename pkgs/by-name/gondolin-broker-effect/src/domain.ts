@@ -24,7 +24,7 @@ export const AuthorityBinding = Schema.Struct({
   profile: Identifier,
   executor: Identifier,
   authorityClass: Identifier,
-  policyGeneration: PositiveInt,
+  policyDigest: Schema.String.pipe(Schema.pattern(/^[0-9a-f]{64}$/)),
 });
 export type AuthorityBinding = typeof AuthorityBinding.Type;
 
