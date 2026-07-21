@@ -48,7 +48,7 @@ test("VM creation awaits startup before publishing a live handle", async () => {
   })
 
   await new Promise((resolve) => setImmediate(resolve))
-  assert.equal(options.autoStart, false)
+  assert.equal(options.autoStart, true)
   assert.equal(settled, false)
 
   resolveStart()

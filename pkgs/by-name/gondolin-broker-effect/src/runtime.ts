@@ -120,7 +120,7 @@ export const makeCreateVm = (createGondolinVm: typeof GondolinVM.create) =>
           rootfs: { mode: "cow" },
           memory: `${spec.memoryMiB}M`,
           cpus: spec.cpus,
-          autoStart: false,
+          autoStart: true,
           sessionLabel: spec.sessionLabel,
           ...(debugLog === undefined ? {} : { debugLog }),
           vfs: {
