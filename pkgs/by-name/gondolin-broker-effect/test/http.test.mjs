@@ -8,7 +8,7 @@ import path from "node:path"
 import test from "node:test"
 import { Effect } from "effect"
 import { BrokerConfig } from "../dist/config.js"
-import { makeHttpApp } from "../dist/http.js"
+import { makeControlHttpApp, makeHttpApp } from "../dist/http.js"
 import { makeTestLayer } from "./fakes.mjs"
 
 const request = (socketPath, route, body) => new Promise((resolve, reject) => {
@@ -43,10 +43,15 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
     const app = yield* makeHttpApp
     const server = yield* NodeHttpServer.make(() => createServer(), { path: config.socketPath })
     yield* HttpServer.serveEffect(app).pipe(Effect.provideService(HttpServer.HttpServer, server))
+    const controlApp = yield* makeControlHttpApp
+    const controlServer = yield* NodeHttpServer.make(() => createServer(), { path: config.controlSocketPath })
+    yield* HttpServer.serveEffect(controlApp).pipe(
+      Effect.provideService(HttpServer.HttpServer, controlServer)
+    )
 
     const health = yield* Effect.promise(() => request(config.socketPath, "/v1/health"))
     assert.equal(health.status, 200)
-    assert.deepEqual(JSON.parse(health.text), { status: "ok" })
+    assert.deepEqual(JSON.parse(health.text), { status: "ok", plane: "execution" })
 
     const ensure = yield* Effect.promise(() => request(config.socketPath, "/v1/environments/ensure", {
       environmentKey: "conversation-http"
@@ -65,6 +70,40 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
     const events = exec.text.trim().split("\n").map(JSON.parse)
     assert.deepEqual(events.map((event) => event.type), ["start", "output", "exit"])
     assert.equal(Buffer.from(events[1].dataBase64, "base64").toString(), "printf hello")
+
+    const executionRejectsControl = yield* Effect.promise(() =>
+      request(config.socketPath, "/v1/control/authority/status", {
+        environmentKey: "conversation-http"
+      })
+    )
+    assert.equal(executionRejectsControl.status, 404)
+
+    const controlRejectsExecution = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/environments/ensure", {
+        environmentKey: "conversation-control"
+      })
+    )
+    assert.equal(controlRejectsExecution.status, 404)
+
+    const bind = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/authority/bind", {
+        environmentKey: "conversation-control",
+        profile: "test",
+        executor: "hermes-gateway",
+        authorityClass: "default",
+        policyGeneration: 1
+      })
+    )
+    assert.equal(bind.status, 200)
+    assert.equal(JSON.parse(bind.text).authorityClass, "default")
+
+    const authority = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/authority/status", {
+        environmentKey: "conversation-control"
+      })
+    )
+    assert.equal(authority.status, 200)
+    assert.equal(JSON.parse(authority.text).executor, "hermes-gateway")
 
     const invalid = yield* Effect.promise(() => request(config.socketPath, "/v1/environments/ensure", {
       environmentKey: "conversation-http",

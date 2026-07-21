@@ -12,7 +12,8 @@ from pathlib import Path
 
 
 root = Path(tempfile.mkdtemp(prefix="gondolin-effect-activation-"))
-socket_path = root / "broker.sock"
+execution_socket_path = root / "broker.sock"
+control_socket_path = root / "control.sock"
 asset_path = root / "asset"
 asset_path.mkdir()
 (asset_path / "manifest.json").write_text(json.dumps({"buildId": "activation-test"}))
@@ -54,9 +55,12 @@ policy = {
 policy_path = root / "policy.json"
 policy_path.write_text(json.dumps(policy))
 
-listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-listener.bind(str(socket_path))
-listener.listen(16)
+execution_listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+execution_listener.bind(str(execution_socket_path))
+execution_listener.listen(16)
+control_listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+control_listener.bind(str(control_socket_path))
+control_listener.listen(16)
 
 node = shutil.which("node")
 if node is None:
@@ -65,19 +69,23 @@ if node is None:
 pid = os.fork()
 if pid == 0:
     try:
-        os.dup2(listener.fileno(), 3)
+        execution_fd = os.dup(execution_listener.fileno())
+        control_fd = os.dup(control_listener.fileno())
+        os.dup2(execution_fd, 3)
+        os.dup2(control_fd, 4)
         os.set_inheritable(3, True)
-        if listener.fileno() != 3:
-            listener.close()
+        os.set_inheritable(4, True)
         env = os.environ.copy()
         env.update(
             {
                 "LISTEN_PID": str(os.getpid()),
-                "LISTEN_FDS": "1",
+                "LISTEN_FDS": "2",
+                "LISTEN_FDNAMES": "execution:control",
                 "GONDOLIN_EFFECT_POLICY": str(policy_path),
                 "GONDOLIN_EFFECT_PROFILE": "activation-test",
                 "GONDOLIN_EFFECT_STATE_DIR": str(root / "state"),
-                "GONDOLIN_EFFECT_SOCKET": str(socket_path),
+                "GONDOLIN_EFFECT_SOCKET": str(execution_socket_path),
+                "GONDOLIN_EFFECT_CONTROL_SOCKET": str(control_socket_path),
             }
         )
         os.execve(
@@ -89,29 +97,42 @@ if pid == 0:
         print(f"activation child failed: {exc}", file=sys.stderr)
         os._exit(127)
 
-listener.close()
+execution_listener.close()
+control_listener.close()
+
+def request(socket_path: Path, route: str, body: dict | None = None) -> bytes:
+    payload = b"" if body is None else json.dumps(body).encode()
+    method = b"GET" if body is None else b"POST"
+    headers = (
+        method + b" " + route.encode() + b" HTTP/1.1\r\n"
+        b"Host: localhost\r\n"
+        b"Connection: close\r\n"
+        + (b"" if body is None else b"Content-Type: application/json\r\nContent-Length: " + str(len(payload)).encode() + b"\r\n")
+        + b"\r\n"
+        + payload
+    )
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(0.5)
+    client.connect(str(socket_path))
+    client.sendall(headers)
+    chunks = []
+    while True:
+        chunk = client.recv(4096)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    client.close()
+    return b"".join(chunks)
+
 try:
-    response = b""
+    execution_health = b""
     for _ in range(100):
         ended, status = os.waitpid(pid, os.WNOHANG)
         if ended:
             raise RuntimeError(f"broker exited before health request: {status}")
         try:
-            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            client.settimeout(0.2)
-            client.connect(str(socket_path))
-            client.sendall(
-                b"GET /v1/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
-            )
-            chunks = []
-            while True:
-                chunk = client.recv(4096)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-            client.close()
-            if chunks:
-                response = b"".join(chunks)
+            execution_health = request(execution_socket_path, "/v1/health")
+            if execution_health:
                 break
         except (
             BrokenPipeError,
@@ -122,9 +143,33 @@ try:
         ):
             pass
         time.sleep(0.05)
-    if b"HTTP/1.1 200" not in response or b'{"status":"ok"}' not in response:
-        raise RuntimeError(f"unexpected health response: {response!r}")
-    print("systemd-style fd 3 activation: HTTP health OK")
+
+    control_health = request(control_socket_path, "/v1/health")
+    execution_control = request(execution_socket_path, "/v1/control/authority/status", {
+        "environmentKey": "activation-environment",
+    })
+    control_execution = request(control_socket_path, "/v1/environments/ensure", {
+        "environmentKey": "activation-environment",
+    })
+    bound = request(control_socket_path, "/v1/control/authority/bind", {
+        "environmentKey": "activation-environment",
+        "profile": "activation-test",
+        "executor": "hermes-gateway",
+        "authorityClass": "default",
+        "policyGeneration": 1,
+    })
+
+    if b"HTTP/1.1 200" not in execution_health or b'"plane":"execution"' not in execution_health:
+        raise RuntimeError(f"unexpected execution health response: {execution_health!r}")
+    if b"HTTP/1.1 200" not in control_health or b'"plane":"control"' not in control_health:
+        raise RuntimeError(f"unexpected control health response: {control_health!r}")
+    if b"HTTP/1.1 404" not in execution_control:
+        raise RuntimeError(f"control route escaped onto execution socket: {execution_control!r}")
+    if b"HTTP/1.1 404" not in control_execution:
+        raise RuntimeError(f"execution route escaped onto control socket: {control_execution!r}")
+    if b"HTTP/1.1 200" not in bound or b'"authorityClass":"default"' not in bound:
+        raise RuntimeError(f"authority bind failed: {bound!r}")
+    print("systemd-style named fd activation: execution/control separation OK")
 finally:
     try:
         os.kill(pid, signal.SIGTERM)

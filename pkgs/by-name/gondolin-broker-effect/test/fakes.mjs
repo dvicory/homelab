@@ -195,6 +195,7 @@ export const makeTestLayer = (stateDir, options = {}) => {
     workspaceRoot: path.join(stateDir, "workspaces"),
     databasePath: path.join(stateDir, "broker.sqlite"),
     socketPath: path.join(stateDir, "broker.sock"),
+    controlSocketPath: path.join(stateDir, "control.sock"),
     profile: "test",
     policyFile: makePolicyFile(options.policyFile)
   }
