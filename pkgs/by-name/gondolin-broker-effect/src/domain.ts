@@ -17,9 +17,22 @@ export type Generation = typeof Generation.Type;
 
 export const EnsureRequest = Schema.Struct({
   environmentKey: EnvironmentKey,
-  worklane: Schema.optional(Identifier),
 });
 export type EnsureRequest = typeof EnsureRequest.Type;
+
+export const AuthorityBinding = Schema.Struct({
+  profile: Identifier,
+  executor: Identifier,
+  authorityClass: Identifier,
+  policyGeneration: PositiveInt,
+});
+export type AuthorityBinding = typeof AuthorityBinding.Type;
+
+export const BindAuthorityRequest = Schema.Struct({
+  environmentKey: EnvironmentKey,
+  ...AuthorityBinding.fields,
+});
+export type BindAuthorityRequest = typeof BindAuthorityRequest.Type;
 
 export const EnvironmentRef = Schema.Struct({
   environmentKey: EnvironmentKey,

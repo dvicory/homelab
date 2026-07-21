@@ -351,7 +351,8 @@ in
         version = 1;
         policyGeneration = 1;
         inherit policy networkPolicies;
-        defaultWorklane = "default";
+        defaultExecutor = "hermes-gateway";
+        defaultAuthorityClass = "default";
         maxEnvironments = floor.maxVms;
         inherit assets;
         worklanes = lanes;

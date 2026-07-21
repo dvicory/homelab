@@ -2,7 +2,7 @@ diff --git a/tests/tools/test_gondolin_backend.py b/tests/tools/test_gondolin_ba
 new file mode 100644
 --- /dev/null
 +++ b/tests/tools/test_gondolin_backend.py
-@@ -0,0 +1,307 @@
+@@ -0,0 +1,309 @@
 +"""Contract tests for Hermes HTTP/1.1 over Unix-socket Gondolin client."""
 +
 +import base64
@@ -79,7 +79,9 @@ new file mode 100644
 +                "environmentKey": request["environmentKey"],
 +                "generation": self.broker.generation,
 +                "state": state,
-+                "worklane": "default",
++                "profile": "test",
++                "executor": "hermes-gateway",
++                "authorityClass": "default",
 +                "policyGeneration": 1,
 +                "decisionDigest": "digest",
 +            })

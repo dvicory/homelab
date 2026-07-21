@@ -5,7 +5,7 @@
 
 ## 2. Broker Authority Boundary
 
-- [ ] 2.1 Add strict task authority binding schemas and SQLite persistence in `pkgs/by-name/gondolin-broker-effect`, remove caller-selected worklane authority from execution `ensure`, cover default/conflicting bindings, run the package check, and commit.
+- [x] 2.1 Add strict task authority binding schemas and SQLite persistence in `pkgs/by-name/gondolin-broker-effect`, remove caller-selected worklane authority from execution `ensure`, cover default/conflicting bindings, run the package check, and commit.
 - [ ] 2.2 Add named systemd-activated execution/control listeners and route-level separation for the `hermes-qa` broker on `hvn-hyp1`; extend activation and Nix HTTP checks for both descriptors, rebuild them, and commit. No SOPS update is required.
 
 ## 3. Dynamic Runtime Grants

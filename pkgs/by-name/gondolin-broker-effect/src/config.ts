@@ -9,7 +9,8 @@ const BrokerPolicyFileSchema = Schema.Struct({
   version: Schema.Literal(1),
   policyGeneration: Schema.Int.pipe(Schema.greaterThan(0)),
   policy: Schema.Unknown,
-  defaultWorklane: Schema.String.pipe(Schema.minLength(1)),
+  defaultExecutor: Schema.String.pipe(Schema.minLength(1)),
+  defaultAuthorityClass: Schema.String.pipe(Schema.minLength(1)),
   maxEnvironments: Schema.Int.pipe(Schema.greaterThan(0)),
   assets: Schema.Record({ key: Schema.String, value: Asset }),
   networkPolicies: Schema.Record({ key: Schema.String, value: NetworkPolicy }),
@@ -122,9 +123,9 @@ const load = Effect.gen(function* () {
   const assets = yield* resolveAssets(decoded);
   const policyFile: BrokerPolicyFile = { ...decoded, assets };
 
-  if (!(policyFile.defaultWorklane in policyFile.worklanes)) {
-    return yield* brokerError("request.invalid", "default worklane is not defined", {
-      worklane: policyFile.defaultWorklane,
+  if (!(policyFile.defaultAuthorityClass in policyFile.worklanes)) {
+    return yield* brokerError("request.invalid", "default authority class is not defined", {
+      authorityClass: policyFile.defaultAuthorityClass,
     });
   }
   for (const [name, worklane] of Object.entries(policyFile.worklanes)) {

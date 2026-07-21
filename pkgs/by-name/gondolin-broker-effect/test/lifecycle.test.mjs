@@ -7,6 +7,8 @@ import { Effect, Exit, Stream } from "effect"
 import { Environments } from "../dist/environments.js"
 import { Executor } from "../dist/exec.js"
 import { Files } from "../dist/files.js"
+import { EnsureRequest, decodeExact } from "../dist/domain.js"
+import { Registry } from "../dist/registry.js"
 import { makeTestLayer } from "./fakes.mjs"
 
 const withHarness = async (run, options) => {
@@ -32,6 +34,70 @@ test("ensure reuses a compatible live generation and increments after close", as
     const next = yield* environments.ensure({ environmentKey: "conversation-a" })
     assert.equal(next.generation, first.generation + 1)
   }))
+})
+
+test("ensure binds broker-owned default authority and rejects conflicts", async () => {
+  await withHarness(() => Effect.gen(function* () {
+    const environments = yield* Environments
+    const registry = yield* Registry
+    const ensured = yield* environments.ensure({ environmentKey: "conversation-authority" })
+
+    assert.equal(ensured.profile, "test")
+    assert.equal(ensured.executor, "hermes-gateway")
+    assert.equal(ensured.authorityClass, "default")
+    assert.equal(ensured.policyGeneration, 1)
+
+    const binding = yield* registry.getAuthority("conversation-authority")
+    assert.equal(binding.profile, "test")
+    assert.equal(binding.executor, "hermes-gateway")
+    assert.equal(binding.authorityClass, "default")
+
+    const conflict = yield* Effect.flip(registry.bindAuthority({
+      environmentKey: "conversation-authority",
+      profile: "test",
+      executor: "different-executor",
+      authorityClass: "default",
+      policyGeneration: 1
+    }))
+    assert.equal(conflict.reason, "authority.conflict")
+  }))
+})
+
+test("authority bindings persist across broker registry restarts", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "gondolin-authority-test-"))
+  const request = {
+    environmentKey: "conversation-persisted",
+    profile: "test",
+    executor: "hermes-gateway",
+    authorityClass: "default",
+    policyGeneration: 1
+  }
+
+  const first = makeTestLayer(stateDir)
+  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const registry = yield* Registry
+    yield* registry.bindAuthority(request)
+  }).pipe(Effect.provide(first.layer))))
+
+  const second = makeTestLayer(stateDir)
+  const binding = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const registry = yield* Registry
+    return yield* registry.getAuthority(request.environmentKey)
+  }).pipe(Effect.provide(second.layer))))
+
+  assert.equal(binding.profile, request.profile)
+  assert.equal(binding.executor, request.executor)
+  assert.equal(binding.authorityClass, request.authorityClass)
+  assert.equal(binding.policyGeneration, request.policyGeneration)
+})
+
+test("ordinary ensure input rejects caller-selected authority", async () => {
+  await assert.rejects(
+    Effect.runPromise(decodeExact(EnsureRequest, {
+      environmentKey: "conversation-authority",
+      worklane: "codex"
+    }))
+  )
 })
 
 test("stale generations are rejected after recreation", async () => {

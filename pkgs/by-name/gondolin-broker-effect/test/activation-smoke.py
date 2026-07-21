@@ -25,7 +25,8 @@ policy = {
             {"effect": "allow", "actions": ["environment.ensure"], "resources": ["*"]}
         ],
     },
-    "defaultWorklane": "default",
+    "defaultExecutor": "hermes-gateway",
+    "defaultAuthorityClass": "default",
     "maxEnvironments": 1,
     "assets": {
         "default": {"path": str(asset_path), "buildId": "activation-test"}

@@ -161,7 +161,8 @@ export const makePolicyFile = (overrides = {}) => ({
       }
     ]
   },
-  defaultWorklane: "default",
+  defaultExecutor: "hermes-gateway",
+  defaultAuthorityClass: "default",
   maxEnvironments: 4,
   assets: { default: { path: "/fake/root.qcow2", buildId: "fake-build" } },
   networkPolicies: {
