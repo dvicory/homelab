@@ -165,28 +165,26 @@ def _broker_capabilities(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _canonical_summary(prepared: dict[str, Any], rationale: str) -> str:
-    lines = ["Canonical sandbox capability request (broker-authoritative):"]
+    requested_scope = prepared.get("requestedScope")
+    session_scope = _scope_for_choice("session", requested_scope)
+    lines = ["Network access request (broker verified):"]
     for capability in prepared.get("capabilities", []):
         ports = ",".join(str(port) for port in capability.get("ports", []))
         line = (
             f"- {capability.get('scheme')}://{capability.get('host')} "
-            f"ports [{ports}], address mode {capability.get('addressMode')}"
+            f"ports [{ports}], {capability.get('addressMode')} addresses"
         )
         pins = capability.get("pinnedAddresses") or []
         if pins:
-            line += f", pinned addresses [{', '.join(pins)}]"
+            line += f", pinned [{', '.join(pins)}]"
         lines.append(line)
-    scope = prepared.get("requestedScope")
     duration = prepared.get("durationSeconds")
     lines.extend([
-        f"Requested maximum scope: {scope}" + (f" ({duration} seconds)" if duration else ""),
-        "Credentials delivered: none.",
-        "Filesystem effects: none.",
-        "VM recreation: not required; a grant changes mediated network authority in the current VM.",
-        "Approval choices: once grants one request; session is capped by the requested scope; "
-        "always creates an exact executor rule.",
-        "Model rationale (non-authoritative):",
-        rationale,
+        f"Model-requested scope: {requested_scope}" + (f" ({duration} seconds)" if duration else ""),
+        "Effect: network only; no credentials, filesystem access, or VM restart.",
+        f"Choices: once=next matching request; session={session_scope}; "
+        "always=all tasks for this executor until revoked or policy update.",
+        f"Why (model-provided): {rationale}",
     ])
     return "\n".join(lines)
 

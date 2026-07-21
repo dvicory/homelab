@@ -107,9 +107,10 @@ def test_broker_prepares_before_approval_and_decision_uses_only_request_id(plugi
         "principal": "hermes-paired-user",
     }
     assert "capabilities" not in decision
-    assert "api.example.com" in prompts[0][1]
-    assert "Credentials delivered: none" in prompts[0][1]
-    assert "Model rationale (non-authoritative)" in prompts[0][1]
+    assert "https://api.example.com ports [443], public addresses" in prompts[0][1]
+    assert "Effect: network only; no credentials, filesystem access, or VM restart." in prompts[0][1]
+    assert "Choices: once=next matching request; session=task;" in prompts[0][1]
+    assert "Why (model-provided): Needed for the vendor API" in prompts[0][1]
     assert prompts[0][2] == "sandbox-access:fingerprint-1"
 
 
