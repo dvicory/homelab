@@ -1,12 +1,12 @@
-From de4a34b352ebb9862dd4a51dc1808c590a5c7828 Mon Sep 17 00:00:00 2001
+From d31f163dca391366ee4812dda392a74a4f45f0a5 Mon Sep 17 00:00:00 2001
 From: Hermes Patch <hermes@example.invalid>
 Date: Tue, 21 Jul 2026 04:27:07 -0700
 Subject: [PATCH] feat: add task authority binding hook
 
 ---
  tests/tools/test_task_authority_binding.py | 87 ++++++++++++++++++++++
- tools/terminal_tool.py                     | 53 +++++++++++--
- 2 files changed, 133 insertions(+), 7 deletions(-)
+ tools/terminal_tool.py                     | 55 ++++++++++++--
+ 2 files changed, 135 insertions(+), 7 deletions(-)
  create mode 100644 tests/tools/test_task_authority_binding.py
 
 diff --git a/tests/tools/test_task_authority_binding.py b/tests/tools/test_task_authority_binding.py
@@ -103,7 +103,7 @@ index 0000000..5e8dc8b
 +    with pytest.raises(ValueError):
 +        terminal_tool.register_task_authority_binding("task", "")
 diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
-index 8427954..5214c08 100644
+index 8427954..93f7a12 100644
 --- a/tools/terminal_tool.py
 +++ b/tools/terminal_tool.py
 @@ -1083,11 +1083,15 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
@@ -171,13 +171,14 @@ index 8427954..5214c08 100644
  
      Fallback: when neither identifier is available the key is the explicit
      constant ``"default"``. This is only reachable for platform-internal
-@@ -1170,10 +1196,23 @@ def environment_key(task_id: Optional[str] = None, session_id: Optional[str] = N
+@@ -1170,10 +1196,25 @@ def environment_key(task_id: Optional[str] = None, session_id: Optional[str] = N
      """
      scope = os.getenv("TERMINAL_ISOLATION_SCOPE", "shared").strip().lower()
      identity = (session_id or task_id) if scope == "conversation" else task_id
 +    if identity and _DERIVED_ENV_KEY_RE.match(identity):
 +        return identity
 +    authority_binding_id = None
++    authority_identity_source = None
 +    for raw in (task_id, session_id):
 +        if not raw or raw not in _task_env_overrides:
 +            continue
@@ -185,9 +186,10 @@ index 8427954..5214c08 100644
 +        candidate = overrides.get("authority_binding_id")
 +        if isinstance(candidate, str) and candidate.strip():
 +            authority_binding_id = candidate
++            authority_identity_source = raw
 +            break
 +    if authority_binding_id is not None:
-+        authority_identity = "\x00".join((session_id or task_id or "", authority_binding_id))
++        authority_identity = "\x00".join((authority_identity_source, authority_binding_id))
 +        digest = hashlib.sha256(authority_identity.encode("utf-8")).hexdigest()[:24]
 +        return f"authority-{digest}"
      if not identity:

@@ -13,6 +13,9 @@ export const Reason = Schema.Literal(
   "capability.unsupported",
   "network.resolution_failed",
   "network.address_forbidden",
+  "network.capability_inactive",
+  "network.protocol_unsupported",
+  "network.rebinding_denied",
   "approval.request_suppressed",
   "approval.request_not_found",
   "approval.invalid_state",
@@ -67,6 +70,9 @@ export const statusFor = (error: BrokerError): number => {
     case "policy.denied":
     case "policy.approval_required":
     case "network.address_forbidden":
+    case "network.capability_inactive":
+    case "network.protocol_unsupported":
+    case "network.rebinding_denied":
       return 403;
     case "environment.not_found":
     case "fs.not_found":

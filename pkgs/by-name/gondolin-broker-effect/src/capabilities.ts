@@ -102,6 +102,24 @@ const isPrivateAddress = ({ address, family }: ResolvedAddress): boolean =>
     ? privateAllowedIpv4.check(address, "ipv4")
     : privateAllowedIpv6.check(address, "ipv6");
 
+export const normalizeResolvedAddress = (address: string): ResolvedAddress => normalizeIp(address);
+
+export const isPublicResolvedAddress = (address: string): boolean => {
+  try {
+    return isPublicAddress(normalizeIp(address));
+  } catch {
+    return false;
+  }
+};
+
+export const isGrantablePrivateAddress = (address: string): boolean => {
+  try {
+    return isPrivateAddress(normalizeIp(address));
+  } catch {
+    return false;
+  }
+};
+
 const normalizeHost = (raw: string): { readonly host: string; readonly literal?: ResolvedAddress } => {
   if (raw.trim() !== raw || raw.includes("*") || /[@/?#\\\[\]]/.test(raw)) {
     throw brokerError("capability.invalid", "network origin host is not an exact hostname or IP literal");
