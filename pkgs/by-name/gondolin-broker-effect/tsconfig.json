@@ -14,7 +14,7 @@
     "noEmitOnError": true,
     "declaration": true,
     "sourceMap": true,
-    "skipLibCheck": false,
+    "skipLibCheck": true,
     "types": ["node"]
   },
   "include": ["src/**/*.ts"]

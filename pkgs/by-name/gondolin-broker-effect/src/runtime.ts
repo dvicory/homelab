@@ -1,4 +1,10 @@
-import { createRequire } from "node:module";
+import {
+  RealFSProvider,
+  VM as GondolinVM,
+  type DebugComponent,
+  type DebugConfig,
+  type DebugFlag,
+} from "@earendil-works/gondolin";
 import { Context, Effect, Layer } from "effect";
 import { brokerError, type BrokerError } from "./errors.js";
 
@@ -60,66 +66,20 @@ export class VmRuntime extends Context.Tag("@agent-x/gondolin-broker-effect/VmRu
   VmRuntimeService
 >() {}
 
-interface GondolinProcess {
-  readonly result: Promise<{ readonly exitCode?: number; readonly signal?: number }>;
-  output(): AsyncIterable<{ readonly stream: "stdout" | "stderr"; readonly data: Buffer }>;
-  write(data: string | Buffer): void;
-  end(): void;
-}
-
-interface GondolinVm {
-  readonly id: string;
-  readonly fs: {
-    stat(path: string): Promise<{ isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean; size: number; mode: number; mtimeMs: number }>;
-    listDir(path: string): Promise<string[]>;
-    readFile(path: string, options: Record<string, unknown>): Promise<Buffer>;
-    writeFile(path: string, data: Buffer, options?: Record<string, unknown>): Promise<void>;
-    mkdir(path: string, options?: Record<string, unknown>): Promise<void>;
-    deleteFile(path: string, options?: Record<string, unknown>): Promise<void>;
-  };
-  exec(argv: string[], options: Record<string, unknown>): GondolinProcess;
-  getHostPid(): number | null;
-  close(): Promise<void>;
-}
-
-interface GondolinSdk {
-  readonly VM: {
-    create(options: Record<string, unknown>): Promise<GondolinVm>;
-  };
-  readonly RealFSProvider: new (rootPath: string) => unknown;
-}
-
-const require = createRequire(import.meta.url);
-let sdkPromise: Promise<GondolinSdk> | undefined;
-
-const isGondolinSdk = (value: unknown): value is GondolinSdk =>
-  typeof value === "object" &&
-  value !== null &&
-  "VM" in value &&
-  typeof value.VM === "object" &&
-  value.VM !== null &&
-  "create" in value.VM &&
-  typeof value.VM.create === "function" &&
-  "RealFSProvider" in value &&
-  typeof value.RealFSProvider === "function";
-
-const loadSdk = (): Promise<GondolinSdk> => {
-  if (sdkPromise === undefined) {
-    const loaded: unknown = require("@earendil-works/gondolin");
-    if (!isGondolinSdk(loaded)) {
-      return Promise.reject(new Error("Gondolin SDK exports do not match the broker adapter"));
-    }
-    sdkPromise = Promise.resolve(loaded);
-  }
-  return sdkPromise;
-};
+const isDebugFlag = (value: string): value is DebugFlag =>
+  value === "net" || value === "exec" || value === "vfs" || value === "protocol";
 
 export const parseGondolinDebug = (
   value: string | undefined = process.env.GONDOLIN_DEBUG,
-): false | true | ReadonlyArray<string> => {
+): DebugConfig => {
   if (value === undefined || value === "") return false;
   if (value === "all") return true;
-  return value.split(",").map((component) => component.trim()).filter(Boolean);
+  const components = value.split(",").map((component) => component.trim()).filter(Boolean);
+  const invalid = components.find((component) => !isDebugFlag(component));
+  if (invalid !== undefined) {
+    throw new Error(`Unknown Gondolin debug component: ${invalid}`);
+  }
+  return components.filter(isDebugFlag);
 };
 
 const runtimeFailure = (operation: string, error: unknown): BrokerError =>
@@ -132,15 +92,14 @@ const runtimeFailure = (operation: string, error: unknown): BrokerError =>
 const createVm = (spec: VmCreateSpec): Effect.Effect<VmHandle, BrokerError> =>
   Effect.tryPromise({
     try: async () => {
-      const sdk = await loadSdk();
       const debug = parseGondolinDebug();
       const debugLog =
         debug === false
           ? undefined
-          : (component: string, message: string) => {
+          : (component: DebugComponent, message: string) => {
               process.stderr.write(`[gondolin:${component}] ${message.replace(/\n$/, "")}\n`);
             };
-      const vm = await sdk.VM.create({
+      const vm = await GondolinVM.create({
         sandbox: {
           ...(process.platform === "linux" ? { vmm: "qemu", accel: "kvm" } : {}),
           imagePath: spec.assetPath,
@@ -155,7 +114,7 @@ const createVm = (spec: VmCreateSpec): Effect.Effect<VmHandle, BrokerError> =>
         ...(debugLog === undefined ? {} : { debugLog }),
         vfs: {
           fuseMount: spec.workspaceGuestPath,
-          mounts: { "/": new sdk.RealFSProvider(spec.workspaceHostPath) },
+          mounts: { "/": new RealFSProvider(spec.workspaceHostPath) },
         },
       });
 
@@ -177,7 +136,7 @@ const createVm = (spec: VmCreateSpec): Effect.Effect<VmHandle, BrokerError> =>
         },
         list: (path) => vm.fs.listDir(path),
         read: (path) => vm.fs.readFile(path, {}),
-        write: (path, data, options) => vm.fs.writeFile(path, Buffer.from(data), options),
+        write: (path, data) => vm.fs.writeFile(path, data),
         mkdir: (path, recursive) => vm.fs.mkdir(path, { recursive }),
         remove: (path, recursive) => vm.fs.deleteFile(path, { recursive, force: false }),
       };

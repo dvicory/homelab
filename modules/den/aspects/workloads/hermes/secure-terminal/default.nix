@@ -155,7 +155,7 @@ in
                 # SDK boot/protocol metadata and Effect HTTP request spans
                 # go to journald. Do not enable Gondolin's `exec` or `vfs`
                 # debug channels: they include commands, env, and paths.
-                GONDOLIN_DEBUG = "qemu,protocol,net";
+                GONDOLIN_DEBUG = "protocol,net";
               };
               serviceConfig = {
                 Type = "exec";
