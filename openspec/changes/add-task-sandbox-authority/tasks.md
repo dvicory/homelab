@@ -20,6 +20,7 @@
 - [x] 4.2 Add a Nix-built sandbox-authority Hermes plugin with control client, `sandbox_request_access`, list/revoke tools, existing approval-provider integration, trusted session/Kanban registration, canonical batch prompts, suppressed-request handling, plugin contract checks, and commit.
 - [ ] 4.3 Wire the plugin, profile/executor defaults, allowed grant scopes, cooldowns, budgets, and control socket into `modules/den/aspects/workloads/hermes/secure-terminal/` for `hermes-qa`; rebuild the affected `hvn-hyp1` configuration and portable checks, then commit. No SOPS update is required.
 - [x] 4.4 Constrain the rendered QA broker policy to its Nix `maximum.grantScopes`, disable Hermes' permanent approval choice only for sandbox access, reject out-of-profile scopes at the broker, bind persisted state to the full immutable policy digest, and cover the contract with focused checks.
+- [x] 4.5 Preserve running QA gateway connectivity across broker socket inode replacement by mounting a stable read-only broker runtime directory; cover the rendered Quadlet and socket-directory ownership contract, then commit.
 
 ## 5. End-to-End Validation and Documentation
 

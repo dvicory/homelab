@@ -11,6 +11,9 @@ The QA Gondolin broker currently treats a client-supplied worklane as policy aut
 - Add structured requestable denials so the agent can learn which capability is missing and retry after approval.
 - Add approval-fatigue controls: one pending request per task, request coalescing, denial cooldowns, prompt budgets, and canonical broker-rendered policy diffs.
 - Add a privileged broker control channel for authority registration and grant mutation; the ordinary execution channel cannot select its own authority.
+- Preserve running-gateway connectivity when NixOS activation replaces broker
+  socket inodes by mounting only the broker's stable, read-only runtime directory
+  instead of bind-mounting individual socket files.
 - Add a Nix-managed Hermes sandbox-authority plugin that uses existing tool registration, task lifecycle hooks, and approval UX.
 - Make one narrow, generic Hermes integration change so an authority-bearing task receives a distinct canonical environment identity. No policy evaluator or per-tool worklane plumbing is added to Hermes.
 - Add exact public and private HTTP(S) origin grants as the first dynamically enforceable capability. The schema remains extensible to installed credential adapters, filesystem exports, resources, and exact TCP mediation without treating unsupported capability kinds as approved no-ops.

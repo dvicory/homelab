@@ -171,6 +171,15 @@ The model supplies rationale for task planning, but the approval's security fact
 
 Systemd supplies named socket-activation descriptors for execution and control listeners. The broker rejects control routes on the execution listener and execution routes on the control listener. Health is available on both for activation checks but does not reveal grant content.
 
+The gateway bind-mounts the broker's dedicated runtime directory, not the two
+socket files. A file bind mount pins one Unix-socket inode; if NixOS activation
+or an operator restarts the socket units, a running container otherwise keeps
+the dead inode and cannot reconnect until its Quadlet is recreated. The
+root-owned, mode-0711 runtime directory is stable across socket replacement and
+is mounted read-only at `/run/hermes-sandbox`, so path lookup reaches the new
+mode-0600 runner-owned sockets without exposing unrelated `/run` state or
+granting directory mutation.
+
 Control operations:
 
 ```text
@@ -218,5 +227,14 @@ The ongoing QA repair routes patch pre-read, write, and verification through bro
 4. Add the generic Hermes authority identity hook and plugin.
 5. Enable dynamic grants only for `hermes-qa` on `hvn-hyp1`.
 6. Exercise denial, approval, retry, expiry, revocation, restart, and fatigue controls.
+
+For the socket-directory cutover, deploy the matching QA Hermes release first.
+The pre-cutover socket units already create `/run/hermes-qa-broker`, so the new
+gateway can bind the directory and continue using the old sockets. Deploy the
+host NixOS configuration second; replacement socket inodes then remain visible
+through that existing directory bind. Verify broker health and one terminal
+operation after each activation before running the full acceptance prompt. This
+ordering limits disruption to broker reconnection and avoids requiring the host
+and Quadlet changes to become active atomically.
 
 Rollback disables the plugin and control socket, revokes/quarantines runtime grants, and leaves the broker on its fixed `project` default. Production remains unchanged; QA may return to the rootless-Podman backend if the broker path is unstable.

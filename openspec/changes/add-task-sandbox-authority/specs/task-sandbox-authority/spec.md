@@ -28,6 +28,12 @@ Authority mutation MUST be exposed only through the broker control listener. Env
 - **WHEN** a client sends command execution to the control listener
 - **THEN** the broker MUST reject it without starting or leasing a VM
 
+#### Scenario: Socket replacement under a running gateway
+- **GIVEN** a running Hermes gateway connected through the broker's execution and control socket paths
+- **WHEN** NixOS activation or an operator replaces the socket inodes and starts a new broker
+- **THEN** the gateway SHALL resolve the replacement sockets without a Hermes redeploy or container restart
+- **AND** the gateway MUST NOT receive a writable mount of the broker runtime directory or unrelated host runtime state
+
 ### Requirement: Task-scoped canonical environment identity
 
 Hermes MUST provide one generic, infrastructure-only way to associate a trusted authority binding with a task or session. Every environment-backed surface MUST continue to derive its opaque environment key through the canonical identity helper. A task carrying distinct authority MUST NOT share an environment with a conversation or task carrying different authority.

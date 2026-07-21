@@ -114,6 +114,18 @@
         maximum = qaSelections.maximum;
         worklanes = qaSelections.worklanes;
       };
+      qaHome = self.homeConfigurations."hermes-qa-runner@hvn-hyp1".config;
+      qaHost = self.nixosConfigurations.hvn-hyp1.config;
+      qaExecutionSocket = qaHost.systemd.sockets.hermes-qa-broker-execution.socketConfig;
+      qaControlSocket = qaHost.systemd.sockets.hermes-qa-broker-control.socketConfig;
+      qaVolumes = qaHome.virtualisation.quadlet.containers.hermes-qa.containerConfig.volumes;
+      brokerDirectoryMount = "/run/hermes-qa-broker:/run/hermes-sandbox:ro";
+      hasLegacySocketMount =
+        lib.any (
+          volume:
+          lib.hasPrefix "/run/hermes-qa-broker/broker.sock:" volume
+          || lib.hasPrefix "/run/hermes-qa-broker/control.sock:" volume
+        ) qaVolumes;
     in
     {
       checks.secure-terminal-policy-golden =
@@ -128,6 +140,19 @@
               node ${self + "/modules/tests/secure-terminal-policy-golden.mjs"}
             touch $out
           '';
+      checks.secure-terminal-socket-directory-mount =
+        assert lib.elem brokerDirectoryMount qaVolumes;
+        assert !hasLegacySocketMount;
+        assert lib.elem "d /run/hermes-qa-broker 0711 root root -" qaHost.systemd.tmpfiles.rules;
+        assert qaExecutionSocket.DirectoryMode == "0711";
+        assert qaExecutionSocket.SocketMode == "0600";
+        assert qaExecutionSocket.SocketUser == "hermes-qa-runner";
+        assert qaControlSocket.DirectoryMode == "0711";
+        assert qaControlSocket.SocketMode == "0600";
+        assert qaControlSocket.SocketUser == "hermes-qa-runner";
+        pkgs.runCommand "secure-terminal-socket-directory-mount" { } ''
+          touch $out
+        '';
       checks.secure-terminal-effect-policy-http =
         pkgs.runCommand "secure-terminal-effect-policy-http"
           {
