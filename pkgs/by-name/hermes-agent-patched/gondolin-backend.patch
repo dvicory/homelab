@@ -2,7 +2,7 @@ diff --git a/tests/tools/test_gondolin_backend.py b/tests/tools/test_gondolin_ba
 new file mode 100644
 --- /dev/null
 +++ b/tests/tools/test_gondolin_backend.py
-@@ -0,0 +1,267 @@
+@@ -0,0 +1,307 @@
 +"""Contract tests for Hermes HTTP/1.1 over Unix-socket Gondolin client."""
 +
 +import base64
@@ -20,6 +20,7 @@ new file mode 100644
 +    GondolinEnvironment,
 +    check_gondolin_available,
 +)
++from tools.file_operations import ShellFileOperations
 +
 +
 +class _UnixHttpServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
@@ -82,6 +83,14 @@ new file mode 100644
 +                "policyGeneration": 1,
 +                "decisionDigest": "digest",
 +            })
++        elif self.path == "/v1/files/read":
++            self._json(200, {
++                "dataBase64": base64.b64encode(self.broker.file_data).decode(),
++                "size": len(self.broker.file_data),
++            })
++        elif self.path == "/v1/files/write":
++            self.broker.file_data = base64.b64decode(request["dataBase64"], validate=True)
++            self._json(200, {"size": len(self.broker.file_data)})
 +        elif self.path == "/v1/environments/close":
 +            self._json(200, {"closed": True})
 +        elif self.path == "/v1/exec":
@@ -136,6 +145,7 @@ new file mode 100644
 +        self.generation = 1
 +        self.sequence = 0
 +        self.hang_exec = False
++        self.file_data = b""
 +        self.exec_started = threading.Event()
 +        self.disconnected = threading.Event()
 +        self._server = _UnixHttpServer(socket_path, _Handler)
@@ -202,7 +212,7 @@ new file mode 100644
 +    assert "oops" in result["output"]
 +    path, payload = next(call for call in broker.calls if call[0] == "/v1/exec")
 +    assert path == "/v1/exec"
-+    assert payload["argv"] == ["/bin/sh", "-lc", "echo hello"]
++    assert payload["argv"] == ["/bin/sh", "-c", "echo hello"]
 +    assert payload["generation"] == 1
 +
 +
@@ -245,6 +255,36 @@ new file mode 100644
 +    assert not check_gondolin_available(str(tmp_path / "missing.sock"))
 +
 +
++def test_typed_file_round_trip_preserves_control_bytes():
++    broker, env = make_env()
++    payload = "héllo\x1b]8;;https://example.test\x07link\x1b]8;;\x07\n".encode()
++    broker.file_data = payload
++    assert env.read_file_bytes("/workspace/example.txt") == payload
++    assert env.write_file_bytes("/workspace/example.txt", payload + b"\x00") == len(payload) + 1
++    assert broker.file_data == payload + b"\x00"
++    paths = [path for path, _request in broker.calls]
++    assert "/v1/files/read" in paths
++    assert "/v1/files/write" in paths
++
++
++def test_patch_uses_typed_files_without_terminal_output_corruption():
++    broker, env = make_env()
++    original = "pré\x1b]8;;https://example.test\x07link\x1b]8;;\x07 post\n".encode()
++    expected = "pré\x1b]8;;https://example.test\x07changed\x1b]8;;\x07 post\n".encode()
++    broker.file_data = original
++
++    result = ShellFileOperations(env).patch_replace(
++        "/workspace/example.txt",
++        "link",
++        "changed",
++    )
++
++    assert result.success, result.error
++    assert broker.file_data == expected
++    file_calls = [path for path, _request in broker.calls if path.startswith("/v1/files/")]
++    assert file_calls == ["/v1/files/read", "/v1/files/write", "/v1/files/read"]
++
++
 +def test_embed_stdin_heredoc_groups_command():
 +    wrapped = GondolinEnvironment._embed_stdin_heredoc("a; b; c", "payload")
 +    head, _, tail = wrapped.partition("\n")
@@ -274,7 +314,7 @@ diff --git a/tools/environments/gondolin.py b/tools/environments/gondolin.py
 new file mode 100644
 --- /dev/null
 +++ b/tools/environments/gondolin.py
-@@ -0,0 +1,277 @@
+@@ -0,0 +1,345 @@
 +"""Gondolin Effect broker terminal backend.
 +
 +Uses ordinary HTTP/1.1 over the profile's mode-0600 Unix socket. Hermes supplies
@@ -351,6 +391,62 @@ new file mode 100644
 +        )
 +        self._raise_for_status(response)
 +        return response.json()
++
++    @staticmethod
++    def _file_result(response: httpx.Response) -> tuple[bytes, int]:
++        body = response.json()
++        data_base64 = body.get("dataBase64")
++        size = body.get("size")
++        if not isinstance(data_base64, str) or not isinstance(size, int) or size < 0:
++            raise BrokerError("protocol.invalid_response", "invalid broker file response")
++        try:
++            data = base64.b64decode(data_base64, validate=True)
++        except (ValueError, TypeError) as exc:
++            raise BrokerError("protocol.invalid_response", "invalid broker file base64") from exc
++        if len(data) != size:
++            raise BrokerError("protocol.invalid_response", "broker file size mismatch")
++        return data, size
++
++    def read_file(
++        self,
++        environment_key: str,
++        generation: int,
++        path: str,
++        max_bytes: int = 64 * 1024 * 1024,
++    ) -> bytes:
++        response = self._client.post(
++            "/v1/files/read",
++            json={
++                "environmentKey": environment_key,
++                "generation": generation,
++                "path": path,
++                "maxBytes": max_bytes,
++            },
++            timeout=self._timeout,
++        )
++        self._raise_for_status(response)
++        data, _size = self._file_result(response)
++        return data
++
++    def write_file(self, environment_key: str, generation: int, path: str, data: bytes) -> int:
++        response = self._client.post(
++            "/v1/files/write",
++            json={
++                "environmentKey": environment_key,
++                "generation": generation,
++                "path": path,
++                "dataBase64": base64.b64encode(data).decode("ascii"),
++                "create": True,
++                "truncate": True,
++            },
++            timeout=self._timeout,
++        )
++        self._raise_for_status(response)
++        body = response.json()
++        size = body.get("size")
++        if not isinstance(size, int) or size < 0 or size != len(data):
++            raise BrokerError("protocol.invalid_response", "invalid broker write response")
++        return size
 +
 +    def close_environment(self, environment_key: str, generation: int) -> None:
 +        response = self._client.post(
@@ -457,6 +553,18 @@ new file mode 100644
 +                generation,
 +            )
 +
++    def read_file_bytes(self, path: str, max_bytes: int = 64 * 1024 * 1024) -> bytes:
++        self._ensure_environment()
++        if self.generation is None:
++            raise BrokerError("protocol.invalid_response", "environment has no generation")
++        return self._client.read_file(self._env_key, self.generation, path, max_bytes)
++
++    def write_file_bytes(self, path: str, data: bytes) -> int:
++        self._ensure_environment()
++        if self.generation is None:
++            raise BrokerError("protocol.invalid_response", "environment has no generation")
++        return self._client.write_file(self._env_key, self.generation, path, data)
++
 +    def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
 +        result = super().execute(command, cwd, **kwargs)
 +        if self._state_loss_notice:
@@ -495,7 +603,7 @@ new file mode 100644
 +                    {
 +                        "environmentKey": self._env_key,
 +                        "generation": self.generation,
-+                        "argv": ["/bin/sh", "-lc", cmd_string],
++                        "argv": ["/bin/sh", "-lc" if login else "-c", cmd_string],
 +                        "timeoutMs": int(timeout) * 1000,
 +                    },
 +                    timeout=max(float(timeout) + 30.0, 60.0),
@@ -607,3 +715,130 @@ diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
                  env_type,
              )
              return False
+diff --git a/tools/file_operations.py b/tools/file_operations.py
+index 78bdd8d..0818a5c 100644
+--- a/tools/file_operations.py
++++ b/tools/file_operations.py
+@@ -1355,15 +1355,22 @@ class ShellFileOperations(FileOperations):
+         ext = os.path.splitext(path)[1].lower()
+         pre_content: Optional[str] = None
+         want_pre = ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
++        native_read = getattr(self.env, "read_file_bytes", None)
+         if want_pre:
+             # Best-effort read; failure (file missing, permission) leaves
+             # pre_content as None which makes both downstream consumers
+             # degrade gracefully (lint reports all errors; LSP skips the
+             # shift map).
+-            read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+-            read_result = self._exec(read_cmd)
+-            if read_result.exit_code == 0 and read_result.stdout:
+-                pre_content = read_result.stdout
++            if callable(native_read):
++                try:
++                    pre_content = native_read(path).decode("utf-8")
++                except (OSError, UnicodeDecodeError):
++                    pre_content = None
++            else:
++                read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
++                read_result = self._exec(read_cmd)
++                if read_result.exit_code == 0 and read_result.stdout:
++                    pre_content = read_result.stdout
+ 
+         # ── Line-ending preservation (Roo Code pattern) ──────────────
+         # If the file existed with CRLF endings and the agent's content
+@@ -1420,19 +1427,23 @@ class ShellFileOperations(FileOperations):
+         # the atomic swap doesn't silently widen or narrow permissions, and
+         # clean the temp up on any failure so we never leak a ``.hermes-tmp``
+         # turd next to the user's file.
+-        write_result = self._atomic_write(path, content)
+-
+-        if write_result.exit_code != 0:
+-            return WriteResult(error=f"Failed to write file: {write_result.stdout}")
+-
+-        # Get bytes written (wc -c is POSIX, works on Linux + macOS)
+-        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
+-        stat_result = self._exec(stat_cmd)
++        native_write = getattr(self.env, "write_file_bytes", None)
++        if callable(native_write):
++            try:
++                bytes_written = native_write(path, content.encode("utf-8"))
++            except (OSError, UnicodeEncodeError) as exc:
++                return WriteResult(error=f"Failed to write file: {exc}")
++        else:
++            write_result = self._atomic_write(path, content)
++            if write_result.exit_code != 0:
++                return WriteResult(error=f"Failed to write file: {write_result.stdout}")
+ 
+-        try:
+-            bytes_written = int(stat_result.stdout.strip())
+-        except ValueError:
+-            bytes_written = len(content.encode('utf-8'))
++            stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
++            stat_result = self._exec(stat_cmd)
++            try:
++                bytes_written = int(stat_result.stdout.strip())
++            except ValueError:
++                bytes_written = len(content.encode("utf-8"))
+ 
+         # Post-write lint with delta refinement.
+         lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=content)
+@@ -1483,14 +1494,20 @@ class ShellFileOperations(FileOperations):
+         if _is_write_denied(path):
+             return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+ 
+-        # Read current content
+-        read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+-        read_result = self._exec(read_cmd)
+-        
+-        if read_result.exit_code != 0:
+-            return PatchResult(error=f"Failed to read file: {path}")
+-        
+-        content = read_result.stdout
++        # Use typed broker file reads when the environment exposes them. PTY
++        # output can contain terminal control sequences and is not file data.
++        native_read = getattr(self.env, "read_file_bytes", None)
++        if callable(native_read):
++            try:
++                content = native_read(path).decode("utf-8")
++            except (OSError, UnicodeDecodeError) as exc:
++                return PatchResult(error=f"Failed to read file: {exc}")
++        else:
++            read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
++            read_result = self._exec(read_cmd)
++            if read_result.exit_code != 0:
++                return PatchResult(error=f"Failed to read file: {path}")
++            content = read_result.stdout
+         # Strip a leading UTF-8 BOM before matching so the fuzzy matcher and
+         # the diff operate on clean content (a phantom U+FEFF before line 1
+         # defeats an exact first-line match). write_file restores the BOM on
+@@ -1536,10 +1553,17 @@ class ShellFileOperations(FileOperations):
+         # failures (backend FS oddities, race with another task, truncated
+         # pipe, etc.) that would otherwise return success-with-diff while the
+         # file is unchanged on disk.
+-        verify_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+-        verify_result = self._exec(verify_cmd)
+-        if verify_result.exit_code != 0:
+-            return PatchResult(error=f"Post-write verification failed: could not re-read {path}")
++        if callable(native_read):
++            try:
++                verify_content = native_read(path).decode("utf-8")
++            except (OSError, UnicodeDecodeError) as exc:
++                return PatchResult(error=f"Post-write verification failed: {exc}")
++        else:
++            verify_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
++            verify_result = self._exec(verify_cmd)
++            if verify_result.exit_code != 0:
++                return PatchResult(error=f"Post-write verification failed: could not re-read {path}")
++            verify_content = verify_result.stdout
+         # Normalize line endings before comparing.  On Windows, Python's
+         # default text-mode ``open()`` translates ``\n`` → ``\r\n`` on
+         # write, so the file on disk legitimately holds CRLFs while our
+@@ -1551,7 +1575,7 @@ class ShellFileOperations(FileOperations):
+         # marker on disk but ``new_content`` is the BOM-less string we
+         # matched against, so the comparison must drop it to stay
+         # apples-to-apples.
+-        _verify_bomless, _ = _strip_bom(verify_result.stdout)
++        _verify_bomless, _ = _strip_bom(verify_content)
+         _verify_stdout_normalized = _verify_bomless.replace("\r\n", "\n").replace("\r", "\n")
+         _new_content_normalized = new_content.replace("\r\n", "\n").replace("\r", "\n")
+         if _verify_stdout_normalized != _new_content_normalized:

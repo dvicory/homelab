@@ -1,7 +1,7 @@
 ## 1. Credential-Free Baseline
 
 - [x] 1.1 Complete and commit the `hvn-hyp1` QA broker's policy-backed Gondolin HTTP/DNS enforcement, including exact public origins, internal-range denial, worklane attenuation fixtures, and the targeted broker/Nix rebuild checks.
-- [ ] 1.2 Route Hermes patch pre-read, write, and byte verification through typed broker file operations instead of PTY shell output; prove exact non-ASCII/control-byte round trips with the patched-source and broker checks, then commit the repair.
+- [x] 1.2 Route Hermes patch pre-read, write, and byte verification through typed broker file operations instead of PTY shell output; prove exact non-ASCII/control-byte round trips with the patched-source and broker checks, then commit the repair.
 
 ## 2. Broker Authority Boundary
 
