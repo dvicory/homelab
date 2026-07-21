@@ -9,49 +9,52 @@ measured rollback/comparison implementation; it is not started by that path.
 
 Implemented:
 
-- HTTP/JSON API over a mode-`0600` Unix socket;
-- exact request/config decoding;
+- ordinary HTTP/1.1 over separate mode-`0600` execution and control Unix sockets, including systemd named-FD activation;
+- strict request/config decoding and RFC 9457 errors with stable `reason` values;
 - shared `@agent-x/policy-kernel` authorization;
-- generation-fenced environment ensure/status/close;
-- credential-free Gondolin/QEMU VM creation;
-- network-disabled guests;
-- one durable SQLite environment registry;
-- one persistent host workspace per environment key;
-- foreground execution as NDJSON events;
-- deadline/output/input/concurrency enforcement;
-- hard VM close for incomplete or uncooperative commands;
-- mediated stat/list/read/write/mkdir/remove operations;
-- Effect scopes, read/write lifecycle locks, semaphores, streams, layers, and typed errors;
-- fake-runtime lifecycle and real Unix-socket HTTP tests.
-- a thin Hermes HTTPX-over-UDS terminal adapter with RFC 9457 error mapping;
-- NixOS systemd service and mode-`0600` socket activation wiring;
-- inherited-listener, rendered-policy startup, and patched-Hermes contract tests.
+- broker-owned profile/executor/authority-class bindings and generation-fenced environment lifecycle;
+- durable SQLite environment, access-request, and runtime-grant state;
+- credential-free Gondolin/QEMU VM creation with one persistent VFS workspace per environment key;
+- finite DNS/HTTP policy, synthetic DNS, resolved-address validation, redirect reauthorization, and public/private range classification;
+- closed `network-origin` capability preparation with canonical origins and pinned private-address previews;
+- dynamic once/task/conversation/timed/profile/executor grants, expiry, revocation, once-use, policy-generation invalidation, coalescing, cooldown, and prompt budgets;
+- immutable in-memory grant snapshots consumed by live Gondolin hooks without recreating a VM;
+- foreground NDJSON execution with deadline/output/input/concurrency bounds and hard VM close on incomplete termination;
+- mediated, byte-safe stat/list/read/write/mkdir/remove operations;
+- a thin Hermes HTTPX-over-UDS environment adapter and a separate Nix-built approval plugin;
+- fake-runtime lifecycle, direct authority smoke, real Unix-socket HTTP, inherited-listener, rendered-policy, and patched-Hermes contract checks.
 
 Not implemented:
 
-- TCP listening, TLS, remote authentication, or SaaS tenant isolation;
-- network bundles, DNS/HTTP mediation, or WebSocket policy;
-- credentials, grants, approvals, leases, redaction, audit delivery, artifact export, or reconciliation;
+- TCP listening, TLS, remote authentication, SaaS tenant isolation, or a boundary against compromise of the trusted gateway account;
+- credential adapters/substitution, secret redaction verification, durable audit delivery, artifact export, or external-effect publication;
 - PTY/background process/notification semantics;
 - checkpoint/resume or VM adoption after broker restart;
-- per-VM cgroup placement (the static live-environment admission ceiling is enforced);
-- V3 Phase 3/4 adversarial, latency, and Podman-parity gates.
+- per-VM cgroup placement, workspace quotas, complete orphan reconciliation, and measured denial-of-service resistance;
+- completed V3 adversarial, real-Linux QA, latency, and Podman-parity gates.
 
-The missing items are not implied by the use of Effect. Effect improves application composition and cleanup; Gondolin/QEMU, systemd, cgroups, VFS, policy enforcement, and tests remain the security boundary.
+The missing items are not implied by Effect, Gondolin, QEMU, or the approval plugin. Effect structures composition and cleanup; QEMU/KVM, Gondolin mediation, systemd, VFS, policy enforcement, the trusted Hermes plugin boundary, and tests carry distinct security obligations.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    H[Hermes / Agent X caller] -->|HTTP over Unix socket| API[HttpRouter]
-    API --> S[Exact Effect Schemas]
+    H[Hermes execution adapter] -->|execution UDS| XE[Execution HttpRouter]
+    P[Trusted sandbox-access plugin] -->|control UDS| XC[Control HttpRouter]
+    XE --> S[Exact Effect Schemas]
+    XC --> S
     S --> A[Authorization service]
     A --> K[@agent-x/policy-kernel]
-    API --> E[Environment service]
-    API --> X[Executor]
-    API --> F[Files service]
-    E --> R[(SQLite registry)]
+    XC --> B[Authority bindings]
+    XC --> D[Access grants]
+    XE --> E[Environment service]
+    XE --> X[Executor]
+    XE --> F[Files service]
+    B --> R[(SQLite registry)]
+    D --> R
+    E --> R
     E --> G[VmRuntime adapter]
+    D --> G
     X --> E
     F --> E
     G --> Q[Gondolin / QEMU / KVM]
@@ -62,15 +65,18 @@ flowchart LR
 
 | State or behavior | Owner |
 |---|---|
-| Policy document and generation | Immutable broker config |
+| Policy document, ceilings, and generation | Immutable Nix-rendered broker config |
 | Pure allow/deny/attenuation | `@agent-x/policy-kernel` |
-| Local policy enforcement | `Authorization`, `Environments`, `Executor`, `Files` |
-| Latest environment generation/state | SQLite `Registry` |
-| Live VM handle and locks | scoped `Environments` service |
+| Profile/executor/authority binding | broker `Registry`, prepared by trusted Hermes hooks |
+| Pending requests, grants, expiry/revocation/once-use | broker `AccessGrants` and SQLite |
+| User approval presentation and effective choice | Hermes' existing approval provider |
+| Model-facing request/list/revoke contract | Nix-built `sandbox-access` plugin |
+| Latest environment generation/state | broker SQLite `Registry` |
+| Live VM handle, locks, and immutable grant view | scoped `Environments` service |
 | VM construction/destruction | `VmRuntime` Gondolin adapter |
 | Command output stream | `Executor` |
 | Host workspace confinement | Gondolin `RealFSProvider` plus broker guest-path checks |
-| Product identity, grants, approvals, artifacts | Agent X—not implemented here |
+| Credentials, publication, product audit, artifacts | not implemented |
 
 ## Request flow
 
@@ -295,6 +301,26 @@ Responses include `X-Content-Type-Options: nosniff`. The local socket is mode
 { "status": "ok", "plane": "execution" }
 ```
 
+### Authority and access control plane
+
+Only the control socket exposes:
+
+- `POST /v1/control/authority/bind`
+- `POST /v1/control/authority/status`
+- `POST /v1/control/access/prepare`
+- `POST /v1/control/access/decide`
+- `POST /v1/control/grants/list`
+- `POST /v1/control/grants/revoke`
+- `POST /v1/control/grants/revoke-environment`
+
+`bind` records `{environmentKey, profile, executor, authorityClass, policyGeneration}` and rejects conflicting rebinding. `ensure` uses broker defaults only when no trusted hook has already bound the key; model-facing execution requests cannot select authority.
+
+`prepare` accepts an environment key, a closed capability batch, requested scope, optional bounded duration, and rationale. It canonicalizes and deduplicates capabilities, resolves and classifies addresses, enforces the immutable policy ceiling, coalesces compatible pending requests, and applies denial cooldown and rolling prompt budgets. The response is `active`, `pending`, or a stable structured error such as `approval.request_suppressed`.
+
+`decide` accepts a pending request ID, `approve` or `deny`, an optional approved scope/duration, and a trusted principal. Approval and all grant mutations commit SQLite state before publishing a new immutable in-memory snapshot. List and revoke operations are principal checked. Task/session lifecycle hooks use `revoke-environment` with explicit scopes.
+
+Supported grant scopes are `once`, `task`, `conversation`, `timed`, `profile`, and `executor`. Profile/executor grants are remembered rules and become active only when authority and requested capability still match the current policy generation. Policy changes revoke incompatible durable grants; expiry and once-use are transactional.
+
 ### Ensure an environment
 
 `POST /v1/environments/ensure`
@@ -468,7 +494,7 @@ Example file:
 }
 ```
 
-The credential-free spike passes `supportedObligations: []`. Any policy statement that requires an obligation fails closed until the corresponding PEP exists.
+`environment.ensure` advertises only the implemented `network` obligation; other actions advertise none. Any policy statement requiring an obligation not explicitly supported by that enforcement point fails closed.
 
 ## V3 compatibility matrix
 
@@ -486,32 +512,32 @@ The credential-free spike passes `supportedObligations: []`. Any policy statemen
 | QEMU/KVM production runtime | Preserved in adapter | NixOS unit must prove `/dev/kvm`, device policy, and hardening compatibility |
 | Disposable COW root | Preserved | Validate real guest asset and close/recreate behavior in KVM QA |
 | Persistent per-environment workspace | Preserved | Add workspace identity/topology digest, quotas, artifact export, and deletion policy |
-| Network mediation bundles | Not implemented; `netEnabled: false` | Port finite DNS/HTTP/WebSocket policy only after the credential-free local slice passes |
+| Network mediation bundles | Finite DNS/HTTP policies, public/private classification, synthetic DNS, redirect/rebinding checks, and live runtime grants implemented; WebSocket/raw TCP/SSH remain denied | Run hostile-network and real package/Git workloads on Linux; credentials remain separate |
 | Foreground exec events | Preserved semantically; Hermes consumes the NDJSON envelope | Add event cursor/replay rules only if the product contract requires reconnect |
 | Background processes / notify-on-complete | Not implemented | Design Agent X task/process ownership instead of copying legacy flags blindly |
 | PTY open/input/resize/close | Not implemented | Define typed PTY lifecycle and cancellation before exposing it |
 | Input/output/deadline ceilings | Preserved | Add per-action unit-bearing policy types and adversarial tests |
 | Hard cancellation via VM close | Preserved and tested with fake runtime, but intentionally coarse | Gondolin 0.12.0 abort only rejects the host session; it does not confirm guest-process termination. Add guest-side signal/kill-and-confirm before preserving a VM after request loss; until then disconnect cancellation sacrifices ephemeral VM state for containment |
 | File stat/list/read/write/mkdir/remove | Preserved semantically | Run path/symlink/hardlink/race/atomic-write and guest/direct-VFS concurrency gates |
-| Network, VFS, resource admission | Only VFS basics; network off; no cgroups | V3 Phase 3/4 remains mandatory |
-| Static policy/grants | Replaced with shared pure kernel for static policy; grants absent | Agent X owns mutable grants/approvals/budgets; add immutable snapshots and transactional consumption |
+| Network, VFS, resource admission | Network and VFS enforcement plus static live-VM ceiling implemented; no per-VM cgroups or workspace quotas | Complete V3 resource/adversarial gates |
+| Static policy/grants | Shared pure kernel plus transactional runtime grants, immutable snapshots, expiry/revocation/once-use, cooldown, and budgets | Add product-grade audit, migrations, external publication, and credential capabilities |
 | Audit records | Not implemented | Decision digest is not an audit log; add durable request/decision/enforcement/result/publication events |
 | Legacy broker error reasons | RFC 9457 body with stable reason/status surfaced by the Hermes adapter | Measure legacy reason parity where callers depend on a specific reason |
 | systemd activation and hardening | Wired with inherited FD, dedicated UID, KVM condition, and systemd protections | Prove the evaluated unit against real KVM/VFS workloads on Linux |
 | Nix package | Built and selected by the QA Gondolin backend path | Keep the legacy package as tested rollback until parity gates pass |
 
-## Agent X compromises in the broker
+## Agent X boundary and compromises
 
-The broker currently retains several V3-shaped concepts to make the runtime comparison possible:
+The broker deliberately keeps these integration boundaries visible:
 
-1. **`environmentKey` is a flat caller string.** Agent X should supply a canonical identity derived from principal/space/conversation/task/worker/runtime generations.
-2. **Worklanes are broker config.** Agent X should own model/tool/runtime selection and pass a reviewed runtime profile reference, not arbitrary VM settings.
-3. **Policy is one static file.** Agent X mutable grants, approvals, budgets, credentials, and product facts remain outside this spike.
-4. **Resources are formatted strings.** Compatibility translation must move to the API edge; shared policy should receive typed normalized actions.
-5. **Registry records only executor lifecycle.** They must never supersede Agent X/PostgreSQL product state.
-6. **HTTP has no authenticated principal.** Unix socket ownership is the only caller gate in this local spike.
-7. **Decision evidence is returned but not durably correlated.** Product audit/reconciliation is still missing.
-8. **Only ordinary foreground exec/file operations exist.** PTY/background semantics need Agent X task/process ownership, not a blind V3 port.
+1. **`environmentKey` remains a flat transport identifier.** Trusted Hermes code derives it from task/session context and binds it to profile/executor authority. A future Agent X product identity can replace the derivation without changing model-facing tool schemas.
+2. **Worklanes and ceilings are immutable broker config.** Callers cannot select arbitrary VM resources, asset paths, network rules, or authority through execution requests.
+3. **Mutable access is broker-owned local state.** Runtime grants, approval requests, cooldown, and budgets are implemented in SQLite and immutable live snapshots. They are not yet Agent X/PostgreSQL product state and have no durable publication/audit pipeline.
+4. **The policy kernel remains pure.** Capability preparation, address resolution/pinning, transactional consumption, and Gondolin hook composition live at enforcement edges rather than inside the pure policy evaluator.
+5. **Socket ownership authenticates a profile, not a human or conversation.** Authority binding prevents accidental/model-selected key changes. A compromised gateway account can still call both sockets and act as any environment in that profile.
+6. **Hermes owns approval presentation.** The trusted plugin prepares canonical requests before prompting and records the effective generic approval choice. The broker owns policy ceilings and durable grant state; neither layer treats model text as approval.
+7. **Only foreground exec and ordinary file operations exist.** PTY/background semantics need explicit Agent X task/process ownership rather than a blind legacy port.
+8. **Credentials and external publication are absent.** No raw-secret or generic bearer-token path is implied by runtime network grants.
 
 Follow-up design and acceptance gates are also documented in `policy-kernel/README.md`.
 
@@ -519,17 +545,16 @@ Follow-up design and acceptance gates are also documented in `policy-kernel/READ
 
 ### Enforced now
 
-- no guest network;
-- no credentials supplied to broker or VM;
-- production Linux VM requests QEMU/KVM;
-- disposable COW root;
-- only configured workspace is exposed through Gondolin VFS;
-- exact request schemas;
-- closed action registry and fail-closed policy;
-- generation on every post-ensure operation;
+- no guest credentials supplied by the broker;
+- production Linux VM requests QEMU/KVM with no silent acceleration fallback;
+- disposable COW root and only the configured VFS workspace exposed;
+- strict execution/control socket route separation and mode-`0600` local transport;
+- exact request schemas, closed capability/action registries, and fail-closed policy;
+- broker-owned authority binding and generation fencing;
+- default-deny mediated DNS/HTTP with internal-range, redirect, and rebinding checks;
+- policy-bounded runtime grants with transactional expiry, revocation, once-use, cooldown, budgets, and immutable live snapshots;
 - bounded input/output/time/concurrency/files/listing;
 - hard close after incomplete exec;
-- local socket only;
 - database and state paths created with restrictive modes.
 
 ### Not proven by this package
@@ -546,10 +571,11 @@ Follow-up design and acceptance gates are also documented in `policy-kernel/READ
 
 ## Testing and acceptance
 
-Local:
+Local contract suite and focused backend-neutral authority smoke:
 
 ```sh
 npm test
+npm run test:smoke
 ```
 
 Nix package, rendered-policy startup, and inherited-socket checks:
@@ -561,6 +587,7 @@ nix build \
 ```
 
 The fake runtime tests prove broker contracts and cleanup logic, not VM containment.
+The focused smoke covers structured denial, canonical capability preparation, approval, same-generation retry, live revocation, and environment restart. It is ordinary Node test logic; the Nix package invokes the same test rather than redefining it.
 The current QA selection is an explicit integration stage, not a production parity
 claim. Before promotion, run the existing V3 acceptance workload against both
 brokers and compare:
