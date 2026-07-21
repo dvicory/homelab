@@ -3,6 +3,7 @@ import * as HttpServerRequest from "@effect/platform/HttpServerRequest";
 import * as HttpServerResponse from "@effect/platform/HttpServerResponse";
 import { Effect, Schema, Stream } from "effect";
 import {
+  BindAuthorityRequest,
   EnvironmentRef,
   EnsureRequest,
   ExecRequest,
@@ -14,10 +15,12 @@ import {
   StatusRequest,
   WriteFileRequest,
 } from "./domain.js";
+import { BrokerConfig } from "./config.js";
 import { Environments } from "./environments.js";
 import { asBrokerError, brokerError, publicErrorEvent, publicProblem, statusFor, type BrokerError } from "./errors.js";
 import { Executor } from "./exec.js";
 import { Files } from "./files.js";
+import { Registry } from "./registry.js";
 
 const encoder = new TextEncoder();
 const requestDecodeOptions = { onExcessProperty: "error" as const };
@@ -105,7 +108,7 @@ export const makeHttpApp = Effect.gen(function* () {
   return HttpRouter.empty.pipe(
     HttpRouter.get(
       "/v1/health",
-      HttpServerResponse.unsafeJson({ status: "ok" }, { headers: { "cache-control": "no-store" } }),
+      HttpServerResponse.unsafeJson({ status: "ok", plane: "execution" }, { headers: { "cache-control": "no-store" } }),
     ),
     HttpRouter.post("/v1/environments/ensure", unary("environment.ensure", EnsureRequest, environments.ensure)),
     HttpRouter.post("/v1/environments/status", unary("environment.status", StatusRequest, ({ environmentKey }) => environments.status(environmentKey))),
@@ -128,6 +131,71 @@ export const makeHttpApp = Effect.gen(function* () {
     ),
     HttpRouter.catchAll(() =>
       Effect.succeed(errorResponse(brokerError("request.invalid", "route does not exist"))),
+    ),
+  );
+});
+
+export const makeControlHttpApp = Effect.gen(function* () {
+  const config = yield* BrokerConfig;
+  const registry = yield* Registry;
+
+  const bindAuthority = (request: typeof BindAuthorityRequest.Type) =>
+    Effect.gen(function* () {
+      if (request.profile !== config.profile) {
+        return yield* brokerError("authority.conflict", "authority profile does not match this broker", {
+          expectedProfile: config.profile,
+          requestedProfile: request.profile,
+        });
+      }
+      if (request.policyGeneration !== config.policyFile.policyGeneration) {
+        return yield* brokerError("authority.conflict", "authority policy generation is not active", {
+          activePolicyGeneration: config.policyFile.policyGeneration,
+          requestedPolicyGeneration: request.policyGeneration,
+        });
+      }
+      if (!(request.authorityClass in config.policyFile.worklanes)) {
+        return yield* brokerError("request.invalid", "authority class is not installed", {
+          authorityClass: request.authorityClass,
+        });
+      }
+      return yield* registry.bindAuthority(request);
+    });
+
+  const authorityStatus = ({ environmentKey }: typeof StatusRequest.Type) =>
+    Effect.gen(function* () {
+      const binding = yield* registry.getAuthority(environmentKey);
+      if (binding === undefined) {
+        return yield* brokerError("environment.not_found", "authority binding does not exist", {
+          environmentKey,
+        });
+      }
+      return binding;
+    });
+
+  const unary = <A, I>(
+    operationName: string,
+    schema: Schema.Schema<A, I>,
+    operation: (request: A) => Effect.Effect<unknown, BrokerError>,
+  ) => respond(operationName, Effect.flatMap(parseBody(schema), operation));
+
+  return HttpRouter.empty.pipe(
+    HttpRouter.get(
+      "/v1/health",
+      HttpServerResponse.unsafeJson(
+        { status: "ok", plane: "control" },
+        { headers: { "cache-control": "no-store" } },
+      ),
+    ),
+    HttpRouter.post(
+      "/v1/control/authority/bind",
+      unary("authority.bind", BindAuthorityRequest, bindAuthority),
+    ),
+    HttpRouter.post(
+      "/v1/control/authority/status",
+      unary("authority.status", StatusRequest, authorityStatus),
+    ),
+    HttpRouter.catchAll(() =>
+      Effect.succeed(errorResponse(brokerError("request.invalid", "control route does not exist"))),
     ),
   );
 });

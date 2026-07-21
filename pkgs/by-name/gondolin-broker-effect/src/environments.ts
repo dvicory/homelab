@@ -21,7 +21,9 @@ import { VmRuntime, type VmHandle } from "./runtime.js";
 export interface LiveEnvironment {
   readonly environmentKey: string;
   readonly generation: number;
-  readonly worklane: string;
+  readonly profile: string;
+  readonly executor: string;
+  readonly authorityClass: string;
   readonly policyGeneration: number;
   readonly decisionDigest: string;
   readonly workspacePath: string;
@@ -37,7 +39,9 @@ export interface EnsureResult {
   readonly environmentKey: string;
   readonly generation: number;
   readonly state: "created" | "reused";
-  readonly worklane: string;
+  readonly profile: string;
+  readonly executor: string;
+  readonly authorityClass: string;
   readonly policyGeneration: number;
   readonly decisionDigest: string;
 }
@@ -49,7 +53,9 @@ export interface EnvironmentService {
     readonly generation: number;
     readonly state: string;
     readonly live: boolean;
-    readonly worklane: string;
+    readonly profile: string;
+    readonly executor: string;
+    readonly authorityClass: string;
     readonly policyGeneration: number;
   }, BrokerError>;
   readonly lease: (reference: EnvironmentRef) => Effect.Effect<LiveEnvironment, BrokerError, Scope.Scope>;
@@ -128,10 +134,19 @@ const make = Effect.gen(function* () {
 
   const ensureUnlocked = (request: EnsureRequest): Effect.Effect<EnsureResult, BrokerError> =>
     Effect.gen(function* () {
-      const worklaneName = request.worklane ?? config.policyFile.defaultWorklane;
+      const binding = yield* registry.bindAuthority({
+        environmentKey: request.environmentKey,
+        profile: config.profile,
+        executor: config.policyFile.defaultExecutor,
+        authorityClass: config.policyFile.defaultAuthorityClass,
+        policyGeneration: config.policyFile.policyGeneration,
+      });
+      const worklaneName = binding.authorityClass;
       const worklane = config.policyFile.worklanes[worklaneName];
       if (worklane === undefined) {
-        return yield* brokerError("request.invalid", "unknown worklane", { worklane: worklaneName });
+        return yield* brokerError("policy.indeterminate", "bound authority class is unavailable", {
+          authorityClass: binding.authorityClass,
+        });
       }
       const asset = config.policyFile.assets[worklane.asset];
       if (asset === undefined) {
@@ -142,24 +157,53 @@ const make = Effect.gen(function* () {
       }
       const decision = yield* authorization.authorize({
         action: "environment.ensure",
-        resource: `environment:${request.environmentKey}`,
+        resource: `worklane:${worklaneName}:environment:${request.environmentKey}`,
         requestedLimits: {
           memoryMiB: worklane.memoryMiB,
           cpus: worklane.cpus,
           ...worklane.limits,
         },
       });
+      if (decision.policyGeneration !== binding.policyGeneration) {
+        return yield* brokerError("policy.indeterminate", "bound policy generation is unavailable", {
+          authorityClass: binding.authorityClass,
+          boundPolicyGeneration: binding.policyGeneration,
+          activePolicyGeneration: decision.policyGeneration,
+        });
+      }
+      const networkObligations = decision.obligations.filter(
+        (obligation) => typeof obligation === "object" && obligation.kind === "network",
+      );
+      if (networkObligations.length !== 1) {
+        return yield* brokerError(
+          "policy.indeterminate",
+          "environment authorization must produce exactly one network obligation",
+          { worklane: worklaneName, count: networkObligations.length },
+        );
+      }
+      const networkPolicyId = networkObligations[0]!.bundleId;
+      const network = config.policyFile.networkPolicies[networkPolicyId];
+      if (network === undefined) {
+        return yield* brokerError(
+          "policy.indeterminate",
+          "network obligation references an unknown policy",
+          { worklane: worklaneName, networkPolicyId },
+        );
+      }
       const existing = live.get(request.environmentKey);
       if (
         existing !== undefined &&
-        existing.worklane === worklaneName &&
-        existing.policyGeneration === decision.policyGeneration
+        existing.authorityClass === binding.authorityClass &&
+        existing.policyGeneration === decision.policyGeneration &&
+        existing.decisionDigest === decision.decisionDigest
       ) {
         return {
           environmentKey: existing.environmentKey,
           generation: existing.generation,
           state: "reused",
-          worklane: existing.worklane,
+          profile: existing.profile,
+          executor: existing.executor,
+          authorityClass: existing.authorityClass,
           policyGeneration: existing.policyGeneration,
           decisionDigest: existing.decisionDigest,
         };
@@ -197,6 +241,7 @@ const make = Effect.gen(function* () {
         workspaceHostPath: workspacePath,
         workspaceGuestPath: worklane.workspaceGuestPath,
         sessionLabel: `${config.profile}:${request.environmentKey}:${record.generation}`,
+        network,
       }).pipe(
         Effect.tapError((error) =>
           registry.markFailed(request.environmentKey, record.generation, error.message).pipe(Effect.ignore),
@@ -209,7 +254,9 @@ const make = Effect.gen(function* () {
       const environment: LiveEnvironment = {
         environmentKey: request.environmentKey,
         generation: record.generation,
-        worklane: worklaneName,
+        profile: binding.profile,
+        executor: binding.executor,
+        authorityClass: binding.authorityClass,
         policyGeneration: decision.policyGeneration,
         decisionDigest: decision.decisionDigest,
         workspacePath,
@@ -228,7 +275,9 @@ const make = Effect.gen(function* () {
         environmentKey: request.environmentKey,
         generation: record.generation,
         state: "created",
-        worklane: worklaneName,
+        profile: binding.profile,
+        executor: binding.executor,
+        authorityClass: binding.authorityClass,
         policyGeneration: decision.policyGeneration,
         decisionDigest: decision.decisionDigest,
       };
@@ -247,12 +296,20 @@ const make = Effect.gen(function* () {
       if (record === undefined) {
         return yield* brokerError("environment.not_found", "environment does not exist", { environmentKey });
       }
+      const binding = yield* registry.getAuthority(environmentKey);
+      if (binding === undefined) {
+        return yield* brokerError("policy.indeterminate", "environment authority binding is missing", {
+          environmentKey,
+        });
+      }
       return {
         environmentKey,
         generation: record.generation,
         state: record.state,
         live: live.has(environmentKey),
-        worklane: record.worklane,
+        profile: binding.profile,
+        executor: binding.executor,
+        authorityClass: binding.authorityClass,
         policyGeneration: record.policyGeneration,
       };
     });

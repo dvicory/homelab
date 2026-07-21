@@ -17,9 +17,22 @@ export type Generation = typeof Generation.Type;
 
 export const EnsureRequest = Schema.Struct({
   environmentKey: EnvironmentKey,
-  worklane: Schema.optional(Identifier),
 });
 export type EnsureRequest = typeof EnsureRequest.Type;
+
+export const AuthorityBinding = Schema.Struct({
+  profile: Identifier,
+  executor: Identifier,
+  authorityClass: Identifier,
+  policyGeneration: PositiveInt,
+});
+export type AuthorityBinding = typeof AuthorityBinding.Type;
+
+export const BindAuthorityRequest = Schema.Struct({
+  environmentKey: EnvironmentKey,
+  ...AuthorityBinding.fields,
+});
+export type BindAuthorityRequest = typeof BindAuthorityRequest.Type;
 
 export const EnvironmentRef = Schema.Struct({
   environmentKey: EnvironmentKey,
@@ -88,6 +101,32 @@ export const Asset = Schema.Struct({
   buildId: Schema.optional(Identifier),
 });
 export type Asset = typeof Asset.Type;
+
+const NetworkPort = Schema.Int.pipe(
+  Schema.greaterThan(0),
+  Schema.lessThanOrEqualTo(65535),
+);
+
+export const NetworkDestination = Schema.Struct({
+  kind: Schema.Union(
+    Schema.Literal("exact"),
+    Schema.Literal("subdomains"),
+    Schema.Literal("host-and-subdomains"),
+  ),
+  host: Schema.String.pipe(Schema.minLength(1)),
+  ports: Schema.optional(Schema.Array(NetworkPort).pipe(Schema.minItems(1))),
+});
+export type NetworkDestination = typeof NetworkDestination.Type;
+
+export const NetworkPolicy = Schema.Struct({
+  mode: Schema.Union(
+    Schema.Literal("deny-all"),
+    Schema.Literal("bundles"),
+    Schema.Literal("public-anonymous"),
+  ),
+  destinations: Schema.Array(NetworkDestination),
+});
+export type NetworkPolicy = typeof NetworkPolicy.Type;
 
 export const WorklaneLimits = Schema.Struct({
   maxCommandMs: PositiveInt,

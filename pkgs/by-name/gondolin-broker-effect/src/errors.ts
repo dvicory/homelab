@@ -8,6 +8,7 @@ export const Reason = Schema.Literal(
   "environment.not_found",
   "environment.tombstoned",
   "environment.stale_generation",
+  "authority.conflict",
   "environment.capacity",
   "runtime.start_failed",
   "runtime.operation_failed",
@@ -62,6 +63,7 @@ export const statusFor = (error: BrokerError): number => {
     case "environment.tombstoned":
     case "environment.stale_generation":
     case "fs.exists":
+    case "authority.conflict":
       return 409;
     case "environment.capacity":
     case "exec.output_limit":

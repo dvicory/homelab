@@ -1,16 +1,19 @@
 import { Config, Context, Effect, Layer, Schema } from "effect";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { Asset, decodeExact, Worklane } from "./domain.js";
+import { Asset, decodeExact, NetworkPolicy, Worklane } from "./domain.js";
 import { brokerError, type BrokerError } from "./errors.js";
+import { validateNetworkPolicy } from "./network.js";
 
 const BrokerPolicyFileSchema = Schema.Struct({
   version: Schema.Literal(1),
   policyGeneration: Schema.Int.pipe(Schema.greaterThan(0)),
   policy: Schema.Unknown,
-  defaultWorklane: Schema.String.pipe(Schema.minLength(1)),
+  defaultExecutor: Schema.String.pipe(Schema.minLength(1)),
+  defaultAuthorityClass: Schema.String.pipe(Schema.minLength(1)),
   maxEnvironments: Schema.Int.pipe(Schema.greaterThan(0)),
   assets: Schema.Record({ key: Schema.String, value: Asset }),
+  networkPolicies: Schema.Record({ key: Schema.String, value: NetworkPolicy }),
   worklanes: Schema.Record({ key: Schema.String, value: Worklane }),
 });
 
@@ -60,6 +63,7 @@ export interface BrokerConfigService {
   readonly workspaceRoot: string;
   readonly databasePath: string;
   readonly socketPath: string;
+  readonly controlSocketPath: string;
   readonly profile: string;
   readonly policyFile: BrokerPolicyFile;
 }
@@ -73,6 +77,7 @@ const environmentConfig = Config.all({
   policyPath: Config.string("GONDOLIN_EFFECT_POLICY"),
   stateDir: Config.string("GONDOLIN_EFFECT_STATE_DIR"),
   socketPath: Config.string("GONDOLIN_EFFECT_SOCKET").pipe(Config.option),
+  controlSocketPath: Config.string("GONDOLIN_EFFECT_CONTROL_SOCKET").pipe(Config.option),
   profile: Config.string("GONDOLIN_EFFECT_PROFILE").pipe(Config.withDefault("default")),
 });
 
@@ -102,12 +107,27 @@ const load = Effect.gen(function* () {
       }),
     ),
   );
+  yield* Effect.try({
+    try: () => {
+      for (const [name, networkPolicy] of Object.entries(decoded.networkPolicies)) {
+        try {
+          validateNetworkPolicy(networkPolicy);
+        } catch (error) {
+          throw new Error(`${name}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    },
+    catch: (error) =>
+      brokerError("request.invalid", "broker network policy is invalid", {
+        cause: error instanceof Error ? error.message : String(error),
+      }),
+  });
   const assets = yield* resolveAssets(decoded);
   const policyFile: BrokerPolicyFile = { ...decoded, assets };
 
-  if (!(policyFile.defaultWorklane in policyFile.worklanes)) {
-    return yield* brokerError("request.invalid", "default worklane is not defined", {
-      worklane: policyFile.defaultWorklane,
+  if (!(policyFile.defaultAuthorityClass in policyFile.worklanes)) {
+    return yield* brokerError("request.invalid", "default authority class is not defined", {
+      authorityClass: policyFile.defaultAuthorityClass,
     });
   }
   for (const [name, worklane] of Object.entries(policyFile.worklanes)) {
@@ -126,6 +146,9 @@ const load = Effect.gen(function* () {
     workspaceRoot: path.join(stateDir, "workspaces"),
     databasePath: path.join(stateDir, "broker.sqlite"),
     socketPath: raw.socketPath._tag === "Some" ? path.resolve(raw.socketPath.value) : path.join(stateDir, "broker.sock"),
+    controlSocketPath: raw.controlSocketPath._tag === "Some"
+      ? path.resolve(raw.controlSocketPath.value)
+      : path.join(stateDir, "control.sock"),
     profile: raw.profile,
     policyFile,
   } satisfies BrokerConfigService;

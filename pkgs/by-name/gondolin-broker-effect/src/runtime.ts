@@ -7,6 +7,8 @@ import {
 } from "@earendil-works/gondolin";
 import { Context, Effect, Layer } from "effect";
 import { brokerError, type BrokerError } from "./errors.js";
+import type { NetworkPolicy } from "./domain.js";
+import { buildNetworkEnforcement } from "./network.js";
 
 export interface VmCreateSpec {
   readonly assetPath: string;
@@ -15,6 +17,7 @@ export interface VmCreateSpec {
   readonly workspaceHostPath: string;
   readonly workspaceGuestPath: string;
   readonly sessionLabel: string;
+  readonly network: NetworkPolicy;
 }
 
 export interface VmStat {
@@ -110,11 +113,12 @@ export const makeCreateVm = (createGondolinVm: typeof GondolinVM.create) =>
             : (component: DebugComponent, message: string) => {
                 process.stderr.write(`[gondolin:${component}] ${message.replace(/\n$/, "")}\n`);
               };
+        const network = buildNetworkEnforcement(spec.network);
         vm = await createGondolinVm({
           sandbox: {
             ...(process.platform === "linux" ? { vmm: "qemu", accel: "kvm" } : {}),
             imagePath: spec.assetPath,
-            netEnabled: false,
+            ...network,
             ...(debug === false ? {} : { debug }),
           },
           rootfs: { mode: "cow" },
