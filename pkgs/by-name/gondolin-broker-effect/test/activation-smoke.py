@@ -29,6 +29,12 @@ policy = {
     "defaultExecutor": "hermes-gateway",
     "defaultAuthorityClass": "default",
     "maxEnvironments": 1,
+    "grantPolicy": {
+        "allowedScopes": ["once", "task", "conversation", "timed"],
+        "maxDurationSeconds": 3600,
+        "denialCooldownSeconds": 300,
+        "promptBudget": {"maxNewRequests": 4, "windowSeconds": 900},
+    },
     "assets": {
         "default": {"path": str(asset_path), "buildId": "activation-test"}
     },

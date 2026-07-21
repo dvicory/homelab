@@ -1,0 +1,674 @@
+import { createHash, randomUUID } from "node:crypto";
+import * as fs from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { Context, Effect, Layer, Schema } from "effect";
+import {
+  type DecideAccessRequest,
+  type GrantScope,
+  PreparedNetworkOriginCapability,
+  type PreparedNetworkOriginCapability as PreparedNetworkOrigin,
+  type PrepareAccessRequest,
+} from "./domain.js";
+import { BrokerConfig } from "./config.js";
+import {
+  canonicalCapabilityKey,
+  prepareCapabilityBatch,
+  type AddressResolver,
+} from "./capabilities.js";
+import { BrokerError, brokerError } from "./errors.js";
+import { Registry, type AuthorityBindingRecord } from "./registry.js";
+
+export type AccessRequestState = "pending" | "approved" | "denied";
+export type RuntimeGrantState = "active" | "revoked" | "consumed" | "expired";
+
+export interface PreparedAccess {
+  readonly state: "pending" | "existing-pending" | "active";
+  readonly requestId: string | null;
+  readonly fingerprint: string;
+  readonly environmentKey: string;
+  readonly requestedScope: GrantScope;
+  readonly durationSeconds: number | null;
+  readonly capabilities: ReadonlyArray<PreparedNetworkOrigin>;
+  readonly grantIds: ReadonlyArray<string>;
+}
+
+export interface AccessDecision {
+  readonly requestId: string;
+  readonly state: "approved" | "denied";
+  readonly grantIds: ReadonlyArray<string>;
+}
+
+export interface RuntimeGrant {
+  readonly grantId: string;
+  readonly requestId: string;
+  readonly bindingId: string;
+  readonly environmentKey: string;
+  readonly profile: string;
+  readonly executor: string;
+  readonly authorityClass: string;
+  readonly policyGeneration: number;
+  readonly capabilities: ReadonlyArray<PreparedNetworkOrigin>;
+  readonly scope: GrantScope;
+  readonly state: RuntimeGrantState;
+  readonly usesRemaining: number | null;
+  readonly expiresAt: number | null;
+  readonly approvedBy: string;
+  readonly createdAt: number;
+  readonly lastUsedAt: number | null;
+  readonly revokedAt: number | null;
+  readonly revokedBy: string | null;
+}
+
+export interface GrantSnapshot {
+  readonly revision: number;
+  readonly grants: ReadonlyArray<RuntimeGrant>;
+}
+
+export interface AccessGrantService {
+  readonly prepare: (request: PrepareAccessRequest) => Effect.Effect<PreparedAccess, BrokerError>;
+  readonly decide: (request: DecideAccessRequest) => Effect.Effect<AccessDecision, BrokerError>;
+  readonly list: (environmentKey?: string) => Effect.Effect<ReadonlyArray<RuntimeGrant>, BrokerError>;
+  readonly revoke: (grantId: string, principal: string) => Effect.Effect<RuntimeGrant, BrokerError>;
+  readonly revokeEnvironment: (
+    environmentKey: string,
+    scopes: ReadonlyArray<GrantScope>,
+    principal: string,
+  ) => Effect.Effect<number, BrokerError>;
+  readonly snapshot: () => GrantSnapshot;
+  readonly matching: (
+    binding: AuthorityBindingRecord,
+    environmentKey: string,
+    now?: number,
+  ) => ReadonlyArray<RuntimeGrant>;
+  readonly consumeOnce: (grantId: string) => Effect.Effect<boolean, BrokerError>;
+}
+
+export class AccessGrants extends Context.Tag("@agent-x/gondolin-broker-effect/AccessGrants")<
+  AccessGrants,
+  AccessGrantService
+>() {}
+
+type AccessRequestRow = {
+  request_id: string;
+  fingerprint: string;
+  binding_id: string;
+  environment_key: string;
+  profile: string;
+  executor: string;
+  authority_class: string;
+  policy_generation: number;
+  capabilities_json: string;
+  requested_scope: GrantScope;
+  requested_duration_seconds: number | null;
+  state: AccessRequestState;
+  created_at: number;
+  decided_at: number | null;
+  decision_principal: string | null;
+};
+
+type RuntimeGrantRow = {
+  grant_id: string;
+  request_id: string;
+  binding_id: string;
+  environment_key: string;
+  profile: string;
+  executor: string;
+  authority_class: string;
+  policy_generation: number;
+  capabilities_json: string;
+  scope: GrantScope;
+  state: RuntimeGrantState;
+  uses_remaining: number | null;
+  expires_at: number | null;
+  approved_by: string;
+  created_at: number;
+  last_used_at: number | null;
+  revoked_at: number | null;
+  revoked_by: string | null;
+};
+
+const PreparedBatch = Schema.Array(PreparedNetworkOriginCapability).pipe(Schema.minItems(1), Schema.maxItems(32));
+
+const parsePrepared = (text: string): ReadonlyArray<PreparedNetworkOrigin> =>
+  Schema.decodeUnknownSync(PreparedBatch)(JSON.parse(text) as unknown, { onExcessProperty: "error" });
+
+const freezeCapability = (capability: PreparedNetworkOrigin): PreparedNetworkOrigin => Object.freeze({
+  ...capability,
+  ports: Object.freeze([...capability.ports]),
+  pinnedAddresses: Object.freeze([...capability.pinnedAddresses]),
+});
+
+const grantFromRow = (row: RuntimeGrantRow): RuntimeGrant => Object.freeze({
+  grantId: row.grant_id,
+  requestId: row.request_id,
+  bindingId: row.binding_id,
+  environmentKey: row.environment_key,
+  profile: row.profile,
+  executor: row.executor,
+  authorityClass: row.authority_class,
+  policyGeneration: row.policy_generation,
+  capabilities: Object.freeze(parsePrepared(row.capabilities_json).map(freezeCapability)),
+  scope: row.scope,
+  state: row.state,
+  usesRemaining: row.uses_remaining,
+  expiresAt: row.expires_at,
+  approvedBy: row.approved_by,
+  createdAt: row.created_at,
+  lastUsedAt: row.last_used_at,
+  revokedAt: row.revoked_at,
+  revokedBy: row.revoked_by,
+});
+
+const bindingIdFor = (binding: AuthorityBindingRecord): string => createHash("sha256")
+  .update(JSON.stringify({
+    environmentKey: binding.environmentKey,
+    profile: binding.profile,
+    executor: binding.executor,
+    authorityClass: binding.authorityClass,
+    policyGeneration: binding.policyGeneration,
+  }))
+  .digest("hex");
+
+const fingerprintFor = (
+  binding: AuthorityBindingRecord,
+  capabilities: ReadonlyArray<PreparedNetworkOrigin>,
+  scope: GrantScope,
+  durationSeconds: number | undefined,
+): string => createHash("sha256")
+  .update(JSON.stringify({
+    bindingId: bindingIdFor(binding),
+    capabilities,
+    scope,
+    durationSeconds: durationSeconds ?? null,
+  }))
+  .digest("hex");
+
+const grantFailure = (operation: string, error: unknown): BrokerError =>
+  error instanceof BrokerError
+    ? error
+    : brokerError("registry.failed", `grant registry ${operation} failed`, {
+        cause: error instanceof Error ? error.message : String(error),
+      });
+
+const isRememberedFor = (grant: RuntimeGrant, binding: AuthorityBindingRecord): boolean =>
+  (grant.scope === "profile" && grant.profile === binding.profile) ||
+  (grant.scope === "executor" && grant.executor === binding.executor);
+
+const containsCapabilities = (
+  grants: ReadonlyArray<RuntimeGrant>,
+  capabilities: ReadonlyArray<PreparedNetworkOrigin>,
+): boolean => {
+  const installed = new Set(grants.flatMap((grant) => grant.capabilities.map(canonicalCapabilityKey)));
+  return capabilities.every((capability) => installed.has(canonicalCapabilityKey(capability)));
+};
+
+interface AccessGrantOptions {
+  readonly now?: () => number;
+  readonly resolver?: AddressResolver;
+}
+
+const make = (options: AccessGrantOptions) => Effect.gen(function* () {
+  const config = yield* BrokerConfig;
+  const registry = yield* Registry;
+  const now = options.now ?? Date.now;
+  const db = yield* Effect.acquireRelease(
+    Effect.try({
+      try: () => {
+        fs.mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
+        const opened = new DatabaseSync(config.databasePath);
+        opened.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
+        opened.exec(`
+          CREATE TABLE IF NOT EXISTS access_requests (
+            request_id TEXT PRIMARY KEY,
+            fingerprint TEXT NOT NULL,
+            binding_id TEXT NOT NULL,
+            environment_key TEXT NOT NULL,
+            profile TEXT NOT NULL,
+            executor TEXT NOT NULL,
+            authority_class TEXT NOT NULL,
+            policy_generation INTEGER NOT NULL CHECK (policy_generation > 0),
+            capabilities_json TEXT NOT NULL,
+            requested_scope TEXT NOT NULL CHECK (requested_scope IN ('once','task','conversation','timed','profile','executor')),
+            requested_duration_seconds INTEGER CHECK (requested_duration_seconds IS NULL OR requested_duration_seconds > 0),
+            state TEXT NOT NULL CHECK (state IN ('pending','approved','denied')),
+            created_at INTEGER NOT NULL,
+            decided_at INTEGER,
+            decision_principal TEXT
+          ) STRICT;
+          CREATE UNIQUE INDEX IF NOT EXISTS access_requests_one_pending_environment
+            ON access_requests(environment_key) WHERE state = 'pending';
+          CREATE INDEX IF NOT EXISTS access_requests_fingerprint_state
+            ON access_requests(fingerprint, state, decided_at);
+        `);
+        opened.exec(`
+          CREATE TABLE IF NOT EXISTS runtime_grants (
+            grant_id TEXT PRIMARY KEY,
+            request_id TEXT NOT NULL REFERENCES access_requests(request_id),
+            binding_id TEXT NOT NULL,
+            environment_key TEXT NOT NULL,
+            profile TEXT NOT NULL,
+            executor TEXT NOT NULL,
+            authority_class TEXT NOT NULL,
+            policy_generation INTEGER NOT NULL CHECK (policy_generation > 0),
+            capabilities_json TEXT NOT NULL,
+            scope TEXT NOT NULL CHECK (scope IN ('once','task','conversation','timed','profile','executor')),
+            state TEXT NOT NULL CHECK (state IN ('active','revoked','consumed','expired')),
+            uses_remaining INTEGER CHECK (uses_remaining IS NULL OR uses_remaining >= 0),
+            expires_at INTEGER,
+            approved_by TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            last_used_at INTEGER,
+            revoked_at INTEGER,
+            revoked_by TEXT
+          ) STRICT;
+          CREATE INDEX IF NOT EXISTS runtime_grants_active_environment
+            ON runtime_grants(environment_key, state, policy_generation);
+          CREATE INDEX IF NOT EXISTS runtime_grants_remembered_profile
+            ON runtime_grants(profile, executor, scope, state, policy_generation);
+        `);
+        fs.chmodSync(config.databasePath, 0o600);
+        const timestamp = now();
+        opened.prepare(`
+          UPDATE runtime_grants
+          SET state='expired'
+          WHERE state='active' AND expires_at IS NOT NULL AND expires_at <= ?
+        `).run(timestamp);
+        opened.prepare(`
+          UPDATE runtime_grants
+          SET state='revoked', revoked_at=?, revoked_by='policy-generation'
+          WHERE state='active' AND policy_generation <> ?
+        `).run(timestamp, config.policyFile.policyGeneration);
+        return opened;
+      },
+      catch: (error) => grantFailure("open", error),
+    }),
+    (opened) => Effect.sync(() => opened.close()),
+  );
+
+  let revision = 0;
+  let currentSnapshot: GrantSnapshot = Object.freeze({ revision, grants: Object.freeze([]) });
+
+  const buildSnapshot = (nextRevision: number): GrantSnapshot => {
+    const rows = db.prepare(`
+      SELECT * FROM runtime_grants
+      WHERE state='active' AND policy_generation=?
+      ORDER BY created_at, grant_id
+    `).all(config.policyFile.policyGeneration) as unknown as RuntimeGrantRow[];
+    return Object.freeze({
+      revision: nextRevision,
+      grants: Object.freeze(rows.map(grantFromRow)),
+    });
+  };
+  const installSnapshot = (next: GrantSnapshot): void => {
+    revision = next.revision;
+    currentSnapshot = next;
+  };
+  const publishSnapshot = (): void => installSnapshot(buildSnapshot(revision + 1));
+  const mutateWithSnapshot = <A>(mutation: () => A): A => {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = mutation();
+      const nextSnapshot = buildSnapshot(revision + 1);
+      db.exec("COMMIT");
+      installSnapshot(nextSnapshot);
+      return result;
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  };
+  yield* Effect.try({
+    try: publishSnapshot,
+    catch: (error) => grantFailure("restore snapshot", error),
+  });
+
+  const validateScope = (
+    scope: GrantScope,
+    durationSeconds: number | undefined,
+  ): Effect.Effect<number | null, BrokerError> => {
+    if (!config.policyFile.grantPolicy.allowedScopes.includes(scope)) {
+      return Effect.fail(brokerError("policy.denied", "requested grant scope is not enabled", { scope }));
+    }
+    if (scope === "timed") {
+      if (durationSeconds === undefined) {
+        return Effect.fail(brokerError("capability.invalid", "timed grant scope requires a duration"));
+      }
+      if (durationSeconds > config.policyFile.grantPolicy.maxDurationSeconds) {
+        return Effect.fail(brokerError("policy.denied", "requested grant duration exceeds the configured ceiling", {
+          requestedSeconds: durationSeconds,
+          maximumSeconds: config.policyFile.grantPolicy.maxDurationSeconds,
+        }));
+      }
+      return Effect.succeed(durationSeconds);
+    }
+    if (durationSeconds !== undefined) {
+      return Effect.fail(brokerError("capability.invalid", "duration is valid only for timed grant scope"));
+    }
+    return Effect.succeed(null);
+  };
+
+  const requireBinding = (environmentKey: string): Effect.Effect<AuthorityBindingRecord, BrokerError> =>
+    registry.getAuthority(environmentKey).pipe(
+      Effect.flatMap((binding) => binding === undefined
+        ? Effect.fail(brokerError("policy.indeterminate", "environment has no authority binding", { environmentKey }))
+        : binding.policyGeneration !== config.policyFile.policyGeneration
+          ? Effect.fail(brokerError("policy.indeterminate", "environment authority uses an inactive policy generation", {
+              environmentKey,
+              bindingPolicyGeneration: binding.policyGeneration,
+              activePolicyGeneration: config.policyFile.policyGeneration,
+            }))
+          : Effect.succeed(binding)),
+    );
+
+  const matching = (
+    binding: AuthorityBindingRecord,
+    environmentKey: string,
+    timestamp = now(),
+  ): ReadonlyArray<RuntimeGrant> => currentSnapshot.grants.filter((grant) =>
+    grant.state === "active" &&
+    grant.policyGeneration === binding.policyGeneration &&
+    (grant.expiresAt === null || grant.expiresAt > timestamp) &&
+    (grant.usesRemaining === null || grant.usesRemaining > 0) &&
+    (grant.environmentKey === environmentKey || isRememberedFor(grant, binding))
+  );
+
+  const prepare = (request: PrepareAccessRequest): Effect.Effect<PreparedAccess, BrokerError> =>
+    Effect.gen(function* () {
+      const duration = yield* validateScope(request.requestedScope, request.durationSeconds);
+      const binding = yield* requireBinding(request.environmentKey);
+      const capabilities = yield* prepareCapabilityBatch(request.capabilities, options.resolver);
+      const fingerprint = fingerprintFor(binding, capabilities, request.requestedScope, request.durationSeconds);
+      const remembered = matching(binding, request.environmentKey).filter((grant) => isRememberedFor(grant, binding));
+      if (containsCapabilities(remembered, capabilities)) {
+        return {
+          state: "active",
+          requestId: null,
+          fingerprint,
+          environmentKey: request.environmentKey,
+          requestedScope: request.requestedScope,
+          durationSeconds: duration,
+          capabilities,
+          grantIds: remembered.map((grant) => grant.grantId),
+        };
+      }
+
+      return yield* Effect.try({
+        try: () => {
+          db.exec("BEGIN IMMEDIATE");
+          try {
+            const timestamp = now();
+            db.prepare(`UPDATE runtime_grants SET state='expired' WHERE state='active' AND expires_at IS NOT NULL AND expires_at <= ?`)
+              .run(timestamp);
+            const pending = db.prepare(`SELECT * FROM access_requests WHERE environment_key=? AND state='pending'`)
+              .get(request.environmentKey) as AccessRequestRow | undefined;
+            if (pending !== undefined) {
+              if (pending.fingerprint === fingerprint) {
+                const nextSnapshot = buildSnapshot(revision + 1);
+                db.exec("COMMIT");
+                installSnapshot(nextSnapshot);
+                return {
+                  state: "existing-pending",
+                  requestId: pending.request_id,
+                  fingerprint,
+                  environmentKey: request.environmentKey,
+                  requestedScope: request.requestedScope,
+                  durationSeconds: duration,
+                  capabilities,
+                  grantIds: [],
+                } satisfies PreparedAccess;
+              }
+              throw brokerError("approval.request_suppressed", "environment already has a pending access request", {
+                pendingRequestId: pending.request_id,
+              });
+            }
+            const cooldownFloor = timestamp - config.policyFile.grantPolicy.denialCooldownSeconds * 1000;
+            const denied = db.prepare(`
+              SELECT decided_at FROM access_requests
+              WHERE fingerprint=? AND state='denied' AND decided_at >= ?
+              ORDER BY decided_at DESC LIMIT 1
+            `).get(fingerprint, cooldownFloor) as { decided_at: number } | undefined;
+            if (denied !== undefined) {
+              throw brokerError("approval.request_suppressed", "equivalent access request is in denial cooldown", {
+                cooldownUntil: denied.decided_at + config.policyFile.grantPolicy.denialCooldownSeconds * 1000,
+              });
+            }
+            const windowFloor = timestamp - config.policyFile.grantPolicy.promptBudget.windowSeconds * 1000;
+            const count = db.prepare(`
+              SELECT COUNT(*) AS count FROM access_requests
+              WHERE environment_key=? AND created_at >= ?
+            `).get(request.environmentKey, windowFloor) as { count: number };
+            if (count.count >= config.policyFile.grantPolicy.promptBudget.maxNewRequests) {
+              throw brokerError("approval.request_suppressed", "access request prompt budget is exhausted", {
+                maximum: config.policyFile.grantPolicy.promptBudget.maxNewRequests,
+                windowSeconds: config.policyFile.grantPolicy.promptBudget.windowSeconds,
+              });
+            }
+            const requestId = randomUUID();
+            db.prepare(`
+              INSERT INTO access_requests (
+                request_id, fingerprint, binding_id, environment_key, profile, executor,
+                authority_class, policy_generation, capabilities_json, requested_scope,
+                requested_duration_seconds, state, created_at, decided_at, decision_principal
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL)
+            `).run(
+              requestId,
+              fingerprint,
+              bindingIdFor(binding),
+              request.environmentKey,
+              binding.profile,
+              binding.executor,
+              binding.authorityClass,
+              binding.policyGeneration,
+              JSON.stringify(capabilities),
+              request.requestedScope,
+              duration,
+              timestamp,
+            );
+            const nextSnapshot = buildSnapshot(revision + 1);
+            db.exec("COMMIT");
+            installSnapshot(nextSnapshot);
+            return {
+              state: "pending",
+              requestId,
+              fingerprint,
+              environmentKey: request.environmentKey,
+              requestedScope: request.requestedScope,
+              durationSeconds: duration,
+              capabilities,
+              grantIds: [],
+            } satisfies PreparedAccess;
+          } catch (error) {
+            db.exec("ROLLBACK");
+            throw error;
+          }
+        },
+        catch: (error) => grantFailure("prepare access request", error),
+      });
+    });
+
+  const decide = (request: DecideAccessRequest): Effect.Effect<AccessDecision, BrokerError> =>
+    Effect.gen(function* () {
+      const row = yield* Effect.try({
+        try: () => db.prepare("SELECT * FROM access_requests WHERE request_id=?").get(request.requestId) as AccessRequestRow | undefined,
+        catch: (error) => grantFailure("read access request", error),
+      });
+      if (row === undefined) {
+        return yield* brokerError("approval.request_not_found", "access request does not exist", { requestId: request.requestId });
+      }
+      if (row.state !== "pending") {
+        return yield* brokerError("approval.invalid_state", "access request is no longer pending", {
+          requestId: request.requestId,
+          state: row.state,
+        });
+      }
+      if (row.policy_generation !== config.policyFile.policyGeneration) {
+        return yield* brokerError("policy.indeterminate", "access request uses an inactive policy generation", {
+          requestId: request.requestId,
+        });
+      }
+      if (request.decision === "deny") {
+        if (request.scope !== undefined || request.durationSeconds !== undefined) {
+          return yield* brokerError("capability.invalid", "denial cannot carry grant scope or duration");
+        }
+        return yield* Effect.try({
+          try: () => {
+            const timestamp = now();
+            const result = db.prepare(`
+              UPDATE access_requests
+              SET state='denied', decided_at=?, decision_principal=?
+              WHERE request_id=? AND state='pending'
+            `).run(timestamp, request.principal, request.requestId);
+            if (result.changes !== 1) throw brokerError("approval.invalid_state", "access request changed concurrently");
+            return { requestId: request.requestId, state: "denied", grantIds: [] } as const;
+          },
+          catch: (error) => grantFailure("deny access request", error),
+        });
+      }
+
+      const scope = request.scope ?? row.requested_scope;
+      const duration = yield* validateScope(scope, request.durationSeconds ?? row.requested_duration_seconds ?? undefined);
+      const grantId = randomUUID();
+      yield* Effect.try({
+        try: () => {
+          db.exec("BEGIN IMMEDIATE");
+          try {
+            const timestamp = now();
+            const latest = db.prepare("SELECT state FROM access_requests WHERE request_id=?").get(request.requestId) as { state: AccessRequestState };
+            if (latest.state !== "pending") throw brokerError("approval.invalid_state", "access request changed concurrently");
+            db.prepare(`
+              INSERT INTO runtime_grants (
+                grant_id, request_id, binding_id, environment_key, profile, executor,
+                authority_class, policy_generation, capabilities_json, scope, state,
+                uses_remaining, expires_at, approved_by, created_at, last_used_at,
+                revoked_at, revoked_by
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, NULL, NULL, NULL)
+            `).run(
+              grantId,
+              row.request_id,
+              row.binding_id,
+              row.environment_key,
+              row.profile,
+              row.executor,
+              row.authority_class,
+              row.policy_generation,
+              row.capabilities_json,
+              scope,
+              scope === "once" ? 1 : null,
+              scope === "timed" ? timestamp + (duration ?? 0) * 1000 : null,
+              request.principal,
+              timestamp,
+            );
+            db.prepare(`
+              UPDATE access_requests
+              SET state='approved', decided_at=?, decision_principal=?
+              WHERE request_id=? AND state='pending'
+            `).run(timestamp, request.principal, request.requestId);
+            const nextSnapshot = buildSnapshot(revision + 1);
+            db.exec("COMMIT");
+            installSnapshot(nextSnapshot);
+          } catch (error) {
+            db.exec("ROLLBACK");
+            throw error;
+          }
+        },
+        catch: (error) => grantFailure("approve access request", error),
+      });
+      return { requestId: request.requestId, state: "approved", grantIds: [grantId] };
+    });
+
+  const expire = (): void => {
+    const expired = db.prepare(`
+      SELECT COUNT(*) AS count FROM runtime_grants
+      WHERE state='active' AND expires_at IS NOT NULL AND expires_at <= ?
+    `).get(now()) as { count: number };
+    if (expired.count === 0) return;
+    mutateWithSnapshot(() => {
+      db.prepare(`
+        UPDATE runtime_grants SET state='expired'
+        WHERE state='active' AND expires_at IS NOT NULL AND expires_at <= ?
+      `).run(now());
+    });
+  };
+
+  const list = (environmentKey?: string): Effect.Effect<ReadonlyArray<RuntimeGrant>, BrokerError> =>
+    Effect.try({
+      try: () => {
+        expire();
+        const rows = (environmentKey === undefined
+          ? db.prepare("SELECT * FROM runtime_grants ORDER BY created_at, grant_id").all()
+          : db.prepare("SELECT * FROM runtime_grants WHERE environment_key=? ORDER BY created_at, grant_id").all(environmentKey)
+        ) as unknown as RuntimeGrantRow[];
+        return rows.map(grantFromRow);
+      },
+      catch: (error) => grantFailure("list grants", error),
+    });
+
+  const revoke = (grantId: string, principal: string): Effect.Effect<RuntimeGrant, BrokerError> =>
+    Effect.try({
+      try: () => mutateWithSnapshot(() => {
+        const timestamp = now();
+        const result = db.prepare(`
+          UPDATE runtime_grants
+          SET state='revoked', revoked_at=?, revoked_by=?
+          WHERE grant_id=? AND state='active'
+        `).run(timestamp, principal, grantId);
+        if (result.changes !== 1) {
+          throw brokerError("grant.not_found", "active runtime grant does not exist", { grantId });
+        }
+        const row = db.prepare("SELECT * FROM runtime_grants WHERE grant_id=?").get(grantId) as RuntimeGrantRow;
+        return grantFromRow(row);
+      }),
+      catch: (error) => grantFailure("revoke grant", error),
+    });
+
+  const revokeEnvironment = (
+    environmentKey: string,
+    scopes: ReadonlyArray<GrantScope>,
+    principal: string,
+  ): Effect.Effect<number, BrokerError> => Effect.try({
+    try: () => {
+      if (scopes.length === 0) return 0;
+      const placeholders = scopes.map(() => "?").join(",");
+      return mutateWithSnapshot(() => {
+        const result = db.prepare(`
+          UPDATE runtime_grants
+          SET state='revoked', revoked_at=?, revoked_by=?
+          WHERE environment_key=? AND state='active' AND scope IN (${placeholders})
+        `).run(now(), principal, environmentKey, ...scopes);
+        return Number(result.changes);
+      });
+    },
+    catch: (error) => grantFailure("revoke environment grants", error),
+  });
+
+  const consumeOnce = (grantId: string): Effect.Effect<boolean, BrokerError> =>
+    Effect.try({
+      try: () => mutateWithSnapshot(() => {
+        const timestamp = now();
+        const result = db.prepare(`
+          UPDATE runtime_grants
+          SET uses_remaining=0, state='consumed', last_used_at=?
+          WHERE grant_id=? AND state='active' AND uses_remaining=1
+            AND (expires_at IS NULL OR expires_at > ?)
+        `).run(timestamp, grantId, timestamp);
+        return result.changes === 1;
+      }),
+      catch: (error) => grantFailure("consume once grant", error),
+    });
+
+  return {
+    prepare,
+    decide,
+    list,
+    revoke,
+    revokeEnvironment,
+    snapshot: () => currentSnapshot,
+    matching,
+    consumeOnce,
+  } satisfies AccessGrantService;
+});
+
+export const makeAccessGrantsLayer = (options: AccessGrantOptions = {}) =>
+  Layer.scoped(AccessGrants, make(options));
+
+export const AccessGrantsLive = makeAccessGrantsLayer();

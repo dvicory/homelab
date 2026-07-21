@@ -11,7 +11,7 @@
 ## 3. Dynamic Runtime Grants
 
 - [x] 3.1 Add closed `network-origin` capability decoding, canonical public/private origin preparation, private-address pin previews, batch deduplication, and stable unsupported-capability failures; run broker contract checks and commit.
-- [ ] 3.2 Add strict SQLite access-request/runtime-grant tables, transactional scope/expiry/revocation/once-use behavior, remembered profile/executor rules, policy-generation invalidation, atomic in-memory snapshots, cooldown/coalescing/prompt-budget state, focused checks, and commit.
+- [x] 3.2 Add strict SQLite access-request/runtime-grant tables, transactional scope/expiry/revocation/once-use behavior, remembered profile/executor rules, policy-generation invalidation, atomic in-memory snapshots, cooldown/coalescing/prompt-budget state, focused checks, and commit.
 - [ ] 3.3 Compose active grants into Gondolin DNS/HTTP hooks so approved public and pinned-private origins activate and revoke in the same VM while redirects and rebinding remain constrained; add structured requestable denials, run broker checks, and commit.
 
 ## 4. Minimal Hermes Integration

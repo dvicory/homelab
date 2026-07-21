@@ -1,9 +1,19 @@
 import { Config, Context, Effect, Layer, Schema } from "effect";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { Asset, decodeExact, NetworkPolicy, Worklane } from "./domain.js";
+import { Asset, decodeExact, GrantScope, NetworkPolicy, Worklane } from "./domain.js";
 import { brokerError, type BrokerError } from "./errors.js";
 import { validateNetworkPolicy } from "./network.js";
+
+const GrantPolicy = Schema.Struct({
+  allowedScopes: Schema.Array(GrantScope).pipe(Schema.minItems(1)),
+  maxDurationSeconds: Schema.Int.pipe(Schema.greaterThan(0)),
+  denialCooldownSeconds: Schema.Int.pipe(Schema.greaterThanOrEqualTo(0)),
+  promptBudget: Schema.Struct({
+    maxNewRequests: Schema.Int.pipe(Schema.greaterThan(0)),
+    windowSeconds: Schema.Int.pipe(Schema.greaterThan(0)),
+  }),
+});
 
 const BrokerPolicyFileSchema = Schema.Struct({
   version: Schema.Literal(1),
@@ -15,6 +25,7 @@ const BrokerPolicyFileSchema = Schema.Struct({
   assets: Schema.Record({ key: Schema.String, value: Asset }),
   networkPolicies: Schema.Record({ key: Schema.String, value: NetworkPolicy }),
   worklanes: Schema.Record({ key: Schema.String, value: Worklane }),
+  grantPolicy: GrantPolicy,
 });
 
 type BrokerPolicyFileInput = typeof BrokerPolicyFileSchema.Type;

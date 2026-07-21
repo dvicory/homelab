@@ -13,6 +13,10 @@ export const Reason = Schema.Literal(
   "capability.unsupported",
   "network.resolution_failed",
   "network.address_forbidden",
+  "approval.request_suppressed",
+  "approval.request_not_found",
+  "approval.invalid_state",
+  "grant.not_found",
   "environment.capacity",
   "runtime.start_failed",
   "runtime.operation_failed",
@@ -66,15 +70,19 @@ export const statusFor = (error: BrokerError): number => {
       return 403;
     case "environment.not_found":
     case "fs.not_found":
+    case "approval.request_not_found":
+    case "grant.not_found":
       return 404;
     case "environment.tombstoned":
     case "environment.stale_generation":
     case "fs.exists":
     case "authority.conflict":
+    case "approval.invalid_state":
       return 409;
     case "environment.capacity":
     case "exec.output_limit":
     case "fs.size_limit":
+    case "approval.request_suppressed":
       return 429;
     case "network.resolution_failed":
       return 502;

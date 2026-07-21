@@ -123,6 +123,57 @@ export const CapabilityBatch = Schema.Array(Schema.Unknown).pipe(
 );
 export type CapabilityBatch = typeof CapabilityBatch.Type;
 
+export const PreparedNetworkOriginCapability = Schema.Struct({
+  version: Schema.Literal(1),
+  kind: Schema.Literal("network-origin"),
+  scheme: Schema.Union(Schema.Literal("http"), Schema.Literal("https")),
+  host: Schema.String.pipe(Schema.minLength(1), Schema.maxLength(253)),
+  ports: Schema.Array(NetworkPort).pipe(Schema.minItems(1), Schema.maxItems(16)),
+  addressMode: Schema.Union(Schema.Literal("public"), Schema.Literal("pinned-private")),
+  canonicalOrigin: Schema.String.pipe(Schema.minLength(1), Schema.maxLength(320)),
+  pinnedAddresses: Schema.Array(Schema.String).pipe(Schema.maxItems(32)),
+});
+export type PreparedNetworkOriginCapability = typeof PreparedNetworkOriginCapability.Type;
+
+export const GrantScope = Schema.Union(
+  Schema.Literal("once"),
+  Schema.Literal("task"),
+  Schema.Literal("conversation"),
+  Schema.Literal("timed"),
+  Schema.Literal("profile"),
+  Schema.Literal("executor"),
+);
+export type GrantScope = typeof GrantScope.Type;
+
+export const PrepareAccessRequest = Schema.Struct({
+  environmentKey: EnvironmentKey,
+  capabilities: CapabilityBatch,
+  requestedScope: GrantScope,
+  durationSeconds: Schema.optional(PositiveInt),
+  rationale: Schema.optional(Schema.String.pipe(Schema.maxLength(2048))),
+});
+export type PrepareAccessRequest = typeof PrepareAccessRequest.Type;
+
+export const DecideAccessRequest = Schema.Struct({
+  requestId: Identifier,
+  decision: Schema.Union(Schema.Literal("approve"), Schema.Literal("deny")),
+  scope: Schema.optional(GrantScope),
+  durationSeconds: Schema.optional(PositiveInt),
+  principal: Identifier,
+});
+export type DecideAccessRequest = typeof DecideAccessRequest.Type;
+
+export const ListGrantsRequest = Schema.Struct({
+  environmentKey: Schema.optional(EnvironmentKey),
+});
+export type ListGrantsRequest = typeof ListGrantsRequest.Type;
+
+export const RevokeGrantRequest = Schema.Struct({
+  grantId: Identifier,
+  principal: Identifier,
+});
+export type RevokeGrantRequest = typeof RevokeGrantRequest.Type;
+
 export const NetworkDestination = Schema.Struct({
   kind: Schema.Union(
     Schema.Literal("exact"),
