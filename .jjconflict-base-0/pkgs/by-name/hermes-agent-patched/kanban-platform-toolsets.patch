@@ -1,0 +1,88 @@
+From 9c0aeae2230d8a21b8149c24e515ddc2b56cdb9f Mon Sep 17 00:00:00 2001
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Thu, 16 Jul 2026 12:00:00 -0700
+Subject: [PATCH] fix(kanban): honor platform toolset configuration
+
+Kanban's registry checks only considered the deprecated top-level
+`toolsets` key. A platform could therefore resolve `kanban` from
+`platform_toolsets` and still have every Kanban tool rejected by its
+runtime availability check.
+
+Treat either configuration surface as the profile-level opt-in. The
+normal enabled-toolset filter remains authoritative for the active
+platform, so enabling Kanban on one platform does not expose it on
+another.
+---
+ tests/tools/test_kanban_tools.py | 39 +++++++++++++++++++++++++++++++++++++++
+ tools/kanban_tools.py            | 14 ++++++++++++--
+ 2 files changed, 51 insertions(+), 2 deletions(-)
+
+diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
+index 6a1dc1f..33d3261 100644
+--- a/tools/kanban_tools.py
++++ b/tools/kanban_tools.py
+@@ -59,2 +59,12 @@
+-        toolsets = cfg.get("toolsets", [])
+-        return "kanban" in toolsets
++        # Keep accepting the legacy profile-wide key, but use the current
++        # per-platform configuration as the primary opt-in surface. The
++        # registry's enabled-toolset filter still decides whether Kanban is
++        # exposed to the platform handling this particular session.
++        if "kanban" in (cfg.get("toolsets") or []):
++            return True
++        platform_toolsets = cfg.get("platform_toolsets") or {}
++        return any(
++            "kanban" in toolsets
++            for toolsets in platform_toolsets.values()
++            if isinstance(toolsets, list)
++        )
+diff --git a/tests/tools/test_kanban_tools.py b/tests/tools/test_kanban_tools.py
+index 83944b1..71feb96 100644
+--- a/tests/tools/test_kanban_tools.py
++++ b/tests/tools/test_kanban_tools.py
+@@ -143,6 +143,45 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
+     assert kanban == expected, f"expected {expected}, got {kanban}"
+
+
++def test_kanban_tools_visible_with_platform_toolset_config(monkeypatch, tmp_path):
++    """The current platform_toolsets schema enables orchestrator tools.
++
++    The registry's enabled-toolset filter selects the active platform. This
++    availability check only needs to recognize that the profile opted in on
++    at least one platform instead of requiring the deprecated top-level key.
++    """
++    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
++    home = tmp_path / ".hermes"
++    home.mkdir()
++    (home / "config.yaml").write_text(
++        "platform_toolsets:\n"
++        "  telegram:\n"
++        "    - hermes-telegram\n"
++        "    - kanban\n"
++    )
++    monkeypatch.setenv("HERMES_HOME", str(home))
++
++    import tools.kanban_tools  # ensure registered
++    from tools.registry import invalidate_check_fn_cache, registry
++    from toolsets import resolve_toolset
++
++    invalidate_check_fn_cache()
++    schema = registry.get_definitions(
++        set(resolve_toolset("hermes-telegram"))
++        | set(resolve_toolset("kanban")),
++        quiet=True,
++    )
++    names = {s["function"].get("name") for s in schema if "function" in s}
++    kanban = {n for n in names if n and n.startswith("kanban_")}
++    expected = {
++        "kanban_list",
++        "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
++        "kanban_comment", "kanban_create", "kanban_link",
++        "kanban_unblock",
++    }
++    assert kanban == expected, f"expected {expected}, got {kanban}"
++
++
+ # ---------------------------------------------------------------------------
+ # Handler happy paths
+ # ---------------------------------------------------------------------------

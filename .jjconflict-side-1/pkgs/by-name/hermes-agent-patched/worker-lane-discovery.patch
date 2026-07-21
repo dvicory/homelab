@@ -1,0 +1,316 @@
+From 2fa63bd0378afd7e78ac14c7549c80912b80b383 Mon Sep 17 00:00:00 2001
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Thu, 16 Jul 2026 04:00:00 -0700
+Subject: [PATCH] feat(kanban): advertise registered worker lanes to agents
+
+External worker lanes are valid dispatcher assignees, but kanban_create still
+describes every assignee as a Hermes profile. Agents therefore cannot select a
+lane unless some separate prompt happens to teach them its routing key.
+
+Carry a generic description on WorkerLane and render a unified profile
+and external-lane catalog into kanban_create's dynamic schema. The assignee
+stays an open string while the model sees the choices the owning gateway can
+actually dispatch and the capability descriptions needed to select among them.
+---
+ agent/prompt_builder.py                         |  20 +++--
+ hermes_cli/worker_lanes.py                      |   5 +-
+ tests/hermes_cli/test_worker_lane_discovery.py  | 140 ++++++++++++++++++++++++
+ tools/kanban_tools.py                           |  71 +++++++++++-
+ 4 files changed, 220 insertions(+), 16 deletions(-)
+ create mode 100644 tests/hermes_cli/test_worker_lane_discovery.py
+
+diff --git a/hermes_cli/worker_lanes.py b/hermes_cli/worker_lanes.py
+index ee2a1b1..706bf5e 100644
+--- a/hermes_cli/worker_lanes.py
++++ b/hermes_cli/worker_lanes.py
+@@ -66 +66,2 @@ class WorkerLane:
+-    ``kind`` is an optional label for logs/telemetry; ``max_concurrency`` is an
++    ``kind`` is an optional label for logs/telemetry; ``description`` explains to
++    orchestrators when this lane should be selected; ``max_concurrency`` is an
+@@ -73,2 +74,3 @@ class WorkerLane:
+     kind: str = ""
++    description: str = ""
+     max_concurrency: Optional[int] = None
+@@ -80,2 +82,3 @@ class WorkerLane:
+         self.kind = str(self.kind or "").strip()
++        self.description = str(self.description or "").strip()
+         if self.max_concurrency is not None:
+diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
+index 90f9c26..72dca32 100644
+--- a/agent/prompt_builder.py
++++ b/agent/prompt_builder.py
+@@ -230,7 +230,7 @@ KANBAN_GUIDANCE = (
+     "eyes on it.\n"
+     "6. **If follow-up work appears, create it; don't do it.** Use "
+-    "`kanban_create(title=..., assignee=<right-profile>, parents=[your-task-id])` "
+-    "to spawn a child task for the appropriate specialist profile instead of "
++    "`kanban_create(title=..., assignee=<right-worker>, parents=[your-task-id])` "
++    "to spawn a child task for the appropriate specialist worker instead of "
+     "scope-creeping into the next thing.\n"
+     "\n"
+     "## Orchestrator mode\n"
+@@ -256,10 +256,13 @@ KANBAN_GUIDANCE = (
+     "- **Created cards.** List ids in `kanban_complete(created_cards=[...])` "
+     "ONLY when captured from a successful `kanban_create` return — never invent "
+     "or paste ids; the kernel rejects the completion on any phantom id.\n"
++    "- **Parent links.** `parents` gate dependencies and preserve lineage. Link "
++    "derived reviews and follow-ups even when the source is done; completed parent "
++    "handoffs enter worker context without delay. Do not link unrelated tasks.\n"
+-    "- **Orchestrating: discover profiles first.** The dispatcher SILENTLY "
+-    "drops a card with an unknown assignee (it sits in `ready` forever). Ground "
+-    "every assignee in a real profile (`hermes profile list`, or ask the user), "
+-    "and express dependencies via `parents=[...]` on `kanban_create`, not prose.\n"
++    "- **Orchestrating.** Choose dispatchable assignees from `kanban_create`'s "
++    "dynamic schema by described capability. 'You' does not select the "
++    "current/default profile; an explicitly named executor wins. Unknown "
++    "assignees cannot run.\n"
+     "\n"
+     "## Do NOT\n"
+     "\n"
+@@ -271,8 +280,9 @@ KANBAN_GUIDANCE = (
+     "will sit silently in `running` with no signal to the operator. Instead: "
+     "`kanban_comment` the context, then `kanban_block(reason=...)` so the "
+     "task surfaces on the board as needing input.\n"
+-    "- Do not assign follow-up work to yourself. Assign it to the right "
+-    "specialist profile.\n"
++    "- Do not assign follow-up work based only on your current identity. Choose "
++    "the right specialist profile or external worker lane by its described "
++    "capability.\n"
+     "- Do not call `delegate_task` as a board substitute. `delegate_task` is "
+     "for short reasoning subtasks inside your own run; board tasks are for "
+     "cross-agent handoffs that outlive one API loop."
+diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
+index 6a1dc1f..1dc888a 100644
+--- a/tools/kanban_tools.py
++++ b/tools/kanban_tools.py
+@@ -846 +846,2 @@ def _handle_create(args: dict) -> str:
+-            "assignee is required — name the profile that should execute this "
++            "assignee is required — name the Hermes profile or registered "
++            "worker lane that should execute this "
+@@ -1398 +1399 @@ KANBAN_CREATE_SCHEMA = {
+-        "tasks on its next tick and spawns the assigned profiles."
++        "tasks on its next tick and spawns the assigned workers."
+@@ -1410,2 +1411,2 @@ KANBAN_CREATE_SCHEMA = {
+-                    "Profile name that should execute this task "
+-                    "(e.g. 'researcher-a', 'reviewer', 'writer'). "
++                    "Hermes profile or registered external worker lane that "
++                    "should execute this task. "
+@@ -1428,5 +1429,7 @@ KANBAN_CREATE_SCHEMA = {
+-                    "Parent task ids. The new task stays in 'todo' "
+-                    "until every parent reaches 'done'; then it "
++                    "Parent task ids encode both dependency gating and durable "
++                    "lineage. The assigned worker receives completed parents' "
++                    "summary and metadata in its context. The new task stays "
++                    "in 'todo' until every parent reaches 'done'; then it "
+                     "auto-promotes to 'ready'. Typical fan-in: list "
+                     "all the researcher task ids when creating a "
+                     "synthesizer task."
+@@ -1548,3 +1551,58 @@ KANBAN_CREATE_SCHEMA = {
+ }
+
++
++def _kanban_create_schema_overrides() -> dict:
++    """Advertise every assignee dispatchable by this gateway process."""
++    try:
++        from hermes_cli.worker_lanes import list_worker_lanes
++
++        lanes = list_worker_lanes()
++    except (ImportError, AttributeError):
++        # Worker lanes are an optional extension.
++        lanes = []
++
++    try:
++        from hermes_cli.profiles import list_profiles
++
++        profiles = list_profiles()
++    except Exception:
++        # Schema construction must survive a missing or damaged profile home.
++        profiles = []
++
++    lane_names = {lane.name for lane in lanes}
++    lines = []
++    for profile in sorted(profiles, key=lambda item: item.name):
++        # A registered lane wins dispatcher resolution when names collide, so
++        # do not advertise an unreachable profile with the same routing key.
++        if profile.name in lane_names:
++            continue
++        description = " ".join(str(getattr(profile, "description", "") or "").split())
++        suffix = description or "no capability description"
++        lines.append(f"- {profile.name} [Hermes profile]: {suffix}")
++    for lane in sorted(lanes, key=lambda item: item.name):
++        description = " ".join(str(getattr(lane, "description", "") or "").split())
++        suffix = description or "no capability description"
++        lines.append(f"- {lane.name} [external worker lane]: {suffix}")
++
++    if not lines:
++        return {}
++
++    parameters = {**KANBAN_CREATE_SCHEMA["parameters"]}
++    parameters["properties"] = {
++        name: dict(schema)
++        for name, schema in KANBAN_CREATE_SCHEMA["parameters"]["properties"].items()
++    }
++    assignee = parameters["properties"]["assignee"]
++    assignee["description"] = (
++        assignee["description"]
++        + "\n\nDispatchable assignees in this gateway:\n"
++        + "\n".join(lines)
++        + "\nChoose an assignee by matching the task to its described capability. "
++        + "Addressing the current orchestrator as 'you' does not by itself select "
++        + "the current/default profile; an explicit executor instruction takes "
++        + "precedence. Hermes profiles remain valid."
++    )
++    return {"parameters": parameters}
++
++
+ KANBAN_UNBLOCK_SCHEMA = {
+@@ -1653,2 +1711,3 @@ registry.register(
+     emoji="➕",
++    dynamic_schema_overrides=_kanban_create_schema_overrides,
+ )
+diff --git a/tests/hermes_cli/test_worker_lane_discovery.py b/tests/hermes_cli/test_worker_lane_discovery.py
+new file mode 100644
+index 0000000..3e87caf
+--- /dev/null
++++ b/tests/hermes_cli/test_worker_lane_discovery.py
+@@ -0,0 +1,140 @@
++"""Model-facing discovery tests for registered external worker lanes."""
++
++from __future__ import annotations
++
++from types import SimpleNamespace
++
++import pytest
++
++from hermes_cli import profiles as profiles_mod
++from hermes_cli import worker_lanes as wl
++
++
++@pytest.fixture(autouse=True)
++def _isolated_worker_lanes(monkeypatch):
++    wl.clear_worker_lanes()
++    monkeypatch.setattr(profiles_mod, "list_profiles", lambda: [])
++    monkeypatch.setenv("HERMES_KANBAN_TASK", "schema-probe")
++    yield
++    wl.clear_worker_lanes()
++
++
++def _spawn(_task, _workspace, *, board=None):
++    del board
++    return 4242
++
++
++def _kanban_create_definition():
++    import tools.kanban_tools  # noqa: F401 -- ensure tool registration
++    from tools.registry import invalidate_check_fn_cache, registry
++    from toolsets import resolve_toolset
++
++    invalidate_check_fn_cache()
++    definitions = registry.get_definitions(
++        set(resolve_toolset("kanban")),
++        quiet=True,
++    )
++    return next(
++        definition["function"]
++        for definition in definitions
++        if definition["function"]["name"] == "kanban_create"
++    )
++
++
++def test_worker_lane_description_is_normalized():
++    lane = wl.WorkerLane(
++        name="review-lane",
++        spawn_fn=_spawn,
++        description="  read-only architecture and code review  ",
++    )
++
++    assert lane.description == "read-only architecture and code review"
++
++
++def test_kanban_create_advertises_registered_worker_lanes():
++    wl.register_worker_lane(
++        wl.WorkerLane(
++            name="review-lane",
++            spawn_fn=_spawn,
++            description="read-only architecture and code review",
++        )
++    )
++    wl.register_worker_lane(
++        wl.WorkerLane(
++            name="implementation-lane",
++            spawn_fn=_spawn,
++            description="implementation that may modify files",
++        )
++    )
++
++    definition = _kanban_create_definition()
++    description = definition["parameters"]["properties"]["assignee"]["description"]
++
++    assert "Hermes profile or registered external worker lane" in description
++    assert "- review-lane [external worker lane]: read-only architecture and code review" in description
++    assert "- implementation-lane [external worker lane]: implementation that may modify files" in description
++
++
++def test_kanban_create_advertises_profiles_and_lane_precedence(monkeypatch):
++    monkeypatch.setattr(
++        profiles_mod,
++        "list_profiles",
++        lambda: [
++            SimpleNamespace(name="default", description="general-purpose Hermes agent"),
++            SimpleNamespace(name="review-lane", description="shadowed profile"),
++        ],
++    )
++    wl.register_worker_lane(
++        wl.WorkerLane(
++            name="review-lane",
++            spawn_fn=_spawn,
++            description="read-only architecture and code review",
++        )
++    )
++
++    definition = _kanban_create_definition()
++    description = definition["parameters"]["properties"]["assignee"]["description"]
++
++    assert "- default [Hermes profile]: general-purpose Hermes agent" in description
++    assert "- review-lane [external worker lane]: read-only architecture" in description
++    assert "shadowed profile" not in description
++    assert description.count("- review-lane") == 1
++
++
++def test_kanban_create_routes_by_capability_not_current_identity():
++    wl.register_worker_lane(
++        wl.WorkerLane(
++            name="review-lane",
++            spawn_fn=_spawn,
++            description="read-only architecture and code review",
++        )
++    )
++
++    definition = _kanban_create_definition()
++    properties = definition["parameters"]["properties"]
++    assignee_description = properties["assignee"]["description"]
++    parents_description = properties["parents"]["description"]
++
++    assert "matching the task to its described capability" in assignee_description
++    assert "does not by itself select the current/default profile" in assignee_description
++    assert "explicit executor instruction takes precedence" in assignee_description
++    assert "dependency gating and durable lineage" in parents_description
++    assert "completed parents' summary and metadata" in parents_description
++
++
++def test_kanban_guidance_recognizes_profiles_and_external_lanes():
++    from agent.prompt_builder import KANBAN_GUIDANCE
++
++    assert "Choose dispatchable assignees" in KANBAN_GUIDANCE
++    assert "does not select the current/default profile" in KANBAN_GUIDANCE
++    assert "handoffs enter worker context without delay" in KANBAN_GUIDANCE
++    assert "assignee=<right-profile>" not in KANBAN_GUIDANCE
++    assert "Ground every assignee in a real profile" not in KANBAN_GUIDANCE
++
++
++def test_kanban_create_without_registered_lanes_keeps_generic_schema():
++    definition = _kanban_create_definition()
++    description = definition["parameters"]["properties"]["assignee"]["description"]
++
++    assert "Hermes profile or registered external worker lane" in description
++    assert "Dispatchable assignees in this gateway" not in description
