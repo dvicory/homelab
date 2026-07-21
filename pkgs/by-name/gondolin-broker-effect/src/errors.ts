@@ -9,6 +9,17 @@ export const Reason = Schema.Literal(
   "environment.tombstoned",
   "environment.stale_generation",
   "authority.conflict",
+  "capability.invalid",
+  "capability.unsupported",
+  "network.resolution_failed",
+  "network.address_forbidden",
+  "network.capability_inactive",
+  "network.protocol_unsupported",
+  "network.rebinding_denied",
+  "approval.request_suppressed",
+  "approval.request_not_found",
+  "approval.invalid_state",
+  "grant.not_found",
   "environment.capacity",
   "runtime.start_failed",
   "runtime.operation_failed",
@@ -51,24 +62,36 @@ export const statusFor = (error: BrokerError): number => {
     case "request.invalid":
     case "exec.invalid":
     case "fs.path_forbidden":
+    case "capability.invalid":
+    case "capability.unsupported":
       return 400;
     case "exec.timeout":
       return 408;
     case "policy.denied":
     case "policy.approval_required":
+    case "network.address_forbidden":
+    case "network.capability_inactive":
+    case "network.protocol_unsupported":
+    case "network.rebinding_denied":
       return 403;
     case "environment.not_found":
     case "fs.not_found":
+    case "approval.request_not_found":
+    case "grant.not_found":
       return 404;
     case "environment.tombstoned":
     case "environment.stale_generation":
     case "fs.exists":
     case "authority.conflict":
+    case "approval.invalid_state":
       return 409;
     case "environment.capacity":
     case "exec.output_limit":
     case "fs.size_limit":
+    case "approval.request_suppressed":
       return 429;
+    case "network.resolution_failed":
+      return 502;
     case "policy.indeterminate":
     case "runtime.start_failed":
     case "runtime.operation_failed":

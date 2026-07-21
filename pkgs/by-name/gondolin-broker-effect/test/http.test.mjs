@@ -105,6 +105,50 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
     assert.equal(authority.status, 200)
     assert.equal(JSON.parse(authority.text).executor, "hermes-gateway")
 
+    const prepared = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/access/prepare", {
+        environmentKey: "conversation-control",
+        capabilities: [{
+          version: 1,
+          kind: "network-origin",
+          scheme: "https",
+          host: "8.8.8.8",
+          addressMode: "public"
+        }],
+        requestedScope: "task"
+      })
+    )
+    assert.equal(prepared.status, 200)
+    const accessRequest = JSON.parse(prepared.text)
+    assert.equal(accessRequest.state, "pending")
+
+    const decided = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/access/decide", {
+        requestId: accessRequest.requestId,
+        decision: "approve",
+        principal: "operator"
+      })
+    )
+    assert.equal(decided.status, 200)
+    const grantId = JSON.parse(decided.text).grantIds[0]
+
+    const listed = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/grants/list", {
+        environmentKey: "conversation-control"
+      })
+    )
+    assert.equal(listed.status, 200)
+    assert.equal(JSON.parse(listed.text)[0].grantId, grantId)
+
+    const revoked = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/grants/revoke", {
+        grantId,
+        principal: "operator"
+      })
+    )
+    assert.equal(revoked.status, 200)
+    assert.equal(JSON.parse(revoked.text).state, "revoked")
+
     const invalid = yield* Effect.promise(() => request(config.socketPath, "/v1/environments/ensure", {
       environmentKey: "conversation-http",
       unexpected: true

@@ -4,6 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { Effect, Exit, Stream } from "effect"
+import { AccessGrants } from "../dist/grants.js"
 import { Environments } from "../dist/environments.js"
 import { Executor } from "../dist/exec.js"
 import { Files } from "../dist/files.js"
@@ -34,6 +35,41 @@ test("ensure reuses a compatible live generation and increments after close", as
     const next = yield* environments.ensure({ environmentKey: "conversation-a" })
     assert.equal(next.generation, first.generation + 1)
   }))
+})
+
+test("an existing VM observes approval and revocation through its live grant view", async () => {
+  await withHarness((harness) => Effect.gen(function* () {
+    const environments = yield* Environments
+    const grants = yield* AccessGrants
+    const environment = yield* environments.ensure({ environmentKey: "conversation-live-network" })
+    const dynamic = harness.fake.state.created[0].spec.dynamicNetwork
+
+    assert.ok(dynamic)
+    assert.deepEqual(dynamic.activeGrants(), [])
+    const prepared = yield* grants.prepare({
+      environmentKey: environment.environmentKey,
+      capabilities: [{
+        version: 1,
+        kind: "network-origin",
+        scheme: "https",
+        host: "api.example.com",
+        addressMode: "public"
+      }],
+      requestedScope: "task"
+    })
+    const approved = yield* grants.decide({
+      requestId: prepared.requestId,
+      decision: "approve",
+      principal: "operator"
+    })
+
+    assert.equal(dynamic.activeGrants().length, 1)
+    yield* grants.revoke(approved.grantIds[0], "operator")
+    assert.deepEqual(dynamic.activeGrants(), [])
+    assert.equal(harness.fake.state.created.length, 1)
+  }), {
+    grantResolver: async () => [{ address: "93.184.216.34", family: 4 }]
+  })
 })
 
 test("ensure binds broker-owned default authority and rejects conflicts", async () => {

@@ -8,7 +8,7 @@ import {
 import { Context, Effect, Layer } from "effect";
 import { brokerError, type BrokerError } from "./errors.js";
 import type { NetworkPolicy } from "./domain.js";
-import { buildNetworkEnforcement } from "./network.js";
+import { buildNetworkEnforcement, type DynamicNetworkAuthority } from "./network.js";
 
 export interface VmCreateSpec {
   readonly assetPath: string;
@@ -18,6 +18,7 @@ export interface VmCreateSpec {
   readonly workspaceGuestPath: string;
   readonly sessionLabel: string;
   readonly network: NetworkPolicy;
+  readonly dynamicNetwork?: DynamicNetworkAuthority;
 }
 
 export interface VmStat {
@@ -113,7 +114,7 @@ export const makeCreateVm = (createGondolinVm: typeof GondolinVM.create) =>
             : (component: DebugComponent, message: string) => {
                 process.stderr.write(`[gondolin:${component}] ${message.replace(/\n$/, "")}\n`);
               };
-        const network = buildNetworkEnforcement(spec.network);
+        const network = buildNetworkEnforcement(spec.network, spec.dynamicNetwork);
         vm = await createGondolinVm({
           sandbox: {
             ...(process.platform === "linux" ? { vmm: "qemu", accel: "kvm" } : {}),

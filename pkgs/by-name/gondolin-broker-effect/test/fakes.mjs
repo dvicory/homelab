@@ -6,6 +6,7 @@ import { BrokerConfig } from "../dist/config.js"
 import { EnvironmentsLive } from "../dist/environments.js"
 import { ExecutorLive } from "../dist/exec.js"
 import { FilesLive } from "../dist/files.js"
+import { makeAccessGrantsLayer } from "../dist/grants.js"
 import { RegistryLive } from "../dist/registry.js"
 import { VmRuntime } from "../dist/runtime.js"
 
@@ -164,6 +165,15 @@ export const makePolicyFile = (overrides = {}) => ({
   defaultExecutor: "hermes-gateway",
   defaultAuthorityClass: "default",
   maxEnvironments: 4,
+  grantPolicy: {
+    allowedScopes: ["once", "task", "conversation", "timed", "profile", "executor"],
+    maxDurationSeconds: 3600,
+    denialCooldownSeconds: 60,
+    promptBudget: {
+      maxNewRequests: 4,
+      windowSeconds: 300
+    }
+  },
   assets: { default: { path: "/fake/root.qcow2", buildId: "fake-build" } },
   networkPolicies: {
     "worklane:default": { mode: "deny-all", destinations: [] }
@@ -204,7 +214,11 @@ export const makeTestLayer = (stateDir, options = {}) => {
   const policy = BrokerPolicyKernelLive.pipe(Layer.provideMerge(infrastructure))
   const authorization = AuthorizationLive.pipe(Layer.provideMerge(policy))
   const registry = RegistryLive.pipe(Layer.provideMerge(authorization))
-  const environments = EnvironmentsLive.pipe(Layer.provideMerge(registry))
+  const grants = makeAccessGrantsLayer({
+    ...(options.grantResolver === undefined ? {} : { resolver: options.grantResolver }),
+    ...(options.now === undefined ? {} : { now: options.now })
+  }).pipe(Layer.provideMerge(registry))
+  const environments = EnvironmentsLive.pipe(Layer.provideMerge(grants))
   const executor = ExecutorLive.pipe(Layer.provideMerge(environments))
   const layer = FilesLive.pipe(Layer.provideMerge(executor))
   return { config, fake, layer }

@@ -354,6 +354,20 @@ in
         defaultExecutor = "hermes-gateway";
         defaultAuthorityClass = "default";
         maxEnvironments = floor.maxVms;
+        grantPolicy = {
+          allowedScopes = [
+            "once"
+            "task"
+            "conversation"
+            "timed"
+          ];
+          maxDurationSeconds = 3600;
+          denialCooldownSeconds = 300;
+          promptBudget = {
+            maxNewRequests = 4;
+            windowSeconds = 900;
+          };
+        };
         inherit assets;
         worklanes = lanes;
       };
