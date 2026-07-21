@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { parseGondolinDebug } from "../dist/runtime.js"
+import { Effect } from "effect"
+import { makeCreateVm, parseGondolinDebug } from "../dist/runtime.js"
 
 test("Gondolin debug configuration is explicit and component-scoped", () => {
   assert.equal(parseGondolinDebug(undefined), false)
@@ -8,4 +9,67 @@ test("Gondolin debug configuration is explicit and component-scoped", () => {
   assert.equal(parseGondolinDebug("all"), true)
   assert.deepEqual(parseGondolinDebug("protocol, net"), ["protocol", "net"])
   assert.throws(() => parseGondolinDebug("qemu"), /Unknown Gondolin debug component: qemu/)
+})
+
+const vmSpec = {
+  assetPath: "/asset",
+  memoryMiB: 512,
+  cpus: 1,
+  workspaceHostPath: "/host-workspace",
+  workspaceGuestPath: "/workspace",
+  sessionLabel: "test:environment:1",
+}
+
+const fakeVm = (start, close) => ({
+  id: "vm-1",
+  start,
+  close,
+  getHostPid: () => 123,
+  fs: {},
+  exec: () => {
+    throw new Error("not exercised")
+  },
+})
+
+test("VM creation awaits startup before publishing a live handle", async () => {
+  let resolveStart
+  const started = new Promise((resolve) => {
+    resolveStart = resolve
+  })
+  let options
+  let settled = false
+  const createVm = makeCreateVm(async (received) => {
+    options = received
+    return fakeVm(() => started, async () => undefined)
+  })
+  const pending = Effect.runPromise(createVm(vmSpec))
+  void pending.then(() => {
+    settled = true
+  })
+
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(options.autoStart, false)
+  assert.equal(settled, false)
+
+  resolveStart()
+  const handle = await pending
+  assert.equal(handle.id, "vm-1")
+  assert.equal(settled, true)
+})
+
+test("VM startup failure closes the partially started VM", async () => {
+  let closes = 0
+  const createVm = makeCreateVm(async () =>
+    fakeVm(
+      async () => {
+        throw new Error("boot failed")
+      },
+      async () => {
+        closes += 1
+      },
+    )
+  )
+
+  await assert.rejects(Effect.runPromise(createVm(vmSpec)), /Gondolin create failed/)
+  assert.equal(closes, 1)
 })

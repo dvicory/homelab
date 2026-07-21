@@ -89,83 +89,110 @@ const runtimeFailure = (operation: string, error: unknown): BrokerError =>
     { cause: error instanceof Error ? error.message : String(error) },
   );
 
-const createVm = (spec: VmCreateSpec): Effect.Effect<VmHandle, BrokerError> =>
+export const makeCreateVm = (createGondolinVm: typeof GondolinVM.create) =>
+  (spec: VmCreateSpec): Effect.Effect<VmHandle, BrokerError> =>
   Effect.tryPromise({
-    try: async () => {
-      const debug = parseGondolinDebug();
-      const debugLog =
-        debug === false
-          ? undefined
-          : (component: DebugComponent, message: string) => {
-              process.stderr.write(`[gondolin:${component}] ${message.replace(/\n$/, "")}\n`);
-            };
-      const vm = await GondolinVM.create({
-        sandbox: {
-          ...(process.platform === "linux" ? { vmm: "qemu", accel: "kvm" } : {}),
-          imagePath: spec.assetPath,
-          netEnabled: false,
-          ...(debug === false ? {} : { debug }),
-        },
-        rootfs: { mode: "cow" },
-        memory: `${spec.memoryMiB}M`,
-        cpus: spec.cpus,
-        autoStart: true,
-        sessionLabel: spec.sessionLabel,
-        ...(debugLog === undefined ? {} : { debugLog }),
-        vfs: {
-          fuseMount: spec.workspaceGuestPath,
-          mounts: { "/": new RealFSProvider(spec.workspaceHostPath) },
-        },
-      });
-
-      const fs: VmFileSystem = {
-        stat: async (path) => {
-          const value = await vm.fs.stat(path);
-          return {
-            type: value.isFile()
-              ? "file"
-              : value.isDirectory()
-                ? "directory"
-                : value.isSymbolicLink()
-                  ? "symlink"
-                  : "other",
-            size: value.size,
-            mode: value.mode,
-            mtimeMs: value.mtimeMs,
-          };
-        },
-        list: (path) => vm.fs.listDir(path),
-        read: (path) => vm.fs.readFile(path, {}),
-        write: (path, data) => vm.fs.writeFile(path, data),
-        mkdir: (path, recursive) => vm.fs.mkdir(path, { recursive }),
-        remove: (path, recursive) => vm.fs.deleteFile(path, { recursive, force: false }),
+    try: async (signal) => {
+      let vm: GondolinVM | undefined;
+      const closeVm = async () => {
+        if (vm !== undefined) await vm.close().catch(() => undefined);
       };
+      const closeOnInterrupt = () => {
+        void closeVm();
+      };
+      signal.addEventListener("abort", closeOnInterrupt, { once: true });
 
-      return {
-        id: vm.id,
-        hostPid: () => vm.getHostPid(),
-        fs,
-        exec: async (request) => {
-          const proc = vm.exec([...request.argv], {
-            ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
-            ...(request.env === undefined ? {} : { env: request.env }),
-            stdout: "pipe",
-            stderr: "pipe",
-          });
-          return {
-            output: proc.output(),
-            result: proc.result.then((result) => ({
-              exitCode: result.exitCode ?? null,
-              signal: result.signal ?? null,
-            })),
-            write: (data) => proc.write(Buffer.from(data)),
-            end: () => proc.end(),
-          };
-        },
-        close: () => vm.close(),
-      } satisfies VmHandle;
+      try {
+        const debug = parseGondolinDebug();
+        const debugLog =
+          debug === false
+            ? undefined
+            : (component: DebugComponent, message: string) => {
+                process.stderr.write(`[gondolin:${component}] ${message.replace(/\n$/, "")}\n`);
+              };
+        vm = await createGondolinVm({
+          sandbox: {
+            ...(process.platform === "linux" ? { vmm: "qemu", accel: "kvm" } : {}),
+            imagePath: spec.assetPath,
+            netEnabled: false,
+            ...(debug === false ? {} : { debug }),
+          },
+          rootfs: { mode: "cow" },
+          memory: `${spec.memoryMiB}M`,
+          cpus: spec.cpus,
+          autoStart: false,
+          sessionLabel: spec.sessionLabel,
+          ...(debugLog === undefined ? {} : { debugLog }),
+          vfs: {
+            fuseMount: spec.workspaceGuestPath,
+            mounts: { "/": new RealFSProvider(spec.workspaceHostPath) },
+          },
+        });
+        const startedVm = vm;
+        if (signal.aborted) throw new Error("VM creation was interrupted");
+        await startedVm.start();
+        if (signal.aborted) throw new Error("VM startup was interrupted");
+
+        const fs: VmFileSystem = {
+          stat: async (path) => {
+            const value = await startedVm.fs.stat(path);
+            return {
+              type: value.isFile()
+                ? "file"
+                : value.isDirectory()
+                  ? "directory"
+                  : value.isSymbolicLink()
+                    ? "symlink"
+                    : "other",
+              size: value.size,
+              mode: value.mode,
+              mtimeMs: value.mtimeMs,
+            };
+          },
+          list: (path) => startedVm.fs.listDir(path),
+          read: (path) => startedVm.fs.readFile(path, {}),
+          write: (path, data) => startedVm.fs.writeFile(path, data),
+          mkdir: (path, recursive) => startedVm.fs.mkdir(path, { recursive }),
+          remove: (path, recursive) => startedVm.fs.deleteFile(path, { recursive, force: false }),
+        };
+
+        return {
+          id: startedVm.id,
+          hostPid: () => startedVm.getHostPid(),
+          fs,
+          exec: async (request) => {
+            const proc = startedVm.exec([...request.argv], {
+              ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+              ...(request.env === undefined ? {} : { env: request.env }),
+              stdout: "pipe",
+              stderr: "pipe",
+            });
+            const result = proc.result.then((value) => ({
+              exitCode: value.exitCode ?? null,
+              signal: value.signal ?? null,
+            }));
+            // Output failure can terminate the HTTP stream before it reaches
+            // the exit event. Keep the result rejection observed regardless.
+            void result.catch(() => undefined);
+            return {
+              output: proc.output(),
+              result,
+              write: (data) => proc.write(Buffer.from(data)),
+              end: () => proc.end(),
+            };
+          },
+          close: () => startedVm.close(),
+        } satisfies VmHandle;
+      } catch (error) {
+        await closeVm();
+        throw error;
+      } finally {
+        signal.removeEventListener("abort", closeOnInterrupt);
+      }
     },
     catch: (error) => runtimeFailure("create", error),
   });
+const createVm = makeCreateVm((options) => GondolinVM.create(options));
+
 
 export const VmRuntimeLive = Layer.succeed(VmRuntime, { create: createVm });
