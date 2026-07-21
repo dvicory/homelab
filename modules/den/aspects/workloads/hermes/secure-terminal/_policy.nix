@@ -360,6 +360,8 @@ in
             "task"
             "conversation"
             "timed"
+            "profile"
+            "executor"
           ];
           maxDurationSeconds = 3600;
           denialCooldownSeconds = 300;

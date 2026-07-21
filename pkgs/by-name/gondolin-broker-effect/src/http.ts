@@ -16,6 +16,7 @@ import {
   RemoveFileRequest,
   PrepareAccessRequest,
   RevokeGrantRequest,
+  RevokeEnvironmentGrantsRequest,
   StatusRequest,
   WriteFileRequest,
 } from "./domain.js";
@@ -215,6 +216,17 @@ export const makeControlHttpApp = Effect.gen(function* () {
     HttpRouter.post(
       "/v1/control/grants/revoke",
       unary("grants.revoke", RevokeGrantRequest, ({ grantId, principal }) => grants.revoke(grantId, principal)),
+    ),
+    HttpRouter.post(
+      "/v1/control/grants/revoke-environment",
+      unary(
+        "grants.revoke-environment",
+        RevokeEnvironmentGrantsRequest,
+        ({ environmentKey, scopes, principal }) =>
+          grants.revokeEnvironment(environmentKey, scopes, principal).pipe(
+            Effect.map((revoked) => ({ revoked })),
+          ),
+      ),
     ),
     HttpRouter.catchAll(() =>
       Effect.succeed(errorResponse(brokerError("request.invalid", "control route does not exist"))),

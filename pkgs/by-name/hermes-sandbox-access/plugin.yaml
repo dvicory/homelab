@@ -1,0 +1,4 @@
+name: sandbox-access
+version: "0.1.0"
+description: Broker-prepared sandbox capability approvals and lifecycle revocation
+author: Daniel Vicory
