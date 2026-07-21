@@ -174,6 +174,13 @@ export const RevokeGrantRequest = Schema.Struct({
 });
 export type RevokeGrantRequest = typeof RevokeGrantRequest.Type;
 
+export const RevokeEnvironmentGrantsRequest = Schema.Struct({
+  environmentKey: EnvironmentKey,
+  scopes: Schema.Array(GrantScope).pipe(Schema.minItems(1), Schema.maxItems(6)),
+  principal: Identifier,
+});
+export type RevokeEnvironmentGrantsRequest = typeof RevokeEnvironmentGrantsRequest.Type;
+
 export const NetworkDestination = Schema.Struct({
   kind: Schema.Union(
     Schema.Literal("exact"),

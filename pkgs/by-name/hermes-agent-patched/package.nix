@@ -14,6 +14,8 @@ let
       ./kanban-platform-toolsets.patch
       ./secure-terminal-isolation.patch
       ./gondolin-backend.patch
+      ./task-authority-binding.patch
+      ./approval-choice-result.patch
     ];
   };
 in

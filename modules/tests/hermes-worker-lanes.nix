@@ -28,6 +28,9 @@
         codexWorkerLane = pkgs.callPackage (
           self + "/pkgs/by-name/hermes-codex-worker-lane/package.nix"
         ) { };
+        sandboxAccess = pkgs.callPackage (
+          self + "/pkgs/by-name/hermes-sandbox-access/package.nix"
+        ) { };
         customCodexWorkerLane =
           pkgs.callPackage (self + "/pkgs/by-name/hermes-codex-worker-lane/package.nix")
             {
@@ -60,7 +63,7 @@
         checks.hermes-worker-lane =
           pkgs.callPackage (self + "/pkgs/by-name/hermes-agent-patched/check.nix")
             {
-              inherit codexWorkerLane patchedHermes;
+              inherit codexWorkerLane patchedHermes sandboxAccess;
             };
       }
     );

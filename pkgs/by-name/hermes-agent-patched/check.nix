@@ -2,6 +2,7 @@
   cacert,
   codexWorkerLane,
   patchedHermes,
+  sandboxAccess,
   runCommand,
 }:
 runCommand "hermes-agent-patched-check" { } ''
@@ -20,14 +21,20 @@ runCommand "hermes-agent-patched-check" { } ''
     ${patchedHermes.patchedSource}/tests/tools/test_kanban_tools.py \
     ${patchedHermes.patchedSource}/tests/tools/test_secure_terminal_scope.py \
     ${patchedHermes.patchedSource}/tests/tools/test_secure_terminal_identity_integration.py \
+    ${patchedHermes.patchedSource}/tests/tools/test_task_authority_binding.py \
+    ${patchedHermes.patchedSource}/tests/tools/test_approval_choice_result.py \
     ${patchedHermes.patchedSource}/tests/tools/test_gondolin_backend.py \
+    ${sandboxAccess.testSource}/tests \
     ${codexWorkerLane.testSource}/tests
   "$python" -m py_compile \
     ${codexWorkerLane}/share/hermes-agent/plugins/codex-worker-lane/__init__.py \
-    ${codexWorkerLane}/share/hermes-agent/plugins/codex-worker-lane/worker.py
+    ${codexWorkerLane}/share/hermes-agent/plugins/codex-worker-lane/worker.py \
+    ${sandboxAccess}/share/hermes-agent/plugins/sandbox-access/__init__.py
   "$python" -m ruff check \
     ${codexWorkerLane.testSource}/__init__.py \
     ${codexWorkerLane.testSource}/worker.py \
-    ${codexWorkerLane.testSource}/tests
+    ${codexWorkerLane.testSource}/tests \
+    ${sandboxAccess.testSource}/__init__.py \
+    ${sandboxAccess.testSource}/tests
   touch $out
 ''
