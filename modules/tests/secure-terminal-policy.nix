@@ -107,6 +107,7 @@
       effectPolicy = policyLib.mkEffectPolicy {
         inherit pkgs;
         assets = lib.mapAttrs (_: asset: { path = "${asset}"; }) assets;
+        bundles = networkBundles;
         profile = qaSelections.profile;
         defaultTemplate = qaSelections.defaultTemplate;
         allowedPairs = qaSelections.allowedPairs;
@@ -192,6 +193,7 @@
             [ -S "$GONDOLIN_EFFECT_SOCKET" ]
             node --input-type=module -e '
               import http from "node:http";
+              import fs from "node:fs";
               const body = await new Promise((resolve, reject) => {
                 const request = http.request({
                   socketPath: process.env.GONDOLIN_EFFECT_SOCKET,
@@ -209,6 +211,43 @@
                 request.end();
               });
               if (JSON.parse(body).status !== "ok") throw new Error("broker health response is not ok");
+              const rendered = JSON.parse(fs.readFileSync(process.env.GONDOLIN_EFFECT_POLICY, "utf8"));
+              for (const lane of ["default", "codex"]) {
+                const resource = "worklane:" + lane + ":environment:*";
+                const statement = rendered.policy.statements.find(
+                  (candidate) =>
+                    candidate.actions.includes("environment.ensure") &&
+                    candidate.resources.includes(resource)
+                );
+                if (!statement) throw new Error("missing ensure authority for " + lane);
+                const obligations = statement.obligations?.filter(
+                  (obligation) => obligation.kind === "network"
+                ) ?? [];
+                if (obligations.length !== 1) {
+                  throw new Error("expected exactly one network obligation for " + lane);
+                }
+                const networkId = obligations[0].bundleId;
+                if (!networkId.startsWith("worklane:" + lane + ":") || !rendered.networkPolicies[networkId]) {
+                  throw new Error("network obligation is not content-bound for " + lane);
+                }
+              }
+              const policyFor = (lane) => {
+                const statement = rendered.policy.statements.find(
+                  (candidate) => candidate.resources.includes("worklane:" + lane + ":environment:*")
+                );
+                return rendered.networkPolicies[statement.obligations[0].bundleId];
+              };
+              const defaultHosts = new Set(policyFor("default").destinations.map((item) => item.host));
+              for (const host of ["github.com", "registry.npmjs.org", "pypi.org", "cache.nixos.org"]) {
+                if (!defaultHosts.has(host)) throw new Error("default lane missing reviewed host " + host);
+              }
+              const codexHosts = new Set(policyFor("codex").destinations.map((item) => item.host));
+              if (!codexHosts.has("github.com") || !codexHosts.has("pypi.org")) {
+                throw new Error("codex lane missing its reviewed network bundles");
+              }
+              if (codexHosts.has("cache.nixos.org")) {
+                throw new Error("codex lane exceeded its network maximum");
+              }
             '
             kill "$broker_pid"
             wait "$broker_pid" || true

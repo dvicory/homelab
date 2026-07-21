@@ -30,6 +30,9 @@ policy = {
     "assets": {
         "default": {"path": str(asset_path), "buildId": "activation-test"}
     },
+    "networkPolicies": {
+        "worklane:default": {"mode": "deny-all", "destinations": []}
+    },
     "worklanes": {
         "default": {
             "asset": "default",

@@ -142,18 +142,38 @@ const make = Effect.gen(function* () {
       }
       const decision = yield* authorization.authorize({
         action: "environment.ensure",
-        resource: `environment:${request.environmentKey}`,
+        resource: `worklane:${worklaneName}:environment:${request.environmentKey}`,
         requestedLimits: {
           memoryMiB: worklane.memoryMiB,
           cpus: worklane.cpus,
           ...worklane.limits,
         },
       });
+      const networkObligations = decision.obligations.filter(
+        (obligation) => typeof obligation === "object" && obligation.kind === "network",
+      );
+      if (networkObligations.length !== 1) {
+        return yield* brokerError(
+          "policy.indeterminate",
+          "environment authorization must produce exactly one network obligation",
+          { worklane: worklaneName, count: networkObligations.length },
+        );
+      }
+      const networkPolicyId = networkObligations[0]!.bundleId;
+      const network = config.policyFile.networkPolicies[networkPolicyId];
+      if (network === undefined) {
+        return yield* brokerError(
+          "policy.indeterminate",
+          "network obligation references an unknown policy",
+          { worklane: worklaneName, networkPolicyId },
+        );
+      }
       const existing = live.get(request.environmentKey);
       if (
         existing !== undefined &&
         existing.worklane === worklaneName &&
-        existing.policyGeneration === decision.policyGeneration
+        existing.policyGeneration === decision.policyGeneration &&
+        existing.decisionDigest === decision.decisionDigest
       ) {
         return {
           environmentKey: existing.environmentKey,
@@ -197,6 +217,7 @@ const make = Effect.gen(function* () {
         workspaceHostPath: workspacePath,
         workspaceGuestPath: worklane.workspaceGuestPath,
         sessionLabel: `${config.profile}:${request.environmentKey}:${record.generation}`,
+        network,
       }).pipe(
         Effect.tapError((error) =>
           registry.markFailed(request.environmentKey, record.generation, error.message).pipe(Effect.ignore),

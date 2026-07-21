@@ -16,13 +16,17 @@ const withHarness = async (run, options) => {
 }
 
 test("ensure reuses a compatible live generation and increments after close", async () => {
-  await withHarness(() => Effect.gen(function* () {
+  await withHarness((harness) => Effect.gen(function* () {
     const environments = yield* Environments
     const first = yield* environments.ensure({ environmentKey: "conversation-a" })
     const reused = yield* environments.ensure({ environmentKey: "conversation-a" })
     assert.equal(first.state, "created")
     assert.equal(reused.state, "reused")
     assert.equal(reused.generation, first.generation)
+    assert.deepEqual(harness.fake.state.created[0].spec.network, {
+      mode: "deny-all",
+      destinations: []
+    })
 
     yield* environments.close({ environmentKey: first.environmentKey, generation: first.generation })
     const next = yield* environments.ensure({ environmentKey: "conversation-a" })
@@ -51,6 +55,39 @@ test("missing policy allow fails closed before VM creation", async () => {
   }), {
     policyFile: { policy: { version: 1, statements: [] } }
   })
+})
+
+test("ensure requires one resolvable policy-authorized network obligation", async () => {
+  const allowWithoutNetwork = {
+    version: 1,
+    statements: [{
+      effect: "allow",
+      actions: ["environment.ensure"],
+      resources: ["worklane:default:environment:*"]
+    }]
+  }
+  await withHarness((harness) => Effect.gen(function* () {
+    const environments = yield* Environments
+    const error = yield* Effect.flip(environments.ensure({ environmentKey: "conversation-no-network" }))
+    assert.equal(error.reason, "policy.indeterminate")
+    assert.equal(harness.fake.state.created.length, 0)
+  }), { policyFile: { policy: allowWithoutNetwork } })
+
+  const unknownNetwork = {
+    version: 1,
+    statements: [{
+      effect: "allow",
+      actions: ["environment.ensure"],
+      resources: ["worklane:default:environment:*"],
+      obligations: [{ kind: "network", bundleId: "missing" }]
+    }]
+  }
+  await withHarness((harness) => Effect.gen(function* () {
+    const environments = yield* Environments
+    const error = yield* Effect.flip(environments.ensure({ environmentKey: "conversation-unknown-network" }))
+    assert.equal(error.reason, "policy.indeterminate")
+    assert.equal(harness.fake.state.created.length, 0)
+  }), { policyFile: { policy: unknownNetwork } })
 })
 
 test("file operations enforce workspace paths and byte ceilings", async () => {

@@ -10,7 +10,12 @@ import { Authorization, BrokerActions, type AuthorizationService } from "./auth.
 import { BrokerConfig } from "./config.js";
 import { brokerError } from "./errors.js";
 
-const brokerActionRegistry = makeActionRegistry(BrokerActions.map((action) => ({ action })));
+const brokerActionRegistry = makeActionRegistry(
+  BrokerActions.map((action) => ({
+    action,
+    ...(action === "environment.ensure" ? { obligations: ["network" as const] } : {}),
+  })),
+);
 
 export const BrokerPolicyKernelLive = Layer.effect(
   PolicyKernel,
@@ -51,7 +56,7 @@ const make = Effect.gen(function* () {
                 ? {}
                 : { parameters: { requestedLimits: request.requestedLimits } }),
             },
-            supportedObligations: [],
+            supportedObligations: request.action === "environment.ensure" ? ["network"] : [],
           }),
         catch: (error) => {
           if (error instanceof AuthorizationDeniedError) {
@@ -73,6 +78,7 @@ const make = Effect.gen(function* () {
           decisionDigest: authorized.decisionDigest,
           policyGeneration: config.policyFile.policyGeneration,
           limits: authorized.authority.limits,
+          obligations: authorized.authority.obligations,
         })),
       ),
   } satisfies AuthorizationService;

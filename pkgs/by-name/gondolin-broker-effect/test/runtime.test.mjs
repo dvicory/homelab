@@ -18,6 +18,7 @@ const vmSpec = {
   workspaceHostPath: "/host-workspace",
   workspaceGuestPath: "/workspace",
   sessionLabel: "test:environment:1",
+  network: { mode: "deny-all", destinations: [] },
 }
 
 const fakeVm = (
@@ -53,6 +54,8 @@ test("VM creation awaits startup before publishing a live handle", async () => {
 
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(options.autoStart, true)
+  assert.equal(options.sandbox.netEnabled, false)
+  assert.equal(options.sandbox.allowWebSockets, false)
   assert.equal(settled, false)
 
   resolveStart()

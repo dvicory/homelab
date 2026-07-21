@@ -1,8 +1,9 @@
 import { Config, Context, Effect, Layer, Schema } from "effect";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { Asset, decodeExact, Worklane } from "./domain.js";
+import { Asset, decodeExact, NetworkPolicy, Worklane } from "./domain.js";
 import { brokerError, type BrokerError } from "./errors.js";
+import { validateNetworkPolicy } from "./network.js";
 
 const BrokerPolicyFileSchema = Schema.Struct({
   version: Schema.Literal(1),
@@ -11,6 +12,7 @@ const BrokerPolicyFileSchema = Schema.Struct({
   defaultWorklane: Schema.String.pipe(Schema.minLength(1)),
   maxEnvironments: Schema.Int.pipe(Schema.greaterThan(0)),
   assets: Schema.Record({ key: Schema.String, value: Asset }),
+  networkPolicies: Schema.Record({ key: Schema.String, value: NetworkPolicy }),
   worklanes: Schema.Record({ key: Schema.String, value: Worklane }),
 });
 
@@ -102,6 +104,21 @@ const load = Effect.gen(function* () {
       }),
     ),
   );
+  yield* Effect.try({
+    try: () => {
+      for (const [name, networkPolicy] of Object.entries(decoded.networkPolicies)) {
+        try {
+          validateNetworkPolicy(networkPolicy);
+        } catch (error) {
+          throw new Error(`${name}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    },
+    catch: (error) =>
+      brokerError("request.invalid", "broker network policy is invalid", {
+        cause: error instanceof Error ? error.message : String(error),
+      }),
+  });
   const assets = yield* resolveAssets(decoded);
   const policyFile: BrokerPolicyFile = { ...decoded, assets };
 
