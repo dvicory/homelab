@@ -17,11 +17,11 @@
 ## 4. Minimal Hermes Integration
 
 - [x] 4.1 Add one generic infrastructure-only Hermes task authority binding hook to canonical environment identity, migrate no individual tool schemas, exercise concurrent task separation through the patched-source check, and commit.
-- [ ] 4.2 Add a Nix-built sandbox-authority Hermes plugin with control client, `sandbox_request_access`, list/revoke tools, existing approval-provider integration, trusted session/Kanban registration, canonical batch prompts, suppressed-request handling, plugin contract checks, and commit.
+- [x] 4.2 Add a Nix-built sandbox-authority Hermes plugin with control client, `sandbox_request_access`, list/revoke tools, existing approval-provider integration, trusted session/Kanban registration, canonical batch prompts, suppressed-request handling, plugin contract checks, and commit.
 - [ ] 4.3 Wire the plugin, profile/executor defaults, allowed grant scopes, cooldowns, budgets, and control socket into `modules/den/aspects/workloads/hermes/secure-terminal/` for `hermes-qa`; rebuild the affected `hvn-hyp1` configuration and portable checks, then commit. No SOPS update is required.
 
 ## 5. End-to-End Validation and Documentation
 
 - [ ] 5.1 Exercise a real broker path covering denied origin, canonical capability preparation, approval decision, same-generation retry, live revocation, expiry/restart, concurrent authority isolation, fatigue suppression, and byte-safe patching; commit any focused regression repairs individually.
-- [ ] 5.2 Amend `HERMES_NIX_SECURE_TERMINAL_BACKEND_V3.md` and Agent-X broker/policy documentation with sandbox classes, dynamic grants, hard enforcement boundaries, approval scopes/fatigue controls, mutable overlay operations, rollback, and the exact Hermes patch surface; run documentation/package checks and commit.
+- [x] 5.2 Amend `HERMES_NIX_SECURE_TERMINAL_BACKEND_V3.md` and Agent-X broker/policy documentation with sandbox classes, dynamic grants, hard enforcement boundaries, approval scopes/fatigue controls, mutable overlay operations, rollback, and the exact Hermes patch surface; run documentation/package checks and commit.
 - [ ] 5.3 Deploy only the QA `hvn-hyp1` profile, run the Hermes-agent prompt/scenario against default, dynamically approved public/private, revoked, and denied paths, record observed compatibility without production changes, and commit the verified final configuration.
