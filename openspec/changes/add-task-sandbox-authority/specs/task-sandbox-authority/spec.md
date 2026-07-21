@@ -2,17 +2,17 @@
 
 ### Requirement: Broker-owned authority binding
 
-The broker MUST own the binding between an opaque environment key and its trusted profile, executor, authority class, and policy generation. The ordinary execution protocol MUST NOT accept a caller-selected worklane, template, network class, or capability set.
+The broker MUST own the binding between an opaque environment key and its trusted profile, executor, authority class, and full immutable policy digest. The ordinary execution protocol MUST NOT accept a caller-selected worklane, template, network class, or capability set.
 
 #### Scenario: Default binding
 - **GIVEN** an execution request for an unbound environment key
 - **WHEN** the configured profile permits automatic default binding
 - **THEN** the broker SHALL bind the environment to the profile's default authority class before creating the VM
-- **AND** the response SHALL identify the resulting authority class and policy generation without exposing raw session identity
+- **AND** the response SHALL identify the resulting authority class and policy digest without exposing raw session identity
 
 #### Scenario: Conflicting authority
 - **GIVEN** an environment key already bound to one authority context
-- **WHEN** a control request attempts to bind incompatible profile, executor, class, or policy-generation data
+- **WHEN** a control request attempts to bind incompatible profile, executor, class, or policy-digest data
 - **THEN** the broker MUST reject the request with a stable conflict reason
 - **AND** MUST NOT modify the existing binding
 
@@ -27,6 +27,12 @@ Authority mutation MUST be exposed only through the broker control listener. Env
 #### Scenario: Execution operation on control listener
 - **WHEN** a client sends command execution to the control listener
 - **THEN** the broker MUST reject it without starting or leasing a VM
+
+#### Scenario: Socket replacement under a running gateway
+- **GIVEN** a running Hermes gateway connected through the broker's execution and control socket paths
+- **WHEN** NixOS activation or an operator replaces the socket inodes and starts a new broker
+- **THEN** the gateway SHALL resolve the replacement sockets without a Hermes redeploy or container restart
+- **AND** the gateway MUST NOT receive a writable mount of the broker runtime directory or unrelated host runtime state
 
 ### Requirement: Task-scoped canonical environment identity
 

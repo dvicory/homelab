@@ -454,13 +454,16 @@ in
           sandboxEngine = "${serviceName}-sandbox-engine";
           brokerName = "${serviceName}-broker";
           sandboxSocketHost = "/run/${sandboxEngine}/podman.sock";
-          brokerSocketHost = "/run/${brokerName}/broker.sock";
-          brokerControlSocketHost = "/run/${brokerName}/control.sock";
-          brokerControlSocketContainer = "/run/hermes-sandbox/control.sock";
+          brokerSocketHostDirectory = "/run/${brokerName}";
+          brokerSocketContainerDirectory = "/run/hermes-sandbox";
+          brokerControlSocketContainer = "${brokerSocketContainerDirectory}/control.sock";
           # One container-side sandbox path regardless of engine; the host
           # side selects the podman API socket or the broker socket.
           sandboxSocketContainer =
-            if secureTerminalBackend == "gondolin" then "/run/hermes-sandbox/broker.sock" else "/run/hermes-sandbox/podman.sock";
+            if secureTerminalBackend == "gondolin" then
+              "${brokerSocketContainerDirectory}/broker.sock"
+            else
+              "/run/hermes-sandbox/podman.sock";
           codexHome = "${containerHome}/.codex";
           codexModel = codex.model or null;
           codexReasoningEffort = codex.reasoningEffort or null;
@@ -746,9 +749,9 @@ in
                     TERMINAL_DOCKER_MOUNT_SUPPORT_FILES = "false";
                   }
                   // lib.optionalAttrs (secureTerminalEnabled && secureTerminalBackend == "gondolin") {
-                    # The broker socket is the gateway's only sandbox
-                    # capability (V3 §7). Conversation identity stays enforced
-                    # by the canonical environment key on every surface.
+                    # The dedicated read-only broker directory is the gateway's
+                    # only sandbox capability. A directory bind follows socket
+                    # inode replacement without exposing unrelated host runtime.
                     HERMES_GONDOLIN_SOCKET = sandboxSocketContainer;
                     TERMINAL_ISOLATION_SCOPE = "conversation";
                     GONDOLIN_EFFECT_CONTROL_SOCKET = brokerControlSocketContainer;
@@ -776,8 +779,7 @@ in
                     "${osConfig.age.secrets.${secretNames.githubPat}.path}:/run/secrets/hermes-github-pat:ro"
                   ]
                   ++ lib.optional (secureTerminalEnabled && secureTerminalBackend == "podman") "${sandboxSocketHost}:${sandboxSocketContainer}"
-                  ++ lib.optional (secureTerminalEnabled && secureTerminalBackend == "gondolin") "${brokerSocketHost}:${sandboxSocketContainer}"
-                  ++ lib.optional (secureTerminalEnabled && secureTerminalBackend == "gondolin") "${brokerControlSocketHost}:${brokerControlSocketContainer}"
+                  ++ lib.optional (secureTerminalEnabled && secureTerminalBackend == "gondolin") "${brokerSocketHostDirectory}:${brokerSocketContainerDirectory}:ro"
                   ++ lib.optionals codexEnabled [
                     "${serviceName}-codex:${codexHome}"
                     "${codexWorkerLane}/share/hermes-agent/external-skills:${codexSkillRoot}:ro"

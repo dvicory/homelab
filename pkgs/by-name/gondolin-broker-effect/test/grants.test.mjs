@@ -20,7 +20,8 @@ const resolver = async (host) => {
   const addresses = {
     "docs.example.com": "93.184.216.34",
     "api.example.net": "8.8.8.8",
-    "packages.example.org": "1.1.1.1"
+    "packages.example.org": "1.1.1.1",
+    "internal.example.com": "192.168.1.10"
   }
   if (!(host in addresses)) throw new Error(`unexpected host ${host}`)
   return [{ address: addresses[host], family: 4 }]
@@ -31,8 +32,76 @@ const bind = (registry, environmentKey, overrides = {}) => registry.bindAuthorit
   profile: "test",
   executor: "hermes-gateway",
   authorityClass: "default",
-  policyGeneration: 1,
+  policyDigest: "a".repeat(64),
   ...overrides
+})
+
+test("proactive preparation binds defaults without a VM and skips approval for static policy", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "gondolin-effect-proactive-"))
+  const harness = makeTestLayer(stateDir, {
+    grantResolver: resolver,
+    policyFile: {
+      networkPolicies: {
+        "worklane:default": {
+          mode: "bundles",
+          destinations: [{ kind: "exact", host: "docs.example.com", ports: [443] }]
+        }
+      }
+    }
+  })
+  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const registry = yield* Registry
+    const grants = yield* AccessGrants
+
+    const covered = yield* grants.prepare({
+      environmentKey: "task-proactive",
+      capabilities: [origin()],
+      requestedScope: "task"
+    })
+    assert.equal(covered.state, "active")
+    assert.equal(covered.requestId, null)
+    assert.deepEqual(covered.grantIds, [])
+    assert.equal(grants.snapshot().grants.length, 0)
+    assert.equal((yield* registry.getAuthority("task-proactive")).authorityClass, "default")
+    assert.equal(yield* registry.get("task-proactive"), undefined)
+    assert.equal(harness.fake.state.created.length, 0)
+
+    const requestable = yield* grants.prepare({
+      environmentKey: "task-proactive",
+      capabilities: [origin("api.example.net")],
+      requestedScope: "task"
+    })
+    assert.equal(requestable.state, "pending")
+    assert.ok(requestable.requestId)
+  }).pipe(Effect.provide(harness.layer))))
+})
+
+test("a static hostname does not bypass pinned-private approval", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "gondolin-effect-private-baseline-"))
+  const harness = makeTestLayer(stateDir, {
+    grantResolver: resolver,
+    policyFile: {
+      networkPolicies: {
+        "worklane:default": {
+          mode: "bundles",
+          destinations: [{ kind: "exact", host: "internal.example.com", ports: [443] }]
+        }
+      }
+    }
+  })
+  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const grants = yield* AccessGrants
+    const prepared = yield* grants.prepare({
+      environmentKey: "task-private",
+      capabilities: [{
+        ...origin("internal.example.com"),
+        addressMode: "pinned-private"
+      }],
+      requestedScope: "task"
+    })
+    assert.equal(prepared.state, "pending")
+    assert.deepEqual(prepared.capabilities[0].pinnedAddresses, ["192.168.1.10"])
+  }).pipe(Effect.provide(harness.layer))))
 })
 
 test("access preparation coalesces pending requests and publishes approved batches atomically", async () => {
@@ -276,13 +345,13 @@ test("restart restores only current non-expired grants", async () => {
   const changedPolicy = makeTestLayer(stateDir, {
     grantResolver: resolver,
     now: () => timestamp,
-    policyFile: { policyGeneration: 2 }
+    policyFile: { policyDigest: "b".repeat(64) }
   })
   await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const grants = yield* AccessGrants
     assert.equal(grants.snapshot().grants.length, 0)
     const all = yield* grants.list("task-restart")
     assert.deepEqual(all.map((grant) => grant.state).sort(), ["expired", "revoked"])
-    assert.equal(all.find((grant) => grant.state === "revoked").revokedBy, "policy-generation")
+    assert.equal(all.find((grant) => grant.state === "revoked").revokedBy, "policy-digest")
   }).pipe(Effect.provide(changedPolicy.layer))))
 })

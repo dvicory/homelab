@@ -91,11 +91,18 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
         profile: "test",
         executor: "hermes-gateway",
         authorityClass: "default",
-        policyGeneration: 1
+        policyDigest: "a".repeat(64)
       })
     )
     assert.equal(bind.status, 200)
     assert.equal(JSON.parse(bind.text).authorityClass, "default")
+
+    const controlledEnsure = yield* Effect.promise(() =>
+      request(config.socketPath, "/v1/environments/ensure", {
+        environmentKey: "conversation-control"
+      })
+    )
+    assert.equal(controlledEnsure.status, 200)
 
     const authority = yield* Effect.promise(() =>
       request(config.controlSocketPath, "/v1/control/authority/status", {
@@ -104,6 +111,9 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
     )
     assert.equal(authority.status, 200)
     assert.equal(JSON.parse(authority.text).executor, "hermes-gateway")
+    assert.equal(JSON.parse(authority.text).policyDigest, "a".repeat(64))
+    assert.equal(JSON.parse(authority.text).generation, 1)
+    assert.equal(JSON.parse(authority.text).state, "active")
 
     const prepared = yield* Effect.promise(() =>
       request(config.controlSocketPath, "/v1/control/access/prepare", {

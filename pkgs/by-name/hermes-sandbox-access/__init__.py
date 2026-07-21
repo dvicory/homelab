@@ -19,8 +19,8 @@ from tools.terminal_tool import (
 
 _TOOLSET = "sandbox_access"
 _SESSION_ENVIRONMENTS: dict[str, str] = {}
-_VALID_CHOICES = {"once", "session", "always"}
-_VALID_SCOPES = {"once", "task", "conversation", "timed", "profile", "executor"}
+_VALID_CHOICES = {"once", "session"}
+_VALID_SCOPES = {"once", "task"}
 
 _TASK_ENVIRONMENTS: dict[str, str] = {}
 
@@ -75,7 +75,7 @@ class BrokerClient:
         return body
 
 
-_REQUEST_SCHEMA = {
+_REQUEST_PARAMETERS = {
     "type": "object",
     "additionalProperties": False,
     "required": ["capabilities", "requested_scope", "rationale"],
@@ -107,19 +107,21 @@ _REQUEST_SCHEMA = {
         "rationale": {"type": "string", "minLength": 1, "maxLength": 2048},
     },
 }
-
-_LIST_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {},
+_REQUEST_SCHEMA = {
+    "description": "Request narrowly scoped runtime capabilities for the current sandbox.",
+    "parameters": _REQUEST_PARAMETERS,
 }
-
+_LIST_SCHEMA = {
+    "description": "List grants visible to the current sandbox authority.",
+    "parameters": {"type": "object", "additionalProperties": False, "properties": {}},
+}
 _REVOKE_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["grant_id"],
-    "properties": {
-        "grant_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "description": "Revoke one visible active sandbox grant.",
+    "parameters": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["grant_id"],
+        "properties": {"grant_id": {"type": "string", "minLength": 1, "maxLength": 256}},
     },
 }
 
@@ -178,12 +180,10 @@ def _canonical_summary(prepared: dict[str, Any], rationale: str) -> str:
         if pins:
             line += f", pinned [{', '.join(pins)}]"
         lines.append(line)
-    duration = prepared.get("durationSeconds")
     lines.extend([
-        f"Model-requested scope: {requested_scope}" + (f" ({duration} seconds)" if duration else ""),
+        f"Model-requested scope: {requested_scope}",
         "Effect: network only; no credentials, filesystem access, or VM restart.",
-        f"Choices: once=next matching request; session={session_scope}; "
-        "always=all tasks for this executor until revoked or policy update.",
+        f"Choices: once=next matching request; session={session_scope}.",
         f"Why (model-provided): {rationale}",
     ])
     return "\n".join(lines)
@@ -192,11 +192,7 @@ def _canonical_summary(prepared: dict[str, Any], rationale: str) -> str:
 def _scope_for_choice(choice: str, requested: str) -> str:
     if choice == "once":
         return "once"
-    if choice == "always":
-        return "executor"
-    if requested in {"once", "task", "timed"}:
-        return requested
-    return "conversation"
+    return requested
 
 
 def _deny_pending(client: BrokerClient, request_id: str) -> None:
@@ -233,6 +229,7 @@ def handle_request_access(args: dict[str, Any], **kwargs: Any) -> str:
             "sandbox_request_access",
             _canonical_summary(prepared, args["rationale"]),
             rule_key=f"sandbox-access:{prepared.get('fingerprint', request_id)}",
+            allow_permanent=False,
         )
         choice = approval.get("choice") if isinstance(approval, dict) else None
         if not isinstance(approval, dict) or not approval.get("approved") or choice not in _VALID_CHOICES:
@@ -266,8 +263,12 @@ def handle_request_access(args: dict[str, Any], **kwargs: Any) -> str:
         return json.dumps({"ok": False, "reason": "request.invalid", "detail": str(exc)}, sort_keys=True)
 
 
-def _accessible_grants(client: BrokerClient, key: str) -> list[dict[str, Any]]:
-    binding = client.post("/v1/control/authority/status", {"environmentKey": key})
+def _accessible_grants(
+    client: BrokerClient,
+    key: str,
+    binding: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    binding = binding or client.post("/v1/control/authority/status", {"environmentKey": key})
     grants = client.post("/v1/control/grants/list", {})
     if not isinstance(grants, list):
         raise BrokerProblem(502, "broker.invalid_response", "broker returned invalid grant list", {})
@@ -281,8 +282,14 @@ def _accessible_grants(client: BrokerClient, key: str) -> list[dict[str, Any]]:
 def handle_access_list(_args: dict[str, Any], **kwargs: Any) -> str:
     try:
         key, _ = _authority_context(kwargs)
-        grants = _accessible_grants(BrokerClient(), key)
-        return json.dumps({"ok": True, "grants": grants}, sort_keys=True)
+        client = BrokerClient()
+        binding = client.post("/v1/control/authority/status", {"environmentKey": key})
+        grants = _accessible_grants(client, key, binding)
+        return json.dumps({
+            "ok": True,
+            "authority": binding,
+            "grants": grants,
+        }, sort_keys=True)
     except BrokerProblem as exc:
         return exc.result()
     except RuntimeError as exc:

@@ -121,6 +121,24 @@ const staticOriginAllowed = (policy: NetworkPolicy, origin: RequestOrigin): bool
   }
 };
 
+export const isCapabilityCoveredByStaticPolicy = (
+  policy: NetworkPolicy,
+  capability: {
+    readonly scheme: "http" | "https";
+    readonly host: string;
+    readonly ports: ReadonlyArray<number>;
+    readonly addressMode: "public" | "pinned-private";
+  },
+): boolean =>
+  capability.addressMode === "public" &&
+  capability.ports.every((port) =>
+    staticOriginAllowed(policy, {
+      scheme: capability.scheme,
+      host: capability.host,
+      port,
+    })
+  );
+
 const capabilityMatches = (
   capability: RuntimeGrant["capabilities"][number],
   origin: RequestOrigin,

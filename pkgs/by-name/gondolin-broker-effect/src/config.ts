@@ -1,9 +1,22 @@
 import { Config, Context, Effect, Layer, Schema } from "effect";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { Asset, decodeExact, GrantScope, NetworkPolicy, Worklane } from "./domain.js";
 import { brokerError, type BrokerError } from "./errors.js";
 import { validateNetworkPolicy } from "./network.js";
+const canonicalize = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonicalize(entry)]),
+    );
+  }
+  return value;
+};
+
 
 const GrantPolicy = Schema.Struct({
   allowedScopes: Schema.Array(GrantScope).pipe(Schema.minItems(1)),
@@ -17,7 +30,7 @@ const GrantPolicy = Schema.Struct({
 
 const BrokerPolicyFileSchema = Schema.Struct({
   version: Schema.Literal(1),
-  policyGeneration: Schema.Int.pipe(Schema.greaterThan(0)),
+  policyDigest: Schema.String.pipe(Schema.pattern(/^[0-9a-f]{64}$/)),
   policy: Schema.Unknown,
   defaultExecutor: Schema.String.pipe(Schema.minLength(1)),
   defaultAuthorityClass: Schema.String.pipe(Schema.minLength(1)),
@@ -118,6 +131,16 @@ const load = Effect.gen(function* () {
       }),
     ),
   );
+  const { policyDigest, ...policyMaterial } = decoded;
+  const computedPolicyDigest = createHash("sha256")
+    .update(JSON.stringify(canonicalize(policyMaterial)))
+    .digest("hex");
+  if (policyDigest !== computedPolicyDigest) {
+    return yield* brokerError("request.invalid", "broker policy digest does not match its immutable content", {
+      configuredPolicyDigest: policyDigest,
+      computedPolicyDigest,
+    });
+  }
   yield* Effect.try({
     try: () => {
       for (const [name, networkPolicy] of Object.entries(decoded.networkPolicies)) {

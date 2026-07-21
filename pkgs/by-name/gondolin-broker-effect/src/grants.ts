@@ -9,6 +9,11 @@ import {
   type PreparedNetworkOriginCapability as PreparedNetworkOrigin,
   type PrepareAccessRequest,
 } from "./domain.js";
+import { Authorization } from "./auth.js";
+import {
+  getOrBindDefaultAuthority,
+  resolveAuthorityPolicy,
+} from "./authority.js";
 import { BrokerConfig } from "./config.js";
 import {
   canonicalCapabilityKey,
@@ -16,6 +21,7 @@ import {
   type AddressResolver,
 } from "./capabilities.js";
 import { BrokerError, brokerError } from "./errors.js";
+import { isCapabilityCoveredByStaticPolicy } from "./network.js";
 import { Registry, type AuthorityBindingRecord } from "./registry.js";
 
 export type AccessRequestState = "pending" | "approved" | "denied";
@@ -46,7 +52,7 @@ export interface RuntimeGrant {
   readonly profile: string;
   readonly executor: string;
   readonly authorityClass: string;
-  readonly policyGeneration: number;
+  readonly policyDigest: string;
   readonly capabilities: ReadonlyArray<PreparedNetworkOrigin>;
   readonly scope: GrantScope;
   readonly state: RuntimeGrantState;
@@ -96,7 +102,7 @@ type AccessRequestRow = {
   profile: string;
   executor: string;
   authority_class: string;
-  policy_generation: number;
+  policy_digest: string;
   capabilities_json: string;
   requested_scope: GrantScope;
   requested_duration_seconds: number | null;
@@ -114,7 +120,7 @@ type RuntimeGrantRow = {
   profile: string;
   executor: string;
   authority_class: string;
-  policy_generation: number;
+  policy_digest: string;
   capabilities_json: string;
   scope: GrantScope;
   state: RuntimeGrantState;
@@ -146,7 +152,7 @@ const grantFromRow = (row: RuntimeGrantRow): RuntimeGrant => Object.freeze({
   profile: row.profile,
   executor: row.executor,
   authorityClass: row.authority_class,
-  policyGeneration: row.policy_generation,
+  policyDigest: row.policy_digest,
   capabilities: Object.freeze(parsePrepared(row.capabilities_json).map(freezeCapability)),
   scope: row.scope,
   state: row.state,
@@ -165,7 +171,7 @@ const bindingIdFor = (binding: AuthorityBindingRecord): string => createHash("sh
     profile: binding.profile,
     executor: binding.executor,
     authorityClass: binding.authorityClass,
-    policyGeneration: binding.policyGeneration,
+    policyDigest: binding.policyDigest,
   }))
   .digest("hex");
 
@@ -209,6 +215,7 @@ interface AccessGrantOptions {
 
 const make = (options: AccessGrantOptions) => Effect.gen(function* () {
   const config = yield* BrokerConfig;
+  const authorization = yield* Authorization;
   const registry = yield* Registry;
   const now = options.now ?? Date.now;
   const db = yield* Effect.acquireRelease(
@@ -217,6 +224,17 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
         fs.mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
         const opened = new DatabaseSync(config.databasePath);
         opened.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
+        const legacyRequestSchema = opened.prepare(
+          "SELECT 1 FROM pragma_table_info('access_requests') WHERE name='policy_generation'",
+        ).get();
+        const legacyGrantSchema = opened.prepare(
+          "SELECT 1 FROM pragma_table_info('runtime_grants') WHERE name='policy_generation'",
+        ).get();
+        if (legacyRequestSchema !== undefined || legacyGrantSchema !== undefined) {
+          // The prior integer cannot identify the immutable policy content.
+          // Fail closed by discarding only broker authorization overlays.
+          opened.exec("DROP TABLE IF EXISTS runtime_grants; DROP TABLE IF EXISTS access_requests;");
+        }
         opened.exec(`
           CREATE TABLE IF NOT EXISTS access_requests (
             request_id TEXT PRIMARY KEY,
@@ -226,7 +244,7 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
             profile TEXT NOT NULL,
             executor TEXT NOT NULL,
             authority_class TEXT NOT NULL,
-            policy_generation INTEGER NOT NULL CHECK (policy_generation > 0),
+            policy_digest TEXT NOT NULL CHECK (length(policy_digest) = 64),
             capabilities_json TEXT NOT NULL,
             requested_scope TEXT NOT NULL CHECK (requested_scope IN ('once','task','conversation','timed','profile','executor')),
             requested_duration_seconds INTEGER CHECK (requested_duration_seconds IS NULL OR requested_duration_seconds > 0),
@@ -249,7 +267,7 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
             profile TEXT NOT NULL,
             executor TEXT NOT NULL,
             authority_class TEXT NOT NULL,
-            policy_generation INTEGER NOT NULL CHECK (policy_generation > 0),
+            policy_digest TEXT NOT NULL CHECK (length(policy_digest) = 64),
             capabilities_json TEXT NOT NULL,
             scope TEXT NOT NULL CHECK (scope IN ('once','task','conversation','timed','profile','executor')),
             state TEXT NOT NULL CHECK (state IN ('active','revoked','consumed','expired')),
@@ -262,9 +280,9 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
             revoked_by TEXT
           ) STRICT;
           CREATE INDEX IF NOT EXISTS runtime_grants_active_environment
-            ON runtime_grants(environment_key, state, policy_generation);
+            ON runtime_grants(environment_key, state, policy_digest);
           CREATE INDEX IF NOT EXISTS runtime_grants_remembered_profile
-            ON runtime_grants(profile, executor, scope, state, policy_generation);
+            ON runtime_grants(profile, executor, scope, state, policy_digest);
         `);
         fs.chmodSync(config.databasePath, 0o600);
         const timestamp = now();
@@ -275,9 +293,9 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
         `).run(timestamp);
         opened.prepare(`
           UPDATE runtime_grants
-          SET state='revoked', revoked_at=?, revoked_by='policy-generation'
-          WHERE state='active' AND policy_generation <> ?
-        `).run(timestamp, config.policyFile.policyGeneration);
+          SET state='revoked', revoked_at=?, revoked_by='policy-digest'
+          WHERE state='active' AND policy_digest <> ?
+        `).run(timestamp, config.policyFile.policyDigest);
         return opened;
       },
       catch: (error) => grantFailure("open", error),
@@ -291,9 +309,9 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
   const buildSnapshot = (nextRevision: number): GrantSnapshot => {
     const rows = db.prepare(`
       SELECT * FROM runtime_grants
-      WHERE state='active' AND policy_generation=?
+      WHERE state='active' AND policy_digest=?
       ORDER BY created_at, grant_id
-    `).all(config.policyFile.policyGeneration) as unknown as RuntimeGrantRow[];
+    `).all(config.policyFile.policyDigest) as unknown as RuntimeGrantRow[];
     return Object.freeze({
       revision: nextRevision,
       grants: Object.freeze(rows.map(grantFromRow)),
@@ -348,17 +366,7 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
   };
 
   const requireBinding = (environmentKey: string): Effect.Effect<AuthorityBindingRecord, BrokerError> =>
-    registry.getAuthority(environmentKey).pipe(
-      Effect.flatMap((binding) => binding === undefined
-        ? Effect.fail(brokerError("policy.indeterminate", "environment has no authority binding", { environmentKey }))
-        : binding.policyGeneration !== config.policyFile.policyGeneration
-          ? Effect.fail(brokerError("policy.indeterminate", "environment authority uses an inactive policy generation", {
-              environmentKey,
-              bindingPolicyGeneration: binding.policyGeneration,
-              activePolicyGeneration: config.policyFile.policyGeneration,
-            }))
-          : Effect.succeed(binding)),
-    );
+    getOrBindDefaultAuthority(registry, config, environmentKey);
 
   const matching = (
     binding: AuthorityBindingRecord,
@@ -366,7 +374,7 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
     timestamp = now(),
   ): ReadonlyArray<RuntimeGrant> => currentSnapshot.grants.filter((grant) =>
     grant.state === "active" &&
-    grant.policyGeneration === binding.policyGeneration &&
+    grant.policyDigest === binding.policyDigest &&
     (grant.expiresAt === null || grant.expiresAt > timestamp) &&
     (grant.usesRemaining === null || grant.usesRemaining > 0) &&
     (grant.environmentKey === environmentKey || isRememberedFor(grant, binding))
@@ -378,6 +386,21 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
       const binding = yield* requireBinding(request.environmentKey);
       const capabilities = yield* prepareCapabilityBatch(request.capabilities, options.resolver);
       const fingerprint = fingerprintFor(binding, capabilities, request.requestedScope, request.durationSeconds);
+      const { network } = yield* resolveAuthorityPolicy(config, authorization, binding);
+      if (capabilities.every((capability) =>
+        isCapabilityCoveredByStaticPolicy(network, capability)
+      )) {
+        return {
+          state: "active",
+          requestId: null,
+          fingerprint,
+          environmentKey: request.environmentKey,
+          requestedScope: request.requestedScope,
+          durationSeconds: duration,
+          capabilities,
+          grantIds: [],
+        };
+      }
       const remembered = matching(binding, request.environmentKey).filter((grant) => isRememberedFor(grant, binding));
       if (containsCapabilities(remembered, capabilities)) {
         return {
@@ -447,7 +470,7 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
             db.prepare(`
               INSERT INTO access_requests (
                 request_id, fingerprint, binding_id, environment_key, profile, executor,
-                authority_class, policy_generation, capabilities_json, requested_scope,
+                authority_class, policy_digest, capabilities_json, requested_scope,
                 requested_duration_seconds, state, created_at, decided_at, decision_principal
               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL)
             `).run(
@@ -458,7 +481,7 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
               binding.profile,
               binding.executor,
               binding.authorityClass,
-              binding.policyGeneration,
+              binding.policyDigest,
               JSON.stringify(capabilities),
               request.requestedScope,
               duration,
@@ -501,8 +524,8 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
           state: row.state,
         });
       }
-      if (row.policy_generation !== config.policyFile.policyGeneration) {
-        return yield* brokerError("policy.indeterminate", "access request uses an inactive policy generation", {
+      if (row.policy_digest !== config.policyFile.policyDigest) {
+        return yield* brokerError("policy.indeterminate", "access request uses an inactive policy digest", {
           requestId: request.requestId,
         });
       }
@@ -538,7 +561,7 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
             db.prepare(`
               INSERT INTO runtime_grants (
                 grant_id, request_id, binding_id, environment_key, profile, executor,
-                authority_class, policy_generation, capabilities_json, scope, state,
+                authority_class, policy_digest, capabilities_json, scope, state,
                 uses_remaining, expires_at, approved_by, created_at, last_used_at,
                 revoked_at, revoked_by
               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, NULL, NULL, NULL)
@@ -550,7 +573,7 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
               row.profile,
               row.executor,
               row.authority_class,
-              row.policy_generation,
+              row.policy_digest,
               row.capabilities_json,
               scope,
               scope === "once" ? 1 : null,

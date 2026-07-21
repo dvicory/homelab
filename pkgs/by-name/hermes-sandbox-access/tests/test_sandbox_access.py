@@ -87,8 +87,8 @@ def test_broker_prepares_before_approval_and_decision_uses_only_request_id(plugi
     })
     prompts = []
     monkeypatch.setattr(plugin, "BrokerClient", lambda: client)
-    monkeypatch.setattr(plugin, "request_tool_approval", lambda tool, reason, rule_key: (
-        prompts.append((tool, reason, rule_key)) or {"approved": True, "choice": "session"}
+    monkeypatch.setattr(plugin, "request_tool_approval", lambda tool, reason, **kwargs: (
+        prompts.append((tool, reason, kwargs)) or {"approved": True, "choice": "session"}
     ))
 
     result = json.loads(plugin.handle_request_access(proposal(), task_id="turn-1", session_id="session-1"))
@@ -109,17 +109,18 @@ def test_broker_prepares_before_approval_and_decision_uses_only_request_id(plugi
     assert "capabilities" not in decision
     assert "https://api.example.com ports [443], public addresses" in prompts[0][1]
     assert "Effect: network only; no credentials, filesystem access, or VM restart." in prompts[0][1]
-    assert "Choices: once=next matching request; session=task;" in prompts[0][1]
+    assert "Choices: once=next matching request; session=task." in prompts[0][1]
     assert "Why (model-provided): Needed for the vendor API" in prompts[0][1]
-    assert prompts[0][2] == "sandbox-access:fingerprint-1"
+    assert prompts[0][2] == {
+        "rule_key": "sandbox-access:fingerprint-1",
+        "allow_permanent": False,
+    }
 
 
-def test_always_choice_creates_exact_executor_scope(plugin, monkeypatch):
-    request = prepared()
-    request["requestedScope"] = "conversation"
+def test_permanent_choice_is_unavailable_and_fails_closed(plugin, monkeypatch):
     client = FakeClient({
-        "/v1/control/access/prepare": request,
-        "/v1/control/access/decide": {"state": "approved", "requestId": "request-1", "grantIds": ["grant-1"]},
+        "/v1/control/access/prepare": prepared(),
+        "/v1/control/access/decide": {"state": "denied", "requestId": "request-1", "grantIds": []},
     })
     monkeypatch.setattr(plugin, "BrokerClient", lambda: client)
     monkeypatch.setattr(plugin, "request_tool_approval", lambda *args, **kwargs: {
@@ -127,10 +128,15 @@ def test_always_choice_creates_exact_executor_scope(plugin, monkeypatch):
         "choice": "always",
     })
 
-    result = json.loads(plugin.handle_request_access(proposal("conversation"), session_id="session-1"))
+    result = json.loads(plugin.handle_request_access(proposal(), session_id="session-1"))
 
-    assert result["scope"] == "executor"
-    assert client.calls[1][1]["scope"] == "executor"
+    assert result["ok"] is False
+    assert result["reason"] == "approval.denied"
+    assert client.calls[1] == (
+        "/v1/control/access/decide",
+        {"requestId": "request-1", "decision": "deny", "principal": "hermes-paired-user"},
+    )
+    assert plugin._REQUEST_SCHEMA["parameters"]["properties"]["requested_scope"]["enum"] == ["once", "task"]
 
 
 def test_denial_is_recorded_and_malformed_approval_fails_closed(plugin, monkeypatch):
@@ -184,7 +190,13 @@ def test_list_and_revoke_expose_only_current_or_matching_remembered_grants(plugi
         {"grantId": "hidden", "environmentKey": "other", "scope": "executor", "executor": "codex", "state": "active"},
     ]
     client = FakeClient({
-        "/v1/control/authority/status": {"profile": "hermes-qa", "executor": "hermes-gateway"},
+        "/v1/control/authority/status": {
+            "profile": "hermes-qa",
+            "executor": "hermes-gateway",
+            "policyDigest": "a" * 64,
+            "generation": 2,
+            "state": "active",
+        },
         "/v1/control/grants/list": grants,
         "/v1/control/grants/revoke": lambda payload: next(item for item in grants if item["grantId"] == payload["grantId"]),
     })
@@ -195,6 +207,8 @@ def test_list_and_revoke_expose_only_current_or_matching_remembered_grants(plugi
     hidden = json.loads(plugin.handle_access_revoke({"grant_id": "hidden"}, session_id="session-1"))
 
     assert [item["grantId"] for item in listed["grants"]] == ["current", "remembered"]
+    assert listed["authority"]["policyDigest"] == "a" * 64
+    assert listed["authority"]["generation"] == 2
     assert revoked["ok"] is True
     assert hidden["reason"] == "grant.not_found"
 
@@ -217,3 +231,21 @@ def test_registration_exposes_only_explicit_tools_and_lifecycle_hooks(plugin):
         "on_session_reset",
         "kanban_task_completed",
     }
+
+
+def test_registration_uses_openai_function_schema_envelopes(plugin):
+    context = SimpleNamespace(tools=[], hooks=[])
+    context.register_tool = lambda **kwargs: context.tools.append(kwargs)
+    context.register_hook = lambda name, handler: context.hooks.append((name, handler))
+
+    plugin.register(context)
+
+    definitions = {tool["name"]: tool["schema"] for tool in context.tools}
+    request = definitions["sandbox_request_access"]
+    assert set(request) == {"description", "parameters"}
+    assert request["parameters"]["properties"]["capabilities"]["items"]["properties"]["address_mode"] == {
+        "enum": ["public", "pinned-private"],
+    }
+    assert request["parameters"]["required"] == ["capabilities", "requested_scope", "rationale"]
+    assert definitions["sandbox_access_list"]["parameters"]["properties"] == {}
+    assert definitions["sandbox_access_revoke"]["parameters"]["required"] == ["grant_id"]

@@ -30,6 +30,18 @@ The plugin MUST send the proposed batch to the broker for validation and canonic
 - **THEN** the tool SHALL return the broker's stable denial to the agent
 - **AND** MUST NOT invoke user approval
 
+#### Scenario: Proactive request before environment creation
+- **GIVEN** a trusted environment key with no persisted authority binding or VM
+- **WHEN** the plugin asks the broker to prepare a valid capability request
+- **THEN** the broker SHALL conflict-safely bind only its configured default profile, executor, authority class, and policy digest
+- **AND** it MUST NOT create a VM or accept caller-selected authority fields
+
+#### Scenario: Capability already covered by immutable policy
+- **GIVEN** a canonical capability wholly covered by the bound authority class's immutable Nix network policy
+- **WHEN** the broker prepares the request
+- **THEN** it SHALL return the capability as active without creating an access request or runtime grant
+- **AND** Hermes MUST NOT invoke user approval
+
 ### Requirement: Existing Hermes approval integration
 
 The plugin SHOULD reuse Hermes' existing paired-user and surface-specific approval mechanism. A denial, timeout, callback failure, or malformed response MUST fail closed. Approval choices MUST map only to broker-supported scopes.
@@ -45,11 +57,11 @@ The plugin SHOULD reuse Hermes' existing paired-user and surface-specific approv
 - **THEN** the plugin MUST record or submit a denied decision
 - **AND** no capability may become active
 
-#### Scenario: Persistent approval choice
-- **GIVEN** the user selects an existing `always` choice
-- **WHEN** immutable policy permits the exact capability to be remembered for the profile or executor
-- **THEN** the prompt MUST state that a durable local rule will be created
-- **AND** the broker SHALL store it as a listable and revocable exact rule
+#### Scenario: Durable approval choice unavailable
+- **GIVEN** a QA Hermes sandbox capability request
+- **WHEN** Hermes renders or resolves the approval
+- **THEN** it MUST offer and accept only `once` and `session`, with `session` capped to the requested task scope
+- **AND** an `always`, profile, executor, conversation, or timed result MUST NOT activate a grant
 
 ### Requirement: Approval-fatigue controls
 
@@ -72,9 +84,9 @@ The broker MUST enforce persistent request coalescing, denial cooldowns, one pen
 - **WHEN** it proposes another non-remembered capability
 - **THEN** the broker MUST suppress the request until the rolling window resets or the user changes policy out of band
 
-### Requirement: Batch and remembered-rule behavior
+### Requirement: Batch and grant-management behavior
 
-Capability batches MUST be normalized and deduplicated before fingerprinting. Initial Hermes approval is all-or-nothing for one batch. The user MUST be able to list and revoke active grants and remembered rules without a Nix rebuild.
+Capability batches MUST be normalized and deduplicated before fingerprinting. Initial Hermes approval is all-or-nothing for one batch. The user MUST be able to list and revoke visible active grants without a Nix rebuild. The broker MAY retain remembered-rule machinery for a future management client, but the QA Hermes plugin MUST NOT create durable rules.
 
 #### Scenario: Duplicate entries in a batch
 - **WHEN** a model submits semantically identical origin capabilities more than once
@@ -86,11 +98,11 @@ Capability batches MUST be normalized and deduplicated before fingerprinting. In
 - **THEN** no entry in that batch may activate
 - **AND** the agent MAY submit a smaller non-suppressed batch after the cooldown rules permit it
 
-#### Scenario: Revoke remembered access
-- **GIVEN** a profile-scoped remembered origin rule
-- **WHEN** the user invokes the plugin's list/revoke operation for that rule
-- **THEN** future matching tasks MUST no longer auto-activate it
-- **AND** active grants derived from it MUST be revoked according to the selected revocation scope
+#### Scenario: Durable scope blocked by QA policy
+- **GIVEN** the QA Hermes profile permits only once and task grants
+- **WHEN** any client attempts to decide a request with conversation, timed, profile, or executor scope
+- **THEN** the broker MUST reject the decision without activating or remembering authority
+- **AND** the immutable policy maximum MUST remain authoritative even if a caller is compromised
 
 ### Requirement: Minimal Hermes patch surface
 
@@ -105,6 +117,6 @@ Hermes core changes MUST be generic to trusted task environment authority and MU
 
 - A Nix-built Hermes plugin registers `sandbox_request_access`, `sandbox_access_list`, and `sandbox_access_revoke` tools and the relevant session/Kanban lifecycle hooks.
 - The plugin uses the broker control client and imports only the generic Hermes task-environment authority registration API.
-- Hermes' existing approval provider remains responsible for CLI, gateway, Telegram, and other paired-user interaction. The plugin passes canonical broker summaries and interprets approved/denied scope choices.
+- Hermes' existing approval provider remains responsible for CLI, gateway, Telegram, and other paired-user interaction. The plugin passes canonical broker summaries, disables the permanent choice for this call, and interprets only once/session results.
 - Broker `access_requests` rows implement request IDs, fingerprints, state, pending uniqueness, cooldown, and rolling budget accounting across gateway restarts.
-- Nix options define default cooldown, prompt budget, allowed scopes, duration ceiling, and whether durable profile/executor rules are available for `hermes-qa`.
+- Nix options define default cooldown, prompt budget, allowed scopes, and duration ceiling. QA renders only once/task; profile/executor remembered scopes require a future explicit management plane and immutable policy opt-in.

@@ -12,12 +12,12 @@ Implemented:
 - ordinary HTTP/1.1 over separate mode-`0600` execution and control Unix sockets, including systemd named-FD activation;
 - strict request/config decoding and RFC 9457 errors with stable `reason` values;
 - shared `@agent-x/policy-kernel` authorization;
-- broker-owned profile/executor/authority-class bindings and generation-fenced environment lifecycle;
+- broker-owned profile/executor/authority-class bindings and policy-digest-fenced environment lifecycle;
 - durable SQLite environment, access-request, and runtime-grant state;
 - credential-free Gondolin/QEMU VM creation with one persistent VFS workspace per environment key;
 - finite DNS/HTTP policy, synthetic DNS, resolved-address validation, redirect reauthorization, and public/private range classification;
 - closed `network-origin` capability preparation with canonical origins and pinned private-address previews;
-- dynamic once/task/conversation/timed/profile/executor grants, expiry, revocation, once-use, policy-generation invalidation, coalescing, cooldown, and prompt budgets;
+- dynamic once/task/conversation/timed/profile/executor grants, expiry, revocation, once-use, policy-digest invalidation, coalescing, cooldown, and prompt budgets;
 - immutable in-memory grant snapshots consumed by live Gondolin hooks without recreating a VM;
 - foreground NDJSON execution with deadline/output/input/concurrency bounds and hard VM close on incomplete termination;
 - mediated, byte-safe stat/list/read/write/mkdir/remove operations;
@@ -313,13 +313,17 @@ Only the control socket exposes:
 - `POST /v1/control/grants/revoke`
 - `POST /v1/control/grants/revoke-environment`
 
-`bind` records `{environmentKey, profile, executor, authorityClass, policyGeneration}` and rejects conflicting rebinding. `ensure` uses broker defaults only when no trusted hook has already bound the key; model-facing execution requests cannot select authority.
+`bind` records `{environmentKey, profile, executor, authorityClass, policyDigest}` and rejects conflicting rebinding. `ensure` uses broker defaults only when no trusted hook has already bound the key; model-facing execution requests cannot select authority.
 
-`prepare` accepts an environment key, a closed capability batch, requested scope, optional bounded duration, and rationale. It canonicalizes and deduplicates capabilities, resolves and classifies addresses, enforces the immutable policy ceiling, coalesces compatible pending requests, and applies denial cooldown and rolling prompt budgets. The response is `active`, `pending`, or a stable structured error such as `approval.request_suppressed`.
+`prepare` accepts an environment key, a closed capability batch, requested scope, optional bounded duration, and rationale. If the trusted key is not yet bound, preparation conflict-safely installs the broker-configured default authority without creating a VM. It canonicalizes and deduplicates capabilities, resolves the effective immutable Nix network policy, classifies addresses, and enforces the policy ceiling. A batch already covered by the immutable policy returns `active` without an access request, runtime grant, or approval prompt. Otherwise preparation coalesces compatible pending requests and applies denial cooldown and rolling prompt budgets; the response is `pending`, `existing-pending`, `active` through a matching remembered grant, or a stable structured error such as `approval.request_suppressed`.
+
+Here “immutable” means fixed for the active Nix policy digest, not permanent across deployments. A `once` or expiring grant remains consumable or expirable when it supplies authority outside that baseline. A request cannot use a narrower dynamic scope to remove authority that Nix already grants; operators who require temporary-only access must omit that origin from the baseline.
 
 `decide` accepts a pending request ID, `approve` or `deny`, an optional approved scope/duration, and a trusted principal. Approval and all grant mutations commit SQLite state before publishing a new immutable in-memory snapshot. List and revoke operations are principal checked. Task/session lifecycle hooks use `revoke-environment` with explicit scopes.
 
-Supported grant scopes are `once`, `task`, `conversation`, `timed`, `profile`, and `executor`. Profile/executor grants are remembered rules and become active only when authority and requested capability still match the current policy generation. Policy changes revoke incompatible durable grants; expiry and once-use are transactional.
+Supported grant scopes are `once`, `task`, `conversation`, `timed`, `profile`, and `executor`. Profile/executor grants are remembered rules and become active only when authority and requested capability still match the current policy digest. Policy changes revoke incompatible durable grants; expiry and once-use are transactional.
+
+The protocol vocabulary is broader than any one deployment's authority. `grantPolicy.allowedScopes` is the immutable upper bound enforced during preparation and decision. The QA Hermes policy currently admits only `once` and `task`; its plugin cannot create conversation, timed, profile, or executor grants. `policyDigest` is SHA-256 over the complete immutable Nix policy material, so a rendered policy change automatically fences persisted environments, requests, and grants without a counter.
 
 ### Ensure an environment
 
@@ -341,12 +345,12 @@ Response:
   "profile": "hermes-qa",
   "executor": "hermes-gateway",
   "authorityClass": "default",
-  "policyGeneration": 1,
+  "policyDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "decisionDigest": "..."
 }
 ```
 
-A compatible live environment returns `state: "reused"`. An authority-class or policy-generation change requires a new generation.
+A compatible live environment returns `state: "reused"`. An authority-class or policy-digest change requires a new environment generation.
 
 ### Status
 
@@ -444,7 +448,7 @@ Example file:
 ```json
 {
   "version": 1,
-  "policyGeneration": 1,
+  "policyDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "policy": {
     "version": 1,
     "statements": [
@@ -505,7 +509,7 @@ Example file:
 | Length-prefixed framed Unix protocol | Replaced by HTTP/JSON and NDJSON over Unix socket; Hermes HTTPX adapter is patched in | Keep the adapter thin; do not add legacy framing to core services |
 | Socket-local trust boundary | Preserved by the NixOS mode-`0600`, gateway-owned activation socket | Validate ownership and no TCP listener on the deployed host |
 | `ensure` with server generation | Preserved; Hermes sends the canonical conversation-derived environment key | Stop treating conversation strings as the final Agent X product identity model |
-| Compatible ensure reuse | Preserved for same worklane and policy generation | V3 also considers asset/template/policy/mount topology; add a complete immutable environment fingerprint |
+| Compatible ensure reuse | Preserved for same worklane and policy digest | V3 also considers asset/template/policy/mount topology; add a complete immutable environment fingerprint |
 | Recreate on incompatible state | Partial | Current comparison omits template version, mount topology digest, runtime generation, and adapter generation |
 | Durable latest generation/state | Preserved in SQLite | Add migrations, tombstones/retention, crash injection, backup/restore, and multi-process exclusion |
 | Restart reconciliation | Conservative rows-to-failed only | Kill/adopt/reconcile actual QEMU processes and stale mounts before listening |
