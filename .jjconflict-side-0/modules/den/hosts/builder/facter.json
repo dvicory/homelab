@@ -1,0 +1,1987 @@
+{
+  "version": 1,
+  "system": "aarch64-linux",
+  "virtualisation": "apple",
+  "hardware": {
+    "bridge": [
+      {
+        "index": 18,
+        "attached_to": 0,
+        "class_list": [
+          "pci",
+          "bridge"
+        ],
+        "bus_type": {
+          "hex": "0004",
+          "name": "PCI",
+          "value": 4
+        },
+        "slot": {
+          "bus": 0,
+          "number": 0
+        },
+        "base_class": {
+          "hex": "0006",
+          "name": "Bridge",
+          "value": 6
+        },
+        "sub_class": {
+          "hex": "0000",
+          "name": "Host bridge",
+          "value": 0
+        },
+        "vendor": {
+          "hex": "106b",
+          "value": 4203
+        },
+        "device": {
+          "hex": "1a05",
+          "value": 6661
+        },
+        "model": "Host bridge",
+        "sysfs_id": "/devices/pci0000:00/0000:00:00.0",
+        "sysfs_bus_id": "0000:00:00.0",
+        "detail": {
+          "function": 0,
+          "command": 16,
+          "header_type": 0,
+          "secondary_bus": 0,
+          "prog_if": 0
+        },
+        "module_alias": "pci:v0000106Bd00001A05sv00000000sd00000000bc06sc00i00"
+      }
+    ],
+    "cpu": [
+      {
+        "architecture": "aarch64",
+        "vendor_name": "unknown (61)",
+        "family": 0,
+        "model": 0,
+        "stepping": 0,
+        "features": [
+          "fp",
+          "asimd",
+          "evtstrm",
+          "aes",
+          "pmull",
+          "sha1",
+          "sha2",
+          "crc32",
+          "atomics",
+          "fphp",
+          "asimdhp",
+          "cpuid",
+          "asimdrdm",
+          "jscvt",
+          "fcma",
+          "lrcpc",
+          "dcpop",
+          "sha3",
+          "asimddp",
+          "sha512",
+          "asimdfhm",
+          "dit",
+          "uscat",
+          "ilrcpc",
+          "flagm",
+          "sb",
+          "paca",
+          "pacg",
+          "dcpodp",
+          "flagm2",
+          "frint"
+        ],
+        "bogo": 48,
+        "physical_id": 0,
+        "fpu": false,
+        "fpu_exception": false,
+        "write_protect": false,
+        "address_sizes": {
+          "physical": "0x0",
+          "virtual": "0x0"
+        }
+      }
+    ],
+    "disk": [
+      {
+        "index": 36,
+        "attached_to": 29,
+        "class_list": [
+          "disk",
+          "block_device"
+        ],
+        "base_class": {
+          "hex": "0106",
+          "name": "Mass Storage Device",
+          "value": 262
+        },
+        "sub_class": {
+          "hex": "0000",
+          "name": "Disk",
+          "value": 0
+        },
+        "model": "Disk",
+        "sysfs_id": "/class/block/vda",
+        "sysfs_bus_id": "virtio2",
+        "sysfs_device_link": "/devices/pci0000:00/0000:00:06.0/virtio2",
+        "unix_device_names": [
+          "/dev/disk/by-id/virtio-23B47EEB70344787A159",
+          "/dev/disk/by-path/pci-0000:00:06.0",
+          "/dev/disk/by-path/virtio-pci-0000:00:06.0",
+          "/dev/vda"
+        ],
+        "resources": [
+          {
+            "type": "disk_geo",
+            "cylinders": 0,
+            "heads": 64,
+            "sectors": 32,
+            "size": "0x0",
+            "geo_type": "logical"
+          },
+          {
+            "type": "size",
+            "unit": "sectors",
+            "value_1": 134217728,
+            "value_2": 512
+          }
+        ],
+        "driver": "virtio-pci",
+        "driver_module": "virtio_pci",
+        "drivers": [
+          "virtio-pci",
+          "virtio_blk"
+        ],
+        "driver_modules": [
+          "virtio_pci"
+        ]
+      }
+    ],
+    "graphics_card": [
+      {
+        "index": 21,
+        "attached_to": 0,
+        "class_list": [
+          "graphics_card",
+          "pci"
+        ],
+        "bus_type": {
+          "hex": "0004",
+          "name": "PCI",
+          "value": 4
+        },
+        "slot": {
+          "bus": 0,
+          "number": 9
+        },
+        "base_class": {
+          "hex": "0003",
+          "name": "Display controller",
+          "value": 3
+        },
+        "sub_class": {
+          "hex": "0080",
+          "name": "Display controller",
+          "value": 128
+        },
+        "vendor": {
+          "hex": "1af4",
+          "value": 6900
+        },
+        "sub_vendor": {
+          "hex": "1af4",
+          "value": 6900
+        },
+        "device": {
+          "hex": "1050",
+          "value": 4176
+        },
+        "sub_device": {
+          "hex": "0050",
+          "value": 80
+        },
+        "revision": {
+          "hex": "0001",
+          "value": 1
+        },
+        "model": "Display controller",
+        "sysfs_id": "/devices/pci0000:00/0000:00:09.0",
+        "sysfs_bus_id": "0000:00:09.0",
+        "detail": {
+          "function": 0,
+          "command": 1046,
+          "header_type": 0,
+          "secondary_bus": 0,
+          "prog_if": 0
+        },
+        "driver": "virtio-pci",
+        "driver_module": "virtio_pci",
+        "drivers": [
+          "virtio-pci"
+        ],
+        "driver_modules": [
+          "virtio_pci"
+        ],
+        "module_alias": "pci:v00001AF4d00001050sv00001AF4sd00000050bc03sc80i00"
+      }
+    ],
+    "hub": [
+      {
+        "index": 38,
+        "attached_to": 13,
+        "class_list": [
+          "usb",
+          "hub"
+        ],
+        "bus_type": {
+          "hex": "0086",
+          "name": "USB",
+          "value": 134
+        },
+        "slot": {
+          "bus": 0,
+          "number": 0
+        },
+        "base_class": {
+          "hex": "010a",
+          "name": "Hub",
+          "value": 266
+        },
+        "vendor": {
+          "hex": "1d6b",
+          "name": "Linux 6.12.48 xhci-hcd",
+          "value": 7531
+        },
+        "device": {
+          "hex": "0002",
+          "name": "xHCI Host Controller",
+          "value": 2
+        },
+        "revision": {
+          "hex": "0000",
+          "name": "6.12",
+          "value": 0
+        },
+        "serial": "0000:00:10.0",
+        "model": "Linux 6.12.48 xhci-hcd xHCI Host Controller",
+        "sysfs_id": "/devices/pci0000:00/0000:00:10.0/usb3/3-0:1.0",
+        "sysfs_bus_id": "3-0:1.0",
+        "resources": [
+          {
+            "type": "baud",
+            "speed": 480000000,
+            "bits": 0,
+            "stop_bits": 0,
+            "parity": 0,
+            "handshake": 0
+          }
+        ],
+        "detail": {
+          "device_class": {
+            "hex": "0009",
+            "name": "hub",
+            "value": 9
+          },
+          "device_subclass": {
+            "hex": "0000",
+            "name": "per_interface",
+            "value": 0
+          },
+          "device_protocol": 1,
+          "interface_class": {
+            "hex": "0009",
+            "name": "hub",
+            "value": 9
+          },
+          "interface_subclass": {
+            "hex": "0000",
+            "name": "per_interface",
+            "value": 0
+          },
+          "interface_protocol": 0,
+          "interface_number": 0,
+          "interface_alternate_setting": 0
+        },
+        "hotplug": "usb",
+        "driver": "hub",
+        "driver_module": "usbcore",
+        "drivers": [
+          "hub"
+        ],
+        "driver_modules": [
+          "usbcore"
+        ],
+        "module_alias": "usb:v1D6Bp0002d0612dc09dsc00dp01ic09isc00ip00in00"
+      },
+      {
+        "index": 39,
+        "attached_to": 13,
+        "class_list": [
+          "usb",
+          "hub"
+        ],
+        "bus_type": {
+          "hex": "0086",
+          "name": "USB",
+          "value": 134
+        },
+        "slot": {
+          "bus": 0,
+          "number": 0
+        },
+        "base_class": {
+          "hex": "010a",
+          "name": "Hub",
+          "value": 266
+        },
+        "vendor": {
+          "hex": "1d6b",
+          "name": "Linux 6.12.48 xhci-hcd",
+          "value": 7531
+        },
+        "device": {
+          "hex": "0003",
+          "name": "xHCI Host Controller",
+          "value": 3
+        },
+        "revision": {
+          "hex": "0000",
+          "name": "6.12",
+          "value": 0
+        },
+        "serial": "0000:00:10.0",
+        "model": "Linux 6.12.48 xhci-hcd xHCI Host Controller",
+        "sysfs_id": "/devices/pci0000:00/0000:00:10.0/usb4/4-0:1.0",
+        "sysfs_bus_id": "4-0:1.0",
+        "detail": {
+          "device_class": {
+            "hex": "0009",
+            "name": "hub",
+            "value": 9
+          },
+          "device_subclass": {
+            "hex": "0000",
+            "name": "per_interface",
+            "value": 0
+          },
+          "device_protocol": 3,
+          "interface_class": {
+            "hex": "0009",
+            "name": "hub",
+            "value": 9
+          },
+          "interface_subclass": {
+            "hex": "0000",
+            "name": "per_interface",
+            "value": 0
+          },
+          "interface_protocol": 0,
+          "interface_number": 0,
+          "interface_alternate_setting": 0
+        },
+        "hotplug": "usb",
+        "driver": "hub",
+        "driver_module": "usbcore",
+        "drivers": [
+          "hub"
+        ],
+        "driver_modules": [
+          "usbcore"
+        ],
+        "module_alias": "usb:v1D6Bp0003d0612dc09dsc00dp03ic09isc00ip00in00"
+      },
+      {
+        "index": 40,
+        "attached_to": 17,
+        "class_list": [
+          "usb",
+          "hub"
+        ],
+        "bus_type": {
+          "hex": "0086",
+          "name": "USB",
+          "value": 134
+        },
+        "slot": {
+          "bus": 0,
+          "number": 0
+        },
+        "base_class": {
+          "hex": "010a",
+          "name": "Hub",
+          "value": 266
+        },
+        "vendor": {
+          "hex": "1d6b",
+          "name": "Linux 6.12.48 xhci-hcd",
+          "value": 7531
+        },
+        "device": {
+          "hex": "0002",
+          "name": "xHCI Host Controller",
+          "value": 2
+        },
+        "revision": {
+          "hex": "0000",
+          "name": "6.12",
+          "value": 0
+        },
+        "serial": "0000:00:0f.0",
+        "model": "Linux 6.12.48 xhci-hcd xHCI Host Controller",
+        "sysfs_id": "/devices/pci0000:00/0000:00:0f.0/usb1/1-0:1.0",
+        "sysfs_bus_id": "1-0:1.0",
+        "resources": [
+          {
+            "type": "baud",
+            "speed": 480000000,
+            "bits": 0,
+            "stop_bits": 0,
+            "parity": 0,
+            "handshake": 0
+          }
+        ],
+        "detail": {
+          "device_class": {
+            "hex": "0009",
+            "name": "hub",
+            "value": 9
+          },
+          "device_subclass": {
+            "hex": "0000",
+            "name": "per_interface",
+            "value": 0
+          },
+          "device_protocol": 1,
+          "interface_class": {
+            "hex": "0009",
+            "name": "hub",
+            "value": 9
+          },
+          "interface_subclass": {
+            "hex": "0000",
+            "name": "per_interface",
+            "value": 0
+          },
+          "interface_protocol": 0,
+          "interface_number": 0,
+          "interface_alternate_setting": 0
+        },
+        "hotplug": "usb",
+        "driver": "hub",
+        "driver_module": "usbcore",
+        "drivers": [
+          "hub"
+        ],
+        "driver_modules": [
+          "usbcore"
+        ],
+        "module_alias": "usb:v1D6Bp0002d0612dc09dsc00dp01ic09isc00ip00in00"
+      },
+      {
+        "index": 42,
+        "attached_to": 17,
+        "class_list": [
+          "usb",
+          "hub"
+        ],
+        "bus_type": {
+          "hex": "0086",
+          "name": "USB",
+          "value": 134
+        },
+        "slot": {
+          "bus": 0,
+          "number": 0
+        },
+        "base_class": {
+          "hex": "010a",
+          "name": "Hub",
+          "value": 266
+        },
+        "vendor": {
+          "hex": "1d6b",
+          "name": "Linux 6.12.48 xhci-hcd",
+          "value": 7531
+        },
+        "device": {
+          "hex": "0003",
+          "name": "xHCI Host Controller",
+          "value": 3
+        },
+        "revision": {
+          "hex": "0000",
+          "name": "6.12",
+          "value": 0
+        },
+        "serial": "0000:00:0f.0",
+        "model": "Linux 6.12.48 xhci-hcd xHCI Host Controller",
+        "sysfs_id": "/devices/pci0000:00/0000:00:0f.0/usb2/2-0:1.0",
+        "sysfs_bus_id": "2-0:1.0",
+        "detail": {
+          "device_class": {
+            "hex": "0009",
+            "name": "hub",
+            "value": 9
+          },
+          "device_subclass": {
+            "hex": "0000",
+            "name": "per_interface",
+            "value": 0
+          },
+          "device_protocol": 3,
+          "interface_class": {
+            "hex": "0009",
+            "name": "hub",
+            "value": 9
+          },
+          "interface_subclass": {
+            "hex": "0000",
+            "name": "per_interface",
+            "value": 0
+          },
+          "interface_protocol": 0,
+          "interface_number": 0,
+          "interface_alternate_setting": 0
+        },
+        "hotplug": "usb",
+        "driver": "hub",
+        "driver_module": "usbcore",
+        "drivers": [
+          "hub"
+        ],
+        "driver_modules": [
+          "usbcore"
+        ],
+        "module_alias": "usb:v1D6Bp0003d0612dc09dsc00dp03ic09isc00ip00in00"
+      }
+    ],
+    "keyboard": [
+      {
+        "index": 41,
+        "attached_to": 40,
+        "class_list": [
+          "keyboard",
+          "usb"
+        ],
+        "bus_type": {
+          "hex": "0086",
+          "name": "USB",
+          "value": 134
+        },
+        "slot": {
+          "bus": 0,
+          "number": 0
+        },
+        "base_class": {
+          "hex": "0108",
+          "name": "Keyboard",
+          "value": 264
+        },
+        "sub_class": {
+          "hex": "0000",
+          "name": "Keyboard",
+          "value": 0
+        },
+        "vendor": {
+          "hex": "05ac",
+          "name": "Apple Computer, Inc.",
+          "value": 1452
+        },
+        "device": {
+          "hex": "8105",
+          "name": "Virtual USB Keyboard",
+          "value": 33029
+        },
+        "model": "Apple Virtual USB Keyboard",
+        "sysfs_id": "/devices/pci0000:00/0000:00:0f.0/usb1/1-1/1-1:1.0",
+        "sysfs_bus_id": "1-1:1.0",
+        "unix_device_names": [
+          "/dev/input/by-id/usb-Apple_Inc._Virtual_USB_Keyboard-event-kbd",
+          "/dev/input/by-path/pci-0000:00:0f.0-usb-0:1:1.0-event-kbd",
+          "/dev/input/by-path/pci-0000:00:0f.0-usbv2-0:1:1.0-event-kbd",
+          "/dev/input/event1"
+        ],
+        "resources": [
+          {
+            "type": "baud",
+            "speed": 12000000,
+            "bits": 0,
+            "stop_bits": 0,
+            "parity": 0,
+            "handshake": 0
+          }
+        ],
+        "detail": {
+          "device_class": {
+            "hex": "0000",
+            "name": "per_interface",
+            "value": 0
+          },
+          "device_subclass": {
+            "hex": "0000",
+            "name": "per_interface",
+            "value": 0
+          },
+          "device_protocol": 0,
+          "interface_class": {
+            "hex": "0003",
+            "name": "hid",
+            "value": 3
+          },
+          "interface_subclass": {
+            "hex": "0001",
+            "name": "audio",
+            "value": 1
+          },
+          "interface_protocol": 1,
+          "interface_number": 0,
+          "interface_alternate_setting": 0
+        },
+        "hotplug": "usb",
+        "driver": "usbhid",
+        "driver_module": "usbhid",
+        "drivers": [
+          "usbhid"
+        ],
+        "driver_modules": [
+          "usbhid"
+        ],
+        "driver_info": {
+          "type": "keyboard",
+          "xkb_rules": "xfree86"
+        },
+        "module_alias": "usb:v05ACp8105d0000dc00dsc00dp00ic03isc01ip01in00"
+      }
+    ],
+    "memory": [
+      {
+        "index": 10,
+        "attached_to": 0,
+        "class_list": [
+          "memory"
+        ],
+        "base_class": {
+          "hex": "0101",
+          "name": "Internally Used Class",
+          "value": 257
+        },
+        "sub_class": {
+          "hex": "0002",
+          "name": "Main Memory",
+          "value": 2
+        },
+        "model": "Main Memory",
+        "resources": [
+          {
+            "type": "phys_mem",
+            "range": 4026531840
+          }
+        ]
+      }
+    ],
+    "mouse": [
+      {
+        "index": 37,
+        "attached_to": 40,
+        "class_list": [
+          "mouse",
+          "usb"
+        ],
+        "bus_type": {
+          "hex": "0086",
+          "name": "USB",
+          "value": 134
+        },
+        "slot": {
+          "bus": 0,
+          "number": 0
+        },
+        "base_class": {
+          "hex": "0105",
+          "name": "Mouse",
+          "value": 261
+        },
+        "sub_class": {
+          "hex": "0003",
+          "name": "USB Mouse",
+          "value": 3
+        },
+        "vendor": {
+          "hex": "05ac",
+          "name": "Apple Computer, Inc.",
+          "value": 1452
+        },
+        "device": {
+          "hex": "8106",
+          "name": "Virtual USB Digitizer",
+          "value": 33030
+        },
+        "compat_vendor": "Unknown",
+        "compat_device": "Generic USB Mouse",
+        "model": "Apple Virtual USB Digitizer",
+        "sysfs_id": "/devices/pci0000:00/0000:00:0f.0/usb1/1-2/1-2:1.0",
+        "sysfs_bus_id": "1-2:1.0",
+        "unix_device_names": [
+          "/dev/input/mice"
+        ],
+        "unix_device_name2": "/dev/input/mouse0",
+        "resources": [
+          {
+            "type": "baud",
+            "speed": 12000000,
+            "bits": 0,
+            "stop_bits": 0,
+            "parity": 0,
+            "handshake": 0
+          }
+        ],
+        "detail": {
+          "device_class": {
+            "hex": "0000",
+            "name": "per_interface",
+            "value": 0
+          },
+          "device_subclass": {
+            "hex": "0000",
+            "name": "per_interface",
+            "value": 0
+          },
+          "device_protocol": 0,
+          "interface_class": {
+            "hex": "0003",
+            "name": "hid",
+            "value": 3
+          },
+          "interface_subclass": {
+            "hex": "0000",
+            "name": "per_interface",
+            "value": 0
+          },
+          "interface_protocol": 0,
+          "interface_number": 0,
+          "interface_alternate_setting": 0
+        },
+        "hotplug": "usb",
+        "driver": "usbhid",
+        "driver_module": "usbhid",
+        "drivers": [
+          "usbhid"
+        ],
+        "driver_modules": [
+          "usbhid"
+        ],
+        "driver_info": {
+          "type": "mouse",
+          "db_entry_0": [
+            "explorerps/2",
+            "exps2"
+          ],
+          "xf86": "explorerps/2",
+          "gpm": "exps2",
+          "buttons": -1,
+          "wheels": -1
+        },
+        "module_alias": "usb:v05ACp8106d0000dc00dsc00dp00ic03isc00ip00in00"
+      }
+    ],
+    "network_controller": [
+      {
+        "index": 31,
+        "attached_to": 14,
+        "class_list": [
+          "network_controller"
+        ],
+        "bus_type": {
+          "hex": "008f",
+          "name": "Virtio",
+          "value": 143
+        },
+        "slot": {
+          "bus": 0,
+          "number": 0
+        },
+        "base_class": {
+          "hex": "0002",
+          "name": "Network controller",
+          "value": 2
+        },
+        "sub_class": {
+          "hex": "0000",
+          "name": "Ethernet controller",
+          "value": 0
+        },
+        "vendor": "Virtio",
+        "device": "Ethernet Card 0",
+        "model": "Virtio Ethernet Card 0",
+        "sysfs_id": "/devices/pci0000:00/0000:00:01.0/virtio0",
+        "sysfs_bus_id": "virtio0",
+        "unix_device_names": [
+          "enp0s1"
+        ],
+        "resources": [
+          {
+            "type": "hwaddr",
+            "address": 101
+          },
+          {
+            "type": "phwaddr",
+            "address": 101
+          }
+        ],
+        "driver": "virtio_net",
+        "drivers": [
+          "virtio_net"
+        ],
+        "module_alias": "virtio:d00000001v00001AF4"
+      }
+    ],
+    "network_interface": [
+      {
+        "index": 43,
+        "attached_to": 0,
+        "class_list": [
+          "network_interface"
+        ],
+        "base_class": {
+          "hex": "0107",
+          "name": "Network Interface",
+          "value": 263
+        },
+        "sub_class": {
+          "hex": "0000",
+          "name": "Loopback",
+          "value": 0
+        },
+        "model": "Loopback network interface",
+        "sysfs_id": "/class/net/lo",
+        "unix_device_names": [
+          "lo"
+        ]
+      },
+      {
+        "index": 44,
+        "attached_to": 31,
+        "class_list": [
+          "network_interface"
+        ],
+        "base_class": {
+          "hex": "0107",
+          "name": "Network Interface",
+          "value": 263
+        },
+        "sub_class": {
+          "hex": "0001",
+          "name": "Ethernet",
+          "value": 1
+        },
+        "model": "Ethernet network interface",
+        "sysfs_id": "/class/net/enp0s1",
+        "sysfs_device_link": "/devices/pci0000:00/0000:00:01.0/virtio0",
+        "unix_device_names": [
+          "enp0s1"
+        ],
+        "resources": [
+          {
+            "type": "hwaddr",
+            "address": 101
+          },
+          {
+            "type": "phwaddr",
+            "address": 101
+          }
+        ],
+        "driver": "virtio_net",
+        "drivers": [
+          "virtio_net"
+        ]
+      }
+    ],
+    "pci": [
+      {
+        "index": 12,
+        "attached_to": 0,
+        "class_list": [
+          "pci",
+          "unknown"
+        ],
+        "bus_type": {
+          "hex": "0004",
+          "name": "PCI",
+          "value": 4
+        },
+        "slot": {
+          "bus": 0,
+          "number": 13
+        },
+        "base_class": {
+          "hex": "0005",
+          "name": "Memory controller",
+          "value": 5
+        },
+        "sub_class": {
+          "hex": "0080",
+          "name": "Memory controller",
+          "value": 128
+        },
+        "vendor": {
+          "hex": "1af4",
+          "value": 6900
+        },
+        "sub_vendor": {
+          "hex": "1af4",
+          "value": 6900
+        },
+        "device": {
+          "hex": "1045",
+          "value": 4165
+        },
+        "sub_device": {
+          "hex": "0045",
+          "value": 69
+        },
+        "revision": {
+          "hex": "0001",
+          "value": 1
+        },
+        "model": "Memory controller",
+        "sysfs_id": "/devices/pci0000:00/0000:00:0d.0",
+        "sysfs_bus_id": "0000:00:0d.0",
+        "detail": {
+          "function": 0,
+          "command": 1046,
+          "header_type": 0,
+          "secondary_bus": 0,
+          "prog_if": 0
+        },
+        "driver": "virtio-pci",
+        "driver_module": "virtio_pci",
+        "drivers": [
+          "virtio-pci"
+        ],
+        "driver_modules": [
+          "virtio_pci"
+        ],
+        "module_alias": "pci:v00001AF4d00001045sv00001AF4sd00000045bc05sc80i00"
+      },
+      {
+        "index": 14,
+        "attached_to": 0,
+        "class_list": [
+          "pci",
+          "unknown"
+        ],
+        "bus_type": {
+          "hex": "0004",
+          "name": "PCI",
+          "value": 4
+        },
+        "slot": {
+          "bus": 0,
+          "number": 1
+        },
+        "base_class": {
+          "hex": "0002",
+          "name": "Network controller",
+          "value": 2
+        },
+        "sub_class": {
+          "hex": "0000",
+          "name": "Ethernet controller",
+          "value": 0
+        },
+        "vendor": {
+          "hex": "1af4",
+          "value": 6900
+        },
+        "sub_vendor": {
+          "hex": "1af4",
+          "value": 6900
+        },
+        "device": {
+          "hex": "1041",
+          "value": 4161
+        },
+        "sub_device": {
+          "hex": "0041",
+          "value": 65
+        },
+        "revision": {
+          "hex": "0001",
+          "value": 1
+        },
+        "model": "Ethernet controller",
+        "sysfs_id": "/devices/pci0000:00/0000:00:01.0",
+        "sysfs_bus_id": "0000:00:01.0",
+        "detail": {
+          "function": 0,
+          "command": 1046,
+          "header_type": 0,
+          "secondary_bus": 0,
+          "prog_if": 0
+        },
+        "driver": "virtio-pci",
+        "driver_module": "virtio_pci",
+        "drivers": [
+          "virtio-pci"
+        ],
+        "driver_modules": [
+          "virtio_pci"
+        ],
+        "module_alias": "pci:v00001AF4d00001041sv00001AF4sd00000041bc02sc00i00"
+      },
+      {
+        "index": 16,
+        "attached_to": 0,
+        "class_list": [
+          "pci",
+          "unknown"
+        ],
+        "bus_type": {
+          "hex": "0004",
+          "name": "PCI",
+          "value": 4
+        },
+        "slot": {
+          "bus": 0,
+          "number": 12
+        },
+        "base_class": {
+          "hex": "0010",
+          "name": "Encryption controller",
+          "value": 16
+        },
+        "sub_class": {
+          "hex": "0000",
+          "name": "Network and computing encryption device",
+          "value": 0
+        },
+        "vendor": {
+          "hex": "1af4",
+          "value": 6900
+        },
+        "sub_vendor": {
+          "hex": "1af4",
+          "value": 6900
+        },
+        "device": {
+          "hex": "1044",
+          "value": 4164
+        },
+        "sub_device": {
+          "hex": "0044",
+          "value": 68
+        },
+        "revision": {
+          "hex": "0001",
+          "value": 1
+        },
+        "model": "Network and computing encryption device",
+        "sysfs_id": "/devices/pci0000:00/0000:00:0c.0",
+        "sysfs_bus_id": "0000:00:0c.0",
+        "detail": {
+          "function": 0,
+          "command": 1046,
+          "header_type": 0,
+          "secondary_bus": 0,
+          "prog_if": 0
+        },
+        "driver": "virtio-pci",
+        "driver_module": "virtio_pci",
+        "drivers": [
+          "virtio-pci"
+        ],
+        "driver_modules": [
+          "virtio_pci"
+        ],
+        "module_alias": "pci:v00001AF4d00001044sv00001AF4sd00000044bc10sc00i00"
+      },
+      {
+        "index": 19,
+        "attached_to": 0,
+        "class_list": [
+          "pci",
+          "unknown"
+        ],
+        "bus_type": {
+          "hex": "0004",
+          "name": "PCI",
+          "value": 4
+        },
+        "slot": {
+          "bus": 0,
+          "number": 6
+        },
+        "base_class": {
+          "hex": "0001",
+          "name": "Mass storage controller",
+          "value": 1
+        },
+        "sub_class": {
+          "hex": "0080",
+          "name": "Storage controller",
+          "value": 128
+        },
+        "vendor": {
+          "hex": "1af4",
+          "value": 6900
+        },
+        "sub_vendor": {
+          "hex": "1af4",
+          "value": 6900
+        },
+        "device": {
+          "hex": "1042",
+          "value": 4162
+        },
+        "sub_device": {
+          "hex": "0042",
+          "value": 66
+        },
+        "revision": {
+          "hex": "0001",
+          "value": 1
+        },
+        "model": "Storage controller",
+        "sysfs_id": "/devices/pci0000:00/0000:00:06.0",
+        "sysfs_bus_id": "0000:00:06.0",
+        "detail": {
+          "function": 0,
+          "command": 1046,
+          "header_type": 0,
+          "secondary_bus": 0,
+          "prog_if": 0
+        },
+        "driver": "virtio-pci",
+        "driver_module": "virtio_pci",
+        "drivers": [
+          "virtio-pci"
+        ],
+        "driver_modules": [
+          "virtio_pci"
+        ],
+        "module_alias": "pci:v00001AF4d00001042sv00001AF4sd00000042bc01sc80i00"
+      },
+      {
+        "index": 22,
+        "attached_to": 0,
+        "class_list": [
+          "pci",
+          "unknown"
+        ],
+        "bus_type": {
+          "hex": "0004",
+          "name": "PCI",
+          "value": 4
+        },
+        "slot": {
+          "bus": 0,
+          "number": 14
+        },
+        "base_class": {
+          "hex": "0007",
+          "name": "Communication controller",
+          "value": 7
+        },
+        "sub_class": {
+          "hex": "0080",
+          "name": "Communication controller",
+          "value": 128
+        },
+        "vendor": {
+          "hex": "1af4",
+          "value": 6900
+        },
+        "sub_vendor": {
+          "hex": "1af4",
+          "value": 6900
+        },
+        "device": {
+          "hex": "1043",
+          "value": 4163
+        },
+        "sub_device": {
+          "hex": "0043",
+          "value": 67
+        },
+        "revision": {
+          "hex": "0001",
+          "value": 1
+        },
+        "model": "Communication controller",
+        "sysfs_id": "/devices/pci0000:00/0000:00:0e.0",
+        "sysfs_bus_id": "0000:00:0e.0",
+        "detail": {
+          "function": 0,
+          "command": 1046,
+          "header_type": 0,
+          "secondary_bus": 0,
+          "prog_if": 0
+        },
+        "driver": "virtio-pci",
+        "driver_module": "virtio_pci",
+        "drivers": [
+          "virtio-pci"
+        ],
+        "driver_modules": [
+          "virtio_pci"
+        ],
+        "module_alias": "pci:v00001AF4d00001043sv00001AF4sd00000043bc07sc80i00"
+      },
+      {
+        "index": 23,
+        "attached_to": 0,
+        "class_list": [
+          "pci",
+          "unknown"
+        ],
+        "bus_type": {
+          "hex": "0004",
+          "name": "PCI",
+          "value": 4
+        },
+        "slot": {
+          "bus": 0,
+          "number": 5
+        },
+        "base_class": {
+          "hex": "0007",
+          "name": "Communication controller",
+          "value": 7
+        },
+        "sub_class": {
+          "hex": "0080",
+          "name": "Communication controller",
+          "value": 128
+        },
+        "vendor": {
+          "hex": "1af4",
+          "value": 6900
+        },
+        "sub_vendor": {
+          "hex": "1af4",
+          "value": 6900
+        },
+        "device": {
+          "hex": "1043",
+          "value": 4163
+        },
+        "sub_device": {
+          "hex": "0043",
+          "value": 67
+        },
+        "revision": {
+          "hex": "0001",
+          "value": 1
+        },
+        "model": "Communication controller",
+        "sysfs_id": "/devices/pci0000:00/0000:00:05.0",
+        "sysfs_bus_id": "0000:00:05.0",
+        "detail": {
+          "function": 0,
+          "command": 1046,
+          "header_type": 0,
+          "secondary_bus": 0,
+          "prog_if": 0
+        },
+        "driver": "virtio-pci",
+        "driver_module": "virtio_pci",
+        "drivers": [
+          "virtio-pci"
+        ],
+        "driver_modules": [
+          "virtio_pci"
+        ],
+        "module_alias": "pci:v00001AF4d00001043sv00001AF4sd00000043bc07sc80i00"
+      }
+    ],
+    "sound": [
+      {
+        "index": 20,
+        "attached_to": 0,
+        "class_list": [
+          "sound",
+          "pci"
+        ],
+        "bus_type": {
+          "hex": "0004",
+          "name": "PCI",
+          "value": 4
+        },
+        "slot": {
+          "bus": 0,
+          "number": 11
+        },
+        "base_class": {
+          "hex": "0004",
+          "name": "Multimedia controller",
+          "value": 4
+        },
+        "sub_class": {
+          "hex": "0001",
+          "name": "Multimedia audio controller",
+          "value": 1
+        },
+        "vendor": {
+          "hex": "1af4",
+          "value": 6900
+        },
+        "sub_vendor": {
+          "hex": "1af4",
+          "value": 6900
+        },
+        "device": {
+          "hex": "1059",
+          "value": 4185
+        },
+        "sub_device": {
+          "hex": "0059",
+          "value": 89
+        },
+        "revision": {
+          "hex": "0001",
+          "value": 1
+        },
+        "model": "Multimedia audio controller",
+        "sysfs_id": "/devices/pci0000:00/0000:00:0b.0",
+        "sysfs_bus_id": "0000:00:0b.0",
+        "detail": {
+          "function": 0,
+          "command": 1046,
+          "header_type": 0,
+          "secondary_bus": 0,
+          "prog_if": 0
+        },
+        "driver": "virtio-pci",
+        "driver_module": "virtio_pci",
+        "drivers": [
+          "virtio-pci"
+        ],
+        "driver_modules": [
+          "virtio_pci"
+        ],
+        "module_alias": "pci:v00001AF4d00001059sv00001AF4sd00000059bc04sc01i00"
+      },
+      {
+        "index": 24,
+        "attached_to": 0,
+        "class_list": [
+          "sound",
+          "pci"
+        ],
+        "bus_type": {
+          "hex": "0004",
+          "name": "PCI",
+          "value": 4
+        },
+        "slot": {
+          "bus": 0,
+          "number": 10
+        },
+        "base_class": {
+          "hex": "0004",
+          "name": "Multimedia controller",
+          "value": 4
+        },
+        "sub_class": {
+          "hex": "0001",
+          "name": "Multimedia audio controller",
+          "value": 1
+        },
+        "vendor": {
+          "hex": "1af4",
+          "value": 6900
+        },
+        "sub_vendor": {
+          "hex": "1af4",
+          "value": 6900
+        },
+        "device": {
+          "hex": "1059",
+          "value": 4185
+        },
+        "sub_device": {
+          "hex": "0059",
+          "value": 89
+        },
+        "revision": {
+          "hex": "0001",
+          "value": 1
+        },
+        "model": "Multimedia audio controller",
+        "sysfs_id": "/devices/pci0000:00/0000:00:0a.0",
+        "sysfs_bus_id": "0000:00:0a.0",
+        "detail": {
+          "function": 0,
+          "command": 1046,
+          "header_type": 0,
+          "secondary_bus": 0,
+          "prog_if": 0
+        },
+        "driver": "virtio-pci",
+        "driver_module": "virtio_pci",
+        "drivers": [
+          "virtio-pci"
+        ],
+        "driver_modules": [
+          "virtio_pci"
+        ],
+        "module_alias": "pci:v00001AF4d00001059sv00001AF4sd00000059bc04sc01i00"
+      }
+    ],
+    "storage_controller": [
+      {
+        "index": 11,
+        "attached_to": 0,
+        "class_list": [
+          "storage_controller",
+          "pci"
+        ],
+        "bus_type": {
+          "hex": "0004",
+          "name": "PCI",
+          "value": 4
+        },
+        "slot": {
+          "bus": 0,
+          "number": 8
+        },
+        "base_class": {
+          "hex": "0001",
+          "name": "Mass storage controller",
+          "value": 1
+        },
+        "sub_class": {
+          "hex": "0080",
+          "name": "Storage controller",
+          "value": 128
+        },
+        "vendor": {
+          "hex": "1af4",
+          "value": 6900
+        },
+        "sub_vendor": {
+          "hex": "1af4",
+          "value": 6900
+        },
+        "device": {
+          "hex": "105a",
+          "value": 4186
+        },
+        "sub_device": {
+          "hex": "005a",
+          "value": 90
+        },
+        "revision": {
+          "hex": "0001",
+          "value": 1
+        },
+        "model": "Storage controller",
+        "sysfs_id": "/devices/pci0000:00/0000:00:08.0",
+        "sysfs_bus_id": "0000:00:08.0",
+        "detail": {
+          "function": 0,
+          "command": 1046,
+          "header_type": 0,
+          "secondary_bus": 0,
+          "prog_if": 0
+        },
+        "driver": "virtio-pci",
+        "driver_module": "virtio_pci",
+        "drivers": [
+          "virtio-pci"
+        ],
+        "driver_modules": [
+          "virtio_pci"
+        ],
+        "module_alias": "pci:v00001AF4d0000105Asv00001AF4sd0000005Abc01sc80i00"
+      },
+      {
+        "index": 15,
+        "attached_to": 0,
+        "class_list": [
+          "storage_controller",
+          "pci"
+        ],
+        "bus_type": {
+          "hex": "0004",
+          "name": "PCI",
+          "value": 4
+        },
+        "slot": {
+          "bus": 0,
+          "number": 7
+        },
+        "base_class": {
+          "hex": "0001",
+          "name": "Mass storage controller",
+          "value": 1
+        },
+        "sub_class": {
+          "hex": "0080",
+          "name": "Storage controller",
+          "value": 128
+        },
+        "vendor": {
+          "hex": "1af4",
+          "value": 6900
+        },
+        "sub_vendor": {
+          "hex": "1af4",
+          "value": 6900
+        },
+        "device": {
+          "hex": "105a",
+          "value": 4186
+        },
+        "sub_device": {
+          "hex": "005a",
+          "value": 90
+        },
+        "revision": {
+          "hex": "0001",
+          "value": 1
+        },
+        "model": "Storage controller",
+        "sysfs_id": "/devices/pci0000:00/0000:00:07.0",
+        "sysfs_bus_id": "0000:00:07.0",
+        "detail": {
+          "function": 0,
+          "command": 1046,
+          "header_type": 0,
+          "secondary_bus": 0,
+          "prog_if": 0
+        },
+        "driver": "virtio-pci",
+        "driver_module": "virtio_pci",
+        "drivers": [
+          "virtio-pci"
+        ],
+        "driver_modules": [
+          "virtio_pci"
+        ],
+        "module_alias": "pci:v00001AF4d0000105Asv00001AF4sd0000005Abc01sc80i00"
+      },
+      {
+        "index": 29,
+        "attached_to": 19,
+        "class_list": [
+          "storage_controller"
+        ],
+        "bus_type": {
+          "hex": "008f",
+          "name": "Virtio",
+          "value": 143
+        },
+        "slot": {
+          "bus": 0,
+          "number": 0
+        },
+        "base_class": {
+          "hex": "0001",
+          "name": "Mass storage controller",
+          "value": 1
+        },
+        "sub_class": {
+          "hex": "0080",
+          "name": "Storage controller",
+          "value": 128
+        },
+        "vendor": "Virtio",
+        "device": "Storage 0",
+        "model": "Virtio Storage 0",
+        "sysfs_id": "/devices/pci0000:00/0000:00:06.0/virtio2",
+        "sysfs_bus_id": "virtio2",
+        "driver": "virtio_blk",
+        "drivers": [
+          "virtio_blk"
+        ],
+        "module_alias": "virtio:d00000002v00001AF4"
+      }
+    ],
+    "system": {},
+    "unknown": [
+      {
+        "index": 25,
+        "attached_to": 23,
+        "class_list": [
+          "unknown"
+        ],
+        "base_class": {
+          "hex": "0000",
+          "name": "Unclassified device",
+          "value": 0
+        },
+        "sub_class": {
+          "hex": "0000",
+          "name": "Unclassified device",
+          "value": 0
+        },
+        "vendor": "Virtio",
+        "device": "",
+        "model": "Virtio Unclassified device",
+        "sysfs_id": "/devices/pci0000:00/0000:00:05.0/virtio1",
+        "sysfs_bus_id": "virtio1",
+        "driver": "virtio_console",
+        "drivers": [
+          "virtio_console"
+        ],
+        "module_alias": "virtio:d00000003v00001AF4"
+      },
+      {
+        "index": 26,
+        "attached_to": 16,
+        "class_list": [
+          "unknown"
+        ],
+        "base_class": {
+          "hex": "0000",
+          "name": "Unclassified device",
+          "value": 0
+        },
+        "sub_class": {
+          "hex": "0000",
+          "name": "Unclassified device",
+          "value": 0
+        },
+        "vendor": "Virtio",
+        "device": "",
+        "model": "Virtio Unclassified device",
+        "sysfs_id": "/devices/pci0000:00/0000:00:0c.0/virtio8",
+        "sysfs_bus_id": "virtio8",
+        "driver": "virtio_rng",
+        "drivers": [
+          "virtio_rng"
+        ],
+        "module_alias": "virtio:d00000004v00001AF4"
+      },
+      {
+        "index": 27,
+        "attached_to": 24,
+        "class_list": [
+          "unknown"
+        ],
+        "base_class": {
+          "hex": "0000",
+          "name": "Unclassified device",
+          "value": 0
+        },
+        "sub_class": {
+          "hex": "0000",
+          "name": "Unclassified device",
+          "value": 0
+        },
+        "vendor": "Virtio",
+        "device": "",
+        "model": "Virtio Unclassified device",
+        "sysfs_id": "/devices/pci0000:00/0000:00:0a.0/virtio6",
+        "sysfs_bus_id": "virtio6",
+        "driver": "virtio_snd",
+        "driver_module": "virtio_snd",
+        "drivers": [
+          "virtio_snd"
+        ],
+        "driver_modules": [
+          "virtio_snd"
+        ],
+        "module_alias": "virtio:d00000019v00001AF4"
+      },
+      {
+        "index": 28,
+        "attached_to": 11,
+        "class_list": [
+          "unknown"
+        ],
+        "base_class": {
+          "hex": "0000",
+          "name": "Unclassified device",
+          "value": 0
+        },
+        "sub_class": {
+          "hex": "0000",
+          "name": "Unclassified device",
+          "value": 0
+        },
+        "vendor": "Virtio",
+        "device": "",
+        "model": "Virtio Unclassified device",
+        "sysfs_id": "/devices/pci0000:00/0000:00:08.0/virtio4",
+        "sysfs_bus_id": "virtio4",
+        "driver": "virtiofs",
+        "driver_module": "virtiofs",
+        "drivers": [
+          "virtiofs"
+        ],
+        "driver_modules": [
+          "virtiofs"
+        ],
+        "module_alias": "virtio:d0000001Av00001AF4"
+      },
+      {
+        "index": 30,
+        "attached_to": 22,
+        "class_list": [
+          "unknown"
+        ],
+        "base_class": {
+          "hex": "0000",
+          "name": "Unclassified device",
+          "value": 0
+        },
+        "sub_class": {
+          "hex": "0000",
+          "name": "Unclassified device",
+          "value": 0
+        },
+        "vendor": "Virtio",
+        "device": "",
+        "model": "Virtio Unclassified device",
+        "sysfs_id": "/devices/pci0000:00/0000:00:0e.0/virtio10",
+        "sysfs_bus_id": "virtio10",
+        "driver": "virtio_console",
+        "drivers": [
+          "virtio_console"
+        ],
+        "module_alias": "virtio:d00000003v00001AF4"
+      },
+      {
+        "index": 32,
+        "attached_to": 12,
+        "class_list": [
+          "unknown"
+        ],
+        "base_class": {
+          "hex": "0000",
+          "name": "Unclassified device",
+          "value": 0
+        },
+        "sub_class": {
+          "hex": "0000",
+          "name": "Unclassified device",
+          "value": 0
+        },
+        "vendor": "Virtio",
+        "device": "",
+        "model": "Virtio Unclassified device",
+        "sysfs_id": "/devices/pci0000:00/0000:00:0d.0/virtio9",
+        "sysfs_bus_id": "virtio9",
+        "driver": "virtio_balloon",
+        "drivers": [
+          "virtio_balloon"
+        ],
+        "module_alias": "virtio:d00000005v00001AF4"
+      },
+      {
+        "index": 33,
+        "attached_to": 20,
+        "class_list": [
+          "unknown"
+        ],
+        "base_class": {
+          "hex": "0000",
+          "name": "Unclassified device",
+          "value": 0
+        },
+        "sub_class": {
+          "hex": "0000",
+          "name": "Unclassified device",
+          "value": 0
+        },
+        "vendor": "Virtio",
+        "device": "",
+        "model": "Virtio Unclassified device",
+        "sysfs_id": "/devices/pci0000:00/0000:00:0b.0/virtio7",
+        "sysfs_bus_id": "virtio7",
+        "driver": "virtio_snd",
+        "driver_module": "virtio_snd",
+        "drivers": [
+          "virtio_snd"
+        ],
+        "driver_modules": [
+          "virtio_snd"
+        ],
+        "module_alias": "virtio:d00000019v00001AF4"
+      },
+      {
+        "index": 34,
+        "attached_to": 21,
+        "class_list": [
+          "unknown"
+        ],
+        "base_class": {
+          "hex": "0000",
+          "name": "Unclassified device",
+          "value": 0
+        },
+        "sub_class": {
+          "hex": "0000",
+          "name": "Unclassified device",
+          "value": 0
+        },
+        "vendor": "Virtio",
+        "device": "",
+        "model": "Virtio Unclassified device",
+        "sysfs_id": "/devices/pci0000:00/0000:00:09.0/virtio5",
+        "sysfs_bus_id": "virtio5",
+        "driver": "virtio_gpu",
+        "driver_module": "virtio_gpu",
+        "drivers": [
+          "virtio_gpu"
+        ],
+        "driver_modules": [
+          "virtio_gpu"
+        ],
+        "module_alias": "virtio:d00000010v00001AF4"
+      },
+      {
+        "index": 35,
+        "attached_to": 15,
+        "class_list": [
+          "unknown"
+        ],
+        "base_class": {
+          "hex": "0000",
+          "name": "Unclassified device",
+          "value": 0
+        },
+        "sub_class": {
+          "hex": "0000",
+          "name": "Unclassified device",
+          "value": 0
+        },
+        "vendor": "Virtio",
+        "device": "",
+        "model": "Virtio Unclassified device",
+        "sysfs_id": "/devices/pci0000:00/0000:00:07.0/virtio3",
+        "sysfs_bus_id": "virtio3",
+        "driver": "virtiofs",
+        "driver_module": "virtiofs",
+        "drivers": [
+          "virtiofs"
+        ],
+        "driver_modules": [
+          "virtiofs"
+        ],
+        "module_alias": "virtio:d0000001Av00001AF4"
+      }
+    ],
+    "usb_controller": [
+      {
+        "index": 13,
+        "attached_to": 0,
+        "class_list": [
+          "usb_controller",
+          "pci"
+        ],
+        "bus_type": {
+          "hex": "0004",
+          "name": "PCI",
+          "value": 4
+        },
+        "slot": {
+          "bus": 0,
+          "number": 16
+        },
+        "base_class": {
+          "hex": "000c",
+          "name": "Serial bus controller",
+          "value": 12
+        },
+        "sub_class": {
+          "hex": "0003",
+          "name": "USB Controller",
+          "value": 3
+        },
+        "pci_interface": {
+          "hex": "0030",
+          "value": 48
+        },
+        "vendor": {
+          "hex": "106b",
+          "value": 4203
+        },
+        "device": {
+          "hex": "1a06",
+          "value": 6662
+        },
+        "model": "USB Controller",
+        "sysfs_id": "/devices/pci0000:00/0000:00:10.0",
+        "sysfs_bus_id": "0000:00:10.0",
+        "detail": {
+          "function": 0,
+          "command": 1046,
+          "header_type": 0,
+          "secondary_bus": 0,
+          "prog_if": 48
+        },
+        "driver": "xhci_hcd",
+        "driver_module": "xhci_pci",
+        "drivers": [
+          "xhci_hcd"
+        ],
+        "driver_modules": [
+          "xhci_pci"
+        ],
+        "module_alias": "pci:v0000106Bd00001A06sv00000000sd00000000bc0Csc03i30"
+      },
+      {
+        "index": 17,
+        "attached_to": 0,
+        "class_list": [
+          "usb_controller",
+          "pci"
+        ],
+        "bus_type": {
+          "hex": "0004",
+          "name": "PCI",
+          "value": 4
+        },
+        "slot": {
+          "bus": 0,
+          "number": 15
+        },
+        "base_class": {
+          "hex": "000c",
+          "name": "Serial bus controller",
+          "value": 12
+        },
+        "sub_class": {
+          "hex": "0003",
+          "name": "USB Controller",
+          "value": 3
+        },
+        "pci_interface": {
+          "hex": "0030",
+          "value": 48
+        },
+        "vendor": {
+          "hex": "106b",
+          "value": 4203
+        },
+        "device": {
+          "hex": "1a06",
+          "value": 6662
+        },
+        "model": "USB Controller",
+        "sysfs_id": "/devices/pci0000:00/0000:00:0f.0",
+        "sysfs_bus_id": "0000:00:0f.0",
+        "detail": {
+          "function": 0,
+          "command": 1046,
+          "header_type": 0,
+          "secondary_bus": 0,
+          "prog_if": 48
+        },
+        "driver": "xhci_hcd",
+        "driver_module": "xhci_pci",
+        "drivers": [
+          "xhci_hcd"
+        ],
+        "driver_modules": [
+          "xhci_pci"
+        ],
+        "module_alias": "pci:v0000106Bd00001A06sv00000000sd00000000bc0Csc03i30"
+      }
+    ]
+  },
+  "smbios": {}
+}

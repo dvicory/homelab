@@ -1,0 +1,30 @@
+# Nix build results
+result
+result-*
+
+# Direnv and Devenv environments
+/.direnv/
+/.devenv/
+
+# IDE files
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.swp
+.DS_Store
+
+# SECRETS - DO NOT COMMIT
+sops.key
+ssh
+*_host_key
+*_host_*_key
+!.secrets/hosts/**/*.pub
+
+# Backup/temporary files
+*.old
+*.backup
+
+/den/
+.secrets/priv/

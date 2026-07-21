@@ -1,0 +1,1063 @@
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Sat, 18 Jul 2026 09:00:00 -0700
+Subject: [PATCH] fix(terminal): canonical conversation environment identity
+
+Replace the two divergent identity helpers with one canonical
+environment_key(task_id, session_id) and migrate every environment-backed
+surface to it: terminal, background/PTY processes, process list, file
+read/write/patch/search, execute-code (including sandbox RPC dispatch),
+environment creation, get_active_env, and cleanup paths (cleanup_vm,
+AIAgent.close background-process teardown).
+
+Previously handlers pre-mapped identity through a session-aware helper
+while internals re-resolved through a task-only helper, so process list
+never matched conversation-scoped spawns and session-close cleanup
+silently missed conversation-keyed environments and processes.
+
+The canonical key is opaque (sha256-derived, never embedding the platform
+conversation identifier), idempotent for already-derived keys, honors
+RL/benchmark isolation overrides in both scopes, and falls back to an
+explicit "default" only when no trusted identifier exists.
+
+diff --git a/run_agent.py b/run_agent.py
+index 3be621f..c70fd26 100644
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -3445,10 +3445,14 @@ class AIAgent:
+         """
+         task_id = getattr(self, "session_id", None) or ""
+ 
+-        # 1. Kill background processes for this task
++        # 1. Kill background processes for this task. Background processes
++        # are recorded under the canonical environment key, so resolve the
++        # session id through the same function the tool surfaces use —
++        # filtering by the raw id would leak conversation-scoped processes.
+         try:
+             from tools.process_registry import process_registry
+-            process_registry.kill_all(task_id=task_id)
++            from tools.terminal_tool import environment_key
++            process_registry.kill_all(task_id=environment_key(task_id))
+         except Exception:
+             pass
+ 
+diff --git a/tests/integration/test_vision_docker_resolve.py b/tests/integration/test_vision_docker_resolve.py
+index 4ff3e46..adc3578 100644
+--- a/tests/integration/test_vision_docker_resolve.py
++++ b/tests/integration/test_vision_docker_resolve.py
+@@ -75,7 +75,7 @@ def docker_backend(request, monkeypatch):
+         network=False,
+     )
+     # Register under the raw task_id; get_active_env() falls back to the raw
+-    # key after trying the _resolve_container_task_id() mapping.
++    # key after trying the environment_key() mapping.
+     with terminal_tool._env_lock:
+         terminal_tool._active_environments[task_id] = env
+     try:
+diff --git a/tests/tools/test_file_tools_cwd_resolution.py b/tests/tools/test_file_tools_cwd_resolution.py
+index 530fd96..1a16ba3 100644
+--- a/tests/tools/test_file_tools_cwd_resolution.py
++++ b/tests/tools/test_file_tools_cwd_resolution.py
+@@ -303,7 +303,7 @@ def test_registered_task_cwd_override_anchors_before_terminal_env_exists(_isolat
+ 
+     resolved = ft._resolve_path_for_task("target.py", task_id=task_id)
+ 
+-    assert terminal_tool._resolve_container_task_id(task_id) == "default"
++    assert terminal_tool.environment_key(task_id) == "default"
+     assert resolved == (workspace / "target.py")
+     assert not str(resolved).startswith(str(decoy))
+ 
+diff --git a/tests/tools/test_secure_terminal_identity_integration.py b/tests/tools/test_secure_terminal_identity_integration.py
+new file mode 100644
+index 0000000..a361c52
+--- /dev/null
++++ b/tests/tools/test_secure_terminal_identity_integration.py
+@@ -0,0 +1,175 @@
++"""Cross-surface integration tests for canonical environment identity.
++
++Two conversations drive terminal, background-process, file, search, patch,
++and execute-code surfaces end to end (with the environment backend faked at
++the BaseEnvironment boundary) and must never observe each other's
++environment, cached file ops, processes, or cleanup — and every surface
++must resolve the *same* key within one conversation.
++
++The real two-session container proof runs against the QA Podman backend at
++deploy time; here we pin the identity contract every surface depends on.
++"""
++
++import json
++
++import pytest
++
++from tools import code_execution_tool, file_tools, process_registry, terminal_tool
++from tools.terminal_tool import environment_key
++
++
++class FakeEnvironment:
++    """Minimal BaseEnvironment stand-in recording the identity it got."""
++
++    def __init__(self, task_id, **kwargs):
++        self.task_id = task_id
++        self.kwargs = kwargs
++        self.cleaned = False
++        self.cwd = "/workspace"
++        self.env = {}
++        self.commands = []
++
++    def execute(self, command, cwd=None, timeout=None):
++        self.commands.append(command)
++        return {"output": "", "returncode": 0}
++
++    def cleanup(self, **kwargs):
++        self.cleaned = True
++
++
++@pytest.fixture
++def two_sessions(monkeypatch):
++    """Conversation scope with two sessions and a recording env factory."""
++    monkeypatch.setenv("TERMINAL_ISOLATION_SCOPE", "conversation")
++
++    created = {}
++
++    def fake_create(task_id, **kwargs):
++        env = FakeEnvironment(task_id, **kwargs)
++        created[task_id] = env
++        return env
++
++    monkeypatch.setattr(terminal_tool, "_create_environment", fake_create)
++    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
++    # Guard rails that require approval/config must not interfere.
++    monkeypatch.setattr(terminal_tool, "_check_all_guards", lambda *a, **k: None)
++    monkeypatch.setattr(
++        code_execution_tool,
++        "_load_config",
++        lambda: {"timeout": 5, "max_tool_calls": 3},
++    )
++
++    sessions = {
++        "a": {"task_id": "task-a", "session_id": "session-a"},
++        "b": {"task_id": "task-b", "session_id": "session-b"},
++    }
++    yield created, sessions
++
++    # Do not leak environments/processes into other tests.
++    for key in list(terminal_tool._active_environments.keys()):
++        terminal_tool._active_environments.pop(key, None)
++        terminal_tool._last_activity.pop(key, None)
++    terminal_tool._task_env_overrides.clear()
++    process_registry.process_registry.kill_all()
++
++
++def _run_terminal(task_id, session_id, command="true"):
++    return json.loads(
++        terminal_tool._handle_terminal(
++            {"command": command}, task_id=task_id, session_id=session_id
++        )
++    )
++
++
++def test_every_surface_resolves_one_key_per_conversation(two_sessions):
++    created, sessions = two_sessions
++    key_a = environment_key(**sessions["a"])
++    key_b = environment_key(**sessions["b"])
++    assert key_a != key_b
++
++    for session in sessions.values():
++        tid = environment_key(**session)
++        # Terminal surface (creates the environment).
++        _run_terminal(**session)
++        # File surfaces reuse the same cached environment/file_ops.
++        file_ops = file_tools._get_file_ops(environment_key(**session))
++        assert file_ops is not None
++        # Execute-code resolves the same environment.
++        env, _ = code_execution_tool._get_or_create_env(**session)
++        assert env is created[tid]
++
++    assert set(created.keys()) == {key_a, key_b}
++
++
++def test_conversations_cannot_observe_each_other(two_sessions):
++    created, sessions = two_sessions
++    key_a = environment_key(**sessions["a"])
++    key_b = environment_key(**sessions["b"])
++
++    _run_terminal(**sessions["a"])
++    _run_terminal(**sessions["b"])
++
++    # Distinct environment objects with their own command history.
++    assert created[key_a] is not created[key_b]
++
++    # get_active_env (agent-loop path) resolves per conversation.
++    assert terminal_tool.get_active_env(sessions["a"]["session_id"]) is created[key_a]
++    assert terminal_tool.get_active_env(sessions["b"]["session_id"]) is created[key_b]
++
++    # Background processes spawn under the canonical key and list per key.
++    registry = process_registry.process_registry
++    proc_a = registry.spawn_local(
++        command="sleep 0.1", cwd="/tmp", task_id=key_a, session_key="sk-a"
++    )
++    proc_b = registry.spawn_local(
++        command="sleep 0.1", cwd="/tmp", task_id=key_b, session_key="sk-b"
++    )
++    listed_a = {p["session_id"] for p in registry.list_sessions(task_id=key_a)}
++    listed_b = {p["session_id"] for p in registry.list_sessions(task_id=key_b)}
++    assert proc_a.id in listed_a
++    assert proc_b.id not in listed_a
++    assert proc_b.id in listed_b
++    assert proc_a.id not in listed_b
++
++    # Cleanup by raw session id tears down only that conversation's env,
++    # resolving through the canonical key rather than the raw identifier.
++    terminal_tool.cleanup_vm(sessions["a"]["session_id"])
++    assert created[key_a].cleaned
++    assert not created[key_b].cleaned
++    assert terminal_tool.get_active_env(sessions["b"]["session_id"]) is created[key_b]
++
++
++def test_file_first_slow_path_creates_environment_without_error(two_sessions):
++    """A file operation before any terminal call must create the env via
++    the slow path (regression: raw_task_id must remain bound there)."""
++    created, sessions = two_sessions
++    key_a = environment_key(**sessions["a"])
++
++    # No terminal call first: _get_file_ops must build the environment
++    # through the creation branch, including resolve_task_overrides.
++    ops = file_tools._get_file_ops(key_a)
++    assert ops is not None
++    assert key_a in created
++    assert file_tools._get_file_ops(key_a) is ops
++
++
++def test_process_list_handler_uses_canonical_key(two_sessions, monkeypatch):
++    _, sessions = two_sessions
++    key_a = environment_key(**sessions["a"])
++    key_b = environment_key(**sessions["b"])
++
++    registry = process_registry.process_registry
++    proc_a = registry.spawn_local(
++        command="sleep 0.1", cwd="/tmp", task_id=key_a, session_key=""
++    )
++    proc_b = registry.spawn_local(command="sleep 0.1", cwd="/tmp", task_id=key_b, session_key="")
++
++    result = json.loads(
++        process_registry._handle_process(
++            {"action": "list"}, task_id=sessions["a"]["task_id"],
++            session_id=sessions["a"]["session_id"],
++        )
++    )
++    listed = {p["session_id"] for p in result["processes"]}
++    assert proc_a.id in listed
++    assert proc_b.id not in listed
+diff --git a/tests/tools/test_secure_terminal_scope.py b/tests/tools/test_secure_terminal_scope.py
+new file mode 100644
+index 0000000..3ec5cc1
+--- /dev/null
++++ b/tests/tools/test_secure_terminal_scope.py
+@@ -0,0 +1,90 @@
++"""Regression tests for the canonical environment identity (environment_key).
++
++Every environment-backed surface (terminal, process, file, patch, search,
++execute-code, cleanup, worker-lane dispatch) resolves identity through
++``tools.terminal_tool.environment_key`` and only that function. These tests
++pin its scope semantics; the cross-surface integration lives in
++``test_secure_terminal_identity_integration.py``.
++"""
++
++from tools import terminal_tool
++from tools.terminal_tool import environment_key
++
++
++def test_upstream_default_remains_shared(monkeypatch):
++    monkeypatch.delenv("TERMINAL_ISOLATION_SCOPE", raising=False)
++
++    assert environment_key("turn-a", "conversation-a") == "default"
++    assert environment_key("turn-b", "conversation-b") == "default"
++    assert environment_key(None, None) == "default"
++
++
++def test_conversation_scope_is_stable_and_separate(monkeypatch):
++    monkeypatch.setenv("TERMINAL_ISOLATION_SCOPE", "conversation")
++
++    key_a = environment_key("turn-a", "conversation-a")
++    key_a_later = environment_key("turn-b", "conversation-a")
++    key_b = environment_key("turn-c", "conversation-b")
++
++    assert key_a == key_a_later
++    assert key_b != key_a
++    assert key_a.startswith("conversation-")
++    # The opaque key must not embed the platform conversation identifier.
++    assert "conversation-a" not in key_a
++    assert "conversation-b" not in key_b
++
++
++def test_conversation_scope_falls_back_to_task_without_session(monkeypatch):
++    monkeypatch.setenv("TERMINAL_ISOLATION_SCOPE", "conversation")
++
++    assert environment_key("task-a", None).startswith("conversation-")
++
++
++def test_missing_identifiers_fall_back_explicitly(monkeypatch):
++    monkeypatch.setenv("TERMINAL_ISOLATION_SCOPE", "conversation")
++
++    # Only reachable for platform-internal calls with no conversation
++    # context; two *identified* conversations never land here.
++    assert environment_key(None, None) == "default"
++    assert environment_key("", "") == "default"
++
++
++def test_derived_keys_pass_through_unchanged(monkeypatch):
++    monkeypatch.setenv("TERMINAL_ISOLATION_SCOPE", "conversation")
++
++    key = environment_key("turn-a", "conversation-a")
++
++    # Re-resolving a canonical key (e.g. an internal helper receiving an
++    # already-derived identity) must not derive a fresh key and orphan the
++    # environment.
++    assert environment_key(key) == key
++    assert environment_key(key, None) == key
++    # A raw session id always wins over a carried key: the trusted
++    # conversation identity defines the environment.
++    assert environment_key(key, "conversation-b") == environment_key(None, "conversation-b")
++
++
++def test_isolation_override_wins_in_both_scopes(monkeypatch):
++    terminal_tool.register_task_env_overrides(
++        "tb2-task", {"docker_image": "tb2:image", "cwd": "/app"}
++    )
++    try:
++        monkeypatch.delenv("TERMINAL_ISOLATION_SCOPE", raising=False)
++        assert environment_key("tb2-task") == "tb2-task"
++
++        monkeypatch.setenv("TERMINAL_ISOLATION_SCOPE", "conversation")
++        assert environment_key("tb2-task", "conversation-a") == "tb2-task"
++    finally:
++        terminal_tool.clear_task_env_overrides("tb2-task")
++
++
++def test_cwd_only_override_does_not_isolate(monkeypatch):
++    terminal_tool.register_task_env_overrides("acp-session", {"cwd": "/work"})
++    try:
++        monkeypatch.delenv("TERMINAL_ISOLATION_SCOPE", raising=False)
++        assert environment_key("acp-session") == "default"
++
++        monkeypatch.setenv("TERMINAL_ISOLATION_SCOPE", "conversation")
++        assert environment_key("acp-session").startswith("conversation-")
++    finally:
++        terminal_tool.clear_task_env_overrides("acp-session")
+diff --git a/tests/tools/test_shared_container_task_id.py b/tests/tools/test_shared_container_task_id.py
+index 3a66cde..5471916 100644
+--- a/tests/tools/test_shared_container_task_id.py
++++ b/tests/tools/test_shared_container_task_id.py
+@@ -2,7 +2,7 @@
+ Regression tests for the shared-container task_id mapping.
+ 
+ The top-level agent and all delegate_task subagents share a single
+-terminal sandbox keyed by ``"default"``.  ``_resolve_container_task_id``
++terminal sandbox keyed by ``"default"``.  ``environment_key``
+ is the sole gatekeeper for which tool-call task_ids go to the shared
+ container vs. get their own isolated sandbox.  RL / benchmark
+ environments opt in to isolation by calling
+@@ -31,39 +31,39 @@ def _clean_overrides():
+ 
+ 
+ def test_none_task_id_maps_to_default():
+-    assert terminal_tool._resolve_container_task_id(None) == "default"
++    assert terminal_tool.environment_key(None) == "default"
+ 
+ 
+ def test_empty_task_id_maps_to_default():
+-    assert terminal_tool._resolve_container_task_id("") == "default"
++    assert terminal_tool.environment_key("") == "default"
+ 
+ 
+ def test_literal_default_stays_default():
+-    assert terminal_tool._resolve_container_task_id("default") == "default"
++    assert terminal_tool.environment_key("default") == "default"
+ 
+ 
+ def test_subagent_task_id_collapses_to_default():
+     # delegate_task constructs IDs like "subagent-<N>-<uuid_hex>"; these
+     # should share the parent's container, not spin up their own.
+-    assert terminal_tool._resolve_container_task_id("subagent-0-deadbeef") == "default"
+-    assert terminal_tool._resolve_container_task_id("subagent-42-cafef00d") == "default"
++    assert terminal_tool.environment_key("subagent-0-deadbeef") == "default"
++    assert terminal_tool.environment_key("subagent-42-cafef00d") == "default"
+ 
+ 
+ def test_arbitrary_session_id_collapses_to_default():
+     # Session UUIDs or anything else without an override still collapse.
+-    assert terminal_tool._resolve_container_task_id("sess-123e4567-e89b-12d3") == "default"
++    assert terminal_tool.environment_key("sess-123e4567-e89b-12d3") == "default"
+ 
+ 
+ def test_rl_task_with_override_keeps_its_own_id():
+     # RL / benchmark pattern: register a per-task image, then the task_id
+-    # must survive ``_resolve_container_task_id`` so the rollout lands in
++    # must survive ``environment_key`` so the rollout lands in
+     # its own sandbox.
+     terminal_tool.register_task_env_overrides(
+         "tb2-task-fix-git", {"docker_image": "tb2:fix-git", "cwd": "/app"}
+     )
+     try:
+         assert (
+-            terminal_tool._resolve_container_task_id("tb2-task-fix-git")
++            terminal_tool.environment_key("tb2-task-fix-git")
+             == "tb2-task-fix-git"
+         )
+     finally:
+@@ -72,9 +72,9 @@ def test_rl_task_with_override_keeps_its_own_id():
+ 
+ def test_cleared_override_collapses_again():
+     terminal_tool.register_task_env_overrides("tb2-x", {"docker_image": "x:y"})
+-    assert terminal_tool._resolve_container_task_id("tb2-x") == "tb2-x"
++    assert terminal_tool.environment_key("tb2-x") == "tb2-x"
+     terminal_tool.clear_task_env_overrides("tb2-x")
+-    assert terminal_tool._resolve_container_task_id("tb2-x") == "default"
++    assert terminal_tool.environment_key("tb2-x") == "default"
+ 
+ 
+ def test_get_active_env_reads_shared_container_from_subagent_id():
+@@ -117,7 +117,7 @@ def test_cwd_only_override_collapses_to_default():
+     )
+     try:
+         assert (
+-            terminal_tool._resolve_container_task_id("acp-session-abc")
++            terminal_tool.environment_key("acp-session-abc")
+             == "default"
+         )
+     finally:
+@@ -132,7 +132,7 @@ def test_cwd_plus_docker_image_keeps_own_id():
+     )
+     try:
+         assert (
+-            terminal_tool._resolve_container_task_id("rl-with-cwd")
++            terminal_tool.environment_key("rl-with-cwd")
+             == "rl-with-cwd"
+         )
+     finally:
+@@ -146,7 +146,7 @@ def test_env_type_override_keeps_own_id():
+     )
+     try:
+         assert (
+-            terminal_tool._resolve_container_task_id("bench-env")
++            terminal_tool.environment_key("bench-env")
+             == "bench-env"
+         )
+     finally:
+diff --git a/tests/tools/test_terminal_task_cwd.py b/tests/tools/test_terminal_task_cwd.py
+index 85817fa..9f83f8f 100644
+--- a/tests/tools/test_terminal_task_cwd.py
++++ b/tests/tools/test_terminal_task_cwd.py
+@@ -94,7 +94,7 @@ def test_foreground_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
+     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {task_id: {"cwd": "/workspace/init"}})
+     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config(cwd="/workspace/init"))
+     monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+-    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda value: value or "default")
++    monkeypatch.setattr(terminal_tool, "environment_key", lambda *ids: ids[0] or "default")
+     monkeypatch.setattr(
+         terminal_tool,
+         "_check_all_guards",
+@@ -132,7 +132,7 @@ def test_background_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
+     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {task_id: {"cwd": "/workspace/init"}})
+     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config(cwd="/workspace/init"))
+     monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+-    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda value: value or "default")
++    monkeypatch.setattr(terminal_tool, "environment_key", lambda *ids: ids[0] or "default")
+     monkeypatch.setattr(
+         terminal_tool,
+         "_check_all_guards",
+diff --git a/tools/code_execution_tool.py b/tools/code_execution_tool.py
+index 54772d7..4fec047 100644
+--- a/tools/code_execution_tool.py
++++ b/tools/code_execution_tool.py
+@@ -624,21 +624,23 @@ def _rpc_server_loop(
+ # Remote execution support (file-based RPC via terminal backend)
+ # ---------------------------------------------------------------------------
+ 
+-def _get_or_create_env(task_id: str):
+-    """Get or create the terminal environment for *task_id*.
++def _get_or_create_env(task_id: str, session_id: Optional[str] = None):
++    """Get or create the terminal environment for a surface.
+ 
+     Reuses the same environment (container/sandbox/SSH session) that the
+     terminal and file tools use, creating one if it doesn't exist yet.
+-    Returns ``(env, env_type)`` tuple.
++    Identity resolves through the canonical ``environment_key`` so
++    execute-code shares the exact conversation/task environment of every
++    other surface. Returns ``(env, env_type)`` tuple.
+     """
+     from tools.terminal_tool import (
+         _active_environments, _env_lock, _create_environment,
+         _get_env_config, _last_activity, _start_cleanup_thread,
+         _creation_locks, _creation_locks_lock, _task_env_overrides,
+-        _resolve_container_task_id,
++        environment_key,
+     )
+ 
+-    effective_task_id = _resolve_container_task_id(task_id)
++    effective_task_id = environment_key(task_id, session_id)
+ 
+     # Fast path: environment already exists
+     with _env_lock:
+@@ -914,6 +916,7 @@ def _execute_remote(
+     code: str,
+     task_id: Optional[str],
+     enabled_tools: Optional[List[str]],
++    session_id: Optional[str] = None,
+ ) -> str:
+     """Run a script on the remote terminal backend via file-based RPC.
+ 
+@@ -931,8 +934,15 @@ def _execute_remote(
+     if not sandbox_tools:
+         sandbox_tools = SANDBOX_ALLOWED_TOOLS
+ 
+-    effective_task_id = task_id or "default"
+-    env, env_type = _get_or_create_env(effective_task_id)
++    env, env_type = _get_or_create_env(task_id, session_id)
++
++    # Sandbox RPC tool calls execute under the canonical environment key so
++    # they land in the same conversation environment as direct tool calls.
++    # (``environment_key`` passes already-derived keys through unchanged, so
++    # the handlers the poll loop dispatches to resolve this back to the same
++    # environment instead of deriving a fresh one.)
++    from tools.terminal_tool import environment_key as _environment_key
++    effective_task_id = _environment_key(task_id, session_id)
+ 
+     sandbox_id = uuid.uuid4().hex[:12]
+     temp_dir = _env_temp_dir(env)
+@@ -1116,6 +1126,7 @@ def execute_code(
+     code: str,
+     task_id: Optional[str] = None,
+     enabled_tools: Optional[List[str]] = None,
++    session_id: Optional[str] = None,
+ ) -> str:
+     """
+     Run a Python script in a sandboxed child process with RPC access
+@@ -1177,10 +1188,16 @@ def execute_code(
+         clear_current_thread_interrupt()
+ 
+     if env_type != "local":
+-        return _execute_remote(code, task_id, enabled_tools)
++        return _execute_remote(code, task_id, enabled_tools, session_id)
+ 
+     # --- Local execution path (UDS) --- below this line is unchanged ---
+ 
++    # Sandbox RPC tool calls dispatch under the canonical environment key so
++    # they share the conversation environment with direct tool calls in every
++    # scope (``environment_key`` passes derived keys through unchanged).
++    from tools.terminal_tool import environment_key as _environment_key
++    rpc_task_id = _environment_key(task_id, session_id)
++
+     # Import per-thread interrupt check (cooperative cancellation)
+     from tools.interrupt import is_interrupted as _is_interrupted
+ 
+@@ -1270,7 +1287,7 @@ def execute_code(
+         rpc_thread = threading.Thread(
+             target=propagate_context_to_thread(_rpc_server_loop),
+             args=(
+-                server_sock, task_id, tool_call_log,
++                server_sock, rpc_task_id, tool_call_log,
+                 tool_call_counter, max_tool_calls, sandbox_tools, stop_event, rpc_token,
+             ),
+             daemon=True,
+@@ -1896,14 +1913,21 @@ EXECUTE_CODE_SCHEMA = build_execute_code_schema()
+ # --- Registry ---
+ from tools.registry import registry, tool_error
+ 
++
++def _handle_execute_code(args, **kw):
++    return execute_code(
++        code=args.get("code", ""),
++        task_id=kw.get("task_id"),
++        enabled_tools=kw.get("enabled_tools"),
++        session_id=kw.get("session_id"),
++    )
++
++
+ registry.register(
+     name="execute_code",
+     toolset="code_execution",
+     schema=EXECUTE_CODE_SCHEMA,
+-    handler=lambda args, **kw: execute_code(
+-        code=args.get("code", ""),
+-        task_id=kw.get("task_id"),
+-        enabled_tools=kw.get("enabled_tools")),
++    handler=_handle_execute_code,
+     check_fn=check_sandbox_requirements,
+     emoji="🐍",
+     max_result_size_chars=100_000,
+diff --git a/tools/environments/docker.py b/tools/environments/docker.py
+index ea4a6ec..78e6dae 100644
+--- a/tools/environments/docker.py
++++ b/tools/environments/docker.py
+@@ -596,6 +596,8 @@ class DockerEnvironment(BaseEnvironment):
+         run_as_host_user: bool = False,
+         extra_args: list = None,
+         persist_across_processes: bool = True,
++        storage: str | None = None,
++        mount_support_files: bool | None = None,
+     ):
+         if cwd == "~":
+             cwd = "/root"
+@@ -604,6 +606,20 @@ class DockerEnvironment(BaseEnvironment):
+         self._persist_across_processes = persist_across_processes
+         self._task_id = task_id
+         self._forward_env = _normalize_forward_env_names(forward_env)
++        storage = (storage or os.getenv("TERMINAL_DOCKER_STORAGE", "bind")).strip().lower()
++        if storage not in {"bind", "named-volume"}:
++            raise ValueError(
++                "TERMINAL_DOCKER_STORAGE must be 'bind' or 'named-volume', "
++                f"not {storage!r}"
++            )
++        if mount_support_files is None:
++            mount_support_files = os.getenv(
++                "TERMINAL_DOCKER_MOUNT_SUPPORT_FILES", "true"
++            ).lower() in {"true", "1", "yes"}
++        self._storage = storage
++        self._mount_support_files = mount_support_files
++        profile_name = _sanitize_label_value(_get_active_profile_name())
++        task_label = _sanitize_label_value(task_id)
+         self._env = _normalize_env_dict(env)
+         self._container_id: Optional[str] = None
+         self._labels: dict[str, str] = {}
+@@ -678,18 +694,27 @@ class DockerEnvironment(BaseEnvironment):
+         self._home_dir: Optional[str] = None
+         writable_args = []
+         if self._persistent:
+-            sandbox = get_sandbox_dir() / "docker" / task_id
+-            self._home_dir = str(sandbox / "home")
+-            os.makedirs(self._home_dir, exist_ok=True)
+-            writable_args.extend([
+-                "-v", f"{self._home_dir}:/root",
+-            ])
+-            if not bind_host_cwd and not workspace_explicitly_mounted:
+-                self._workspace_dir = str(sandbox / "workspace")
+-                os.makedirs(self._workspace_dir, exist_ok=True)
++            if storage == "named-volume":
++                # The Docker/Podman service owns these paths. This works when
++                # the API server is a different Unix account and prevents the
++                # gateway from needing any sandbox storage access.
++                volume_prefix = f"hermes-{profile_name}-{task_label}"
+                 writable_args.extend([
+-                    "-v", f"{self._workspace_dir}:/workspace",
++                    "-v", f"{volume_prefix}-home:/root",
+                 ])
++                if not bind_host_cwd and not workspace_explicitly_mounted:
++                    writable_args.extend([
++                        "-v", f"{volume_prefix}-workspace:/workspace",
++                    ])
++            else:
++                sandbox = get_sandbox_dir() / "docker" / task_id
++                self._home_dir = str(sandbox / "home")
++                os.makedirs(self._home_dir, exist_ok=True)
++                writable_args.extend(["-v", f"{self._home_dir}:/root"])
++                if not bind_host_cwd and not workspace_explicitly_mounted:
++                    self._workspace_dir = str(sandbox / "workspace")
++                    os.makedirs(self._workspace_dir, exist_ok=True)
++                    writable_args.extend(["-v", f"{self._workspace_dir}:/workspace"])
+         else:
+             if not bind_host_cwd and not workspace_explicitly_mounted:
+                 writable_args.extend([
+@@ -714,6 +739,11 @@ class DockerEnvironment(BaseEnvironment):
+                 get_skills_directory_mount,
+                 get_cache_directory_mounts,
+             )
++            if not mount_support_files:
++                get_credential_file_mounts = lambda: []
++                get_skills_directory_mount = lambda: []
++                get_cache_directory_mounts = lambda: []
++                logger.info("Docker: gateway support-file mounts disabled")
+ 
+             for mount_entry in get_credential_file_mounts():
+                 src = Path(mount_entry["host_path"])
+@@ -863,8 +893,6 @@ class DockerEnvironment(BaseEnvironment):
+         # Values are limited to the safe character set defined by
+         # _sanitize_label_value(); the active Hermes profile is captured at
+         # container-start time and never changes for the container's lifetime.
+-        profile_name = _sanitize_label_value(_get_active_profile_name())
+-        task_label = _sanitize_label_value(task_id)
+         label_args = [
+             "--label", "hermes-agent=1",
+             "--label", f"hermes-task-id={task_label}",
+diff --git a/tools/file_tools.py b/tools/file_tools.py
+index 61e6ecc..0aa1870 100644
+--- a/tools/file_tools.py
++++ b/tools/file_tools.py
+@@ -173,11 +173,11 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
+             _active_environments,
+             _env_lock,
+             _get_env_config,
+-            _resolve_container_task_id,
++            environment_key,
+         )
+ 
+         try:
+-            container_key = _resolve_container_task_id(task_id)
++            container_key = environment_key(task_id)
+         except Exception:
+             container_key = task_id
+         with _env_lock:
+@@ -295,8 +295,8 @@ def _live_cwd_if_owned(env, task_id: str) -> str | None:
+ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
+     """Return the task's live terminal cwd for bookkeeping when available."""
+     try:
+-        from tools.terminal_tool import _resolve_container_task_id
+-        container_key = _resolve_container_task_id(task_id)
++        from tools.terminal_tool import environment_key
++        container_key = environment_key(task_id)
+     except Exception:
+         container_key = task_id
+ 
+@@ -667,10 +667,10 @@ def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | Non
+             _active_environments,
+             _env_lock,
+             _get_env_config,
+-            _resolve_container_task_id,
++            environment_key,
+         )
+ 
+-        container_key = _resolve_container_task_id(task_id)
++        container_key = environment_key(task_id)
+     except Exception:
+         return None
+ 
+@@ -798,8 +798,8 @@ def _last_known_cwd_for(task_id: str = "default") -> str | None:
+     up the resolved key first and fall back to the raw task id.
+     """
+     try:
+-        from tools.terminal_tool import _resolve_container_task_id
+-        container_key = _resolve_container_task_id(task_id)
++        from tools.terminal_tool import environment_key
++        container_key = environment_key(task_id)
+     except Exception:
+         container_key = task_id
+     with _file_ops_lock:
+@@ -1012,7 +1012,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
+     prevent duplicate sandbox creation from concurrent tool calls.
+ 
+     Note: subagent task_ids are collapsed to "default" via
+-    ``_resolve_container_task_id`` so delegate_task children share the
++    ``environment_key`` so delegate_task children share the
+     parent's container and its cached file_ops. RL/benchmark task_ids with
+     a registered env override keep their isolation.
+     """
+@@ -1021,14 +1021,16 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
+         _get_env_config, _last_activity, _start_cleanup_thread,
+         _creation_locks,
+         _creation_locks_lock,
+-        _resolve_container_task_id,
++        environment_key,
+         _is_unusable_container_cwd,
+         _CONTAINER_BACKENDS,
+     )
+     import time
+ 
++    # Keep the raw id for override lookups (they are registered under raw
++    # session/task ids); the canonical key drives every environment lookup.
+     raw_task_id = task_id or "default"
+-    task_id = _resolve_container_task_id(raw_task_id)
++    task_id = environment_key(task_id)
+ 
+     # Fast path: check cache -- but also verify the underlying environment
+     # is still alive (it may have been killed by the cleanup thread).
+@@ -2114,12 +2116,16 @@ SEARCH_FILES_SCHEMA = {
+ 
+ 
+ def _handle_read_file(args, **kw):
+-    tid = kw.get("task_id") or "default"
++    from tools.terminal_tool import environment_key
++
++    tid = environment_key(kw.get("task_id"), kw.get("session_id"))
+     return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+ 
+ 
+ def _handle_write_file(args, **kw):
+-    tid = kw.get("task_id") or "default"
++    from tools.terminal_tool import environment_key
++
++    tid = environment_key(kw.get("task_id"), kw.get("session_id"))
+     if not args.get("path") or not isinstance(args.get("path"), str):
+         return tool_error(
+             "write_file: missing required field 'path'. Re-emit the tool call with "
+@@ -2146,7 +2152,9 @@ def _handle_write_file(args, **kw):
+ 
+ 
+ def _handle_patch(args, **kw):
+-    tid = kw.get("task_id") or "default"
++    from tools.terminal_tool import environment_key
++
++    tid = environment_key(kw.get("task_id"), kw.get("session_id"))
+     return patch_tool(
+         mode=args.get("mode", "replace"), path=args.get("path"),
+         old_string=args.get("old_string"), new_string=args.get("new_string"),
+@@ -2157,7 +2165,9 @@ def _handle_patch(args, **kw):
+ 
+ 
+ def _handle_search_files(args, **kw):
+-    tid = kw.get("task_id") or "default"
++    from tools.terminal_tool import environment_key
++
++    tid = environment_key(kw.get("task_id"), kw.get("session_id"))
+     target_map = {"grep": "content", "find": "files"}
+     raw_target = args.get("target", "content")
+     target = target_map.get(raw_target, raw_target)
+diff --git a/tools/process_registry.py b/tools/process_registry.py
+index 5dfa5de..2ea869e 100644
+--- a/tools/process_registry.py
++++ b/tools/process_registry.py
+@@ -2180,13 +2180,22 @@ def _handle_process(args, **kw):
+         # Surface session-scoped background processes (e.g. a forgotten
+         # preview server) in addition to this task's own — they share the
+         # gateway session_key and can block session reset (#29177).
++        #
++        # Background processes are recorded under the canonical environment
++        # key (the same identity terminal/file/execute-code surfaces use),
++        # so the task filter must resolve through it too — filtering by the
++        # raw task id would never match conversation-scoped spawns.
++        from tools.terminal_tool import environment_key
+         try:
+             from tools.approval import get_current_session_key
+             session_key = get_current_session_key(default="") or ""
+         except Exception:
+             session_key = ""
+         return json.dumps(
+-            {"processes": process_registry.list_sessions(task_id=task_id, session_key=session_key or None)},
++            {"processes": process_registry.list_sessions(
++                task_id=environment_key(task_id, kw.get("session_id")),
++                session_key=session_key or None,
++            )},
+             ensure_ascii=False,
+         )
+     elif action in {"poll", "log", "wait", "kill", "write", "submit", "close"}:
+diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
+index 44ef03a..4694933 100644
+--- a/tools/terminal_tool.py
++++ b/tools/terminal_tool.py
+@@ -31,6 +31,7 @@ Usage:
+     result = terminal_tool("python server.py", background=True)
+ """
+ 
++import hashlib
+ import importlib.util
+ import json
+ import logging
+@@ -1100,13 +1101,13 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
+     new_cwd = overrides.get("cwd")
+     if isinstance(new_cwd, str) and new_cwd.strip():
+         # The live env is cached under the raw task_id for per-session surfaces
+-        # (ACP/gateway/dashboard) and under the collapsed container id for
+-        # isolation-keyed rollouts. Try the raw id first, then the container id,
+-        # so a CWD-only override (which collapses to "default") still finds and
+-        # updates the originating session's env.
+-        container_id = _resolve_container_task_id(task_id)
++        # surfaces (ACP/gateway/dashboard) and under the canonical key for
++        # isolation-keyed rollouts. Try the raw id first, then the canonical
++        # key, so a CWD-only override (which collapses to "default") still
++        # finds and updates the originating session's env.
++        key = environment_key(task_id)
+         with _env_lock:
+-            env = _active_environments.get(task_id) or _active_environments.get(container_id)
++            env = _active_environments.get(task_id) or _active_environments.get(key)
+         if env is not None and getattr(env, "cwd", None) is not None:
+             env.cwd = new_cwd
+ 
+@@ -1120,57 +1121,85 @@ def clear_task_env_overrides(task_id: str):
+     _task_env_overrides.pop(task_id, None)
+ 
+ 
+-def _resolve_container_task_id(task_id: Optional[str]) -> str:
++# Derived environment keys are opaque: they never embed the platform
++# session/conversation identifier, so engine metadata (container names,
++# volume labels, process bookkeeping) cannot leak or be guessed from it.
++_DERIVED_ENV_KEY_RE = re.compile(r"^conversation-[0-9a-f]{24}$")
++
++# Overrides containing any of these keys request an isolated per-task
++# sandbox (RL / benchmark rollouts); CWD-only overrides are *not*
++# isolation signals and must not fork environments per session.
++_ISOLATION_OVERRIDE_KEYS = frozenset({
++    "docker_image", "modal_image", "singularity_image",
++    "daytona_image", "env_type",
++})
++
++
++def environment_key(task_id: Optional[str] = None, session_id: Optional[str] = None) -> str:
++    """Derive the one canonical environment key for a tool surface.
++
++    Every environment-backed surface (terminal, background/PTY processes,
++    file read/write/stat/list, patch, search, execute-code, environment
++    creation/cleanup, and worker-lane dispatch) MUST resolve identity
++    through this function and only this function, so two conversations can
++    never alias each other's environment and no surface invents its own
++    fallback.
++
++    Scopes:
++
++    * ``TERMINAL_ISOLATION_SCOPE=conversation``: the key is
++      ``conversation-<sha256(identity)[:24]>`` where identity is
++      ``session_id`` (trusted conversation id) with ``task_id`` as the
++      explicit per-task fallback. The raw identifier is never exposed.
++    * ``shared`` (upstream default): everything collapses to ``"default"``
++      so subagents share the parent's long-lived environment.
++    * Isolation overrides (``register_task_env_overrides`` with backend
++      image keys or ``env_type``) always win in either scope and keep the
++      raw task id as the key -- that isolation is the point of the
++      override.
++
++    Fallback: when neither identifier is available the key is the explicit
++    constant ``"default"``. This is only reachable for platform-internal
++    calls with no conversation context; it never merges two *identified*
++    conversations, because any present identifier takes the keyed path.
++
++    The function is idempotent: an already-derived ``conversation-<hex>``
++    key is returned unchanged, so passing a resolved key back through any
++    surface cannot accidentally re-derive (and orphan) an environment.
+     """
+-    Map a tool-call ``task_id`` to the container/sandbox key used by
+-    ``_active_environments``.
+-
+-    The top-level agent passes ``task_id=None`` and lands on ``"default"``.
+-    ``delegate_task`` children pass their own subagent ID so that
+-    file-state tracking, the active-subagents registry, and TUI events stay
+-    distinct per child -- but we deliberately collapse that ID back to
+-    ``"default"`` here so subagents share the parent's long-lived container
+-    (one bash, one /workspace, one set of installed packages).
+-
+-    Exception: RL / benchmark environments (TerminalBench2, HermesSweEnv, ...)
+-    call ``register_task_env_overrides(task_id, {...})`` to request a
+-    per-task Docker/Modal image. When an override is registered for a
+-    task_id, we honour it by returning the task_id unchanged -- those
+-    rollouts need their own isolated sandbox, which is the whole point of
+-    the override.
+-
+-    CWD-only overrides (registered by the ACP adapter for workspace
+-    tracking) are *not* isolation signals — they should not cause each
+-    session to spin up its own container.  Only overrides containing
+-    backend-specific image keys or ``env_type`` trigger isolation.
+-    """
+-    _ISOLATION_KEYS = frozenset({
+-        "docker_image", "modal_image", "singularity_image",
+-        "daytona_image", "env_type",
+-    })
+-    if task_id and task_id in _task_env_overrides:
+-        overrides = _task_env_overrides[task_id]
+-        if set(overrides.keys()) & _ISOLATION_KEYS:
+-            return task_id
++    scope = os.getenv("TERMINAL_ISOLATION_SCOPE", "shared").strip().lower()
++    identity = (session_id or task_id) if scope == "conversation" else task_id
++    if not identity:
++        return "default"
++    if _DERIVED_ENV_KEY_RE.match(identity):
++        return identity
++    for raw in (task_id, session_id):
++        if raw and raw in _task_env_overrides:
++            if set(_task_env_overrides[raw].keys()) & _ISOLATION_OVERRIDE_KEYS:
++                return raw
++    if scope == "conversation":
++        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
++        return f"conversation-{digest}"
+     return "default"
+ 
+ 
+-def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
+-    """Return the env overrides for *task_id*, raw key first then collapsed.
++def resolve_task_overrides(task_id: Optional[str], session_id: Optional[str] = None) -> Dict[str, Any]:
++    """Return the env overrides for a surface, raw ids first then canonical key.
+ 
+     ``register_task_env_overrides`` writes under the *raw* task/session id, but
+-    a CWD-only override collapses (:func:`_resolve_container_task_id`) to the
+-    shared ``"default"`` container so per-session surfaces (ACP/gateway/
++    a CWD-only override collapses (:func:`environment_key`) to the shared
++    ``"default"`` container so per-session surfaces (ACP/gateway/
+     dashboard) don't each spin up their own sandbox. Callers that need the
+     override (terminal command setup, file-tool cwd resolution) must therefore
+-    read the raw id FIRST and only fall back to the collapsed container id, or
+-    the originating session's override is silently dropped. This is the single
+-    source of that lookup so the terminal and file layers can't drift apart.
++    read the raw ids FIRST and only fall back to the canonical environment
++    key, or the originating session's override is silently dropped. This is
++    the single source of that lookup so the terminal and file layers can't
++    drift apart.
+     """
+-    raw = task_id or "default"
+     return (
+-        _task_env_overrides.get(raw)
+-        or _task_env_overrides.get(_resolve_container_task_id(raw))
++        _task_env_overrides.get(task_id or "")
++        or _task_env_overrides.get(session_id or "")
++        or _task_env_overrides.get(environment_key(task_id, session_id))
+         or {}
+     )
+ 
+@@ -1640,7 +1669,7 @@ def _stop_cleanup_thread():
+ 
+ def get_active_env(task_id: str):
+     """Return the active BaseEnvironment for *task_id*, or None."""
+-    lookup = _resolve_container_task_id(task_id)
++    lookup = environment_key(task_id)
+     with _env_lock:
+         return _active_environments.get(lookup) or _active_environments.get(task_id)
+ 
+@@ -1714,20 +1743,31 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
+     """
+     # Remove from tracking dicts while holding the lock, but defer the
+     # actual (potentially slow) env.cleanup() call to outside the lock
+-    # so other tool calls aren't blocked.
++    # so other tool calls aren't blocked. Environments are keyed by the
++    # canonical environment key, so resolve the caller's raw task/session
++    # id first; otherwise session teardown (``AIAgent.close()``) silently
++    # leaks conversation-scoped environments. Fall back to the raw id for
++    # per-session surfaces that cached under it.
++    key = environment_key(task_id)
+     env = None
+     with _env_lock:
+-        env = _active_environments.pop(task_id, None)
+-        _last_activity.pop(task_id, None)
++        env = _active_environments.pop(key, None)
++        _last_activity.pop(key, None)
++        if env is None and key != task_id:
++            env = _active_environments.pop(task_id, None)
++            _last_activity.pop(task_id, None)
+ 
+     # Clean up per-task creation lock
+     with _creation_locks_lock:
++        _creation_locks.pop(key, None)
+         _creation_locks.pop(task_id, None)
+ 
+     # Invalidate stale file_ops cache entry
+     try:
+         from tools.file_tools import clear_file_ops_cache
+-        clear_file_ops_cache(task_id)
++        clear_file_ops_cache(key)
++        if key != task_id:
++            clear_file_ops_cache(task_id)
+     except ImportError:
+         pass
+ 
+@@ -2067,19 +2107,21 @@ def terminal_tool(
+         config = _get_env_config()
+         env_type = config["env_type"]
+ 
+-        # Use task_id for environment isolation. By default all subagent
+-        # task_ids collapse back to "default" so the top-level agent and
+-        # every delegate_task child share one container; only task_ids with
+-        # a registered env override (RL benchmarks) get isolated sandboxes.
+-        effective_task_id = _resolve_container_task_id(task_id)
++        # Use the canonical environment key for environment isolation. In
++        # the default shared scope every task_id collapses back to
++        # "default" so the top-level agent and every delegate_task child
++        # share one container; in conversation scope each conversation gets
++        # an opaque derived key; only task_ids with a registered env
++        # override (RL benchmarks) get isolated sandboxes.
++        effective_task_id = environment_key(task_id, session_id)
+ 
+         # Check per-task overrides (set by environments like TerminalBench2Env)
+         # before falling back to global env var config. ``resolve_task_overrides``
+-        # reads the raw task id first then the collapsed container id, so a
++        # reads the raw task/session ids first then the canonical key, so a
+         # CWD-only override (which collapses ``effective_task_id`` to
+         # ``"default"``) is still found under its originating session id while
+         # isolation-keyed RL/benchmark overrides keep resolving as before.
+-        overrides = resolve_task_overrides(task_id)
++        overrides = resolve_task_overrides(task_id, session_id)
+         
+         # Select image based on env type, with per-task override support
+         if env_type == "docker":
