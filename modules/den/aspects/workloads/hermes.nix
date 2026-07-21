@@ -275,7 +275,7 @@ in
       includes = [
         den.aspects.virtualization.podman-user
         # Self-gates on secureTerminal.backend == "gondolin"; the Podman
-        # slice below remains the backend until the spike decision (V3 §18).
+        # service remains available only for profiles that select it.
         den.aspects.workloads.hermes.secureTerminal
       ];
 

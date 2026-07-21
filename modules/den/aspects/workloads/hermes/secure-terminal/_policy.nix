@@ -158,6 +158,58 @@ let
       };
     };
 
+  effectActions = [
+    "environment.ensure"
+    "environment.status"
+    "environment.close"
+    "exec.foreground"
+    "fs.stat"
+    "fs.list"
+    "fs.read"
+    "fs.write"
+    "fs.mkdir"
+    "fs.remove"
+  ];
+
+  mkEffectLane =
+    {
+      defaultTemplate,
+      allowedPairs,
+      maximum,
+    }:
+    let
+      matchingPairs = builtins.filter (pair: pair.template == defaultTemplate) allowedPairs;
+      pair =
+        if matchingPairs == [ ] then
+          throw "Gondolin Effect policy has no allowed asset pair for template '${defaultTemplate}'"
+        else
+          builtins.head matchingPairs;
+      template =
+        templates.${defaultTemplate}
+          or (throw "Gondolin Effect policy references unknown template '${defaultTemplate}'");
+      maximumResources = maximum.resources or { };
+      min = left: right: if left < right then left else right;
+      resourceLimit =
+        name: hardDefault:
+        min hardDefault (
+          min (template.resources.${name} or hardDefault) (maximumResources.${name} or hardDefault)
+        );
+    in
+    {
+      asset = pair.asset;
+      memoryMiB = resourceLimit "memoryMiB" floor.maxResources.memoryMiB;
+      cpus = resourceLimit "cpus" floor.maxResources.cpus;
+      workspaceGuestPath = "/workspace";
+      limits = {
+        maxCommandMs = floor.maxResources.maxCommandMs;
+        maxOutputBytes = floor.maxResources.maxOutputBytes;
+        maxInputBytes = floor.maxInputBytes;
+        maxFileBytes = floor.maxInputBytes;
+        maxListEntries = 4096;
+        maxConcurrentExecs = 1;
+      };
+    };
+
 in
 {
   inherit floor templates credentialCapabilities;
@@ -173,6 +225,79 @@ in
     in
     {
       json = pkgs.writeText "hermes-${profile}-sandbox-policy.json" (builtins.toJSON rendered);
+      inherit policyId;
+    };
+
+  # Compatibility envelope for the Effect/HTTP broker. The reviewed V3
+  # templates still choose immutable assets and resource ceilings, while the
+  # current Effect runtime remains intentionally network-offline and has no
+  # credential grants.
+  mkEffectPolicy =
+    {
+      pkgs,
+      profile,
+      assets,
+      defaultTemplate,
+      allowedPairs,
+      maximum,
+      worklanes ? { },
+      ...
+    }:
+    let
+      defaultLane = mkEffectLane {
+        inherit defaultTemplate allowedPairs maximum;
+      };
+      mappedWorklanes = builtins.mapAttrs (
+        _: lane:
+        let
+          laneMaximum = lane.maximum or { };
+        in
+        mkEffectLane {
+          defaultTemplate = lane.defaultTemplate or defaultTemplate;
+          allowedPairs = lane.allowedPairs or allowedPairs;
+          maximum = maximum // laneMaximum // {
+            resources = (maximum.resources or { }) // (laneMaximum.resources or { });
+          };
+        }
+      ) worklanes;
+      limits = {
+        cpus = floor.maxResources.cpus;
+        memoryMiB = floor.maxResources.memoryMiB;
+        maxCommandMs = floor.maxResources.maxCommandMs;
+        maxOutputBytes = floor.maxResources.maxOutputBytes;
+        maxInputBytes = floor.maxInputBytes;
+        maxFileBytes = floor.maxInputBytes;
+        maxListEntries = 4096;
+        maxConcurrentExecs = 1;
+        timeoutMs = floor.maxResources.maxCommandMs;
+        outputBytes = floor.maxResources.maxOutputBytes;
+        inputBytes = floor.maxInputBytes;
+        bytes = floor.maxInputBytes;
+        entries = 4096;
+      };
+      doc = {
+        version = 1;
+        policyGeneration = 1;
+        policy = {
+          version = 1;
+          statements = [
+            {
+              effect = "allow";
+              actions = effectActions;
+              resources = [ "environment:*" ];
+              inherit limits;
+            }
+          ];
+        };
+        defaultWorklane = "default";
+        maxEnvironments = floor.maxVms;
+        inherit assets;
+        worklanes = { default = defaultLane; } // mappedWorklanes;
+      };
+      policyId = builtins.hashString "sha256" (builtins.toJSON doc);
+    in
+    {
+      json = pkgs.writeText "hermes-${profile}-effect-sandbox-policy.json" (builtins.toJSON doc);
       inherit policyId;
     };
 }

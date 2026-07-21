@@ -17,6 +17,7 @@
       };
       policyLib = import (self + "/modules/den/aspects/workloads/hermes/secure-terminal/_policy.nix") { };
       broker = pkgs.callPackage (self + "/pkgs/by-name/hermes-gondolin-broker/package.nix") { };
+      effectBroker = pkgs.callPackage (self + "/pkgs/by-name/gondolin-broker-effect/package.nix") { };
 
       # Mirror of the QA selections in modules/den/users/hermes-runners.nix.
       # Keep in sync: the host evaluation proves the real path; this check
@@ -103,6 +104,15 @@
         maximum = qaSelections.maximum;
         worklanes = qaSelections.worklanes;
       };
+      effectPolicy = policyLib.mkEffectPolicy {
+        inherit pkgs;
+        assets = lib.mapAttrs (_: asset: { path = "${asset}"; }) assets;
+        profile = qaSelections.profile;
+        defaultTemplate = qaSelections.defaultTemplate;
+        allowedPairs = qaSelections.allowedPairs;
+        maximum = qaSelections.maximum;
+        worklanes = qaSelections.worklanes;
+      };
     in
     {
       checks.secure-terminal-policy-golden =
@@ -155,6 +165,54 @@
               }
               console.log("policy golden: parse + compose + floor invariants OK");
             '
+            touch $out
+          '';
+      checks.secure-terminal-effect-policy-http =
+        pkgs.runCommand "secure-terminal-effect-policy-http"
+          {
+            nativeBuildInputs = [ pkgs.nodejs_24 ];
+            policyJson = "${effectPolicy.json}";
+          }
+          ''
+            export GONDOLIN_EFFECT_POLICY="$policyJson"
+            export GONDOLIN_EFFECT_PROFILE=hermes-qa
+            export GONDOLIN_EFFECT_STATE_DIR="$TMPDIR/state"
+            export GONDOLIN_EFFECT_SOCKET="$TMPDIR/broker.sock"
+            ${effectBroker}/bin/gondolin-broker-effect >"$TMPDIR/broker.log" 2>&1 &
+            broker_pid=$!
+            trap 'kill "$broker_pid" 2>/dev/null || true' EXIT
+            for _ in $(seq 1 100); do
+              [ -S "$GONDOLIN_EFFECT_SOCKET" ] && break
+              if ! kill -0 "$broker_pid"; then
+                cat "$TMPDIR/broker.log"
+                exit 1
+              fi
+              sleep 0.05
+            done
+            [ -S "$GONDOLIN_EFFECT_SOCKET" ]
+            node --input-type=module -e '
+              import http from "node:http";
+              const body = await new Promise((resolve, reject) => {
+                const request = http.request({
+                  socketPath: process.env.GONDOLIN_EFFECT_SOCKET,
+                  path: "/v1/health",
+                  method: "GET",
+                }, (response) => {
+                  const chunks = [];
+                  response.on("data", (chunk) => chunks.push(chunk));
+                  response.on("end", () => {
+                    if (response.statusCode !== 200) reject(new Error("health status " + response.statusCode));
+                    else resolve(Buffer.concat(chunks).toString("utf8"));
+                  });
+                });
+                request.on("error", reject);
+                request.end();
+              });
+              if (JSON.parse(body).status !== "ok") throw new Error("broker health response is not ok");
+            '
+            kill "$broker_pid"
+            wait "$broker_pid" || true
+            trap - EXIT
             touch $out
           '';
     };
