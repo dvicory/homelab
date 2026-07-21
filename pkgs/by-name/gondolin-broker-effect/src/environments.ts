@@ -15,6 +15,7 @@ import { Authorization } from "./auth.js";
 import { BrokerConfig } from "./config.js";
 import type { EnvironmentRef, EnsureRequest, WorklaneLimits } from "./domain.js";
 import { brokerError, type BrokerError } from "./errors.js";
+import { AccessGrants } from "./grants.js";
 import { Registry } from "./registry.js";
 import { VmRuntime, type VmHandle } from "./runtime.js";
 
@@ -91,6 +92,7 @@ const make = Effect.gen(function* () {
   const authorization = yield* Authorization;
   const registry = yield* Registry;
   const runtime = yield* VmRuntime;
+  const grants = yield* AccessGrants;
   const live = new Map<string, LiveEnvironment>();
   const mutation = yield* STM.commit(TSemaphore.make(1));
 
@@ -242,6 +244,11 @@ const make = Effect.gen(function* () {
         workspaceGuestPath: worklane.workspaceGuestPath,
         sessionLabel: `${config.profile}:${request.environmentKey}:${record.generation}`,
         network,
+        dynamicNetwork: {
+          activeGrants: () =>
+            grants.matching(binding, request.environmentKey),
+          consumeOnce: (grantId) => Effect.runPromise(grants.consumeOnce(grantId)),
+        },
       }).pipe(
         Effect.tapError((error) =>
           registry.markFailed(request.environmentKey, record.generation, error.message).pipe(Effect.ignore),

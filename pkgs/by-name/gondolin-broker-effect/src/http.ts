@@ -4,14 +4,18 @@ import * as HttpServerResponse from "@effect/platform/HttpServerResponse";
 import { Effect, Schema, Stream } from "effect";
 import {
   BindAuthorityRequest,
+  DecideAccessRequest,
   EnvironmentRef,
   EnsureRequest,
   ExecRequest,
   FileRef,
   ListFileRequest,
   MakeDirectoryRequest,
+  ListGrantsRequest,
   ReadFileRequest,
   RemoveFileRequest,
+  PrepareAccessRequest,
+  RevokeGrantRequest,
   StatusRequest,
   WriteFileRequest,
 } from "./domain.js";
@@ -20,6 +24,7 @@ import { Environments } from "./environments.js";
 import { asBrokerError, brokerError, publicErrorEvent, publicProblem, statusFor, type BrokerError } from "./errors.js";
 import { Executor } from "./exec.js";
 import { Files } from "./files.js";
+import { AccessGrants } from "./grants.js";
 import { Registry } from "./registry.js";
 
 const encoder = new TextEncoder();
@@ -138,6 +143,7 @@ export const makeHttpApp = Effect.gen(function* () {
 export const makeControlHttpApp = Effect.gen(function* () {
   const config = yield* BrokerConfig;
   const registry = yield* Registry;
+  const grants = yield* AccessGrants;
 
   const bindAuthority = (request: typeof BindAuthorityRequest.Type) =>
     Effect.gen(function* () {
@@ -193,6 +199,22 @@ export const makeControlHttpApp = Effect.gen(function* () {
     HttpRouter.post(
       "/v1/control/authority/status",
       unary("authority.status", StatusRequest, authorityStatus),
+    ),
+    HttpRouter.post(
+      "/v1/control/access/prepare",
+      unary("access.prepare", PrepareAccessRequest, grants.prepare),
+    ),
+    HttpRouter.post(
+      "/v1/control/access/decide",
+      unary("access.decide", DecideAccessRequest, grants.decide),
+    ),
+    HttpRouter.post(
+      "/v1/control/grants/list",
+      unary("grants.list", ListGrantsRequest, ({ environmentKey }) => grants.list(environmentKey)),
+    ),
+    HttpRouter.post(
+      "/v1/control/grants/revoke",
+      unary("grants.revoke", RevokeGrantRequest, ({ grantId, principal }) => grants.revoke(grantId, principal)),
     ),
     HttpRouter.catchAll(() =>
       Effect.succeed(errorResponse(brokerError("request.invalid", "control route does not exist"))),

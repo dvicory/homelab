@@ -14,6 +14,7 @@ import { EnvironmentsLive } from "./environments.js";
 import { ExecutorLive } from "./exec.js";
 import { FilesLive } from "./files.js";
 import { makeControlHttpApp, makeHttpApp } from "./http.js";
+import { AccessGrantsLive } from "./grants.js";
 import { RegistryLive } from "./registry.js";
 import { VmRuntimeLive } from "./runtime.js";
 
@@ -22,7 +23,8 @@ export const BrokerLive = (() => {
   const policy = BrokerPolicyKernelLive.pipe(Layer.provideMerge(infrastructure));
   const authorization = AuthorizationLive.pipe(Layer.provideMerge(policy));
   const registry = RegistryLive.pipe(Layer.provideMerge(authorization));
-  const environments = EnvironmentsLive.pipe(Layer.provideMerge(registry));
+  const grants = AccessGrantsLive.pipe(Layer.provideMerge(registry));
+  const environments = EnvironmentsLive.pipe(Layer.provideMerge(grants));
   const executor = ExecutorLive.pipe(Layer.provideMerge(environments));
   return FilesLive.pipe(Layer.provideMerge(executor));
 })();
