@@ -115,7 +115,7 @@ export const makeFakeRuntime = () => {
 
 export const makePolicyFile = (overrides = {}) => ({
   version: 1,
-  policyGeneration: 1,
+  policyDigest: "a".repeat(64),
   policy: {
     version: 1,
     statements: [

@@ -244,6 +244,23 @@ in
       ...
     }:
     let
+      supportedGrantScopes = [
+        "once"
+        "task"
+        "conversation"
+        "timed"
+        "profile"
+        "executor"
+      ];
+      configuredGrantScopes = maximum.grantScopes or [ ];
+      unknownGrantScopes = builtins.filter (
+        scope: !(builtins.elem scope supportedGrantScopes)
+      ) configuredGrantScopes;
+      allowedGrantScopes =
+        if unknownGrantScopes == [ ] then
+          configuredGrantScopes
+        else
+          throw "Gondolin Effect policy has unknown grant scopes: ${builtins.concatStringsSep ", " unknownGrantScopes}";
       laneTemplateNames = {
         default = defaultTemplate;
       } // builtins.mapAttrs (_: lane: lane.defaultTemplate or defaultTemplate) worklanes;
@@ -347,32 +364,27 @@ in
           ];
         }) (builtins.attrNames lanes);
       };
-      doc = {
+      grantPolicy = {
+        allowedScopes = allowedGrantScopes;
+        maxDurationSeconds = 3600;
+        denialCooldownSeconds = 300;
+        promptBudget = {
+          maxNewRequests = 4;
+          windowSeconds = 900;
+        };
+      };
+      policyMaterial = {
         version = 1;
-        policyGeneration = 1;
-        inherit policy networkPolicies;
+        inherit policy networkPolicies grantPolicy assets;
         defaultExecutor = "hermes-gateway";
         defaultAuthorityClass = "default";
         maxEnvironments = floor.maxVms;
-        grantPolicy = {
-          allowedScopes = [
-            "once"
-            "task"
-            "conversation"
-            "timed"
-            "profile"
-            "executor"
-          ];
-          maxDurationSeconds = 3600;
-          denialCooldownSeconds = 300;
-          promptBudget = {
-            maxNewRequests = 4;
-            windowSeconds = 900;
-          };
-        };
-        inherit assets;
         worklanes = lanes;
       };
+      # The full immutable Nix policy digest fences persisted environments,
+      # requests, and grants. Identical rebuilds retain the same identity.
+      policyDigest = builtins.hashString "sha256" (builtins.toJSON policyMaterial);
+      doc = policyMaterial // { inherit policyDigest; };
       policyId = builtins.hashString "sha256" (builtins.toJSON doc);
     in
     {

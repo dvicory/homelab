@@ -1,5 +1,6 @@
 """Exercise the production systemd LISTEN_FDS contract over a real Unix listener."""
 
+import hashlib
 import json
 import os
 import signal
@@ -19,7 +20,7 @@ asset_path.mkdir()
 (asset_path / "manifest.json").write_text(json.dumps({"buildId": "activation-test"}))
 policy = {
     "version": 1,
-    "policyGeneration": 1,
+    "policyDigest": "a" * 64,
     "policy": {
         "version": 1,
         "statements": [
@@ -58,6 +59,11 @@ policy = {
         }
     },
 }
+policy["policyDigest"] = hashlib.sha256(json.dumps(
+    {key: value for key, value in policy.items() if key != "policyDigest"},
+    sort_keys=True,
+    separators=(",", ":"),
+).encode()).hexdigest()
 policy_path = root / "policy.json"
 policy_path.write_text(json.dumps(policy))
 
@@ -162,7 +168,7 @@ try:
         "profile": "activation-test",
         "executor": "hermes-gateway",
         "authorityClass": "default",
-        "policyGeneration": 1,
+        "policyDigest": policy["policyDigest"],
     })
 
     if b"HTTP/1.1 200" not in execution_health or b'"plane":"execution"' not in execution_health:

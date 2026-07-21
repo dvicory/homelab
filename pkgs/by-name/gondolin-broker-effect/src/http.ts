@@ -154,10 +154,10 @@ export const makeControlHttpApp = Effect.gen(function* () {
           requestedProfile: request.profile,
         });
       }
-      if (request.policyGeneration !== config.policyFile.policyGeneration) {
-        return yield* brokerError("authority.conflict", "authority policy generation is not active", {
-          activePolicyGeneration: config.policyFile.policyGeneration,
-          requestedPolicyGeneration: request.policyGeneration,
+      if (request.policyDigest !== config.policyFile.policyDigest) {
+        return yield* brokerError("authority.conflict", "authority policy digest is not active", {
+          activePolicyDigest: config.policyFile.policyDigest,
+          requestedPolicyDigest: request.policyDigest,
         });
       }
       if (!(request.authorityClass in config.policyFile.worklanes)) {
@@ -176,7 +176,15 @@ export const makeControlHttpApp = Effect.gen(function* () {
           environmentKey,
         });
       }
-      return binding;
+      const environment = yield* registry.get(environmentKey);
+      if (environment === undefined) return binding;
+      const visibleEnvironment = {
+        generation: environment.generation,
+        state: environment.state,
+        worklane: environment.worklane,
+        assetBuildId: environment.assetBuildId,
+      };
+      return { ...binding, ...visibleEnvironment };
     });
 
   const unary = <A, I>(

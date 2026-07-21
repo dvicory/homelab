@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
-import { mkdtemp } from "node:fs/promises"
+import { DatabaseSync } from "node:sqlite"
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -81,7 +82,7 @@ test("ensure binds broker-owned default authority and rejects conflicts", async 
     assert.equal(ensured.profile, "test")
     assert.equal(ensured.executor, "hermes-gateway")
     assert.equal(ensured.authorityClass, "default")
-    assert.equal(ensured.policyGeneration, 1)
+    assert.equal(ensured.policyDigest, "a".repeat(64))
 
     const binding = yield* registry.getAuthority("conversation-authority")
     assert.equal(binding.profile, "test")
@@ -93,7 +94,7 @@ test("ensure binds broker-owned default authority and rejects conflicts", async 
       profile: "test",
       executor: "different-executor",
       authorityClass: "default",
-      policyGeneration: 1
+      policyDigest: "a".repeat(64)
     }))
     assert.equal(conflict.reason, "authority.conflict")
   }))
@@ -106,7 +107,7 @@ test("authority bindings persist across broker registry restarts", async () => {
     profile: "test",
     executor: "hermes-gateway",
     authorityClass: "default",
-    policyGeneration: 1
+    policyDigest: "a".repeat(64)
   }
 
   const first = makeTestLayer(stateDir)
@@ -124,7 +125,46 @@ test("authority bindings persist across broker registry restarts", async () => {
   assert.equal(binding.profile, request.profile)
   assert.equal(binding.executor, request.executor)
   assert.equal(binding.authorityClass, request.authorityClass)
-  assert.equal(binding.policyGeneration, request.policyGeneration)
+  assert.equal(binding.policyDigest, request.policyDigest)
+})
+
+test("legacy numeric policy state is discarded without deleting workspaces", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "gondolin-policy-digest-migration-"))
+  const workspaceFile = path.join(stateDir, "workspaces", "legacy", "fixture.txt")
+  await mkdir(path.dirname(workspaceFile), { recursive: true })
+  await writeFile(workspaceFile, "preserved")
+  const databasePath = path.join(stateDir, "broker.sqlite")
+  const legacy = new DatabaseSync(databasePath)
+  legacy.exec(`
+    CREATE TABLE environments (environment_key TEXT PRIMARY KEY, policy_generation INTEGER) STRICT;
+    CREATE TABLE authority_bindings (environment_key TEXT PRIMARY KEY, policy_generation INTEGER) STRICT;
+    CREATE TABLE access_requests (request_id TEXT PRIMARY KEY, policy_generation INTEGER) STRICT;
+    CREATE TABLE runtime_grants (grant_id TEXT PRIMARY KEY, policy_generation INTEGER) STRICT;
+  `)
+  legacy.close()
+
+  const harness = makeTestLayer(stateDir)
+  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const registry = yield* Registry
+    yield* AccessGrants
+    const binding = yield* registry.bindAuthority({
+      environmentKey: "digest-migrated",
+      profile: "test",
+      executor: "hermes-gateway",
+      authorityClass: "default",
+      policyDigest: "a".repeat(64)
+    })
+    assert.equal(binding.policyDigest, "a".repeat(64))
+  }).pipe(Effect.provide(harness.layer))))
+
+  const migrated = new DatabaseSync(databasePath)
+  for (const table of ["environments", "authority_bindings", "access_requests", "runtime_grants"]) {
+    const columns = migrated.prepare(`SELECT name FROM pragma_table_info('${table}')`).all().map((row) => row.name)
+    assert.equal(columns.includes("policy_generation"), false)
+    assert.equal(columns.includes("policy_digest"), true)
+  }
+  migrated.close()
+  assert.equal(await readFile(workspaceFile, "utf8"), "preserved")
 })
 
 test("ordinary ensure input rejects caller-selected authority", async () => {

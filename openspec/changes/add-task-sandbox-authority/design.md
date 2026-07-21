@@ -13,7 +13,7 @@ The immediate concrete capability is dynamic exact HTTP(S) origin access, includ
 - Make task/environment authority broker-owned and independent of model-selected executor routing.
 - Let an agent learn from a typed denial, batch the missing capabilities, request approval, and retry in the same VM.
 - Apply network grants and revocations live through existing Gondolin hooks.
-- Support safe defaults, temporary grants, and durable remembered operator rules without a Nix redeploy.
+- Support safe defaults and temporary QA grants without a Nix redeploy; retain durable remembered-rule machinery for a future explicit management plane without exposing it through Hermes' generic approval button.
 - Bound approval fatigue and render canonical approval facts rather than model-authored security descriptions.
 - Keep Hermes changes generic and small.
 
@@ -53,7 +53,7 @@ An authority binding contains:
 
 ```text
 bindingId, environmentKey, profile, executor,
-authorityClass, policyGeneration, createdAt, updatedAt
+authorityClass, policyDigest, createdAt, updatedAt
 ```
 
 `profile` and `executor` are trusted control-plane context. The broker computes effective defaults from immutable policy. `ensure` no longer accepts a `worklane`; it requires an existing binding or creates a binding using the broker-configured profile default. A conflicting rebind fails closed.
@@ -106,7 +106,7 @@ Unsupported mechanisms remain unavailable even after approval. Examples include 
 
 Gondolin HTTP and DNS hooks receive a broker callback that evaluates the request against an atomic in-memory grant snapshot. Grant transactions persist to SQLite first and then replace the snapshot. Activation, revocation, and expiry become visible to subsequent requests without rebuilding hooks or the VM.
 
-A grant is bound to policy generation. Policy mismatch makes it inactive. Broker startup reloads non-expired grants, marks stale-generation grants inactive, and rebuilds the cache before accepting execution requests.
+A grant is bound to the full digest of the immutable rendered Nix policy. A digest mismatch makes it inactive. Broker startup reloads non-expired grants, marks grants from other policy digests inactive, and rebuilds the cache before accepting execution requests.
 
 **Alternative:** rebuild the VM for every network grant. Rejected because it destroys useful task state and makes discovery/approval/retry impractical.
 
@@ -135,11 +135,11 @@ sequenceDiagram
   B-->>G: allowed in same VM
 ```
 
-Preparation never activates authority. It validates and canonicalizes capabilities, resolves private pins, coalesces duplicate requests, applies remembered rules, and returns a broker-rendered summary. The plugin passes that summary to the existing Hermes approval callback. The decision call references the broker request ID; it does not repeat model data.
+Preparation never activates new authority. For an unbound trusted environment key, it first establishes the broker-configured default binding without creating a VM; conflicting concurrent or existing bindings retain the registry's fail-closed behavior. It then validates and canonicalizes capabilities and resolves the bound authority class's immutable Nix network policy. A batch already covered by that baseline returns `active` without an access request, runtime grant, or approval prompt. Otherwise preparation resolves private pins, coalesces duplicate requests, applies remembered rules, and returns a broker-rendered summary. The plugin passes only a new pending request to the existing Hermes approval callback. The decision call references the broker request ID; it does not repeat model data.
 
 ### 7. Scopes and durable overlays
 
-Supported scopes are:
+The broker protocol supports:
 
 - `once`: one matching top-level mediated request, consumed atomically;
 - `task`: until task completion or explicit revocation;
@@ -148,9 +148,9 @@ Supported scopes are:
 - `profile`: durable exact remembered rule for this broker profile;
 - `executor`: durable exact remembered rule for a configured executor lane.
 
-Profile and executor rules are stored in the broker registry with approving principal, creation time, last-used time, policy generation, and revocation state. They are listable and revocable. They never introduce a capability kind the immutable broker does not implement.
+Protocol support is not permission. The rendered profile policy is the upper bound accepted by the broker. For `hermes-qa`, Nix renders only `once` and `task`. The Hermes plugin schema accepts only those two requested scopes, passes `allow_permanent = false` to the generic approval API, accepts only `once` and `session` results, and maps `session` to the requested task scope. An unexpected `always` result fails closed. Existing non-sandbox Hermes approval callers retain their default permanent-choice behavior.
 
-The existing Hermes approval choices map to the narrowest compatible scope. `once` maps directly; `session` maps to conversation; `always` is accepted only when policy permits a profile/executor remembered rule and the canonical prompt says it will persist. Task and timed scopes are explicit sandbox tool arguments constrained by policy.
+Profile and executor remembered rules remain broker machinery for a future explicit management plane. They are not available through the QA Hermes approval UI. A later management plane must make durable creation a separate, deliberate action with list/search, provenance, expiry, revoke/bulk-revoke, audit export, and reconciliation against declarative Nix policy; it must also opt those scopes into the immutable profile maximum.
 
 ### 8. Approval-fatigue controls are broker state
 
@@ -162,7 +162,7 @@ The broker owns request fingerprints and budgets so gateway restarts do not rese
 - denied fingerprints enter a configurable cooldown;
 - a bounded number of new prompts is permitted per task and rolling interval;
 - suppressed requests return `approval.request_suppressed` without invoking UI;
-- remembered exact rules auto-activate without prompting;
+- matching remembered exact rules may auto-activate only when a future immutable profile policy enables durable scopes; QA Hermes cannot create them;
 - only an explicit `sandbox_request_access` tool call can prompt; an ordinary network denial never opens UI.
 
 The model supplies rationale for task planning, but the approval's security facts come only from canonical broker fields.
@@ -170,6 +170,15 @@ The model supplies rationale for task planning, but the approval's security fact
 ### 9. Execution and control protocols
 
 Systemd supplies named socket-activation descriptors for execution and control listeners. The broker rejects control routes on the execution listener and execution routes on the control listener. Health is available on both for activation checks but does not reveal grant content.
+
+The gateway bind-mounts the broker's dedicated runtime directory, not the two
+socket files. A file bind mount pins one Unix-socket inode; if NixOS activation
+or an operator restarts the socket units, a running container otherwise keeps
+the dead inode and cannot reconnect until its Quadlet is recreated. The
+root-owned, mode-0711 runtime directory is stable across socket replacement and
+is mounted read-only at `/run/hermes-sandbox`, so path lookup reaches the new
+mode-0600 runner-owned sockets without exposing unrelated `/run` state or
+granting directory mutation.
 
 Control operations:
 
@@ -191,7 +200,7 @@ The in-memory snapshot is immutable and replaced only after transaction commit. 
 
 ### 11. Audit and privacy
 
-Audit records include binding ID, opaque environment key, authority class, capability kind, normalized origin, grant scope, decision, reason, policy generation, and timestamps. They exclude command bodies, response bodies, URL paths/queries, headers, credentials, and model rationale by default.
+Audit records include binding ID, opaque environment key, authority class, capability kind, normalized origin, grant scope, decision, reason, policy digest, and timestamps. They exclude command bodies, response bodies, URL paths/queries, headers, credentials, and model rationale by default.
 
 Private resolved addresses are security facts and may be stored in the broker registry, but normal logs show only the approved hostname and address class unless debug diagnostics are explicitly enabled.
 
@@ -202,12 +211,12 @@ The ongoing QA repair routes patch pre-read, write, and verification through bro
 ## Risks / Trade-offs
 
 - **The control socket shares the trusted gateway principal.** Interface separation prevents accidental authority plumbing but not malicious code execution in the gateway. Mitigation: the gateway remains trusted by the V3 threat model; neither socket enters the guest.
-- **Remembered grants create mutable state outside Nix.** Mitigation: list/revoke/export operations, policy-generation invalidation, timestamps, exact normalized rules, and a fixed-policy rollback mode.
-- **Private DNS changes may invalidate pinned addresses.** Mitigation: short default expiry and explicit re-approval on changed pins. Availability is preferred over silently following a rebinding target.
+- **The broker contains dormant remembered-grant machinery outside Nix.** Mitigation: QA's rendered policy admits only `once` and `task`, the Hermes plugin disables permanent approval, and persisted state is bound to the full digest of the immutable rendered Nix policy. Policy changes therefore fence earlier grants without a mutable counter. Future durable-rule enablement requires a separate reviewed management plane with list/revoke/export and reconciliation.
+- **Private DNS changes may invalidate pinned addresses.** Mitigation: pins are revalidated for every mediated request and changed resolution is denied rather than silently followed. Availability is preferred over following a rebinding target.
 - **Existing Hermes approval choices do not support partial batch selection.** Mitigation: batch approval is all-or-nothing; denial tells the model to request a smaller set.
 - **A model can still generate annoying requests.** Mitigation: broker prompt budgets, duplicate coalescing, cooldowns, and no automatic prompt on denial.
 - **Per-request grant checks add overhead.** Mitigation: immutable in-memory snapshots and exact-key indexes; SQLite is not queried on each HTTP chunk.
-- **Once semantics may be too narrow for package managers.** Mitigation: recommend task/timed origin grants for multi-request workflows and reserve once for exact operation adapters.
+- **Once semantics may be too narrow for package managers.** Mitigation: recommend task origin grants for multi-request workflows and reserve once for exact operation adapters.
 - **Dynamic private access increases homelab reachability risk.** Mitigation: exact origin/port, pinned private addresses, redirect re-evaluation, no guest-visible socket, bounded scope, and canonical approval display.
 
 ## Migration and Rollback
@@ -218,5 +227,14 @@ The ongoing QA repair routes patch pre-read, write, and verification through bro
 4. Add the generic Hermes authority identity hook and plugin.
 5. Enable dynamic grants only for `hermes-qa` on `hvn-hyp1`.
 6. Exercise denial, approval, retry, expiry, revocation, restart, and fatigue controls.
+
+For the socket-directory cutover, deploy the matching QA Hermes release first.
+The pre-cutover socket units already create `/run/hermes-qa-broker`, so the new
+gateway can bind the directory and continue using the old sockets. Deploy the
+host NixOS configuration second; replacement socket inodes then remain visible
+through that existing directory bind. Verify broker health and one terminal
+operation after each activation before running the full acceptance prompt. This
+ordering limits disruption to broker reconnection and avoids requiring the host
+and Quadlet changes to become active atomically.
 
 Rollback disables the plugin and control socket, revokes/quarantines runtime grants, and leaves the broker on its fixed `project` default. Production remains unchanged; QA may return to the rootless-Podman backend if the broker path is unstable.

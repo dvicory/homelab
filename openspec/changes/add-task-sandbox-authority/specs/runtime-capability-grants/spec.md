@@ -60,7 +60,7 @@ Public origin grants MUST continue to reject loopback, private, link-local, meta
 
 ### Requirement: Scoped and persistent grants
 
-The broker MUST support once, task, conversation, timed, profile, and executor grant scopes. Every grant MUST record its binding or remembered-rule scope, policy generation, normalized capabilities, approval principal, creation time, expiry where applicable, usage state, and revocation state.
+The broker MUST support once, task, conversation, timed, profile, and executor grant scopes. Every grant MUST record its binding or remembered-rule scope, full immutable policy digest, normalized capabilities, approval principal, creation time, expiry where applicable, usage state, and revocation state.
 
 #### Scenario: Once grant consumption
 - **GIVEN** a once-scoped grant with one remaining use
@@ -76,17 +76,17 @@ The broker MUST support once, task, conversation, timed, profile, and executor g
 
 #### Scenario: Remembered profile rule
 - **GIVEN** an approved profile-scoped exact origin rule
-- **WHEN** a new environment for that profile is bound under the same policy generation
+- **WHEN** a new environment for that profile is bound under the same policy digest
 - **THEN** the broker MAY activate the matching authority without prompting
 - **AND** the rule MUST remain listable and revocable
 
-### Requirement: Policy-generation and restart safety
+### Requirement: Policy-digest and restart safety
 
-Runtime grants and remembered rules MUST remain subordinate to the current immutable policy generation and installed capability mechanisms. Broker restart MUST restore only valid, non-expired state before accepting mediated requests.
+Runtime grants and remembered rules MUST remain subordinate to the full digest of the current immutable rendered policy and installed capability mechanisms. Broker restart MUST restore only valid, non-expired state before accepting mediated requests.
 
-#### Scenario: Policy generation changes
-- **GIVEN** grants created under an older policy generation
-- **WHEN** the broker starts with a new policy generation
+#### Scenario: Policy content changes
+- **GIVEN** grants created under a different immutable policy digest
+- **WHEN** the broker starts with the newly rendered policy
 - **THEN** those grants MUST be inactive until explicitly migrated or re-approved
 
 #### Scenario: Broker restart

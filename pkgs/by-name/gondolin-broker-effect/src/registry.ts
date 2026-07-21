@@ -10,7 +10,7 @@ export interface EnvironmentRecord {
   readonly environmentKey: string;
   readonly generation: number;
   readonly state: EnvironmentState;
-  readonly policyGeneration: number;
+  readonly policyDigest: string;
   readonly worklane: string;
   readonly assetBuildId: string;
   readonly workspacePath: string;
@@ -22,7 +22,7 @@ export interface EnvironmentRecord {
 
 export interface ReserveEnvironment {
   readonly environmentKey: string;
-  readonly policyGeneration: number;
+  readonly policyDigest: string;
   readonly worklane: string;
   readonly assetBuildId: string;
   readonly workspacePath: string;
@@ -33,7 +33,7 @@ export interface AuthorityBindingRecord {
   readonly profile: string;
   readonly executor: string;
   readonly authorityClass: string;
-  readonly policyGeneration: number;
+  readonly policyDigest: string;
   readonly createdAt: number;
   readonly updatedAt: number;
 }
@@ -43,7 +43,7 @@ export interface BindAuthority {
   readonly profile: string;
   readonly executor: string;
   readonly authorityClass: string;
-  readonly policyGeneration: number;
+  readonly policyDigest: string;
 }
 
 export interface RegistryService {
@@ -66,7 +66,7 @@ type Row = {
   environment_key: string;
   generation: number;
   state: EnvironmentState;
-  policy_generation: number;
+  policy_digest: string;
   worklane: string;
   asset_build_id: string;
   workspace_path: string;
@@ -81,7 +81,7 @@ type AuthorityRow = {
   profile: string;
   executor: string;
   authority_class: string;
-  policy_generation: number;
+  policy_digest: string;
   created_at: number;
   updated_at: number;
 };
@@ -90,7 +90,7 @@ const fromRow = (row: Row): EnvironmentRecord => ({
   environmentKey: row.environment_key,
   generation: row.generation,
   state: row.state,
-  policyGeneration: row.policy_generation,
+  policyDigest: row.policy_digest,
   worklane: row.worklane,
   assetBuildId: row.asset_build_id,
   workspacePath: row.workspace_path,
@@ -105,7 +105,7 @@ const authorityFromRow = (row: AuthorityRow): AuthorityBindingRecord => ({
   profile: row.profile,
   executor: row.executor,
   authorityClass: row.authority_class,
-  policyGeneration: row.policy_generation,
+  policyDigest: row.policy_digest,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
@@ -123,12 +123,23 @@ const make = Effect.gen(function* () {
         fs.mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
         const opened = new DatabaseSync(config.databasePath);
         opened.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
+        const legacyEnvironmentSchema = opened.prepare(
+          "SELECT 1 FROM pragma_table_info('environments') WHERE name='policy_generation'",
+        ).get();
+        const legacyAuthoritySchema = opened.prepare(
+          "SELECT 1 FROM pragma_table_info('authority_bindings') WHERE name='policy_generation'",
+        ).get();
+        if (legacyEnvironmentSchema !== undefined || legacyAuthoritySchema !== undefined) {
+          // Pre-digest QA state cannot safely identify its authorizing policy.
+          // Environment workspaces are stored separately and remain intact.
+          opened.exec("DROP TABLE IF EXISTS authority_bindings; DROP TABLE IF EXISTS environments;");
+        }
         opened.exec(`
           CREATE TABLE IF NOT EXISTS environments (
             environment_key TEXT PRIMARY KEY,
             generation INTEGER NOT NULL CHECK (generation > 0),
             state TEXT NOT NULL CHECK (state IN ('creating','active','closing','closed','failed')),
-            policy_generation INTEGER NOT NULL CHECK (policy_generation > 0),
+            policy_digest TEXT NOT NULL CHECK (length(policy_digest) = 64),
             worklane TEXT NOT NULL,
             asset_build_id TEXT NOT NULL,
             workspace_path TEXT NOT NULL,
@@ -144,7 +155,7 @@ const make = Effect.gen(function* () {
             profile TEXT NOT NULL,
             executor TEXT NOT NULL,
             authority_class TEXT NOT NULL,
-            policy_generation INTEGER NOT NULL CHECK (policy_generation > 0),
+            policy_digest TEXT NOT NULL CHECK (length(policy_digest) = 64),
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
           ) STRICT;
@@ -193,7 +204,7 @@ const make = Effect.gen(function* () {
           db.prepare(`
             INSERT INTO authority_bindings (
               environment_key, profile, executor, authority_class,
-              policy_generation, created_at, updated_at
+              policy_digest, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(environment_key) DO NOTHING
           `).run(
@@ -201,7 +212,7 @@ const make = Effect.gen(function* () {
             request.profile,
             request.executor,
             request.authorityClass,
-            request.policyGeneration,
+            request.policyDigest,
             now,
             now,
           );
@@ -211,14 +222,14 @@ const make = Effect.gen(function* () {
             binding.profile !== request.profile ||
             binding.executor !== request.executor ||
             binding.authorityClass !== request.authorityClass ||
-            binding.policyGeneration !== request.policyGeneration
+            binding.policyDigest !== request.policyDigest
           ) {
             throw brokerError("authority.conflict", "environment authority is already bound", {
               environmentKey: request.environmentKey,
               profile: binding.profile,
               executor: binding.executor,
               authorityClass: binding.authorityClass,
-              policyGeneration: binding.policyGeneration,
+              policyDigest: binding.policyDigest,
             });
           }
           db.exec("COMMIT");
@@ -242,13 +253,13 @@ const make = Effect.gen(function* () {
           const now = Date.now();
           db.prepare(`
             INSERT INTO environments (
-              environment_key, generation, state, policy_generation, worklane,
+              environment_key, generation, state, policy_digest, worklane,
               asset_build_id, workspace_path, vm_id, host_pid, failure_reason, updated_at
             ) VALUES (?, ?, 'creating', ?, ?, ?, ?, NULL, NULL, NULL, ?)
             ON CONFLICT(environment_key) DO UPDATE SET
               generation=excluded.generation,
               state='creating',
-              policy_generation=excluded.policy_generation,
+              policy_digest=excluded.policy_digest,
               worklane=excluded.worklane,
               asset_build_id=excluded.asset_build_id,
               workspace_path=excluded.workspace_path,
@@ -259,7 +270,7 @@ const make = Effect.gen(function* () {
           `).run(
             request.environmentKey,
             generation,
-            request.policyGeneration,
+            request.policyDigest,
             request.worklane,
             request.assetBuildId,
             request.workspacePath,

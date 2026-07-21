@@ -12,6 +12,7 @@ import {
   type Scope,
 } from "effect";
 import { Authorization } from "./auth.js";
+import { resolveAuthorityPolicy } from "./authority.js";
 import { BrokerConfig } from "./config.js";
 import type { EnvironmentRef, EnsureRequest, WorklaneLimits } from "./domain.js";
 import { brokerError, type BrokerError } from "./errors.js";
@@ -25,7 +26,7 @@ export interface LiveEnvironment {
   readonly profile: string;
   readonly executor: string;
   readonly authorityClass: string;
-  readonly policyGeneration: number;
+  readonly policyDigest: string;
   readonly decisionDigest: string;
   readonly workspacePath: string;
   readonly workspaceGuestPath: string;
@@ -43,7 +44,7 @@ export interface EnsureResult {
   readonly profile: string;
   readonly executor: string;
   readonly authorityClass: string;
-  readonly policyGeneration: number;
+  readonly policyDigest: string;
   readonly decisionDigest: string;
 }
 
@@ -57,7 +58,7 @@ export interface EnvironmentService {
     readonly profile: string;
     readonly executor: string;
     readonly authorityClass: string;
-    readonly policyGeneration: number;
+    readonly policyDigest: string;
   }, BrokerError>;
   readonly lease: (reference: EnvironmentRef) => Effect.Effect<LiveEnvironment, BrokerError, Scope.Scope>;
   readonly close: (reference: EnvironmentRef) => Effect.Effect<void, BrokerError>;
@@ -141,62 +142,15 @@ const make = Effect.gen(function* () {
         profile: config.profile,
         executor: config.policyFile.defaultExecutor,
         authorityClass: config.policyFile.defaultAuthorityClass,
-        policyGeneration: config.policyFile.policyGeneration,
+        policyDigest: config.policyFile.policyDigest,
       });
-      const worklaneName = binding.authorityClass;
-      const worklane = config.policyFile.worklanes[worklaneName];
-      if (worklane === undefined) {
-        return yield* brokerError("policy.indeterminate", "bound authority class is unavailable", {
-          authorityClass: binding.authorityClass,
-        });
-      }
-      const asset = config.policyFile.assets[worklane.asset];
-      if (asset === undefined) {
-        return yield* brokerError("request.invalid", "worklane asset is unavailable", {
-          worklane: worklaneName,
-          asset: worklane.asset,
-        });
-      }
-      const decision = yield* authorization.authorize({
-        action: "environment.ensure",
-        resource: `worklane:${worklaneName}:environment:${request.environmentKey}`,
-        requestedLimits: {
-          memoryMiB: worklane.memoryMiB,
-          cpus: worklane.cpus,
-          ...worklane.limits,
-        },
-      });
-      if (decision.policyGeneration !== binding.policyGeneration) {
-        return yield* brokerError("policy.indeterminate", "bound policy generation is unavailable", {
-          authorityClass: binding.authorityClass,
-          boundPolicyGeneration: binding.policyGeneration,
-          activePolicyGeneration: decision.policyGeneration,
-        });
-      }
-      const networkObligations = decision.obligations.filter(
-        (obligation) => typeof obligation === "object" && obligation.kind === "network",
-      );
-      if (networkObligations.length !== 1) {
-        return yield* brokerError(
-          "policy.indeterminate",
-          "environment authorization must produce exactly one network obligation",
-          { worklane: worklaneName, count: networkObligations.length },
-        );
-      }
-      const networkPolicyId = networkObligations[0]!.bundleId;
-      const network = config.policyFile.networkPolicies[networkPolicyId];
-      if (network === undefined) {
-        return yield* brokerError(
-          "policy.indeterminate",
-          "network obligation references an unknown policy",
-          { worklane: worklaneName, networkPolicyId },
-        );
-      }
+      const { worklaneName, worklane, asset, decision, network } =
+        yield* resolveAuthorityPolicy(config, authorization, binding);
       const existing = live.get(request.environmentKey);
       if (
         existing !== undefined &&
         existing.authorityClass === binding.authorityClass &&
-        existing.policyGeneration === decision.policyGeneration &&
+        existing.policyDigest === decision.policyDigest &&
         existing.decisionDigest === decision.decisionDigest
       ) {
         return {
@@ -206,7 +160,7 @@ const make = Effect.gen(function* () {
           profile: existing.profile,
           executor: existing.executor,
           authorityClass: existing.authorityClass,
-          policyGeneration: existing.policyGeneration,
+          policyDigest: existing.policyDigest,
           decisionDigest: existing.decisionDigest,
         };
       }
@@ -231,7 +185,7 @@ const make = Effect.gen(function* () {
       });
       const record = yield* registry.reserve({
         environmentKey: request.environmentKey,
-        policyGeneration: decision.policyGeneration,
+        policyDigest: decision.policyDigest,
         worklane: worklaneName,
         assetBuildId: asset.buildId,
         workspacePath,
@@ -264,7 +218,7 @@ const make = Effect.gen(function* () {
         profile: binding.profile,
         executor: binding.executor,
         authorityClass: binding.authorityClass,
-        policyGeneration: decision.policyGeneration,
+        policyDigest: decision.policyDigest,
         decisionDigest: decision.decisionDigest,
         workspacePath,
         workspaceGuestPath: worklane.workspaceGuestPath,
@@ -285,7 +239,7 @@ const make = Effect.gen(function* () {
         profile: binding.profile,
         executor: binding.executor,
         authorityClass: binding.authorityClass,
-        policyGeneration: decision.policyGeneration,
+        policyDigest: decision.policyDigest,
         decisionDigest: decision.decisionDigest,
       };
     });
@@ -317,7 +271,7 @@ const make = Effect.gen(function* () {
         profile: binding.profile,
         executor: binding.executor,
         authorityClass: binding.authorityClass,
-        policyGeneration: record.policyGeneration,
+        policyDigest: record.policyDigest,
       };
     });
 
