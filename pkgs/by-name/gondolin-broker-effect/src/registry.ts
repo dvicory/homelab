@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import * as fs from "node:fs";
 import { Context, Effect, Layer } from "effect";
 import { BrokerConfig } from "./config.js";
-import { brokerError, type BrokerError } from "./errors.js";
+import { BrokerError, brokerError } from "./errors.js";
 
 export type EnvironmentState = "creating" | "active" | "closing" | "closed" | "failed";
 
@@ -28,9 +28,29 @@ export interface ReserveEnvironment {
   readonly workspacePath: string;
 }
 
+export interface AuthorityBindingRecord {
+  readonly environmentKey: string;
+  readonly profile: string;
+  readonly executor: string;
+  readonly authorityClass: string;
+  readonly policyGeneration: number;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+export interface BindAuthority {
+  readonly environmentKey: string;
+  readonly profile: string;
+  readonly executor: string;
+  readonly authorityClass: string;
+  readonly policyGeneration: number;
+}
+
 export interface RegistryService {
   readonly get: (environmentKey: string) => Effect.Effect<EnvironmentRecord | undefined, BrokerError>;
   readonly reserve: (request: ReserveEnvironment) => Effect.Effect<EnvironmentRecord, BrokerError>;
+  readonly getAuthority: (environmentKey: string) => Effect.Effect<AuthorityBindingRecord | undefined, BrokerError>;
+  readonly bindAuthority: (request: BindAuthority) => Effect.Effect<AuthorityBindingRecord, BrokerError>;
   readonly markActive: (environmentKey: string, generation: number, vmId: string, hostPid: number | null) => Effect.Effect<void, BrokerError>;
   readonly markClosing: (environmentKey: string, generation: number) => Effect.Effect<void, BrokerError>;
   readonly markClosed: (environmentKey: string, generation: number) => Effect.Effect<void, BrokerError>;
@@ -56,6 +76,16 @@ type Row = {
   updated_at: number;
 };
 
+type AuthorityRow = {
+  environment_key: string;
+  profile: string;
+  executor: string;
+  authority_class: string;
+  policy_generation: number;
+  created_at: number;
+  updated_at: number;
+};
+
 const fromRow = (row: Row): EnvironmentRecord => ({
   environmentKey: row.environment_key,
   generation: row.generation,
@@ -67,6 +97,16 @@ const fromRow = (row: Row): EnvironmentRecord => ({
   vmId: row.vm_id,
   hostPid: row.host_pid,
   failureReason: row.failure_reason,
+  updatedAt: row.updated_at,
+});
+
+const authorityFromRow = (row: AuthorityRow): AuthorityBindingRecord => ({
+  environmentKey: row.environment_key,
+  profile: row.profile,
+  executor: row.executor,
+  authorityClass: row.authority_class,
+  policyGeneration: row.policy_generation,
+  createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
 
@@ -98,6 +138,17 @@ const make = Effect.gen(function* () {
             updated_at INTEGER NOT NULL
           ) STRICT;
         `);
+        opened.exec(`
+          CREATE TABLE IF NOT EXISTS authority_bindings (
+            environment_key TEXT PRIMARY KEY,
+            profile TEXT NOT NULL,
+            executor TEXT NOT NULL,
+            authority_class TEXT NOT NULL,
+            policy_generation INTEGER NOT NULL CHECK (policy_generation > 0),
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+          ) STRICT;
+        `);
         fs.chmodSync(config.databasePath, 0o600);
         opened.prepare(
           "UPDATE environments SET state='failed', failure_reason='broker restarted before reconciliation', updated_at=? WHERE state IN ('creating','active','closing')",
@@ -117,6 +168,68 @@ const make = Effect.gen(function* () {
         return row === undefined ? undefined : fromRow(row);
       },
       catch: (error) => registryFailure("read", error),
+    });
+
+  const authorityQuery = db.prepare("SELECT * FROM authority_bindings WHERE environment_key = ?");
+  const getAuthority = (
+    environmentKey: string,
+  ): Effect.Effect<AuthorityBindingRecord | undefined, BrokerError> =>
+    Effect.try({
+      try: () => {
+        const row = authorityQuery.get(environmentKey) as AuthorityRow | undefined;
+        return row === undefined ? undefined : authorityFromRow(row);
+      },
+      catch: (error) => registryFailure("read authority", error),
+    });
+
+  const bindAuthority = (
+    request: BindAuthority,
+  ): Effect.Effect<AuthorityBindingRecord, BrokerError> =>
+    Effect.try({
+      try: () => {
+        db.exec("BEGIN IMMEDIATE");
+        try {
+          const now = Date.now();
+          db.prepare(`
+            INSERT INTO authority_bindings (
+              environment_key, profile, executor, authority_class,
+              policy_generation, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(environment_key) DO NOTHING
+          `).run(
+            request.environmentKey,
+            request.profile,
+            request.executor,
+            request.authorityClass,
+            request.policyGeneration,
+            now,
+            now,
+          );
+          const row = authorityQuery.get(request.environmentKey) as AuthorityRow;
+          const binding = authorityFromRow(row);
+          if (
+            binding.profile !== request.profile ||
+            binding.executor !== request.executor ||
+            binding.authorityClass !== request.authorityClass ||
+            binding.policyGeneration !== request.policyGeneration
+          ) {
+            throw brokerError("authority.conflict", "environment authority is already bound", {
+              environmentKey: request.environmentKey,
+              profile: binding.profile,
+              executor: binding.executor,
+              authorityClass: binding.authorityClass,
+              policyGeneration: binding.policyGeneration,
+            });
+          }
+          db.exec("COMMIT");
+          return binding;
+        } catch (error) {
+          db.exec("ROLLBACK");
+          throw error;
+        }
+      },
+      catch: (error) =>
+        error instanceof BrokerError ? error : registryFailure("bind authority", error),
     });
 
   const reserve = (request: ReserveEnvironment): Effect.Effect<EnvironmentRecord, BrokerError> =>
@@ -202,6 +315,8 @@ const make = Effect.gen(function* () {
   return {
     get,
     reserve,
+    getAuthority,
+    bindAuthority,
     markActive: (key, generation, vmId, hostPid) => transition(key, generation, "active", { vmId, hostPid }),
     markClosing: (key, generation) => transition(key, generation, "closing"),
     markClosed: (key, generation) => transition(key, generation, "closed"),

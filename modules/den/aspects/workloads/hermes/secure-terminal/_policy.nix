@@ -228,15 +228,15 @@ in
       inherit policyId;
     };
 
-  # Compatibility envelope for the Effect/HTTP broker. The reviewed V3
-  # templates still choose immutable assets and resource ceilings, while the
-  # current Effect runtime remains intentionally network-offline and has no
-  # credential grants.
+  # Effect/HTTP compatibility envelope. Network authority is emitted as a
+  # mandatory policy obligation per worklane; the broker must resolve and
+  # enforce that obligation before creating a VM.
   mkEffectPolicy =
     {
       pkgs,
       profile,
       assets,
+      bundles,
       defaultTemplate,
       allowedPairs,
       maximum,
@@ -244,22 +244,72 @@ in
       ...
     }:
     let
+      laneTemplateNames = {
+        default = defaultTemplate;
+      } // builtins.mapAttrs (_: lane: lane.defaultTemplate or defaultTemplate) worklanes;
       defaultLane = mkEffectLane {
         inherit defaultTemplate allowedPairs maximum;
       };
-      mappedWorklanes = builtins.mapAttrs (
+      laneMaximums = {
+        default = maximum;
+      } // builtins.mapAttrs (
         _: lane:
         let
           laneMaximum = lane.maximum or { };
         in
+        maximum // laneMaximum // {
+          resources = (maximum.resources or { }) // (laneMaximum.resources or { });
+        }
+      ) worklanes;
+      mappedWorklanes = builtins.mapAttrs (
+        laneName: lane:
         mkEffectLane {
           defaultTemplate = lane.defaultTemplate or defaultTemplate;
           allowedPairs = lane.allowedPairs or allowedPairs;
-          maximum = maximum // laneMaximum // {
-            resources = (maximum.resources or { }) // (laneMaximum.resources or { });
-          };
+          maximum = laneMaximums.${laneName};
         }
       ) worklanes;
+      lanes = {
+        default = defaultLane;
+      } // mappedWorklanes;
+      networkPolicyId =
+        laneName:
+        let
+          digest = builtins.hashString "sha256" (builtins.toJSON networkPoliciesByLane.${laneName});
+        in
+        "worklane:${laneName}:${builtins.substring 0 16 digest}";
+      networkForLane =
+        laneName:
+        let
+          network = templates.${laneTemplateNames.${laneName}}.network;
+          permittedBundleNames = builtins.filter (
+            bundleName: builtins.elem bundleName (laneMaximums.${laneName}.networkBundles or [ ])
+          ) (network.bundles or [ ]);
+        in
+        {
+          mode =
+            if network.mode == "bundles" && permittedBundleNames == [ ] then
+              "deny-all"
+            else
+              network.mode;
+          destinations =
+            if network.mode == "bundles" then
+              builtins.concatLists (
+                map (
+                  bundleName:
+                  ((bundles.${bundleName} or (throw "unknown network bundle '${bundleName}'")).destinations)
+                ) permittedBundleNames
+              )
+            else
+              [ ];
+        };
+      networkPoliciesByLane = builtins.mapAttrs (laneName: _: networkForLane laneName) lanes;
+      networkPolicies = builtins.listToAttrs (
+        map (laneName: {
+          name = networkPolicyId laneName;
+          value = networkPoliciesByLane.${laneName};
+        }) (builtins.attrNames lanes)
+      );
       limits = {
         cpus = floor.maxResources.cpus;
         memoryMiB = floor.maxResources.memoryMiB;
@@ -275,24 +325,37 @@ in
         bytes = floor.maxInputBytes;
         entries = 4096;
       };
+      policy = {
+        version = 1;
+        statements = [
+          {
+            effect = "allow";
+            actions = builtins.filter (action: action != "environment.ensure") effectActions;
+            resources = [ "environment:*" ];
+            inherit limits;
+          }
+        ] ++ map (laneName: {
+          effect = "allow";
+          actions = [ "environment.ensure" ];
+          resources = [ "worklane:${laneName}:environment:*" ];
+          inherit limits;
+          obligations = [
+            {
+              kind = "network";
+              bundleId = networkPolicyId laneName;
+            }
+          ];
+        }) (builtins.attrNames lanes);
+      };
       doc = {
         version = 1;
         policyGeneration = 1;
-        policy = {
-          version = 1;
-          statements = [
-            {
-              effect = "allow";
-              actions = effectActions;
-              resources = [ "environment:*" ];
-              inherit limits;
-            }
-          ];
-        };
-        defaultWorklane = "default";
+        inherit policy networkPolicies;
+        defaultExecutor = "hermes-gateway";
+        defaultAuthorityClass = "default";
         maxEnvironments = floor.maxVms;
         inherit assets;
-        worklanes = { default = defaultLane; } // mappedWorklanes;
+        worklanes = lanes;
       };
       policyId = builtins.hashString "sha256" (builtins.toJSON doc);
     in

@@ -206,16 +206,17 @@ On broker startup, persisted `creating`, `active`, or `closing` rows are changed
 
 ### Wire protocol and Hermes client
 
-The broker speaks ordinary HTTP/1.1 over a Unix domain stream socket. The socket
-path is transport configuration; it is not encoded into a proprietary URL.
-Clients use origin-form paths and a conventional authority such as
-`http://localhost`:
+The broker speaks ordinary HTTP/1.1 over two Unix domain stream sockets. The
+gateway receives only the execution socket; trusted Hermes control-plane code
+receives the authority socket. Socket paths are transport configuration and are
+not encoded into proprietary URLs. Clients use origin-form paths and a
+conventional authority such as `http://localhost`:
 
 ```python
 import httpx
 import json
 
-transport = httpx.HTTPTransport(uds="/run/hermes/gondolin-broker.sock")
+transport = httpx.HTTPTransport(uds="/run/hermes-qa-broker/broker.sock")
 with httpx.Client(
     transport=transport,
     base_url="http://localhost",
@@ -223,7 +224,7 @@ with httpx.Client(
 ) as client:
     ensured = client.post(
         "/v1/environments/ensure",
-        json={"environmentKey": "conversation-abc", "worklane": "default"},
+        json={"environmentKey": "conversation-abc"},
     )
     ensured.raise_for_status()
 
@@ -258,8 +259,9 @@ The conventions are:
 - pre-stream failures use RFC 9457 Problem Details with
   `application/problem+json`;
 - `Cache-Control: no-store` applies to all broker data responses;
-- authorization is the mode-`0600` socket plus broker policy, not an HTTP
-  bearer credential.
+- authorization is the mode-`0600` socket boundary plus broker policy, not an
+  HTTP bearer credential; authority bind/status routes exist only on the
+  separately owned control socket.
 
 There is no IETF URI scheme for “HTTP over UDS.” Passing the socket path
 out-of-band while preserving unmodified HTTP/1.1 messages is the established
@@ -287,10 +289,10 @@ Responses include `X-Content-Type-Options: nosniff`. The local socket is mode
 
 ### Health
 
-`GET /v1/health`
+`GET /v1/health` exists on both sockets and identifies its plane:
 
 ```json
-{ "status": "ok" }
+{ "status": "ok", "plane": "execution" }
 ```
 
 ### Ensure an environment
@@ -299,8 +301,7 @@ Responses include `X-Content-Type-Options: nosniff`. The local socket is mode
 
 ```json
 {
-  "environmentKey": "conversation-abc",
-  "worklane": "default"
+  "environmentKey": "conversation-abc"
 }
 ```
 
@@ -311,13 +312,15 @@ Response:
   "environmentKey": "conversation-abc",
   "generation": 1,
   "state": "created",
-  "worklane": "default",
+  "profile": "hermes-qa",
+  "executor": "hermes-gateway",
+  "authorityClass": "default",
   "policyGeneration": 1,
   "decisionDigest": "..."
 }
 ```
 
-A compatible live environment returns `state: "reused"`. Policy-generation or worklane changes close and recreate it.
+A compatible live environment returns `state: "reused"`. An authority-class or policy-generation change requires a new generation.
 
 ### Status
 
@@ -407,6 +410,7 @@ Environment variables:
 | `GONDOLIN_EFFECT_POLICY` | yes | Absolute or working-directory-relative JSON policy/config file |
 | `GONDOLIN_EFFECT_STATE_DIR` | yes | Registry and workspace state root |
 | `GONDOLIN_EFFECT_SOCKET` | no | Unix socket path; defaults under state dir |
+| `GONDOLIN_EFFECT_CONTROL_SOCKET` | no | Privileged authority-control Unix socket path; defaults under state dir |
 | `GONDOLIN_EFFECT_PROFILE` | no | Profile label used in VM session labels |
 
 Example file:
@@ -436,7 +440,8 @@ Example file:
       }
     ]
   },
-  "defaultWorklane": "default",
+  "defaultExecutor": "hermes-gateway",
+  "defaultAuthorityClass": "default",
   "maxEnvironments": 4,
   "assets": {
     "default": {

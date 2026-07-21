@@ -1,4 +1,0 @@
-name: codex-worker-lane
-version: "0.1.0"
-description: Dispatch Hermes Kanban tasks to the Nix-managed Codex CLI worker
-author: Daniel Vicory

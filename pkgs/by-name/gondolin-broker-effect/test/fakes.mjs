@@ -117,30 +117,57 @@ export const makePolicyFile = (overrides = {}) => ({
   policyGeneration: 1,
   policy: {
     version: 1,
-    statements: [{
-      effect: "allow",
-      actions: [...BrokerActions],
-      resources: ["*"],
-      limits: {
-        memoryMiB: 512,
-        cpus: 2,
-        maxCommandMs: 1000,
-        maxOutputBytes: 4096,
-        maxInputBytes: 1024,
-        maxFileBytes: 1024,
-        maxListEntries: 32,
-        maxConcurrentExecs: 2,
-        timeoutMs: 1000,
-        outputBytes: 4096,
-        inputBytes: 1024,
-        bytes: 1024,
-        entries: 32
+    statements: [
+      {
+        effect: "allow",
+        actions: BrokerActions.filter((action) => action !== "environment.ensure"),
+        resources: ["*"],
+        limits: {
+          memoryMiB: 512,
+          cpus: 2,
+          maxCommandMs: 1000,
+          maxOutputBytes: 4096,
+          maxInputBytes: 1024,
+          maxFileBytes: 1024,
+          maxListEntries: 32,
+          maxConcurrentExecs: 2,
+          timeoutMs: 1000,
+          outputBytes: 4096,
+          inputBytes: 1024,
+          bytes: 1024,
+          entries: 32
+        }
+      },
+      {
+        effect: "allow",
+        actions: ["environment.ensure"],
+        resources: ["worklane:default:environment:*"],
+        obligations: [{ kind: "network", bundleId: "worklane:default" }],
+        limits: {
+          memoryMiB: 512,
+          cpus: 2,
+          maxCommandMs: 1000,
+          maxOutputBytes: 4096,
+          maxInputBytes: 1024,
+          maxFileBytes: 1024,
+          maxListEntries: 32,
+          maxConcurrentExecs: 2,
+          timeoutMs: 1000,
+          outputBytes: 4096,
+          inputBytes: 1024,
+          bytes: 1024,
+          entries: 32
+        }
       }
-    }]
+    ]
   },
-  defaultWorklane: "default",
+  defaultExecutor: "hermes-gateway",
+  defaultAuthorityClass: "default",
   maxEnvironments: 4,
   assets: { default: { path: "/fake/root.qcow2", buildId: "fake-build" } },
+  networkPolicies: {
+    "worklane:default": { mode: "deny-all", destinations: [] }
+  },
   worklanes: {
     default: {
       asset: "default",
@@ -168,6 +195,7 @@ export const makeTestLayer = (stateDir, options = {}) => {
     workspaceRoot: path.join(stateDir, "workspaces"),
     databasePath: path.join(stateDir, "broker.sqlite"),
     socketPath: path.join(stateDir, "broker.sock"),
+    controlSocketPath: path.join(stateDir, "control.sock"),
     profile: "test",
     policyFile: makePolicyFile(options.policyFile)
   }

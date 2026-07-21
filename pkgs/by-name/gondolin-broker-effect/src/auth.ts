@@ -1,3 +1,4 @@
+import type { Obligation } from "@agent-x/policy-kernel";
 import { Context, Effect } from "effect";
 import type { BrokerError } from "./errors.js";
 
@@ -26,6 +27,7 @@ export interface AuthorizationResult {
   readonly decisionDigest: string;
   readonly policyGeneration: number;
   readonly limits: Readonly<Record<string, number>>;
+  readonly obligations: ReadonlyArray<Obligation>;
 }
 
 export interface AuthorizationService {
