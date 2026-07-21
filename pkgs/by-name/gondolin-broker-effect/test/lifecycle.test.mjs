@@ -127,6 +127,22 @@ test("output limit failures hard-close the environment", async () => {
   }))
 })
 
+test("guest input setup failures are typed and hard-close the environment", async () => {
+  await withHarness((harness) => Effect.gen(function* () {
+    const environments = yield* Environments
+    const executor = yield* Executor
+    const environment = yield* environments.ensure({ environmentKey: "conversation-input-failure" })
+    const failure = yield* Effect.flip(Stream.runCollect(executor.execute({
+      environmentKey: environment.environmentKey,
+      generation: environment.generation,
+      argv: ["stdin-disabled"]
+    })))
+    assert.equal(failure.reason, "runtime.operation_failed")
+    assert.equal(failure.details.cause, "stdin was not enabled for this exec")
+    assert.equal(harness.fake.state.closed.length, 1)
+  }))
+})
+
 test("early stream consumer termination hard-closes the environment", async () => {
   await withHarness((harness) => Effect.gen(function* () {
     const environments = yield* Environments

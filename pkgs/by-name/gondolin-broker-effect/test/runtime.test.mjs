@@ -20,15 +20,19 @@ const vmSpec = {
   sessionLabel: "test:environment:1",
 }
 
-const fakeVm = (start, close) => ({
+const fakeVm = (
+  start,
+  close,
+  exec = () => {
+    throw new Error("not exercised")
+  },
+) => ({
   id: "vm-1",
   start,
   close,
   getHostPid: () => 123,
   fs: {},
-  exec: () => {
-    throw new Error("not exercised")
-  },
+  exec,
 })
 
 test("VM creation awaits startup before publishing a live handle", async () => {
@@ -72,4 +76,34 @@ test("VM startup failure closes the partially started VM", async () => {
 
   await assert.rejects(Effect.runPromise(createVm(vmSpec)), /Gondolin create failed/)
   assert.equal(closes, 1)
+})
+
+test("guest exec enables stdin before the broker sends EOF", async () => {
+  let execOptions
+  let ended = false
+  const createVm = makeCreateVm(async () =>
+    fakeVm(
+      async () => undefined,
+      async () => undefined,
+      (_argv, options) => {
+        execOptions = options
+        return {
+          result: Promise.resolve({ exitCode: 0 }),
+          async *output() {},
+          write: () => undefined,
+          end: () => {
+            if (options.stdin !== true) throw new Error("stdin was not enabled for this exec")
+            ended = true
+          },
+        }
+      },
+    )
+  )
+  const vm = await Effect.runPromise(createVm(vmSpec))
+  const process = await vm.exec({ argv: ["/bin/true"] })
+
+  process.end()
+
+  assert.equal(execOptions.stdin, true)
+  assert.equal(ended, true)
 })

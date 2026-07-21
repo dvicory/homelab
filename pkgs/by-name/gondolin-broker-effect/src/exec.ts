@@ -130,9 +130,15 @@ const make = Effect.gen(function* () {
                     cause: error instanceof Error ? error.message : String(error),
                   }),
               });
-              yield* Effect.sync(() => {
-                if (stdin.byteLength > 0) processHandle.write(stdin);
-                processHandle.end();
+              yield* Effect.try({
+                try: () => {
+                  if (stdin.byteLength > 0) processHandle.write(stdin);
+                  processHandle.end();
+                },
+                catch: (error) =>
+                  brokerError("runtime.operation_failed", "failed to initialize guest process input", {
+                    cause: error instanceof Error ? error.message : String(error),
+                  }),
               });
               const bytes = yield* Ref.make(0);
               const sequence = yield* Ref.make(0);

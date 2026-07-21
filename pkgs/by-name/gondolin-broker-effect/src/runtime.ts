@@ -164,6 +164,7 @@ export const makeCreateVm = (createGondolinVm: typeof GondolinVM.create) =>
             const proc = startedVm.exec([...request.argv], {
               ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
               ...(request.env === undefined ? {} : { env: request.env }),
+              stdin: true,
               stdout: "pipe",
               stderr: "pipe",
             });

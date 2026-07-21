@@ -93,7 +93,10 @@ export const makeFakeRuntime = () => {
                 })
               : Promise.resolve({ exitCode: 0, signal: null }),
             write: () => undefined,
-            end: () => { ended = true },
+            end: () => {
+              if (argv[0] === "stdin-disabled") throw new Error("stdin was not enabled for this exec")
+              ended = true
+            },
             get ended() { return ended }
           }
         },

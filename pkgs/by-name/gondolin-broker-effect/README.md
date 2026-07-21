@@ -486,7 +486,7 @@ The credential-free spike passes `supportedObligations: []`. Any policy statemen
 | Background processes / notify-on-complete | Not implemented | Design Agent X task/process ownership instead of copying legacy flags blindly |
 | PTY open/input/resize/close | Not implemented | Define typed PTY lifecycle and cancellation before exposing it |
 | Input/output/deadline ceilings | Preserved | Add per-action unit-bearing policy types and adversarial tests |
-| Hard cancellation via VM close | Preserved and tested with fake runtime | Prove real Gondolin/QEMU process-tree termination within V3 threshold |
+| Hard cancellation via VM close | Preserved and tested with fake runtime, but intentionally coarse | Gondolin 0.12.0 abort only rejects the host session; it does not confirm guest-process termination. Add guest-side signal/kill-and-confirm before preserving a VM after request loss; until then disconnect cancellation sacrifices ephemeral VM state for containment |
 | File stat/list/read/write/mkdir/remove | Preserved semantically | Run path/symlink/hardlink/race/atomic-write and guest/direct-VFS concurrency gates |
 | Network, VFS, resource admission | Only VFS basics; network off; no cgroups | V3 Phase 3/4 remains mandatory |
 | Static policy/grants | Replaced with shared pure kernel for static policy; grants absent | Agent X owns mutable grants/approvals/budgets; add immutable snapshots and transactional consumption |
