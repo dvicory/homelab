@@ -107,6 +107,22 @@ const NetworkPort = Schema.Int.pipe(
   Schema.lessThanOrEqualTo(65535),
 );
 
+export const NetworkOriginCapability = Schema.Struct({
+  version: Schema.Literal(1),
+  kind: Schema.Literal("network-origin"),
+  scheme: Schema.Union(Schema.Literal("http"), Schema.Literal("https")),
+  host: Schema.String.pipe(Schema.minLength(1), Schema.maxLength(253)),
+  ports: Schema.optional(Schema.Array(NetworkPort).pipe(Schema.minItems(1), Schema.maxItems(16))),
+  addressMode: Schema.Union(Schema.Literal("public"), Schema.Literal("pinned-private")),
+});
+export type NetworkOriginCapability = typeof NetworkOriginCapability.Type;
+
+export const CapabilityBatch = Schema.Array(Schema.Unknown).pipe(
+  Schema.minItems(1),
+  Schema.maxItems(32),
+);
+export type CapabilityBatch = typeof CapabilityBatch.Type;
+
 export const NetworkDestination = Schema.Struct({
   kind: Schema.Union(
     Schema.Literal("exact"),

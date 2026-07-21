@@ -9,6 +9,10 @@ export const Reason = Schema.Literal(
   "environment.tombstoned",
   "environment.stale_generation",
   "authority.conflict",
+  "capability.invalid",
+  "capability.unsupported",
+  "network.resolution_failed",
+  "network.address_forbidden",
   "environment.capacity",
   "runtime.start_failed",
   "runtime.operation_failed",
@@ -51,11 +55,14 @@ export const statusFor = (error: BrokerError): number => {
     case "request.invalid":
     case "exec.invalid":
     case "fs.path_forbidden":
+    case "capability.invalid":
+    case "capability.unsupported":
       return 400;
     case "exec.timeout":
       return 408;
     case "policy.denied":
     case "policy.approval_required":
+    case "network.address_forbidden":
       return 403;
     case "environment.not_found":
     case "fs.not_found":
@@ -69,6 +76,8 @@ export const statusFor = (error: BrokerError): number => {
     case "exec.output_limit":
     case "fs.size_limit":
       return 429;
+    case "network.resolution_failed":
+      return 502;
     case "policy.indeterminate":
     case "runtime.start_failed":
     case "runtime.operation_failed":
