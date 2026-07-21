@@ -32,6 +32,15 @@ const errorResponse = (error: BrokerError) =>
     },
   });
 
+const logFailure = (operation: string, error: BrokerError) =>
+  Effect.logError("Gondolin broker operation failed", {
+    operation,
+    reason: error.reason,
+    status: statusFor(error),
+    errorMessage: error.message,
+    ...(error.details === undefined ? {} : { details: error.details }),
+  });
+
 const parseBody = <A, I>(schema: Schema.Schema<A, I>) =>
   HttpServerRequest.schemaBodyJson(schema, requestDecodeOptions).pipe(
     Effect.mapError((error) =>
@@ -41,8 +50,9 @@ const parseBody = <A, I>(schema: Schema.Schema<A, I>) =>
     ),
   );
 
-const respond = <A, R>(effect: Effect.Effect<A, BrokerError, R>) =>
+const respond = <A, R>(operation: string, effect: Effect.Effect<A, BrokerError, R>) =>
   effect.pipe(
+    Effect.tapError((error) => logFailure(operation, error)),
     Effect.match({
       onFailure: errorResponse,
       onSuccess: (body) =>
@@ -59,19 +69,26 @@ export const makeHttpApp = Effect.gen(function* () {
   const files = yield* Files;
 
   const unary = <A, I>(
+    operationName: string,
     schema: Schema.Schema<A, I>,
     operation: (request: A) => Effect.Effect<unknown, BrokerError>,
-  ) => respond(Effect.flatMap(parseBody(schema), operation));
+  ) => respond(operationName, Effect.flatMap(parseBody(schema), operation));
 
   const exec = parseBody(ExecRequest).pipe(
+    Effect.tapError((error) => logFailure("exec.foreground", error)),
     Effect.match({
       onFailure: errorResponse,
       onSuccess: (request) => {
         const body = executor.execute(request).pipe(
           Stream.map((event) => encoder.encode(`${JSON.stringify(event)}\n`)),
-          Stream.catchAll((error) =>
-            Stream.succeed(encoder.encode(`${JSON.stringify(publicErrorEvent(asBrokerError(error)))}\n`)),
-          ),
+          Stream.catchAll((error) => {
+            const brokerFailure = asBrokerError(error);
+            return Stream.fromEffect(logFailure("exec.foreground", brokerFailure)).pipe(
+              Stream.flatMap(() =>
+                Stream.succeed(encoder.encode(`${JSON.stringify(publicErrorEvent(brokerFailure))}\n`)),
+              ),
+            );
+          }),
         );
         return HttpServerResponse.stream(body, {
           status: 200,
@@ -90,24 +107,24 @@ export const makeHttpApp = Effect.gen(function* () {
       "/v1/health",
       HttpServerResponse.unsafeJson({ status: "ok" }, { headers: { "cache-control": "no-store" } }),
     ),
-    HttpRouter.post("/v1/environments/ensure", unary(EnsureRequest, environments.ensure)),
-    HttpRouter.post("/v1/environments/status", unary(StatusRequest, ({ environmentKey }) => environments.status(environmentKey))),
+    HttpRouter.post("/v1/environments/ensure", unary("environment.ensure", EnsureRequest, environments.ensure)),
+    HttpRouter.post("/v1/environments/status", unary("environment.status", StatusRequest, ({ environmentKey }) => environments.status(environmentKey))),
     HttpRouter.post(
       "/v1/environments/close",
-      unary(EnvironmentRef, (request) => environments.close(request).pipe(Effect.as({ closed: true }))),
+      unary("environment.close", EnvironmentRef, (request) => environments.close(request).pipe(Effect.as({ closed: true }))),
     ),
     HttpRouter.post("/v1/exec", exec),
-    HttpRouter.post("/v1/files/stat", unary(FileRef, files.stat)),
-    HttpRouter.post("/v1/files/list", unary(ListFileRequest, files.list)),
-    HttpRouter.post("/v1/files/read", unary(ReadFileRequest, files.read)),
-    HttpRouter.post("/v1/files/write", unary(WriteFileRequest, files.write)),
+    HttpRouter.post("/v1/files/stat", unary("fs.stat", FileRef, files.stat)),
+    HttpRouter.post("/v1/files/list", unary("fs.list", ListFileRequest, files.list)),
+    HttpRouter.post("/v1/files/read", unary("fs.read", ReadFileRequest, files.read)),
+    HttpRouter.post("/v1/files/write", unary("fs.write", WriteFileRequest, files.write)),
     HttpRouter.post(
       "/v1/files/mkdir",
-      unary(MakeDirectoryRequest, (request) => files.mkdir(request).pipe(Effect.as({ created: true }))),
+      unary("fs.mkdir", MakeDirectoryRequest, (request) => files.mkdir(request).pipe(Effect.as({ created: true }))),
     ),
     HttpRouter.post(
       "/v1/files/remove",
-      unary(RemoveFileRequest, (request) => files.remove(request).pipe(Effect.as({ removed: true }))),
+      unary("fs.remove", RemoveFileRequest, (request) => files.remove(request).pipe(Effect.as({ removed: true }))),
     ),
     HttpRouter.catchAll(() =>
       Effect.succeed(errorResponse(brokerError("request.invalid", "route does not exist"))),

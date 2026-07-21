@@ -114,6 +114,14 @@ const loadSdk = (): Promise<GondolinSdk> => {
   return sdkPromise;
 };
 
+export const parseGondolinDebug = (
+  value: string | undefined = process.env.GONDOLIN_DEBUG,
+): false | true | ReadonlyArray<string> => {
+  if (value === undefined || value === "") return false;
+  if (value === "all") return true;
+  return value.split(",").map((component) => component.trim()).filter(Boolean);
+};
+
 const runtimeFailure = (operation: string, error: unknown): BrokerError =>
   brokerError(
     operation === "create" ? "runtime.start_failed" : "runtime.operation_failed",
@@ -125,17 +133,26 @@ const createVm = (spec: VmCreateSpec): Effect.Effect<VmHandle, BrokerError> =>
   Effect.tryPromise({
     try: async () => {
       const sdk = await loadSdk();
+      const debug = parseGondolinDebug();
+      const debugLog =
+        debug === false
+          ? undefined
+          : (component: string, message: string) => {
+              process.stderr.write(`[gondolin:${component}] ${message.replace(/\n$/, "")}\n`);
+            };
       const vm = await sdk.VM.create({
         sandbox: {
           ...(process.platform === "linux" ? { vmm: "qemu", accel: "kvm" } : {}),
           imagePath: spec.assetPath,
           netEnabled: false,
+          ...(debug === false ? {} : { debug }),
         },
         rootfs: { mode: "cow" },
         memory: `${spec.memoryMiB}M`,
         cpus: spec.cpus,
         autoStart: true,
         sessionLabel: spec.sessionLabel,
+        ...(debugLog === undefined ? {} : { debugLog }),
         vfs: {
           fuseMount: spec.workspaceGuestPath,
           mounts: { "/": new sdk.RealFSProvider(spec.workspaceHostPath) },
