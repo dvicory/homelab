@@ -24,6 +24,7 @@ runCommand "hermes-agent-patched-check" { } ''
     ${patchedHermes.patchedSource}/tests/tools/test_task_authority_binding.py \
     ${patchedHermes.patchedSource}/tests/tools/test_approval_choice_result.py \
     ${patchedHermes.patchedSource}/tests/gateway/test_approval_permanent_choices.py \
+    ${patchedHermes.patchedSource}/tests/gateway/test_telegram_approval_buttons.py \
     ${patchedHermes.patchedSource}/tests/tools/test_gondolin_backend.py \
     ${sandboxAccess.testSource}/tests \
     ${codexWorkerLane.testSource}/tests

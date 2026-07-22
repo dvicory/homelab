@@ -19,6 +19,7 @@ let
       ./approval-choice-result.patch
       ./approval-permanent-control.patch
       ./approval-surface-permanent-control.patch
+      ./approval-rich-choice-control.patch
     ];
   };
 in
