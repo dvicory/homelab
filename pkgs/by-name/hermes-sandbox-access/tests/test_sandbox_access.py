@@ -136,7 +136,7 @@ def test_permanent_choice_is_unavailable_and_fails_closed(plugin, monkeypatch):
         "/v1/control/access/decide",
         {"requestId": "request-1", "decision": "deny", "principal": "hermes-paired-user"},
     )
-    assert plugin._REQUEST_SCHEMA["properties"]["requested_scope"]["enum"] == ["once", "task"]
+    assert plugin._REQUEST_SCHEMA["parameters"]["properties"]["requested_scope"]["enum"] == ["once", "task"]
 
 
 def test_denial_is_recorded_and_malformed_approval_fails_closed(plugin, monkeypatch):
@@ -231,3 +231,21 @@ def test_registration_exposes_only_explicit_tools_and_lifecycle_hooks(plugin):
         "on_session_reset",
         "kanban_task_completed",
     }
+
+
+def test_registration_uses_openai_function_schema_envelopes(plugin):
+    context = SimpleNamespace(tools=[], hooks=[])
+    context.register_tool = lambda **kwargs: context.tools.append(kwargs)
+    context.register_hook = lambda name, handler: context.hooks.append((name, handler))
+
+    plugin.register(context)
+
+    definitions = {tool["name"]: tool["schema"] for tool in context.tools}
+    request = definitions["sandbox_request_access"]
+    assert set(request) == {"description", "parameters"}
+    assert request["parameters"]["properties"]["capabilities"]["items"]["properties"]["address_mode"] == {
+        "enum": ["public", "pinned-private"],
+    }
+    assert request["parameters"]["required"] == ["capabilities", "requested_scope", "rationale"]
+    assert definitions["sandbox_access_list"]["parameters"]["properties"] == {}
+    assert definitions["sandbox_access_revoke"]["parameters"]["required"] == ["grant_id"]

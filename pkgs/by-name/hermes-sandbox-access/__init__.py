@@ -75,7 +75,7 @@ class BrokerClient:
         return body
 
 
-_REQUEST_SCHEMA = {
+_REQUEST_PARAMETERS = {
     "type": "object",
     "additionalProperties": False,
     "required": ["capabilities", "requested_scope", "rationale"],
@@ -107,19 +107,21 @@ _REQUEST_SCHEMA = {
         "rationale": {"type": "string", "minLength": 1, "maxLength": 2048},
     },
 }
-
-_LIST_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {},
+_REQUEST_SCHEMA = {
+    "description": "Request narrowly scoped runtime capabilities for the current sandbox.",
+    "parameters": _REQUEST_PARAMETERS,
 }
-
+_LIST_SCHEMA = {
+    "description": "List grants visible to the current sandbox authority.",
+    "parameters": {"type": "object", "additionalProperties": False, "properties": {}},
+}
 _REVOKE_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["grant_id"],
-    "properties": {
-        "grant_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "description": "Revoke one visible active sandbox grant.",
+    "parameters": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["grant_id"],
+        "properties": {"grant_id": {"type": "string", "minLength": 1, "maxLength": 256}},
     },
 }
 
