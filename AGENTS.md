@@ -44,6 +44,8 @@ The role of this file is to describe common mistakes and confusion points that a
 
 - **Do not enable `users.users.<name>.autoSubUidGidRange` for registry users.** The user enrichment aspect already derives deterministic subordinate UID/GID ranges from the registry UID. Enabling NixOS auto-allocation conflicts with `deterministic-uids.nix` and produces failed assertions for those users.
 
+- **A shared Git metadata directory may locally exclude top-level Hermes roadmap documents even when `.gitignore` does not.** Use `git check-ignore -v --no-index <path>` to identify the source when `git add` reports one ignored; force-add only when the document is intentionally being placed under version control.
+
 ## Den framework patterns
 
 - **Per-host metadata lives on `den.hosts.<name>` as entity data, not as NixOS options.** Use `den.schema.host` to type it. Parametric aspects (`{ host, ... }`) in `includes` or `den.schema.host.includes` receive the full entity context including schema options. This replaces the old pattern of "data carrier" NixOS options.
