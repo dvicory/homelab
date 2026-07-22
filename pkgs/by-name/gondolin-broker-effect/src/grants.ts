@@ -9,6 +9,11 @@ import {
   type PreparedNetworkOriginCapability as PreparedNetworkOrigin,
   type PrepareAccessRequest,
 } from "./domain.js";
+import { Authorization } from "./auth.js";
+import {
+  getOrBindDefaultAuthority,
+  resolveAuthorityPolicy,
+} from "./authority.js";
 import { BrokerConfig } from "./config.js";
 import {
   canonicalCapabilityKey,
@@ -16,6 +21,7 @@ import {
   type AddressResolver,
 } from "./capabilities.js";
 import { BrokerError, brokerError } from "./errors.js";
+import { isCapabilityCoveredByStaticPolicy } from "./network.js";
 import { Registry, type AuthorityBindingRecord } from "./registry.js";
 
 export type AccessRequestState = "pending" | "approved" | "denied";
@@ -209,6 +215,7 @@ interface AccessGrantOptions {
 
 const make = (options: AccessGrantOptions) => Effect.gen(function* () {
   const config = yield* BrokerConfig;
+  const authorization = yield* Authorization;
   const registry = yield* Registry;
   const now = options.now ?? Date.now;
   const db = yield* Effect.acquireRelease(
@@ -359,17 +366,7 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
   };
 
   const requireBinding = (environmentKey: string): Effect.Effect<AuthorityBindingRecord, BrokerError> =>
-    registry.getAuthority(environmentKey).pipe(
-      Effect.flatMap((binding) => binding === undefined
-        ? Effect.fail(brokerError("policy.indeterminate", "environment has no authority binding", { environmentKey }))
-        : binding.policyDigest !== config.policyFile.policyDigest
-          ? Effect.fail(brokerError("policy.indeterminate", "environment authority uses an inactive policy digest", {
-              environmentKey,
-              bindingPolicyDigest: binding.policyDigest,
-              activePolicyDigest: config.policyFile.policyDigest,
-            }))
-          : Effect.succeed(binding)),
-    );
+    getOrBindDefaultAuthority(registry, config, environmentKey);
 
   const matching = (
     binding: AuthorityBindingRecord,
@@ -389,6 +386,21 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
       const binding = yield* requireBinding(request.environmentKey);
       const capabilities = yield* prepareCapabilityBatch(request.capabilities, options.resolver);
       const fingerprint = fingerprintFor(binding, capabilities, request.requestedScope, request.durationSeconds);
+      const { network } = yield* resolveAuthorityPolicy(config, authorization, binding);
+      if (capabilities.every((capability) =>
+        isCapabilityCoveredByStaticPolicy(network, capability)
+      )) {
+        return {
+          state: "active",
+          requestId: null,
+          fingerprint,
+          environmentKey: request.environmentKey,
+          requestedScope: request.requestedScope,
+          durationSeconds: duration,
+          capabilities,
+          grantIds: [],
+        };
+      }
       const remembered = matching(binding, request.environmentKey).filter((grant) => isRememberedFor(grant, binding));
       if (containsCapabilities(remembered, capabilities)) {
         return {

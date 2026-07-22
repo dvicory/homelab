@@ -135,7 +135,7 @@ sequenceDiagram
   B-->>G: allowed in same VM
 ```
 
-Preparation never activates authority. It validates and canonicalizes capabilities, resolves private pins, coalesces duplicate requests, applies remembered rules, and returns a broker-rendered summary. The plugin passes that summary to the existing Hermes approval callback. The decision call references the broker request ID; it does not repeat model data.
+Preparation never activates new authority. For an unbound trusted environment key, it first establishes the broker-configured default binding without creating a VM; conflicting concurrent or existing bindings retain the registry's fail-closed behavior. It then validates and canonicalizes capabilities and resolves the bound authority class's immutable Nix network policy. A batch already covered by that baseline returns `active` without an access request, runtime grant, or approval prompt. Otherwise preparation resolves private pins, coalesces duplicate requests, applies remembered rules, and returns a broker-rendered summary. The plugin passes only a new pending request to the existing Hermes approval callback. The decision call references the broker request ID; it does not repeat model data.
 
 ### 7. Scopes and durable overlays
 

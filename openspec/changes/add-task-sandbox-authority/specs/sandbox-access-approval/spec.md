@@ -30,6 +30,18 @@ The plugin MUST send the proposed batch to the broker for validation and canonic
 - **THEN** the tool SHALL return the broker's stable denial to the agent
 - **AND** MUST NOT invoke user approval
 
+#### Scenario: Proactive request before environment creation
+- **GIVEN** a trusted environment key with no persisted authority binding or VM
+- **WHEN** the plugin asks the broker to prepare a valid capability request
+- **THEN** the broker SHALL conflict-safely bind only its configured default profile, executor, authority class, and policy digest
+- **AND** it MUST NOT create a VM or accept caller-selected authority fields
+
+#### Scenario: Capability already covered by immutable policy
+- **GIVEN** a canonical capability wholly covered by the bound authority class's immutable Nix network policy
+- **WHEN** the broker prepares the request
+- **THEN** it SHALL return the capability as active without creating an access request or runtime grant
+- **AND** Hermes MUST NOT invoke user approval
+
 ### Requirement: Existing Hermes approval integration
 
 The plugin SHOULD reuse Hermes' existing paired-user and surface-specific approval mechanism. A denial, timeout, callback failure, or malformed response MUST fail closed. Approval choices MUST map only to broker-supported scopes.
