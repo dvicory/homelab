@@ -13,8 +13,8 @@ runCommand "hermes-agent-patched-check" { } ''
   # path even though they make no network requests.
   export SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt
   python=${patchedHermes.hermesVenv}/bin/python3
-  grep -F "HERMES_BUNDLED_PLUGINS" ${patchedHermes}/bin/hermes
-  grep -F "${patchedHermes.patchedSource}/plugins" ${patchedHermes}/bin/hermes
+  test "$(readlink -f ${patchedHermes}/share/hermes-agent/plugins)" = \
+    "${patchedHermes.patchedSource}/plugins"
 
   "$python" -m pytest -q -o cache_dir=$TMPDIR/pytest-cache \
     ${patchedHermes.patchedSource}/tests/hermes_cli/test_worker_lanes.py \
