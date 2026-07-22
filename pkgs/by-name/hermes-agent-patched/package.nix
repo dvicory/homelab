@@ -18,6 +18,7 @@ let
       ./task-authority-binding.patch
       ./approval-choice-result.patch
       ./approval-permanent-control.patch
+      ./approval-surface-permanent-control.patch
     ];
   };
 in

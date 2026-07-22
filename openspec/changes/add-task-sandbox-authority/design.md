@@ -148,7 +148,9 @@ The broker protocol supports:
 - `profile`: durable exact remembered rule for this broker profile;
 - `executor`: durable exact remembered rule for a configured executor lane.
 
-Protocol support is not permission. The rendered profile policy is the upper bound accepted by the broker. For `hermes-qa`, Nix renders only `once` and `task`. The Hermes plugin schema accepts only those two requested scopes, passes `allow_permanent = false` to the generic approval API, accepts only `once` and `session` results, and maps `session` to the requested task scope. An unexpected `always` result fails closed. Existing non-sandbox Hermes approval callers retain their default permanent-choice behavior.
+Protocol support is not permission. The rendered profile policy is the upper bound accepted by the broker. For `hermes-qa`, Nix renders only `once` and `task`. The Hermes plugin schema accepts only those two requested scopes, passes `allow_permanent = false` to the generic approval API, accepts only `once` and `session` results, and maps `session` to the requested task scope. The gateway propagates that restriction to its rendered choices; forged or stale `always` results fail closed rather than being downgraded. Existing non-sandbox Hermes approval callers retain their default permanent-choice behavior.
+
+Grant decisions record the fixed `paired-user` audit principal. This is not caller-selected policy input and is deliberately not configurable through the gateway environment. Authentication of the actual operator remains the responsibility of Hermes' paired-user and surface-specific approval mechanism.
 
 Profile and executor remembered rules remain broker machinery for a future explicit management plane. They are not available through the QA Hermes approval UI. A later management plane must make durable creation a separate, deliberate action with list/search, provenance, expiry, revoke/bulk-revoke, audit export, and reconciliation against declarative Nix policy; it must also opt those scopes into the immutable profile maximum.
 

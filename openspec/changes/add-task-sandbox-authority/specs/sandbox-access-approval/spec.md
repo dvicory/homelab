@@ -63,6 +63,13 @@ The plugin SHOULD reuse Hermes' existing paired-user and surface-specific approv
 - **THEN** it MUST offer and accept only `once` and `session`, with `session` capped to the requested task scope
 - **AND** an `always`, profile, executor, conversation, or timed result MUST NOT activate a grant
 
+#### Scenario: Restricted choice reaches every approval surface
+- **GIVEN** the sandbox plugin requests approval with permanent approval disabled
+- **WHEN** a gateway or interactive adapter renders the request
+- **THEN** the visible choices MUST omit permanent approval
+- **AND** a forged, stale, or adapter-generated `always` response MUST fail closed rather than downgrade to session scope
+- **AND** unrelated Hermes approval callers MUST retain their ordinary permanent-choice behavior
+
 ### Requirement: Approval-fatigue controls
 
 The broker MUST enforce persistent request coalescing, denial cooldowns, one pending request per environment, and bounded prompt budgets. The plugin MUST honor suppressed and existing-pending responses without opening another prompt.

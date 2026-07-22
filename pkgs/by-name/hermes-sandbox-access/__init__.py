@@ -21,6 +21,7 @@ _TOOLSET = "sandbox_access"
 _SESSION_ENVIRONMENTS: dict[str, str] = {}
 _VALID_CHOICES = {"once", "session"}
 _VALID_SCOPES = {"once", "task"}
+_APPROVAL_PRINCIPAL = "paired-user"
 
 _TASK_ENVIRONMENTS: dict[str, str] = {}
 
@@ -151,8 +152,6 @@ def _authority_context(kwargs: dict[str, Any]) -> tuple[str, str | None]:
     return key, session_id if isinstance(session_id, str) else None
 
 
-def _principal() -> str:
-    return os.environ.get("HERMES_SANDBOX_APPROVAL_PRINCIPAL", "hermes-paired-user")
 
 
 def _broker_capabilities(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -200,7 +199,7 @@ def _deny_pending(client: BrokerClient, request_id: str) -> None:
         client.post("/v1/control/access/decide", {
             "requestId": request_id,
             "decision": "deny",
-            "principal": _principal(),
+            "principal": _APPROVAL_PRINCIPAL,
         })
     except BrokerProblem:
         pass
@@ -246,7 +245,7 @@ def handle_request_access(args: dict[str, Any], **kwargs: Any) -> str:
             "requestId": request_id,
             "decision": "approve",
             "scope": scope,
-            "principal": _principal(),
+            "principal": _APPROVAL_PRINCIPAL,
         }
         if scope == "timed" and "duration_seconds" in args:
             decision["durationSeconds"] = args["duration_seconds"]
@@ -305,7 +304,7 @@ def handle_access_revoke(args: dict[str, Any], **kwargs: Any) -> str:
             raise BrokerProblem(404, "grant.not_found", "grant is not visible to this sandbox authority", {})
         revoked = client.post("/v1/control/grants/revoke", {
             "grantId": args["grant_id"],
-            "principal": _principal(),
+            "principal": _APPROVAL_PRINCIPAL,
         })
         return json.dumps({"ok": True, "grant": revoked}, sort_keys=True)
     except BrokerProblem as exc:
