@@ -26,12 +26,14 @@ in
 hermesAgent.overrideAttrs (old: {
   nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ makeWrapper ];
   postFixup = (old.postFixup or "") + ''
-    # Upstream's flake seals its Python venv and does not expose a source
-    # override. Prepending the fully patched source keeps its dependency graph
-    # while ensuring all Hermes Python modules come from one coherent tree.
+    # Upstream's flake seals its Python venv and separately points plugin
+    # discovery at the unpatched package tree. Select the fully patched source
+    # for both normal imports and bundled plugin loading so migrated platform
+    # adapters (including Telegram) cannot drift from the patched gateway.
     for program in hermes hermes-agent hermes-acp; do
       wrapProgram "$out/bin/$program" \
-        --prefix PYTHONPATH : "${patchedSource}"
+        --prefix PYTHONPATH : "${patchedSource}" \
+        --set HERMES_BUNDLED_PLUGINS "${patchedSource}/plugins"
     done
   '';
   passthru = (old.passthru or { }) // {
