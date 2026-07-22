@@ -27,6 +27,7 @@ def plugin(monkeypatch):
     module = _load_plugin()
     monkeypatch.setenv("HERMES_SANDBOX_AUTHORITY_BINDING", "qa-default-authority")
     monkeypatch.setenv("GONDOLIN_EFFECT_CONTROL_SOCKET", "/run/test/control.sock")
+    monkeypatch.setenv("HERMES_SANDBOX_APPROVAL_PRINCIPAL", "model-selected")
     monkeypatch.setattr(module, "register_task_authority_binding", lambda identity, binding: None)
     monkeypatch.setattr(module, "environment_key", lambda task_id=None, session_id=None: "authority-test")
     return module
@@ -104,7 +105,7 @@ def test_broker_prepares_before_approval_and_decision_uses_only_request_id(plugi
         "requestId": "request-1",
         "decision": "approve",
         "scope": "task",
-        "principal": "hermes-paired-user",
+        "principal": "paired-user",
     }
     assert "capabilities" not in decision
     assert "https://api.example.com ports [443], public addresses" in prompts[0][1]
@@ -134,7 +135,7 @@ def test_permanent_choice_is_unavailable_and_fails_closed(plugin, monkeypatch):
     assert result["reason"] == "approval.denied"
     assert client.calls[1] == (
         "/v1/control/access/decide",
-        {"requestId": "request-1", "decision": "deny", "principal": "hermes-paired-user"},
+        {"requestId": "request-1", "decision": "deny", "principal": "paired-user"},
     )
     assert plugin._REQUEST_SCHEMA["parameters"]["properties"]["requested_scope"]["enum"] == ["once", "task"]
 
@@ -153,7 +154,7 @@ def test_denial_is_recorded_and_malformed_approval_fails_closed(plugin, monkeypa
     assert result["reason"] == "approval.denied"
     assert client.calls[1] == (
         "/v1/control/access/decide",
-        {"requestId": "request-1", "decision": "deny", "principal": "hermes-paired-user"},
+        {"requestId": "request-1", "decision": "deny", "principal": "paired-user"},
     )
 
 
