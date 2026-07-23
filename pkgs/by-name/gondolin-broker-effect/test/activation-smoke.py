@@ -163,12 +163,21 @@ try:
     control_execution = request(control_socket_path, "/v1/environments/ensure", {
         "environmentKey": "activation-environment",
     })
+    acquired_response = request(control_socket_path, "/v1/control/workspaces/acquire", {
+        "environmentKey": "activation-environment",
+    })
+    if b"HTTP/1.1 200" not in acquired_response:
+        raise RuntimeError(f"workspace acquire failed: {acquired_response!r}")
+    acquired = json.loads(acquired_response.split(b"\r\n\r\n", 1)[1])
+
     bound = request(control_socket_path, "/v1/control/authority/bind", {
         "environmentKey": "activation-environment",
         "profile": "activation-test",
         "executor": "hermes-gateway",
         "authorityClass": "default",
         "policyDigest": policy["policyDigest"],
+        "workspaceId": acquired["workspace"]["workspaceId"],
+        "workspaceLeaseId": acquired["lease"]["leaseId"],
     })
 
     if b"HTTP/1.1 200" not in execution_health or b'"plane":"execution"' not in execution_health:

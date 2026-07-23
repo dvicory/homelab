@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import { Context, Effect, Layer } from "effect";
 import { BrokerConfig } from "./config.js";
 import { BrokerError, brokerError } from "./errors.js";
+import { Workspaces } from "./workspaces.js";
 
 export type EnvironmentState = "creating" | "active" | "closing" | "closed" | "failed";
 
@@ -13,7 +14,8 @@ export interface EnvironmentRecord {
   readonly policyDigest: string;
   readonly worklane: string;
   readonly assetBuildId: string;
-  readonly workspacePath: string;
+  readonly workspaceId: string;
+  readonly workspaceLeaseId: string;
   readonly vmId: string | null;
   readonly hostPid: number | null;
   readonly failureReason: string | null;
@@ -25,7 +27,8 @@ export interface ReserveEnvironment {
   readonly policyDigest: string;
   readonly worklane: string;
   readonly assetBuildId: string;
-  readonly workspacePath: string;
+  readonly workspaceId: string;
+  readonly workspaceLeaseId: string;
 }
 
 export interface AuthorityBindingRecord {
@@ -34,6 +37,8 @@ export interface AuthorityBindingRecord {
   readonly executor: string;
   readonly authorityClass: string;
   readonly policyDigest: string;
+  readonly workspaceId: string;
+  readonly workspaceLeaseId: string;
   readonly createdAt: number;
   readonly updatedAt: number;
 }
@@ -44,6 +49,8 @@ export interface BindAuthority {
   readonly executor: string;
   readonly authorityClass: string;
   readonly policyDigest: string;
+  readonly workspaceId: string;
+  readonly workspaceLeaseId: string;
 }
 
 export interface RegistryService {
@@ -69,7 +76,8 @@ type Row = {
   policy_digest: string;
   worklane: string;
   asset_build_id: string;
-  workspace_path: string;
+  workspace_id: string;
+  workspace_lease_id: string;
   vm_id: string | null;
   host_pid: number | null;
   failure_reason: string | null;
@@ -82,6 +90,8 @@ type AuthorityRow = {
   executor: string;
   authority_class: string;
   policy_digest: string;
+  workspace_id: string;
+  workspace_lease_id: string;
   created_at: number;
   updated_at: number;
 };
@@ -93,7 +103,8 @@ const fromRow = (row: Row): EnvironmentRecord => ({
   policyDigest: row.policy_digest,
   worklane: row.worklane,
   assetBuildId: row.asset_build_id,
-  workspacePath: row.workspace_path,
+  workspaceId: row.workspace_id,
+  workspaceLeaseId: row.workspace_lease_id,
   vmId: row.vm_id,
   hostPid: row.host_pid,
   failureReason: row.failure_reason,
@@ -106,6 +117,8 @@ const authorityFromRow = (row: AuthorityRow): AuthorityBindingRecord => ({
   executor: row.executor,
   authorityClass: row.authority_class,
   policyDigest: row.policy_digest,
+  workspaceId: row.workspace_id,
+  workspaceLeaseId: row.workspace_lease_id,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
@@ -117,23 +130,13 @@ const registryFailure = (operation: string, error: unknown) =>
 
 const make = Effect.gen(function* () {
   const config = yield* BrokerConfig;
+  yield* Workspaces;
   const db = yield* Effect.acquireRelease(
     Effect.try({
       try: () => {
         fs.mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
         const opened = new DatabaseSync(config.databasePath);
         opened.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
-        const legacyEnvironmentSchema = opened.prepare(
-          "SELECT 1 FROM pragma_table_info('environments') WHERE name='policy_generation'",
-        ).get();
-        const legacyAuthoritySchema = opened.prepare(
-          "SELECT 1 FROM pragma_table_info('authority_bindings') WHERE name='policy_generation'",
-        ).get();
-        if (legacyEnvironmentSchema !== undefined || legacyAuthoritySchema !== undefined) {
-          // Pre-digest QA state cannot safely identify its authorizing policy.
-          // Environment workspaces are stored separately and remain intact.
-          opened.exec("DROP TABLE IF EXISTS authority_bindings; DROP TABLE IF EXISTS environments;");
-        }
         opened.exec(`
           CREATE TABLE IF NOT EXISTS environments (
             environment_key TEXT PRIMARY KEY,
@@ -142,7 +145,8 @@ const make = Effect.gen(function* () {
             policy_digest TEXT NOT NULL CHECK (length(policy_digest) = 64),
             worklane TEXT NOT NULL,
             asset_build_id TEXT NOT NULL,
-            workspace_path TEXT NOT NULL,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+            workspace_lease_id TEXT NOT NULL REFERENCES workspace_leases(lease_id),
             vm_id TEXT,
             host_pid INTEGER,
             failure_reason TEXT,
@@ -156,6 +160,8 @@ const make = Effect.gen(function* () {
             executor TEXT NOT NULL,
             authority_class TEXT NOT NULL,
             policy_digest TEXT NOT NULL CHECK (length(policy_digest) = 64),
+            workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+            workspace_lease_id TEXT NOT NULL REFERENCES workspace_leases(lease_id),
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
           ) STRICT;
@@ -203,9 +209,9 @@ const make = Effect.gen(function* () {
           const now = Date.now();
           db.prepare(`
             INSERT INTO authority_bindings (
-              environment_key, profile, executor, authority_class,
-              policy_digest, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+              environment_key, profile, executor, authority_class, policy_digest,
+              workspace_id, workspace_lease_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(environment_key) DO NOTHING
           `).run(
             request.environmentKey,
@@ -213,6 +219,8 @@ const make = Effect.gen(function* () {
             request.executor,
             request.authorityClass,
             request.policyDigest,
+            request.workspaceId,
+            request.workspaceLeaseId,
             now,
             now,
           );
@@ -222,7 +230,9 @@ const make = Effect.gen(function* () {
             binding.profile !== request.profile ||
             binding.executor !== request.executor ||
             binding.authorityClass !== request.authorityClass ||
-            binding.policyDigest !== request.policyDigest
+            binding.policyDigest !== request.policyDigest ||
+            binding.workspaceId !== request.workspaceId ||
+            binding.workspaceLeaseId !== request.workspaceLeaseId
           ) {
             throw brokerError("authority.conflict", "environment authority is already bound", {
               environmentKey: request.environmentKey,
@@ -230,6 +240,8 @@ const make = Effect.gen(function* () {
               executor: binding.executor,
               authorityClass: binding.authorityClass,
               policyDigest: binding.policyDigest,
+              workspaceId: binding.workspaceId,
+              workspaceLeaseId: binding.workspaceLeaseId,
             });
           }
           db.exec("COMMIT");
@@ -254,15 +266,17 @@ const make = Effect.gen(function* () {
           db.prepare(`
             INSERT INTO environments (
               environment_key, generation, state, policy_digest, worklane,
-              asset_build_id, workspace_path, vm_id, host_pid, failure_reason, updated_at
-            ) VALUES (?, ?, 'creating', ?, ?, ?, ?, NULL, NULL, NULL, ?)
+              asset_build_id, workspace_id, workspace_lease_id, vm_id, host_pid,
+              failure_reason, updated_at
+            ) VALUES (?, ?, 'creating', ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
             ON CONFLICT(environment_key) DO UPDATE SET
               generation=excluded.generation,
               state='creating',
               policy_digest=excluded.policy_digest,
               worklane=excluded.worklane,
               asset_build_id=excluded.asset_build_id,
-              workspace_path=excluded.workspace_path,
+              workspace_id=excluded.workspace_id,
+              workspace_lease_id=excluded.workspace_lease_id,
               vm_id=NULL,
               host_pid=NULL,
               failure_reason=NULL,
@@ -273,7 +287,8 @@ const make = Effect.gen(function* () {
             request.policyDigest,
             request.worklane,
             request.assetBuildId,
-            request.workspacePath,
+            request.workspaceId,
+            request.workspaceLeaseId,
             now,
           );
           db.exec("COMMIT");

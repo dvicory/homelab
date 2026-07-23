@@ -6,6 +6,7 @@ import test from "node:test"
 import { Effect } from "effect"
 import { AccessGrants } from "../dist/grants.js"
 import { Registry } from "../dist/registry.js"
+import { Workspaces } from "../dist/workspaces.js"
 import { makeTestLayer } from "./fakes.mjs"
 
 const origin = (host = "docs.example.com") => ({
@@ -27,13 +28,19 @@ const resolver = async (host) => {
   return [{ address: addresses[host], family: 4 }]
 }
 
-const bind = (registry, environmentKey, overrides = {}) => registry.bindAuthority({
-  environmentKey,
-  profile: "test",
-  executor: "hermes-gateway",
-  authorityClass: "default",
-  policyDigest: "a".repeat(64),
-  ...overrides
+const bind = (registry, environmentKey, overrides = {}) => Effect.gen(function* () {
+  const workspaces = yield* Workspaces
+  const acquired = yield* workspaces.acquire(environmentKey)
+  return yield* registry.bindAuthority({
+    environmentKey,
+    profile: "test",
+    executor: "hermes-gateway",
+    authorityClass: "default",
+    policyDigest: "a".repeat(64),
+    workspaceId: acquired.workspace.workspaceId,
+    workspaceLeaseId: acquired.lease.leaseId,
+    ...overrides
+  })
 })
 
 test("proactive preparation binds defaults without a VM and skips approval for static policy", async () => {

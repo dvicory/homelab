@@ -1,0 +1,117 @@
+diff --git a/plugins/workspace-service/__init__.py b/plugins/workspace-service/__init__.py
+index 3d58a6c..337a78c 100644
+--- a/plugins/workspace-service/__init__.py
++++ b/plugins/workspace-service/__init__.py
+@@ -90,11 +90,15 @@ def _acquire(task_id: str = "", session_id: str = "") -> dict[str, Any]:
+ 
+     with _bindings_lock:
+         cached = _bindings.get(environment_key)
+-        if cached is not None:
+-            return cached
+         request = {"environmentKey": environment_key}
+-        expected_workspace_id = os.getenv("HERMES_WORKSPACE_ID", "").strip()
+-        expected_lease_id = os.getenv("HERMES_WORKSPACE_LEASE_ID", "").strip()
++        expected_workspace_id = (
++            os.getenv("HERMES_WORKSPACE_ID", "").strip()
++            or (cached["workspaceId"] if cached is not None else "")
++        )
++        expected_lease_id = (
++            os.getenv("HERMES_WORKSPACE_LEASE_ID", "").strip()
++            or (cached["workspaceLeaseId"] if cached is not None else "")
++        )
+         if expected_workspace_id:
+             request["workspaceId"] = expected_workspace_id
+         acquired = _request("/v1/control/workspaces/acquire", request)
+@@ -160,6 +164,11 @@ def _on_prepare_worker_environment(
+     }
+ 
+ 
++def _on_task_terminal(*, task_id: str = "", **_: Any) -> None:
++    if _ENABLED and task_id:
++        terminal_tool.cleanup_vm(task_id)
++
++
+ def _on_pre_tool_call(
+     *, tool_name: str = "", task_id: str = "", session_id: str = "", **_: Any
+ ) -> dict[str, str] | None:
+@@ -176,3 +185,5 @@ def register(ctx: Any) -> None:
+     ctx.register_hook("pre_llm_call", _on_pre_llm_call)
+     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
+     ctx.register_hook("prepare_worker_environment", _on_prepare_worker_environment)
++    ctx.register_hook("kanban_task_completed", _on_task_terminal)
++    ctx.register_hook("kanban_task_blocked", _on_task_terminal)
+diff --git a/tests/plugins/test_workspace_service.py b/tests/plugins/test_workspace_service.py
+index e79204a..78927cf 100644
+--- a/tests/plugins/test_workspace_service.py
++++ b/tests/plugins/test_workspace_service.py
+@@ -23,7 +23,7 @@ def load_plugin(monkeypatch):
+     return module
+ 
+ 
+-def test_plugin_acquires_once_and_injects_only_opaque_workspace_context(monkeypatch):
++def test_plugin_revalidates_and_injects_only_opaque_workspace_context(monkeypatch):
+     plugin = load_plugin(monkeypatch)
+     registered = []
+     monkeypatch.setattr(
+@@ -54,7 +54,14 @@ def test_plugin_acquires_once_and_injects_only_opaque_workspace_context(monkeypa
+     assert "/workspace" in first["context"]
+     assert "/run/control.sock" not in first["context"]
+     assert calls == [
+-        ("/v1/control/workspaces/acquire", {"environmentKey": "authority-task-a"})
++        ("/v1/control/workspaces/acquire", {"environmentKey": "authority-task-a"}),
++        (
++            "/v1/control/workspaces/acquire",
++            {
++                "environmentKey": "authority-task-a",
++                "workspaceId": "workspace-opaque",
++            },
++        ),
+     ]
+     assert len(registered) == 4
+     assert set(registered) == {
+@@ -77,6 +84,38 @@ def test_workspace_tools_fail_closed_but_unrelated_tools_do_not_allocate(monkeyp
+     assert "broker offline" in blocked["message"]
+ 
+ 
++def test_cached_workspace_is_revalidated_before_tool_execution(monkeypatch):
++    plugin = load_plugin(monkeypatch)
++    monkeypatch.setattr(plugin.terminal_tool, "register_task_authority_binding", lambda *_: None)
++    monkeypatch.setattr(plugin.terminal_tool, "environment_key", lambda *_: "authority-task")
++    plugin._bindings["authority-task"] = {
++        "environmentKey": "authority-task",
++        "workspaceId": "workspace-opaque",
++        "workspaceLeaseId": "lease-opaque",
++        "guestPath": "/workspace",
++    }
++    monkeypatch.setattr(
++        plugin, "_request", lambda *_: (_ for _ in ()).throw(RuntimeError("broker offline"))
++    )
++
++    blocked = plugin._on_pre_tool_call(tool_name="terminal", task_id="task-a")
++
++    assert blocked["action"] == "block"
++    assert "broker offline" in blocked["message"]
++
++
++def test_terminal_task_state_closes_live_environment(monkeypatch):
++    plugin = load_plugin(monkeypatch)
++    cleaned = []
++    monkeypatch.setattr(plugin.terminal_tool, "cleanup_vm", cleaned.append)
++
++    plugin._on_task_terminal(task_id="task-a", summary="done")
++    plugin._on_task_terminal(task_id="task-b", reason="blocked")
++    plugin._on_task_terminal(task_id="")
++
++    assert cleaned == ["task-a", "task-b"]
++
++
+ def test_register_uses_generic_lifecycle_hooks(monkeypatch):
+     plugin = load_plugin(monkeypatch)
+     hooks = []
+@@ -88,4 +127,6 @@ def test_register_uses_generic_lifecycle_hooks(monkeypatch):
+         "pre_llm_call",
+         "pre_tool_call",
+         "prepare_worker_environment",
++        "kanban_task_completed",
++        "kanban_task_blocked",
+     ]

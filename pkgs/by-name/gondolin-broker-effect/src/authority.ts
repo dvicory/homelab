@@ -7,6 +7,7 @@ import type {
   AuthorityBindingRecord,
   RegistryService,
 } from "./registry.js";
+import type { WorkspaceService } from "./workspaces.js";
 
 export interface ResolvedAuthorityPolicy {
   readonly worklaneName: string;
@@ -22,18 +23,23 @@ export interface ResolvedAuthorityPolicy {
 export const getOrBindDefaultAuthority = (
   registry: RegistryService,
   config: BrokerConfigService,
+  workspaces: WorkspaceService,
   environmentKey: string,
 ): Effect.Effect<AuthorityBindingRecord, BrokerError> =>
   registry.getAuthority(environmentKey).pipe(
     Effect.flatMap((existing) => {
       if (existing === undefined) {
-        return registry.bindAuthority({
-          environmentKey,
-          profile: config.profile,
-          executor: config.policyFile.defaultExecutor,
-          authorityClass: config.policyFile.defaultAuthorityClass,
-          policyDigest: config.policyFile.policyDigest,
-        });
+        return workspaces.acquire(environmentKey).pipe(
+          Effect.flatMap((acquired) => registry.bindAuthority({
+            environmentKey,
+            profile: config.profile,
+            executor: config.policyFile.defaultExecutor,
+            authorityClass: config.policyFile.defaultAuthorityClass,
+            policyDigest: config.policyFile.policyDigest,
+            workspaceId: acquired.workspace.workspaceId,
+            workspaceLeaseId: acquired.lease.leaseId,
+          })),
+        );
       }
       if (existing.profile !== config.profile) {
         return Effect.fail(brokerError("authority.conflict", "environment authority belongs to another profile", {

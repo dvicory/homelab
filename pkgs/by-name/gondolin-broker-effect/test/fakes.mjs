@@ -9,6 +9,7 @@ import { FilesLive } from "../dist/files.js"
 import { makeAccessGrantsLayer } from "../dist/grants.js"
 import { RegistryLive } from "../dist/registry.js"
 import { VmRuntime } from "../dist/runtime.js"
+import { WorkspacesLive } from "../dist/workspaces.js"
 
 const errno = (code, message) => Object.assign(new Error(message), { code })
 
@@ -213,7 +214,8 @@ export const makeTestLayer = (stateDir, options = {}) => {
   const infrastructure = Layer.mergeAll(configLayer, fake.layer)
   const policy = BrokerPolicyKernelLive.pipe(Layer.provideMerge(infrastructure))
   const authorization = AuthorizationLive.pipe(Layer.provideMerge(policy))
-  const registry = RegistryLive.pipe(Layer.provideMerge(authorization))
+  const workspaces = WorkspacesLive.pipe(Layer.provideMerge(authorization))
+  const registry = RegistryLive.pipe(Layer.provideMerge(workspaces))
   const grants = makeAccessGrantsLayer({
     ...(options.grantResolver === undefined ? {} : { resolver: options.grantResolver }),
     ...(options.now === undefined ? {} : { now: options.now })

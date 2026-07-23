@@ -14,6 +14,13 @@ export type EnvironmentKey = typeof EnvironmentKey.Type;
 
 export const Generation = PositiveInt;
 export type Generation = typeof Generation.Type;
+export const WorkspaceId = Schema.String.pipe(
+  Schema.pattern(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
+);
+export type WorkspaceId = typeof WorkspaceId.Type;
+
+export const WorkspaceLeaseId = WorkspaceId;
+export type WorkspaceLeaseId = typeof WorkspaceLeaseId.Type;
 
 export const EnsureRequest = Schema.Struct({
   environmentKey: EnvironmentKey,
@@ -25,6 +32,8 @@ export const AuthorityBinding = Schema.Struct({
   executor: Identifier,
   authorityClass: Identifier,
   policyDigest: Schema.String.pipe(Schema.pattern(/^[0-9a-f]{64}$/)),
+  workspaceId: WorkspaceId,
+  workspaceLeaseId: WorkspaceLeaseId,
 });
 export type AuthorityBinding = typeof AuthorityBinding.Type;
 
@@ -39,6 +48,24 @@ export const EnvironmentRef = Schema.Struct({
   generation: Generation,
 });
 export type EnvironmentRef = typeof EnvironmentRef.Type;
+
+export const WorkspaceAcquireRequest = Schema.Struct({
+  environmentKey: EnvironmentKey,
+  workspaceId: Schema.optional(WorkspaceId),
+});
+export type WorkspaceAcquireRequest = typeof WorkspaceAcquireRequest.Type;
+
+export const WorkspaceRef = Schema.Struct({
+  environmentKey: EnvironmentKey,
+  workspaceId: WorkspaceId,
+});
+export type WorkspaceRef = typeof WorkspaceRef.Type;
+
+export const WorkspaceLeaseRef = Schema.Struct({
+  ...WorkspaceRef.fields,
+  leaseId: WorkspaceLeaseId,
+});
+export type WorkspaceLeaseRef = typeof WorkspaceLeaseRef.Type;
 
 export const StatusRequest = Schema.Struct({
   environmentKey: EnvironmentKey,

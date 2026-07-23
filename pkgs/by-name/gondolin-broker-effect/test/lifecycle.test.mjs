@@ -11,6 +11,7 @@ import { Executor } from "../dist/exec.js"
 import { Files } from "../dist/files.js"
 import { EnsureRequest, decodeExact } from "../dist/domain.js"
 import { Registry } from "../dist/registry.js"
+import { Workspaces } from "../dist/workspaces.js"
 import { makeTestLayer } from "./fakes.mjs"
 
 const withHarness = async (run, options) => {
@@ -94,7 +95,9 @@ test("ensure binds broker-owned default authority and rejects conflicts", async 
       profile: "test",
       executor: "different-executor",
       authorityClass: "default",
-      policyDigest: "a".repeat(64)
+      policyDigest: "a".repeat(64),
+      workspaceId: binding.workspaceId,
+      workspaceLeaseId: binding.workspaceLeaseId
     }))
     assert.equal(conflict.reason, "authority.conflict")
   }))
@@ -102,17 +105,22 @@ test("ensure binds broker-owned default authority and rejects conflicts", async 
 
 test("authority bindings persist across broker registry restarts", async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), "gondolin-authority-test-"))
-  const request = {
-    environmentKey: "conversation-persisted",
-    profile: "test",
-    executor: "hermes-gateway",
-    authorityClass: "default",
-    policyDigest: "a".repeat(64)
-  }
+  let request
 
   const first = makeTestLayer(stateDir)
   await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const registry = yield* Registry
+    const workspaces = yield* Workspaces
+    const acquired = yield* workspaces.acquire("conversation-persisted")
+    request = {
+      environmentKey: "conversation-persisted",
+      profile: "test",
+      executor: "hermes-gateway",
+      authorityClass: "default",
+      policyDigest: "a".repeat(64),
+      workspaceId: acquired.workspace.workspaceId,
+      workspaceLeaseId: acquired.lease.leaseId
+    }
     yield* registry.bindAuthority(request)
   }).pipe(Effect.provide(first.layer))))
 
@@ -128,7 +136,7 @@ test("authority bindings persist across broker registry restarts", async () => {
   assert.equal(binding.policyDigest, request.policyDigest)
 })
 
-test("legacy numeric policy state is discarded without deleting workspaces", async () => {
+test("legacy broker state and anonymous workspaces are discarded", async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), "gondolin-policy-digest-migration-"))
   const workspaceFile = path.join(stateDir, "workspaces", "legacy", "fixture.txt")
   await mkdir(path.dirname(workspaceFile), { recursive: true })
@@ -147,12 +155,16 @@ test("legacy numeric policy state is discarded without deleting workspaces", asy
   await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const registry = yield* Registry
     yield* AccessGrants
+    const workspaces = yield* Workspaces
+    const acquired = yield* workspaces.acquire("digest-migrated")
     const binding = yield* registry.bindAuthority({
       environmentKey: "digest-migrated",
       profile: "test",
       executor: "hermes-gateway",
       authorityClass: "default",
-      policyDigest: "a".repeat(64)
+      policyDigest: "a".repeat(64),
+      workspaceId: acquired.workspace.workspaceId,
+      workspaceLeaseId: acquired.lease.leaseId
     })
     assert.equal(binding.policyDigest, "a".repeat(64))
   }).pipe(Effect.provide(harness.layer))))
@@ -164,7 +176,7 @@ test("legacy numeric policy state is discarded without deleting workspaces", asy
     assert.equal(columns.includes("policy_digest"), true)
   }
   migrated.close()
-  assert.equal(await readFile(workspaceFile, "utf8"), "preserved")
+  await assert.rejects(readFile(workspaceFile, "utf8"))
 })
 
 test("ordinary ensure input rejects caller-selected authority", async () => {
