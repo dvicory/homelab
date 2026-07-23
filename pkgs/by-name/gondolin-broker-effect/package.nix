@@ -34,6 +34,7 @@ buildNpmPackage {
     runHook preCheck
     node --test policy-kernel/test/*.test.mjs test/*.test.mjs
     python3 test/activation-smoke.py
+    node --check test/qa-workspace-smoke.mjs
     runHook postCheck
   '';
 
