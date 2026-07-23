@@ -559,7 +559,10 @@ in
             };
             plugins.enabled =
               lib.optional codexEnabled "codex-worker-lane"
-              ++ lib.optional (secureTerminalEnabled && secureTerminalBackend == "gondolin") "sandbox-access";
+              ++ lib.optionals (secureTerminalEnabled && secureTerminalBackend == "gondolin") [
+                "sandbox-access"
+                "workspace-service"
+              ];
             platform_toolsets = {
               cli =
                 [ "hermes-cli" ]
