@@ -2,7 +2,7 @@ diff --git a/plugins/workspace-service/__init__.py b/plugins/workspace-service/_
 new file mode 100644
 --- /dev/null
 +++ b/plugins/workspace-service/__init__.py
-@@ -0,0 +1,146 @@
+@@ -0,0 +1,158 @@
 +"""Trusted lifecycle bridge between Hermes identities and broker workspaces."""
 +
 +from __future__ import annotations
@@ -38,6 +38,12 @@ new file mode 100644
 +)
 +_bindings: dict[str, dict[str, Any]] = {}
 +_bindings_lock = threading.RLock()
++_BROKER_UNAVAILABLE_MESSAGE = (
++    "Execution workspace unavailable: broker.unavailable. "
++    "The Gondolin broker control plane is unreachable, so no workspace-backed execution tool can run. "
++    "No command ran, and workspace persistence state is unknown. Retry after broker recovery; "
++    "Hermes restart is not required."
++)
 +
 +
 +class _UnixConnection(http.client.HTTPConnection):
@@ -74,6 +80,12 @@ new file mode 100644
 +        return decoded
 +    finally:
 +        connection.close()
++
++
++def _unavailable_message(error: Exception) -> str:
++    if isinstance(error, OSError):
++        return _BROKER_UNAVAILABLE_MESSAGE
++    return f"Execution workspace unavailable: {error}"
 +
 +
 +def _identity(task_id: str = "", session_id: str = "") -> str:
@@ -121,7 +133,7 @@ new file mode 100644
 +    try:
 +        binding = _acquire(task_id, session_id)
 +    except Exception as error:  # Fail visibly before the model assumes a workspace exists.
-+        return {"context": f"Execution workspace unavailable: {error}"}
++        return {"context": _unavailable_message(error)}
 +    return {
 +        "context": (
 +            "Execution workspace (broker-authored):\n"
@@ -142,7 +154,7 @@ new file mode 100644
 +    try:
 +        _acquire(task_id, session_id)
 +    except Exception as error:
-+        return {"action": "block", "message": f"Execution workspace unavailable: {error}"}
++        return {"action": "block", "message": _unavailable_message(error)}
 +    return None
 +
 +
@@ -166,7 +178,7 @@ diff --git a/tests/plugins/test_workspace_service.py b/tests/plugins/test_worksp
 new file mode 100644
 --- /dev/null
 +++ b/tests/plugins/test_workspace_service.py
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,106 @@
 +"""Contract tests for the broker workspace lifecycle plugin."""
 +
 +from __future__ import annotations
@@ -245,6 +257,24 @@ new file mode 100644
 +        blocked = plugin._on_pre_tool_call(tool_name=tool_name, task_id="task-a")
 +        assert blocked["action"] == "block"
 +        assert "broker offline" in blocked["message"]
++
++
++def test_transport_outage_message_states_shared_gate_and_recovery(monkeypatch):
++    plugin = load_plugin(monkeypatch)
++    monkeypatch.setattr(plugin.terminal_tool, "register_task_authority_binding", lambda *_: None)
++    monkeypatch.setattr(plugin.terminal_tool, "environment_key", lambda *_: "authority-task")
++    monkeypatch.setattr(
++        plugin, "_request", lambda *_: (_ for _ in ()).throw(FileNotFoundError(2, "missing"))
++    )
++
++    blocked = plugin._on_pre_tool_call(tool_name="execute_code", task_id="task-a")
++    context = plugin._on_pre_llm_call(task_id="task-a")
++
++    assert blocked == {"action": "block", "message": plugin._BROKER_UNAVAILABLE_MESSAGE}
++    assert context == {"context": plugin._BROKER_UNAVAILABLE_MESSAGE}
++    assert "broker control plane is unreachable" in plugin._BROKER_UNAVAILABLE_MESSAGE
++    assert "workspace persistence state is unknown" in plugin._BROKER_UNAVAILABLE_MESSAGE
++    assert "Hermes restart is not required" in plugin._BROKER_UNAVAILABLE_MESSAGE
 +
 +
 +def test_register_uses_generic_lifecycle_hooks(monkeypatch):

@@ -61,6 +61,7 @@ When the QA Gondolin backend is configured, transient broker liveness MUST NOT r
 - **THEN** workspace-backed tool schemas SHALL remain available to the conversation
 - **AND** attempts to use them SHALL fail before execution with a structured workspace-unavailable reason
 - **AND** Hermes SHALL NOT invoke a local, Docker, Podman, execute-code, process, or other fallback
+- **AND** the structured reason SHALL distinguish broker reachability from workspace persistence and provide retry-after-recovery guidance without requiring a fresh conversation or Hermes restart
 
 #### Scenario: Broker recovers in process
 - **GIVEN** a conversation whose workspace-backed tool call was blocked while the broker was unavailable
