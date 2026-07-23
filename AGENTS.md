@@ -14,6 +14,8 @@ The role of this file is to describe common mistakes and confusion points that a
 
 - **`nix flake lock` rewrites node numbering across the lockfile.** Adding one input renumbers shared transitive nodes (nixpkgs_N) and looks like a mass update; verify with a node-content multiset diff instead of `git diff` noise. Scope with `nix flake lock --update-input <name>` when possible.
 
+- **Evaluating a whole NixOS module submodule attrset can force unset optional fields.** For example, `nix eval --json ...config.systemd.sockets` can fail on an undefined `startLimitBurst` even though the host configuration and individual socket attributes evaluate. Query the exact leaf attribute needed instead of forcing the entire `systemd.services` or `systemd.sockets` subtree.
+
 - **New files must be `git add`-ed before Nix can see them.** Nix resolves the source tree from git-tracked files. A `nix run .#write-flake` on an unstageed file produces "path does not exist" errors with store paths.
 
 - **The root `.gitignore` pattern `result-*` matches files at any depth.** Avoid names such as `result-schema.json` for Nix package sources, or explicitly account for the ignore; otherwise the file exists locally but is omitted from the flake source.
