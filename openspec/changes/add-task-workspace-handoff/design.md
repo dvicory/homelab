@@ -60,7 +60,7 @@ Add broker records conceptually equivalent to:
 
 There is no grant, retention, deletion, label, or deduplication model in this increment. Revisions are disposable QA data retained until an explicit QA reset.
 
-The workspace, environment registry, and existing access-grant services each open the same SQLite path through separate connections. The first implementation step extracts one broker database/migration/transaction service and migrates those existing users without behavior change, so workspace lease, attempt, environment, revision, and operation mutations can share real transactions. Independent connections or nested transactions are not atomic and must not be treated as such.
+The workspace, environment registry, and existing access-grant services previously opened the same SQLite path through separate connections. One scoped `BrokerDatabase` Effect service now owns the built-in `node:sqlite` connection and transaction helper, so workspace lease, attempt, environment, revision, and operation mutations can share real transactions. Repository transaction callbacks are deliberately synchronous: nested callbacks join the outer transaction, and no Effect suspension or asynchronous work may occur inside them. `@effect/sql` core is present transitively, but no SQLite driver is installed; adopting it is deferred until a driver or remote-database migration removes more code than it adds. Independent connections or independently started nested transactions are not atomic and must not be treated as such.
 
 ### 3. Fence by trusted run activation, not another bearer secret
 
