@@ -17,12 +17,14 @@ import { makeControlHttpApp, makeHttpApp } from "./http.js";
 import { AccessGrantsLive } from "./grants.js";
 import { RegistryLive } from "./registry.js";
 import { VmRuntimeLive } from "./runtime.js";
+import { WorkspacesLive } from "./workspaces.js";
 
 export const BrokerLive = (() => {
   const infrastructure = Layer.mergeAll(BrokerConfigLive, VmRuntimeLive);
   const policy = BrokerPolicyKernelLive.pipe(Layer.provideMerge(infrastructure));
   const authorization = AuthorizationLive.pipe(Layer.provideMerge(policy));
-  const registry = RegistryLive.pipe(Layer.provideMerge(authorization));
+  const workspaces = WorkspacesLive.pipe(Layer.provideMerge(authorization));
+  const registry = RegistryLive.pipe(Layer.provideMerge(workspaces));
   const grants = AccessGrantsLive.pipe(Layer.provideMerge(registry));
   const environments = EnvironmentsLive.pipe(Layer.provideMerge(grants));
   const executor = ExecutorLive.pipe(Layer.provideMerge(environments));

@@ -18,6 +18,9 @@ import {
   RevokeGrantRequest,
   RevokeEnvironmentGrantsRequest,
   StatusRequest,
+  WorkspaceAcquireRequest,
+  WorkspaceLeaseRef,
+  WorkspaceRef,
   WriteFileRequest,
 } from "./domain.js";
 import { BrokerConfig } from "./config.js";
@@ -27,6 +30,7 @@ import { Executor } from "./exec.js";
 import { Files } from "./files.js";
 import { AccessGrants } from "./grants.js";
 import { Registry } from "./registry.js";
+import { Workspaces, type WorkspaceRecord } from "./workspaces.js";
 
 const encoder = new TextEncoder();
 const requestDecodeOptions = { onExcessProperty: "error" as const };
@@ -145,6 +149,7 @@ export const makeControlHttpApp = Effect.gen(function* () {
   const config = yield* BrokerConfig;
   const registry = yield* Registry;
   const grants = yield* AccessGrants;
+  const workspaces = yield* Workspaces;
 
   const bindAuthority = (request: typeof BindAuthorityRequest.Type) =>
     Effect.gen(function* () {
@@ -165,6 +170,7 @@ export const makeControlHttpApp = Effect.gen(function* () {
           authorityClass: request.authorityClass,
         });
       }
+      yield* workspaces.resolve(request.environmentKey, request.workspaceId, request.workspaceLeaseId);
       return yield* registry.bindAuthority(request);
     });
 
@@ -187,6 +193,34 @@ export const makeControlHttpApp = Effect.gen(function* () {
       return { ...binding, ...visibleEnvironment };
     });
 
+  const publicWorkspace = (workspace: WorkspaceRecord): Record<string, unknown> => ({
+    workspaceId: workspace.workspaceId,
+    ownerEnvironmentKey: workspace.ownerEnvironmentKey,
+    kind: workspace.kind,
+    state: workspace.state,
+    guestPath: "/workspace",
+    retentionExpiresAt: workspace.retentionExpiresAt,
+    lastAttachedAt: workspace.lastAttachedAt,
+    createdAt: workspace.createdAt,
+  });
+
+  const acquireWorkspace = (request: typeof WorkspaceAcquireRequest.Type) =>
+    workspaces.acquire(request.environmentKey, request.workspaceId).pipe(
+      Effect.map(({ workspace, lease }) => ({ workspace: publicWorkspace(workspace), lease })),
+    );
+  const describeWorkspace = (request: typeof WorkspaceRef.Type) =>
+    workspaces.describe(request.environmentKey, request.workspaceId).pipe(Effect.map(publicWorkspace));
+  const listWorkspaces = ({ environmentKey }: typeof StatusRequest.Type) =>
+    workspaces.list(environmentKey).pipe(Effect.map((items) => items.map(publicWorkspace)));
+  const releaseWorkspace = (request: typeof WorkspaceLeaseRef.Type) =>
+    workspaces.release(request.environmentKey, request.workspaceId, request.leaseId).pipe(
+      Effect.map((lease) => ({ lease })),
+    );
+  const closeWorkspace = (request: typeof WorkspaceRef.Type) =>
+    workspaces.close(request.environmentKey, request.workspaceId).pipe(Effect.map(publicWorkspace));
+  const deleteWorkspace = (request: typeof WorkspaceRef.Type) =>
+    workspaces.delete(request.environmentKey, request.workspaceId).pipe(Effect.as({ deleted: true }));
+
   const unary = <A, I>(
     operationName: string,
     schema: Schema.Schema<A, I>,
@@ -200,6 +234,30 @@ export const makeControlHttpApp = Effect.gen(function* () {
         { status: "ok", plane: "control" },
         { headers: { "cache-control": "no-store" } },
       ),
+    ),
+    HttpRouter.post(
+      "/v1/control/workspaces/acquire",
+      unary("workspace.acquire", WorkspaceAcquireRequest, acquireWorkspace),
+    ),
+    HttpRouter.post(
+      "/v1/control/workspaces/describe",
+      unary("workspace.describe", WorkspaceRef, describeWorkspace),
+    ),
+    HttpRouter.post(
+      "/v1/control/workspaces/list",
+      unary("workspace.list", StatusRequest, listWorkspaces),
+    ),
+    HttpRouter.post(
+      "/v1/control/workspaces/release",
+      unary("workspace.release", WorkspaceLeaseRef, releaseWorkspace),
+    ),
+    HttpRouter.post(
+      "/v1/control/workspaces/close",
+      unary("workspace.close", WorkspaceRef, closeWorkspace),
+    ),
+    HttpRouter.post(
+      "/v1/control/workspaces/delete",
+      unary("workspace.delete", WorkspaceRef, deleteWorkspace),
     ),
     HttpRouter.post(
       "/v1/control/authority/bind",

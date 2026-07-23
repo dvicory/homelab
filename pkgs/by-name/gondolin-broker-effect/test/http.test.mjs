@@ -85,17 +85,44 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
     )
     assert.equal(controlRejectsExecution.status, 404)
 
+    const acquiredResponse = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/workspaces/acquire", {
+        environmentKey: "conversation-control"
+      })
+    )
+    assert.equal(acquiredResponse.status, 200)
+    const acquired = JSON.parse(acquiredResponse.text)
+    assert.equal(acquired.workspace.guestPath, "/workspace")
+    assert.equal("workspacePath" in acquired.workspace, false)
+
     const bind = yield* Effect.promise(() =>
       request(config.controlSocketPath, "/v1/control/authority/bind", {
         environmentKey: "conversation-control",
         profile: "test",
         executor: "hermes-gateway",
         authorityClass: "default",
-        policyDigest: "a".repeat(64)
+        policyDigest: "a".repeat(64),
+        workspaceId: acquired.workspace.workspaceId,
+        workspaceLeaseId: acquired.lease.leaseId
       })
     )
     assert.equal(bind.status, 200)
     assert.equal(JSON.parse(bind.text).authorityClass, "default")
+
+    const described = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/workspaces/describe", {
+        environmentKey: "conversation-control",
+        workspaceId: acquired.workspace.workspaceId
+      })
+    )
+    assert.equal(described.status, 200)
+    assert.equal(JSON.parse(described.text).workspaceId, acquired.workspace.workspaceId)
+    const workspaceList = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/workspaces/list", {
+        environmentKey: "conversation-control"
+      })
+    )
+    assert.deepEqual(JSON.parse(workspaceList.text).map((item) => item.workspaceId), [acquired.workspace.workspaceId])
 
     const controlledEnsure = yield* Effect.promise(() =>
       request(config.socketPath, "/v1/environments/ensure", {
@@ -158,6 +185,39 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
     )
     assert.equal(revoked.status, 200)
     assert.equal(JSON.parse(revoked.text).state, "revoked")
+
+    const closedEnvironment = yield* Effect.promise(() =>
+      request(config.socketPath, "/v1/environments/close", {
+        environmentKey: "conversation-control",
+        generation: JSON.parse(controlledEnsure.text).generation
+      })
+    )
+    assert.equal(closedEnvironment.status, 200)
+    const released = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/workspaces/release", {
+        environmentKey: "conversation-control",
+        workspaceId: acquired.workspace.workspaceId,
+        leaseId: acquired.lease.leaseId
+      })
+    )
+    assert.equal(released.status, 200)
+    assert.equal(JSON.parse(released.text).lease.state, "released")
+    const closedWorkspace = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/workspaces/close", {
+        environmentKey: "conversation-control",
+        workspaceId: acquired.workspace.workspaceId
+      })
+    )
+    assert.equal(closedWorkspace.status, 200)
+    assert.equal(JSON.parse(closedWorkspace.text).state, "closed")
+    const deletedWorkspace = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/workspaces/delete", {
+        environmentKey: "conversation-control",
+        workspaceId: acquired.workspace.workspaceId
+      })
+    )
+    assert.equal(deletedWorkspace.status, 200)
+    assert.deepEqual(JSON.parse(deletedWorkspace.text), { deleted: true })
 
     const invalid = yield* Effect.promise(() => request(config.socketPath, "/v1/environments/ensure", {
       environmentKey: "conversation-http",

@@ -23,6 +23,7 @@ import {
 import { BrokerError, brokerError } from "./errors.js";
 import { isCapabilityCoveredByStaticPolicy } from "./network.js";
 import { Registry, type AuthorityBindingRecord } from "./registry.js";
+import { Workspaces } from "./workspaces.js";
 
 export type AccessRequestState = "pending" | "approved" | "denied";
 export type RuntimeGrantState = "active" | "revoked" | "consumed" | "expired";
@@ -217,6 +218,7 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
   const config = yield* BrokerConfig;
   const authorization = yield* Authorization;
   const registry = yield* Registry;
+  const workspaces = yield* Workspaces;
   const now = options.now ?? Date.now;
   const db = yield* Effect.acquireRelease(
     Effect.try({
@@ -366,7 +368,7 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
   };
 
   const requireBinding = (environmentKey: string): Effect.Effect<AuthorityBindingRecord, BrokerError> =>
-    getOrBindDefaultAuthority(registry, config, environmentKey);
+    getOrBindDefaultAuthority(registry, config, workspaces, environmentKey);
 
   const matching = (
     binding: AuthorityBindingRecord,
