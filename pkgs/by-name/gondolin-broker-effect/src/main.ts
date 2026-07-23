@@ -8,6 +8,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type * as Net from "node:net";
 import { Effect, Layer } from "effect";
+import { TaskRunActivationsLive } from "./task-run-activations.js";
 import { AuthorizationLive, BrokerPolicyKernelLive } from "./authorization-live.js";
 import { BrokerConfig, BrokerConfigLive } from "./config.js";
 import { BrokerDatabaseLive } from "./database.js";
@@ -27,7 +28,8 @@ export const BrokerLive = (() => {
   const database = BrokerDatabaseLive.pipe(Layer.provideMerge(authorization));
   const workspaces = WorkspacesLive.pipe(Layer.provideMerge(database));
   const registry = RegistryLive.pipe(Layer.provideMerge(workspaces));
-  const grants = AccessGrantsLive.pipe(Layer.provideMerge(registry));
+  const runActivations = TaskRunActivationsLive.pipe(Layer.provideMerge(registry));
+  const grants = AccessGrantsLive.pipe(Layer.provideMerge(runActivations));
   const environments = EnvironmentsLive.pipe(Layer.provideMerge(grants));
   const executor = ExecutorLive.pipe(Layer.provideMerge(environments));
   return FilesLive.pipe(Layer.provideMerge(executor));

@@ -153,6 +153,7 @@ const initializeSchema = (db: DatabaseSync, workspaceRoot: string) => {
       asset_build_id TEXT NOT NULL,
       workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
       workspace_lease_id TEXT NOT NULL REFERENCES workspace_leases(lease_id),
+      run_activation_id TEXT CHECK (run_activation_id IS NULL OR length(run_activation_id) = 36),
       vm_id TEXT,
       host_pid INTEGER,
       failure_reason TEXT,

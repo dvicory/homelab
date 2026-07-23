@@ -1,5 +1,6 @@
 import path from "node:path"
 import { Effect, Layer } from "effect"
+import { TaskRunActivationsLive } from "../dist/task-run-activations.js"
 import { BrokerActions } from "../dist/auth.js"
 import { AuthorizationLive, BrokerPolicyKernelLive } from "../dist/authorization-live.js"
 import { BrokerConfig } from "../dist/config.js"
@@ -218,10 +219,11 @@ export const makeTestLayer = (stateDir, options = {}) => {
   const database = BrokerDatabaseLive.pipe(Layer.provideMerge(authorization))
   const workspaces = WorkspacesLive.pipe(Layer.provideMerge(database))
   const registry = RegistryLive.pipe(Layer.provideMerge(workspaces))
+  const runActivations = TaskRunActivationsLive.pipe(Layer.provideMerge(registry))
   const grants = makeAccessGrantsLayer({
     ...(options.grantResolver === undefined ? {} : { resolver: options.grantResolver }),
     ...(options.now === undefined ? {} : { now: options.now })
-  }).pipe(Layer.provideMerge(registry))
+  }).pipe(Layer.provideMerge(runActivations))
   const environments = EnvironmentsLive.pipe(Layer.provideMerge(grants))
   const executor = ExecutorLive.pipe(Layer.provideMerge(environments))
   const layer = FilesLive.pipe(Layer.provideMerge(executor))

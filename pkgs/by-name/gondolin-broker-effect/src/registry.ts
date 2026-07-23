@@ -14,6 +14,7 @@ export interface EnvironmentRecord {
   readonly assetBuildId: string;
   readonly workspaceId: string;
   readonly workspaceLeaseId: string;
+  readonly runActivationId: string | null;
   readonly vmId: string | null;
   readonly hostPid: number | null;
   readonly failureReason: string | null;
@@ -27,6 +28,7 @@ export interface ReserveEnvironment {
   readonly assetBuildId: string;
   readonly workspaceId: string;
   readonly workspaceLeaseId: string;
+  readonly runActivationId: string | null;
 }
 
 export interface AuthorityBindingRecord {
@@ -76,6 +78,7 @@ type Row = {
   asset_build_id: string;
   workspace_id: string;
   workspace_lease_id: string;
+  run_activation_id: string | null;
   vm_id: string | null;
   host_pid: number | null;
   failure_reason: string | null;
@@ -103,6 +106,7 @@ const fromRow = (row: Row): EnvironmentRecord => ({
   assetBuildId: row.asset_build_id,
   workspaceId: row.workspace_id,
   workspaceLeaseId: row.workspace_lease_id,
+  runActivationId: row.run_activation_id,
   vmId: row.vm_id,
   hostPid: row.host_pid,
   failureReason: row.failure_reason,
@@ -142,6 +146,7 @@ const make = Effect.gen(function* () {
           asset_build_id TEXT NOT NULL,
           workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
           workspace_lease_id TEXT NOT NULL REFERENCES workspace_leases(lease_id),
+          run_activation_id TEXT CHECK (run_activation_id IS NULL OR length(run_activation_id) = 36),
           vm_id TEXT,
           host_pid INTEGER,
           failure_reason TEXT,
@@ -246,9 +251,9 @@ const make = Effect.gen(function* () {
         db.prepare(`
           INSERT INTO environments (
             environment_key, generation, state, policy_digest, worklane,
-            asset_build_id, workspace_id, workspace_lease_id, vm_id, host_pid,
-            failure_reason, updated_at
-          ) VALUES (?, ?, 'creating', ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
+            asset_build_id, workspace_id, workspace_lease_id, run_activation_id,
+            vm_id, host_pid, failure_reason, updated_at
+          ) VALUES (?, ?, 'creating', ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
           ON CONFLICT(environment_key) DO UPDATE SET
             generation=excluded.generation,
             state='creating',
@@ -257,6 +262,7 @@ const make = Effect.gen(function* () {
             asset_build_id=excluded.asset_build_id,
             workspace_id=excluded.workspace_id,
             workspace_lease_id=excluded.workspace_lease_id,
+            run_activation_id=excluded.run_activation_id,
             vm_id=NULL,
             host_pid=NULL,
             failure_reason=NULL,
@@ -269,6 +275,7 @@ const make = Effect.gen(function* () {
           request.assetBuildId,
           request.workspaceId,
           request.workspaceLeaseId,
+          request.runActivationId,
           now,
         );
         return {

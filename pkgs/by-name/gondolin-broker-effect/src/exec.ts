@@ -89,6 +89,7 @@ const make = Effect.gen(function* () {
               const environment = yield* environments.lease({
                 environmentKey: request.environmentKey,
                 generation: request.generation,
+                ...(request.taskRun === undefined ? {} : { taskRun: request.taskRun }),
               });
               yield* TSemaphore.withPermitScoped(environment.execPermits);
               const decision = yield* authorization.authorize({

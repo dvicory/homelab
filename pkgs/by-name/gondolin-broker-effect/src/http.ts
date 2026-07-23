@@ -3,8 +3,10 @@ import * as HttpServerRequest from "@effect/platform/HttpServerRequest";
 import * as HttpServerResponse from "@effect/platform/HttpServerResponse";
 import { Effect, Schema, Stream } from "effect";
 import {
+  ActivateTaskRunRequest,
   BindAuthorityRequest,
   DecideAccessRequest,
+  ConsumeTaskRunRequest,
   EnvironmentRef,
   EnsureRequest,
   ExecRequest,
@@ -23,6 +25,7 @@ import {
   WorkspaceRef,
   WriteFileRequest,
 } from "./domain.js";
+import { TaskRunActivations } from "./task-run-activations.js";
 import { BrokerConfig } from "./config.js";
 import { Environments } from "./environments.js";
 import { asBrokerError, brokerError, publicErrorEvent, publicProblem, statusFor, type BrokerError } from "./errors.js";
@@ -150,6 +153,8 @@ export const makeControlHttpApp = Effect.gen(function* () {
   const registry = yield* Registry;
   const grants = yield* AccessGrants;
   const workspaces = yield* Workspaces;
+  const runActivations = yield* TaskRunActivations;
+  const environments = yield* Environments;
 
   const bindAuthority = (request: typeof BindAuthorityRequest.Type) =>
     Effect.gen(function* () {
@@ -221,6 +226,24 @@ export const makeControlHttpApp = Effect.gen(function* () {
   const deleteWorkspace = (request: typeof WorkspaceRef.Type) =>
     workspaces.delete(request.environmentKey, request.workspaceId).pipe(Effect.as({ deleted: true }));
 
+  const activateTaskRun = (request: typeof ActivateTaskRunRequest.Type) =>
+    runActivations.activate(request).pipe(
+      Effect.tap(({ generationsToClose }) =>
+        Effect.forEach(generationsToClose, environments.closeForFence, {
+          concurrency: 1,
+          discard: true,
+        }),
+      ),
+      Effect.map(({ activation }) => ({ activation })),
+    );
+  const consumeTaskRun = (request: typeof ConsumeTaskRunRequest.Type) =>
+    runActivations.consume(request).pipe(
+      Effect.tap(({ generationToClose }) =>
+        generationToClose === null ? Effect.void : environments.closeForFence(generationToClose),
+      ),
+      Effect.map(({ activation }) => ({ activation })),
+    );
+
   const unary = <A, I>(
     operationName: string,
     schema: Schema.Schema<A, I>,
@@ -266,6 +289,14 @@ export const makeControlHttpApp = Effect.gen(function* () {
     HttpRouter.post(
       "/v1/control/authority/status",
       unary("authority.status", StatusRequest, authorityStatus),
+    ),
+    HttpRouter.post(
+      "/v1/control/task-runs/activate",
+      unary("run_activation.activate", ActivateTaskRunRequest, activateTaskRun),
+    ),
+    HttpRouter.post(
+      "/v1/control/task-runs/consume",
+      unary("run_activation.consume", ConsumeTaskRunRequest, consumeTaskRun),
     ),
     HttpRouter.post(
       "/v1/control/access/prepare",

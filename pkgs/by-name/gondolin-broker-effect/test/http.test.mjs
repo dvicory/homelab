@@ -124,9 +124,24 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
     )
     assert.deepEqual(JSON.parse(workspaceList.text).map((item) => item.workspaceId), [acquired.workspace.workspaceId])
 
+    const activated = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/task-runs/activate", {
+        environmentKey: "conversation-control",
+        taskId: "task-http",
+        runId: "run-http",
+        workspaceId: acquired.workspace.workspaceId,
+        workspaceLeaseId: acquired.lease.leaseId,
+        policyDigest: "a".repeat(64),
+        epoch: 1
+      })
+    )
+    assert.equal(activated.status, 200)
+    assert.equal(JSON.parse(activated.text).activation.state, "active")
+
     const controlledEnsure = yield* Effect.promise(() =>
       request(config.socketPath, "/v1/environments/ensure", {
-        environmentKey: "conversation-control"
+        environmentKey: "conversation-control",
+        taskRun: { taskId: "task-http", runId: "run-http" }
       })
     )
     assert.equal(controlledEnsure.status, 200)
@@ -186,13 +201,15 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
     assert.equal(revoked.status, 200)
     assert.equal(JSON.parse(revoked.text).state, "revoked")
 
-    const closedEnvironment = yield* Effect.promise(() =>
-      request(config.socketPath, "/v1/environments/close", {
+    const consumedRun = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/task-runs/consume", {
         environmentKey: "conversation-control",
-        generation: JSON.parse(controlledEnsure.text).generation
+        taskId: "task-http",
+        runId: "run-http"
       })
     )
-    assert.equal(closedEnvironment.status, 200)
+    assert.equal(consumedRun.status, 200)
+    assert.equal(JSON.parse(consumedRun.text).activation.state, "consumed")
     const released = yield* Effect.promise(() =>
       request(config.controlSocketPath, "/v1/control/workspaces/release", {
         environmentKey: "conversation-control",

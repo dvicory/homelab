@@ -14,6 +14,9 @@ export const Reason = Schema.Literal(
   "workspace.stale_lease",
   "workspace.path_forbidden",
   "workspace.failed",
+  "run_activation.not_found",
+  "run_activation.stale",
+  "run_activation.conflict",
   "capability.invalid",
   "capability.unsupported",
   "network.resolution_failed",
@@ -85,6 +88,7 @@ export const statusFor = (error: BrokerError): number => {
     case "approval.request_not_found":
     case "grant.not_found":
     case "workspace.not_found":
+    case "run_activation.not_found":
       return 404;
     case "environment.tombstoned":
     case "environment.stale_generation":
@@ -93,6 +97,8 @@ export const statusFor = (error: BrokerError): number => {
     case "approval.invalid_state":
     case "workspace.conflict":
     case "workspace.stale_lease":
+    case "run_activation.stale":
+    case "run_activation.conflict":
       return 409;
     case "environment.capacity":
     case "exec.output_limit":

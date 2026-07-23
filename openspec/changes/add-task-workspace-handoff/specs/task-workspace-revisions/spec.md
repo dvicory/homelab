@@ -1,12 +1,12 @@
 ## ADDED Requirements
 
-### Requirement: Run-scoped workspace activation
+### Requirement: Task-run workspace activation
 
-Stable task identity and an active workspace lease MUST NOT be sufficient to create, reuse, execute in, or access files in a handoff-enabled environment. Before worker spawn, trusted dispatch MUST register a broker activation bound to task, Kanban run, workspace, lease, full policy digest, and a monotonically increasing epoch. Every ensure, execution, and file request MUST use task/run identity attached by trusted backend state; model-facing schemas MUST NOT accept or override it. Completion MUST consume the activation before VM closure. Registering a newer retry MUST revoke the older activation and close its generation before creating another.
+Stable task identity and an active workspace lease MUST NOT be sufficient to create, reuse, execute in, or access files in a handoff-enabled environment. Before worker spawn, trusted dispatch MUST activate a Kanban run against its task, workspace, lease, full policy digest, and a monotonically increasing epoch. The broker MUST issue an opaque activation ID. Every ensure, execution, and file request MUST use task/run identity attached by trusted backend state; model-facing schemas MUST NOT accept or override it. Completion MUST consume the activation before VM closure. Activating a newer retry MUST supersede the older activation and close its generation before creating another.
 
 #### Scenario: Completed run attempts recreation
 
-- **GIVEN** completion consumed a run activation and closed its VM while retaining the task workspace
+- **GIVEN** completion consumed a task-run activation and closed its VM while retaining the task workspace
 - **WHEN** the old worker calls ensure, execution, or file APIs using its prior run identity
 - **THEN** the broker MUST reject the request
 - **AND** stable task identity or lease knowledge MUST NOT recreate the VM
@@ -101,7 +101,7 @@ The control listener MAY import one ready revision for one destination child/run
 
 ### Requirement: Broker and QA integration
 
-`pkgs/by-name/gondolin-broker-effect` MUST first consolidate the repeated SQLite connection/migration/transaction setup used by workspace, environment-registry, and access-grant services into one shared database service without changing existing behavior, then own attempt, revision, entry, operation, import, traversal, copy, verification, and recovery logic. Attempt fencing, environment closing, workspace lease, revision staging, and import commits MUST use that shared transaction boundary. Revision publication/import routes MUST exist only on the control listener under explicit policy actions. `modules/den/aspects/workloads/hermes/secure-terminal/default.nix` MUST derive contained QA roots and limits and enable them only for the selected `hvn-hyp1` profile.
+`pkgs/by-name/gondolin-broker-effect` MUST first consolidate the repeated SQLite connection/migration/transaction setup used by workspace, environment-registry, and access-grant services into one shared database service without changing existing behavior, then own task-run activation, revision, entry, operation, import, traversal, copy, verification, and recovery logic. Activation fencing, environment closing, workspace lease, revision staging, and import commits MUST use that shared transaction boundary. Revision publication/import routes MUST exist only on the control listener under explicit policy actions. `modules/den/aspects/workloads/hermes/secure-terminal/default.nix` MUST derive contained QA roots and limits and enable them only for the selected `hvn-hyp1` profile.
 
 #### Scenario: Execution listener attempts revision management
 
