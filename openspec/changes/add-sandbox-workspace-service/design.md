@@ -59,15 +59,15 @@ The execution `ensure` path may create the profile's default private workspace o
 
 ### Lease and VM lifecycle are separate
 
-Closing, reaping, crashing, or recreating a VM does not release its workspace lease. `workspace.release` ends the writer lease while retaining files. `workspace.close` marks a released workspace closed. `workspace.delete` requires no active lease, removes the contained directory, and tombstones the row. Kanban completion releases the lease; a later sequential run explicitly reacquires the retained workspace.
+Closing, reaping, crashing, or recreating a VM does not release its workspace lease. Task completion and blocking close the live VM but retain the task-private lease and files so a retry can recreate the VM without rebinding broker authority. `workspace.release` is an explicit operator or future handoff transition; it ends the writer lease while retaining files. `workspace.close` marks a released workspace closed. `workspace.delete` requires no active lease, removes the contained directory, and tombstones the row.
 
-Environment reuse requires the same workspace ID and lease ID in addition to authority/policy/asset decisions. A changed lease closes the old VM and creates a new generation.
+Environment reuse requires the same workspace ID and lease ID in addition to authority/policy/asset decisions. A changed lease closes the old VM and creates a new generation. Cross-task transfer is deferred because it requires an explicit revision and handoff authority model rather than mutable authority rebinding.
 
 ### Kanban integration stays narrow
 
-The sandbox-access plugin exposes an infrastructure-only Python API for trusted code to acquire/release a broker workspace. Kanban task persistence gains `sandbox_workspace_id`, not a host path replacement for non-Gondolin lanes. When the selected secure-terminal backend is Gondolin, dispatcher claim acquires/reuses that ID, registers the authority binding, injects `HERMES_KANBAN_WORKSPACE_ID`, and sets terminal cwd to `/workspace`. Model-facing `kanban_create` and terminal schemas cannot choose a workspace ID.
+The repository-owned `workspace-service` plugin derives a scoped broker authority from trusted Kanban task identity. The dispatcher acquires the task workspace before spawn and passes only `HERMES_WORKSPACE_ID`, `HERMES_WORKSPACE_LEASE_ID`, and `HERMES_WORKSPACE_GUEST_PATH=/workspace`. In broker mode the shared worker launcher removes `HERMES_KANBAN_WORKSPACE`, does not set the gateway scratch directory as `TERMINAL_CWD`, and starts the worker without that directory as process cwd. The task row may still display upstream scratch-workspace bookkeeping, but that path is not the Gondolin workspace or a worker environment input.
 
-Retries reuse the task row's workspace ID. Concurrent child tasks receive distinct IDs. This increment does not import the parent repository or promise useful Git project contents.
+Retries derive the same broker authority and reuse the task workspace. Concurrent child tasks derive distinct authorities and workspace IDs. This increment does not import parent files, publish child outputs, or promise useful cross-task project contents.
 
 ## Component Diagram
 
@@ -97,11 +97,11 @@ sequenceDiagram
   participant A as Authority registry
   participant E as Environment service
   participant V as Gondolin VM
-  K->>P: acquire(task authority key)
+  K->>P: acquire(scoped task authority)
   P->>W: workspace.acquire(environmentKey)
   W-->>P: workspaceId, leaseId
   P->>A: authority.bind(..., workspaceId, leaseId)
-  K->>K: persist sandbox_workspace_id
+  K->>K: pass opaque binding to matching worker
   K->>E: worker later calls ensure(environmentKey)
   E->>A: resolve binding
   E->>W: validate active lease
@@ -119,9 +119,9 @@ sequenceDiagram
   E->>V: close generation N
   E->>W: validate same active lease
   E->>V: create generation N+1 with same workspace
-  K->>E: close VM after task completion
-  K->>W: release lease
-  W-->>K: retained workspace metadata
+  K->>E: close VM after task completion or blocking
+  E-->>K: workspace and lease retained
+  Note over K,W: release, freeze, and transfer are explicit future lifecycle actions
 ```
 
 ## Risks / Trade-offs
@@ -131,4 +131,22 @@ sequenceDiagram
 - **Destructive QA migration.** Existing anonymous files are deleted. This is intentional and accepted because no current work needs retention; containment checks and fail-closed startup prevent deleting outside `workspaceRoot`.
 - **SQLite metadata and filesystem creation cannot be one transaction.** Creation uses a provisional row/directory sequence with compensating deletion; startup reconciliation marks incomplete records failed/deleted. Tests inject failures around both boundaries.
 - **Rollback is not data-compatible.** The old binary cannot use new workspace records. QA rollback recreates ephemeral state; production is unaffected.
-- **Plugin patch size grows.** Keep all broker calls in sandbox-access and add only opaque ID plumbing to Kanban. Do not add provider/project logic to Hermes.
+- **Plugin patch size grows.** Keep broker calls in the repository-owned `workspace-service` plugin and add only generic lifecycle hooks plus opaque ID plumbing to Kanban. Do not add provider, revision, publication, or project logic to Hermes.
+
+## QA Acceptance Evidence (2026-07-23)
+
+Operator testing on `hvn-hyp1` established:
+
+- ordinary QA Hermes terminal and file operations use `/workspace`;
+- repeated turns retain identical bytes;
+- restarting `hermes-qa-broker.service` replaces QEMU processes and VM generation while retaining `/workspace`;
+- `/tmp` is ephemeral across recreation;
+- a fresh Hermes session receives a different private workspace;
+- stopping the broker fails closed with no local, Docker, or Podman fallback;
+- Kanban task `t_c2ba7bdd` assigned to `default` completed terminal work in `/workspace`.
+
+The broker-outage result exposed a preflight defect: the plugin returned a process-local cached binding without revalidating broker availability, so the eventual tool backend returned raw `ConnectError: [Errno 2]` rather than the pre-tool hook blocking with a structured workspace-unavailable reason. The security invariant held because no fallback ran. The repository now revalidates cached bindings through idempotent broker acquisition before each workspace-backed tool call; QA redeployment and outage retest remain required.
+
+The Kanban task display retained an upstream `scratch @ /home/hermes/...` record. Broker-mode worker preparation removes that host path from the worker environment and process cwd, so this is redundant orchestration bookkeeping rather than the Gondolin filesystem binding. Raw worker stdout was not retained; the Kanban summary is model-attested evidence. Cross-task filesystem cooperation was not tested and is not supplied by this change.
+
+The current proposal intentionally gives each task a distinct private workspace. A follow-on `add-task-workspace-handoff` change must define immutable parent/child revisions and explicit output publication before isolated tasks can cooperate on filesystem data.

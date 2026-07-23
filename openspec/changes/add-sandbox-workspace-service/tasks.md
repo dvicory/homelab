@@ -15,4 +15,4 @@
 ## 4. QA Activation and Acceptance
 
 - [x] 4.1 Wire the workspace lifecycle configuration through `modules/den/aspects/workloads/hermes/secure-terminal` and `modules/den/users/hermes-runners.nix` for `hvn-hyp1` QA only; evaluate the host and build focused broker/Hermes checks, then commit. No SOPS update.
-- [ ] 4.2 Deploy only the `hvn-hyp1` QA profile and exercise clean legacy removal, first task acquisition, same-task retry, VM recreation with retained bytes, conflicting writer denial, completion release, explicit deletion, and unchanged non-Gondolin behavior; record observed evidence in the V3/OpenSpec docs and commit the acceptance record.
+- [ ] 4.2 On `hvn-hyp1` QA, verify clean legacy removal, first task acquisition, same-task retry, VM recreation with retained bytes, conflicting writer denial, terminal-state VM close with retained task lease, explicit release and deletion, fail-closed broker outage, and unchanged non-Gondolin behavior; fix broker-aware cached preflight, record observed evidence in the OpenSpec design, run focused checks, request approval before redeployment, and commit the acceptance record.
