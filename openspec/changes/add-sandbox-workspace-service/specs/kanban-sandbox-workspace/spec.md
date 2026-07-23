@@ -51,6 +51,23 @@ Retries of one Kanban task MUST reuse its retained workspace. Completion or bloc
 - **THEN** trusted lifecycle code SHALL close its VM
 - **AND** SHALL retain its workspace and lease for same-task retry or explicit later cleanup
 
+### Requirement: Broker outage and in-process recovery
+
+When the QA Gondolin backend is configured, transient broker liveness MUST NOT remove terminal or file schemas from the Hermes model tool catalogue. Every workspace-backed execution surface, including terminal, file tools, process control, close-terminal, and execute-code, MUST revalidate through the trusted workspace pre-tool gate. Broker recovery MUST NOT require a Hermes process restart.
+
+#### Scenario: Conversation starts during broker outage
+- **GIVEN** the QA Gondolin broker and its sockets are stopped
+- **WHEN** Hermes creates a new conversation
+- **THEN** workspace-backed tool schemas SHALL remain available to the conversation
+- **AND** attempts to use them SHALL fail before execution with a structured workspace-unavailable reason
+- **AND** Hermes SHALL NOT invoke a local, Docker, Podman, execute-code, process, or other fallback
+
+#### Scenario: Broker recovers in process
+- **GIVEN** a conversation whose workspace-backed tool call was blocked while the broker was unavailable
+- **WHEN** the broker and its sockets become available again
+- **THEN** the next workspace-backed tool call SHALL reacquire or revalidate its binding
+- **AND** execution SHALL resume without restarting Hermes, toggling tools, or creating another conversation
+
 ### Requirement: Backend compatibility
 
 The workspace integration MUST be gated to the Gondolin secure-terminal backend. Existing local, Podman, production, and non-sandbox worker workspace behavior MUST remain unchanged.

@@ -166,7 +166,7 @@ diff --git a/tests/plugins/test_workspace_service.py b/tests/plugins/test_worksp
 new file mode 100644
 --- /dev/null
 +++ b/tests/plugins/test_workspace_service.py
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,88 @@
 +"""Contract tests for the broker workspace lifecycle plugin."""
 +
 +from __future__ import annotations
@@ -240,9 +240,11 @@ new file mode 100644
 +    )
 +
 +    assert plugin._on_pre_tool_call(tool_name="web_search", task_id="task-a") is None
-+    blocked = plugin._on_pre_tool_call(tool_name="terminal", task_id="task-a")
-+    assert blocked["action"] == "block"
-+    assert "broker offline" in blocked["message"]
++    assert {"terminal", "process", "execute_code"}.issubset(plugin._WORKSPACE_TOOLS)
++    for tool_name in plugin._WORKSPACE_TOOLS:
++        blocked = plugin._on_pre_tool_call(tool_name=tool_name, task_id="task-a")
++        assert blocked["action"] == "block"
++        assert "broker offline" in blocked["message"]
 +
 +
 +def test_register_uses_generic_lifecycle_hooks(monkeypatch):
