@@ -70,6 +70,10 @@ Completion transactionally consumes the activation and marks its environment gen
 
 A separate random credential on every broker request is deferred. It would not improve the stated boundary because the gateway account and backend are already trusted and can access both protected sockets. If the trust boundary later moves inside the gateway process, capability credentials can be added then.
 
+The existing `@agent-x/policy-kernel` remains the static authorization upper bound. Handoff-enabled policy registers explicit task-run activation/consumption and workspace publication/import actions, resource classes derived by trusted broker code, and numeric publication limits. The high-level broker operation authorizes through the existing `Authorization` service and persists its policy and decision digests. Mutable facts—active run, lease, direct parent/child relation, board/tenant equality, revision readiness, and idempotency state—remain broker/Kanban transaction checks: the current kernel matches action/resource and aggregates limits/obligations, but does not evaluate arbitrary request parameters as predicates. Fencing, quarantine, and canonical filesystem validation are unconditional mechanism invariants, not optional policy obligations.
+
+Agent X should separately design proof-carrying authorization rather than expand this handoff change: the pure kernel would produce a `PolicyPermit`; authoritative state machines would mint typed, process-local witnesses only after atomic reservations or transitions; and a closed action recipe would seal the permit plus required witnesses into the final `AuthorizedAction`. This avoids database access or a condition language in the kernel while making dynamic authority composable. This handoff preserves the migration path by recording canonical action/resource, policy and decision digests, activation/lease generations, request digest, relation digest, and operation result identity. No witness framework or transferable capability is introduced here.
+
 ### 4. Make completion a recoverable saga
 
 Kanban and broker use different SQLite databases, so completion cannot be one transaction:

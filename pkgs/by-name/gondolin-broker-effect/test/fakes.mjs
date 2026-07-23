@@ -9,6 +9,7 @@ import { EnvironmentsLive } from "../dist/environments.js"
 import { ExecutorLive } from "../dist/exec.js"
 import { FilesLive } from "../dist/files.js"
 import { makeAccessGrantsLayer } from "../dist/grants.js"
+import { RevisionStoreLive } from "../dist/revision-store.js"
 import { RegistryLive } from "../dist/registry.js"
 import { VmRuntime } from "../dist/runtime.js"
 import { WorkspacesLive } from "../dist/workspaces.js"
@@ -220,10 +221,11 @@ export const makeTestLayer = (stateDir, options = {}) => {
   const workspaces = WorkspacesLive.pipe(Layer.provideMerge(database))
   const registry = RegistryLive.pipe(Layer.provideMerge(workspaces))
   const runActivations = TaskRunActivationsLive.pipe(Layer.provideMerge(registry))
+  const revisions = RevisionStoreLive.pipe(Layer.provideMerge(runActivations))
   const grants = makeAccessGrantsLayer({
     ...(options.grantResolver === undefined ? {} : { resolver: options.grantResolver }),
     ...(options.now === undefined ? {} : { now: options.now })
-  }).pipe(Layer.provideMerge(runActivations))
+  }).pipe(Layer.provideMerge(revisions))
   const environments = EnvironmentsLive.pipe(Layer.provideMerge(grants))
   const executor = ExecutorLive.pipe(Layer.provideMerge(environments))
   const layer = FilesLive.pipe(Layer.provideMerge(executor))
