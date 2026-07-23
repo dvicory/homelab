@@ -1,12 +1,17 @@
 import path from "node:path"
 import { Effect, Layer } from "effect"
+import { TaskRunActivationsLive } from "../dist/task-run-activations.js"
 import { BrokerActions } from "../dist/auth.js"
 import { AuthorizationLive, BrokerPolicyKernelLive } from "../dist/authorization-live.js"
 import { BrokerConfig } from "../dist/config.js"
+import { BrokerDatabaseLive } from "../dist/database.js"
 import { EnvironmentsLive } from "../dist/environments.js"
 import { ExecutorLive } from "../dist/exec.js"
 import { FilesLive } from "../dist/files.js"
 import { makeAccessGrantsLayer } from "../dist/grants.js"
+import { RevisionOperationsLive } from "../dist/revision-operations.js"
+import { RevisionStoreLive } from "../dist/revision-store.js"
+import { RevisionStorageLive } from "../dist/revision-storage.js"
 import { RegistryLive } from "../dist/registry.js"
 import { VmRuntime } from "../dist/runtime.js"
 import { WorkspacesLive } from "../dist/workspaces.js"
@@ -137,7 +142,10 @@ export const makePolicyFile = (overrides = {}) => ({
           outputBytes: 4096,
           inputBytes: 1024,
           bytes: 1024,
-          entries: 32
+          entries: 32,
+          maxLogicalBytes: 1024 * 1024,
+          maxEntries: 100,
+          maxPathBytes: 256,
         }
       },
       {
@@ -204,6 +212,8 @@ export const makeTestLayer = (stateDir, options = {}) => {
     policyPath: path.join(stateDir, "policy.json"),
     stateDir,
     workspaceRoot: path.join(stateDir, "workspaces"),
+    workspaceRevisionRoot: path.join(stateDir, "workspace-revisions"),
+    workspaceHandoffEnabled: options.workspaceHandoffEnabled ?? false,
     databasePath: path.join(stateDir, "broker.sqlite"),
     socketPath: path.join(stateDir, "broker.sock"),
     controlSocketPath: path.join(stateDir, "control.sock"),
@@ -214,14 +224,19 @@ export const makeTestLayer = (stateDir, options = {}) => {
   const infrastructure = Layer.mergeAll(configLayer, fake.layer)
   const policy = BrokerPolicyKernelLive.pipe(Layer.provideMerge(infrastructure))
   const authorization = AuthorizationLive.pipe(Layer.provideMerge(policy))
-  const workspaces = WorkspacesLive.pipe(Layer.provideMerge(authorization))
+  const database = BrokerDatabaseLive.pipe(Layer.provideMerge(authorization))
+  const workspaces = WorkspacesLive.pipe(Layer.provideMerge(database))
   const registry = RegistryLive.pipe(Layer.provideMerge(workspaces))
+  const runActivations = TaskRunActivationsLive.pipe(Layer.provideMerge(registry))
+  const revisions = RevisionStoreLive.pipe(Layer.provideMerge(runActivations))
+  const revisionStorage = RevisionStorageLive.pipe(Layer.provideMerge(revisions))
   const grants = makeAccessGrantsLayer({
     ...(options.grantResolver === undefined ? {} : { resolver: options.grantResolver }),
     ...(options.now === undefined ? {} : { now: options.now })
-  }).pipe(Layer.provideMerge(registry))
+  }).pipe(Layer.provideMerge(revisionStorage))
   const environments = EnvironmentsLive.pipe(Layer.provideMerge(grants))
-  const executor = ExecutorLive.pipe(Layer.provideMerge(environments))
+  const revisionOperations = RevisionOperationsLive.pipe(Layer.provideMerge(environments))
+  const executor = ExecutorLive.pipe(Layer.provideMerge(revisionOperations))
   const layer = FilesLive.pipe(Layer.provideMerge(executor))
   return { config, fake, layer }
 }

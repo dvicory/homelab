@@ -3,8 +3,10 @@ import * as HttpServerRequest from "@effect/platform/HttpServerRequest";
 import * as HttpServerResponse from "@effect/platform/HttpServerResponse";
 import { Effect, Schema, Stream } from "effect";
 import {
+  ActivateTaskRunRequest,
   BindAuthorityRequest,
   DecideAccessRequest,
+  ConsumeTaskRunRequest,
   EnvironmentRef,
   EnsureRequest,
   ExecRequest,
@@ -23,6 +25,11 @@ import {
   WorkspaceRef,
   WriteFileRequest,
 } from "./domain.js";
+import {
+  ImportWorkspaceRevisionRequest,
+  PublishWorkspaceRevisionRequest,
+} from "./revision-domain.js";
+import { TaskRunActivations } from "./task-run-activations.js";
 import { BrokerConfig } from "./config.js";
 import { Environments } from "./environments.js";
 import { asBrokerError, brokerError, publicErrorEvent, publicProblem, statusFor, type BrokerError } from "./errors.js";
@@ -30,6 +37,7 @@ import { Executor } from "./exec.js";
 import { Files } from "./files.js";
 import { AccessGrants } from "./grants.js";
 import { Registry } from "./registry.js";
+import { RevisionOperations } from "./revision-operations.js";
 import { Workspaces, type WorkspaceRecord } from "./workspaces.js";
 
 const encoder = new TextEncoder();
@@ -150,6 +158,9 @@ export const makeControlHttpApp = Effect.gen(function* () {
   const registry = yield* Registry;
   const grants = yield* AccessGrants;
   const workspaces = yield* Workspaces;
+  const runActivations = yield* TaskRunActivations;
+  const environments = yield* Environments;
+  const revisionOperations = yield* RevisionOperations;
 
   const bindAuthority = (request: typeof BindAuthorityRequest.Type) =>
     Effect.gen(function* () {
@@ -221,13 +232,31 @@ export const makeControlHttpApp = Effect.gen(function* () {
   const deleteWorkspace = (request: typeof WorkspaceRef.Type) =>
     workspaces.delete(request.environmentKey, request.workspaceId).pipe(Effect.as({ deleted: true }));
 
+  const activateTaskRun = (request: typeof ActivateTaskRunRequest.Type) =>
+    runActivations.activate(request).pipe(
+      Effect.tap(({ generationsToClose }) =>
+        Effect.forEach(generationsToClose, environments.closeForFence, {
+          concurrency: 1,
+          discard: true,
+        }),
+      ),
+      Effect.map(({ activation }) => ({ activation })),
+    );
+  const consumeTaskRun = (request: typeof ConsumeTaskRunRequest.Type) =>
+    runActivations.consume(request).pipe(
+      Effect.tap(({ generationToClose }) =>
+        generationToClose === null ? Effect.void : environments.closeForFence(generationToClose),
+      ),
+      Effect.map(({ activation }) => ({ activation })),
+    );
+
   const unary = <A, I>(
     operationName: string,
     schema: Schema.Schema<A, I>,
     operation: (request: A) => Effect.Effect<unknown, BrokerError>,
   ) => respond(operationName, Effect.flatMap(parseBody(schema), operation));
 
-  return HttpRouter.empty.pipe(
+  const routes = HttpRouter.empty.pipe(
     HttpRouter.get(
       "/v1/health",
       HttpServerResponse.unsafeJson(
@@ -294,6 +323,29 @@ export const makeControlHttpApp = Effect.gen(function* () {
           ),
       ),
     ),
+  );
+
+  const configuredRoutes = config.workspaceHandoffEnabled
+    ? routes.pipe(
+        HttpRouter.post(
+          "/v1/control/task-runs/activate",
+          unary("run_activation.activate", ActivateTaskRunRequest, activateTaskRun),
+        ),
+        HttpRouter.post(
+          "/v1/control/task-runs/consume",
+          unary("run_activation.consume", ConsumeTaskRunRequest, consumeTaskRun),
+        ),
+        HttpRouter.post(
+          "/v1/control/workspace-revisions/publish",
+          unary("workspace.publish", PublishWorkspaceRevisionRequest, revisionOperations.publish),
+        ),
+        HttpRouter.post(
+          "/v1/control/workspace-revisions/import",
+          unary("workspace.import", ImportWorkspaceRevisionRequest, revisionOperations.importRevision),
+        ),
+      )
+    : routes;
+  return configuredRoutes.pipe(
     HttpRouter.catchAll(() =>
       Effect.succeed(errorResponse(brokerError("request.invalid", "control route does not exist"))),
     ),

@@ -5,7 +5,7 @@ The QA Gondolin backend gives each Hermes Kanban task a durable private workspac
 ## What Changes
 
 - Publish one immutable, bounded workspace revision from a task's selected relative paths after its VM is fenced and closed.
-- Add a broker run/attempt activation so stable task identity and a retained workspace lease cannot recreate a VM after completion; retry requires trusted dispatch to register a newer attempt.
+- Add broker task-run activation so stable task identity and a retained workspace lease cannot recreate a VM after completion; retry requires trusted dispatch to activate a newer run.
 - Make publication a recoverable completion saga. Kanban enters `finalizing`, the broker publishes idempotently, and only then does the task become `done`.
 - Let a producer create a child with `inherit_parent_workspace_output: true`. The caller's current task becomes the sole workspace source; trusted dispatch later resolves its revision and creates one new private writable child workspace. The model cannot name another source task.
 - Extend existing Kanban create/completion requests only. Add no model-facing workspace-management tool, and accept no workspace, lease, revision, or host path as model authority.
@@ -15,7 +15,7 @@ The QA Gondolin backend gives each Hermes Kanban task a durable private workspac
 
 ### New Capabilities
 
-- `task-workspace-revisions`: Fenced publication, canonical manifest verification, idempotent private fork, and attempt fencing.
+- `task-workspace-revisions`: Fenced publication, canonical manifest verification, idempotent private fork, and task-run activation fencing.
 - `kanban-workspace-handoff`: Truthful completion publication and one-source parent-to-child handoff through existing Kanban operations.
 
 ### Modified Capabilities
@@ -24,7 +24,7 @@ None. `add-sandbox-workspace-service` remains the prerequisite private-workspace
 
 ## Impact
 
-- `pkgs/by-name/gondolin-broker-effect`: attempt, revision, manifest, publication, private-import, and recovery state plus control routes and tests.
+- `pkgs/by-name/gondolin-broker-effect`: task-run activation, revision, manifest, publication, private-import, and recovery state plus control routes and tests.
 - `pkgs/by-name/hermes-agent-patched`: generic Kanban finalization/input metadata, required completion-finalizer support, dispatcher preparation, and the repository-owned workspace-service integration.
 - `modules/den/aspects/workloads/hermes/secure-terminal/default.nix`: QA-only revision root, limits, policy actions, and feature wiring.
 - `modules/den/users/hermes-runners.nix`: explicit QA selection only if the existing secure-terminal setting cannot carry the subfeature.
@@ -48,14 +48,14 @@ None. `add-sandbox-workspace-service` remains the prerequisite private-workspace
 
 - `add-sandbox-workspace-service` has passed QA and provides broker-owned paths, one active writer lease, trusted backend-derived task identity, and fail-closed execution.
 - The gateway/plugin/backend process and the mode-restricted control/execution Unix sockets are trusted. The model cannot set the task/run identity attached by the backend. Gateway-account compromise remains outside this increment's boundary.
-- Before worker spawn, trusted dispatch registers a broker activation bound to task, Kanban run, workspace, lease, policy digest, and monotonic epoch. Every ensure, execution, and file request is checked against that active binding. Completion consumes it before VM closure; only a newer trusted run can reactivate the retained workspace.
+- Before worker spawn, trusted dispatch registers a broker activation bound to a globally unique Kanban run ID, task, workspace, lease, and policy digest. Every ensure, execution, and file request is checked against that active binding. Completion consumes it before VM closure; a trusted retry uses a fresh run ID and supersedes the prior activation.
 - Revision IDs are random and publication-specific. A versioned canonical SHA-256 manifest digest verifies content but is retained in broker/Kanban provenance rather than ordinary model context.
-- The initial store uses bounded full copies in broker-owned directories. It accepts directories and regular files only and rejects links, special files, traversal, mount crossings, unstable metadata, and configured resource-limit excess.
+- The initial store uses bounded full copies made by a pinned standard copier into broker-owned staging directories, followed by manifest validation of the detached tree. It accepts directories and regular files only, never shares mutable links, crosses no source filesystem boundary, and rejects traversal, unsupported nodes, and configured resource-limit excess before ready state. Gateway-account compromise remains outside this increment; source-race resistance requires later OS-account separation.
 - Revisions are QA data retained until explicit QA reset in this increment. No deletion or retention API is exposed.
 
 ## Refactoring
 
-First extract the broker's repeated SQLite connection/migration/transaction setup from workspace, environment registry, and access-grant services into one shared database service so lease, attempt, environment, and revision state can share real transactions. Keep storage logic in the broker and generic lifecycle/request plumbing in Hermes. Do not extend `sandbox-access` or add a provider abstraction.
+First extract the broker's repeated SQLite connection/migration/transaction setup from workspace, environment registry, and access-grant services into one shared database service so lease, task-run activation, environment, and revision state can share real transactions. Keep storage logic in the broker and generic lifecycle/request plumbing in Hermes. Do not extend `sandbox-access` or add a provider abstraction.
 
 ## Rollback
 

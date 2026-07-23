@@ -1,7 +1,5 @@
-import { DatabaseSync } from "node:sqlite";
-import * as fs from "node:fs";
 import { Context, Effect, Layer } from "effect";
-import { BrokerConfig } from "./config.js";
+import { BrokerDatabase } from "./database.js";
 import { BrokerError, brokerError } from "./errors.js";
 import { Workspaces } from "./workspaces.js";
 
@@ -16,6 +14,7 @@ export interface EnvironmentRecord {
   readonly assetBuildId: string;
   readonly workspaceId: string;
   readonly workspaceLeaseId: string;
+  readonly runActivationId: string | null;
   readonly vmId: string | null;
   readonly hostPid: number | null;
   readonly failureReason: string | null;
@@ -29,6 +28,7 @@ export interface ReserveEnvironment {
   readonly assetBuildId: string;
   readonly workspaceId: string;
   readonly workspaceLeaseId: string;
+  readonly runActivationId: string | null;
 }
 
 export interface AuthorityBindingRecord {
@@ -78,6 +78,7 @@ type Row = {
   asset_build_id: string;
   workspace_id: string;
   workspace_lease_id: string;
+  run_activation_id: string | null;
   vm_id: string | null;
   host_pid: number | null;
   failure_reason: string | null;
@@ -105,6 +106,7 @@ const fromRow = (row: Row): EnvironmentRecord => ({
   assetBuildId: row.asset_build_id,
   workspaceId: row.workspace_id,
   workspaceLeaseId: row.workspace_lease_id,
+  runActivationId: row.run_activation_id,
   vmId: row.vm_id,
   hostPid: row.host_pid,
   failureReason: row.failure_reason,
@@ -129,53 +131,45 @@ const registryFailure = (operation: string, error: unknown) =>
   });
 
 const make = Effect.gen(function* () {
-  const config = yield* BrokerConfig;
+  const database = yield* BrokerDatabase;
+  const db = database.connection;
   yield* Workspaces;
-  const db = yield* Effect.acquireRelease(
-    Effect.try({
-      try: () => {
-        fs.mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
-        const opened = new DatabaseSync(config.databasePath);
-        opened.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
-        opened.exec(`
-          CREATE TABLE IF NOT EXISTS environments (
-            environment_key TEXT PRIMARY KEY,
-            generation INTEGER NOT NULL CHECK (generation > 0),
-            state TEXT NOT NULL CHECK (state IN ('creating','active','closing','closed','failed')),
-            policy_digest TEXT NOT NULL CHECK (length(policy_digest) = 64),
-            worklane TEXT NOT NULL,
-            asset_build_id TEXT NOT NULL,
-            workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
-            workspace_lease_id TEXT NOT NULL REFERENCES workspace_leases(lease_id),
-            vm_id TEXT,
-            host_pid INTEGER,
-            failure_reason TEXT,
-            updated_at INTEGER NOT NULL
-          ) STRICT;
-        `);
-        opened.exec(`
-          CREATE TABLE IF NOT EXISTS authority_bindings (
-            environment_key TEXT PRIMARY KEY,
-            profile TEXT NOT NULL,
-            executor TEXT NOT NULL,
-            authority_class TEXT NOT NULL,
-            policy_digest TEXT NOT NULL CHECK (length(policy_digest) = 64),
-            workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
-            workspace_lease_id TEXT NOT NULL REFERENCES workspace_leases(lease_id),
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-          ) STRICT;
-        `);
-        fs.chmodSync(config.databasePath, 0o600);
-        opened.prepare(
-          "UPDATE environments SET state='failed', failure_reason='broker restarted before reconciliation', updated_at=? WHERE state IN ('creating','active','closing')",
-        ).run(Date.now());
-        return opened;
-      },
-      catch: (error) => registryFailure("open", error),
-    }),
-    (opened) => Effect.sync(() => opened.close()),
-  );
+  yield* Effect.try({
+    try: () => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS environments (
+          environment_key TEXT PRIMARY KEY,
+          generation INTEGER NOT NULL CHECK (generation > 0),
+          state TEXT NOT NULL CHECK (state IN ('creating','active','closing','closed','failed')),
+          policy_digest TEXT NOT NULL CHECK (length(policy_digest) = 64),
+          worklane TEXT NOT NULL,
+          asset_build_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+          workspace_lease_id TEXT NOT NULL REFERENCES workspace_leases(lease_id),
+          run_activation_id TEXT CHECK (run_activation_id IS NULL OR length(run_activation_id) = 36),
+          vm_id TEXT,
+          host_pid INTEGER,
+          failure_reason TEXT,
+          updated_at INTEGER NOT NULL
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS authority_bindings (
+          environment_key TEXT PRIMARY KEY,
+          profile TEXT NOT NULL,
+          executor TEXT NOT NULL,
+          authority_class TEXT NOT NULL,
+          policy_digest TEXT NOT NULL CHECK (length(policy_digest) = 64),
+          workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+          workspace_lease_id TEXT NOT NULL REFERENCES workspace_leases(lease_id),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        ) STRICT;
+      `);
+      db.prepare(
+        "UPDATE environments SET state='failed', failure_reason='broker restarted before reconciliation', updated_at=? WHERE state IN ('creating','active','closing')",
+      ).run(Date.now());
+    },
+    catch: (error) => registryFailure("open", error),
+  });
 
   const query = db.prepare("SELECT * FROM environments WHERE environment_key = ?");
   const get = (environmentKey: string): Effect.Effect<EnvironmentRecord | undefined, BrokerError> =>
@@ -203,109 +197,97 @@ const make = Effect.gen(function* () {
     request: BindAuthority,
   ): Effect.Effect<AuthorityBindingRecord, BrokerError> =>
     Effect.try({
-      try: () => {
-        db.exec("BEGIN IMMEDIATE");
-        try {
-          const now = Date.now();
-          db.prepare(`
-            INSERT INTO authority_bindings (
-              environment_key, profile, executor, authority_class, policy_digest,
-              workspace_id, workspace_lease_id, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(environment_key) DO NOTHING
-          `).run(
-            request.environmentKey,
-            request.profile,
-            request.executor,
-            request.authorityClass,
-            request.policyDigest,
-            request.workspaceId,
-            request.workspaceLeaseId,
-            now,
-            now,
-          );
-          const row = authorityQuery.get(request.environmentKey) as AuthorityRow;
-          const binding = authorityFromRow(row);
-          if (
-            binding.profile !== request.profile ||
-            binding.executor !== request.executor ||
-            binding.authorityClass !== request.authorityClass ||
-            binding.policyDigest !== request.policyDigest ||
-            binding.workspaceId !== request.workspaceId ||
-            binding.workspaceLeaseId !== request.workspaceLeaseId
-          ) {
-            throw brokerError("authority.conflict", "environment authority is already bound", {
-              environmentKey: request.environmentKey,
-              profile: binding.profile,
-              executor: binding.executor,
-              authorityClass: binding.authorityClass,
-              policyDigest: binding.policyDigest,
-              workspaceId: binding.workspaceId,
-              workspaceLeaseId: binding.workspaceLeaseId,
-            });
-          }
-          db.exec("COMMIT");
-          return binding;
-        } catch (error) {
-          db.exec("ROLLBACK");
-          throw error;
+      try: () => database.transaction(() => {
+        const now = Date.now();
+        db.prepare(`
+          INSERT INTO authority_bindings (
+            environment_key, profile, executor, authority_class, policy_digest,
+            workspace_id, workspace_lease_id, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(environment_key) DO NOTHING
+        `).run(
+          request.environmentKey,
+          request.profile,
+          request.executor,
+          request.authorityClass,
+          request.policyDigest,
+          request.workspaceId,
+          request.workspaceLeaseId,
+          now,
+          now,
+        );
+        const row = authorityQuery.get(request.environmentKey) as AuthorityRow;
+        const binding = authorityFromRow(row);
+        if (
+          binding.profile !== request.profile ||
+          binding.executor !== request.executor ||
+          binding.authorityClass !== request.authorityClass ||
+          binding.policyDigest !== request.policyDigest ||
+          binding.workspaceId !== request.workspaceId ||
+          binding.workspaceLeaseId !== request.workspaceLeaseId
+        ) {
+          throw brokerError("authority.conflict", "environment authority is already bound", {
+            environmentKey: request.environmentKey,
+            profile: binding.profile,
+            executor: binding.executor,
+            authorityClass: binding.authorityClass,
+            policyDigest: binding.policyDigest,
+            workspaceId: binding.workspaceId,
+            workspaceLeaseId: binding.workspaceLeaseId,
+          });
         }
-      },
+        return binding;
+      }),
       catch: (error) =>
         error instanceof BrokerError ? error : registryFailure("bind authority", error),
     });
 
   const reserve = (request: ReserveEnvironment): Effect.Effect<EnvironmentRecord, BrokerError> =>
     Effect.try({
-      try: () => {
-        db.exec("BEGIN IMMEDIATE");
-        try {
-          const prior = query.get(request.environmentKey) as Row | undefined;
-          const generation = (prior?.generation ?? 0) + 1;
-          const now = Date.now();
-          db.prepare(`
-            INSERT INTO environments (
-              environment_key, generation, state, policy_digest, worklane,
-              asset_build_id, workspace_id, workspace_lease_id, vm_id, host_pid,
-              failure_reason, updated_at
-            ) VALUES (?, ?, 'creating', ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
-            ON CONFLICT(environment_key) DO UPDATE SET
-              generation=excluded.generation,
-              state='creating',
-              policy_digest=excluded.policy_digest,
-              worklane=excluded.worklane,
-              asset_build_id=excluded.asset_build_id,
-              workspace_id=excluded.workspace_id,
-              workspace_lease_id=excluded.workspace_lease_id,
-              vm_id=NULL,
-              host_pid=NULL,
-              failure_reason=NULL,
-              updated_at=excluded.updated_at
-          `).run(
-            request.environmentKey,
-            generation,
-            request.policyDigest,
-            request.worklane,
-            request.assetBuildId,
-            request.workspaceId,
-            request.workspaceLeaseId,
-            now,
-          );
-          db.exec("COMMIT");
-          return {
-            ...request,
-            generation,
-            state: "creating",
-            vmId: null,
-            hostPid: null,
-            failureReason: null,
-            updatedAt: now,
-          };
-        } catch (error) {
-          db.exec("ROLLBACK");
-          throw error;
-        }
-      },
+      try: () => database.transaction(() => {
+        const prior = query.get(request.environmentKey) as Row | undefined;
+        const generation = (prior?.generation ?? 0) + 1;
+        const now = Date.now();
+        db.prepare(`
+          INSERT INTO environments (
+            environment_key, generation, state, policy_digest, worklane,
+            asset_build_id, workspace_id, workspace_lease_id, run_activation_id,
+            vm_id, host_pid, failure_reason, updated_at
+          ) VALUES (?, ?, 'creating', ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
+          ON CONFLICT(environment_key) DO UPDATE SET
+            generation=excluded.generation,
+            state='creating',
+            policy_digest=excluded.policy_digest,
+            worklane=excluded.worklane,
+            asset_build_id=excluded.asset_build_id,
+            workspace_id=excluded.workspace_id,
+            workspace_lease_id=excluded.workspace_lease_id,
+            run_activation_id=excluded.run_activation_id,
+            vm_id=NULL,
+            host_pid=NULL,
+            failure_reason=NULL,
+            updated_at=excluded.updated_at
+        `).run(
+          request.environmentKey,
+          generation,
+          request.policyDigest,
+          request.worklane,
+          request.assetBuildId,
+          request.workspaceId,
+          request.workspaceLeaseId,
+          request.runActivationId,
+          now,
+        );
+        return {
+          ...request,
+          generation,
+          state: "creating",
+          vmId: null,
+          hostPid: null,
+          failureReason: null,
+          updatedAt: now,
+        };
+      }),
       catch: (error) => registryFailure("reserve", error),
     });
 
