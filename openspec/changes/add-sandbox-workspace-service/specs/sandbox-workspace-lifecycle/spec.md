@@ -68,25 +68,10 @@ The control plane MUST support describing, listing, releasing, closing, and dele
 - **THEN** the broker SHALL remove its files and mark it deleted
 - **AND** later acquisition by that workspace ID MUST fail
 
-### Requirement: Clean legacy cutover
-
-The QA migration MUST remove the legacy `environments.workspace_path` schema and anonymous workspace data rather than preserving dual behavior. Migration MUST fail closed if a recorded legacy path is not safely contained beneath the configured workspace root.
-
-#### Scenario: Legacy broker database
-- **GIVEN** the current QA schema containing `environments.workspace_path`
-- **WHEN** the new broker initializes
-- **THEN** it SHALL discard old environment and authority rows, remove contained anonymous workspace directories, and create only the new workspace-aware schema
-- **AND** the resulting `environments` table SHALL have no `workspace_path` column
-
-#### Scenario: Unsafe legacy path
-- **GIVEN** a legacy environment row whose path resolves outside the workspace root
-- **WHEN** migration initializes
-- **THEN** broker startup MUST fail before deleting that path
 
 ## Mechanism
-
-- `pkgs/by-name/gondolin-broker-effect/src/workspaces.ts` defines the workspace service, strict records, SQLite operations, path derivation, containment checks, reconciliation, and lifecycle errors.
-- `pkgs/by-name/gondolin-broker-effect/src/registry.ts` creates/rebuilds `workspaces`, `workspace_leases`, `authority_bindings`, and workspace-aware `environments` under a serialized migration and stores workspace/lease IDs instead of host paths.
+- `pkgs/by-name/gondolin-broker-effect/src/workspaces.ts` defines the workspace service, current schema, strict records, SQLite operations, path derivation, containment checks, and lifecycle errors.
+- `pkgs/by-name/gondolin-broker-effect/src/registry.ts` stores workspace/lease IDs in authority and environment records instead of host paths.
 - `pkgs/by-name/gondolin-broker-effect/src/domain.ts` defines strict control request schemas containing opaque IDs only.
 - `pkgs/by-name/gondolin-broker-effect/src/http.ts` exposes lifecycle mutations only on the control listener; execution routes cannot list, switch, release, or delete workspaces.
 - `pkgs/by-name/gondolin-broker-effect/src/environments.ts` validates a current active lease and resolves the derived path before VM creation.

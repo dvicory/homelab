@@ -136,48 +136,6 @@ test("authority bindings persist across broker registry restarts", async () => {
   assert.equal(binding.policyDigest, request.policyDigest)
 })
 
-test("legacy broker state and anonymous workspaces are discarded", async () => {
-  const stateDir = await mkdtemp(path.join(os.tmpdir(), "gondolin-policy-digest-migration-"))
-  const workspaceFile = path.join(stateDir, "workspaces", "legacy", "fixture.txt")
-  await mkdir(path.dirname(workspaceFile), { recursive: true })
-  await writeFile(workspaceFile, "preserved")
-  const databasePath = path.join(stateDir, "broker.sqlite")
-  const legacy = new DatabaseSync(databasePath)
-  legacy.exec(`
-    CREATE TABLE environments (environment_key TEXT PRIMARY KEY, policy_generation INTEGER) STRICT;
-    CREATE TABLE authority_bindings (environment_key TEXT PRIMARY KEY, policy_generation INTEGER) STRICT;
-    CREATE TABLE access_requests (request_id TEXT PRIMARY KEY, policy_generation INTEGER) STRICT;
-    CREATE TABLE runtime_grants (grant_id TEXT PRIMARY KEY, policy_generation INTEGER) STRICT;
-  `)
-  legacy.close()
-
-  const harness = makeTestLayer(stateDir)
-  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const registry = yield* Registry
-    yield* AccessGrants
-    const workspaces = yield* Workspaces
-    const acquired = yield* workspaces.acquire("digest-migrated")
-    const binding = yield* registry.bindAuthority({
-      environmentKey: "digest-migrated",
-      profile: "test",
-      executor: "hermes-gateway",
-      authorityClass: "default",
-      policyDigest: "a".repeat(64),
-      workspaceId: acquired.workspace.workspaceId,
-      workspaceLeaseId: acquired.lease.leaseId
-    })
-    assert.equal(binding.policyDigest, "a".repeat(64))
-  }).pipe(Effect.provide(harness.layer))))
-
-  const migrated = new DatabaseSync(databasePath)
-  for (const table of ["environments", "authority_bindings", "access_requests", "runtime_grants"]) {
-    const columns = migrated.prepare(`SELECT name FROM pragma_table_info('${table}')`).all().map((row) => row.name)
-    assert.equal(columns.includes("policy_generation"), false)
-    assert.equal(columns.includes("policy_digest"), true)
-  }
-  migrated.close()
-  await assert.rejects(readFile(workspaceFile, "utf8"))
-})
 
 test("ordinary ensure input rejects caller-selected authority", async () => {
   await assert.rejects(

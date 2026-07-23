@@ -1,6 +1,6 @@
 ## 1. Broker Workspace Store
 
-- [x] 1.1 Add the `hvn-hyp1` QA broker workspace schema, clean legacy migration, broker-owned path validation, and lifecycle service under `pkgs/by-name/gondolin-broker-effect`; run focused package tests and the Nix package check, then commit the self-contained change with a conventional commit message. No SOPS update.
+- [x] 1.1 Add the `hvn-hyp1` QA broker workspace schema, broker-owned path validation, and lifecycle service under `pkgs/by-name/gondolin-broker-effect`; run focused package tests and the Nix package check, then commit the self-contained change with a conventional commit message. No SOPS update.
 - [x] 1.2 Add strict control-plane workspace acquire/describe/list/release/close/delete schemas and routes under `pkgs/by-name/gondolin-broker-effect`; verify route separation and lifecycle failures with focused tests and the Nix package check, then commit. No SOPS update.
 
 ## 2. Gondolin Environment Binding
@@ -15,4 +15,4 @@
 ## 4. QA Activation and Acceptance
 
 - [x] 4.1 Wire the workspace lifecycle configuration through `modules/den/aspects/workloads/hermes/secure-terminal` and `modules/den/users/hermes-runners.nix` for `hvn-hyp1` QA only; evaluate the host and build focused broker/Hermes checks, then commit. No SOPS update.
-- [x] 4.2 Verify first acquisition, repeated-session reuse, VM recreation with retained bytes, fail-closed outage, stable workspace-tool visibility, in-process broker recovery, and normal Kanban execution on `hvn-hyp1` QA; verify clean legacy migration, conflicting-writer denial, terminal-state close with retained lease, explicit release/deletion, and unchanged non-Gondolin behavior through focused Nix checks.
+- [x] 4.2 Verify first acquisition, repeated-session reuse, VM recreation with retained bytes, fail-closed outage, stable workspace-tool visibility, in-process broker recovery, and normal Kanban execution on `hvn-hyp1` QA; verify conflicting-writer denial, terminal-state close with retained lease, explicit release/deletion, and unchanged non-Gondolin behavior through focused Nix checks.
