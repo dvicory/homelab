@@ -17,6 +17,7 @@ let
       ./gondolin-hard-cancel.patch
       ./task-authority-binding.patch
       ./workspace-service.patch
+      ./workspace-kanban.patch
       ./approval-choice-result.patch
       ./approval-permanent-control.patch
       ./approval-surface-permanent-control.patch

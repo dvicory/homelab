@@ -30,6 +30,7 @@ runCommand "hermes-agent-patched-check" { } ''
     ${patchedHermes.patchedSource}/tests/gateway/test_telegram_approval_buttons.py \
     ${patchedHermes.patchedSource}/tests/tools/test_gondolin_backend.py \
     ${patchedHermes.patchedSource}/tests/plugins/test_workspace_service.py \
+    ${patchedHermes.patchedSource}/tests/plugins/test_workspace_kanban.py \
     ${sandboxAccess.testSource}/tests \
     ${codexWorkerLane.testSource}/tests
   "$python" -m py_compile \
@@ -44,6 +45,7 @@ runCommand "hermes-agent-patched-check" { } ''
     ${sandboxAccess.testSource}/__init__.py \
     ${sandboxAccess.testSource}/tests \
     ${patchedHermes.patchedSource}/plugins/workspace-service/__init__.py \
-    ${patchedHermes.patchedSource}/tests/plugins/test_workspace_service.py
+    ${patchedHermes.patchedSource}/tests/plugins/test_workspace_service.py \
+    ${patchedHermes.patchedSource}/tests/plugins/test_workspace_kanban.py
   touch $out
 ''
