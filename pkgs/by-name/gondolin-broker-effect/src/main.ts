@@ -10,6 +10,7 @@ import type * as Net from "node:net";
 import { Effect, Layer } from "effect";
 import { AuthorizationLive, BrokerPolicyKernelLive } from "./authorization-live.js";
 import { BrokerConfig, BrokerConfigLive } from "./config.js";
+import { BrokerDatabaseLive } from "./database.js";
 import { EnvironmentsLive } from "./environments.js";
 import { ExecutorLive } from "./exec.js";
 import { FilesLive } from "./files.js";
@@ -23,7 +24,8 @@ export const BrokerLive = (() => {
   const infrastructure = Layer.mergeAll(BrokerConfigLive, VmRuntimeLive);
   const policy = BrokerPolicyKernelLive.pipe(Layer.provideMerge(infrastructure));
   const authorization = AuthorizationLive.pipe(Layer.provideMerge(policy));
-  const workspaces = WorkspacesLive.pipe(Layer.provideMerge(authorization));
+  const database = BrokerDatabaseLive.pipe(Layer.provideMerge(authorization));
+  const workspaces = WorkspacesLive.pipe(Layer.provideMerge(database));
   const registry = RegistryLive.pipe(Layer.provideMerge(workspaces));
   const grants = AccessGrantsLive.pipe(Layer.provideMerge(registry));
   const environments = EnvironmentsLive.pipe(Layer.provideMerge(grants));

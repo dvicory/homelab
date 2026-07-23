@@ -3,6 +3,7 @@ import { Effect, Layer } from "effect"
 import { BrokerActions } from "../dist/auth.js"
 import { AuthorizationLive, BrokerPolicyKernelLive } from "../dist/authorization-live.js"
 import { BrokerConfig } from "../dist/config.js"
+import { BrokerDatabaseLive } from "../dist/database.js"
 import { EnvironmentsLive } from "../dist/environments.js"
 import { ExecutorLive } from "../dist/exec.js"
 import { FilesLive } from "../dist/files.js"
@@ -214,7 +215,8 @@ export const makeTestLayer = (stateDir, options = {}) => {
   const infrastructure = Layer.mergeAll(configLayer, fake.layer)
   const policy = BrokerPolicyKernelLive.pipe(Layer.provideMerge(infrastructure))
   const authorization = AuthorizationLive.pipe(Layer.provideMerge(policy))
-  const workspaces = WorkspacesLive.pipe(Layer.provideMerge(authorization))
+  const database = BrokerDatabaseLive.pipe(Layer.provideMerge(authorization))
+  const workspaces = WorkspacesLive.pipe(Layer.provideMerge(database))
   const registry = RegistryLive.pipe(Layer.provideMerge(workspaces))
   const grants = makeAccessGrantsLayer({
     ...(options.grantResolver === undefined ? {} : { resolver: options.grantResolver }),

@@ -182,14 +182,15 @@ This is not permission to expose the current listener over TCP. A SaaS deploymen
 
 ### Why SQLite is currently `node:sqlite`
 
-The first registry uses Node's built-in synchronous SQLite API behind an Effect service:
+The broker uses Node's built-in synchronous SQLite API behind one scoped `BrokerDatabase` Effect service:
 
-- no additional native module;
-- no `better-sqlite3` build/package ownership;
-- explicit transactions and schema;
-- easy replacement behind `Registry` if product topology changes.
+- one connection and transaction boundary shared by workspace, environment, and grant repositories;
+- no additional native module or `better-sqlite3` build/package ownership;
+- explicit schema and synchronous database operations;
+- nested repository mutations join the caller's transaction;
+- easy replacement when product topology changes.
 
-`@effect/sql` was not rejected for being pre-1.0. It is deferred because the current single-table local registry does not yet justify another native driver or SQL abstraction. Reconsider it when Agent X/PostgreSQL repositories, migrations, telemetry, and transactional product state move into the implementation.
+`@effect/sql` core is present transitively, but no SQLite driver is installed. Adopting its standard Node SQLite path would add a driver and native packaging while leaving the broker's domain repositories and schema work intact. Reconsider it when Agent X/PostgreSQL, remote repositories, telemetry, or asynchronous query composition justify a driver migration rather than using it only to replace this narrow built-in adapter.
 
 ## Lifecycle statechart
 
