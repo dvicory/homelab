@@ -1,12 +1,12 @@
 ## ADDED Requirements
 
-### Requirement: Run-scoped workspace activation
+### Requirement: Task-run workspace activation
 
-Stable task identity and an active workspace lease MUST NOT be sufficient to create, reuse, execute in, or access files in a handoff-enabled environment. Before worker spawn, trusted dispatch MUST register a broker activation bound to task, Kanban run, workspace, lease, full policy digest, and a monotonically increasing epoch. Every ensure, execution, and file request MUST use task/run identity attached by trusted backend state; model-facing schemas MUST NOT accept or override it. Completion MUST consume the activation before VM closure. Registering a newer retry MUST revoke the older activation and close its generation before creating another.
+Stable task identity and an active workspace lease MUST NOT be sufficient to create, reuse, execute in, or access files in a handoff-enabled environment. Before worker spawn, trusted dispatch MUST activate a globally unique Kanban run ID against its task, workspace, lease, and full policy digest. The broker MUST issue an opaque activation ID. Every ensure, execution, and file request MUST use task/run identity attached by trusted backend state; model-facing schemas MUST NOT accept or override it. Completion MUST consume the activation before VM closure. Activating a trusted retry with a fresh run ID MUST supersede the older activation and close its generation before creating another. A prior run ID MUST NOT be reactivated.
 
 #### Scenario: Completed run attempts recreation
 
-- **GIVEN** completion consumed a run activation and closed its VM while retaining the task workspace
+- **GIVEN** completion consumed a task-run activation and closed its VM while retaining the task workspace
 - **WHEN** the old worker calls ensure, execution, or file APIs using its prior run identity
 - **THEN** the broker MUST reject the request
 - **AND** stable task identity or lease knowledge MUST NOT recreate the VM
@@ -14,7 +14,7 @@ Stable task identity and an active workspace lease MUST NOT be sufficient to cre
 #### Scenario: Trusted retry
 
 - **GIVEN** a retained task workspace has no active run
-- **WHEN** trusted dispatch registers a newer Kanban run and epoch against the current lease and policy
+- **WHEN** trusted dispatch registers a fresh Kanban run ID against the current lease and policy
 - **THEN** the broker SHALL permit that run to create a new VM generation
 - **AND** all older runs and generations MUST remain stale
 
@@ -39,15 +39,15 @@ Trusted lifecycle code MAY publish one revision from a workspace using a unique 
 
 ### Requirement: Canonical bounded manifest
 
-The manifest MUST contain only directories and regular files under selected relative POSIX roots; exact `.` MAY select the whole workspace but MUST NOT appear as an entry. Names MUST be strict UTF-8 and NFC. Paths MUST reject absolute paths, empty segments, `.`, `..`, NUL, normalization collisions, and configured length/depth excess. Regular files with multiple links, symlinks, devices, sockets, FIFOs, unsupported sparse files, mount crossings, and detected identity changes MUST fail publication.
+The manifest MUST contain only directories and regular files under selected relative POSIX roots; exact `.` MAY select the whole workspace but MUST NOT appear as an entry. Names MUST be strict UTF-8 and NFC. Paths MUST reject absolute paths, empty segments, `.`, `..`, NUL, normalization collisions, and configured byte-length excess. Publication MUST use pinned `rsync` without following symlinks or crossing the source filesystem boundary, preserve no ownership, timestamps, ACLs, or xattrs, and create independent destination files rather than preserving hardlinks or using reflinks. Symlinks, devices, sockets, and FIFOs MUST fail publication.
 
-Publication MUST incrementally enforce configured logical-byte, staging-byte, entry-count, individual-file, path-length, and path-depth limits. Modes MUST normalize to `0755` for directories and executable files and `0644` otherwise. The digest encoding MUST be documented, versioned, domain-separated, length-delimited, fixed-width for integers, sorted by UTF-8 path bytes, and covered by byte-vector fixtures. Owner, group, timestamps, ACLs, xattrs, and other mode bits MUST be excluded.
+A broker-owned filesystem quota MUST bound copy-time amplification. Detached staging-tree validation MUST enforce configured logical-byte, entry-count, individual-file, and path-byte limits before ready state. Sparse source files MAY be materialized as ordinary destination files and MUST count at their full logical size. Modes MUST normalize to `0755` for directories and executable files and `0644` otherwise. The digest MUST cover a documented, broker-versioned, domain-separated canonical JSON projection sorted by UTF-8 path bytes and MUST have a fixed test vector. Owner, group, timestamps, ACLs, xattrs, and other mode bits MUST be excluded.
 
 #### Scenario: Unsafe link
 
-- **GIVEN** selected output contains a symlink or multiply linked regular file
-- **WHEN** publication traverses it
-- **THEN** publication MUST fail without following or copying the target
+- **GIVEN** selected output contains a symlink or unsupported special file
+- **WHEN** publication copies it to staging or validates the detached staging tree
+- **THEN** publication MUST fail without following or exposing the target
 - **AND** no ready revision MAY be exposed
 
 #### Scenario: Limit exceeded
@@ -60,13 +60,13 @@ Publication MUST incrementally enforce configured logical-byte, staging-byte, en
 #### Scenario: Equivalent publications
 
 - **GIVEN** two safe trees have identical canonical paths, modes, and bytes
-- **WHEN** each is published under the same canonicalization version
+- **WHEN** each is published under the same broker manifest version
 - **THEN** their manifest digests SHALL match
 - **AND** their opaque revision IDs and provenance SHALL differ
 
 ### Requirement: Idempotent publication recovery
 
-Publication MUST bind finalization ID to source task/run/workspace, selected roots, policy digest, and a canonical request digest. Repeating an identical request MUST return the same revision. Reusing the ID with changed authority or selection MUST fail. The broker MUST persist operation state before filesystem mutation and reconcile staging, ready-response-loss, quarantined, and failed states after restart.
+Publication MUST bind a finalization ID to source activation/task/run/workspace, selected roots, policy digest, and policy decision digest. Repeating an identical request MUST return the same revision. Reusing the ID with any changed bound field MUST fail. The broker MUST persist publication state before filesystem mutation and reconcile staging, ready-response-loss, quarantined, and failed states after restart.
 
 #### Scenario: Ready response is lost
 
@@ -77,7 +77,7 @@ Publication MUST bind finalization ID to source task/run/workspace, selected roo
 
 ### Requirement: Authorized private import
 
-The control listener MAY import one ready revision for one destination child/run only from trusted dispatcher facts proving the source worker created that child with inherited output, the direct parent link still exists on the same board and tenant, and source/destination policy matches. Import MUST bind a preparation ID and request digest to source revision and destination authority, re-verify the stored manifest/content, create one new private writable workspace, preserve revision-relative paths, and issue an independent lease. Revision IDs MUST NOT be accepted by execution routes or model-facing requests.
+The control listener MAY import one ready revision for one destination child/run only from trusted dispatcher facts proving the source worker created that child with inherited output, the direct parent link still exists on the same board and tenant, and source/destination policy matches. Import MUST bind every source, destination, relation, and policy field to a preparation ID, re-verify the stored manifest/content, create one new private writable workspace, preserve revision-relative paths, and issue an independent lease. Revision IDs MUST NOT be accepted by execution routes or model-facing requests.
 
 #### Scenario: Direct child import
 
@@ -101,7 +101,7 @@ The control listener MAY import one ready revision for one destination child/run
 
 ### Requirement: Broker and QA integration
 
-`pkgs/by-name/gondolin-broker-effect` MUST first consolidate the repeated SQLite connection/migration/transaction setup used by workspace, environment-registry, and access-grant services into one shared database service without changing existing behavior, then own attempt, revision, entry, operation, import, traversal, copy, verification, and recovery logic. Attempt fencing, environment closing, workspace lease, revision staging, and import commits MUST use that shared transaction boundary. Revision publication/import routes MUST exist only on the control listener under explicit policy actions. `modules/den/aspects/workloads/hermes/secure-terminal/default.nix` MUST derive contained QA roots and limits and enable them only for the selected `hvn-hyp1` profile.
+`pkgs/by-name/gondolin-broker-effect` MUST first consolidate the repeated SQLite connection/migration/transaction setup used by workspace, environment-registry, and access-grant services into one shared database service without changing existing behavior, then own task-run activation, revision/import records, copy orchestration, detached-tree validation, verification, and recovery. Activation fencing, environment closing, workspace lease, revision staging, and import commits MUST use that shared transaction boundary. Revision publication/import routes MUST exist only on the control listener under explicit policy actions. `modules/den/aspects/workloads/hermes/secure-terminal/default.nix` MUST derive contained QA roots and limits and enable them only for the selected `hvn-hyp1` QA profile.
 
 #### Scenario: Execution listener attempts revision management
 

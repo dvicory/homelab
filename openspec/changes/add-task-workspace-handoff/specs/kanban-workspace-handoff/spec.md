@@ -117,7 +117,7 @@ Kanban MUST persist a unique preparation ID and immutable source/destination int
 
 ### Requirement: Retry remains task-private
 
-A retry of the same task MUST use its retained mutable workspace only after trusted dispatch registers a newer run/attempt epoch. It MUST NOT import its own published revision over current task state. A different task MUST always receive a separate private import.
+A retry of the same task MUST use its retained mutable workspace only after trusted dispatch activates a fresh globally unique Kanban run ID and supersedes the prior activation. It MUST NOT import its own published revision over current task state. A different task MUST always receive a separate private import.
 
 #### Scenario: Producer retries after publication failure
 
@@ -135,21 +135,21 @@ A retry of the same task MUST use its retained mutable workspace only after trus
 
 ### Requirement: Hermes integration remains generic and gated
 
-`pkgs/by-name/hermes-agent-patched` MUST implement generic Kanban finalization/preparation persistence, a required completion-finalizer interface, and dispatcher replay without embedding filesystem logic in model tools. The repository-owned `workspace-service` plugin MUST register run activations, invoke broker fence/publication/import control operations, and attach trusted task/run identity to backend calls. `modules/den/aspects/workloads/hermes/secure-terminal/default.nix` MUST enable this only for `hvn-hyp1` QA Gondolin. Non-Gondolin workers, Codex lanes, production Hermes, and nix-darwin behavior MUST remain unchanged.
+`pkgs/by-name/hermes-agent-patched` MUST implement generic Kanban finalization/preparation persistence, a required completion-finalizer interface, and dispatcher replay without embedding filesystem logic in model tools. The repository-owned `workspace-service` plugin MUST activate task runs, invoke broker fence/publication/import control operations, and attach trusted task/run identity to backend calls. `modules/den/aspects/workloads/hermes/secure-terminal/default.nix` MUST enable this only for `hvn-hyp1` QA Gondolin. Non-Gondolin workers, Codex lanes, production Hermes, and nix-darwin behavior MUST remain unchanged.
 
 #### Scenario: Non-Gondolin task
 
 - **GIVEN** a worker profile does not enable Gondolin handoff
 - **WHEN** it is dispatched and completed
 - **THEN** existing task and workspace behavior SHALL remain unchanged
-- **AND** no broker attempt, publication, or import route SHALL run
+- **AND** no broker task-run activation, publication, or import route SHALL run
 
 #### Scenario: Non-Kanban Gondolin conversation
 
 - **GIVEN** a normal QA Gondolin conversation has no Kanban run
 - **WHEN** it uses workspace-backed tools
 - **THEN** existing conversation workspace behavior SHALL remain unchanged
-- **AND** Kanban attempt, publication, and import records MUST NOT be created
+- **AND** Kanban task-run activation, publication, and import records MUST NOT be created
 
 #### Scenario: Input broker is unavailable
 

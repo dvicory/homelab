@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Context, Effect, Layer } from "effect";
 import { BrokerConfig } from "./config.js";
+import { BrokerDatabase } from "./database.js";
 import { BrokerError, brokerError } from "./errors.js";
 
 export type WorkspaceState = "active" | "closed" | "deleted";
@@ -36,7 +37,16 @@ export interface WorkspaceBinding {
   readonly lease: WorkspaceLeaseRecord;
 }
 
+export interface AtomicWorkspaceBinding<A> extends WorkspaceBinding {
+  readonly result: A;
+}
+
 export interface WorkspaceService {
+  readonly acquireAtomically: <A>(
+    environmentKey: string,
+    requestedWorkspaceId: string | undefined,
+    operation: (binding: WorkspaceBinding) => A,
+  ) => Effect.Effect<AtomicWorkspaceBinding<A>, BrokerError>;
   readonly acquire: (environmentKey: string, workspaceId?: string) => Effect.Effect<WorkspaceBinding, BrokerError>;
   readonly resolve: (environmentKey: string, workspaceId: string, leaseId: string) => Effect.Effect<WorkspaceBinding & { readonly workspacePath: string }, BrokerError>;
   readonly describe: (environmentKey: string, workspaceId: string) => Effect.Effect<WorkspaceRecord, BrokerError>;
@@ -152,6 +162,7 @@ const initializeSchema = (db: DatabaseSync, workspaceRoot: string) => {
       asset_build_id TEXT NOT NULL,
       workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
       workspace_lease_id TEXT NOT NULL REFERENCES workspace_leases(lease_id),
+      run_activation_id TEXT CHECK (run_activation_id IS NULL OR length(run_activation_id) = 36),
       vm_id TEXT,
       host_pid INTEGER,
       failure_reason TEXT,
@@ -163,27 +174,12 @@ const initializeSchema = (db: DatabaseSync, workspaceRoot: string) => {
 
 const make = Effect.gen(function* () {
   const config = yield* BrokerConfig;
-  const db = yield* Effect.acquireRelease(
-    Effect.try({
-      try: () => {
-        fs.mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
-        const opened = new DatabaseSync(config.databasePath);
-        opened.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
-        opened.exec("BEGIN IMMEDIATE");
-        try {
-          initializeSchema(opened, config.workspaceRoot);
-          opened.exec("COMMIT");
-        } catch (error) {
-          opened.exec("ROLLBACK");
-          throw error;
-        }
-        fs.chmodSync(config.databasePath, 0o600);
-        return opened;
-      },
-      catch: (error) => workspaceFailure("open", error),
-    }),
-    (opened) => Effect.sync(() => opened.close()),
-  );
+  const database = yield* BrokerDatabase;
+  const db = database.connection;
+  yield* Effect.try({
+    try: () => database.transaction(() => initializeSchema(db, config.workspaceRoot)),
+    catch: (error) => workspaceFailure("open", error),
+  });
 
   const workspaceQuery = db.prepare("SELECT * FROM workspaces WHERE workspace_id = ?");
   const activeEnvironmentLeaseQuery = db.prepare(
@@ -200,72 +196,87 @@ const make = Effect.gen(function* () {
     return candidate;
   };
 
-  const acquire = (environmentKey: string, requestedWorkspaceId?: string): Effect.Effect<WorkspaceBinding, BrokerError> =>
+  const acquireAtomically = <A>(
+    environmentKey: string,
+    requestedWorkspaceId: string | undefined,
+    operation: (binding: WorkspaceBinding) => A,
+  ): Effect.Effect<AtomicWorkspaceBinding<A>, BrokerError> =>
     Effect.try({
       try: () => {
-        db.exec("BEGIN IMMEDIATE");
         let createdPath: string | undefined;
         try {
-          const active = activeEnvironmentLeaseQuery.get(environmentKey) as LeaseRow | undefined;
-          if (active !== undefined) {
-            if (requestedWorkspaceId !== undefined && active.workspace_id !== requestedWorkspaceId) {
-              throw brokerError("workspace.conflict", "environment already holds another workspace lease", {
-                environmentKey,
-                workspaceId: active.workspace_id,
+          return database.transaction(() => {
+            const active = activeEnvironmentLeaseQuery.get(environmentKey) as LeaseRow | undefined;
+            if (active !== undefined) {
+              if (requestedWorkspaceId !== undefined && active.workspace_id !== requestedWorkspaceId) {
+                throw brokerError("workspace.conflict", "environment already holds another workspace lease", {
+                  environmentKey,
+                  workspaceId: active.workspace_id,
+                });
+              }
+              const binding = {
+                workspace: fromWorkspaceRow(workspaceQuery.get(active.workspace_id) as WorkspaceRow),
+                lease: fromLeaseRow(active),
+              };
+              return { ...binding, result: operation(binding) };
+            }
+
+            const now = Date.now();
+            const workspaceId = requestedWorkspaceId ?? randomUUID();
+            let workspaceRow = workspaceQuery.get(workspaceId) as WorkspaceRow | undefined;
+            if (workspaceRow === undefined) {
+              if (requestedWorkspaceId !== undefined) {
+                throw brokerError("workspace.not_found", "workspace does not exist", { workspaceId });
+              }
+              createdPath = workspacePath(workspaceId);
+              fs.mkdirSync(createdPath, { recursive: false, mode: 0o700 });
+              db.prepare(`
+                INSERT INTO workspaces (
+                  workspace_id, owner_environment_key, kind, state,
+                  retention_expires_at, created_at, updated_at, last_attached_at
+                ) VALUES (?, ?, 'private', 'active', NULL, ?, ?, ?)
+              `).run(workspaceId, environmentKey, now, now, now);
+              workspaceRow = workspaceQuery.get(workspaceId) as WorkspaceRow;
+            } else if (workspaceRow.owner_environment_key !== environmentKey || workspaceRow.state !== "active") {
+              throw brokerError("workspace.conflict", "workspace is not active and owned by this environment", {
+                workspaceId,
+                state: workspaceRow.state,
               });
             }
-            const workspace = fromWorkspaceRow(workspaceQuery.get(active.workspace_id) as WorkspaceRow);
-            db.exec("COMMIT");
-            return { workspace, lease: fromLeaseRow(active) };
-          }
 
-          const now = Date.now();
-          const workspaceId = requestedWorkspaceId ?? randomUUID();
-          let workspaceRow = workspaceQuery.get(workspaceId) as WorkspaceRow | undefined;
-          if (workspaceRow === undefined) {
-            if (requestedWorkspaceId !== undefined) {
-              throw brokerError("workspace.not_found", "workspace does not exist", { workspaceId });
-            }
-            createdPath = workspacePath(workspaceId);
-            fs.mkdirSync(createdPath, { recursive: false, mode: 0o700 });
+            const priorToken = db.prepare(
+              "SELECT COALESCE(MAX(fencing_token), 0) AS token FROM workspace_leases WHERE workspace_id = ?",
+            ).get(workspaceId) as { token: number };
+            const leaseId = randomUUID();
             db.prepare(`
-              INSERT INTO workspaces (
-                workspace_id, owner_environment_key, kind, state,
-                retention_expires_at, created_at, updated_at, last_attached_at
-              ) VALUES (?, ?, 'private', 'active', NULL, ?, ?, ?)
-            `).run(workspaceId, environmentKey, now, now, now);
-            workspaceRow = workspaceQuery.get(workspaceId) as WorkspaceRow;
-          } else if (workspaceRow.owner_environment_key !== environmentKey || workspaceRow.state !== "active") {
-            throw brokerError("workspace.conflict", "workspace is not active and owned by this environment", {
-              workspaceId,
-              state: workspaceRow.state,
-            });
-          }
-
-          const priorToken = db.prepare(
-            "SELECT COALESCE(MAX(fencing_token), 0) AS token FROM workspace_leases WHERE workspace_id = ?",
-          ).get(workspaceId) as { token: number };
-          const leaseId = randomUUID();
-          db.prepare(`
-            INSERT INTO workspace_leases (
-              lease_id, workspace_id, environment_key, mode, state,
-              fencing_token, created_at, released_at
-            ) VALUES (?, ?, ?, 'read-write', 'active', ?, ?, NULL)
-          `).run(leaseId, workspaceId, environmentKey, priorToken.token + 1, now);
-          db.prepare("UPDATE workspaces SET updated_at = ?, last_attached_at = ? WHERE workspace_id = ?")
-            .run(now, now, workspaceId);
-          const lease = fromLeaseRow(leaseQuery.get(leaseId) as LeaseRow);
-          const workspace = fromWorkspaceRow(workspaceQuery.get(workspaceId) as WorkspaceRow);
-          db.exec("COMMIT");
-          return { workspace, lease };
+              INSERT INTO workspace_leases (
+                lease_id, workspace_id, environment_key, mode, state,
+                fencing_token, created_at, released_at
+              ) VALUES (?, ?, ?, 'read-write', 'active', ?, ?, NULL)
+            `).run(leaseId, workspaceId, environmentKey, priorToken.token + 1, now);
+            db.prepare("UPDATE workspaces SET updated_at = ?, last_attached_at = ? WHERE workspace_id = ?")
+              .run(now, now, workspaceId);
+            const binding = {
+              workspace: fromWorkspaceRow(workspaceQuery.get(workspaceId) as WorkspaceRow),
+              lease: fromLeaseRow(leaseQuery.get(leaseId) as LeaseRow),
+            };
+            return { ...binding, result: operation(binding) };
+          });
         } catch (error) {
-          db.exec("ROLLBACK");
           if (createdPath !== undefined) fs.rmSync(createdPath, { recursive: true, force: true });
           throw error;
         }
       },
       catch: (error) => error instanceof BrokerError ? error : workspaceFailure("acquire", error),
     });
+
+  const acquire = (
+    environmentKey: string,
+    requestedWorkspaceId?: string,
+  ): Effect.Effect<WorkspaceBinding, BrokerError> =>
+    acquireAtomically(environmentKey, requestedWorkspaceId, () => undefined).pipe(
+      Effect.map(({ workspace, lease }) => ({ workspace, lease })),
+    );
 
   const resolve = (environmentKey: string, workspaceId: string, leaseId: string) =>
     Effect.try({
@@ -371,7 +382,16 @@ const make = Effect.gen(function* () {
       catch: (error) => error instanceof BrokerError ? error : workspaceFailure("delete", error),
     });
 
-  return { acquire, resolve, describe, list, release, close, delete: remove } satisfies WorkspaceService;
+  return {
+    acquireAtomically,
+    acquire,
+    resolve,
+    describe,
+    list,
+    release,
+    close,
+    delete: remove,
+  } satisfies WorkspaceService;
 });
 
 export const WorkspacesLive = Layer.scoped(Workspaces, make);

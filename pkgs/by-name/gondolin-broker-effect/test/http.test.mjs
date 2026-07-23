@@ -1,12 +1,13 @@
 import * as HttpServer from "@effect/platform/HttpServer"
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer"
 import assert from "node:assert/strict"
-import { mkdtemp } from "node:fs/promises"
+import { access, mkdtemp } from "node:fs/promises"
 import { createServer, request as httpRequest } from "node:http"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { Effect } from "effect"
+import { BrokerDatabase } from "../dist/database.js"
 import { BrokerConfig } from "../dist/config.js"
 import { makeControlHttpApp, makeHttpApp } from "../dist/http.js"
 import { makeTestLayer } from "./fakes.mjs"
@@ -37,7 +38,7 @@ const request = (socketPath, route, body) => new Promise((resolve, reject) => {
 
 test("HTTP API serves unary and streamed operations over a Unix socket", async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), "gondolin-effect-http-"))
-  const harness = makeTestLayer(stateDir)
+  const harness = makeTestLayer(stateDir, { workspaceHandoffEnabled: true })
   await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const config = yield* BrokerConfig
     const app = yield* makeHttpApp
@@ -124,9 +125,23 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
     )
     assert.deepEqual(JSON.parse(workspaceList.text).map((item) => item.workspaceId), [acquired.workspace.workspaceId])
 
+    const activated = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/task-runs/activate", {
+        environmentKey: "conversation-control",
+        taskId: "task-http",
+        runId: "run-http",
+        workspaceId: acquired.workspace.workspaceId,
+        workspaceLeaseId: acquired.lease.leaseId,
+        policyDigest: "a".repeat(64),
+      })
+    )
+    assert.equal(activated.status, 200)
+    assert.equal(JSON.parse(activated.text).activation.state, "active")
+
     const controlledEnsure = yield* Effect.promise(() =>
       request(config.socketPath, "/v1/environments/ensure", {
-        environmentKey: "conversation-control"
+        environmentKey: "conversation-control",
+        taskRun: { taskId: "task-http", runId: "run-http" }
       })
     )
     assert.equal(controlledEnsure.status, 200)
@@ -186,13 +201,15 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
     assert.equal(revoked.status, 200)
     assert.equal(JSON.parse(revoked.text).state, "revoked")
 
-    const closedEnvironment = yield* Effect.promise(() =>
-      request(config.socketPath, "/v1/environments/close", {
+    const consumedRun = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/task-runs/consume", {
         environmentKey: "conversation-control",
-        generation: JSON.parse(controlledEnsure.text).generation
+        taskId: "task-http",
+        runId: "run-http"
       })
     )
-    assert.equal(closedEnvironment.status, 200)
+    assert.equal(consumedRun.status, 200)
+    assert.equal(JSON.parse(consumedRun.text).activation.state, "consumed")
     const released = yield* Effect.promise(() =>
       request(config.controlSocketPath, "/v1/control/workspaces/release", {
         environmentKey: "conversation-control",
@@ -219,6 +236,18 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
     assert.equal(deletedWorkspace.status, 200)
     assert.deepEqual(JSON.parse(deletedWorkspace.text), { deleted: true })
 
+    const recognizedControlRevisionRoute = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/workspace-revisions/publish", {})
+    )
+    assert.equal(recognizedControlRevisionRoute.status, 400)
+    assert.equal(
+      JSON.parse(recognizedControlRevisionRoute.text).detail,
+      "request body does not match the endpoint schema"
+    )
+    const hiddenRevisionRoute = yield* Effect.promise(() =>
+      request(config.socketPath, "/v1/control/workspace-revisions/publish", {})
+    )
+    assert.equal(hiddenRevisionRoute.status, 404)
     const invalid = yield* Effect.promise(() => request(config.socketPath, "/v1/environments/ensure", {
       environmentKey: "conversation-http",
       unexpected: true
@@ -229,5 +258,34 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
     assert.equal(problem.type, "urn:agent-x:gondolin-broker:error:request.invalid")
     assert.equal(problem.status, 400)
     assert.equal(problem.reason, "request.invalid")
+  }).pipe(Effect.provide(harness.layer))))
+})
+
+test("disabled handoff exposes no routes, tables, or revision root", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "gondolin-effect-disabled-handoff-"))
+  const harness = makeTestLayer(stateDir)
+  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const config = yield* BrokerConfig
+    const database = yield* BrokerDatabase
+    const controlApp = yield* makeControlHttpApp
+    const server = yield* NodeHttpServer.make(() => createServer(), { path: config.controlSocketPath })
+    yield* HttpServer.serveEffect(controlApp).pipe(Effect.provideService(HttpServer.HttpServer, server))
+
+    const activate = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/task-runs/activate", {})
+    )
+    const publish = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/workspace-revisions/publish", {})
+    )
+    assert.equal(activate.status, 404)
+    assert.equal(publish.status, 404)
+    const revisionTables = database.connection.prepare(`
+      SELECT count(*) AS count FROM sqlite_schema
+      WHERE type='table' AND (
+        name='task_run_activations' OR name LIKE 'workspace_revision%'
+      )
+    `).get().count
+    assert.equal(revisionTables, 0)
+    yield* Effect.promise(() => assert.rejects(access(config.workspaceRevisionRoot)))
   }).pipe(Effect.provide(harness.layer))))
 })

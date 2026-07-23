@@ -2,16 +2,21 @@
   lib,
   buildNpmPackage,
   nodejs_24,
+  makeWrapper,
   python3,
+  rsync,
 }:
-
 buildNpmPackage {
   pname = "gondolin-broker-effect";
   version = "0.1.0";
 
   src = ./.;
   nodejs = nodejs_24;
-  nativeBuildInputs = [ python3 ];
+  nativeBuildInputs = [
+    makeWrapper
+    python3
+    rsync
+  ];
 
   # Gondolin's optional cpu-features extension is not needed. Keep install
   # hermetic and prevent dependency lifecycle scripts from running.
@@ -27,6 +32,11 @@ buildNpmPackage {
   postInstall = ''
     mkdir -p "$out/lib/node_modules/gondolin-broker-effect/policy-kernel/dist"
     cp -R policy-kernel/dist/. "$out/lib/node_modules/gondolin-broker-effect/policy-kernel/dist/"
+  '';
+
+  postFixup = ''
+    wrapProgram "$out/bin/gondolin-broker-effect" \
+      --prefix PATH : ${lib.makeBinPath [ rsync ]}
   '';
 
   doCheck = true;

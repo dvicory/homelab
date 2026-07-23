@@ -22,8 +22,19 @@ export type WorkspaceId = typeof WorkspaceId.Type;
 export const WorkspaceLeaseId = WorkspaceId;
 export type WorkspaceLeaseId = typeof WorkspaceLeaseId.Type;
 
+export const TaskRunIdentity = Schema.Struct({
+  taskId: Identifier,
+  runId: Identifier,
+});
+export type TaskRunIdentity = typeof TaskRunIdentity.Type;
+
+const OptionalTaskRunIdentity = {
+  taskRun: Schema.optional(TaskRunIdentity),
+};
+
 export const EnsureRequest = Schema.Struct({
   environmentKey: EnvironmentKey,
+  ...OptionalTaskRunIdentity,
 });
 export type EnsureRequest = typeof EnsureRequest.Type;
 
@@ -43,9 +54,26 @@ export const BindAuthorityRequest = Schema.Struct({
 });
 export type BindAuthorityRequest = typeof BindAuthorityRequest.Type;
 
+export const ActivateTaskRunRequest = Schema.Struct({
+  environmentKey: EnvironmentKey,
+  taskId: Identifier,
+  runId: Identifier,
+  workspaceId: WorkspaceId,
+  workspaceLeaseId: WorkspaceLeaseId,
+  policyDigest: Schema.String.pipe(Schema.pattern(/^[0-9a-f]{64}$/)),
+});
+export type ActivateTaskRunRequest = typeof ActivateTaskRunRequest.Type;
+
+export const ConsumeTaskRunRequest = Schema.Struct({
+  environmentKey: EnvironmentKey,
+  ...TaskRunIdentity.fields,
+});
+export type ConsumeTaskRunRequest = typeof ConsumeTaskRunRequest.Type;
+
 export const EnvironmentRef = Schema.Struct({
   environmentKey: EnvironmentKey,
   generation: Generation,
+  ...OptionalTaskRunIdentity,
 });
 export type EnvironmentRef = typeof EnvironmentRef.Type;
 
@@ -75,6 +103,7 @@ export type StatusRequest = typeof StatusRequest.Type;
 export const ExecRequest = Schema.Struct({
   environmentKey: EnvironmentKey,
   generation: Generation,
+  ...OptionalTaskRunIdentity,
   argv: Schema.Array(Schema.String).pipe(Schema.minItems(1), Schema.maxItems(256)),
   cwd: Schema.optional(Schema.String),
   env: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.String })),
@@ -87,6 +116,7 @@ export type ExecRequest = typeof ExecRequest.Type;
 export const FileRef = Schema.Struct({
   environmentKey: EnvironmentKey,
   generation: Generation,
+  ...OptionalTaskRunIdentity,
   path: Schema.String.pipe(Schema.minLength(1), Schema.maxLength(4096)),
 });
 export type FileRef = typeof FileRef.Type;
