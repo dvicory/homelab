@@ -39,7 +39,6 @@ The QA Gondolin broker currently derives one anonymous directory from an environ
 - A general Agent X identity/space implementation or household ACL system.
 - General model-facing workspace administration or publication tools.
 - Shared writable workspaces, concurrent collaboration, parent/child forks or handoff, network-file direct write, skills projection, PTY/background support, or production cutover.
-- Preserving or importing existing anonymous broker workspace directories.
 
 ## Technical Assumptions
 
@@ -49,8 +48,7 @@ The QA Gondolin broker currently derives one anonymous directory from an environ
 - Kanban task identity is the trusted acquisition input. The broker, not the Kanban row, persists the workspace and lease; Hermes passes those opaque references only to the matching worker process.
 - One writable lease per workspace is sufficient for task retries. New and child tasks receive distinct workspaces; cross-task dataflow requires a separate immutable handoff design.
 - New files are added to Git before Nix evaluation so flake sources include them.
-- The schema adds only `workspaces` (one row per durable private workspace) and `workspace_leases` (one row per acquisition, updated on release). `environments` is rebuilt without `workspace_path` and instead references `workspace_id` plus `workspace_lease_id`. File contents, directory manifests, Git state, command output, and VM history remain outside SQLite.
-- Migration is a clean QA cutover: existing environment rows and anonymous workspace directories are removed after containment checks; they are not copied, adopted, quarantined, or interpreted as workspace records. Existing authority requests and grants remain only when their immutable policy/authority validation still succeeds.
+- The schema adds only `workspaces` (one row per durable private workspace) and `workspace_leases` (one row per acquisition, updated on release). `environments` references `workspace_id` plus `workspace_lease_id`; it stores no host path. File contents, directory manifests, Git state, command output, and VM history remain outside SQLite.
 
 ## Refactoring
 
@@ -58,4 +56,4 @@ Environment creation will stop deriving its writable host directory directly fro
 
 ## Rollback
 
-The feature remains gated by the QA Gondolin configuration. Rollback reactivates the previous QA release and recreates its ephemeral environment state; it does not attempt to translate new durable workspaces back into anonymous `workspace_path` rows. Production and the Podman fallback are not modified. Before rollback, any wanted QA workspace files must be exported explicitly; otherwise the new tables and broker-owned workspace directories may be removed.
+The feature remains gated by the QA Gondolin configuration. Rollback reactivates the previous QA release after explicitly resetting incompatible QA broker state. Production and the Podman fallback are not modified. Any wanted QA workspace files must be exported before that reset.

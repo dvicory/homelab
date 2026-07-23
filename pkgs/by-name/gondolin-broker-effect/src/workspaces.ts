@@ -101,20 +101,6 @@ const workspaceFailure = (operation: string, error: unknown) =>
   });
 
 const initializeSchema = (db: DatabaseSync, workspaceRoot: string) => {
-  const legacyEnvironmentSchema = db.prepare(
-    "SELECT 1 FROM pragma_table_info('environments') WHERE name='workspace_path'",
-  ).get();
-  const workspaceAuthoritySchema = db.prepare(
-    "SELECT 1 FROM pragma_table_info('authority_bindings') WHERE name='workspace_id'",
-  ).get();
-
-  if (legacyEnvironmentSchema !== undefined || workspaceAuthoritySchema === undefined) {
-    // QA has no retained work. Remove the anonymous data plane before creating
-    // the only supported workspace-aware schema; never infer ownership from it.
-    fs.rmSync(workspaceRoot, { recursive: true, force: true });
-    fs.mkdirSync(workspaceRoot, { recursive: true, mode: 0o700 });
-    db.exec("DROP TABLE IF EXISTS authority_bindings; DROP TABLE IF EXISTS environments;");
-  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS workspaces (

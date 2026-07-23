@@ -2,7 +2,7 @@
 
 The Effect broker currently hashes `environmentKey`, creates that directory under `workspaceRoot`, stores the raw path in `environments.workspace_path`, and mounts it into every recreated VM. There is no independent workspace identity, lease, listing, retention, or deletion contract. Hermes Kanban separately persists a gateway host `workspace_path` and injects it as worker cwd, which cannot be the Gondolin guest `/workspace`.
 
-No existing QA workspace data needs retention. The change therefore makes a clean schema and filesystem cutover rather than carrying compatibility logic.
+The QA broker state is explicitly reset before activation; the implementation carries no compatibility logic for the previous schema or filesystem layout.
 
 ## Goals / Non-Goals
 
@@ -13,39 +13,22 @@ No existing QA workspace data needs retention. The change therefore makes a clea
 - Remove `environments.workspace_path`; callers never provide host paths.
 - Make environment creation resolve a validated broker-owned workspace lease.
 - Let trusted Kanban lifecycle code persist/reuse the workspace ID while model-facing schemas expose neither host paths nor workspace selection.
-- Cleanly delete the current anonymous QA workspace directories during migration.
 
 **Non-Goals:**
 
 - Project sources, Git operations, COW optimization, publication, credentials, read-only composite inputs, shared writers, household identity, or production deployment.
-- Preserving existing anonymous QA environments or their files.
 - Turning Kanban into the workspace record of truth.
 
 ## Decisions
 
 ### Two workspace tables and direct environment references
 
-SQLite adds `workspaces` and `workspace_leases`. The `environments` table is rebuilt without `workspace_path` and contains `workspace_id` and `workspace_lease_id`. No separate binding table is needed: the authority binding identifies who may act, the active lease identifies writable ownership, and the environment record captures the mount used by that VM generation.
+SQLite contains `workspaces` and `workspace_leases`. The `environments` table contains `workspace_id` and `workspace_lease_id`, not a host path. No separate binding table is needed: the authority binding identifies who may act, the active lease identifies writable ownership, and the environment record captures the mount used by that VM generation.
 
 `workspaces` stores only identity/lifecycle metadata: ID, owning environment authority key, kind (`private` initially), state, optional retention deadline, and timestamps. `workspace_leases` stores lease ID, workspace ID, environment key, mode, state, monotonically increasing fencing token, and acquisition/release timestamps. A partial unique index permits one active writable lease for a workspace and one active workspace lease for an environment.
 
 Alternative: add a third `environment_workspace_bindings` table. Rejected because the active lease already is the binding and a second mutable pointer creates disagreement and cleanup obligations.
 
-Alternative: keep `workspace_path` nullable for old rows. Rejected because no data is needed and dual behavior would permanently complicate every environment lookup.
-
-### Clean migration
-
-Schema initialization runs under `BEGIN IMMEDIATE`. Detection of `environments.workspace_path` triggers a QA-only clean cutover:
-
-1. record only legacy paths that resolve beneath configured `workspaceRoot`;
-2. drop `authority_bindings` and `environments`;
-3. create the two workspace tables, indexes, new authority schema, and new environment schema;
-4. remove legacy child directories after containment validation;
-5. recreate an empty workspace root if needed.
-
-Authorization request/grant tables remain structurally unchanged. Existing grants cannot authorize a new workspace by themselves; normal policy-digest and environment authority checks still apply. Migration failure aborts broker startup rather than mixing schemas.
-
-Alternative: import each old path as a workspace. Rejected by operator decision and because old directories lack lifecycle/ownership evidence.
 
 ### Broker-owned IDs and paths
 
@@ -128,7 +111,6 @@ sequenceDiagram
 
 - **Kanban workspace initially contains only private scratch.** This proves lifecycle composition but does not yet make homelab project work useful. Project-provider import is the next change.
 - **One environment key owns a workspace.** Sequential cross-task review needs an explicit transfer model later; silently sharing IDs is forbidden.
-- **Destructive QA migration.** Existing anonymous files are deleted. This is intentional and accepted because no current work needs retention; containment checks and fail-closed startup prevent deleting outside `workspaceRoot`.
-- **SQLite metadata and filesystem creation cannot be one transaction.** Creation uses a provisional row/directory sequence with compensating deletion; startup reconciliation marks incomplete records failed/deleted. Tests inject failures around both boundaries.
+- **SQLite metadata and filesystem mutation cannot be one transaction.** Acquisition creates the directory before inserting its row and removes that directory if the SQLite transaction rolls back. Explicit deletion removes the directory before recording the tombstone, so an interruption between those operations can leave a closed workspace row whose directory is already absent; retrying deletion converges on the tombstone.
 - **Rollback is not data-compatible.** The old binary cannot use new workspace records. QA rollback recreates ephemeral state; production is unaffected.
 - **Plugin patch size grows.** Keep broker calls in the repository-owned `workspace-service` plugin and add only generic lifecycle hooks plus opaque ID plumbing to Kanban. Do not add provider, revision, publication, or project logic to Hermes.
