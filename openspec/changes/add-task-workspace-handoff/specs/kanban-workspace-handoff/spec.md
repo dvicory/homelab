@@ -117,7 +117,7 @@ Kanban MUST persist a unique preparation ID and immutable source/destination int
 
 ### Requirement: Retry remains task-private
 
-A retry of the same task MUST use its retained mutable workspace only after trusted dispatch activates the newer task run with a greater epoch. It MUST NOT import its own published revision over current task state. A different task MUST always receive a separate private import.
+A retry of the same task MUST use its retained mutable workspace only after trusted dispatch activates a fresh globally unique Kanban run ID and supersedes the prior activation. It MUST NOT import its own published revision over current task state. A different task MUST always receive a separate private import.
 
 #### Scenario: Producer retries after publication failure
 

@@ -207,6 +207,7 @@ export const makeTestLayer = (stateDir, options = {}) => {
     policyPath: path.join(stateDir, "policy.json"),
     stateDir,
     workspaceRoot: path.join(stateDir, "workspaces"),
+    workspaceRevisionRoot: path.join(stateDir, "workspace-revisions"),
     databasePath: path.join(stateDir, "broker.sqlite"),
     socketPath: path.join(stateDir, "broker.sock"),
     controlSocketPath: path.join(stateDir, "control.sock"),

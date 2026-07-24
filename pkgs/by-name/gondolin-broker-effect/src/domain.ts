@@ -61,7 +61,6 @@ export const ActivateTaskRunRequest = Schema.Struct({
   workspaceId: WorkspaceId,
   workspaceLeaseId: WorkspaceLeaseId,
   policyDigest: Schema.String.pipe(Schema.pattern(/^[0-9a-f]{64}$/)),
-  epoch: PositiveInt,
 });
 export type ActivateTaskRunRequest = typeof ActivateTaskRunRequest.Type;
 

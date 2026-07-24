@@ -48,9 +48,9 @@ None. `add-sandbox-workspace-service` remains the prerequisite private-workspace
 
 - `add-sandbox-workspace-service` has passed QA and provides broker-owned paths, one active writer lease, trusted backend-derived task identity, and fail-closed execution.
 - The gateway/plugin/backend process and the mode-restricted control/execution Unix sockets are trusted. The model cannot set the task/run identity attached by the backend. Gateway-account compromise remains outside this increment's boundary.
-- Before worker spawn, trusted dispatch registers a broker activation bound to task, Kanban run, workspace, lease, policy digest, and monotonic epoch. Every ensure, execution, and file request is checked against that active binding. Completion consumes it before VM closure; only a newer trusted run can reactivate the retained workspace.
+- Before worker spawn, trusted dispatch registers a broker activation bound to a globally unique Kanban run ID, task, workspace, lease, and policy digest. Every ensure, execution, and file request is checked against that active binding. Completion consumes it before VM closure; a trusted retry uses a fresh run ID and supersedes the prior activation.
 - Revision IDs are random and publication-specific. A versioned canonical SHA-256 manifest digest verifies content but is retained in broker/Kanban provenance rather than ordinary model context.
-- The initial store uses bounded full copies in broker-owned directories. It accepts directories and regular files only and rejects links, special files, traversal, mount crossings, unstable metadata, and configured resource-limit excess.
+- The initial store uses bounded full copies made by a pinned standard copier into broker-owned staging directories, followed by manifest validation of the detached tree. It accepts directories and regular files only, never shares mutable links, crosses no source filesystem boundary, and rejects traversal, unsupported nodes, and configured resource-limit excess before ready state. Gateway-account compromise remains outside this increment; source-race resistance requires later OS-account separation.
 - Revisions are QA data retained until explicit QA reset in this increment. No deletion or retention API is exposed.
 
 ## Refactoring

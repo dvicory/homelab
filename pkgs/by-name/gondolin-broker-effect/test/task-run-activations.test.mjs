@@ -43,7 +43,6 @@ const activationRequest = (acquired, overrides = {}) => ({
   workspaceId: acquired.workspace.workspaceId,
   workspaceLeaseId: acquired.lease.leaseId,
   policyDigest,
-  epoch: 1,
   ...overrides
 })
 
@@ -124,7 +123,7 @@ test("newer task-run activation recreates the VM and supersedes older runs", asy
     const reused = yield* environments.ensure({ environmentKey: firstRequest.environmentKey, taskRun: firstTaskRun })
     assert.equal(reused.generation, first.generation)
 
-    const secondRequest = activationRequest(acquired, { runId: "run-b", epoch: 2 })
+    const secondRequest = activationRequest(acquired, { runId: "run-b" })
     const secondActivation = yield* runActivations.activate(secondRequest)
     assert.equal(secondActivation.activation.state, "active")
     assert.deepEqual(secondActivation.generationsToClose, [{
@@ -170,10 +169,16 @@ test("newer task-run activation recreates the VM and supersedes older runs", asy
     })))
     assert.equal(borrowedExec.reason, "run_activation.stale")
 
-    const repeatedEpoch = yield* Effect.flip(runActivations.activate(
-      activationRequest(acquired, { runId: "run-c", epoch: 2 })
+    const thirdActivation = yield* runActivations.activate(
+      activationRequest(acquired, { runId: "run-c" })
+    )
+    assert.equal(thirdActivation.activation.state, "active")
+    assert.equal(thirdActivation.generationsToClose.length <= 1, true)
+    const supersededSecond = yield* Effect.flip(runActivations.validate(
+      second.environmentKey,
+      secondTaskRun
     ))
-    assert.equal(repeatedEpoch.reason, "run_activation.stale")
+    assert.equal(supersededSecond.reason, "run_activation.stale")
   }))
 })
 

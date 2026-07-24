@@ -52,11 +52,9 @@ Alternative: share the parent workspace. Rejected because concurrent writes dest
 
 Add broker records conceptually equivalent to:
 
-- `task_run_activations`: broker-issued activation ID, task, Kanban run, workspace, lease, policy digest, monotonic epoch, and state (`active`, `consumed`, `superseded`).
-- `workspace_revisions`: opaque revision ID, source task/run/workspace/lease, state (`staging`, `ready`, `quarantined`, `failed`), canonicalization version/digest, counts, finalization ID, and timestamps.
-- `workspace_revision_entries`: revision ID, normalized relative path, kind, normalized mode, byte length, and content digest.
-- `workspace_revision_operations`: idempotent publication or import ID, request digest, state, result identity, and failure detail.
-- `workspace_revision_imports`: source revision, destination task/run/workspace/lease, trusted relation/policy facts, and preparation ID.
+- `task_run_activations`: broker-issued activation ID, unique Kanban run ID, task, workspace, lease, policy digest, and state (`active`, `consumed`, `superseded`).
+- `workspace_revisions`: opaque revision ID, unique finalization ID, source activation/task/run/workspace/lease provenance, selected roots, state (`staging`, `ready`, `quarantined`, `failed`), broker-owned manifest version/digest, counts, failure detail, and timestamps.
+- `workspace_revision_imports`: unique preparation ID, source revision, destination task/run/workspace/lease, trusted relation and policy provenance, state, failure detail, and timestamps.
 
 There is no grant, retention, deletion, label, or deduplication model in this increment. Revisions are disposable QA data retained until an explicit QA reset.
 
@@ -64,15 +62,15 @@ The workspace, environment registry, and existing access-grant services previous
 
 ### 3. Fence by trusted task-run activation, not another bearer secret
 
-Before worker spawn, trusted dispatch activates the task's Kanban run against its workspace, active lease, policy digest, and a greater epoch. The broker issues an opaque activation ID, and the terminal backend attaches task/run identity from trusted process state to every broker ensure, execution, and file request; model-facing schemas cannot set or override it. The broker resolves and requires the exact active activation. Stable task identity and a retained lease are insufficient.
+Before worker spawn, trusted dispatch activates a unique Kanban run against its task, workspace, active lease, and policy digest. The broker issues an opaque activation ID, and the terminal backend attaches task/run identity from trusted process state to every broker ensure, execution, and file request; model-facing schemas cannot set or override it. The broker resolves and requires the exact active activation. Stable task identity and a retained lease are insufficient.
 
-Completion transactionally consumes the activation and marks its environment generation closing. Further requests from that run fail immediately. Publication waits for QEMU exit and VFS callback drain. Trusted retry activation supersedes the prior task run, closes its generation, and allocates a greater epoch over the retained workspace; requests carrying the old run remain stale.
+Completion transactionally consumes the activation and marks its environment generation closing. Further requests from that run fail immediately. Publication waits for QEMU exit and VFS callback drain. A trusted retry with a fresh globally unique run ID supersedes the prior activation and closes its generation over the retained workspace; prior run IDs cannot be reactivated and remain stale. The broker orders these serialized state transitions itself rather than trusting a caller-maintained epoch.
 
 A separate random credential on every broker request is deferred. It would not improve the stated boundary because the gateway account and backend are already trusted and can access both protected sockets. If the trust boundary later moves inside the gateway process, capability credentials can be added then.
 
 The existing `@agent-x/policy-kernel` remains the static authorization upper bound. Handoff-enabled policy registers explicit task-run activation/consumption and workspace publication/import actions, resource classes derived by trusted broker code, and numeric publication limits. The high-level broker operation authorizes through the existing `Authorization` service and persists its policy and decision digests. Mutable facts—active run, lease, direct parent/child relation, board/tenant equality, revision readiness, and idempotency state—remain broker/Kanban transaction checks: the current kernel matches action/resource and aggregates limits/obligations, but does not evaluate arbitrary request parameters as predicates. Fencing, quarantine, and canonical filesystem validation are unconditional mechanism invariants, not optional policy obligations.
 
-Agent X should separately design proof-carrying authorization rather than expand this handoff change: the pure kernel would produce a `PolicyPermit`; authoritative state machines would mint typed, process-local witnesses only after atomic reservations or transitions; and a closed action recipe would seal the permit plus required witnesses into the final `AuthorizedAction`. This avoids database access or a condition language in the kernel while making dynamic authority composable. This handoff preserves the migration path by recording canonical action/resource, policy and decision digests, activation/lease generations, request digest, relation digest, and operation result identity. No witness framework or transferable capability is introduced here.
+Agent X should separately design proof-carrying authorization rather than expand this handoff change: the pure kernel would produce a `PolicyPermit`; authoritative state machines would mint typed, process-local witnesses only after atomic reservations or transitions; and a closed action recipe would seal the permit plus required witnesses into the final `AuthorizedAction`. This avoids database access or a condition language in the kernel while making dynamic authority composable. This handoff preserves the migration path by recording canonical action/resource, policy and decision digests, activation and lease generations, finalization/preparation IDs, relation digest, and operation result identity. No witness framework or transferable capability is introduced here.
 
 ### 4. Make completion a recoverable saga
 
@@ -80,11 +78,11 @@ Kanban and broker use different SQLite databases, so completion cannot be one tr
 
 1. Kanban validates the claimed run and output selection, writes an immutable finalization ID and selection, and moves `running -> finalizing`.
 2. A required completion-finalizer invokes the repository-owned workspace-service plugin. Unlike current best-effort observers, its error propagates.
-3. The broker binds the finalization ID to source authority and request digest, consumes the task-run activation, closes the VM, publishes and verifies the revision, then returns its opaque ID and digest.
+3. The broker binds the finalization ID to source authority, policy decision, and selected roots, consumes the task-run activation, closes the VM, publishes and verifies the revision, then returns its opaque ID and digest.
 4. Kanban records broker provenance and moves `finalizing -> done`.
 5. Dispatcher recovery claims stale finalizations and repeats the same ID. An identical request returns the same revision; changed source or selection conflicts.
 
-If publication fails, the task remains visibly `finalizing` with failure detail. A trusted operator/retry transition may return it to runnable state with a new run/epoch; model summary prose cannot make it `done` or substitute files.
+If publication fails, the task remains visibly `finalizing` with failure detail. A trusted operator/retry transition may return it to runnable state with a fresh run ID; model summary prose cannot make it `done` or substitute files.
 
 ```mermaid
 sequenceDiagram
@@ -106,15 +104,15 @@ sequenceDiagram
 
 ### 5. Keep filesystem publication conservative
 
-The manifest contains directories and regular files only. Selected roots are relative POSIX paths; exact `.` is the only whole-workspace selector and is not a manifest entry. Names must be strict UTF-8 and NFC. Paths reject empty segments, `.`, `..`, absolute paths, NUL, normalization collisions, and configured length/depth excess. Regular files with multiple links, symlinks, sockets, FIFOs, devices, unsupported sparse files, and mount crossings are rejected. Logical bytes, staging bytes, entries, and individual file size are bounded incrementally.
+The manifest contains directories and regular files only. Selected roots are relative POSIX paths; exact `.` is the only whole-workspace selector and is not a manifest entry. Names must be strict UTF-8 and NFC. Paths reject empty segments, `.`, `..`, absolute paths, NUL, normalization collisions, and configured byte-length excess. Symlinks, sockets, FIFOs, and devices are rejected. A pinned `rsync` invocation crosses no filesystem boundaries, preserves no ownership, timestamps, ACLs, or xattrs, does not preserve source hardlink identity, and materializes sparse inputs as ordinary files. A broker-owned filesystem quota bounds copy-time amplification; detached staging validation enforces logical bytes, entries, individual file size, and path bytes before ready state.
 
-Modes normalize to `0755` for directories and executable regular files, `0644` otherwise. Owner, group, timestamps, ACLs, xattrs, and other mode bits are excluded. Entries sort by UTF-8 bytes. The SHA-256 digest uses a documented versioned, domain-separated, length-delimited encoding with fixed-width integers and byte-vector fixtures. Revision IDs remain random and publication-specific.
+Modes normalize to `0755` for directories and executable regular files, `0644` otherwise. Entries sort by UTF-8 bytes. The SHA-256 digest covers a documented, broker-versioned, domain-separated canonical JSON projection of those fields and has a fixed test vector. Revision IDs remain random and publication-specific.
 
-After activation consumption, VM exit, and VFS drain, the broker enumerates byte names, uses `lstat`, no-follow final opens, bounded streaming, and before/after identity, link-count, device, size, and mode checks. It fails if exclusive ownership or stability is not established. Content is copied to a broker-derived staging directory, fsynced with parent metadata, atomically renamed on one filesystem, made read-only as defense in depth, and reopened and rehashed before ready state and before import. This does not claim unavailable Node `openat` traversal guarantees.
+After activation consumption, VM exit, and VFS drain, the broker validates selected roots and delegates the full copy to the pinned copier. It then walks only the detached broker-owned staging tree to enforce node/path/resource rules and build the manifest, fsyncs content and parent metadata, atomically renames on one filesystem, makes the result read-only as defense in depth, and reopens and rehashes it before ready state and before import. Source metadata race checks are intentionally excluded: under this increment's stated trusted-gateway boundary they add complexity without establishing a security boundary. A future malicious-gateway boundary requires separate OS ownership, not a TypeScript imitation of `openat` or rsync.
 
 ### 6. Make consumer preparation idempotent
 
-Kanban persists a preparation ID before calling the broker. It verifies the destination was created by the source worker with `inherit_parent_workspace_output`, retains that direct parent link on the same board/tenant, and the source is `done` with a ready revision. The broker control route receives those trusted source/destination authority and policy facts, binds them to the preparation ID and request digest, re-verifies the revision, stages a new private child workspace, records the import, and issues its independent lease.
+Kanban persists a preparation ID before calling the broker. It verifies the destination was created by the source worker with `inherit_parent_workspace_output`, retains that direct parent link on the same board/tenant, and the source is `done` with a ready revision. The broker control route receives those trusted source/destination authority and policy facts, binds every field to the preparation ID, re-verifies the revision, stages a new private child workspace, records the import, and issues its independent lease.
 
 Kanban records the broker result before spawn. If either process crashes, dispatcher recovery repeats the same preparation ID and receives the same workspace/lease. Reusing the ID with a different source, destination, revision, or policy fails. Revision IDs never enter model requests or ordinary prompt context and are not accepted on the execution listener.
 
@@ -124,8 +122,8 @@ Kanban records the broker result before spawn. If either process crashes, dispat
 
 ## Risks / Trade-offs
 
-- **Two databases.** Completion and preparation can fail between commits. Mitigation: durable Kanban intent, broker idempotency IDs/request digests, and dispatcher replay.
-- **Old workers.** Stable task identity could recreate a closed VM. Mitigation: broker-active task/run/epoch binding on every operation, consumed before publication.
+- **Two databases.** Completion and preparation can fail between commits. Mitigation: durable Kanban intent, broker-bound idempotency IDs, and dispatcher replay.
+- **Old workers.** Stable task identity could recreate a closed VM. Mitigation: a unique broker-active task/run binding on every operation, consumed before publication; prior run IDs cannot be reactivated.
 - **Hostile trees.** Paths and resource amplification attack the broker. Mitigation: close and drain all writers first, allowlist node kinds, bound streaming, copy rather than link, and verify after copy.
 - **Trusted gateway boundary.** Run identity is not a bearer secret from the gateway. This is intentional: the gateway account already controls both sockets and Hermes credentials. Moving that boundary requires a later capability design, not hidden complexity in this slice.
 - **Storage growth.** There is no retention API. Mitigation: QA-only limits and explicit disposable reset; production is blocked until retention is designed from measured usage.

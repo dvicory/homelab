@@ -132,7 +132,6 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
         workspaceId: acquired.workspace.workspaceId,
         workspaceLeaseId: acquired.lease.leaseId,
         policyDigest: "a".repeat(64),
-        epoch: 1
       })
     )
     assert.equal(activated.status, 200)

@@ -7,7 +7,6 @@ const Identifier = Schema.String.pipe(
   Schema.pattern(/^[A-Za-z0-9][A-Za-z0-9._:@-]*$/),
 );
 const NonNegativeInt = Schema.Int.pipe(Schema.greaterThanOrEqualTo(0));
-const PositiveInt = Schema.Int.pipe(Schema.greaterThan(0));
 
 export const Sha256Digest = Schema.String.pipe(Schema.pattern(/^[0-9a-f]{64}$/));
 export type Sha256Digest = typeof Sha256Digest.Type;
@@ -56,17 +55,14 @@ export type WorkspaceRevisionEntry = typeof WorkspaceRevisionEntry.Type;
 
 export const StageWorkspacePublication = Schema.Struct({
   finalizationId: Identifier,
-  requestDigest: Sha256Digest,
   policyDecisionDigest: Sha256Digest,
   sourceActivationId: WorkspaceId,
   selectedRoots: Schema.Array(WorkspaceSelectionRoot).pipe(Schema.minItems(1), Schema.maxItems(128)),
-  canonicalizationVersion: PositiveInt,
 });
 export type StageWorkspacePublication = typeof StageWorkspacePublication.Type;
 
 export const StageWorkspaceImport = Schema.Struct({
   preparationId: Identifier,
-  requestDigest: Sha256Digest,
   policyDecisionDigest: Sha256Digest,
   sourceRevisionId: RevisionId,
   destinationTaskId: Identifier,

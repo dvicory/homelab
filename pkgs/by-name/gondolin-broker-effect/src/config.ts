@@ -85,6 +85,7 @@ export interface BrokerConfigService {
   readonly policyPath: string;
   readonly stateDir: string;
   readonly workspaceRoot: string;
+  readonly workspaceRevisionRoot: string;
   readonly databasePath: string;
   readonly socketPath: string;
   readonly controlSocketPath: string;
@@ -178,6 +179,7 @@ const load = Effect.gen(function* () {
     policyPath: path.resolve(raw.policyPath),
     stateDir,
     workspaceRoot: path.join(stateDir, "workspaces"),
+    workspaceRevisionRoot: path.join(stateDir, "workspace-revisions"),
     databasePath: path.join(stateDir, "broker.sqlite"),
     socketPath: raw.socketPath._tag === "Some" ? path.resolve(raw.socketPath.value) : path.join(stateDir, "broker.sock"),
     controlSocketPath: raw.controlSocketPath._tag === "Some"
