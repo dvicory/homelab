@@ -19,6 +19,7 @@ let
       ./workspace-service.patch
       ./workspace-kanban.patch
       ./workspace-lifecycle.patch
+      ./workspace-handoff.patch
       ./approval-choice-result.patch
       ./approval-permanent-control.patch
       ./approval-surface-permanent-control.patch
