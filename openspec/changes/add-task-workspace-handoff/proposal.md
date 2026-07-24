@@ -59,4 +59,26 @@ First extract the broker's repeated SQLite connection/migration/transaction setu
 
 ## Rollback
 
-The feature remains off outside `hvn-hyp1` QA. Rollback stops QA Hermes and broker units, restores the prior generation, and removes disposable revision rows/content only after containment checks. Existing mutable private workspaces remain governed by the prerequisite change; production and Podman state are untouched.
+The feature remains off outside `hvn-hyp1` QA. A normal rollback disables
+`secureTerminal.workspaceHandoff.enable` (or restores the preceding NixOS and
+QA Home Manager generations), stops the `hermes-qa` user service, then restarts
+`hermes-qa-broker-{execution,control}.socket` and
+`hermes-qa-broker.service`. The disabled broker neither installs revision
+routes nor opens revision storage; existing QA state can remain quarantined for
+diagnosis. Production's `hermes-prod` services, rootless-Podman storage, and
+gateway credentials are outside this path and MUST NOT be stopped, moved, or
+deleted.
+
+A destructive QA reset is deliberately broader than revision deletion because
+this increment has no retention/delete API and revision rows have activation,
+workspace, and import foreign keys. Stop the QA gateway, both QA broker sockets,
+and the QA broker service; verify the candidate resolves beneath exactly
+`/var/lib/hermes-qa-sandbox` and is neither
+`/var/lib/hermes-prod-sandbox` nor any Podman storage path; then move the whole
+QA broker state directory to an operator-named quarantine on the same
+filesystem. Start the broker sockets and QA gateway only after the empty
+`StateDirectory` has been recreated with mode `0700`. Delete the quarantine
+only after broker health, a fresh QA workspace, and unchanged production
+service state have been observed. Never edit `broker.sqlite` or delete
+`workspace-revisions` independently: that can manufacture references to
+missing immutable content.

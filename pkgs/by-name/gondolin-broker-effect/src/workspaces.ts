@@ -169,6 +169,16 @@ const initializeSchema = (db: DatabaseSync, workspaceRoot: string) => {
       updated_at INTEGER NOT NULL
     ) STRICT;
   `);
+  const activationColumn = db.prepare(
+    "SELECT 1 FROM pragma_table_info('environments') WHERE name='run_activation_id'",
+  ).get();
+  if (activationColumn === undefined) {
+    db.exec(`
+      ALTER TABLE environments
+      ADD COLUMN run_activation_id TEXT
+      CHECK (run_activation_id IS NULL OR length(run_activation_id) = 36);
+    `);
+  }
   fs.mkdirSync(path.join(workspaceRoot, "data"), { recursive: true, mode: 0o700 });
 };
 

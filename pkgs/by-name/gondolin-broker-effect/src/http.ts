@@ -182,7 +182,12 @@ export const makeControlHttpApp = Effect.gen(function* () {
         });
       }
       yield* workspaces.resolve(request.environmentKey, request.workspaceId, request.workspaceLeaseId);
-      return yield* registry.bindAuthority(request);
+      const existing = yield* registry.getAuthority(request.environmentKey);
+      return yield* (
+        existing !== undefined && existing.policyDigest !== request.policyDigest
+          ? registry.rotateAuthorityPolicy(request)
+          : registry.bindAuthority(request)
+      );
     });
 
   const authorityStatus = ({ environmentKey }: typeof StatusRequest.Type) =>

@@ -26,6 +26,16 @@ let
     maxInputBytes = 1048576;
   };
 
+  # The Effect broker consumes these ceilings through authorization limits.
+  # Keep them outside `floor`: the rollback broker validates that legacy
+  # policy object with an exact, closed schema.
+  workspaceRevisionLimitCeilings = {
+    maxLogicalBytes = 67108864; # 64 MiB per immutable revision
+    maxEntries = 8192;
+    maxFileBytes = 16777216; # 16 MiB per regular file
+    maxPathBytes = 1024;
+  };
+
   # Credential capabilities reference a network bundle, a logical secret id,
   # a reviewed adapter, bounded targets/actions, and an activation mode.
   # Secret VALUES never appear here — logical IDs only (§12.5).
@@ -212,7 +222,7 @@ let
 
 in
 {
-  inherit floor templates credentialCapabilities;
+  inherit floor templates credentialCapabilities workspaceRevisionLimitCeilings;
 
   # Render policy.json with a content-derived policyId (§11: inert,
   # versioned JSON; the policy hash feeds VM generation identity).
@@ -241,6 +251,8 @@ in
       allowedPairs,
       maximum,
       worklanes ? { },
+      workspaceHandoffEnabled ? false,
+      workspaceRevisionLimits ? workspaceRevisionLimitCeilings,
       ...
     }:
     let
@@ -342,6 +354,15 @@ in
         bytes = floor.maxInputBytes;
         entries = 4096;
       };
+      revisionLimit =
+        name:
+        let
+          hardLimit = workspaceRevisionLimitCeilings.${name};
+          configuredLimit = workspaceRevisionLimits.${name} or hardLimit;
+        in
+        if configuredLimit < hardLimit then configuredLimit else hardLimit;
+      effectiveRevisionLimits =
+        builtins.mapAttrs (name: _: revisionLimit name) workspaceRevisionLimitCeilings;
       policy = {
         version = 1;
         statements = [
@@ -362,7 +383,23 @@ in
               bundleId = networkPolicyId laneName;
             }
           ];
-        }) (builtins.attrNames lanes);
+        }) (builtins.attrNames lanes)
+        ++ (
+          if workspaceHandoffEnabled then
+            [
+              {
+                effect = "allow";
+                actions = [
+                  "workspace.publish"
+                  "workspace.import"
+                ];
+                resources = [ "task-run:*" ];
+                limits = effectiveRevisionLimits;
+              }
+            ]
+          else
+            [ ]
+        );
       };
       grantPolicy = {
         allowedScopes = allowedGrantScopes;

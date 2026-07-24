@@ -137,6 +137,41 @@ test("authority bindings persist across broker registry restarts", async () => {
 })
 
 
+test("restart rotates retained default authority to the active policy", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "gondolin-policy-rollover-"))
+  const firstHarness = makeTestLayer(stateDir)
+  const retained = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const environments = yield* Environments
+    return yield* environments.ensure({ environmentKey: "conversation-policy-rollover" })
+  }).pipe(Effect.provide(firstHarness.layer))))
+
+  const nextDigest = "b".repeat(64)
+  const secondHarness = makeTestLayer(stateDir, {
+    policyFile: {
+      ...firstHarness.config.policyFile,
+      policyDigest: nextDigest
+    }
+  })
+  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const environments = yield* Environments
+    const registry = yield* Registry
+    const recreated = yield* environments.ensure({
+      environmentKey: "conversation-policy-rollover"
+    })
+    const binding = yield* registry.getAuthority("conversation-policy-rollover")
+
+    assert.equal(recreated.state, "created")
+    assert.equal(recreated.workspaceId, retained.workspaceId)
+    assert.equal(recreated.generation, retained.generation + 1)
+    assert.equal(binding?.policyDigest, nextDigest)
+    const liveRotation = yield* Effect.exit(registry.rotateAuthorityPolicy({
+      ...binding,
+      policyDigest: "c".repeat(64)
+    }))
+    assert.equal(Exit.isFailure(liveRotation), true)
+  }).pipe(Effect.provide(secondHarness.layer))))
+})
+
 test("ordinary ensure input rejects caller-selected authority", async () => {
   await assert.rejects(
     Effect.runPromise(decodeExact(EnsureRequest, {

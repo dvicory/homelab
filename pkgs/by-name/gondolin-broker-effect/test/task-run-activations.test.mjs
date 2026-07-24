@@ -2,8 +2,10 @@ import assert from "node:assert/strict"
 import { mkdtemp } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { DatabaseSync } from "node:sqlite"
 import test from "node:test"
 import { Effect, Stream } from "effect"
+import { BrokerDatabase } from "../dist/database.js"
 import { Environments } from "../dist/environments.js"
 import { Executor } from "../dist/exec.js"
 import { Files } from "../dist/files.js"
@@ -19,6 +21,91 @@ const withHarness = async (run) => {
   const harness = makeTestLayer(stateDir, { workspaceHandoffEnabled: true })
   return Effect.runPromise(Effect.scoped(run(harness).pipe(Effect.provide(harness.layer))))
 }
+
+test("workspace handoff migrates a legacy environments table", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "gondolin-task-run-legacy-"))
+  const legacy = new DatabaseSync(path.join(stateDir, "broker.sqlite"))
+  legacy.exec(`
+    CREATE TABLE environments (
+      environment_key TEXT PRIMARY KEY,
+      generation INTEGER NOT NULL CHECK (generation > 0),
+      state TEXT NOT NULL CHECK (state IN ('creating','active','closing','closed','failed')),
+      policy_digest TEXT NOT NULL CHECK (length(policy_digest) = 64),
+      worklane TEXT NOT NULL,
+      asset_build_id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      workspace_lease_id TEXT NOT NULL,
+      vm_id TEXT,
+      host_pid INTEGER,
+      failure_reason TEXT,
+      updated_at INTEGER NOT NULL
+    ) STRICT;
+  `)
+  legacy.prepare(`
+    INSERT INTO environments (
+      environment_key, generation, state, policy_digest, worklane,
+      asset_build_id, workspace_id, workspace_lease_id, vm_id,
+      host_pid, failure_reason, updated_at
+    ) VALUES (?, 1, 'closed', ?, 'default', 'legacy-build', ?, ?, NULL, NULL, NULL, 1)
+  `).run(
+    "legacy-environment",
+    policyDigest,
+    "11111111-1111-4111-8111-111111111111",
+    "22222222-2222-4222-8222-222222222222",
+  )
+  legacy.close()
+
+  const harness = makeTestLayer(stateDir, { workspaceHandoffEnabled: true })
+  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    yield* TaskRunActivations
+    const database = yield* BrokerDatabase
+    const columns = database.connection.prepare(
+      "SELECT name FROM pragma_table_info('environments') ORDER BY cid",
+    ).all()
+    assert.ok(columns.some((column) => column.name === "run_activation_id"))
+    const environment = database.connection.prepare(
+      "SELECT environment_key, run_activation_id FROM environments WHERE environment_key=?",
+    ).get("legacy-environment")
+    assert.equal(environment.environment_key, "legacy-environment")
+    assert.equal(environment.run_activation_id, null)
+  }).pipe(Effect.provide(harness.layer))))
+})
+
+test("startup supersedes active task runs from a prior policy", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "gondolin-task-run-policy-"))
+  const firstHarness = makeTestLayer(stateDir, { workspaceHandoffEnabled: true })
+  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const runActivations = yield* TaskRunActivations
+    const acquired = yield* bindWorkspace("task-policy-rollover")
+    yield* runActivations.activate({
+      environmentKey: "task-policy-rollover",
+      taskId: "task-policy-rollover",
+      runId: "run-policy-rollover",
+      workspaceId: acquired.workspace.workspaceId,
+      workspaceLeaseId: acquired.lease.leaseId,
+      policyDigest
+    })
+  }).pipe(Effect.provide(firstHarness.layer))))
+
+  const secondHarness = makeTestLayer(stateDir, {
+    workspaceHandoffEnabled: true,
+    policyFile: {
+      ...firstHarness.config.policyFile,
+      policyDigest: "b".repeat(64)
+    }
+  })
+  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    yield* TaskRunActivations
+    const database = yield* BrokerDatabase
+    const activation = database.connection.prepare(`
+      SELECT state, superseded_at
+      FROM task_run_activations
+      WHERE run_id='run-policy-rollover'
+    `).get()
+    assert.equal(activation.state, "superseded")
+    assert.equal(typeof activation.superseded_at, "number")
+  }).pipe(Effect.provide(secondHarness.layer))))
+})
 
 const bindWorkspace = (environmentKey) => Effect.gen(function* () {
   const workspaces = yield* Workspaces

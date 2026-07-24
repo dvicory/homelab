@@ -12,6 +12,9 @@ const { resolveAssetBuildIds } = await import(
 )
 
 const raw = JSON.parse(fs.readFileSync(process.env.POLICY_JSON, "utf8"))
+if ("workspaceRevisionLimits" in raw.floor) {
+  throw new Error("Effect-only workspace revision limits leaked into the legacy policy floor")
+}
 const policy = resolveAssetBuildIds(parsePolicy(raw))
 
 const checks = [

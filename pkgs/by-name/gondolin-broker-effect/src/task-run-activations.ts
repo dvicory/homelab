@@ -127,29 +127,36 @@ const make = Effect.gen(function* () {
 
 
   yield* Effect.try({
-    try: () => database.transaction(() => db.exec(`
-      CREATE TABLE IF NOT EXISTS task_run_activations (
-        activation_id TEXT PRIMARY KEY CHECK (length(activation_id) = 36),
-        task_id TEXT NOT NULL,
-        run_id TEXT NOT NULL UNIQUE,
-        environment_key TEXT NOT NULL,
-        workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
-        workspace_lease_id TEXT NOT NULL REFERENCES workspace_leases(lease_id),
-        policy_digest TEXT NOT NULL CHECK (length(policy_digest) = 64),
-        state TEXT NOT NULL CHECK (state IN ('active','consumed','superseded')),
-        activated_at INTEGER NOT NULL,
-        consumed_at INTEGER,
-        superseded_at INTEGER
-      ) STRICT;
-      CREATE UNIQUE INDEX IF NOT EXISTS task_run_activations_one_active_task
-        ON task_run_activations(task_id) WHERE state = 'active';
-      CREATE UNIQUE INDEX IF NOT EXISTS task_run_activations_one_active_environment
-        ON task_run_activations(environment_key) WHERE state = 'active';
-      CREATE UNIQUE INDEX IF NOT EXISTS task_run_activations_one_active_workspace
-        ON task_run_activations(workspace_id) WHERE state = 'active';
-      CREATE INDEX IF NOT EXISTS task_run_activations_environment_time
-        ON task_run_activations(environment_key, activated_at DESC);
-    `)),
+    try: () => database.transaction(() => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS task_run_activations (
+          activation_id TEXT PRIMARY KEY CHECK (length(activation_id) = 36),
+          task_id TEXT NOT NULL,
+          run_id TEXT NOT NULL UNIQUE,
+          environment_key TEXT NOT NULL,
+          workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+          workspace_lease_id TEXT NOT NULL REFERENCES workspace_leases(lease_id),
+          policy_digest TEXT NOT NULL CHECK (length(policy_digest) = 64),
+          state TEXT NOT NULL CHECK (state IN ('active','consumed','superseded')),
+          activated_at INTEGER NOT NULL,
+          consumed_at INTEGER,
+          superseded_at INTEGER
+        ) STRICT;
+        CREATE UNIQUE INDEX IF NOT EXISTS task_run_activations_one_active_task
+          ON task_run_activations(task_id) WHERE state = 'active';
+        CREATE UNIQUE INDEX IF NOT EXISTS task_run_activations_one_active_environment
+          ON task_run_activations(environment_key) WHERE state = 'active';
+        CREATE UNIQUE INDEX IF NOT EXISTS task_run_activations_one_active_workspace
+          ON task_run_activations(workspace_id) WHERE state = 'active';
+        CREATE INDEX IF NOT EXISTS task_run_activations_environment_time
+          ON task_run_activations(environment_key, activated_at DESC);
+      `);
+      db.prepare(`
+        UPDATE task_run_activations
+        SET state='superseded', superseded_at=COALESCE(superseded_at, ?)
+        WHERE state='active' AND policy_digest<>?
+      `).run(Date.now(), config.policyFile.policyDigest);
+    }),
     catch: (error) => activationFailure("schema initialization", error),
   });
 

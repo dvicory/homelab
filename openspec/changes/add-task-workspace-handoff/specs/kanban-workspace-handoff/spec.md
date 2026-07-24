@@ -144,6 +144,14 @@ A retry of the same task MUST use its retained mutable workspace only after trus
 - **THEN** existing task and workspace behavior SHALL remain unchanged
 - **AND** no broker task-run activation, publication, or import route SHALL run
 
+#### Scenario: Registered external Codex lane
+
+- **GIVEN** QA Gondolin handoff is enabled and a task selects a registered external Codex lane
+- **WHEN** the dispatcher prepares and spawns that task
+- **THEN** the lane SHALL receive its existing host-visible task worktree, not the guest-only `/workspace`
+- **AND** no broker task-run activation, publication, import, or workspace-preparation hook SHALL run
+- **AND** the deployment MUST NOT claim Gondolin isolation for that Codex process
+
 #### Scenario: Non-Kanban Gondolin conversation
 
 - **GIVEN** a normal QA Gondolin conversation has no Kanban run
