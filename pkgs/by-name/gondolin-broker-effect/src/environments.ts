@@ -10,7 +10,7 @@ import {
 } from "effect";
 import { TaskRunActivations } from "./task-run-activations.js";
 import { Authorization } from "./auth.js";
-import { resolveAuthorityPolicy } from "./authority.js";
+import { getOrBindDefaultAuthority, resolveAuthorityPolicy } from "./authority.js";
 import { BrokerConfig } from "./config.js";
 import type { EnvironmentRef, EnsureRequest, WorklaneLimits } from "./domain.js";
 import { brokerError, type BrokerError } from "./errors.js";
@@ -147,19 +147,12 @@ const make = Effect.gen(function* () {
   const ensureUnlocked = (request: EnsureRequest): Effect.Effect<EnsureResult, BrokerError> =>
     Effect.gen(function* () {
       const activation = yield* runActivations.validate(request.environmentKey, request.taskRun);
-      const existingBinding = yield* registry.getAuthority(request.environmentKey);
-      const binding = existingBinding ?? (yield* Effect.gen(function* () {
-        const acquired = yield* workspaces.acquire(request.environmentKey);
-        return yield* registry.bindAuthority({
-          environmentKey: request.environmentKey,
-          profile: config.profile,
-          executor: config.policyFile.defaultExecutor,
-          authorityClass: config.policyFile.defaultAuthorityClass,
-          policyDigest: config.policyFile.policyDigest,
-          workspaceId: acquired.workspace.workspaceId,
-          workspaceLeaseId: acquired.lease.leaseId,
-        });
-      }));
+      const binding = yield* getOrBindDefaultAuthority(
+        registry,
+        config,
+        workspaces,
+        request.environmentKey,
+      );
       const workspace = yield* workspaces.resolve(
         request.environmentKey,
         binding.workspaceId,

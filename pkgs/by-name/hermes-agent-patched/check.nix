@@ -31,6 +31,8 @@ runCommand "hermes-agent-patched-check" { } ''
     ${patchedHermes.patchedSource}/tests/tools/test_gondolin_backend.py \
     ${patchedHermes.patchedSource}/tests/plugins/test_workspace_service.py \
     ${patchedHermes.patchedSource}/tests/plugins/test_workspace_kanban.py \
+    ${patchedHermes.patchedSource}/tests/plugins/test_workspace_handoff.py \
+    ${patchedHermes.patchedSource}/tests/plugins/test_workspace_finalizers.py \
     ${sandboxAccess.testSource}/tests \
     ${codexWorkerLane.testSource}/tests
   "$python" -m py_compile \

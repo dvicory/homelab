@@ -19,10 +19,15 @@ let
       ./workspace-service.patch
       ./workspace-kanban.patch
       ./workspace-lifecycle.patch
+      ./workspace-handoff.patch
+      ./workspace-finalizers.patch
+      ./workspace-schemas.patch
+      ./workspace-integration.patch
       ./approval-choice-result.patch
       ./approval-permanent-control.patch
       ./approval-surface-permanent-control.patch
       ./approval-rich-choice-control.patch
+      ./workspace-finalization-exit-recovery.patch
     ];
   };
 in

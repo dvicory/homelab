@@ -8,6 +8,24 @@ if (JSON.stringify(policyDoc.grantPolicy.allowedScopes) !== JSON.stringify(["onc
 if (!/^[0-9a-f]{64}$/.test(policyDoc.policyDigest)) {
   throw new Error("rendered policy digest is not a full SHA-256 value")
 }
+const handoff = policyDoc.policy.statements.find(
+  (candidate) =>
+    candidate.resources.includes("task-run:*") &&
+    candidate.actions.includes("workspace.publish") &&
+    candidate.actions.includes("workspace.import"),
+)
+if (!handoff) throw new Error("QA policy omitted workspace handoff actions")
+const expectedRevisionLimits = {
+  maxLogicalBytes: 67108864,
+  maxEntries: 8192,
+  maxFileBytes: 16777216,
+  maxPathBytes: 1024,
+}
+for (const [name, value] of Object.entries(expectedRevisionLimits)) {
+  if (handoff.limits?.[name] !== value) {
+    throw new Error(`unexpected workspace revision limit ${name}: ${handoff.limits?.[name]}`)
+  }
+}
 
 const request = (socketPath, route, method = "GET", payload) =>
   new Promise((resolve, reject) => {

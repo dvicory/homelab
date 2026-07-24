@@ -101,6 +101,11 @@ in
       }
       // (secureTerminal.maximum or { });
       worklanes = secureTerminal.worklanes or { };
+      workspaceHandoff = secureTerminal.workspaceHandoff or { };
+      workspaceHandoffEnabled = workspaceHandoff.enable or false;
+      workspaceRevisionLimits =
+        policyLib.workspaceRevisionLimitCeilings
+        // (workspaceHandoff.revisionLimits or { });
     in
     {
       name = "workloads/hermes-secure-terminal/${user.userName}";
@@ -122,7 +127,14 @@ in
               profile = serviceName;
               bundles = networkBundles;
               assets = lib.mapAttrs (_: asset: { path = "${asset}"; }) guestAssets;
-              inherit defaultTemplate allowedPairs maximum worklanes;
+              inherit
+                defaultTemplate
+                allowedPairs
+                maximum
+                worklanes
+                workspaceHandoffEnabled
+                workspaceRevisionLimits
+                ;
             };
           in
           {
@@ -187,6 +199,8 @@ in
                 GONDOLIN_EFFECT_STATE_DIR = "/var/lib/${sandboxUser}";
                 GONDOLIN_EFFECT_SOCKET = executionSocketPath;
                 GONDOLIN_EFFECT_CONTROL_SOCKET = controlSocketPath;
+                GONDOLIN_EFFECT_WORKSPACE_HANDOFF =
+                  if workspaceHandoffEnabled then "true" else "false";
                 # SDK boot/protocol metadata and Effect HTTP request spans
                 # go to journald. Do not enable Gondolin's `exec` or `vfs`
                 # debug channels: they include commands, env, and paths.
@@ -198,9 +212,8 @@ in
                 Group = sandboxUser;
                 ExecStart = "${brokerPackage}/bin/gondolin-broker-effect";
 
-                # Reserve the delegated subtree for the documented per-VM
-                # cgroup compatibility debt; this alone is not enforcement.
-
+                # VM admission is enforced in broker policy. Keep the broker
+                # itself outside a delegated, writable cgroup subtree.
                 StateDirectory = sandboxUser;
                 StateDirectoryMode = "0700";
                 CacheDirectory = sandboxUser;
@@ -211,22 +224,32 @@ in
                 UMask = "0077";
                 PrivateTmp = true;
                 ProtectHome = true;
-                # Keep the delegated cgroup v2 subtree writable for the
-                # planned per-VM placement path. The current broker enforces
-                # static VM admission and guest sizing, not host cgroup caps.
                 ProtectSystem = "strict";
                 ReadWritePaths = [
                   "/var/lib/${sandboxUser}"
                   "/var/cache/${sandboxUser}"
                   "/run/${sandboxUser}"
-                  "/sys/fs/cgroup"
                 ];
+                ProtectControlGroups = true;
 
-                DeviceAllow = "/dev/kvm";
+                DevicePolicy = "closed";
+                DeviceAllow = [ "/dev/kvm rw" ];
                 NoNewPrivileges = true;
                 ProtectKernelModules = true;
                 ProtectKernelTunables = true;
                 ProtectKernelLogs = true;
+                ProtectClock = true;
+                ProtectHostname = true;
+                ProtectProc = "invisible";
+                ProcSubset = "pid";
+                PrivateMounts = true;
+                LockPersonality = true;
+                RestrictRealtime = true;
+                RestrictSUIDSGID = true;
+                RemoveIPC = true;
+                CapabilityBoundingSet = "";
+                AmbientCapabilities = "";
+                SystemCallArchitectures = "native";
                 RestrictAddressFamilies = [
                   "AF_UNIX"
                   "AF_INET"

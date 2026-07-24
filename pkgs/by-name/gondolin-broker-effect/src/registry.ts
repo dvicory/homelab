@@ -58,6 +58,7 @@ export interface RegistryService {
   readonly reserve: (request: ReserveEnvironment) => Effect.Effect<EnvironmentRecord, BrokerError>;
   readonly getAuthority: (environmentKey: string) => Effect.Effect<AuthorityBindingRecord | undefined, BrokerError>;
   readonly bindAuthority: (request: BindAuthority) => Effect.Effect<AuthorityBindingRecord, BrokerError>;
+  readonly rotateAuthorityPolicy: (request: BindAuthority) => Effect.Effect<AuthorityBindingRecord, BrokerError>;
   readonly markActive: (environmentKey: string, generation: number, vmId: string, hostPid: number | null) => Effect.Effect<void, BrokerError>;
   readonly markClosing: (environmentKey: string, generation: number) => Effect.Effect<void, BrokerError>;
   readonly markClosed: (environmentKey: string, generation: number) => Effect.Effect<void, BrokerError>;
@@ -242,6 +243,56 @@ const make = Effect.gen(function* () {
         error instanceof BrokerError ? error : registryFailure("bind authority", error),
     });
 
+  const rotateAuthorityPolicy = (
+    request: BindAuthority,
+  ): Effect.Effect<AuthorityBindingRecord, BrokerError> =>
+    Effect.try({
+      try: () => database.transaction(() => {
+        const row = authorityQuery.get(request.environmentKey) as AuthorityRow | undefined;
+        if (row === undefined) {
+          throw brokerError("authority.conflict", "environment authority is not bound", {
+            environmentKey: request.environmentKey,
+          });
+        }
+        const binding = authorityFromRow(row);
+        if (
+          binding.profile !== request.profile ||
+          binding.executor !== request.executor ||
+          binding.authorityClass !== request.authorityClass ||
+          binding.workspaceId !== request.workspaceId ||
+          binding.workspaceLeaseId !== request.workspaceLeaseId
+        ) {
+          throw brokerError("authority.conflict", "environment authority identity changed during policy rotation", {
+            environmentKey: request.environmentKey,
+          });
+        }
+        const environment = query.get(request.environmentKey) as Row | undefined;
+        if (
+          environment !== undefined &&
+          environment.state !== "closed" &&
+          environment.state !== "failed"
+        ) {
+          throw brokerError("authority.conflict", "live environment authority cannot rotate policy", {
+            environmentKey: request.environmentKey,
+            state: environment.state,
+          });
+        }
+        db.prepare(`
+          UPDATE authority_bindings
+          SET policy_digest=?, updated_at=?
+          WHERE environment_key=? AND policy_digest=?
+        `).run(
+          request.policyDigest,
+          Date.now(),
+          request.environmentKey,
+          binding.policyDigest,
+        );
+        return authorityFromRow(authorityQuery.get(request.environmentKey) as AuthorityRow);
+      }),
+      catch: (error) =>
+        error instanceof BrokerError ? error : registryFailure("rotate authority policy", error),
+    });
+
   const reserve = (request: ReserveEnvironment): Effect.Effect<EnvironmentRecord, BrokerError> =>
     Effect.try({
       try: () => database.transaction(() => {
@@ -325,6 +376,7 @@ const make = Effect.gen(function* () {
     reserve,
     getAuthority,
     bindAuthority,
+    rotateAuthorityPolicy,
     markActive: (key, generation, vmId, hostPid) => transition(key, generation, "active", { vmId, hostPid }),
     markClosing: (key, generation) => transition(key, generation, "closing"),
     markClosed: (key, generation) => transition(key, generation, "closed"),
