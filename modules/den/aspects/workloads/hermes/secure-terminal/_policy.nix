@@ -24,6 +24,12 @@ let
     maxVmStartsPerMinute = 12;
     maxFrameBytes = 1048576;
     maxInputBytes = 1048576;
+    workspaceRevisionLimits = {
+      maxLogicalBytes = 67108864; # 64 MiB per immutable revision
+      maxEntries = 8192;
+      maxFileBytes = 16777216; # 16 MiB per regular file
+      maxPathBytes = 1024;
+    };
   };
 
   # Credential capabilities reference a network bundle, a logical secret id,
@@ -241,6 +247,8 @@ in
       allowedPairs,
       maximum,
       worklanes ? { },
+      workspaceHandoffEnabled ? false,
+      workspaceRevisionLimits ? floor.workspaceRevisionLimits,
       ...
     }:
     let
@@ -342,6 +350,14 @@ in
         bytes = floor.maxInputBytes;
         entries = 4096;
       };
+      revisionLimit =
+        name:
+        let
+          hardLimit = floor.workspaceRevisionLimits.${name};
+          configuredLimit = workspaceRevisionLimits.${name} or hardLimit;
+        in
+        if configuredLimit < hardLimit then configuredLimit else hardLimit;
+      effectiveRevisionLimits = builtins.mapAttrs (name: _: revisionLimit name) floor.workspaceRevisionLimits;
       policy = {
         version = 1;
         statements = [
@@ -362,7 +378,23 @@ in
               bundleId = networkPolicyId laneName;
             }
           ];
-        }) (builtins.attrNames lanes);
+        }) (builtins.attrNames lanes)
+        ++ (
+          if workspaceHandoffEnabled then
+            [
+              {
+                effect = "allow";
+                actions = [
+                  "workspace.publish"
+                  "workspace.import"
+                ];
+                resources = [ "task-run:*" ];
+                limits = effectiveRevisionLimits;
+              }
+            ]
+          else
+            [ ]
+        );
       };
       grantPolicy = {
         allowedScopes = allowedGrantScopes;
