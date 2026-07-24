@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Context, Effect, Layer, Schema } from "effect";
+import { BrokerConfig } from "./config.js";
 import { BrokerDatabase } from "./database.js";
 import {
   CompleteWorkspaceImport,
@@ -72,6 +73,7 @@ export interface RevisionStoreService {
     reason: string,
   ) => RevisionRecord;
   readonly stageImport: (request: StageImportRequest) => ImportRecord;
+  readonly reserveImportDestination: (request: CompleteImportRequest) => ImportRecord;
   readonly completeImport: (request: CompleteImportRequest) => ImportRecord;
   readonly failImport: (preparationId: string, reason: string) => ImportRecord;
 }
@@ -164,6 +166,23 @@ const storeFailure = (operation: string, error: unknown): BrokerError =>
       });
 
 const make = Effect.gen(function* () {
+  const config = yield* BrokerConfig;
+  if (!config.workspaceHandoffEnabled) {
+    const unavailable = (): never => {
+      throw brokerError("policy.denied", "workspace handoff is disabled");
+    };
+    return {
+      stagePublication: unavailable,
+      getRevision: unavailable,
+      listRevisions: unavailable,
+      markRevisionReady: unavailable,
+      failRevision: unavailable,
+      stageImport: unavailable,
+      reserveImportDestination: unavailable,
+      completeImport: unavailable,
+      failImport: unavailable,
+    } satisfies RevisionStoreService;
+  }
   const database = yield* BrokerDatabase;
   yield* TaskRunActivations;
   const db = database.connection;
@@ -373,6 +392,55 @@ const make = Effect.gen(function* () {
     } catch (error) { throw storeFailure("stage import", error); }
   };
 
+  const activeDestinationLease = (
+    row: ImportRow,
+    request: CompleteImportRequest,
+  ): { fencing_token: number } => {
+    const lease = db.prepare(`SELECT wl.fencing_token, wl.state, w.owner_environment_key
+      FROM workspace_leases wl JOIN workspaces w ON w.workspace_id=wl.workspace_id
+      WHERE wl.lease_id=? AND wl.workspace_id=?`
+    ).get(request.destinationWorkspaceLeaseId, request.destinationWorkspaceId) as {
+      fencing_token: number; state: string; owner_environment_key: string;
+    } | undefined;
+    if (
+      lease === undefined || lease.state !== "active" ||
+      lease.owner_environment_key !== row.destination_environment_key
+    ) throw brokerError("revision.conflict", "import destination is not an active private workspace");
+    return lease;
+  };
+
+  const reserveImportDestination = (input: CompleteImportRequest): ImportRecord => {
+    try {
+      return database.transaction(() => {
+        const request = decodeCompleteImport(input);
+        const row = requireImport(request.preparationId);
+        if (row.state === "failed") {
+          throw brokerError("revision.invalid_state", "failed import cannot reserve a destination");
+        }
+        if (row.destination_workspace_id !== null) {
+          if (
+            row.destination_workspace_id !== request.destinationWorkspaceId ||
+            row.destination_workspace_lease_id !== request.destinationWorkspaceLeaseId
+          ) throw brokerError("revision.conflict", "import is bound to a different destination workspace");
+          activeDestinationLease(row, request);
+          return fromImport(row);
+        }
+        if (row.state !== "staging") {
+          throw brokerError("revision.invalid_state", "only a staging import can reserve a destination");
+        }
+        const lease = activeDestinationLease(row, request);
+        db.prepare(`UPDATE workspace_revision_imports SET destination_workspace_id=?,
+          destination_workspace_lease_id=?, destination_lease_fencing_token=?, updated_at=?
+          WHERE preparation_id=?`
+        ).run(
+          request.destinationWorkspaceId, request.destinationWorkspaceLeaseId,
+          lease.fencing_token, Date.now(), request.preparationId,
+        );
+        return fromImport(requireImport(request.preparationId));
+      });
+    } catch (error) { throw storeFailure("reserve import destination", error); }
+  };
+
   const completeImport = (input: CompleteImportRequest): ImportRecord => {
     try {
       return database.transaction(() => {
@@ -388,24 +456,15 @@ const make = Effect.gen(function* () {
         if (row.state !== "staging") {
           throw brokerError("revision.invalid_state", "only a staging import can become ready");
         }
-        const lease = db.prepare(`SELECT wl.fencing_token, wl.state, w.owner_environment_key
-          FROM workspace_leases wl JOIN workspaces w ON w.workspace_id=wl.workspace_id
-          WHERE wl.lease_id=? AND wl.workspace_id=?`
-        ).get(request.destinationWorkspaceLeaseId, request.destinationWorkspaceId) as {
-          fencing_token: number; state: string; owner_environment_key: string;
-        } | undefined;
         if (
-          lease === undefined || lease.state !== "active" ||
-          lease.owner_environment_key !== row.destination_environment_key
-        ) throw brokerError("revision.conflict", "import result is not the destination active private workspace");
+          row.destination_workspace_id !== request.destinationWorkspaceId ||
+          row.destination_workspace_lease_id !== request.destinationWorkspaceLeaseId
+        ) throw brokerError("revision.conflict", "import destination was not reserved");
+        activeDestinationLease(row, request);
         const now = Date.now();
-        db.prepare(`UPDATE workspace_revision_imports SET state='ready', destination_workspace_id=?,
-          destination_workspace_lease_id=?, destination_lease_fencing_token=?, updated_at=?, ready_at=?
+        db.prepare(`UPDATE workspace_revision_imports SET state='ready', updated_at=?, ready_at=?
           WHERE preparation_id=?`
-        ).run(
-          request.destinationWorkspaceId, request.destinationWorkspaceLeaseId,
-          lease.fencing_token, now, now, request.preparationId,
-        );
+        ).run(now, now, request.preparationId);
         return fromImport(requireImport(request.preparationId));
       });
     } catch (error) { throw storeFailure("complete import", error); }
@@ -422,7 +481,9 @@ const make = Effect.gen(function* () {
         if (row.state !== "staging") {
           throw brokerError("revision.invalid_state", "only a staging import can fail");
         }
-        db.prepare(`UPDATE workspace_revision_imports SET state='failed', failure_reason=?, updated_at=?
+        db.prepare(`UPDATE workspace_revision_imports SET state='failed',
+          destination_workspace_id=NULL, destination_workspace_lease_id=NULL,
+          destination_lease_fencing_token=NULL, failure_reason=?, updated_at=?
           WHERE preparation_id=?`
         ).run(reason, Date.now(), preparationId);
         return fromImport(requireImport(preparationId));
@@ -437,6 +498,7 @@ const make = Effect.gen(function* () {
     markRevisionReady,
     failRevision,
     stageImport,
+    reserveImportDestination,
     completeImport,
     failImport,
   } satisfies RevisionStoreService;

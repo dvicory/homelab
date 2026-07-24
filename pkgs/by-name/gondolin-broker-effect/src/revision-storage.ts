@@ -69,6 +69,15 @@ const summaryLimits = (revision: RevisionRecord): RevisionLimits => ({
 
 const make = Effect.gen(function* () {
   const config = yield* BrokerConfig;
+  if (!config.workspaceHandoffEnabled) {
+    const unavailable = () => Effect.fail(brokerError("policy.denied", "workspace handoff is disabled"));
+    return {
+      stageRevision: unavailable,
+      verifyRevision: unavailable,
+      materializeRevision: unavailable,
+      reconcile: unavailable,
+    } satisfies RevisionStorageService;
+  }
   const store = yield* RevisionStore;
   const stagingRoot = path.join(config.workspaceRevisionRoot, STAGING_NAME);
   const readyRoot = path.join(config.workspaceRevisionRoot, READY_NAME);
@@ -212,14 +221,17 @@ const make = Effect.gen(function* () {
     if (!destination.isDirectory() || destination.isSymbolicLink()) {
       throw brokerError("revision.failed", "destination workspace is not a real directory");
     }
-    if ((await fs.readdir(destinationWorkspacePath)).length !== 0) {
-      throw brokerError("revision.conflict", "destination workspace is not empty");
+    const destinationEmpty = (await fs.readdir(destinationWorkspacePath)).length === 0;
+    if (destinationEmpty) {
+      await copyTree(path.join(readyRoot, revisionId, TREE_NAME), destinationWorkspacePath);
     }
-    await copyTree(path.join(readyRoot, revisionId, TREE_NAME), destinationWorkspacePath);
     const entries = await inspectTree(destinationWorkspacePath, summaryLimits(revision), true);
     const copied = makeRevisionManifest(entries);
     if (copied.manifestDigest !== manifest.manifestDigest) {
-      throw brokerError("revision.failed", "materialized workspace does not match source revision");
+      throw brokerError(
+        destinationEmpty ? "revision.failed" : "revision.conflict",
+        "materialized workspace does not match source revision",
+      );
     }
     await syncDirectory(destinationWorkspacePath);
     return copied;

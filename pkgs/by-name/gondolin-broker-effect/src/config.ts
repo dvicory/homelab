@@ -86,6 +86,7 @@ export interface BrokerConfigService {
   readonly stateDir: string;
   readonly workspaceRoot: string;
   readonly workspaceRevisionRoot: string;
+  readonly workspaceHandoffEnabled: boolean;
   readonly databasePath: string;
   readonly socketPath: string;
   readonly controlSocketPath: string;
@@ -101,6 +102,7 @@ export class BrokerConfig extends Context.Tag("@agent-x/gondolin-broker-effect/B
 const environmentConfig = Config.all({
   policyPath: Config.string("GONDOLIN_EFFECT_POLICY"),
   stateDir: Config.string("GONDOLIN_EFFECT_STATE_DIR"),
+  workspaceHandoffEnabled: Config.boolean("GONDOLIN_EFFECT_WORKSPACE_HANDOFF").pipe(Config.withDefault(false)),
   socketPath: Config.string("GONDOLIN_EFFECT_SOCKET").pipe(Config.option),
   controlSocketPath: Config.string("GONDOLIN_EFFECT_CONTROL_SOCKET").pipe(Config.option),
   profile: Config.string("GONDOLIN_EFFECT_PROFILE").pipe(Config.withDefault("default")),
@@ -180,6 +182,7 @@ const load = Effect.gen(function* () {
     stateDir,
     workspaceRoot: path.join(stateDir, "workspaces"),
     workspaceRevisionRoot: path.join(stateDir, "workspace-revisions"),
+    workspaceHandoffEnabled: raw.workspaceHandoffEnabled,
     databasePath: path.join(stateDir, "broker.sqlite"),
     socketPath: raw.socketPath._tag === "Some" ? path.resolve(raw.socketPath.value) : path.join(stateDir, "broker.sock"),
     controlSocketPath: raw.controlSocketPath._tag === "Some"

@@ -19,7 +19,7 @@ const manifestDigest = "e".repeat(64)
 
 const withHarness = async (run) => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), "gondolin-revision-store-"))
-  const harness = makeTestLayer(stateDir)
+  const harness = makeTestLayer(stateDir, { workspaceHandoffEnabled: true })
   return Effect.runPromise(Effect.scoped(run.pipe(Effect.provide(harness.layer))))
 }
 
@@ -169,6 +169,12 @@ test("private import binds provenance and one destination run", async () => {
     )
 
     const destination = yield* workspaces.acquire(request.destinationEnvironmentKey)
+    const reserved = store.reserveImportDestination({
+      preparationId: request.preparationId,
+      destinationWorkspaceId: destination.workspace.workspaceId,
+      destinationWorkspaceLeaseId: destination.lease.leaseId
+    })
+    assert.equal(reserved.destinationWorkspaceId, destination.workspace.workspaceId)
     const completed = store.completeImport({
       preparationId: request.preparationId,
       destinationWorkspaceId: destination.workspace.workspaceId,

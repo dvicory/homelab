@@ -53,6 +53,26 @@ export const WorkspaceRevisionEntry = Schema.Struct({
 );
 export type WorkspaceRevisionEntry = typeof WorkspaceRevisionEntry.Type;
 
+export const PublishWorkspaceRevisionRequest = Schema.Struct({
+  finalizationId: Identifier,
+  environmentKey: EnvironmentKey,
+  taskId: Identifier,
+  runId: Identifier,
+  selectedRoots: Schema.Array(WorkspaceSelectionRoot).pipe(Schema.minItems(1), Schema.maxItems(128)),
+});
+export type PublishWorkspaceRevisionRequest = typeof PublishWorkspaceRevisionRequest.Type;
+
+export const ImportWorkspaceRevisionRequest = Schema.Struct({
+  preparationId: Identifier,
+  sourceRevisionId: RevisionId,
+  sourceTaskId: Identifier,
+  destinationTaskId: Identifier,
+  destinationRunId: Identifier,
+  destinationEnvironmentKey: EnvironmentKey,
+  relationDigest: Sha256Digest,
+});
+export type ImportWorkspaceRevisionRequest = typeof ImportWorkspaceRevisionRequest.Type;
+
 export const StageWorkspacePublication = Schema.Struct({
   finalizationId: Identifier,
   policyDecisionDigest: Sha256Digest,

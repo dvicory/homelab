@@ -61,9 +61,12 @@ export const initializeRevisionSchema = (database: BrokerDatabaseService): void 
       updated_at INTEGER NOT NULL,
       ready_at INTEGER,
       CHECK (
-        (state = 'staging' AND destination_workspace_id IS NULL AND
-          destination_workspace_lease_id IS NULL AND destination_lease_fencing_token IS NULL AND
-          failure_reason IS NULL AND ready_at IS NULL)
+        (state = 'staging' AND (
+          (destination_workspace_id IS NULL AND destination_workspace_lease_id IS NULL AND
+            destination_lease_fencing_token IS NULL)
+          OR (destination_workspace_id IS NOT NULL AND destination_workspace_lease_id IS NOT NULL AND
+            destination_lease_fencing_token IS NOT NULL)
+        ) AND failure_reason IS NULL AND ready_at IS NULL)
         OR (state = 'ready' AND destination_workspace_id IS NOT NULL AND
           destination_workspace_lease_id IS NOT NULL AND destination_lease_fencing_token IS NOT NULL AND
           failure_reason IS NULL AND ready_at IS NOT NULL)

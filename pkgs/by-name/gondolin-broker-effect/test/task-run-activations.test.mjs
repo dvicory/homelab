@@ -16,7 +16,7 @@ const policyDigest = "a".repeat(64)
 
 const withHarness = async (run) => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), "gondolin-task-run-test-"))
-  const harness = makeTestLayer(stateDir)
+  const harness = makeTestLayer(stateDir, { workspaceHandoffEnabled: true })
   return Effect.runPromise(Effect.scoped(run(harness).pipe(Effect.provide(harness.layer))))
 }
 
@@ -186,7 +186,7 @@ test("task-run activations persist across broker restart", async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), "gondolin-task-run-persist-"))
   let request
 
-  const firstHarness = makeTestLayer(stateDir)
+  const firstHarness = makeTestLayer(stateDir, { workspaceHandoffEnabled: true })
   await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const runActivations = yield* TaskRunActivations
     const acquired = yield* bindWorkspace("task-environment")
@@ -194,7 +194,7 @@ test("task-run activations persist across broker restart", async () => {
     yield* runActivations.activate(request)
   }).pipe(Effect.provide(firstHarness.layer))))
 
-  const secondHarness = makeTestLayer(stateDir)
+  const secondHarness = makeTestLayer(stateDir, { workspaceHandoffEnabled: true })
   await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const runActivations = yield* TaskRunActivations
     const activation = yield* runActivations.validate(request.environmentKey, {

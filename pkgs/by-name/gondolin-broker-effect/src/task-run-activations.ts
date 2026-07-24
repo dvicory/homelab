@@ -41,6 +41,10 @@ export interface TaskRunConsumptionResult {
   readonly generationToClose: ActivationCloseReference | null;
 }
 
+export interface AtomicTaskRunConsumptionResult<A> extends TaskRunConsumptionResult {
+  readonly result: A;
+}
+
 export interface TaskRunActivationsService {
   readonly activate: (
     request: ActivateTaskRunRequest,
@@ -49,6 +53,10 @@ export interface TaskRunActivationsService {
     environmentKey: string,
     identity: TaskRunIdentity | undefined,
   ) => Effect.Effect<TaskRunActivationRecord | undefined, BrokerError>;
+  readonly consumeAtomically: <A>(
+    request: ConsumeTaskRunRequest,
+    operation: (activation: TaskRunActivationRecord) => A,
+  ) => Effect.Effect<AtomicTaskRunConsumptionResult<A>, BrokerError>;
   readonly consume: (
     request: ConsumeTaskRunRequest,
   ) => Effect.Effect<TaskRunConsumptionResult, BrokerError>;
@@ -103,6 +111,16 @@ const activationFailure = (operation: string, error: unknown): BrokerError =>
 
 const make = Effect.gen(function* () {
   const config = yield* BrokerConfig;
+  if (!config.workspaceHandoffEnabled) {
+    const unavailable = <A>() =>
+      Effect.fail<BrokerError>(brokerError("policy.denied", "workspace handoff is disabled")) as Effect.Effect<A, BrokerError>;
+    return {
+      activate: unavailable,
+      validate: () => Effect.succeed(undefined),
+      consumeAtomically: unavailable,
+      consume: unavailable,
+    } satisfies TaskRunActivationsService;
+  }
   const database = yield* BrokerDatabase;
   yield* Registry;
   const db = database.connection;
@@ -350,9 +368,10 @@ const make = Effect.gen(function* () {
       catch: (error) => activationFailure("validation", error),
     });
 
-  const consume = (
+  const consumeAtomically = <A>(
     request: ConsumeTaskRunRequest,
-  ): Effect.Effect<TaskRunConsumptionResult, BrokerError> =>
+    operation: (activation: TaskRunActivationRecord) => A,
+  ): Effect.Effect<AtomicTaskRunConsumptionResult<A>, BrokerError> =>
     Effect.try({
       try: () => database.transaction(() => {
         const row = byRun.get(request.runId) as ActivationRow | undefined;
@@ -368,6 +387,7 @@ const make = Effect.gen(function* () {
         if (row.state === "superseded") {
           throw brokerError("run_activation.stale", "task run was superseded by a newer activation");
         }
+        const result = operation(fromRow(row));
         if (row.state === "active") {
           const now = Date.now();
           db.prepare(`
@@ -379,12 +399,20 @@ const make = Effect.gen(function* () {
         return {
           activation: fromRow(byRun.get(request.runId) as ActivationRow),
           generationToClose,
+          result,
         };
       }),
       catch: (error) => activationFailure("consumption", error),
     });
 
-  return { activate, validate, consume } satisfies TaskRunActivationsService;
+  const consume = (
+    request: ConsumeTaskRunRequest,
+  ): Effect.Effect<TaskRunConsumptionResult, BrokerError> =>
+    consumeAtomically(request, () => undefined).pipe(
+      Effect.map(({ activation, generationToClose }) => ({ activation, generationToClose })),
+    );
+
+  return { activate, validate, consumeAtomically, consume } satisfies TaskRunActivationsService;
 });
 
 export const TaskRunActivationsLive = Layer.effect(TaskRunActivations, make);

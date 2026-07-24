@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
-import { Effect, Exit, Layer } from "effect"
+import { Effect, Exit } from "effect"
 import { BrokerDatabase } from "../dist/database.js"
 import { makeRevisionManifest } from "../dist/revision-manifest.js"
 import { RevisionStorage, RevisionStorageLive } from "../dist/revision-storage.js"
@@ -24,9 +24,8 @@ const defaultLimits = {
 
 const withStorage = async (run) => {
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gondolin-revision-storage-"))
-  const harness = makeTestLayer(stateDir)
-  const layer = RevisionStorageLive.pipe(Layer.provideMerge(harness.layer))
-  return Effect.runPromise(Effect.scoped(run(stateDir).pipe(Effect.provide(layer))))
+  const harness = makeTestLayer(stateDir, { workspaceHandoffEnabled: true })
+  return Effect.runPromise(Effect.scoped(run(stateDir).pipe(Effect.provide(harness.layer))))
 }
 
 const bindAndActivate = (environmentKey = "producer-environment") => Effect.gen(function* () {

@@ -18,6 +18,7 @@ import { FilesLive } from "./files.js";
 import { makeControlHttpApp, makeHttpApp } from "./http.js";
 import { AccessGrantsLive } from "./grants.js";
 import { RevisionStoreLive } from "./revision-store.js";
+import { RevisionOperationsLive } from "./revision-operations.js";
 import { RevisionStorageLive } from "./revision-storage.js";
 import { RegistryLive } from "./registry.js";
 import { VmRuntimeLive } from "./runtime.js";
@@ -35,7 +36,8 @@ export const BrokerLive = (() => {
   const revisionStorage = RevisionStorageLive.pipe(Layer.provideMerge(revisions));
   const grants = AccessGrantsLive.pipe(Layer.provideMerge(revisionStorage));
   const environments = EnvironmentsLive.pipe(Layer.provideMerge(grants));
-  const executor = ExecutorLive.pipe(Layer.provideMerge(environments));
+  const revisionOperations = RevisionOperationsLive.pipe(Layer.provideMerge(environments));
+  const executor = ExecutorLive.pipe(Layer.provideMerge(revisionOperations));
   return FilesLive.pipe(Layer.provideMerge(executor));
 })();
 

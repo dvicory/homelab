@@ -37,7 +37,16 @@ export interface WorkspaceBinding {
   readonly lease: WorkspaceLeaseRecord;
 }
 
+export interface AtomicWorkspaceBinding<A> extends WorkspaceBinding {
+  readonly result: A;
+}
+
 export interface WorkspaceService {
+  readonly acquireAtomically: <A>(
+    environmentKey: string,
+    requestedWorkspaceId: string | undefined,
+    operation: (binding: WorkspaceBinding) => A,
+  ) => Effect.Effect<AtomicWorkspaceBinding<A>, BrokerError>;
   readonly acquire: (environmentKey: string, workspaceId?: string) => Effect.Effect<WorkspaceBinding, BrokerError>;
   readonly resolve: (environmentKey: string, workspaceId: string, leaseId: string) => Effect.Effect<WorkspaceBinding & { readonly workspacePath: string }, BrokerError>;
   readonly describe: (environmentKey: string, workspaceId: string) => Effect.Effect<WorkspaceRecord, BrokerError>;
@@ -187,7 +196,11 @@ const make = Effect.gen(function* () {
     return candidate;
   };
 
-  const acquire = (environmentKey: string, requestedWorkspaceId?: string): Effect.Effect<WorkspaceBinding, BrokerError> =>
+  const acquireAtomically = <A>(
+    environmentKey: string,
+    requestedWorkspaceId: string | undefined,
+    operation: (binding: WorkspaceBinding) => A,
+  ): Effect.Effect<AtomicWorkspaceBinding<A>, BrokerError> =>
     Effect.try({
       try: () => {
         let createdPath: string | undefined;
@@ -201,8 +214,11 @@ const make = Effect.gen(function* () {
                   workspaceId: active.workspace_id,
                 });
               }
-              const workspace = fromWorkspaceRow(workspaceQuery.get(active.workspace_id) as WorkspaceRow);
-              return { workspace, lease: fromLeaseRow(active) };
+              const binding = {
+                workspace: fromWorkspaceRow(workspaceQuery.get(active.workspace_id) as WorkspaceRow),
+                lease: fromLeaseRow(active),
+              };
+              return { ...binding, result: operation(binding) };
             }
 
             const now = Date.now();
@@ -240,9 +256,11 @@ const make = Effect.gen(function* () {
             `).run(leaseId, workspaceId, environmentKey, priorToken.token + 1, now);
             db.prepare("UPDATE workspaces SET updated_at = ?, last_attached_at = ? WHERE workspace_id = ?")
               .run(now, now, workspaceId);
-            const lease = fromLeaseRow(leaseQuery.get(leaseId) as LeaseRow);
-            const workspace = fromWorkspaceRow(workspaceQuery.get(workspaceId) as WorkspaceRow);
-            return { workspace, lease };
+            const binding = {
+              workspace: fromWorkspaceRow(workspaceQuery.get(workspaceId) as WorkspaceRow),
+              lease: fromLeaseRow(leaseQuery.get(leaseId) as LeaseRow),
+            };
+            return { ...binding, result: operation(binding) };
           });
         } catch (error) {
           if (createdPath !== undefined) fs.rmSync(createdPath, { recursive: true, force: true });
@@ -251,6 +269,14 @@ const make = Effect.gen(function* () {
       },
       catch: (error) => error instanceof BrokerError ? error : workspaceFailure("acquire", error),
     });
+
+  const acquire = (
+    environmentKey: string,
+    requestedWorkspaceId?: string,
+  ): Effect.Effect<WorkspaceBinding, BrokerError> =>
+    acquireAtomically(environmentKey, requestedWorkspaceId, () => undefined).pipe(
+      Effect.map(({ workspace, lease }) => ({ workspace, lease })),
+    );
 
   const resolve = (environmentKey: string, workspaceId: string, leaseId: string) =>
     Effect.try({
@@ -356,7 +382,16 @@ const make = Effect.gen(function* () {
       catch: (error) => error instanceof BrokerError ? error : workspaceFailure("delete", error),
     });
 
-  return { acquire, resolve, describe, list, release, close, delete: remove } satisfies WorkspaceService;
+  return {
+    acquireAtomically,
+    acquire,
+    resolve,
+    describe,
+    list,
+    release,
+    close,
+    delete: remove,
+  } satisfies WorkspaceService;
 });
 
 export const WorkspacesLive = Layer.scoped(Workspaces, make);
