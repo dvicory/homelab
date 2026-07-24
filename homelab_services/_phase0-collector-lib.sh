@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2016 # Nested bash -c programs intentionally use single quotes.
-# Shared implementation for phase0-hvn-hyp1.sh and phase0-proxmox.sh.
+# Shared implementation for the NixOS, Proxmox, and Docker-guest Phase 0 wrappers.
 # Read-only by design: this script inventories state but never changes system
 # configuration, mounts, pools, disks, guests, or services.
 
+INHERITED_NVME=$(command -v nvme 2>/dev/null || true)
+case "$INHERITED_NVME" in
+  /nix/store/*/bin/nvme) NIX_NVME_BIN_DIR=${INHERITED_NVME%/nvme} ;;
+  *) NIX_NVME_BIN_DIR="" ;;
+esac
 set -uo pipefail
 umask 077
 # Do not execute same-directory or user-controlled command shadows under sudo.
 PATH=/run/wrappers/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+[[ -z "$NIX_NVME_BIN_DIR" ]] || PATH="$NIX_NVME_BIN_DIR:$PATH"
 export PATH
 
 ROLE=${PHASE0_ROLE:-}
@@ -42,8 +48,8 @@ Run as root for complete SMART, DMI, IPMI, storage, and virtualization data.
 The report contains sensitive infrastructure metadata: hostnames, IP/MAC
 addresses, disk serials, VM names, filesystem paths, and possibly media titles.
 Review it before sharing. The script intentionally does not collect secret file
-contents, SSH private keys, environment variables, command histories, or tailnet
-peer/account rosters.
+contents, SSH private keys, environment variable values, command histories, or
+tailnet peer/account rosters.
 EOF
 }
 
@@ -105,7 +111,7 @@ while (($#)); do
   esac
 done
 
-[[ "$ROLE" == "hvn-hyp1" || "$ROLE" == "proxmox" ]] || die "collector role was not set by its wrapper"
+[[ "$ROLE" == "hvn-hyp1" || "$ROLE" == "proxmox" || "$ROLE" == "docker-guest" ]] || die "collector role was not set by its wrapper"
 [[ "$COMMAND_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "--command-timeout must be a positive integer"
 [[ "$DEEP_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "--deep-timeout must be a positive integer"
 [[ $(uname -s) == Linux ]] || die "this collector supports Linux hosts only"
@@ -227,7 +233,7 @@ label=$LABEL
 role=$ROLE
 hostname=$HOST
 started_utc=$(date -u +%FT%TZ)
-collector_version=2
+collector_version=3
 collector_uid=$(id -u)
 collector_user=$(id -un 2>/dev/null || true)
 deep=$DEEP
@@ -324,7 +330,8 @@ capture "40-storage-zpool-list" zpool list -v -p
 capture "40-storage-zpool-status" zpool status -LPv
 capture "40-storage-zpool-properties" zpool get all
 capture "40-storage-zfs-list" zfs list -t filesystem,volume -o name,used,available,referenced,mountpoint,compression,compressratio,recordsize,volblocksize,encryption,keystatus -p
-capture "40-storage-zfs-snapshot-summary" bash -c 'zfs list -H -p -t snapshot -o name,used 2>/dev/null | awk -F "[\\t@]" "{count[\\$1]++; bytes[\\$1]+=\\$3} END {for (d in count) printf \\\"%s\\\\t%d\\\\t%.0f\\\\n\\\", d, count[d], bytes[d]}" | sort'
+capture_shell "40-storage-zfs-snapshot-summary" 'zfs list -H -p -t snapshot -o name,used 2>/dev/null | awk -F "\t" '\''{ name=$1; sub(/@.*/, "", name); count[name]++; bytes[name]+=$2 } END { for (d in count) printf "%s\t%d\t%.0f\n", d, count[d], bytes[d] }'\'' | sort'
+capture "40-storage-zpool-importable" zpool import
 capture "40-storage-zfs-properties" zfs get -r -t filesystem,volume -s local,received all
 capture "40-storage-btrfs-show" btrfs filesystem show --all-devices
 capture "40-storage-btrfs-usage" bash -c 'while read -r m; do echo "== $m =="; btrfs filesystem usage -T -b "$m" 2>&1 || true; btrfs device stats "$m" 2>&1 || true; done < <(findmnt -rn -t btrfs -o TARGET)'
@@ -332,6 +339,9 @@ capture "40-storage-mergerfs-mounts" bash -c 'findmnt -rn -t fuse.mergerfs -o TA
 capture "40-storage-snapraid-status" snapraid status
 capture "40-storage-nvme-list" nvme list -o json
 capture "40-storage-nvme-subsystems" nvme list-subsys -o json
+capture "40-storage-nvme-controller-identify" bash -c 'for n in /dev/nvme[0-9]; do [[ -c "$n" ]] || continue; echo "== $n =="; nvme id-ctrl -H -o json "$n" 2>&1 || true; done'
+capture "40-storage-nvme-controller-namespaces" bash -c 'for n in /dev/nvme[0-9]; do [[ -c "$n" ]] || continue; echo "== $n allocated =="; nvme list-ns -o json "$n" 2>&1 || true; echo "== $n all =="; nvme list-ns -a -o json "$n" 2>&1 || true; done'
+capture "40-storage-nvme-namespace-identify" bash -c 'for n in /dev/nvme[0-9]n[0-9]; do [[ -b "$n" ]] || continue; echo "== $n =="; nvme id-ns -H -o json "$n" 2>&1 || true; done'
 if ((SKIP_SMART)); then
   echo "Skipped by --skip-smart." > "$OUT/40-storage-snapraid-smart.txt"
   echo "Skipped by --skip-smart." > "$OUT/40-storage-nvme-health.txt"
@@ -421,7 +431,7 @@ if [[ "$ROLE" == "hvn-hyp1" ]]; then
   capture "60-hvn-agenix-secret-names" bash -c 'if [[ -d /run/agenix ]]; then find /run/agenix -mindepth 1 -maxdepth 1 -printf "%f\n" | sort; fi'
   capture "60-hvn-gocryptfs-mounts" bash -c 'findmnt -rn -t fuse.gocryptfs -o TARGET,SOURCE,OPTIONS; journalctl -b --no-pager -u "gocryptfs-*" -n 500 2>&1 || true'
   add_default_scan_root /mnt/storage/media
-else
+elif [[ "$ROLE" == "proxmox" ]]; then
   capture "60-proxmox-version" pveversion -v
   capture "60-proxmox-cluster-status" pvecm status
   capture "60-proxmox-cluster-nodes" pvecm nodes
@@ -441,6 +451,44 @@ else
   capture "60-proxmox-ceph-osd-tree" ceph osd tree --format json-pretty
   capture "60-proxmox-package-state" dpkg-query -W -f='${binary:Package}\t${Version}\n'
   capture "60-proxmox-apt-sources" bash -c 'for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do [[ -r "$f" ]] || continue; echo "== $f =="; cat "$f"; done'
+else
+  capture "60-docker-version" docker version --format '{{json .}}'
+  capture "60-docker-containers" docker ps -a --no-trunc --format '{{json .}}'
+  capture "60-docker-images" docker image ls --digests --no-trunc --format '{{json .}}'
+  capture "60-docker-volumes" docker volume ls --format '{{json .}}'
+  capture "60-docker-networks" docker network ls --no-trunc --format '{{json .}}'
+  capture "60-docker-system-df" docker system df -v
+  capture "60-docker-compose-projects" docker compose ls --all --format json
+  capture "60-docker-container-topology" bash -c '
+    for id in $(docker ps -aq); do
+      echo "===== $id ====="
+      docker inspect --format "name={{.Name}}
+image={{.Config.Image}}
+created={{.Created}}
+status={{.State.Status}}
+health={{if .State.Health}}{{.State.Health.Status}}{{end}}
+user={{.Config.User}}
+restart={{.HostConfig.RestartPolicy.Name}}
+privileged={{.HostConfig.Privileged}}
+readonly_rootfs={{.HostConfig.ReadonlyRootfs}}
+network_mode={{.HostConfig.NetworkMode}}
+compose_project={{index .Config.Labels \"com.docker.compose.project\"}}
+compose_service={{index .Config.Labels \"com.docker.compose.service\"}}
+compose_files={{index .Config.Labels \"com.docker.compose.project.config_files\"}}
+compose_working_dir={{index .Config.Labels \"com.docker.compose.project.working_dir\"}}" "$id" 2>&1 || true
+      echo "-- mounts --"
+      docker inspect --format "{{json .Mounts}}" "$id" 2>&1 || true
+      echo "-- ports --"
+      docker inspect --format "{{json .HostConfig.PortBindings}}" "$id" 2>&1 || true
+      echo "-- devices --"
+      docker inspect --format "{{json .HostConfig.Devices}}" "$id" 2>&1 || true
+      echo "-- networks --"
+      docker inspect --format "{{json .NetworkSettings.Networks}}" "$id" 2>&1 || true
+      echo "-- environment variable names only --"
+      docker inspect --format "{{range .Config.Env}}{{println (index (split . \"=\") 0)}}{{end}}" "$id" 2>&1 | sort || true
+      echo
+    done
+  '
 fi
 
 # Common virtualization state detects what the old setup actually ran.
@@ -533,7 +581,9 @@ TOOLS=(
 } > "$OUT/90-tool-availability.tsv"
 
 # Final checksums cover sanitized report files, not the archive itself.
-find "$OUT" -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$OUT/SHA256SUMS"
+CHECKSUM_TMP="${OUT}.SHA256SUMS.$$"
+(cd "$OUT" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum) > "$CHECKSUM_TMP"
+mv "$CHECKSUM_TMP" "$OUT/SHA256SUMS"
 
 ARCHIVE=""
 if ((MAKE_ARCHIVE)); then

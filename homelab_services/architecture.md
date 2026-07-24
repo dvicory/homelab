@@ -47,7 +47,7 @@ flowchart TB
   Kanidm --> Edge
   Apps --> NFS
   SMB --> LAN
-  Backup --> Offsite[Encrypted off-site target]
+  Backup --> Legacy[Old Proxmox: unchanged same-site rollback copy]
 ```
 
 ## Responsibility boundary
@@ -57,7 +57,7 @@ flowchart TB
 - physical disks, HBA/enclosures, SMART, encryption and unlock;
 - ZFS pool/vdev/dataset lifecycle;
 - mergerfs branches, SnapRAID parity/content/sync/scrub lifecycle;
-- local snapshots and off-site backup transport;
+- local snapshots, application backup staging, and static Proxmox rollback-copy bookkeeping;
 - NFS exports to the fixed guest address and SMB exports to users;
 - LAN bridge, firewall, public TLS edge, Kanidm, and Tailscale;
 - nspawn machine definition, persistent mount/device attachment, start/stop, and initial identity injection;
@@ -85,14 +85,24 @@ Git does not own user data, database dumps, media catalogs containing sensitive 
 
 The final vdev/disk count must follow inventory. The logical design is fixed now.
 
+Phase 0 constrains the physical implementation:
+
+- Critical storage uses ZFS mirror vdevs only: two-way RAID1 semantics, expanded by adding another mirrored pair. Application state and personal originals use separate physical pools. Do not use RAIDZ or dRAID in the target design.
+- Four 1 TB Intel NVMe devices are available; two are installed but currently expose approximately 100 GB namespaces. Enlarge or rebuild the root namespace safely, then allocate a separate two-device NVMe mirror for guest/application state. This is reuse of owned hardware, not a new-drive purchase.
+- The R730xd has 12 storage slots, with a hard operational ceiling of 11 occupied. Reserve one bay at all times so a replacement disk can be attached and resilvered/recovered before removing the old member where hardware condition permits.
+- After old Proxmox is evacuated and verified, reuse suitable 8 TB disks as one or two HDD mirror pairs for Immich originals, household files, and other irreplaceable personal data. Seven 12 TB bulk disks plus at most four 8 TB mirror members reaches the 11-slot ceiling.
+- Replace temporary gocryptfs with kernel-space encryption. Use per-disk LUKS2 below each independent bulk filesystem so SnapRAID operates on the mounted cleartext view; use ZFS native encryption for critical mirrors unless the recovery proof selects LUKS2-under-ZFS.
+- Current path names, filesystem choices, and branch numbering are not contracts. Define stable disk IDs, labels, mount paths, and application paths from scratch.
+- Keep old Proxmox online and read-mostly until media, fileserver data, application exports, and all other authoritative roots have verified destinations. At 98% pool allocation and with no backup plan, it is a migration source under immediate risk.
+
 | Tier | Intended data | Storage | Kubernetes exposure | Protection |
 |---|---|---|---|---|
-| S0 disposable | downloads, transcodes, ML/model cache, thumbnails reproducible from originals, container images | NVMe cache dataset | local PV or NFS scratch as required | no off-site backup; quotas and cleanup |
-| S1 guest/system state | SSH identity, K3s server state, local kubeconfig, GitOps bootstrap state | dedicated ZFS dataset attached at stable guest `/persist` paths | not a general PVC | snapshots; encrypted off-site backup of necessary state; rebuild test |
-| S2 application state | PostgreSQL, app config, Immich metadata/profile, GitOps state exports | ZFS-backed local PV dataset | default local StorageClass | app-aware backups plus snapshots; off-site |
-| S3 personal originals | Immich-uploaded originals, user-private/shared files, document-sync data | redundant ZFS datasets | static NFS PVs, one owner per subtree | frequent snapshots, encrypted off-site backup, restore drills |
-| S4 replaceable media | ordinary movies, TV, music | mergerfs data disks + SnapRAID parity | static read/write NFS PV for managers, read-only where possible | SnapRAID sync/scrub only; no off-site copy |
-| S5 curated media | explicit selected media | initially paths in S4 plus protected catalog; later separate dataset/copy if selected design requires | same library view | off-site copy and checksum/catalog |
+| S0 disposable | downloads, transcodes, ML/model cache, thumbnails reproducible from originals, container images | dedicated SSD/NVMe cache dataset | local PV or NFS scratch as required | no backup; quotas and cleanup |
+| S1 guest/system state | SSH identity, K3s server state, local kubeconfig, GitOps bootstrap state | dedicated dataset on a redundant services pool attached at stable guest `/persist` paths | not a general PVC | local snapshots, application exports, rebuild test; legacy cutover exports remain on Proxmox |
+| S2 application state | PostgreSQL, app config, Immich metadata/profile, GitOps state exports | redundant services-pool dataset | default local StorageClass | app-aware local backups plus snapshots; no current remote RPO |
+| S3 personal originals | Immich-uploaded originals, user-private/shared files, document-sync data | redundant personal-data ZFS datasets | static NFS PVs, one owner per subtree | frequent local snapshots; unchanged Proxmox copy only for data present at cutover |
+| S4 replaceable media | ordinary movies, TV, music | mergerfs data disks + SnapRAID parity | static read/write NFS PV for managers, read-only where possible | SnapRAID sync/scrub plus unchanged pre-migration Proxmox corpus |
+| S5 curated media | explicit hard-to-reacquire media classification | paths in S4 plus protected catalog | same library view | catalog only; separate payload backup is future scope |
 
 ### Dataset/path contract (provisional names)
 
@@ -100,9 +110,9 @@ Host paths are implementation details; guest/application paths are stable contra
 
 | Purpose | Host-side logical dataset/export | Guest/PV | Pod path |
 |---|---|---|---|
-| K3s persistent state | `rpool/guests/k3s1/state` | nspawn bind | guest service paths via persistence rules |
-| Local PVC root | `rpool/guests/k3s1/local-pv` | nspawn bind at `/var/lib/k8s-local-pv` | PVC-specific `/config` or database path |
-| Container cache | `rpool/guests/k3s1/cache` | nspawn bind at containerd path | internal |
+| K3s persistent state | `services/guests/k3s1/state` | nspawn bind | guest service paths via persistence rules |
+| Local PVC root | `services/guests/k3s1/local-pv` | nspawn bind at `/var/lib/k8s-local-pv` | PVC-specific `/config` or database path |
+| Container cache | `services/guests/k3s1/cache` | nspawn bind at containerd path | internal |
 | Media library | mergerfs media root | static NFS PV `media-data` | `/data` |
 | Download scratch | SSD/NVMe cache dataset | static NFS/local PV `media-scratch` | `/scratch` |
 | Immich managed data | ZFS `personal/immich` | static NFS PV `immich-data` | `/data` |
@@ -206,6 +216,18 @@ Fallback: a separate independently SSH-managed NixOS nspawn Jellyfin guest with 
 - no download/indexer integrations in the first service wave.
 
 Using the same path in all related pods is mandatory to preserve hardlink/atomic-move options when acquisition is added later. If downloads and libraries are on different filesystems, hardlinks cannot work; the final scratch/library placement must reflect that future requirement.
+
+#### Migration and declarative reconciliation
+
+- Export Jellyfin and every installed Arr service before changing versions, paths, database backends, or deployment platforms. Preserve native backups, databases, configuration, users/watch state, library identity, history, custom metadata, quality profiles, and integration inventory.
+- Restore each application on a compatibility-pinned version and its existing database backend first. For Radarr/Sonarr and other Arr services, SQLite is the conservative migration baseline; do not combine migration with PostgreSQL conversion.
+- Make deployment, image versions, mounts, API keys, network endpoints, probes, and backup jobs declarative from the first K3s deployment.
+- Make application settings declarative incrementally after restore. Git owns an explicit field set; unowned runtime state remains in the application database. Reconciliation must support a dry-run/diff and must not reset library/history/user state.
+- Keep TRaSH Guides as the policy source for quality profiles, custom formats, naming, quality definitions, and media management. Recyclarr is the conservative synchronization tool; Configarr is the Kubernetes-friendly CronJob alternative when its broader custom configuration is needed.
+- Recyclarr's supported application scope is Radarr and Sonarr. For Prowlarr, Lidarr, Readarr, Whisparr, Bazarr, download clients, and request services, preserve native state and adopt Configarr or another API reconciler only where support is explicit and a dry-run proves non-destructive behavior.
+- Jellyfin watch state, users, library identity, and plugin/runtime data remain backup/restore state. Declarative API calls may own selected server settings after migration, but no current Kubernetes-native tool is assumed to regenerate the whole database safely.
+- Nixflix is useful reference code for API-driven idempotent configuration, but it is a NixOS service module rather than a Kubernetes controller. Do not move Arr/Jellyfin out of K3s merely to consume it wholesale.
+- Sini provides the K3s deployment, PostgreSQL, secrets, paths, OIDC, policy, and observability pattern. Its Arr manifests do not declaratively own the full in-application quality/profile configuration.
 
 ### Immich
 
@@ -311,15 +333,15 @@ Rules:
 3. **Cluster state**: K3s datastore snapshot or documented clean-rebuild strategy, Argo/Nixidy desired state, cluster SOPS key.
 4. **Application state**: PostgreSQL physical/logical backups, Radarr/Sonarr/Jellyfin configs, Immich database/profile and required non-reproducible directories.
 5. **Personal data**: Immich originals and personal/share datasets.
-6. **Curated media**: future explicit selection manifest plus selected payload.
+6. **Curated media catalog**: future explicit local classification manifest; payload backup is separately scoped.
 
 ### Backup ordering
 
 - Applications produce consistent exports/checkpoints first.
 - Host snapshots the corresponding ZFS datasets only after successful exports.
-- Backup software sends snapshots/files to the encrypted off-site target.
-- Jobs publish age, last success, bytes, and restore-test status.
-- SnapRAID sync is a separate parity operation and never marks off-site backup success.
+- Migration leaves old Proxmox unchanged as a same-site rollback/static copy after cutover.
+- Jobs publish local snapshot/export age, last success, bytes, and restore-test status.
+- SnapRAID sync is a separate parity operation and never establishes an independent backup.
 
 ### Restore order
 
@@ -340,7 +362,7 @@ Before public exposure, alert on:
 
 - SMART/device errors, ZFS pool health/scrub, disk capacity and temperature;
 - SnapRAID sync/scrub age/failure and content-file replication;
-- snapshot and off-site backup age/failure;
+- local snapshot, application-export, and static-copy inventory age/failure;
 - K3s node readiness, certificate expiry, local-PV/NFS mount failure;
 - application readiness and PostgreSQL backup age;
 - public certificate expiry and edge route failure.

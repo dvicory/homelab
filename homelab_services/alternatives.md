@@ -94,7 +94,7 @@ Useful only for the phase-zero application smoke test. Reject as steady state be
 
 - Guest/K3s state and local PVC data live on dedicated host ZFS datasets attached to stable guest paths.
 - Bulk/personal datasets remain host-owned and enter Kubernetes through static NFS PVs with `Retain` and GitOps prune protection.
-- Application-aware backups leave the cluster before host snapshots/off-site upload.
+- Application-aware backups leave the application before host snapshots; legacy cutover exports remain on static Proxmox.
 
 This preserves storage ownership, avoids a single-node distributed-storage facade, and resembles Sini's NAS boundary.
 
@@ -125,25 +125,33 @@ Appropriate for large, mostly immutable files and heterogeneous incremental expa
 
 ### ZFS for all media
 
-Provides real-time checksums, snapshots, redundancy, and simpler correctness semantics. Expansion constraints and disk-layout economics are less flexible, though modern OpenZFS expansion options should be evaluated against the actual future hardware.
-
-Use ZFS instead if the disk inventory becomes homogeneous, media churn is high, or operational simplicity outweighs incremental expansion.
+ZFS would provide real-time checksums, snapshots, and synchronous redundancy, but it conflicts with the required independent-disk expansion model for replaceable bulk media. Do not use ZFS for the target media tier; retain it only for critical mirror-backed data.
 
 ### Current gocryptfs backing layout
 
-Do not automatically extend it. Before SnapRAID design, decide whether per-disk LUKS should replace gocryptfs. SnapRAID needs an explicit protected view and deletion workflow; layering parity over encrypted backing trees changes names/churn and recovery ergonomics. The roadmap includes a disposable-data proof before migration.
+Retire it after verified migration. The target uses kernel-space encryption: per-disk LUKS2 below each independent bulk filesystem, with SnapRAID operating on mounted cleartext paths. Preserve the current gocryptfs branches only long enough to reconcile and migrate their files. Prove unlock, missing-disk behavior, replacement, and recovery on disposable data before cutover.
+
+### Declarative media-service configuration
+
+Use a layered model rather than treating application databases as generated state:
+
+1. Nixidy/Argo owns Kubernetes deployment, mounts, versions, secrets, endpoints, and backup jobs.
+2. Recyclarr owns the TRaSH Guides-supported Radarr/Sonarr settings. Configarr is the alternative when custom configuration beyond Recyclarr's supported field set is required; it documents direct Kubernetes CronJob operation.
+3. Native application databases retain libraries, monitored state, history, users/watch state, and unsupported settings, and remain backup/restore artifacts.
+
+Nixflix covers broader API-based configuration and is valuable source material, but direct adoption would run these services as NixOS units rather than K3s workloads. Port only proven reconciliation ideas; do not create a bespoke full Arr controller before testing Recyclarr/Configarr.
 
 ## Personal data storage
 
-Use a separate ZFS pool or independently fault-tolerant vdev/dataset hierarchy. Do not place irreplaceable photos/files on the mergerfs/SnapRAID tier merely because it has free space. Required properties:
+Use a physically separate ZFS pool of mirror vdevs. Do not place irreplaceable photos/files on the mergerfs/SnapRAID tier merely because it has free space. Required properties:
 
 - checksummed redundant storage;
 - dataset-level snapshots and quotas;
 - separate datasets for Immich originals, user homes/shares, application state, and backup staging;
-- encrypted off-site copies;
+- explicit same-site static-copy status and the accepted absence of post-cutover remote RPO;
 - restore tests at file, dataset, and application levels.
 
-Exact mirror/RAIDZ topology waits for disk and growth inventory.
+Exact mirror-pair count and pool separation wait for disk, capacity, and growth inventory. RAIDZ and dRAID are excluded.
 
 ## NAS access stack
 

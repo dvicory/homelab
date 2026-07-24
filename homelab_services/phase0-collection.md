@@ -1,10 +1,11 @@
 # Phase 0 collection workflow
 
-Two role-specific entry points share one read-only implementation:
+Three role-specific entry points share one read-only implementation:
 
 - `phase0-hvn-hyp1.sh` — NixOS/current-host additions.
 - `phase0-proxmox.sh` — Proxmox cluster, VM, container, storage, and HA additions.
-- `_phase0-collector-lib.sh` — common hardware, disk, network, GPU, power, filesystem, and optional content scanning. Keep this file beside both entry points.
+- `phase0-docker-guest.sh` — credential-safe Docker/Compose inventory for `dia`; records images, mounts, ports, networks, selected Compose labels, and environment variable names but never environment values.
+- `_phase0-collector-lib.sh` — common hardware, disk, network, GPU, power, filesystem, and optional content scanning. Keep this file beside every entry point.
 
 The collectors do not modify disks, pools, mounts, VMs, services, networking, or configuration. They do not run repairs, SMART self-tests, scrubs, parity sync, benchmarks, or packet captures.
 
@@ -45,6 +46,32 @@ sudo ./phase0-proxmox.sh \
   --output /var/tmp
 ```
 
+### 3a. NVMe namespace pass on `hvn-hyp1`
+
+The installed host profile lacks `nvme-cli`. Run the collector inside a root Nix shell so it can preserve the trusted `/nix/store` `nvme` binary while retaining its fixed PATH:
+
+```bash
+sudo nix shell nixpkgs#nvme-cli -c \
+  ./phase0-hvn-hyp1.sh \
+  --label hvn-hyp1-nvme \
+  --output /var/tmp
+```
+
+This adds controller identify data, allocated/all namespace lists, active namespace identify data, SMART logs, and error logs. It does not create, delete, attach, detach, or resize a namespace.
+
+### 3b. Docker inventory inside `dia`
+
+Copy `phase0-docker-guest.sh` and `_phase0-collector-lib.sh` into the VM and run:
+
+```bash
+sudo ./phase0-docker-guest.sh \
+  --label dia \
+  --output /var/tmp \
+  --skip-smart
+```
+
+Do not provide `docker inspect`, `docker compose config`, `.env`, or Compose files manually: those can expose credentials. The dedicated collector emits only the topology needed to design per-application exports. After reviewing its archive, create app-specific native backup commands.
+
 ### 4. Content scan, one root at a time
 
 Start without `--include-paths`. This performs one metadata traversal for counts, bytes, extensions, and age buckets:
@@ -71,6 +98,42 @@ sudo ./phase0-hvn-hyp1.sh \
 ```
 
 Do not point `--scan-root` at `/`, `/proc`, `/sys`, `/dev`, `/run`, a VM image, ZFS zvol, inaccessible guest filesystem, Btrfs snapshot root, or a broad parent containing unrelated mounts. The script refuses key pseudo/root paths, but correct content-root selection remains an operator decision.
+
+## JSON filesystem catalogs
+
+Use [rclone `lsjson`](https://rclone.org/commands/rclone_lsjson/) rather than extending the collector into a custom manifest format. On a local filesystem, hashes are omitted unless `--hash` is explicitly requested, so this reads directory metadata and file stats—not 30 TiB of payload.
+
+```bash
+catalog_name=proxmox-kirk
+sudo ionice -c 3 nice -n 19 \
+  rclone lsjson --recursive --files-only --no-mimetype \
+  --exclude '/.zfs/**' --exclude '**/.zfs/**' /source/root \
+  > "/safe/output/${catalog_name}.files.json" &&
+gzip -1 "/safe/output/${catalog_name}.files.json"
+```
+
+The uncompressed write is deliberate: rclone failure leaves an obvious partial JSON file and prevents compression from masking its exit status. Keep modification times; they help identify likely copies and later changes. Do **not** add `--hash`. Rclone ignores symlinks by default, excludes ZFS snapshot namespaces above, and crosses other mounted filesystem boundaries by default. That crossing is desired for the legacy named roots when their nested ZFS datasets belong to the same catalog; inspect mount topology first so unrelated mounts are not included.
+
+Catalog these roots separately:
+
+- Proxmox: `/tank1/ds1/kirk`, `/tank1/ds1/spock`, `/tank1/ds1/mccoy`, `/tank1/ds1/redshirt`, plus any other explicit content root found during review.
+- `hvn-hyp1`: `/mnt/storage/media`.
+- `bulk-2` and `bulk-3`: their mounted dataset roots after the pools are discovered and opened read-only.
+
+For `bulk-2` and `bulk-3`, use the JSON catalog rather than another complete Phase 0 collector. First provide the output of plain `zpool import`; define the read-only import/mount command only after its topology is known.
+
+The catalogs supply `Path`, `Name`, `Size`, and `ModTime`. They are planning inputs for high-level classification and later `rsync`/rclone transfer lists, not proof of identical content. Hash only same-path size conflicts, unique critical files, and selected samples.
+
+### Initial legacy priority map
+
+The legacy character names express approximate importance but do not override observed contents:
+
+1. **Kirk — control/backup authority candidate:** infrastructure, backup sets, VM/application state. Split genuine recovery material from stale VM images, ISOs, and caches.
+2. **Spock — personal-data authority candidate:** the unbacked fileserver tree is presumed irreplaceable until reviewed.
+3. **McCoy — bulk/media authority candidate:** mostly media, but its parent contains substantial unclassified data outside `media`.
+4. **Redshirt — disposable candidate:** lowest expected importance, but deletion still requires catalog review.
+
+Every top-level subtree receives four labels during review: `criticality` (`irreplaceable`, `stateful`, `hard-to-reacquire`, `replaceable`, `disposable`), `authority` (`authoritative`, `partial`, `duplicate`, `stale`, `unknown`), `destination` (`personal-mirror`, `services-mirror`, `bulk-media`, `static-proxmox`, `discard`), and `action` (`copy-first`, `export`, `reconcile`, `retain-static`, `discard-after-proof`).
 
 ## Production risk and scaling
 
@@ -160,12 +223,12 @@ After both reports are analyzed, the remaining Phase 0 discussion will cover:
 - which old Proxmox data is authoritative, merely duplicated, or disposable;
 - expected media/photo/personal growth and desired initial purchase budget;
 - acceptable disk and enclosure failure combinations;
-- off-site provider capacity, retention, immutability, bandwidth, and recovery access;
+- the accepted duration and restrictions for using old Proxmox as a same-site static rollback copy;
 - physical cable/switch/router/UPS topology not visible through LLDP/IPMI;
 - intended 10GbE switch/router ports, VLANs, and maintenance/failure behavior;
 - public DNS/provider and household access requirements;
 - client devices and concurrency expectations;
-- which media deserves later curated off-site backup;
-- whether old application databases/configuration are worth migrating or services should start clean.
+- which media is hard to reacquire and should be marked in the catalog for a future, separately scoped backup project;
+- complete export scope for Jellyfin and every installed Arr-family service before migration, including databases, native backups, users/watch state, profiles, metadata, history, and integrations;
 
 The desired future dual-10GbE design and VyOS direction are recorded in the architecture documents. Phase 0 only needs to preserve an upgrade path: appropriate NIC/PCIe/NUMA capacity, bridge/bond/VLAN choices, and a management path that survives switch or router maintenance.

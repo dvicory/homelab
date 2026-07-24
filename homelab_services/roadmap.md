@@ -6,28 +6,33 @@ This is a decision and validation roadmap, not an OpenSpec work breakdown. Each 
 
 ### Work
 
-- Inventory every disk by enclosure/slot, stable ID, capacity, age, SMART data, filesystem, encryption layer, actual contents, and backup status.
-- Collect comparable inventory from both partially configured `hvn-hyp1` and the old Proxmox host; classify each discovered copy as authoritative, duplicate, stale, or disposable before migration.
-- Identify HBA/controller mode and whether disks are independently visible; record enclosure and power failure domains.
-- Measure current pool usage, daily growth, Immich/photo import size, personal-file size, and expected three-year growth.
-- Record both NVMe roles and decide whether the second current 1 TB Intel NVMe is available for guest/app state.
-- Identify Intel GPU model/capabilities from PCI ID `8086:56b1`, firmware, supported codec matrix, and current `/dev/dri` nodes.
-- Record active NIC link speeds, switch/VLAN capacity, selected bridge interface, router/firewall/DNS control, UPS state, and iDRAC recovery access.
+- Preserve both report archives and freeze all provisioning, imports, pool upgrades, snapshot deletion, and disk repurposing while source authority is unresolved.
+- Correct the `hvn-hyp1` root-disk declaration from volatile `/dev/nvme0n1` naming to the verified stable ID of the runtime root device before any installer or disk-layout command can consume it.
+- Map all seven 12 TB disks by slot and stable ID. Treat `bulk-2` and `bulk-3` as repurposable only after unique media is copied and verified; they were not included in the deep scan.
+- Identify PERC/HBA controller mode, cache policy, disk error visibility, enclosure/cable/power failure domains, and complete SMART/NVMe health evidence.
+- Generate comparable path/size manifests for old `/tank1/ds1/mccoy/media`, current `/mnt/storage/media`, and the mounted contents of `bulk-2`/`bulk-3`; checksum conflicts and samples before declaring any file duplicate.
+- Inventory and immediately prioritize the unbacked old roots, especially `tank1/ds1/mccoy` outside `media`, `tank1/ds1/kirk`, `tank1/ds1/kirk/backups`, and `tank1/ds1/spock/media/fileserver`.
+- Inventory every installed Arr-family service and export native backups, databases, configuration, integrations, API-visible settings, and version/path contracts from `dia`; export Jellyfin users/watch state, libraries, plugins, metadata, and server configuration.
+- Measure daily growth, Immich/photo import size, personal-file size, and expected three-year growth.
+- Inventory all four owned 1 TB NVMe devices and every namespace. Design a recoverable root expansion/reinstallation and a separate two-device application-state mirror without namespace deletion before data is secured.
+- Before further large builds, record required rollback generations, prune only explicitly obsolete generations/store paths, and establish a temporary free-space floor. Treat this as risk reduction, not a substitute for root namespace expansion.
+- Identify Intel GPU model/capabilities from PCI ID `8086:56b1`, firmware, supported codec matrix, current `/dev/dri` nodes, and safe render-node permissions.
+- Record switch/router models, both hosts' 10GbE port paths, VLAN capacity, selected bridge interface, firewall/DNS control, UPS state, and iDRAC recovery access.
 - Validate the planned dual-10GbE path: NIC models/firmware, PCIe width and NUMA locality, transceivers/DACs, switch/router ports, VLANs, bonding/failover mode, and the management path during a switch restart.
 - Preserve a later VyOS routing-VM/HA path without making it part of the initial critical path.
-- Characterize off-site storage: protocol, capacity, bandwidth, retention, immutability/versioning, encryption, and cost.
-- Freeze destructive storage changes until the inventory is reviewed.
+- Record exactly which source paths and application exports remain preserved on old Proxmox after cutover; define the freeze point and prohibit reuse until a future backup project replaces this rollback copy.
 
 ### Decisions
 
-- ZFS vdev topology and disk count for personal/app data.
-- mergerfs/SnapRAID data/parity disk count for replaceable media.
-- retain/migrate gocryptfs versus per-disk LUKS.
+- Exact allocation of the four 1 TB NVMe devices: host root, mirrored application state, and disposable cache.
+- Exact allocation of liberated 8 TB disks into one or two separate ZFS mirror pairs for personal originals/files, while enforcing a maximum of 11 occupied chassis slots.
+- Five-data/two-parity mergerfs/SnapRAID layout for the seven 12 TB disks; single parity remains a documented fallback only with selective backup.
+- Per-disk LUKS2 and filesystem choice for bulk media; ZFS-native versus LUKS2-under-ZFS encryption for critical mirrors.
 - guest name, LAN IP, VLAN, and resource reservations.
 
 ### Exit gate
 
-A reviewed inventory maps every byte that could be destroyed. A disk-layout proposal demonstrates usable capacity after redundancy, one-disk and selected multi-disk failure behavior, expansion procedure, replacement time, and site-loss backup coverage.
+A reviewed inventory maps every byte that could be destroyed. A disk-layout proposal demonstrates usable capacity after redundancy, one-disk and selected multi-disk failure behavior, expansion procedure, replacement time, and the explicitly accepted lack of site-loss coverage.
 
 ## Phase 1 — nspawn platform feasibility spike
 
@@ -63,11 +68,11 @@ One script/runbook can import, provision, boot, SSH-deploy, run a pod, persist a
 - Configure deterministic shared groups, default ACLs, NFS exports restricted to the guest, and SMB shares restricted to LAN/tailnet.
 - Prove macOS, Windows, and Linux SMB clients, filename behavior, permissions, large files, reconnects, and snapshots/previous versions if exposed.
 - Create static Kubernetes PVs/PVCs with `Retain` and GitOps prune/delete protection.
-- Create application-consistent backup staging and encrypted off-site transport for a synthetic dataset.
+- Create application-consistent local backup staging for a synthetic dataset and prove restoration independent of a running application.
 
 ### Exit gate
 
-Restore all of the following into an empty target: one ZFS file from snapshot, one full personal dataset from off-site, one failed SnapRAID data disk, SMB ACLs, and one static NFS PV attachment. Recorded duration meets provisional targets or the target is revised explicitly.
+Restore all of the following into an empty target: one ZFS file from snapshot, one personal-data sample from the static Proxmox copy, one failed SnapRAID data disk, SMB ACLs, and one static NFS PV attachment. Recorded duration meets provisional targets or the target is revised explicitly.
 
 ## Phase 3 — edge, identity, and secret bootstrap
 
@@ -106,9 +111,9 @@ Starting with only host storage, a guest image, Git, and recovery keys, the test
 
 ### Work
 
-- Compare CloudNativePG on local PV with a single NixOS-managed PostgreSQL service in the guest. Measure backup/restore complexity rather than choosing by feature count.
-- Select one PostgreSQL ownership model for Immich and optionally Radarr/Sonarr.
-- Implement physical/logical backups, retention, encryption, and compatibility-pinned restore jobs.
+- Select and prove PostgreSQL ownership and backup/restore for Immich. Do not make Arr database-backend conversion part of legacy migration.
+- Restore migrated Arr services on their existing backend first; retain SQLite when that is the legacy backend unless a later isolated conversion has official support and a rollback proof.
+- Implement physical/logical backups, retention, kernel-space storage encryption, and compatibility-pinned restore jobs.
 - Decide whether K3s uses embedded SQLite with clean rebuild or embedded etcd with snapshots. Test the selected restore path.
 - Add backup freshness/restore-test observability before application data arrives.
 
@@ -120,14 +125,16 @@ A synthetic database is backed up, the cluster/guest state is destroyed, and the
 
 Order minimizes irreplaceable-data risk.
 
-### 6A. Radarr and Sonarr without acquisition
+### 6A. Arr migration without acquisition
 
-- Deploy config/database state, `/data`, and `/scratch` mounts.
-- Enforce stable shared paths and permissions.
-- Configure OIDC/gateway protection, local break-glass accounts, probes, and backups.
-- Import/read a disposable sample library; do not connect download clients/indexers.
+- Restore Radarr, Sonarr, and every retained Arr-family service from native exports on compatibility-pinned versions and unchanged logical media paths.
+- Deploy config/database state, `/data`, and `/scratch` mounts; enforce stable shared paths and permissions.
+- Configure OIDC/gateway protection, rotated API keys, local break-glass accounts, probes, and backups declaratively.
+- Add Recyclarr with reviewed TRaSH Guides profiles in dry-run/diff mode, then make only its supported settings authoritative. Spike Configarr only if broader custom configuration is required.
+- Inventory and remove bespoke configuration deliberately; never reset library identity, monitored state, history, or integrations merely to achieve declarative purity.
+- Do not connect download clients/indexers until migration and restore are proven.
 
-Exit: config/database restore works; neither service can write outside assigned media subtrees.
+Exit: all retained Arr services restore with their legacy operational state, GitOps recreates deployment/configuration, the reconciler reports no unexplained drift, and no service can write outside assigned media subtrees.
 
 ### 6B. Jellyfin
 
@@ -146,7 +153,7 @@ Exit: media playback survives pod restart and guest rollback; config restore wor
 - Restore originals plus database to a fresh Immich instance at a pinned version.
 - Import real photos only after that restore succeeds.
 
-Exit: a phone-uploaded asset, album/share metadata, and an external-library asset all survive the full restore drill. Off-site backup freshness meets target.
+Exit: a phone-uploaded asset, album/share metadata, and an external-library asset all survive the full local restore drill. The accepted absence of a post-cutover remote RPO is documented.
 
 ## Phase 7 — NAS user service
 
@@ -186,7 +193,7 @@ Only after the earlier recovery gates:
 - request management;
 - import automation and hardlink strategy;
 - Recyclarr/config synchronization;
-- curated-media selection/catalog and selective off-site backup;
+- curated-media classification and catalog maintenance; payload backup remains outside this roadmap;
 - richer observability;
 - Cilium/network-policy migration if still valuable;
 - second physical Kubernetes node or storage host if availability requirements change.

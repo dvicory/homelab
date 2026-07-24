@@ -2,17 +2,26 @@
 
 These are intentionally unresolved. The architecture defines when and how to answer them.
 
+## Phase 0 facts now established
+
+- `hvn-hyp1` has seven 12 TB HDDs. Three temporary Btrfs/gocryptfs filesystems provide 36.00 TB raw and contain 20.83 TB of regular files; `bulk-2` and `bulk-3` contain additional hasty media copies but were not scanned as roots.
+- All seven 12 TB disks may eventually become five mergerfs data disks plus two SnapRAID parity disks after unique-file reconciliation. The temporary filesystem, encryption, path, and naming scheme is not retained.
+- Four physical 1 TB Intel NVMe devices are owned and two are installed. The installed devices currently expose approximately 100 GB namespaces; the boot `rpool` is 84% allocated.
+- Application state and personal originals use separate physical mirror pools. Liberated 8 TB Proxmox disks are candidates for personal-data mirrors; owned NVMe devices are candidates for application-state mirrors.
+- The R730xd has 12 storage slots. At most 11 may be occupied; one bay is permanently reserved for maintenance and replacement workflows.
+- Both hosts have active 10GbE links on `172.27.50.0/24`.
+- The old seven-disk RAIDZ2 pool is online but 98% allocated. No old Proxmox data has a verified backup plan, including the fileserver tree.
+
 ## Must answer before storage changes
 
-1. What are every disk's stable ID, size, age, filesystem, encryption layer, health, slot/enclosure, and current contents across both `hvn-hyp1` and the old Proxmox host?
-2. For every duplicated movie/TV/photo/personal dataset, which copy is authoritative, complete, stale, or disposable? The hasty copy on `hvn-hyp1` must not be assumed authoritative.
-3. Are the bulk disks directly visible through an HBA/JBOD path, and which failures share a controller, cable, enclosure, or power supply?
-4. Which second 1 TB Intel NVMe is unused, and is it suitable for guest local PVs/database state?
-5. What data is currently under the three gocryptfs trees, and is there any verified backup before migrating encryption/layout?
-6. What is the planned initial disk purchase and expected annual growth within the 20–100 TB range?
-7. Does personal data receive its own pool/vdevs, or a rigorously isolated redundant topology within a shared ZFS pool?
-8. How many simultaneous data-disk failures should the media tier tolerate? The proposal assumes dual SnapRAID parity is the conservative starting point, pending disk count.
-9. What off-site target exists, and does it provide versioning/immutability against credential compromise or ransomware?
+1. Which exact enclosure slots contain every disk, what is each disk's SMART/NVMe health, and is the integrated `megaraid_sas` controller in a mode that preserves end-to-end disk error visibility?
+2. What differs among old `/tank1/ds1/mccoy/media`, current `/mnt/storage/media`, `bulk-2`, and `bulk-3` by relative path, size, and targeted checksum?
+3. What do the old Proxmox roots outside the scanned media subtree contain, especially `mccoy`'s 2.55 TB parent data, `kirk`'s 2.02 TB parent data, 2.17 TB of backups, and the unbacked 820 GB `spock/media` fileserver tree?
+4. What namespace topology and controller operations expose the owned 1 TB NVMe capacity? Can root be enlarged without deleting its namespace, or is a staged reinstall required?
+5. Which two NVMe devices form the application-state mirror, and do the remaining devices provide mirrored root, a single rebuildable root, or disposable cache?
+6. Do personal originals initially need one 8 TB mirror (8 TB usable) or two mirror vdevs/pairs (16 TB usable)? Two pairs consume all four additional allowed slots and reach the 11-slot occupancy ceiling.
+7. Which filesystem should live inside each bulk LUKS2 device: Btrfs for checksummed detection, or XFS/ext4 for a simpler SnapRAID stack?
+8. Does critical ZFS use native encryption or LUKS2 under ZFS after comparing recovery keys, raw send, metadata exposure, and boot/unlock behavior?
 
 ## Must answer before nspawn commitment
 
@@ -49,7 +58,7 @@ These are intentionally unresolved. The architecture defines when and how to ans
 
 1. CloudNativePG local-PV restore versus guest systemd PostgreSQL restore: which has the smaller complete disaster-recovery procedure?
 2. Should Radarr/Sonarr start with SQLite or PostgreSQL? Immich requires PostgreSQL regardless.
-3. Exact Immich directory classification: which of `library`, `upload`, `thumbs`, `profile`, `encoded-video`, and `backups` are copied off-site versus regenerated?
+3. Exact Immich directory classification: which of `library`, `upload`, `thumbs`, `profile`, `encoded-video`, and `backups` are required for local restore versus regenerated?
 4. Is an existing photo archive imported into Immich-managed storage or retained as a read-only external library?
 5. Which Jellyfin clients must support SSO, and which require normal Jellyfin credentials?
 6. Which public sharing semantics are needed from Immich versus the later document-sync application?
@@ -90,7 +99,7 @@ The later selective backup design must answer:
 - selection source: explicit catalog, filesystem marker/xattr, directory boundary, or Radarr/Sonarr metadata;
 - behavior when a selected file is renamed, upgraded, or moved between mergerfs branches;
 - whether selected files are copied into a protected ZFS dataset or backed up in place;
-- checksum/catalog privacy at the off-site target;
+- catalog privacy and portability while it remains local;
 - deletion retention and deselection semantics;
 - restore back into library paths without depending on a live Radarr/Sonarr database.
 

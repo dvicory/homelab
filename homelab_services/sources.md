@@ -13,9 +13,17 @@ Inspected 2026-07-23. Repository paths are local evidence; external links are pr
 - `modules/den/hosts/hvn-hyp1/facter.json`
   - two CPU packages, 14 cores each and 56 aggregate threads represented by the inventory;
   - about 224 GiB usable memory;
-  - two Intel 1 TB NVMe devices;
+  - two installed Intel NVMe devices whose model identifies 1 TB hardware; runtime block topology exposes approximately 100 GB namespaces;
   - four Intel Ethernet interfaces plus iDRAC;
   - Intel display PCI device `8086:56b1` using `i915`, plus embedded Matrox display.
+- Owner-supplied inventory and policy:
+  - four physical 1 TB NVMe devices are owned, with two installed;
+  - R730xd has 12 storage slots but at most 11 may be occupied;
+  - `bulk-2`/`bulk-3` contain hasty media copies and may be repurposed after reconciliation;
+  - current gocryptfs/naming is temporary; kernel-space encryption is preferred;
+  - all old Proxmox data, including the fileserver tree, currently lacks a verified backup plan;
+  - application state and personal originals should use separate mirror pools; liberated 8 TB disks are available after evacuation.
+  - old Proxmox remains an unchanged same-site static rollback copy after migration; off-site integration is outside the current roadmap.
 - `modules/den/aspects/services/mergerfs.nix`
   - host-owned mergerfs service with live branch reload.
 - `modules/den/aspects/core/network/tailscale.nix`
@@ -37,7 +45,8 @@ Inspected 2026-07-23. Repository paths are local evidence; external links are pr
   - retained static NFS bulk PV, local/NFS scratch split, stable PVC contracts.
 - `.../aspects/kubernetes/services/media/sonarr.nix`
 - `.../aspects/kubernetes/services/media/radarr.nix`
-  - PostgreSQL, `/data` and `/scratch`, probes, API secrets, gateway OIDC, network policies, metrics/logging.
+  - PostgreSQL, `/data` and `/scratch`, probes, API secrets, gateway OIDC, network policies, metrics/logging;
+  - these manifests declaratively deploy infrastructure but do not own the full in-application TRaSH/quality/profile configuration.
 - `.../aspects/services/media/jellyfin.nix`
   - host placement, NFS media mount, declarative configuration, VA-API, SSO plugin, nginx.
 - `.../aspects/services/storage/media-data-share.nix`
@@ -75,6 +84,18 @@ No official source found a complete supported K3s-inside-nspawn privilege contra
 - [Flux documentation](https://fluxcd.io/flux/) and [Flux installation/bootstrap](https://fluxcd.io/flux/installation/) — controller model, idempotent bootstrap, and self-management.
 - [Argo CD overview](https://argo-cd.readthedocs.io/en/stable/) and [installation modes](https://argo-cd.readthedocs.io/en/stable/operator-manual/installation/) — reconciliation/UI model and full/core options.
 - [Argo CD secret management](https://argo-cd.readthedocs.io/en/stable/operator-manual/secret-management/) — destination-side secret population can remain independent of Argo itself.
+
+### Media application configuration
+
+- [TRaSH Guides](https://github.com/TRaSH-Guides/Guides) — actively maintained, developer-collaborated guidance for Radarr, Sonarr, download clients, path design, quality profiles, and custom formats; retained as the policy source.
+- [Recyclarr](https://github.com/recyclarr/recyclarr) — synchronizes TRaSH quality profiles, custom formats/scores, quality definitions, naming, and media-management settings for Radarr/Sonarr.
+- [Configarr](https://github.com/raydak-labs/configarr) and its [Kubernetes installation](https://configarr.de/docs/installation/kubernetes/) — broader custom configuration with documented CronJob deployment; alternative when Recyclarr's supported field set is insufficient.
+- [Nixflix](https://github.com/kiriwalawren/nixflix) — NixOS modules using application APIs for idempotent Jellyfin/Arr configuration. Useful reference, but its direct runtime model is NixOS services rather than Kubernetes.
+
+### Filesystem catalog
+
+- [rclone `lsjson`](https://rclone.org/commands/rclone_lsjson/) — machine-readable recursive JSON listing with path, size, and modification time; hashes are omitted unless `--hash` is requested.
+- [rclone local backend](https://rclone.org/local/) — local-path behavior, symlink handling, and filesystem-boundary controls.
 
 ### Immich
 
