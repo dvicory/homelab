@@ -6,13 +6,14 @@ Three role-specific entry points share one read-only implementation:
 - `phase0-proxmox.sh` — Proxmox cluster, VM, container, storage, and HA additions.
 - `phase0-docker-guest.sh` — credential-safe Docker/Compose inventory for `dia`; records images, mounts, ports, networks, selected Compose labels, and environment variable names but never environment values.
 - `_phase0-collector-lib.sh` — common hardware, disk, network, GPU, power, filesystem, and optional content scanning. Keep this file beside every entry point.
+- `phase0-catalog.sh` — one-root-at-a-time compressed JSON metadata cataloging with symlink and failure controls.
 
 The collectors do not modify disks, pools, mounts, VMs, services, networking, or configuration. They do not run repairs, SMART self-tests, scrubs, parity sync, benchmarks, or packet captures.
 
 ## Recommended production-safe sequence
 
 Run from a local filesystem with enough room for text reports. Root is strongly recommended.
-Because the collector runs as root, execute it only from a trusted copy. Keep the two wrappers and shared library in a root-owned, non-world-writable directory on the Proxmox host; the collector itself uses a fixed system PATH to avoid command shadowing.
+Because collection runs as root, execute only trusted copies. Keep the required wrapper/helper files in a root-owned, non-world-writable directory on each source host; the inventory collector uses a fixed system PATH to avoid command shadowing.
 
 ### 1. Low-impact topology pass on `hvn-hyp1`
 
@@ -101,28 +102,36 @@ Do not point `--scan-root` at `/`, `/proc`, `/sys`, `/dev`, `/run`, a VM image, 
 
 ## JSON filesystem catalogs
 
-Use [rclone `lsjson`](https://rclone.org/commands/rclone_lsjson/) rather than extending the collector into a custom manifest format. On a local filesystem, hashes are omitted unless `--hash` is explicitly requested, so this reads directory metadata and file stats—not 30 TiB of payload.
+Use [rclone `lsjson`](https://rclone.org/commands/rclone_lsjson/) through `phase0-catalog.sh`. The wrapper produces one compressed catalog, an rclone log, source/mount metadata, and checksums per explicit root. It records files, directories, and symbolic links without following links, hashing payloads, or entering `.zfs` snapshot namespaces.
+
+The repeated notice `Can't follow symlink without -L/--copy-links` from the earlier manual command is expected: those regular-file entries remain useful, but symlinks were omitted. Do **not** add `-L`/`--copy-links`; following links can escape the selected root, duplicate trees, and enter loops. The wrapper uses `--links`, which represents each link as a `.rclonelink` catalog entry without traversing its target.
+
+On `hvn-hyp1`, run via a temporary Nix shell:
 
 ```bash
-catalog_name=proxmox-kirk
-sudo ionice -c 3 nice -n 19 \
-  rclone lsjson --recursive --files-only --no-mimetype \
-  --exclude '/.zfs/**' --exclude '**/.zfs/**' /source/root \
-  > "/safe/output/${catalog_name}.files.json" &&
-gzip -1 "/safe/output/${catalog_name}.files.json"
+sudo nix shell nixpkgs#rclone -c \
+  ./phase0-catalog.sh \
+  --label hvn-bulk-2 \
+  --root /bulk-2/medialibrary \
+  --output /var/tmp/catalogs
 ```
 
-The uncompressed write is deliberate: rclone failure leaves an obvious partial JSON file and prevents compression from masking its exit status. Keep modification times; they help identify likely copies and later changes. Do **not** add `--hash`. Rclone ignores symlinks by default, excludes ZFS snapshot namespaces above, and crosses other mounted filesystem boundaries by default. That crossing is desired for the legacy named roots when their nested ZFS datasets belong to the same catalog; inspect mount topology first so unrelated mounts are not included.
+On old Proxmox or `dia`, install/use a trusted rclone binary and invoke the same script directly. Use one invocation per root. Never reuse a label: the wrapper refuses to overwrite an existing catalog.
 
-Catalog these roots separately:
+Catalog these complete roots:
 
-- Proxmox: `/tank1/ds1/kirk`, `/tank1/ds1/spock`, `/tank1/ds1/mccoy`, `/tank1/ds1/redshirt`, plus any other explicit content root found during review.
-- `hvn-hyp1`: `/mnt/storage/media`.
-- `bulk-2` and `bulk-3`: their mounted dataset roots after the pools are discovered and opened read-only.
+- old Proxmox: `/tank1/ds1` as `proxmox-tank1-ds1`; this includes the disorganized Kirk, Spock, McCoy, Redshirt, fileserver, backup, VM, and other nested dataset trees in one authority inventory;
+- `hvn-hyp1`: `/mnt/storage/media` as `hvn-media`;
+- imported ZFS pools: `/bulk-2/medialibrary` as `hvn-bulk-2` and `/bulk-3/medialibrary` as `hvn-bulk-3`;
+- `dia`: `/home/medialibrary` as `dia-home-medialibrary` and `/var/lib/docker/volumes` as `dia-docker-volumes`.
 
-For `bulk-2` and `bulk-3`, use the JSON catalog rather than another complete Phase 0 collector. First provide the output of plain `zpool import`; define the read-only import/mount command only after its topology is known.
+Do not separately catalog `dia`'s `/mnt/medialibrary`: it is the network-mounted legacy data covered by the Proxmox catalog. The Docker report also shows `/mnt/ceres-complete-downloads`; classify its backing mount from the report before deciding whether it needs its own authority catalog.
 
-The catalogs supply `Path`, `Name`, `Size`, and `ModTime`. They are planning inputs for high-level classification and later `rsync`/rclone transfer lists, not proof of identical content. Hash only same-path size conflicts, unique critical files, and selected samples.
+`bulk-2` and `bulk-3` are now imported read-write and auto-mounted. Both are online single-disk pools with one `medialibrary` dataset; no errors were reported, but their last successful scrubs were September 2025. Do not run `zpool upgrade`, change properties, create/delete snapshots, or write into them. Metadata cataloging is safe. Decide whether to export and re-import read-only after current catalog processes finish.
+
+The catalogs supply `Path`, `Name`, `Size`, `ModTime`, directory entries, and `.rclonelink` markers. They are planning inputs for high-level classification and later `rsync`/rclone transfer lists, not proof of identical content. Hash only same-path size conflicts, unique critical files, and selected samples.
+
+Do not paste raw catalogs into chat. Keep them untracked and copy the four output files per label into `homelab_services/`. After collection, deterministic code will stream the gzip JSON into a local SQLite catalog, normalize `.rclonelink` entries, and emit bounded top-level/extension/age summaries plus cross-source path/size diffs. Only those summaries and selected conflict rows enter model context; catalog size is therefore not a context limit.
 
 ### Initial legacy priority map
 

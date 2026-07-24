@@ -19,11 +19,15 @@ Inspected 2026-07-23. Repository paths are local evidence; external links are pr
 - Owner-supplied inventory and policy:
   - four physical 1 TB NVMe devices are owned, with two installed;
   - R730xd has 12 storage slots but at most 11 may be occupied;
-  - `bulk-2`/`bulk-3` contain hasty media copies and may be repurposed after reconciliation;
+  - `bulk-2`/`bulk-3` contain hasty media copies, are now imported as single-disk pools, and may be repurposed only after reconciliation;
   - current gocryptfs/naming is temporary; kernel-space encryption is preferred;
   - all old Proxmox data, including the fileserver tree, currently lacks a verified backup plan;
   - application state and personal originals should use separate mirror pools; liberated 8 TB disks are available after evacuation.
   - old Proxmox remains an unchanged same-site static rollback copy after migration; off-site integration is outside the current roadmap.
+- `homelab_services/phase0-hvn-hyp1-nvme-20260724T104514Z/`
+  - verified imported-pool topology and NVMe controller/namespace capacity.
+- `homelab_services/phase0-dia-20260724T103518Z/`
+  - verified Docker/Compose topology and persistent bind/volume roots without environment values.
 - `modules/den/aspects/services/mergerfs.nix`
   - host-owned mergerfs service with live branch reload.
 - `modules/den/aspects/core/network/tailscale.nix`

@@ -6,15 +6,15 @@ This is a decision and validation roadmap, not an OpenSpec work breakdown. Each 
 
 ### Work
 
-- Preserve both report archives and freeze all provisioning, imports, pool upgrades, snapshot deletion, and disk repurposing while source authority is unresolved.
+- Preserve all report archives and freeze further pool imports, pool/property upgrades, snapshot deletion, writes to imported legacy pools, and disk repurposing while source authority is unresolved.
 - Correct the `hvn-hyp1` root-disk declaration from volatile `/dev/nvme0n1` naming to the verified stable ID of the runtime root device before any installer or disk-layout command can consume it.
-- Map all seven 12 TB disks by slot and stable ID. Treat `bulk-2` and `bulk-3` as repurposable only after unique media is copied and verified; they were not included in the deep scan.
-- Identify PERC/HBA controller mode, cache policy, disk error visibility, enclosure/cable/power failure domains, and complete SMART/NVMe health evidence.
-- Generate comparable path/size manifests for old `/tank1/ds1/mccoy/media`, current `/mnt/storage/media`, and the mounted contents of `bulk-2`/`bulk-3`; checksum conflicts and samples before declaring any file duplicate.
-- Inventory and immediately prioritize the unbacked old roots, especially `tank1/ds1/mccoy` outside `media`, `tank1/ds1/kirk`, `tank1/ds1/kirk/backups`, and `tank1/ds1/spock/media/fileserver`.
-- Inventory every installed Arr-family service and export native backups, databases, configuration, integrations, API-visible settings, and version/path contracts from `dia`; export Jellyfin users/watch state, libraries, plugins, metadata, and server configuration.
+- Map all seven 12 TB disks by slot and stable ID. Treat imported `bulk-2` and `bulk-3` as repurposable only after unique media is copied and verified.
+- Identify PERC/HBA controller mode, cache policy, disk error visibility, enclosure/cable/power failure domains, and complete HDD SMART evidence.
+- Generate complete catalogs for old `/tank1/ds1`, current `/mnt/storage/media`, `/bulk-2/medialibrary`, `/bulk-3/medialibrary`, and `dia` local application state; checksum conflicts and samples before declaring any file duplicate.
+- Classify every disorganized legacy subtree by criticality, authority, destination, and action rather than assuming the character-name hierarchy reflects current contents.
+- Export native backups, databases, configuration, integrations, API-visible settings, and version/path contracts for every installed `dia` service; preserve Jellyfin users/watch state, libraries, plugins, metadata, and server configuration.
 - Measure daily growth, Immich/photo import size, personal-file size, and expected three-year growth.
-- Inventory all four owned 1 TB NVMe devices and every namespace. Design a recoverable root expansion/reinstallation and a separate two-device application-state mirror without namespace deletion before data is secured.
+- Use the verified NVMe total/unallocated-capacity and namespace-management evidence to design a recoverable root expansion/reinstallation and a separate two-device application-state mirror without risking the only boot namespace.
 - Before further large builds, record required rollback generations, prune only explicitly obsolete generations/store paths, and establish a temporary free-space floor. Treat this as risk reduction, not a substitute for root namespace expansion.
 - Identify Intel GPU model/capabilities from PCI ID `8086:56b1`, firmware, supported codec matrix, current `/dev/dri` nodes, and safe render-node permissions.
 - Record switch/router models, both hosts' 10GbE port paths, VLAN capacity, selected bridge interface, firewall/DNS control, UPS state, and iDRAC recovery access.
