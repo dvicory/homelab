@@ -1,0 +1,965 @@
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -917,3 +917,4 @@ class Task:
+     # parent revision before the worker starts; ordinary workers never resolve it.
+     inherit_parent_workspace_output: bool = False
++    workspace_source_task_id: Optional[str] = None
+     # Selected relative roots requested for immutable publication on completion.
+@@ -1007,3 +1008,6 @@ class Task:
+                 else False
+             ),
++            workspace_source_task_id=(
++                row["workspace_source_task_id"] if "workspace_source_task_id" in keys else None
++            ),
+             workspace_outputs=(
+@@ -1196,3 +1200,5 @@ CREATE TABLE IF NOT EXISTS tasks (
+     -- Child creation intent; interpreted only by trusted dispatch.
+     inherit_parent_workspace_output INTEGER NOT NULL DEFAULT 0,
++    -- Trusted creator task identity; never accepted from the model schema.
++    workspace_source_task_id TEXT,
+     -- JSON array of selected relative roots to publish after execution.
+@@ -2036,3 +2042,8 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
+         )
+ 
++    if "workspace_source_task_id" not in cols:
++        _add_column_if_missing(
++            conn, "tasks", "workspace_source_task_id", "workspace_source_task_id TEXT"
++        )
++
+     if "workspace_outputs" not in cols:
+@@ -2565,6 +2576,8 @@ def _finalize_workspace_outputs(
+     run_id: Optional[int],
+     selected_outputs: Optional[list[str]],
+ ) -> Optional[dict[str, Any]]:
+-    if selected_outputs is None:
++    handoff_enabled = os.environ.get("HERMES_WORKSPACE_HANDOFF", "").strip() == "1"
++    if selected_outputs is None and not handoff_enabled:
+         return None
++    selected_outputs = selected_outputs or []
+     if run_id is None:
+@@ -2590,6 +2603,9 @@ def _finalize_workspace_outputs(
+         if not isinstance(result, dict):
+             raise RuntimeError("workspace completion finalizer returned an invalid result")
+-        for field in ("revisionId", "manifestDigest"):
+-            if not isinstance(result.get(field), str) or not result[field]:
+-                raise RuntimeError(f"workspace completion finalizer omitted {field}")
++        if selected_outputs:
++            for field in ("revisionId", "manifestDigest"):
++                if not isinstance(result.get(field), str) or not result[field]:
++                    raise RuntimeError(f"workspace completion finalizer omitted {field}")
++        elif result.get("consumed") is not True:
++            raise RuntimeError("workspace completion finalizer did not fence the task run")
+         return complete_workspace_operation(
+@@ -2627,3 +2644,4 @@ def create_task(
+     session_id: Optional[str] = None,
+     inherit_parent_workspace_output: bool = False,
++    workspace_source_task_id: Optional[str] = None,
+     board: Optional[str] = None,
+@@ -2667,3 +2685,9 @@ def create_task(
+     if not isinstance(inherit_parent_workspace_output, bool):
+         raise ValueError("inherit_parent_workspace_output must be a boolean")
++    if workspace_source_task_id is not None:
++        workspace_source_task_id = str(workspace_source_task_id).strip() or None
++    if inherit_parent_workspace_output and not workspace_source_task_id:
++        raise ValueError("inherited workspace output requires trusted source task identity")
++    if not inherit_parent_workspace_output and workspace_source_task_id is not None:
++        raise ValueError("workspace source task identity requires inherited output intent")
+     if branch_name is not None:
+@@ -2861,4 +2886,4 @@ def create_task(
+                         max_runtime_seconds,
+                         skills, max_retries, goal_mode, goal_max_turns, session_id,
+-                        inherit_parent_workspace_output
+-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++                        inherit_parent_workspace_output, workspace_source_task_id
++                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+@@ -2885,3 +2911,4 @@ def create_task(
+                         session_id,
+                         1 if inherit_parent_workspace_output else 0,
++                        workspace_source_task_id,
+                     ),
+@@ -7530,8 +7557,13 @@ def dispatch_once(
+             continue
+         try:
+-            resolved_branch_name = None
+-            if claimed.workspace_kind == "worktree":
+-                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
++            broker_workspace = os.environ.get("HERMES_WORKSPACE_HANDOFF", "").strip() == "1"
++            if broker_workspace:
++                resolved_branch_name = None
++                workspace = "/workspace"
+             else:
+-                workspace = resolve_workspace(claimed, board=board)
++                resolved_branch_name = None
++                if claimed.workspace_kind == "worktree":
++                    workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
++                else:
++                    workspace = resolve_workspace(claimed, board=board)
+         except Exception as exc:
+@@ -7544,4 +7577,4 @@ def dispatch_once(
+             continue
+         # Persist the resolved workspace path so the worker can cd there.
+-        set_workspace_path(conn, claimed.id, str(workspace))
++        set_workspace_path(conn, claimed.id, "/workspace" if broker_workspace else str(workspace))
+         if claimed.workspace_kind == "worktree":
+diff --git a/hermes_cli/worker_lanes.py b/hermes_cli/worker_lanes.py
+--- a/hermes_cli/worker_lanes.py
++++ b/hermes_cli/worker_lanes.py
+@@ -170,13 +170,19 @@ def kanban_worker_env(task, workspace, *, board=None, base=None) -> "dict[str, Any]":
+     if getattr(task, "tenant", None):
+         env["HERMES_TENANT"] = task.tenant
+-    from hermes_cli.plugins import invoke_hook
++    from hermes_cli.plugins import invoke_hook, invoke_required_hook
+ 
+     broker_workspace = False
+-    for result in invoke_hook(
+-        "prepare_worker_environment",
++    hook_args = dict(
+         task_id=task.id,
+         board=env["HERMES_KANBAN_BOARD"],
+         assignee=getattr(task, "assignee", None),
+         run_id=getattr(task, "current_run_id", None),
+-    ):
++    )
++    if os.environ.get("HERMES_WORKSPACE_HANDOFF", "").strip() == "1":
++        hook_results = [
++            invoke_required_hook("prepare_worker_environment", **hook_args)
++        ]
++    else:
++        hook_results = invoke_hook("prepare_worker_environment", **hook_args)
++    for result in hook_results:
+         if not isinstance(result, dict):
+diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
+--- a/tools/kanban_tools.py
++++ b/tools/kanban_tools.py
+@@ -981,4 +981,5 @@ def _handle_create(args: dict, **kw) -> str:
+                 ),
+                 initial_status=str(initial_status),
+                 inherit_parent_workspace_output=inherit_parent_workspace_output,
++                workspace_source_task_id=caller_task_id if inherit_parent_workspace_output else None,
+                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
+diff --git a/tools/environments/gondolin.py b/tools/environments/gondolin.py
+--- a/tools/environments/gondolin.py
++++ b/tools/environments/gondolin.py
+@@ -35,3 +35,13 @@ class BrokerClient:
+     """Thread-safe HTTPX client for HTTP/1.1 over one Unix socket."""
+ 
++    @staticmethod
++    def _task_payload(payload: dict[str, Any]) -> dict[str, Any]:
++        task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
++        run_id = os.environ.get("HERMES_KANBAN_RUN_ID", "").strip()
++        if not task_id and not run_id:
++            return payload
++        if not task_id or not run_id:
++            raise BrokerError("run_activation.missing", "incomplete Kanban task/run identity")
++        return {**payload, "taskRun": {"taskId": task_id, "runId": run_id}}
++
+     def __init__(self, socket_path: str, timeout: float = 30.0):
+@@ -69,3 +78,3 @@ class BrokerClient:
+         response = self._client.post(
+             "/v1/environments/ensure",
+-            json={"environmentKey": environment_key},
++            json=self._task_payload({"environmentKey": environment_key}),
+@@ -100,8 +109,8 @@ class BrokerClient:
+         response = self._client.post(
+             "/v1/files/read",
+-            json={
++            json=self._task_payload({
+                 "environmentKey": environment_key,
+                 "generation": generation,
+                 "path": path,
+                 "maxBytes": max_bytes,
+-            },
++            }),
+@@ -115,10 +124,10 @@ class BrokerClient:
+         response = self._client.post(
+             "/v1/files/write",
+-            json={
++            json=self._task_payload({
+                 "environmentKey": environment_key,
+                 "generation": generation,
+                 "path": path,
+                 "dataBase64": base64.b64encode(data).decode("ascii"),
+                 "create": True,
+                 "truncate": True,
+-            },
++            }),
+@@ -134,3 +143,3 @@ class BrokerClient:
+         response = self._client.post(
+             "/v1/environments/close",
+-            json={"environmentKey": environment_key, "generation": generation},
++            json=self._task_payload({"environmentKey": environment_key, "generation": generation}),
+@@ -151,5 +160,5 @@ class BrokerClient:
+         with self._client.stream(
+             "POST",
+             "/v1/exec",
+-            json=payload,
++            json=self._task_payload(payload),
+             timeout=request_timeout,
+
+diff --git a/plugins/workspace-service/__init__.py b/plugins/workspace-service/__init__.py
+--- a/plugins/workspace-service/__init__.py
++++ b/plugins/workspace-service/__init__.py
+@@ -4,3 +4,4 @@ from __future__ import annotations
+ 
++import hashlib
+ import http.client
+ import json
+@@ -12,3 +13,4 @@ from typing import Any
+ from tools import terminal_tool
++from hermes_cli import kanban_db as kb
+ 
+ 
+@@ -19,3 +21,6 @@ _ENABLED = bool(_AUTHORITY_BINDING) and bool(
+     os.getenv("HERMES_GONDOLIN_SOCKET", "").strip()
+ )
++_HANDOFF_ENABLED = _ENABLED and (
++    os.getenv("HERMES_WORKSPACE_HANDOFF", "").strip() == "1"
++)
+ _WORKSPACE_TOOLS = frozenset(
+@@ -106,4 +111,18 @@ def _activate_task_run(
+     }
+ 
+ 
++def _consume_task_run(
++    *, environment_key: str, task_id: str, run_id: str
++) -> dict[str, Any]:
++    response = _request("/v1/control/task-runs/consume", {
++        "environmentKey": environment_key,
++        "taskId": task_id,
++        "runId": run_id,
++    })
++    activation = response.get("activation")
++    if not isinstance(activation, dict):
++        raise RuntimeError("workspace.invalid_response: consumed activation is missing")
++    return {"consumed": True}
++
++
+ def _publish_workspace_revision(
+@@ -155,6 +174,6 @@ def _import_workspace_revision(
+     return {
+         "workspaceId": _required_identifier(workspace.get("workspaceId"), "workspaceId"),
+         "workspaceLeaseId": _required_identifier(lease.get("leaseId"), "workspaceLeaseId"),
+-        "guestPath": workspace.get("guestPath"),
++        "guestPath": _required_identifier(workspace.get("guestPath"), "guestPath"),
+     }
+ 
+@@ -175,2 +197,7 @@ def _acquire(task_id: str = "", session_id: str = "") -> dict[str, Any]:
+-def _acquire(task_id: str = "", session_id: str = "") -> dict[str, Any]:
++def _acquire(
++    task_id: str = "",
++    session_id: str = "",
++    expected_workspace_id: str = "",
++    expected_lease_id: str = "",
++) -> dict[str, Any]:
+     identity = _identity(task_id, session_id)
+@@ -186,10 +214,10 @@ def _acquire(task_id: str = "", session_id: str = "") -> dict[str, Any]:
+         cached = _bindings.get(environment_key)
+         request = {"environmentKey": environment_key}
+-        expected_workspace_id = (
+-            os.getenv("HERMES_WORKSPACE_ID", "").strip()
+-            or (cached["workspaceId"] if cached is not None else "")
++        expected_workspace_id = expected_workspace_id or (
++            os.getenv("HERMES_WORKSPACE_ID", "").strip()
++            or (cached["workspaceId"] if cached is not None else "")
+         )
+-        expected_lease_id = (
+-            os.getenv("HERMES_WORKSPACE_LEASE_ID", "").strip()
+-            or (cached["workspaceLeaseId"] if cached is not None else "")
++        expected_lease_id = expected_lease_id or (
++            os.getenv("HERMES_WORKSPACE_LEASE_ID", "").strip()
++            or (cached["workspaceLeaseId"] if cached is not None else "")
+         )
+@@ -216,4 +246,158 @@ def _acquire(task_id: str = "", session_id: str = "") -> dict[str, Any]:
+         return binding
+ 
+ 
++def _relation_digest(
++    *, board: str, source_task_id: str, destination_task_id: str, tenant: str | None
++) -> str:
++    facts = {
++        "board": board,
++        "destinationTaskId": destination_task_id,
++        "sourceTaskId": source_task_id,
++        "tenant": tenant,
++    }
++    encoded = json.dumps(facts, sort_keys=True, separators=(",", ":")).encode("utf-8")
++    return hashlib.sha256(encoded).hexdigest()
++
++
++def _ready_preparation(connection: Any, task_id: str) -> dict[str, Any] | None:
++    row = connection.execute(
++        "SELECT result_json FROM task_workspace_operations "
++        "WHERE task_id=? AND kind='preparation' AND state='ready' "
++        "ORDER BY run_id DESC LIMIT 1",
++        (task_id,),
++    ).fetchone()
++    if row is None:
++        return None
++    result = json.loads(row["result_json"])
++    if not isinstance(result, dict):
++        raise RuntimeError("workspace.invalid_state: preparation result is invalid")
++    return result
++
++
++def _prepare_task_run(
++    *, task_id: str, run_id: int, board: str
++) -> dict[str, Any]:
++    if not _HANDOFF_ENABLED:
++        raise RuntimeError("workspace handoff is disabled")
++    if not isinstance(run_id, int):
++        raise RuntimeError("workspace.identity_missing: no trusted Kanban run identity")
++    environment_key = _environment_key_for_task(task_id)
++    with kb.connect(board=board) as connection:
++        task = kb.get_task(connection, task_id)
++        if (
++            task is None
++            or task.status != "running"
++            or task.current_run_id != run_id
++        ):
++            raise RuntimeError("workspace operation run is stale")
++
++        prepared = _ready_preparation(connection, task_id)
++        if prepared is not None:
++            binding = _acquire(
++                task_id=task_id,
++                expected_workspace_id=_required_identifier(
++                    prepared.get("workspaceId"), "workspaceId"
++                ),
++                expected_lease_id=_required_identifier(
++                    prepared.get("workspaceLeaseId"), "workspaceLeaseId"
++                ),
++            )
++        elif task.inherit_parent_workspace_output:
++            source_task_id = task.workspace_source_task_id
++            if not source_task_id or kb.parent_ids(connection, task_id) != [source_task_id]:
++                raise RuntimeError("workspace.source_invalid: trusted direct parent is missing")
++            source = kb.get_task(connection, source_task_id)
++            if (
++                source is None
++                or source.status != "done"
++                or source.tenant != task.tenant
++                or not source.workspace_outputs
++            ):
++                raise RuntimeError("workspace.source_not_ready: parent has no ready output")
++            row = connection.execute(
++                "SELECT result_json FROM task_workspace_operations "
++                "WHERE task_id=? AND kind='publication' AND state='ready' "
++                "ORDER BY run_id DESC LIMIT 1",
++                (source_task_id,),
++            ).fetchone()
++            result = json.loads(row["result_json"]) if row is not None else None
++            if not isinstance(result, dict):
++                raise RuntimeError("workspace.source_not_ready: parent revision is unavailable")
++            source_revision_id = _required_identifier(
++                result.get("revisionId"), "sourceRevisionId"
++            )
++            relation_digest = _relation_digest(
++                board=board,
++                source_task_id=source_task_id,
++                destination_task_id=task_id,
++                tenant=task.tenant,
++            )
++            operation = kb.reserve_workspace_operation(
++                connection,
++                kind="preparation",
++                task_id=task_id,
++                run_id=run_id,
++                request={
++                    "source_task_id": source_task_id,
++                    "source_revision_id": source_revision_id,
++                    "relation_digest": relation_digest,
++                },
++            )
++            if operation["state"] == "ready":
++                imported = operation["result"]
++            else:
++                try:
++                    imported = _import_workspace_revision(
++                        preparation_id=operation["operation_id"],
++                        source_revision_id=source_revision_id,
++                        source_task_id=source_task_id,
++                        destination_task_id=task_id,
++                        destination_run_id=str(run_id),
++                        destination_environment_key=environment_key,
++                        relation_digest=relation_digest,
++                    )
++                    kb.complete_workspace_operation(
++                        connection,
++                        operation_id=operation["operation_id"],
++                        result=imported,
++                    )
++                except Exception as error:
++                    kb.record_workspace_operation_error(
++                        connection,
++                        operation_id=operation["operation_id"],
++                        error=error,
++                    )
++                    raise
++            binding = _acquire(
++                task_id=task_id,
++                expected_workspace_id=_required_identifier(
++                    imported.get("workspaceId"), "workspaceId"
++                ),
++                expected_lease_id=_required_identifier(
++                    imported.get("workspaceLeaseId"), "workspaceLeaseId"
++                ),
++            )
++        else:
++            binding = _acquire(task_id=task_id)
++
++    authority = _request(
++        "/v1/control/authority/status", {"environmentKey": environment_key}
++    )
++    policy_digest = _required_identifier(authority.get("policyDigest"), "policyDigest")
++    if (
++        authority.get("workspaceId") != binding["workspaceId"]
++        or authority.get("workspaceLeaseId") != binding["workspaceLeaseId"]
++    ):
++        raise RuntimeError("workspace.conflict: active authority does not match preparation")
++    _activate_task_run(
++        environment_key=environment_key,
++        task_id=task_id,
++        run_id=str(run_id),
++        workspace_id=binding["workspaceId"],
++        workspace_lease_id=binding["workspaceLeaseId"],
++        policy_digest=policy_digest,
++    )
++    return binding
++
++
+ def _on_pre_llm_call(
+@@ -230,5 +370,4 @@ def _on_pre_llm_call(
+     return {
+         "context": (
+             "Execution workspace (broker-authored):\n"
+-            f"- Workspace ID: {binding['workspaceId']}\n"
+             "- Guest path: /workspace\n"
+@@ -241,9 +380,13 @@ def _on_prepare_worker_environment(
+ def _on_prepare_worker_environment(
+-    *, task_id: str = "", **_: Any
++    *, task_id: str = "", run_id: int | None = None, board: str = "", **_: Any
+ ) -> dict[str, Any] | None:
+     if not _ENABLED:
+         return None
+     try:
+-        binding = _acquire(task_id=task_id)
++        binding = (
++            _prepare_task_run(task_id=task_id, run_id=run_id, board=board)
++            if _HANDOFF_ENABLED
++            else _acquire(task_id=task_id)
++        )
+     except Exception as error:
+-        return {"error": f"Execution workspace unavailable: {error}"}
++        raise RuntimeError(f"Execution workspace unavailable: {error}") from error
+@@ -277,5 +417,11 @@ def _on_finalize_task_completion(
+ ) -> dict[str, Any]:
+-    if not _ENABLED:
++    if not _HANDOFF_ENABLED:
+         raise RuntimeError("workspace handoff is disabled")
+     environment_key = _environment_key_for_task(task_id)
++    if not workspace_outputs:
++        return _consume_task_run(
++            environment_key=environment_key,
++            task_id=task_id,
++            run_id=str(run_id),
++        )
+     return _publish_workspace_revision(
+
+diff --git a/tests/plugins/test_workspace_service.py b/tests/plugins/test_workspace_service.py
+--- a/tests/plugins/test_workspace_service.py
++++ b/tests/plugins/test_workspace_service.py
+@@ -50,4 +50,4 @@ def test_plugin_revalidates_and_injects_only_opaque_workspace_context(monkeypatch):
+ 
+     assert first == second
+-    assert "workspace-opaque" in first["context"]
++    assert "workspace-opaque" not in first["context"]
+     assert "/workspace" in first["context"]
+diff --git a/tests/plugins/test_workspace_finalizers.py b/tests/plugins/test_workspace_finalizers.py
+--- a/tests/plugins/test_workspace_finalizers.py
++++ b/tests/plugins/test_workspace_finalizers.py
+@@ -145,3 +145,4 @@ def test_plugin_finalizer_replays_without_reacquiring_closed_environment(monkeypatch):
+     monkeypatch.setenv("HERMES_GONDOLIN_SOCKET", "/run/broker.sock")
+     monkeypatch.setenv("HERMES_SANDBOX_AUTHORITY_BINDING", "qa:gateway:default:v1")
++    monkeypatch.setenv("HERMES_WORKSPACE_HANDOFF", "1")
+     sys.modules.pop("workspace_finalizer_test", None)
+diff --git a/tests/plugins/test_workspace_handoff.py b/tests/plugins/test_workspace_handoff.py
+--- a/tests/plugins/test_workspace_handoff.py
++++ b/tests/plugins/test_workspace_handoff.py
+@@ -39,4 +39,5 @@ def test_handoff_intent_and_outputs_round_trip(monkeypatch, tmp_path):
+             title="child",
+             assignee="worker",
+             inherit_parent_workspace_output=True,
++            workspace_source_task_id="parent",
+         )
+
+diff --git a/tests/tools/test_gondolin_backend.py b/tests/tools/test_gondolin_backend.py
+--- a/tests/tools/test_gondolin_backend.py
++++ b/tests/tools/test_gondolin_backend.py
+@@ -317,3 +317,26 @@ def test_stdin_heredoc_feeds_multi_command_scripts(tmp_path):
+     result = subprocess.run(["/bin/sh", "-c", wrapped], capture_output=True, text=True)
+     assert result.returncode == 0, result.stderr
+     assert target.read_text() == "hello Daniel\n"
++
++
++def test_kanban_identity_is_attached_to_every_execution_request(monkeypatch):
++    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-trusted")
++    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "42")
++    broker, env = make_env()
++    env.read_file_bytes("/workspace/input")
++    env.write_file_bytes("/workspace/output", b"result")
++    process = env._run_bash("true", timeout=30)
++    env._wait_for_process(process, timeout=30)
++    env.cleanup()
++
++    task_run = {"taskId": "task-trusted", "runId": "42"}
++    execution_routes = {
++        "/v1/environments/ensure",
++        "/v1/files/read",
++        "/v1/files/write",
++        "/v1/exec",
++        "/v1/environments/close",
++    }
++    requests = [payload for route, payload in broker.calls if route in execution_routes]
++    assert requests
++    assert all(payload["taskRun"] == task_run for payload in requests)
+diff --git a/tests/plugins/test_workspace_handoff.py b/tests/plugins/test_workspace_handoff.py
+--- a/tests/plugins/test_workspace_handoff.py
++++ b/tests/plugins/test_workspace_handoff.py
+@@ -238,3 +238,229 @@ def test_create_requires_non_model_current_task_identity(monkeypatch, tmp_path):
+         "inherit_parent_workspace_output": True,
+     }))
+     assert "trusted current task identity" in response["error"]
++
++
++def _ready_parent_and_claimed_child(monkeypatch, tmp_path):
++    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
++    monkeypatch.setenv("HERMES_WORKSPACE_HANDOFF", "1")
++    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
++    kb._INITIALIZED_PATHS.clear()
++    kb.init_db()
++    with kb.connect() as connection:
++        parent_id = kb.create_task(
++            connection,
++            title="producer",
++            assignee="producer",
++            tenant="tenant-a",
++        )
++        connection.execute(
++            "UPDATE tasks SET status='done', workspace_outputs=? WHERE id=?",
++            (json.dumps(["output"]), parent_id),
++        )
++        connection.execute(
++            "INSERT INTO task_workspace_operations "
++            "(operation_id, task_id, run_id, kind, request_json, state, "
++            "result_json, last_error, created_at, updated_at) "
++            "VALUES (?, ?, 1, 'publication', ?, 'ready', ?, NULL, 1, 1)",
++            (
++                "publication-ready",
++                parent_id,
++                json.dumps({"selected_roots": ["output"]}),
++                json.dumps({
++                    "revisionId": "revision-opaque",
++                    "manifestDigest": "a" * 64,
++                }),
++            ),
++        )
++        child_id = kb.create_task(
++            connection,
++            title="consumer",
++            assignee="consumer",
++            parents=[parent_id],
++            tenant="tenant-a",
++            inherit_parent_workspace_output=True,
++            workspace_source_task_id=parent_id,
++        )
++        assert kb.claim_task(connection, child_id, claimer="dispatcher") is not None
++        child = kb.get_task(connection, child_id)
++    return parent_id, child
++
++
++def test_dispatch_imports_once_records_result_and_activates(monkeypatch, tmp_path):
++    parent_id, child = _ready_parent_and_claimed_child(monkeypatch, tmp_path)
++    plugin = load_plugin(monkeypatch)
++    monkeypatch.setattr(
++        plugin.terminal_tool, "register_task_authority_binding", lambda *_: None
++    )
++    monkeypatch.setattr(
++        plugin.terminal_tool,
++        "environment_key",
++        lambda task_id, _session_id: f"environment-{task_id}",
++    )
++    calls = []
++
++    def request(route, body):
++        calls.append((route, body))
++        if route.endswith("/import"):
++            return {
++                "workspace": {
++                    "workspaceId": "workspace-child",
++                    "guestPath": "/workspace",
++                },
++                "lease": {"leaseId": "lease-child"},
++            }
++        if route.endswith("/acquire"):
++            return {
++                "workspace": {
++                    "workspaceId": "workspace-child",
++                    "guestPath": "/workspace",
++                },
++                "lease": {"leaseId": "lease-child"},
++            }
++        if route.endswith("/status"):
++            return {
++                "workspaceId": "workspace-child",
++                "workspaceLeaseId": "lease-child",
++                "policyDigest": "b" * 64,
++            }
++        if route.endswith("/activate"):
++            return {"activationId": "activation-child", "epoch": 1}
++        raise AssertionError(route)
++
++    monkeypatch.setattr(plugin, "_request", request)
++    first = plugin._on_prepare_worker_environment(
++        task_id=child.id,
++        run_id=child.current_run_id,
++        board=kb.get_current_board(),
++    )
++    assert first["workspaceMode"] == "broker"
++    assert first["environment"]["HERMES_WORKSPACE_ID"] == "workspace-child"
++    import_calls = [item for item in calls if item[0].endswith("/import")]
++    assert len(import_calls) == 1
++    assert import_calls[0][1]["sourceTaskId"] == parent_id
++    assert import_calls[0][1]["destinationTaskId"] == child.id
++    assert "sourceRevisionId" not in first["environment"]
++
++    second = plugin._on_prepare_worker_environment(
++        task_id=child.id,
++        run_id=child.current_run_id,
++        board=kb.get_current_board(),
++    )
++    assert second == first
++    assert len([item for item in calls if item[0].endswith("/import")]) == 1
++    with kb.connect() as connection:
++        operation = connection.execute(
++            "SELECT state, result_json FROM task_workspace_operations "
++            "WHERE task_id=? AND kind='preparation'",
++            (child.id,),
++        ).fetchone()
++        assert operation["state"] == "ready"
++        assert json.loads(operation["result_json"])["workspaceId"] == "workspace-child"
++
++    before_stale = len(calls)
++    with pytest.raises(RuntimeError, match="stale"):
++        plugin._on_prepare_worker_environment(
++            task_id=child.id,
++            run_id=child.current_run_id + 1,
++            board=kb.get_current_board(),
++        )
++    assert len(calls) == before_stale
++
++
++def test_dispatch_outage_keeps_preparation_pending(monkeypatch, tmp_path):
++    _parent_id, child = _ready_parent_and_claimed_child(monkeypatch, tmp_path)
++    plugin = load_plugin(monkeypatch)
++    monkeypatch.setattr(
++        plugin.terminal_tool, "register_task_authority_binding", lambda *_: None
++    )
++    monkeypatch.setattr(
++        plugin.terminal_tool, "environment_key", lambda *_: "environment-child"
++    )
++    preparation_ids = []
++
++    def request(route, body):
++        if route.endswith("/import"):
++            preparation_ids.append(body["preparationId"])
++            if len(preparation_ids) == 1:
++                raise OSError("broker offline")
++            return {
++                "workspace": {
++                    "workspaceId": "workspace-recovered",
++                    "guestPath": "/workspace",
++                },
++                "lease": {"leaseId": "lease-recovered"},
++            }
++        if route.endswith("/acquire"):
++            return {
++                "workspace": {
++                    "workspaceId": "workspace-recovered",
++                    "guestPath": "/workspace",
++                },
++                "lease": {"leaseId": "lease-recovered"},
++            }
++        if route.endswith("/status"):
++            return {
++                "workspaceId": "workspace-recovered",
++                "workspaceLeaseId": "lease-recovered",
++                "policyDigest": "b" * 64,
++            }
++        if route.endswith("/activate"):
++            return {"activationId": "activation-recovered", "epoch": 1}
++        raise AssertionError(route)
++
++    monkeypatch.setattr(plugin, "_request", request)
++
++    with pytest.raises(RuntimeError, match="broker offline"):
++        plugin._on_prepare_worker_environment(
++            task_id=child.id,
++            run_id=child.current_run_id,
++            board=kb.get_current_board(),
++        )
++    with kb.connect() as connection:
++        operation = connection.execute(
++            "SELECT state, last_error FROM task_workspace_operations "
++            "WHERE task_id=? AND kind='preparation'",
++            (child.id,),
++        ).fetchone()
++        assert operation["state"] == "pending"
++        assert "broker offline" in operation["last_error"]
++
++    recovered = plugin._on_prepare_worker_environment(
++        task_id=child.id,
++        run_id=child.current_run_id,
++        board=kb.get_current_board(),
++    )
++    assert recovered["environment"]["HERMES_WORKSPACE_ID"] == "workspace-recovered"
++    assert len(preparation_ids) == 2
++    assert preparation_ids[0] == preparation_ids[1]
++    with kb.connect() as connection:
++        assert connection.execute(
++            "SELECT state FROM task_workspace_operations "
++            "WHERE task_id=? AND kind='preparation'",
++            (child.id,),
++        ).fetchone()["state"] == "ready"
++
++
++def test_handoff_completion_without_outputs_still_fences(monkeypatch, tmp_path):
++    monkeypatch.setenv("HERMES_WORKSPACE_HANDOFF", "1")
++    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
++    kb._INITIALIZED_PATHS.clear()
++    kb.init_db()
++    with kb.connect() as connection:
++        task_id = kb.create_task(connection, title="ordinary", assignee="worker")
++        assert kb.claim_task(connection, task_id, claimer="worker") is not None
++        running = kb.get_task(connection, task_id)
++        calls = []
++        monkeypatch.setattr(
++            plugins,
++            "invoke_required_hook",
++            lambda name, **kwargs: calls.append((name, kwargs)) or {"consumed": True},
++        )
++        assert kb.complete_task(
++            connection,
++            task_id,
++            summary="done",
++            expected_run_id=running.current_run_id,
++        )
++        assert calls[0][1]["workspace_outputs"] == []
++        assert kb.get_task(connection, task_id).status == "done"
+
+diff --git a/tests/plugins/test_workspace_kanban.py b/tests/plugins/test_workspace_kanban.py
+--- a/tests/plugins/test_workspace_kanban.py
++++ b/tests/plugins/test_workspace_kanban.py
+@@ -7,3 +7,5 @@ from pathlib import Path
+ from types import SimpleNamespace
+ 
++import pytest
++
+ from hermes_cli import kanban_db as kb
+@@ -112,3 +114,36 @@ def test_worker_preflight_reuses_dispatcher_workspace(monkeypatch):
+         "workspaceId": "workspace-opaque",
+     }
+     assert {item[0] for item in registered} == {"task-a", "worker-turn", "worker-session"}
++
++
++def test_handoff_worker_preflight_fails_before_spawn_on_broker_outage(
++    monkeypatch, tmp_path
++):
++    task = SimpleNamespace(
++        id="task-a",
++        assignee="worker",
++        current_run_id=4,
++        claim_lock="claim",
++        tenant=None,
++    )
++    monkeypatch.setenv("HERMES_WORKSPACE_HANDOFF", "1")
++    monkeypatch.setattr(kb, "kanban_home", lambda: tmp_path)
++    monkeypatch.setattr(
++        kb, "kanban_db_path", lambda board=None: tmp_path / "kanban.db"
++    )
++    monkeypatch.setattr(
++        kb, "workspaces_root", lambda board=None: tmp_path / "workspaces"
++    )
++    monkeypatch.setattr(kb, "get_current_board", lambda: "homelab")
++    monkeypatch.setattr(
++        plugins,
++        "invoke_required_hook",
++        lambda *_args, **_kwargs: (_ for _ in ()).throw(
++            RuntimeError("broker offline")
++        ),
++    )
++    monkeypatch.setattr(
++        plugins, "invoke_hook", lambda *_args, **_kwargs: pytest.fail("best effort")
++    )
++    with pytest.raises(RuntimeError, match="broker offline"):
++        worker_lanes.kanban_worker_env(task, "/workspace", base={})
+
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -2574,6 +2574,7 @@ def _finalize_workspace_outputs(
+     task_id: str,
+     run_id: Optional[int],
+     selected_outputs: Optional[list[str]],
++    completion: dict[str, Any],
+ ) -> Optional[dict[str, Any]]:
+     handoff_enabled = os.environ.get("HERMES_WORKSPACE_HANDOFF", "").strip() == "1"
+     if selected_outputs is None and not handoff_enabled:
+@@ -2587,7 +2588,10 @@ def _finalize_workspace_outputs(
+         kind="publication",
+         task_id=task_id,
+         run_id=int(run_id),
+-        request={"selected_roots": selected_outputs},
++        request={
++            "selected_roots": selected_outputs,
++            "completion": completion,
++        },
+     )
+     if operation["state"] == "ready":
+         return operation["result"]
+@@ -2619,7 +2623,52 @@ def _finalize_workspace_outputs(
+         )
+         raise
+ 
++
++def recover_pending_workspace_finalizations(conn: sqlite3.Connection) -> list[str]:
++    """Replay durable completion intents before crashed workers are reclaimed."""
++    rows = conn.execute(
++        """
++        SELECT o.operation_id, o.task_id, o.run_id, o.request_json
++          FROM task_workspace_operations AS o
++          JOIN tasks AS t ON t.id = o.task_id
++         WHERE o.kind = 'publication'
++           AND o.state = 'pending'
++           AND t.status = 'running'
++           AND t.current_run_id = o.run_id
++         ORDER BY o.created_at ASC
++        """
++    ).fetchall()
++    recovered: list[str] = []
++    for row in rows:
++        try:
++            request = json.loads(row["request_json"])
++            completion = request.get("completion")
++            selected_roots = request.get("selected_roots")
++            if not isinstance(completion, dict) or not isinstance(selected_roots, list):
++                raise RuntimeError("workspace completion journal is invalid")
++            if complete_task(
++                conn,
++                row["task_id"],
++                result=completion.get("result"),
++                summary=completion.get("summary"),
++                metadata=completion.get("metadata"),
++                created_cards=completion.get("created_cards"),
++                workspace_outputs=selected_roots,
++                expected_run_id=int(row["run_id"]),
++            ):
++                recovered.append(row["task_id"])
++        except Exception as error:
++            record_workspace_operation_error(
++                conn, operation_id=row["operation_id"], error=error
++            )
++            log.warning(
++                "workspace finalization replay failed for %s: %s",
++                row["task_id"],
++                error,
++            )
++    return recovered
++
+ 
+ def create_task(
+     conn: sqlite3.Connection,
+     *,
+@@ -4303,1 +4363,7 @@ def complete_task(
+         selected_outputs=selected_outputs,
++        completion={
++            "result": result,
++            "summary": summary,
++            "metadata": metadata,
++            "created_cards": verified_cards,
++        },
+@@ -7347,7 +7414,9 @@ def _dispatch_once_locked(
+     # reap_worker_zombies() for the full rationale.
+     reap_worker_zombies()
+ 
+     result = DispatchResult()
++    if not dry_run:
++        recover_pending_workspace_finalizations(conn)
+     result.reclaimed = release_stale_claims(conn)
+     result.stale = detect_stale_running(
+         conn, stale_timeout_seconds=stale_timeout_seconds,
+diff --git a/tests/plugins/test_workspace_handoff.py b/tests/plugins/test_workspace_handoff.py
+--- a/tests/plugins/test_workspace_handoff.py
++++ b/tests/plugins/test_workspace_handoff.py
+@@ -467,0 +468,49 @@
++
++def test_dispatch_replays_publication_after_lost_response(monkeypatch, tmp_path):
++    monkeypatch.setenv("HERMES_WORKSPACE_HANDOFF", "1")
++    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
++    kb._INITIALIZED_PATHS.clear()
++    kb.init_db()
++    finalization_ids = []
++
++    def finalize(name, **kwargs):
++        assert name == "finalize_kanban_task_completion"
++        finalization_ids.append(kwargs["finalization_id"])
++        if len(finalization_ids) == 1:
++            raise OSError("broker response lost")
++        return {"revisionId": "revision-opaque", "manifestDigest": "a" * 64}
++
++    monkeypatch.setattr(plugins, "invoke_required_hook", finalize)
++    with kb.connect() as connection:
++        task_id = kb.create_task(connection, title="producer", assignee="worker")
++        assert kb.claim_task(connection, task_id, claimer="worker") is not None
++        running = kb.get_task(connection, task_id)
++        with pytest.raises(OSError, match="response lost"):
++            kb.complete_task(
++                connection,
++                task_id,
++                result="done",
++                summary="summary",
++                metadata={"tests": ["check"]},
++                workspace_outputs=["output"],
++                expected_run_id=running.current_run_id,
++            )
++        assert kb.get_task(connection, task_id).status == "running"
++
++        kb.dispatch_once(
++            connection,
++            spawn_fn=lambda *_args, **_kwargs: pytest.fail("unexpected spawn"),
++            max_spawn=0,
++        )
++
++        completed = kb.get_task(connection, task_id)
++        assert completed.status == "done"
++        assert completed.workspace_outputs == ["output"]
++        assert len(finalization_ids) == 2
++        assert finalization_ids[0] == finalization_ids[1]
++        operation = connection.execute(
++            "SELECT state FROM task_workspace_operations WHERE task_id=?",
++            (task_id,),
++        ).fetchone()
++        assert operation["state"] == "ready"
++
+diff --git a/tests/plugins/test_workspace_finalizers.py b/tests/plugins/test_workspace_finalizers.py
+--- a/tests/plugins/test_workspace_finalizers.py
++++ b/tests/plugins/test_workspace_finalizers.py
+@@ -81,1 +81,7 @@ def test_ready_finalization_survives_retry_before_board_completion(monkeypatch, tmp_path):
+-        request={"selected_roots": ["output"]},
++        request={
++            "selected_roots": ["output"],
++            "completion": {
++                "result": None, "summary": None, "metadata": None,
++                "created_cards": [],
++            },
++        },

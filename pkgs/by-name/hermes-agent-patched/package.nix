@@ -22,6 +22,7 @@ let
       ./workspace-handoff.patch
       ./workspace-finalizers.patch
       ./workspace-schemas.patch
+      ./workspace-integration.patch
       ./approval-choice-result.patch
       ./approval-permanent-control.patch
       ./approval-surface-permanent-control.patch
