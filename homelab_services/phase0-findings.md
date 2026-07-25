@@ -85,6 +85,25 @@ The current reports establish capacity, not equivalence:
 
 The prior `/mnt/storage` deep scan returned zero files because `find -xdev` stayed on the host root filesystem and did not cross into the `/mnt/storage/media` FUSE mount. This is expected from the selected root; it is not evidence that the media tree is empty.
 
+### Complete catalog inventory
+
+All six catalog sets passed their collection checksums and were streamed into a 7.87 GB SQLite database without loading a raw catalog into model context:
+
+| Catalog | Entries | Files | Apparent file bytes |
+|---|---:|---:|---:|
+| old Proxmox `/tank1/ds1` | 18,324,476 | 15,472,790 | 38.91 TB |
+| current mergerfs | 249,326 | 168,717 | 20.83 TB |
+| `bulk-2/medialibrary` | 10,354 | 9,442 | 7.03 TB |
+| `bulk-3/medialibrary` | 198,063 | 120,825 | 6.89 TB |
+| `dia` home/application tree | 314,856 | 222,816 | 70.07 GB |
+| `dia` Docker volumes | 47 | 7 | 1.97 MB |
+
+Rclone logs contain notices but no summarized error/permission-denied events. The old Proxmox tree alone contains 2,613,817 directories and 237,869 recorded symlinks, explaining the large manifest despite only 38.91 TB of apparent file payload.
+
+Metadata-only matching found 66,244 cross-catalog fuzzy-name plus exact-size candidate groups. Strong overlap signals include current mergerfs ↔ Proxmox (98,309 candidate pairs; 18.70 TB), `bulk-3` ↔ Proxmox (67,500; 6.55 TB), `bulk-3` ↔ current mergerfs (37,104; 6.16 TB), and `bulk-2` ↔ current mergerfs (2,765; 7.05 TB). Pair bytes can exceed unique source bytes when multiple files share a signature. These are triage signals, never deletion proof; targeted hashes remain required.
+
+Depth-three heuristic classification produced 1,827 media subtrees, 84 services-state subtrees, 15 personal-data subtrees, 17 static-Proxmox subtrees, seven disposable-review subtrees, and 353 manual-review subtrees. Mixed-content parents are deliberately downgraded to manual review rather than forcing a destination.
+
 ### Catalog and initial classification
 
 Use `phase0-catalog.sh` for all planning manifests. It wraps rclone `lsjson` without payload hashes, records non-followed symlinks, and excludes `.zfs`. Generate one complete old `/tank1/ds1` catalog plus separate current mergerfs, imported-pool, and `dia` local-state catalogs.
@@ -97,6 +116,19 @@ Initial priority follows the legacy naming intent but remains subject to path re
 4. `redshirt`: disposable candidate, never deletion-authorized without catalog review.
 
 Classification is semantic, not checksum-driven. Each top-level subtree receives criticality, authority, destination, and action labels; rclone/rsync performs later transfers from the approved plan.
+
+### Owner classification decisions
+
+- `kirk/backups` is not one opaque backup repository. It is mostly rsync-collected, poorly organized content from old laptops, Han's Dropbox, and failed-drive recovery images. Preserve it as an authoritative mixed-content source; catalog and restore its useful contents later rather than copying the hierarchy unchanged into a final dataset.
+- `kirk/staging/dewey-other-hd` and `bulk-3/dewey-incoming` are mostly movies/TV from old systems. Reconcile titles against the canonical media library; import acceptable releases or replace them with better releases, then catalog and restore any non-media remainder. Delete only after those two proofs.
+- `bulk-3/acd-incoming` is an encrypted/synchronized archive from the former Amazon Prime Photos unlimited-storage workflow. Preserve unchanged until the encryption mechanism and credentials are recovered; decrypt into staging, catalog plaintext, and restore later.
+- Owner recollection narrows the old Proxmox ACD workflow to folder syncs involving `acd_cli` and possibly git-annex/gcrypt metadata. No related binaries or state live on `dia`; ACD investigation is deferred and the source folders remain untouched.
+- Photo/Immich data is irreplaceable personal data, and some paths are the only copy. Old Proxmox is authoritative relative to the point-in-time `hvn-hyp1` copy. `Amazon Photos Downloads` belongs to the encrypted ACD workflow rather than a normal photo export. `dvicory` and `han` identify Immich users, not general-purpose NAS home directories.
+- Preserve all stopped Proxmox VMs in place. Initial migration focuses on `dia`; other guests remain static until individually reviewed.
+- Restore the stopped Immich application, PostgreSQL, Redis, users, albums, sharing metadata, and originals on compatible versions before upgrading.
+- Preserve Nextcloud and Resilio data/configuration in restore-capable form while their future service choice remains open; treat WebDAV as a replaceable access surface.
+- Preserve Radarr/Sonarr and acquisition-stack state, but separate state recovery from activation and from declarative policy reconciliation.
+- Migrate FreshRSS; LibreSpeed is disposable. Preserve Caddy/HAProxy/nginx/Portainer/Dockge/network-multitool configuration only as reference and replace their runtime roles with the target edge/GitOps platform.
 
 ## Candidate target allocation — preferred direction
 
@@ -113,6 +145,8 @@ Dual SnapRAID parity is the default because five data disks already provide roug
 No current names or filesystem choices are inherited automatically. No RAIDZ topology is a candidate. Critical ZFS expansion is by mirror pairs; mergerfs/SnapRAID expansion is by individual disks with parity sizing reviewed each time.
 
 ## `dia`: observed application-storage roots
+
+The old Proxmox inventory contains two different guests named `dia`: stopped LXC 101 and active QEMU VM 200. The Docker application report came from VM 200, confirmed by matching QEMU virtualization and its machine UUID. VM 200 is the only relevant source-side rollback guest; neither guest is part of the target `hvn-hyp1` architecture.
 
 The verified Docker report identifies `/home/medialibrary` as the parent of Compose stacks and bind-mounted application configuration for Jellyfin, Radarr, Sonarr, Bazarr, Recyclarr, SABnzbd, Nextcloud, PostgreSQL, Caddy, and other retained or review-required services. Docker-managed volumes under `/var/lib/docker/volumes` include additional application data, including an Immich library volume. Catalog both local roots. Network-mounted `/mnt/medialibrary` is legacy shared data and must not be treated as an independent `dia` copy.
 

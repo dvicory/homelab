@@ -7,6 +7,8 @@ Three role-specific entry points share one read-only implementation:
 - `phase0-docker-guest.sh` — credential-safe Docker/Compose inventory for `dia`; records images, mounts, ports, networks, selected Compose labels, and environment variable names but never environment values.
 - `_phase0-collector-lib.sh` — common hardware, disk, network, GPU, power, filesystem, and optional content scanning. Keep this file beside every entry point.
 - `phase0-catalog.sh` — one-root-at-a-time compressed JSON metadata cataloging with symlink and failure controls.
+- `catalog-analyze.py` — standard-library streaming importer, SQLite inventory, fuzzy filename matching, and conservative destination classification.
+- `phase0-dia-apps.sh` — focused recovery preflight for immutable image identity, application state roots, and safe version/database metadata.
 
 The collectors do not modify disks, pools, mounts, VMs, services, networking, or configuration. They do not run repairs, SMART self-tests, scrubs, parity sync, benchmarks, or packet captures.
 
@@ -131,7 +133,13 @@ Do not separately catalog `dia`'s `/mnt/medialibrary`: it is the network-mounted
 
 The catalogs supply `Path`, `Name`, `Size`, `ModTime`, directory entries, and `.rclonelink` markers. They are planning inputs for high-level classification and later `rsync`/rclone transfer lists, not proof of identical content. Hash only same-path size conflicts, unique critical files, and selected samples.
 
-Do not paste raw catalogs into chat. Keep them untracked and copy the four output files per label into `homelab_services/`. After collection, deterministic code will stream the gzip JSON into a local SQLite catalog, normalize `.rclonelink` entries, and emit bounded top-level/extension/age summaries plus cross-source path/size diffs. Only those summaries and selected conflict rows enter model context; catalog size is therefore not a context limit.
+Do not paste raw catalogs into chat. Keep the four files per label untracked under `homelab_services/artifacts/`. Run `python3 homelab_services/catalog-analyze.py` from the repository root. It verifies collection checksums, incrementally decodes each gzip JSON array, stores entries in local SQLite, normalizes large-file names for fuzzy candidates, and emits bounded directory/category/cross-source reports. Only those summaries and selected conflict rows enter model context; the 524 MB compressed catalog is never loaded wholesale into memory or model context.
+
+Use `python3 homelab_services/catalog-analyze.py --status` from another terminal for live bounded progress. It reads only committed SQLite counters and schema state; it does not scan catalog contents or expose paths. If report generation is interrupted after both indexes exist, `--resume-reports` regenerates reports without re-importing the catalogs.
+
+The classifier combines extension/content-category ratios, exact and typo-tolerant path keywords, mixed-content detection, and exact-size normalized-name matching. Its destinations (`personal-mirror`, `services-mirror`, `bulk-media`, `static-proxmox`, `disposable-review`, `manual-review`) are review suggestions only. It never authorizes deletion or treats a metadata match as a verified duplicate.
+
+`catalog-reports/review-queue.csv` sorts every manual, disposable, or non-high-confidence subtree by apparent bytes so the highest-impact ambiguity is reviewed first. The full `directory-classification.csv` retains every depth-three suggestion; `overview.json`, `top-directories.json`, and `cross-catalog-matches.csv` remain bounded summaries.
 
 ### Initial legacy priority map
 
@@ -171,7 +179,42 @@ After reviewing the first Proxmox report, likely follow-up collection is:
 - identify which guest paths correspond to host storage and whether hardlinks/atomic moves were possible;
 - do not start or alter an old guest solely for inventory until its storage and network exposure are understood.
 
-The current two scripts intentionally do not SSH into guests or extract VM disks.
+The inventory collectors intentionally do not SSH into guests or extract VM disks.
+
+## Application recovery collection
+
+The active `dia` workload is **QEMU VM 200**, not the stopped LXC 101 that has the same name. VM 200 uses `agent: 1`, a ZFS-backed `scsi0`, and a host-provided 9p/virtiofs path rooted at `/tank1/ds1/mccoy/media`. A Proxmox VM backup covers the guest disk but not that host data tree.
+
+The Proxmox backup is only a **source-side rollback artifact**. It is not a proposal to recreate `dia`, Docker, or a VM on `hvn-hyp1`. Its value is preserving the exact old VM disk—including application directories, databases, Compose files, local Docker volumes, and legacy image layers—before native export work touches old state. Native exports and copied data, not the VM archive, are the migration inputs.
+
+Run the application preflight on `dia`:
+
+```bash
+./phase0-dia-apps.sh \
+  --output /safe/output
+```
+
+Copy the resulting archive and `.sha256` file under `homelab_services/artifacts/` without tracking them. Do not paste its contents into chat.
+
+The application preflight records immutable container/image IDs and pullable digests, safe build/version metadata, compose-file hashes, mounts, environment **names**, state-root sizes, database filenames, Nextcloud status, and active PostgreSQL database names. It never emits environment values or configuration contents and never changes container lifecycle. ACD/git-annex/gcrypt are outside `dia` and intentionally excluded.
+
+At the current stage, collect only this read-only metadata. Do not create Radarr/Sonarr backup ZIPs, dump databases, enter maintenance mode, or otherwise prepare native exports before the target platform is deployed and can be explored with empty or synthetic state.
+
+After the target applications are deployed on `hvn-hyp1` and their storage, ingress, identity, version compatibility, and restore tooling have been inspected, native export work begins. At that point, first create a source-side Proxmox rollback copy through the existing workflow if an independent target has enough capacity. The initially observed `kirk-k8s-data` target had only about 48 GB available and is too small for VM 200, whose ZFS volume reported about 271 GB referenced. The VM backup excludes `/tank1/ds1/mccoy/media` and is not a media/personal-data backup.
+
+If recovery later needs the exact old runtime, restore that archive only as an isolated VM on old Proxmox with networking disconnected. This is an extraction/verification technique, not part of the target architecture.
+
+Once those gates are satisfied, native exports proceed in dependency order:
+
+1. Save legacy container images by immutable image ID to independent storage; `:latest` tags are not recovery artifacts.
+2. Map every active PostgreSQL database to its consuming application before dumping or stopping it.
+3. Trigger and download Radarr and Sonarr built-in backups from **System → Backup**. Keep their entire `/config` trees as a second recovery form.
+4. Preserve Jellyfin `/config`; use an application-native backup only if the captured version exposes one.
+5. Put Nextcloud in maintenance mode and capture its configuration, application tree, data tree, and database together.
+6. Preserve FreshRSS, Bazarr, NZBHydra2, SABnzbd, Recyclarr, and Resilio application directories before pruning any service. Export user-visible formats where available, but do not treat those exports as replacements for state.
+7. Treat stopped Immich/PostgreSQL 14/Redis as a cold recovery set. First preserve VM 200 and all bind/volume state. Start the exact old stack only in an isolated restored clone, then create a logical PostgreSQL dump and reconcile originals against the photo authority.
+
+Each native export must record application version/image ID, UTC timestamp, source path, byte size, checksum, and the exact restore test used. No source application is upgraded, path-remapped, or policy-reconciled during export.
 
 ## What is collected
 

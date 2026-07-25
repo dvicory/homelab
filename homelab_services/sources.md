@@ -96,6 +96,13 @@ No official source found a complete supported K3s-inside-nspawn privilege contra
 - [Configarr](https://github.com/raydak-labs/configarr) and its [Kubernetes installation](https://configarr.de/docs/installation/kubernetes/) — broader custom configuration with documented CronJob deployment; alternative when Recyclarr's supported field set is insufficient.
 - [Nixflix](https://github.com/kiriwalawren/nixflix) — NixOS modules using application APIs for idempotent Jellyfin/Arr configuration. Useful reference, but its direct runtime model is NixOS services rather than Kubernetes.
 
+### Recovery and native backups
+
+- [Proxmox VE Backup and Restore](https://pve.proxmox.com/wiki/Backup_and_Restore) — snapshot-mode VM backups use a running QEMU guest agent to freeze/thaw filesystems; external host paths still require separate protection.
+- [Radarr FAQ: backing up and restoring](https://wiki.servarr.com/radarr/faq) — built-in **System → Backup** workflow and restore expectations; Sonarr uses the corresponding Servarr pattern.
+- [Nextcloud backup](https://docs.nextcloud.com/server/stable/admin_manual/maintenance/backup.html) and [restore](https://docs.nextcloud.com/server/stable/admin_manual/maintenance/restore.html) — maintenance mode plus configuration, data, application, and database preservation.
+- [Immich backup and restore](https://docs.immich.app/administration/backup-and-restore) — the database is authoritative metadata and must be preserved with the asset library; the library is not reconstructed by scanning alone.
+
 ### Filesystem catalog
 
 - [rclone `lsjson`](https://rclone.org/commands/rclone_lsjson/) — machine-readable recursive JSON listing with path, size, and modification time; hashes are omitted unless `--hash` is requested.

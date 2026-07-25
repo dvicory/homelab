@@ -127,12 +127,16 @@ Order minimizes irreplaceable-data risk.
 
 ### 6A. Arr migration without acquisition
 
-- Restore Radarr, Sonarr, and every retained Arr-family service from native exports on compatibility-pinned versions and unchanged logical media paths.
+- Deploy compatibility-pinned Radarr, Sonarr, and retained Arr-family services first against empty disposable state. Inspect storage, ingress, identity, permissions, and restore mechanics without touching legacy `dia`.
+- After the target deployment is understood, create fresh native exports from `dia` and restore them with unchanged logical media paths.
+- Recover each legacy database on the exact or nearest compatible historical application image first. Prove state, then perform application-supported upgrades separately; never combine restore, database conversion, path redesign, and policy reconciliation in one cutover.
+- Treat Radarr/Sonarr library identity, monitored state, history, and media links as high-value state. Preserve Bazarr/NZBHydra2/SABnzbd configuration/history as deferred state even though acquisition remains disabled initially.
 - Deploy config/database state, `/data`, and `/scratch` mounts; enforce stable shared paths and permissions.
 - Configure OIDC/gateway protection, rotated API keys, local break-glass accounts, probes, and backups declaratively.
 - Add Recyclarr with reviewed TRaSH Guides profiles in dry-run/diff mode, then make only its supported settings authoritative. Spike Configarr only if broader custom configuration is required.
 - Inventory and remove bespoke configuration deliberately; never reset library identity, monitored state, history, or integrations merely to achieve declarative purity.
 - Do not connect download clients/indexers until migration and restore are proven.
+- Map old root/download paths to the stable target path contract explicitly. TRaSH/Recyclarr or Configarr may own reviewed quality/configuration fields only after a dry-run diff; they never replace legacy library/history state.
 
 Exit: all retained Arr services restore with their legacy operational state, GitOps recreates deployment/configuration, the reconciler reports no unexplained drift, and no service can write outside assigned media subtrees.
 
@@ -147,7 +151,8 @@ Exit: media playback survives pod restart and guest rollback; config restore wor
 
 ### 6C. Immich
 
-- Deploy against empty disposable data first.
+- Deploy the target Immich/PostgreSQL/Redis stack against empty disposable data first and inspect its storage and restore interfaces.
+- Only after that target is understood, preserve the stopped legacy Immich/PostgreSQL/Redis state, start compatibility-pinned copies in an isolated recovery environment, and produce native exports before testing a newer target release.
 - Classify all six Immich storage directories and attach managed originals plus read-only external archive.
 - Validate mobile backup, public sharing, multi-user isolation, metadata, storage-template behavior, and OIDC/client compatibility.
 - Restore originals plus database to a fresh Immich instance at a pinned version.
