@@ -196,7 +196,7 @@ Run the application preflight on `dia`:
 
 Copy the resulting archive and `.sha256` file under `homelab_services/artifacts/` without tracking them. Do not paste its contents into chat.
 
-The application preflight records immutable container/image IDs and pullable digests, safe build/version metadata, compose-file hashes, mounts, environment **names**, state-root sizes, database filenames, Nextcloud status, and active PostgreSQL database names. It never emits environment values or configuration contents and never changes container lifecycle. ACD/git-annex/gcrypt are outside `dia` and intentionally excluded.
+The application preflight records immutable container/image IDs and pullable digests, safe build/version metadata, compose-file hashes, mounts, environment **names**, state-root metadata, selected known database-file metadata, Nextcloud status, and active PostgreSQL database names. It never emits environment values or configuration contents and never changes container lifecycle. ACD/git-annex/gcrypt are outside `dia` and intentionally excluded. Every probe has a 60-second timeout, the current section is visible in `00-current-section.txt`, and `SIGINT`/`SIGTERM` terminate the collector rather than advancing to the next probe.
 
 At the current stage, collect only this read-only metadata. Do not create Radarr/Sonarr backup ZIPs, dump databases, enter maintenance mode, or otherwise prepare native exports before the target platform is deployed and can be explored with empty or synthetic state.
 

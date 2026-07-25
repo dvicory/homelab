@@ -8,13 +8,17 @@ export PATH
 
 OUTPUT_PARENT=$PWD
 MAKE_ARCHIVE=1
+COMMAND_TIMEOUT=60
+
+trap 'printf "Interrupted; stopping application collector.\n" >&2; exit 130' INT
+trap 'printf "Terminated; stopping application collector.\n" >&2; exit 143' TERM
 
 usage() {
   cat <<'EOF'
 Usage: phase0-dia-apps.sh [--output DIR] [--no-archive]
 
 Collects immutable container/image identities, mounts, environment variable
-names, state-root sizes, database filenames, and safe version probes. It never
+names, state-root metadata, database filenames, and safe version probes. It never
 prints environment values or configuration contents and never starts, stops,
 restarts, freezes, or backs up a container. Run on dia as root (preferred) or
 as a user with Docker access.
@@ -54,9 +58,15 @@ capture() {
   local section=$1
   shift
   local rc=0
+  printf '%s\n' "$section" > "$OUT/00-current-section.txt"
+  printf 'Collecting %s...\n' "$section"
   {
     printf '# %s\n# started_utc: %s\n\n' "$section" "$(date -u +%FT%TZ)"
-    "$@" || rc=$?
+    if have timeout; then
+      timeout --foreground --signal=TERM --kill-after=5 "$COMMAND_TIMEOUT" "$@" || rc=$?
+    else
+      "$@" || rc=$?
+    fi
     printf '\n# exit_code: %s\n' "$rc"
   } > "$OUT/${section}.txt" 2>&1
   printf '%s\t%s\n' "$section" "$rc" >> "$LOG"
@@ -73,7 +83,7 @@ cat > "$OUT/00-metadata.txt" <<EOF
 label=dia-app-recovery
 hostname=$HOST
 started_utc=$(date -u +%FT%TZ)
-collector_version=1
+collector_version=2
 collector_uid=$(id -u)
 read_only=1
 container_lifecycle_changes=0
@@ -83,7 +93,6 @@ EOF
 
 capture "10-system" bash -c 'hostnamectl; printf "\n--- filesystem ---\n"; df -B1 -T / /home /mnt/medialibrary 2>&1; printf "\n--- mounts ---\n"; findmnt -T /mnt/medialibrary; findmnt -T /mnt/ceres-complete-downloads 2>&1 || true'
 capture "20-docker-version" docker version
-capture "21-docker-space" docker system df -v
 capture_shell "22-container-recovery-inventory" '
   ids=$(docker ps -aq)
   [[ -n "$ids" ]] || { printf "[]\n"; exit 0; }
@@ -151,50 +160,37 @@ capture_shell "24-compose-file-metadata" '
       if [[ -f "$path" ]]; then stat --printf="%n\t%s\t%y\t%U:%G\t%a\n" "$path"; sha256sum "$path"; else printf "MISSING\t%s\n" "$path"; fi
     done
 '
-capture_shell "30-state-root-capacity" '
+capture_shell "30-state-root-metadata" '
   roots=(
     /home/medialibrary/.config/appdata
     /home/medialibrary/.stacks
     /var/lib/docker/volumes
-    /mnt/medialibrary/nextcloud
-    /mnt/medialibrary/photos
-    /mnt/medialibrary/sync
   )
   for root in "${roots[@]}"; do
     if [[ -e "$root" ]]; then
       stat --printf="STAT\t%n\t%F\t%s\t%y\t%U:%G\t%a\n" "$root"
-      du -sx --bytes --one-file-system "$root" 2>&1 | sed "s/^/DU\t/"
     else
       printf "MISSING\t%s\n" "$root"
     fi
   done
 '
 capture_shell "31-database-file-metadata" '
-  python3 - <<'\''PY'\''
-import os
-from pathlib import Path
-roots = [Path("/home/medialibrary/.config/appdata"), Path("/home/medialibrary/.stacks")]
-suffixes = {".db", ".sqlite", ".sqlite3", ".mv.db", ".sql", ".dump", ".backup", ".zip"}
-names = {"config.xml", "sabnzbd.ini", "nzbhydra.yml", "version.php", "PG_VERSION"}
-for root in roots:
-    if not root.is_dir():
-        continue
-    for current, dirs, files in os.walk(root, followlinks=False):
-        relative = Path(current).relative_to(root)
-        if len(relative.parts) >= 7:
-            dirs.clear()
-            continue
-        for filename in files:
-            path = Path(current, filename)
-            lower = filename.casefold()
-            if lower not in {x.casefold() for x in names} and not any(lower.endswith(x) for x in suffixes):
-                continue
-            try:
-                stat = path.stat(follow_symlinks=False)
-                print(f"{path}\t{stat.st_size}\t{stat.st_mtime_ns}\t{stat.st_uid}:{stat.st_gid}\t{stat.st_mode & 0o777:o}")
-            except OSError as error:
-                print(f"ERROR\t{path}\t{error}")
-PY
+  shopt -s nullglob
+  candidates=(
+    /home/medialibrary/.config/appdata/radarr/*.db
+    /home/medialibrary/.config/appdata/sonarr/*.db
+    /home/medialibrary/.config/appdata/jellyfin/data/*.db
+    /home/medialibrary/.config/appdata/bazarr/db/*.db
+    /home/medialibrary/.config/appdata/freshrss/www/freshrss/data/users/*/db.sqlite
+    /home/medialibrary/.config/appdata/nzbhydra2/*/*.mv.db
+    /home/medialibrary/.config/appdata/sabnzbd/sabnzbd.ini
+    /home/medialibrary/.config/appdata/nextcloud/www/nextcloud/version.php
+    /home/medialibrary/.config/appdata/postgres/PG_VERSION
+    /home/medialibrary/.stacks/data-immich-postgres/PG_VERSION
+  )
+  for path in "${candidates[@]}"; do
+    stat --printf="%n\t%s\t%Y\t%u:%g\t%a\n" "$path"
+  done
 '
 capture_shell "32-running-image-version-files" '
   for name in $(docker ps --format "{{.Names}}" | sort); do
@@ -230,6 +226,8 @@ No native backup was created. This preflight intentionally does not call backup 
 A Proxmox VM backup covers the VM disk but not the host-provided /tank1/ds1/mccoy/media tree mounted inside dia.
 Image IDs/digests identify what ran but do not guarantee that registries will retain pullable layers; image export is a later, write-producing step.
 EOF
+
+printf 'complete\n' > "$OUT/00-current-section.txt"
 
 if ((MAKE_ARCHIVE)); then
   ARCHIVE="$OUT.tar.gz"
