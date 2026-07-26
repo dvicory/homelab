@@ -17,7 +17,23 @@ let
         config = {
           model.default = "opencode-go/deepseek-v4-flash";
           agent.restart_drain_timeout = 120;
-        };
+        }
+        // (
+          if instance == "qa" then
+            {
+              curator.enabled = false;
+              skills = {
+                creation_nudge_interval = 0;
+                write_approval = true;
+              };
+              memory = {
+                nudge_interval = 0;
+                write_approval = true;
+              };
+            }
+          else
+            { }
+        );
         tailscale.hostname = "hermes-${instance}";
       }
       // (
