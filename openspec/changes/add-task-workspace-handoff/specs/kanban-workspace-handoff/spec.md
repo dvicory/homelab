@@ -144,6 +144,13 @@ A retry of the same task MUST use its retained mutable workspace only after trus
 - **THEN** existing task and workspace behavior SHALL remain unchanged
 - **AND** no broker task-run activation, publication, or import route SHALL run
 
+#### Scenario: Fresh Gondolin task has no live-session dependency
+
+- **GIVEN** a broker-compatible Kanban task has no existing environment authority binding
+- **WHEN** trusted dispatch prepares its workspace
+- **THEN** the control plane SHALL bind the acquired lease to the broker-configured default authority before activating the task run
+- **AND** preparation SHALL NOT depend on a live conversation having used that task environment
+
 #### Scenario: Registered external Codex lane
 
 - **GIVEN** QA Gondolin handoff is enabled and a task selects a registered external Codex lane

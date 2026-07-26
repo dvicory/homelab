@@ -30,6 +30,7 @@ import {
   PublishWorkspaceRevisionRequest,
 } from "./revision-domain.js";
 import { TaskRunActivations } from "./task-run-activations.js";
+import { getOrBindDefaultAuthority } from "./authority.js";
 import { BrokerConfig } from "./config.js";
 import { Environments } from "./environments.js";
 import { asBrokerError, brokerError, publicErrorEvent, publicProblem, statusFor, type BrokerError } from "./errors.js";
@@ -190,6 +191,28 @@ export const makeControlHttpApp = Effect.gen(function* () {
       );
     });
 
+  const bindDefaultAuthority = (request: typeof WorkspaceLeaseRef.Type) =>
+    Effect.gen(function* () {
+      yield* workspaces.resolve(request.environmentKey, request.workspaceId, request.leaseId);
+      const binding = yield* getOrBindDefaultAuthority(
+        registry,
+        config,
+        workspaces,
+        request.environmentKey,
+      );
+      if (
+        binding.workspaceId !== request.workspaceId ||
+        binding.workspaceLeaseId !== request.leaseId
+      ) {
+        return yield* brokerError(
+          "authority.conflict",
+          "default authority does not match the acquired workspace",
+          { environmentKey: request.environmentKey },
+        );
+      }
+      return binding;
+    });
+
   const authorityStatus = ({ environmentKey }: typeof StatusRequest.Type) =>
     Effect.gen(function* () {
       const binding = yield* registry.getAuthority(environmentKey);
@@ -300,6 +323,10 @@ export const makeControlHttpApp = Effect.gen(function* () {
     HttpRouter.post(
       "/v1/control/authority/status",
       unary("authority.status", StatusRequest, authorityStatus),
+    ),
+    HttpRouter.post(
+      "/v1/control/authority/bind-default",
+      unary("authority.bind-default", WorkspaceLeaseRef, bindDefaultAuthority),
     ),
     HttpRouter.post(
       "/v1/control/access/prepare",
