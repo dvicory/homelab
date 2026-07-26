@@ -17,7 +17,8 @@ let
         config = {
           model.default = "opencode-go/deepseek-v4-flash";
           agent.restart_drain_timeout = 120;
-        };
+        }
+        // (if instance == "qa" then { curator.enabled = false; } else { });
         tailscale.hostname = "hermes-${instance}";
       }
       // (
