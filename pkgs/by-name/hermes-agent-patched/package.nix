@@ -28,6 +28,7 @@ let
       ./approval-surface-permanent-control.patch
       ./approval-rich-choice-control.patch
       ./workspace-finalization-exit-recovery.patch
+      ./kanban-triage-loop-breaker.patch
     ];
   };
 in
