@@ -32,6 +32,7 @@ let
       ./kanban-triage-loop-breaker.patch
       # Standalone Kanban lifecycle safety; generated against pristine Hermes.
       ./kanban-lifecycle-safety.patch
+      ./worker-lane-workspace-policy.patch
     ];
   };
 in

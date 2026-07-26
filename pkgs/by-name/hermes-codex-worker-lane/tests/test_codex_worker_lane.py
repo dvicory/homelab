@@ -76,6 +76,8 @@ def test_register_passes_description_to_worker_lane(plugin, monkeypatch):
     assert len(registered) == 1
     assert registered[0].name == "architecture-review"
     assert registered[0].description == "read-only architecture and code review"
+    assert registered[0].allowed_workspace_kinds == frozenset({"dir", "worktree"})
+    assert registered[0].default_workspace_kind == "worktree"
 
 
 def test_worker_environment_does_not_forward_gateway_secrets(plugin, monkeypatch):
