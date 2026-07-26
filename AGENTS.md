@@ -2,7 +2,7 @@ The role of this file is to describe common mistakes and confusion points that a
 
 ## Repository hygiene
 
-- **Do not start tracking Markdown planning artifacts by default.** Newly created `.md` files used for plans, reviews, handoffs, status tracking, acceptance prompts, or working notes must remain local and untracked unless the developer explicitly asks to start tracking or commit them. Markdown files already tracked by Git may be edited and committed normally. Do not infer permission to `git add` a new tracking document merely because the task requested that it be written.
+- **Do not start tracking Markdown planning artifacts by default.** Newly created `.md` files used for plans, reviews, handoffs, status tracking, acceptance prompts, or working notes must remain local and untracked unless the developer explicitly asks to start tracking or commit them. Write them under `scratch/` — a tracked symlink to a shared, ignored directory outside the repo — instead of the repo root. Markdown files already tracked by Git may be edited and committed normally. Do not infer permission to `git add` a new tracking document merely because the task requested that it be written.
 
 ## Nix gotchas
 
@@ -16,7 +16,7 @@ The role of this file is to describe common mistakes and confusion points that a
 
 - **Evaluating a whole NixOS module submodule attrset can force unset optional fields.** For example, `nix eval --json ...config.systemd.sockets` can fail on an undefined `startLimitBurst` even though the host configuration and individual socket attributes evaluate. Query the exact leaf attribute needed instead of forcing the entire `systemd.services` or `systemd.sockets` subtree.
 
-- **New files must be `git add`-ed before Nix can see them.** Nix resolves the source tree from git-tracked files. A `nix run .#write-flake` on an unstaged file produces "path does not exist" errors with store paths.
+- **New files must be `git add`-ed (or `jj file track`-ed) before Nix can see them.** Nix resolves the source tree from git-tracked files; the colocated jj export keeps the Git index in sync, so tracking in either tool works. A `nix run .#write-flake` on an unstaged file produces "path does not exist" errors with store paths.
 
 - **The root `.gitignore` pattern `result-*` matches files at any depth.** Avoid names such as `result-schema.json` for Nix package sources, or explicitly account for the ignore; otherwise the file exists locally but is omitted from the flake source.
 
@@ -42,7 +42,7 @@ The role of this file is to describe common mistakes and confusion points that a
 
 - **Do not enable `users.users.<name>.autoSubUidGidRange` for registry users.** The user enrichment aspect already derives deterministic subordinate UID/GID ranges from the registry UID. Enabling NixOS auto-allocation conflicts with `deterministic-uids.nix` and produces failed assertions for those users.
 
-- **This checkout is a linked worktree that shares its Git metadata directory with another checkout.** Ignore patterns can originate in the shared metadata (`info/exclude`, `core.excludesFile`) and are invisible from this repository. If `git add` reports a file ignored that `.gitignore` does not list, find the source with `git check-ignore -v --no-index <path>`; force-add only when the file is intentionally being tracked — Markdown planning artifacts covered by the Repository hygiene rule stay untracked.
+- **The checkouts are jj workspaces sharing one Git metadata directory.** Ignore patterns can originate in the shared metadata (`info/exclude`, `core.excludesFile`) and are invisible from any workspace. If `git add` or `jj file track` reports a file ignored that `.gitignore` does not list, find the source with `git check-ignore -v --no-index <path>`; force-add only when the file is intentionally being tracked — Markdown planning artifacts covered by the Repository hygiene rule stay untracked.
 
 ## Den framework patterns
 
