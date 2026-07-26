@@ -29,6 +29,7 @@ let
       ./approval-rich-choice-control.patch
       ./workspace-finalization-exit-recovery.patch
       ./workspace-orchestration-guidance.patch
+      ./kanban-triage-loop-breaker.patch
     ];
   };
 in
