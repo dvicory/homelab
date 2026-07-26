@@ -158,6 +158,58 @@ let
       };
     };
 
+  effectActions = [
+    "environment.ensure"
+    "environment.status"
+    "environment.close"
+    "exec.foreground"
+    "fs.stat"
+    "fs.list"
+    "fs.read"
+    "fs.write"
+    "fs.mkdir"
+    "fs.remove"
+  ];
+
+  mkEffectLane =
+    {
+      defaultTemplate,
+      allowedPairs,
+      maximum,
+    }:
+    let
+      matchingPairs = builtins.filter (pair: pair.template == defaultTemplate) allowedPairs;
+      pair =
+        if matchingPairs == [ ] then
+          throw "Gondolin Effect policy has no allowed asset pair for template '${defaultTemplate}'"
+        else
+          builtins.head matchingPairs;
+      template =
+        templates.${defaultTemplate}
+          or (throw "Gondolin Effect policy references unknown template '${defaultTemplate}'");
+      maximumResources = maximum.resources or { };
+      min = left: right: if left < right then left else right;
+      resourceLimit =
+        name: hardDefault:
+        min hardDefault (
+          min (template.resources.${name} or hardDefault) (maximumResources.${name} or hardDefault)
+        );
+    in
+    {
+      asset = pair.asset;
+      memoryMiB = resourceLimit "memoryMiB" floor.maxResources.memoryMiB;
+      cpus = resourceLimit "cpus" floor.maxResources.cpus;
+      workspaceGuestPath = "/workspace";
+      limits = {
+        maxCommandMs = floor.maxResources.maxCommandMs;
+        maxOutputBytes = floor.maxResources.maxOutputBytes;
+        maxInputBytes = floor.maxInputBytes;
+        maxFileBytes = floor.maxInputBytes;
+        maxListEntries = 4096;
+        maxConcurrentExecs = 1;
+      };
+    };
+
 in
 {
   inherit floor templates credentialCapabilities;
@@ -173,6 +225,170 @@ in
     in
     {
       json = pkgs.writeText "hermes-${profile}-sandbox-policy.json" (builtins.toJSON rendered);
+      inherit policyId;
+    };
+
+  # Effect/HTTP compatibility envelope. Network authority is emitted as a
+  # mandatory policy obligation per worklane; the broker must resolve and
+  # enforce that obligation before creating a VM.
+  mkEffectPolicy =
+    {
+      pkgs,
+      profile,
+      assets,
+      bundles,
+      defaultTemplate,
+      allowedPairs,
+      maximum,
+      worklanes ? { },
+      ...
+    }:
+    let
+      supportedGrantScopes = [
+        "once"
+        "task"
+        "conversation"
+        "timed"
+        "profile"
+        "executor"
+      ];
+      configuredGrantScopes = maximum.grantScopes or [ ];
+      unknownGrantScopes = builtins.filter (
+        scope: !(builtins.elem scope supportedGrantScopes)
+      ) configuredGrantScopes;
+      allowedGrantScopes =
+        if unknownGrantScopes == [ ] then
+          configuredGrantScopes
+        else
+          throw "Gondolin Effect policy has unknown grant scopes: ${builtins.concatStringsSep ", " unknownGrantScopes}";
+      laneTemplateNames = {
+        default = defaultTemplate;
+      } // builtins.mapAttrs (_: lane: lane.defaultTemplate or defaultTemplate) worklanes;
+      defaultLane = mkEffectLane {
+        inherit defaultTemplate allowedPairs maximum;
+      };
+      laneMaximums = {
+        default = maximum;
+      } // builtins.mapAttrs (
+        _: lane:
+        let
+          laneMaximum = lane.maximum or { };
+        in
+        maximum // laneMaximum // {
+          resources = (maximum.resources or { }) // (laneMaximum.resources or { });
+        }
+      ) worklanes;
+      mappedWorklanes = builtins.mapAttrs (
+        laneName: lane:
+        mkEffectLane {
+          defaultTemplate = lane.defaultTemplate or defaultTemplate;
+          allowedPairs = lane.allowedPairs or allowedPairs;
+          maximum = laneMaximums.${laneName};
+        }
+      ) worklanes;
+      lanes = {
+        default = defaultLane;
+      } // mappedWorklanes;
+      networkPolicyId =
+        laneName:
+        let
+          digest = builtins.hashString "sha256" (builtins.toJSON networkPoliciesByLane.${laneName});
+        in
+        "worklane:${laneName}:${builtins.substring 0 16 digest}";
+      networkForLane =
+        laneName:
+        let
+          network = templates.${laneTemplateNames.${laneName}}.network;
+          permittedBundleNames = builtins.filter (
+            bundleName: builtins.elem bundleName (laneMaximums.${laneName}.networkBundles or [ ])
+          ) (network.bundles or [ ]);
+        in
+        {
+          mode =
+            if network.mode == "bundles" && permittedBundleNames == [ ] then
+              "deny-all"
+            else
+              network.mode;
+          destinations =
+            if network.mode == "bundles" then
+              builtins.concatLists (
+                map (
+                  bundleName:
+                  ((bundles.${bundleName} or (throw "unknown network bundle '${bundleName}'")).destinations)
+                ) permittedBundleNames
+              )
+            else
+              [ ];
+        };
+      networkPoliciesByLane = builtins.mapAttrs (laneName: _: networkForLane laneName) lanes;
+      networkPolicies = builtins.listToAttrs (
+        map (laneName: {
+          name = networkPolicyId laneName;
+          value = networkPoliciesByLane.${laneName};
+        }) (builtins.attrNames lanes)
+      );
+      limits = {
+        cpus = floor.maxResources.cpus;
+        memoryMiB = floor.maxResources.memoryMiB;
+        maxCommandMs = floor.maxResources.maxCommandMs;
+        maxOutputBytes = floor.maxResources.maxOutputBytes;
+        maxInputBytes = floor.maxInputBytes;
+        maxFileBytes = floor.maxInputBytes;
+        maxListEntries = 4096;
+        maxConcurrentExecs = 1;
+        timeoutMs = floor.maxResources.maxCommandMs;
+        outputBytes = floor.maxResources.maxOutputBytes;
+        inputBytes = floor.maxInputBytes;
+        bytes = floor.maxInputBytes;
+        entries = 4096;
+      };
+      policy = {
+        version = 1;
+        statements = [
+          {
+            effect = "allow";
+            actions = builtins.filter (action: action != "environment.ensure") effectActions;
+            resources = [ "environment:*" ];
+            inherit limits;
+          }
+        ] ++ map (laneName: {
+          effect = "allow";
+          actions = [ "environment.ensure" ];
+          resources = [ "worklane:${laneName}:environment:*" ];
+          inherit limits;
+          obligations = [
+            {
+              kind = "network";
+              bundleId = networkPolicyId laneName;
+            }
+          ];
+        }) (builtins.attrNames lanes);
+      };
+      grantPolicy = {
+        allowedScopes = allowedGrantScopes;
+        maxDurationSeconds = 3600;
+        denialCooldownSeconds = 300;
+        promptBudget = {
+          maxNewRequests = 4;
+          windowSeconds = 900;
+        };
+      };
+      policyMaterial = {
+        version = 1;
+        inherit policy networkPolicies grantPolicy assets;
+        defaultExecutor = "hermes-gateway";
+        defaultAuthorityClass = "default";
+        maxEnvironments = floor.maxVms;
+        worklanes = lanes;
+      };
+      # The full immutable Nix policy digest fences persisted environments,
+      # requests, and grants. Identical rebuilds retain the same identity.
+      policyDigest = builtins.hashString "sha256" (builtins.toJSON policyMaterial);
+      doc = policyMaterial // { inherit policyDigest; };
+      policyId = builtins.hashString "sha256" (builtins.toJSON doc);
+    in
+    {
+      json = pkgs.writeText "hermes-${profile}-effect-sandbox-policy.json" (builtins.toJSON doc);
       inherit policyId;
     };
 }

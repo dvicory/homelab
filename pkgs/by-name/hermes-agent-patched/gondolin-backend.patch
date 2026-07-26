@@ -1,159 +1,174 @@
-From: Daniel Vicory <dvicory@gmail.com>
-Date: Sat, 19 Jul 2026 02:00:00 -0700
-Subject: [PATCH] feat(terminal): add Gondolin broker terminal backend
-
-Add a BaseEnvironment implementation that routes terminal execution
-through the profile's Gondolin broker over its mode-0600 Unix socket
-(HERMES_GONDOLIN_SOCKET). The backend is a thin typed client of the
-broker protocol: ensure on construction (surfacing recreation as
-trusted state-loss context), exec.start for commands with streamed
-bounded output and exec.cancel on kill, and close on cleanup. The
-broker owns images, policy, lifecycle, network mediation, and resource
-governance; the gateway never selects them.
-
-Registers env_type "gondolin" in the environment factory, the container
-cwd guard, the unknown-backend error, and the tool health check (broker
-status probe). File tools use the generic ShellFileOperations path;
-background processes and execute_code ride the shared env contract.
-Kept as a separate patch from conversation identity and worker-lane
-changes so each is independently reviewable (V3 section 14.4).
-
 diff --git a/tests/tools/test_gondolin_backend.py b/tests/tools/test_gondolin_backend.py
 new file mode 100644
-index 0000000..489ed02
 --- /dev/null
 +++ b/tests/tools/test_gondolin_backend.py
-@@ -0,0 +1,263 @@
-+"""Tests for the Gondolin broker terminal backend.
+@@ -0,0 +1,309 @@
++"""Contract tests for Hermes HTTP/1.1 over Unix-socket Gondolin client."""
 +
-+A fake broker implements the wire protocol (length-prefixed JSON over
-+AF_UNIX) so the real GondolinEnvironment + BrokerClient code paths run
-+end to end: ensure, exec.start with exec.state/output/exit frames,
-+cancel, close, and error mapping.
-+"""
-+
++import base64
 +import json
 +import os
-+import socket
-+import struct
++import socketserver
++import subprocess
 +import tempfile
 +import threading
++import time
++from http.server import BaseHTTPRequestHandler
 +
 +from tools.environments.gondolin import (
-+    BrokerClient,
 +    BrokerError,
 +    GondolinEnvironment,
 +    check_gondolin_available,
 +)
++from tools.file_operations import ShellFileOperations
++
++
++class _UnixHttpServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
++    daemon_threads = True
++
++
++class _Handler(BaseHTTPRequestHandler):
++    protocol_version = "HTTP/1.1"
++
++    def log_message(self, _format, *args):
++        return
++
++    @property
++    def broker(self):
++        return self.server.broker
++
++    def _request_json(self):
++        size = int(self.headers.get("content-length", "0"))
++        return json.loads(self.rfile.read(size))
++
++    def _json(self, status, body, content_type="application/json"):
++        payload = json.dumps(body).encode()
++        self.send_response(status)
++        self.send_header("content-type", content_type)
++        self.send_header("content-length", str(len(payload)))
++        self.end_headers()
++        self.wfile.write(payload)
++
++    def do_GET(self):
++        self.broker.calls.append((self.path, None))
++        if self.path == "/v1/health":
++            self._json(200, {"status": "ok"})
++        else:
++            self._json(404, {"reason": "request.invalid", "detail": "not found"}, "application/problem+json")
++
++    def do_POST(self):
++        request = self._request_json()
++        self.broker.calls.append((self.path, request))
++        if self.path == "/v1/environments/ensure":
++            if self.broker.ensure_denied:
++                self._json(
++                    403,
++                    {
++                        "type": "urn:agent-x:gondolin-broker:error:policy.denied",
++                        "title": "policy.denied",
++                        "status": 403,
++                        "detail": "policy denied ensure",
++                        "reason": "policy.denied",
++                    },
++                    "application/problem+json",
++                )
++                return
++            state = self.broker.ensure_state
++            self.broker.ensure_state = "reused"
++            self._json(200, {
++                "environmentKey": request["environmentKey"],
++                "generation": self.broker.generation,
++                "state": state,
++                "profile": "test",
++                "executor": "hermes-gateway",
++                "authorityClass": "default",
++                "policyGeneration": 1,
++                "decisionDigest": "digest",
++            })
++        elif self.path == "/v1/files/read":
++            self._json(200, {
++                "dataBase64": base64.b64encode(self.broker.file_data).decode(),
++                "size": len(self.broker.file_data),
++            })
++        elif self.path == "/v1/files/write":
++            self.broker.file_data = base64.b64decode(request["dataBase64"], validate=True)
++            self._json(200, {"size": len(self.broker.file_data)})
++        elif self.path == "/v1/environments/close":
++            self._json(200, {"closed": True})
++        elif self.path == "/v1/exec":
++            self.send_response(200)
++            self.send_header("content-type", "application/x-ndjson")
++            self.send_header("connection", "close")
++            self.end_headers()
++            self.close_connection = True
++            self._event({
++                "type": "start",
++                "environmentKey": request["environmentKey"],
++                "generation": request["generation"],
++                "decisionDigest": "digest",
++                "timeoutMs": request["timeoutMs"],
++                "outputLimitBytes": 4096,
++            })
++            self.broker.exec_started.set()
++            if self.broker.hang_exec:
++                while True:
++                    try:
++                        self.wfile.write(b"\n")
++                        self.wfile.flush()
++                    except (BrokenPipeError, ConnectionResetError):
++                        self.broker.disconnected.set()
++                        return
++                    time.sleep(0.01)
++            for stream, text in self.broker.exec_responders:
++                self._event({
++                    "type": "output",
++                    "sequence": self.broker.sequence,
++                    "stream": stream,
++                    "dataBase64": base64.b64encode(text.encode()).decode(),
++                })
++                self.broker.sequence += 1
++            self._event({"type": "exit", "exitCode": self.broker.exec_exit_code, "signal": None})
++        else:
++            self._json(404, {"reason": "request.invalid", "detail": "not found"}, "application/problem+json")
++
++    def _event(self, event):
++        self.wfile.write(json.dumps(event).encode() + b"\n")
++        self.wfile.flush()
 +
 +
 +class FakeBroker:
-+    """Scriptable in-process broker for tests."""
-+
 +    def __init__(self, socket_path):
 +        self.socket_path = socket_path
 +        self.calls = []
 +        self.exec_responders = []
-+        self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-+        self._server.bind(socket_path)
-+        self._server.listen(4)
-+        self._thread = threading.Thread(target=self._serve, daemon=True)
++        self.exec_exit_code = 0
++        self.ensure_state = "created"
++        self.ensure_denied = False
++        self.generation = 1
++        self.sequence = 0
++        self.hang_exec = False
++        self.file_data = b""
++        self.exec_started = threading.Event()
++        self.disconnected = threading.Event()
++        self._server = _UnixHttpServer(socket_path, _Handler)
++        self._server.broker = self
++        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 +        self._thread.start()
 +
-+    def _serve(self):
-+        while True:
-+            try:
-+                conn, _ = self._server.accept()
-+            except OSError:
-+                return
-+            threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
-+
-+    def _read_frame(self, conn):
-+        buffer = b""
-+        while len(buffer) < 4:
-+            chunk = conn.recv(4096)
-+            if not chunk:
-+                return None
-+            buffer += chunk
-+        (length,) = struct.unpack("<I", buffer[:4])
-+        body = buffer[4:]
-+        while len(body) < length:
-+            chunk = conn.recv(4096)
-+            if not chunk:
-+                return None
-+            body += chunk
-+        return json.loads(body.decode())
-+
-+    def _send(self, conn, frame):
-+        body = json.dumps(frame).encode()
-+        conn.sendall(struct.pack("<I", len(body)) + body)
-+
-+    def _handle(self, conn):
-+        try:
-+            request = self._read_frame(conn)
-+            if request is None:
-+                return
-+            self.calls.append((request["op"], request["payload"]))
-+            op = request["op"]
-+            rid = request["id"]
-+
-+            if op == "ensure":
-+                self._send(conn, {
-+                    "v": 1, "id": rid, "ok": True,
-+                    "result": {
-+                        "outcome": self.ensure_outcome,
-+                        "generation": "gen-1",
-+                        "reason": "new_environment",
-+                        "buildId": "build-1",
-+                    },
-+                })
-+            elif op == "exec.start":
-+                self._send(conn, {"v": 1, "id": rid, "event": "exec.state", "procId": "p-1"})
-+                for stream, text in self.exec_responders:
-+                    self._send(conn, {
-+                        "v": 1, "id": rid, "event": "exec.output",
-+                        "stream": stream, "seq": 1,
-+                        "data": __import__("base64").b64encode(text.encode()).decode(),
-+                    })
-+                self._send(conn, {"v": 1, "id": rid, "event": "exec.exit", "exitCode": self.exec_exit_code})
-+                self._send(conn, {
-+                    "v": 1, "id": rid, "ok": True,
-+                    "result": {"procId": "p-1", "exitCode": self.exec_exit_code, "signal": None,
-+                               "reason": None, "truncated": False},
-+                })
-+            elif op == "exec.cancel":
-+                self._send(conn, {"v": 1, "id": rid, "ok": True,
-+                                  "result": {"procId": "p-1", "reason": "cancelled"}})
-+            elif op == "close":
-+                self._send(conn, {"v": 1, "id": rid, "ok": True,
-+                                  "result": {"generation": "gen-1", "state": "warm"}})
-+            elif op == "status":
-+                self._send(conn, {"v": 1, "id": rid, "ok": True, "result": {"environments": []}})
-+            else:
-+                self._send(conn, {"v": 1, "id": rid, "ok": False,
-+                                  "error": {"reason": "protocol.unknown_operation", "message": op}})
-+        finally:
-+            conn.close()
-+
-+    ensure_outcome = "created"
-+    exec_exit_code = 0
-+
 +    def close(self):
++        self._server.shutdown()
++        self._server.server_close()
 +        try:
-+            self._server.close()
-+        finally:
-+            try:
-+                os.unlink(self.socket_path)
-+            except OSError:
-+                pass
++            os.unlink(self.socket_path)
++        except OSError:
++            pass
 +
 +
 +def short_sock():
-+    # AF_UNIX path limit (104 on macOS) — keep sockets in a flat /tmp dir.
 +    return os.path.join(tempfile.mkdtemp(prefix="gb-"), "b.sock")
 +
 +
-+def make_env(tmp_path, monkeypatch=None):
++def make_env():
 +    broker = FakeBroker(short_sock())
 +    env = GondolinEnvironment(
 +        cwd="/workspace", timeout=30, task_id="conversation-test", socket_path=broker.socket_path
@@ -161,29 +176,24 @@ index 0000000..489ed02
 +    return broker, env
 +
 +
-+def test_ensure_on_init_stores_generation(tmp_path):
-+    broker, env = make_env(tmp_path)
-+    assert env.generation == "gen-1"
-+    assert broker.calls[0][0] == "ensure"
-+    assert broker.calls[0][1]["envKey"] == "conversation-test"
++def test_ensure_on_init_stores_numeric_generation():
++    broker, env = make_env()
++    assert env.generation == 1
++    assert broker.calls[0] == (
++        "/v1/environments/ensure",
++        {"environmentKey": "conversation-test"},
++    )
 +
 +
-+def test_env_is_persistent_across_turns(tmp_path):
-+    """terminal_tool's per-turn teardown spares only _persistent backends;
-+    without the flag every agent turn closed the broker environment,
-+    producing state_warm recreation churn (and a fresh /tmp) per call."""
-+    _broker, env = make_env(tmp_path)
++def test_env_is_persistent_across_turns():
++    _broker, env = make_env()
 +    assert env._persistent is True
 +
 +
-+def test_recreation_notice_injected_once(tmp_path):
-+    """V3 §8.2: a recreated environment must surface its state loss in
-+    model context — once, on the first execute after recreation."""
-+    broker = FakeBroker(short_sock())
-+    broker.ensure_outcome = "recreated"
-+    env = GondolinEnvironment(
-+        cwd="/workspace", timeout=30, task_id="conversation-test", socket_path=broker.socket_path
-+    )
++def test_recreation_notice_injected_once():
++    broker, env = make_env()
++    broker.generation = 2
++    broker.ensure_state = "created"
 +    broker.exec_responders = [("stdout", "ok\n")]
 +    first = env.execute("true")
 +    assert first["output"].startswith("[sandbox notice]")
@@ -193,68 +203,88 @@ index 0000000..489ed02
 +    assert "[sandbox notice]" not in second["output"]
 +
 +
-+def test_run_bash_streams_output_and_exit_code(tmp_path):
-+    broker, env = make_env(tmp_path)
++def test_run_bash_streams_ndjson_and_exit_code():
++    broker, env = make_env()
 +    broker.exec_responders = [("stdout", "hello "), ("stdout", "world\n"), ("stderr", "oops\n")]
 +    broker.exec_exit_code = 7
-+
 +    proc = env._run_bash("echo hello", timeout=30)
 +    result = env._wait_for_process(proc, timeout=30)
-+
 +    assert result["returncode"] == 7
 +    assert "hello world" in result["output"]
 +    assert "oops" in result["output"]
-+    op, payload = broker.calls[1]
-+    assert op == "exec.start"
-+    assert payload["shell"] == "echo hello"
-+    assert payload["envKey"] == "conversation-test"
++    path, payload = next(call for call in broker.calls if call[0] == "/v1/exec")
++    assert path == "/v1/exec"
++    assert payload["argv"] == ["/bin/sh", "-c", "echo hello"]
++    assert payload["generation"] == 1
 +
 +
-+def test_execute_end_to_end_with_cwd_markers(tmp_path):
-+    broker, env = make_env(tmp_path)
-+    broker.exec_responders = [("stdout", "/workspace\nmarker-output\n")]
-+    broker.exec_exit_code = 0
-+
-+    result = env.execute("pwd", cwd="/workspace", timeout=30)
-+    assert result["returncode"] == 0
-+    assert "marker-output" in result["output"]
-+
-+
-+def test_kill_cancels_via_proc_id(tmp_path):
-+    broker, env = make_env(tmp_path)
-+    broker.exec_responders = []
-+    broker.exec_exit_code = 0
-+
++def test_kill_closes_http_stream_for_broker_hard_cancel():
++    broker, env = make_env()
++    broker.hang_exec = True
 +    proc = env._run_bash("sleep 100", timeout=30)
-+    # Give exec.state a moment to land, then kill; exec_fn completes with 0.
-+    proc.wait(timeout=30)
++    assert broker.exec_started.wait(timeout=5)
 +    proc.kill()
-+    cancel_calls = [c for c in broker.calls if c[0] == "exec.cancel"]
-+    assert cancel_calls == [("exec.cancel", {"procId": "p-1"})]
++    assert proc.wait(timeout=5) == 130
++    assert broker.disconnected.wait(timeout=5)
 +
 +
-+def test_cleanup_closes_environment(tmp_path):
-+    broker, env = make_env(tmp_path)
++def test_cleanup_closes_generation():
++    broker, env = make_env()
 +    env.cleanup()
-+    assert ("close", {"envKey": "conversation-test"}) in broker.calls
++    assert (
++        "/v1/environments/close",
++        {"environmentKey": "conversation-test", "generation": 1},
++    ) in broker.calls
 +    assert env._closed
 +
 +
-+def test_broker_denial_raises_broker_error(tmp_path):
++def test_problem_details_maps_to_broker_error():
 +    broker = FakeBroker(short_sock())
-+    client = BrokerClient(broker.socket_path, timeout=5.0)
++    broker.ensure_denied = True
 +    try:
-+        client.call("policy.set", {})
++        GondolinEnvironment(task_id="denied", socket_path=broker.socket_path)
 +    except BrokerError as err:
-+        assert err.reason == "protocol.unknown_operation"
++        assert err.reason == "policy.denied"
++        assert err.status == 403
 +    else:
 +        raise AssertionError("expected BrokerError")
 +
 +
-+def test_health_check(tmp_path):
++def test_health_check_uses_http_over_uds(tmp_path):
 +    broker = FakeBroker(short_sock())
 +    assert check_gondolin_available(broker.socket_path)
++    assert broker.calls[-1] == ("/v1/health", None)
 +    assert not check_gondolin_available(str(tmp_path / "missing.sock"))
++
++
++def test_typed_file_round_trip_preserves_control_bytes():
++    broker, env = make_env()
++    payload = "héllo\x1b]8;;https://example.test\x07link\x1b]8;;\x07\n".encode()
++    broker.file_data = payload
++    assert env.read_file_bytes("/workspace/example.txt") == payload
++    assert env.write_file_bytes("/workspace/example.txt", payload + b"\x00") == len(payload) + 1
++    assert broker.file_data == payload + b"\x00"
++    paths = [path for path, _request in broker.calls]
++    assert "/v1/files/read" in paths
++    assert "/v1/files/write" in paths
++
++
++def test_patch_uses_typed_files_without_terminal_output_corruption():
++    broker, env = make_env()
++    original = "pré\x1b]8;;https://example.test\x07link\x1b]8;;\x07 post\n".encode()
++    expected = "pré\x1b]8;;https://example.test\x07changed\x1b]8;;\x07 post\n".encode()
++    broker.file_data = original
++
++    result = ShellFileOperations(env).patch_replace(
++        "/workspace/example.txt",
++        "link",
++        "changed",
++    )
++
++    assert result.success, result.error
++    assert broker.file_data == expected
++    file_calls = [path for path, _request in broker.calls if path.startswith("/v1/files/")]
++    assert file_calls == ["/v1/files/read", "/v1/files/write", "/v1/files/read"]
 +
 +
 +def test_embed_stdin_heredoc_groups_command():
@@ -268,11 +298,6 @@ index 0000000..489ed02
 +
 +
 +def test_stdin_heredoc_feeds_multi_command_scripts(tmp_path):
-+    """Regression: write_file landed 0-byte files because the appended
-+    heredoc bound to the pipeline's trailing ``trap - EXIT`` instead of
-+    feeding ``cat``. The grouped form must deliver stdin to the reader."""
-+    import subprocess
-+
 +    target = tmp_path / "out.txt"
 +    script = (
 +        "set -e; "
@@ -289,179 +314,195 @@ index 0000000..489ed02
 +    assert target.read_text() == "hello Daniel\n"
 diff --git a/tools/environments/gondolin.py b/tools/environments/gondolin.py
 new file mode 100644
-index 0000000..e0f113b
 --- /dev/null
 +++ b/tools/environments/gondolin.py
-@@ -0,0 +1,330 @@
-+"""Gondolin broker terminal backend (V3 secure-terminal).
+@@ -0,0 +1,345 @@
++"""Gondolin Effect broker terminal backend.
 +
-+Talks to the profile's Gondolin broker over its mode-0600 Unix socket
-+(``HERMES_GONDOLIN_SOCKET``). The broker owns VMs, policy, lifecycle, and
-+resource governance; this backend is a thin, faithful client of the typed
-+broker protocol — it never selects images, host paths, QEMU flags, network
-+modes, or resource ceilings.
-+
-+Execution flow mirrors every other Hermes backend: ``_run_bash`` returns a
-+ProcessHandle over a broker ``exec.start`` call, so the shared
-+``BaseEnvironment.execute()`` (session snapshots, CWD tracking, interrupts,
-+timeouts) works unchanged. File tools use the generic ShellFileOperations
-+path; process registry spawns via ``env.execute``.
++Uses ordinary HTTP/1.1 over the profile's mode-0600 Unix socket. Hermes supplies
++only the canonical environment key and commands; the broker owns VM assets,
++policy, lifecycle, filesystem mediation, and resource ceilings.
 +"""
 +
 +import base64
 +import json
 +import logging
 +import os
-+import socket
-+import struct
 +import threading
 +import uuid
 +from typing import Any, Optional
++
++import httpx
 +
 +from tools.environments.base import BaseEnvironment, _ThreadedProcessHandle
 +
 +logger = logging.getLogger(__name__)
 +
-+_PROTOCOL_VERSION = 1
-+_MAX_FRAME_BYTES = 16 * 1024 * 1024
 +_DEFAULT_SOCKET = "/run/hermes-sandbox/broker.sock"
++_BASE_URL = "http://localhost"
 +
 +
 +class BrokerError(Exception):
 +    """Broker-side failure with a stable machine-readable reason."""
 +
-+    def __init__(self, reason: str, message: str):
++    def __init__(self, reason: str, message: str, status: int | None = None):
 +        super().__init__(f"{reason}: {message}")
 +        self.reason = reason
-+
-+
-+class _BrokerConnection:
-+    """One length-prefixed JSON connection to the broker."""
-+
-+    def __init__(self, socket_path: str, timeout: float = 30.0):
-+        self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-+        self._sock.settimeout(timeout)
-+        self._sock.connect(socket_path)
-+        self._buffer = b""
-+        self._lock = threading.Lock()
-+
-+    def close(self) -> None:
-+        try:
-+            self._sock.close()
-+        except OSError:
-+            pass
-+
-+    def _read_frames(self):
-+        """Generator of decoded frames until the connection closes."""
-+        while True:
-+            try:
-+                chunk = self._sock.recv(65536)
-+            except socket.timeout:
-+                continue
-+            except OSError:
-+                return
-+            if not chunk:
-+                return
-+            self._buffer += chunk
-+            while len(self._buffer) >= 4:
-+                (length,) = struct.unpack("<I", self._buffer[:4])
-+                if length > _MAX_FRAME_BYTES:
-+                    raise BrokerError("protocol.frame_too_large", f"broker frame {length} bytes")
-+                if len(self._buffer) < 4 + length:
-+                    break
-+                body = self._buffer[4 : 4 + length]
-+                self._buffer = self._buffer[4 + length :]
-+                yield json.loads(body.decode("utf-8"))
-+
-+    def call(self, request_id: int, op: str, payload: dict):
-+        """Send one request; yield (kind, frame) where kind is
-+        'event' for stream frames and 'response' for the terminal frame."""
-+        frame = {"v": _PROTOCOL_VERSION, "id": request_id, "op": op, "payload": payload}
-+        body = json.dumps(frame).encode("utf-8")
-+        with self._lock:
-+            self._sock.sendall(struct.pack("<I", len(body)) + body)
-+            for decoded in self._read_frames():
-+                if decoded.get("id") != request_id:
-+                    continue
-+                if "event" in decoded:
-+                    yield "event", decoded
-+                    continue
-+                yield "response", decoded
-+                return
++        self.status = status
 +
 +
 +class BrokerClient:
-+    """Minimal typed client: one operation per connection (the broker
-+    serves concurrent connections; this keeps the client trivially correct
-+    under Hermes' threaded tool dispatch)."""
++    """Thread-safe HTTPX client for HTTP/1.1 over one Unix socket."""
 +
 +    def __init__(self, socket_path: str, timeout: float = 30.0):
 +        self._socket_path = socket_path
 +        self._timeout = timeout
-+        self._next_id = 1
-+        self._id_lock = threading.Lock()
-+
-+    def _allocate_id(self) -> int:
-+        with self._id_lock:
-+            request_id = self._next_id
-+            self._next_id += 1
-+            return request_id
-+
-+    def call(self, op: str, payload: dict, timeout: float = None, on_event=None):
-+        """Run one operation. Returns (events, result_payload).
-+
-+        ``on_event`` fires for each stream event as it arrives (needed for
-+        exec.state, which carries the cancellable procId mid-run).
-+
-+        Raises BrokerError on broker denials and OSError on transport
-+        failures so callers can distinguish policy answers from downtime.
-+        """
-+        request_id = self._allocate_id()
-+        conn = _BrokerConnection(
-+            self._socket_path, timeout=timeout if timeout is not None else self._timeout
++        self._client = httpx.Client(
++            transport=httpx.HTTPTransport(uds=socket_path),
++            base_url=_BASE_URL,
++            timeout=httpx.Timeout(timeout),
++            headers={"accept": "application/json"},
 +        )
-+        events = []
++
++    def close(self) -> None:
++        self._client.close()
++
++    @staticmethod
++    def _raise_for_status(response: httpx.Response) -> None:
++        if response.status_code < 400:
++            return
 +        try:
-+            for kind, frame in conn.call(request_id, op, payload):
-+                if kind == "event":
-+                    events.append(frame)
-+                    if on_event is not None:
-+                        on_event(frame)
++            problem = response.json()
++        except (json.JSONDecodeError, UnicodeDecodeError):
++            problem = {}
++        reason = problem.get("reason", "broker.http_error")
++        detail = problem.get("detail", f"broker returned HTTP {response.status_code}")
++        raise BrokerError(str(reason), str(detail), response.status_code)
++
++    def health(self) -> bool:
++        response = self._client.get("/v1/health", timeout=self._timeout)
++        self._raise_for_status(response)
++        body = response.json()
++        return body.get("status") == "ok"
++
++    def ensure(self, environment_key: str, timeout: float = 180.0) -> dict:
++        response = self._client.post(
++            "/v1/environments/ensure",
++            json={"environmentKey": environment_key},
++            timeout=timeout,
++        )
++        self._raise_for_status(response)
++        return response.json()
++
++    @staticmethod
++    def _file_result(response: httpx.Response) -> tuple[bytes, int]:
++        body = response.json()
++        data_base64 = body.get("dataBase64")
++        size = body.get("size")
++        if not isinstance(data_base64, str) or not isinstance(size, int) or size < 0:
++            raise BrokerError("protocol.invalid_response", "invalid broker file response")
++        try:
++            data = base64.b64decode(data_base64, validate=True)
++        except (ValueError, TypeError) as exc:
++            raise BrokerError("protocol.invalid_response", "invalid broker file base64") from exc
++        if len(data) != size:
++            raise BrokerError("protocol.invalid_response", "broker file size mismatch")
++        return data, size
++
++    def read_file(
++        self,
++        environment_key: str,
++        generation: int,
++        path: str,
++        max_bytes: int = 64 * 1024 * 1024,
++    ) -> bytes:
++        response = self._client.post(
++            "/v1/files/read",
++            json={
++                "environmentKey": environment_key,
++                "generation": generation,
++                "path": path,
++                "maxBytes": max_bytes,
++            },
++            timeout=self._timeout,
++        )
++        self._raise_for_status(response)
++        data, _size = self._file_result(response)
++        return data
++
++    def write_file(self, environment_key: str, generation: int, path: str, data: bytes) -> int:
++        response = self._client.post(
++            "/v1/files/write",
++            json={
++                "environmentKey": environment_key,
++                "generation": generation,
++                "path": path,
++                "dataBase64": base64.b64encode(data).decode("ascii"),
++                "create": True,
++                "truncate": True,
++            },
++            timeout=self._timeout,
++        )
++        self._raise_for_status(response)
++        body = response.json()
++        size = body.get("size")
++        if not isinstance(size, int) or size < 0 or size != len(data):
++            raise BrokerError("protocol.invalid_response", "invalid broker write response")
++        return size
++
++    def close_environment(self, environment_key: str, generation: int) -> None:
++        response = self._client.post(
++            "/v1/environments/close",
++            json={"environmentKey": environment_key, "generation": generation},
++            timeout=self._timeout,
++        )
++        self._raise_for_status(response)
++
++    def execute(
++        self,
++        payload: dict,
++        *,
++        timeout: float,
++        on_open=None,
++    ) -> tuple[list[dict], dict]:
++        events: list[dict] = []
++        request_timeout = httpx.Timeout(max(timeout, 30.0), read=None)
++        with self._client.stream(
++            "POST",
++            "/v1/exec",
++            json=payload,
++            timeout=request_timeout,
++            headers={"accept": "application/x-ndjson"},
++        ) as response:
++            self._raise_for_status(response)
++            if on_open is not None:
++                on_open(response)
++            for line in response.iter_lines():
++                if not line:
 +                    continue
-+                if not frame.get("ok", False):
-+                    error = frame.get("error") or {}
-+                    raise BrokerError(error.get("reason", "broker.error"), error.get("message", op))
-+                return events, frame.get("result") or {}
-+        finally:
-+            conn.close()
-+        raise BrokerError("protocol.bad_state", f"{op}: connection closed without a response")
++                try:
++                    event = json.loads(line)
++                except json.JSONDecodeError as exc:
++                    raise BrokerError("protocol.invalid_json", "invalid NDJSON event") from exc
++                if event.get("type") == "error":
++                    raise BrokerError(
++                        str(event.get("reason", "broker.stream_error")),
++                        str(event.get("message", "execution failed")),
++                    )
++                events.append(event)
++        exits = [event for event in events if event.get("type") == "exit"]
++        if len(exits) != 1:
++            raise BrokerError("protocol.incomplete_stream", "execution stream has no terminal exit event")
++        return events, exits[0]
 +
 +
 +class GondolinEnvironment(BaseEnvironment):
-+    """Hermes BaseEnvironment backed by the Gondolin broker.
++    """Hermes environment backed by the Gondolin Effect broker."""
 +
-+    ``task_id`` is the canonical environment key (already derived by
-+    ``terminal_tool.environment_key``); the broker composes the effective
-+    policy for it. Conversation isolation, network policy, and resource
-+    limits are all broker-side.
-+    """
-+
-+    # stdin rides the command heredoc (same as Modal/Daytona); the broker
-+    # protocol's exec.stdin op exists for a future interactive path.
 +    _stdin_mode = "heredoc"
 +
 +    @staticmethod
 +    def _embed_stdin_heredoc(command: str, stdin_data: str) -> str:
-+        """Brace-group the command so the heredoc feeds the script's stdin.
-+
-+        The base implementation appends ``<< DELIM`` to the whole command
-+        string, which binds the heredoc to the LAST command of a
-+        multi-command script. The atomic write pipeline ends in
-+        ``trap - EXIT``, so the heredoc fed ``trap`` while ``cat`` read an
-+        empty stdin and every write_file landed as a 0-byte file.
-+        Redirecting a brace group instead delivers the data to whichever
-+        command inside actually reads stdin.
-+        """
 +        delimiter = f"HERMES_STDIN_{uuid.uuid4().hex[:12]}"
 +        return f"{{\n{command}\n}} << '{delimiter}'\n{stdin_data}\n{delimiter}"
 +
@@ -474,64 +515,59 @@ index 0000000..e0f113b
 +        socket_path: str = None,
 +    ):
 +        super().__init__(cwd, timeout, env)
-+        # Conversation-scoped and warm-by-design: the VM must survive
-+        # between agent turns; terminal_tool's per-turn teardown only
-+        # spares backends that report _persistent (same flag Docker sets).
-+        # Session close still closes the broker environment (VM stops,
-+        # workspace persists warm per broker retention).
 +        self._persistent = True
 +        self._socket_path = socket_path or os.environ.get(
 +            "HERMES_GONDOLIN_SOCKET", _DEFAULT_SOCKET
 +        )
 +        self._env_key = task_id or "default"
 +        self._client = BrokerClient(self._socket_path, timeout=30.0)
-+        self.generation: Optional[str] = None
++        self.generation: Optional[int] = None
 +        self._closed = False
 +        self._state_loss_notice: Optional[str] = None
 +        self._ensure_environment()
 +
 +    def _ensure_environment(self) -> None:
-+        _, result = self._client.call(
-+            "ensure",
-+            {
-+                "envKey": self._env_key,
-+            },
-+            timeout=180.0,
-+        )
-+        self.generation = result.get("generation")
-+        outcome = result.get("outcome")
-+        reason = result.get("reason")
-+        if outcome == "recreated":
-+            # Surface retained/lost state in trusted model context (V3 §8.2):
-+            # the environment was rebuilt, so in-VM process state and the
-+            # disposable root were lost while the workspace persisted. The
-+            # notice rides the next execute() output into the conversation.
++        previous_generation = self.generation
++        result = self._client.ensure(self._env_key)
++        generation = result.get("generation")
++        if not isinstance(generation, int):
++            raise BrokerError("protocol.invalid_response", "ensure response has no integer generation")
++        self.generation = generation
++        state = result.get("state")
++        if previous_generation is not None and generation != previous_generation:
 +            logger.warning(
-+                "Gondolin environment %s recreated (reason=%s): prior VM state lost, workspace retained",
++                "Gondolin environment %s recreated: generation %s -> %s",
 +                self._env_key,
-+                reason,
++                previous_generation,
++                generation,
 +            )
 +            self._state_loss_notice = (
 +                "[sandbox notice] The sandbox VM was recreated since the last "
-+                f"command (reason: {reason or 'unknown'}). Ephemeral state was "
-+                "lost: files outside /workspace (e.g. /tmp), running processes, "
-+                "and shell state (cwd, env vars). /workspace contents persist.\n"
++                "command. Ephemeral state was lost: files outside /workspace "
++                "(e.g. /tmp), running processes, and shell state. /workspace "
++                "contents persist.\n"
 +            )
 +        else:
 +            logger.info(
-+                "Gondolin environment %s %s (generation=%s, build=%s)",
++                "Gondolin environment %s %s (generation=%s)",
 +                self._env_key,
-+                outcome,
-+                (self.generation or "")[:12],
-+                (result.get("buildId") or "")[:12],
++                state,
++                generation,
 +            )
 +
-+    # ------------------------------------------------------------------
-+    # BaseEnvironment contract
-+    # ------------------------------------------------------------------
++    def read_file_bytes(self, path: str, max_bytes: int = 64 * 1024 * 1024) -> bytes:
++        self._ensure_environment()
++        if self.generation is None:
++            raise BrokerError("protocol.invalid_response", "environment has no generation")
++        return self._client.read_file(self._env_key, self.generation, path, max_bytes)
++
++    def write_file_bytes(self, path: str, data: bytes) -> int:
++        self._ensure_environment()
++        if self.generation is None:
++            raise BrokerError("protocol.invalid_response", "environment has no generation")
++        return self._client.write_file(self._env_key, self.generation, path, data)
 +
 +    def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
-+        """Execute, prepending any pending state-loss notice exactly once."""
 +        result = super().execute(command, cwd, **kwargs)
 +        if self._state_loss_notice:
 +            notice, self._state_loss_notice = self._state_loss_notice, None
@@ -549,85 +585,87 @@ index 0000000..e0f113b
 +        if self._closed:
 +            raise RuntimeError("Gondolin environment is closed")
 +
-+        proc_state: dict[str, Any] = {"proc_id": None}
++        # Re-ensure before every command. This is cheap for a live generation
++        # and recovers cleanly after broker restart or disconnect cancellation.
++        self._ensure_environment()
++        if self.generation is None:
++            raise BrokerError("protocol.invalid_response", "environment has no generation")
++
++        state: dict[str, Any] = {"response": None}
++        state_lock = threading.Lock()
++        cancelled = threading.Event()
++
++        def on_open(response: httpx.Response) -> None:
++            with state_lock:
++                state["response"] = response
 +
 +        def exec_fn():
-+            events, result = self._client.call(
-+                "exec.start",
-+                {
-+                    "envKey": self._env_key,
-+                    "shell": cmd_string,
-+                    "timeoutMs": int(timeout) * 1000,
-+                },
-+                timeout=max(float(timeout) + 30.0, 60.0),
-+                on_event=lambda event: (
-+                    proc_state.__setitem__("proc_id", event.get("procId"))
-+                    if event.get("event") == "exec.state"
-+                    else None
-+                ),
-+            )
++            try:
++                events, result = self._client.execute(
++                    {
++                        "environmentKey": self._env_key,
++                        "generation": self.generation,
++                        "argv": ["/bin/sh", "-lc" if login else "-c", cmd_string],
++                        "timeoutMs": int(timeout) * 1000,
++                    },
++                    timeout=max(float(timeout) + 30.0, 60.0),
++                    on_open=on_open,
++                )
++            except httpx.HTTPError:
++                if cancelled.is_set():
++                    return "", 130
++                raise
 +
-+            ordered = sorted(
-+                (e for e in events if e.get("event") == "exec.output"),
-+                key=lambda e: e.get("seq", 0),
-+            )
-+            # Streams are ordered per stream; merge in protocol order for the
-+            # combined-output contract (stdout frames first is fine — Hermes
-+            # merges stderr into output for remote backends).
-+            stdout_parts = []
-+            stderr_parts = []
-+            for event in ordered:
-+                data = base64.b64decode(event.get("data", ""))
-+                text = data.decode("utf-8", errors="replace")
-+                if event.get("stream") == "stderr":
-+                    stderr_parts.append(text)
-+                else:
-+                    stdout_parts.append(text)
-+            output = "".join(stdout_parts) + "".join(stderr_parts)
++            output_parts = []
++            for event in events:
++                if event.get("type") != "output":
++                    continue
++                data = base64.b64decode(event.get("dataBase64", ""))
++                output_parts.append(data.decode("utf-8", errors="replace"))
 +            exit_code = result.get("exitCode")
 +            if exit_code is None:
-+                reason = result.get("reason") or "unknown"
-+                if reason == "timeout":
-+                    raise TimeoutError(f"command timed out after {timeout}s")
-+                exit_code = 1
-+            return output, int(exit_code)
++                exit_code = 128 if result.get("signal") is not None else 1
++            return "".join(output_parts), int(exit_code)
 +
 +        def cancel_fn():
-+            proc_id = proc_state.get("proc_id")
-+            if proc_id:
-+                try:
-+                    self._client.call("exec.cancel", {"procId": proc_id}, timeout=10.0)
-+                except Exception as exc:  # noqa: BLE001 - best-effort cancel
-+                    logger.debug("exec.cancel failed for %s: %s", proc_id, exc)
++            cancelled.set()
++            with state_lock:
++                response = state.get("response")
++            if response is not None:
++                response.close()
 +
 +        return _ThreadedProcessHandle(exec_fn, cancel_fn)
 +
 +    def cleanup(self):
-+        """Close the environment (VM stops; the workspace persists warm)."""
 +        if self._closed:
 +            return
 +        self._closed = True
 +        try:
-+            self._client.call("close", {"envKey": self._env_key}, timeout=30.0)
++            if self.generation is not None:
++                self._client.close_environment(self._env_key, self.generation)
 +        except Exception as exc:  # noqa: BLE001 - cleanup must not raise
 +            logger.debug("Gondolin close for %s failed: %s", self._env_key, exc)
++        finally:
++            self._client.close()
 +
 +
 +def check_gondolin_available(socket_path: str = None) -> bool:
-+    """Health check for tool registration: the broker socket answers."""
++    """Health check for tool registration: the broker answers HTTP over UDS."""
 +    path = socket_path or os.environ.get("HERMES_GONDOLIN_SOCKET", _DEFAULT_SOCKET)
++    client = None
 +    try:
 +        client = BrokerClient(path, timeout=5.0)
-+        client.call("status", {})
-+        return True
++        return client.health()
 +    except Exception as exc:  # noqa: BLE001 - a health probe never raises
 +        logger.error("Gondolin broker unavailable at %s: %s", path, exc)
 +        return False
++    finally:
++        if client is not None:
++            client.close()
 diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
-index 4694933..65f2a4f 100644
 --- a/tools/terminal_tool.py
 +++ b/tools/terminal_tool.py
-@@ -950,6 +950,7 @@ from tools.environments.singularity import SingularityEnvironment as _Singularit
+@@ -950,6 +950,7 @@
  from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
  from tools.environments.docker import DockerEnvironment as _DockerEnvironment
  from tools.environments.modal import ModalEnvironment as _ModalEnvironment
@@ -635,7 +673,7 @@ index 4694933..65f2a4f 100644
  from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
  from tools.managed_tool_gateway import is_managed_tool_gateway_ready
  import sys
-@@ -1242,7 +1243,7 @@ def _safe_getcwd() -> str:
+@@ -1242,7 +1243,7 @@
  # cwd looks when it leaks toward a Linux container's ``-w`` flag.
  _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
  
@@ -644,7 +682,7 @@ index 4694933..65f2a4f 100644
  
  
  def _is_ssh_remote_tilde_cwd(backend: str, cwd: str) -> bool:
-@@ -1475,6 +1476,14 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
+@@ -1475,6 +1476,14 @@
              persist_across_processes=cc.get("docker_persist_across_processes", True),
          )
      
@@ -659,7 +697,7 @@ index 4694933..65f2a4f 100644
      elif env_type == "singularity":
          return _SingularityEnvironment(
              image=image, cwd=cwd, timeout=timeout,
-@@ -2857,6 +2866,10 @@ def check_terminal_requirements() -> bool:
+@@ -2857,6 +2866,10 @@
              result = subprocess.run([docker, "version"], capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
              return result.returncode == 0
  
@@ -670,7 +708,7 @@ index 4694933..65f2a4f 100644
          elif env_type == "singularity":
              executable = shutil.which("apptainer") or shutil.which("singularity")
              if executable:
-@@ -2940,7 +2953,7 @@ def check_terminal_requirements() -> bool:
+@@ -2940,7 +2953,7 @@
          else:
              logger.error(
                  "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
@@ -679,3 +717,130 @@ index 4694933..65f2a4f 100644
                  env_type,
              )
              return False
+diff --git a/tools/file_operations.py b/tools/file_operations.py
+index 78bdd8d..0818a5c 100644
+--- a/tools/file_operations.py
++++ b/tools/file_operations.py
+@@ -1355,15 +1355,22 @@ class ShellFileOperations(FileOperations):
+         ext = os.path.splitext(path)[1].lower()
+         pre_content: Optional[str] = None
+         want_pre = ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
++        native_read = getattr(self.env, "read_file_bytes", None)
+         if want_pre:
+             # Best-effort read; failure (file missing, permission) leaves
+             # pre_content as None which makes both downstream consumers
+             # degrade gracefully (lint reports all errors; LSP skips the
+             # shift map).
+-            read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+-            read_result = self._exec(read_cmd)
+-            if read_result.exit_code == 0 and read_result.stdout:
+-                pre_content = read_result.stdout
++            if callable(native_read):
++                try:
++                    pre_content = native_read(path).decode("utf-8")
++                except (OSError, UnicodeDecodeError):
++                    pre_content = None
++            else:
++                read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
++                read_result = self._exec(read_cmd)
++                if read_result.exit_code == 0 and read_result.stdout:
++                    pre_content = read_result.stdout
+ 
+         # ── Line-ending preservation (Roo Code pattern) ──────────────
+         # If the file existed with CRLF endings and the agent's content
+@@ -1420,19 +1427,23 @@ class ShellFileOperations(FileOperations):
+         # the atomic swap doesn't silently widen or narrow permissions, and
+         # clean the temp up on any failure so we never leak a ``.hermes-tmp``
+         # turd next to the user's file.
+-        write_result = self._atomic_write(path, content)
+-
+-        if write_result.exit_code != 0:
+-            return WriteResult(error=f"Failed to write file: {write_result.stdout}")
+-
+-        # Get bytes written (wc -c is POSIX, works on Linux + macOS)
+-        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
+-        stat_result = self._exec(stat_cmd)
++        native_write = getattr(self.env, "write_file_bytes", None)
++        if callable(native_write):
++            try:
++                bytes_written = native_write(path, content.encode("utf-8"))
++            except (OSError, UnicodeEncodeError) as exc:
++                return WriteResult(error=f"Failed to write file: {exc}")
++        else:
++            write_result = self._atomic_write(path, content)
++            if write_result.exit_code != 0:
++                return WriteResult(error=f"Failed to write file: {write_result.stdout}")
+ 
+-        try:
+-            bytes_written = int(stat_result.stdout.strip())
+-        except ValueError:
+-            bytes_written = len(content.encode('utf-8'))
++            stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
++            stat_result = self._exec(stat_cmd)
++            try:
++                bytes_written = int(stat_result.stdout.strip())
++            except ValueError:
++                bytes_written = len(content.encode("utf-8"))
+ 
+         # Post-write lint with delta refinement.
+         lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=content)
+@@ -1483,14 +1494,20 @@ class ShellFileOperations(FileOperations):
+         if _is_write_denied(path):
+             return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+ 
+-        # Read current content
+-        read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+-        read_result = self._exec(read_cmd)
+-        
+-        if read_result.exit_code != 0:
+-            return PatchResult(error=f"Failed to read file: {path}")
+-        
+-        content = read_result.stdout
++        # Use typed broker file reads when the environment exposes them. PTY
++        # output can contain terminal control sequences and is not file data.
++        native_read = getattr(self.env, "read_file_bytes", None)
++        if callable(native_read):
++            try:
++                content = native_read(path).decode("utf-8")
++            except (OSError, UnicodeDecodeError) as exc:
++                return PatchResult(error=f"Failed to read file: {exc}")
++        else:
++            read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
++            read_result = self._exec(read_cmd)
++            if read_result.exit_code != 0:
++                return PatchResult(error=f"Failed to read file: {path}")
++            content = read_result.stdout
+         # Strip a leading UTF-8 BOM before matching so the fuzzy matcher and
+         # the diff operate on clean content (a phantom U+FEFF before line 1
+         # defeats an exact first-line match). write_file restores the BOM on
+@@ -1536,10 +1553,17 @@ class ShellFileOperations(FileOperations):
+         # failures (backend FS oddities, race with another task, truncated
+         # pipe, etc.) that would otherwise return success-with-diff while the
+         # file is unchanged on disk.
+-        verify_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+-        verify_result = self._exec(verify_cmd)
+-        if verify_result.exit_code != 0:
+-            return PatchResult(error=f"Post-write verification failed: could not re-read {path}")
++        if callable(native_read):
++            try:
++                verify_content = native_read(path).decode("utf-8")
++            except (OSError, UnicodeDecodeError) as exc:
++                return PatchResult(error=f"Post-write verification failed: {exc}")
++        else:
++            verify_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
++            verify_result = self._exec(verify_cmd)
++            if verify_result.exit_code != 0:
++                return PatchResult(error=f"Post-write verification failed: could not re-read {path}")
++            verify_content = verify_result.stdout
+         # Normalize line endings before comparing.  On Windows, Python's
+         # default text-mode ``open()`` translates ``\n`` → ``\r\n`` on
+         # write, so the file on disk legitimately holds CRLFs while our
+@@ -1551,7 +1575,7 @@ class ShellFileOperations(FileOperations):
+         # marker on disk but ``new_content`` is the BOM-less string we
+         # matched against, so the comparison must drop it to stay
+         # apples-to-apples.
+-        _verify_bomless, _ = _strip_bom(verify_result.stdout)
++        _verify_bomless, _ = _strip_bom(verify_content)
+         _verify_stdout_normalized = _verify_bomless.replace("\r\n", "\n").replace("\r", "\n")
+         _new_content_normalized = new_content.replace("\r\n", "\n").replace("\r", "\n")
+         if _verify_stdout_normalized != _new_content_normalized:

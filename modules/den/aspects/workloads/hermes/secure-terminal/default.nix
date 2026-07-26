@@ -1,6 +1,6 @@
 # Gondolin/QEMU secure-terminal backend for Hermes (V3).
 #
-# Brokered sandbox architecture: a Node 22 broker consuming a
+# Brokered sandbox architecture: an Effect/Node 24 HTTP broker consuming a
 # systemd-activated, profile-owned Unix socket; immutable Nix-built guest
 # assets; and policy JSON rendered at evaluation time. The gateway's only
 # sandbox capability is the broker socket.
@@ -53,6 +53,10 @@ in
       serviceName = serviceNameFor user;
       sandboxUser = "${serviceName}-sandbox";
       brokerName = "${serviceName}-broker";
+      executionSocketName = "${brokerName}-execution";
+      controlSocketName = "${brokerName}-control";
+      executionSocketPath = "/run/${brokerName}/broker.sock";
+      controlSocketPath = "/run/${brokerName}/control.sock";
 
       defaultTemplate = secureTerminal.defaultTemplate or "project";
       allowedPairs =
@@ -112,8 +116,8 @@ in
         lib.mkIf gondolin (
           let
             guestAssets = guestAssetsLib.mkGuestAssets pkgs.stdenv.hostPlatform.system;
-            brokerPackage = pkgs.callPackage (inputs.self + "/pkgs/by-name/hermes-gondolin-broker/package.nix") { };
-            policy = policyLib.mkPolicy {
+            brokerPackage = pkgs.callPackage (inputs.self + "/pkgs/by-name/gondolin-broker-effect/package.nix") { };
+            policy = policyLib.mkEffectPolicy {
               inherit pkgs;
               profile = serviceName;
               bundles = networkBundles;
@@ -126,11 +130,33 @@ in
             # activation. The gateway runner owns the mode-0600 socket (its
             # only sandbox capability); the broker process runs as the
             # distinct sandbox UID and never gets gateway secret access.
-            systemd.sockets.${brokerName} = {
-              description = "${serviceName} Gondolin sandbox broker";
+            # Keep the mount source inode stable while socket units replace
+            # broker.sock/control.sock during activation or operator restarts.
+            # The gateway gets traverse-only access plus its mode-0600 sockets.
+            systemd.tmpfiles.rules = [
+              "d /run/${brokerName} 0711 root root -"
+            ];
+            systemd.sockets.${executionSocketName} = {
+              description = "${serviceName} Gondolin sandbox execution plane";
               wantedBy = [ "sockets.target" ];
               socketConfig = {
-                ListenStream = "/run/${brokerName}/broker.sock";
+                ListenStream = executionSocketPath;
+                FileDescriptorName = "execution";
+                Service = "${brokerName}.service";
+                SocketUser = user.userName;
+                SocketGroup = user.userName;
+                SocketMode = "0600";
+                DirectoryMode = "0711";
+                RemoveOnStop = true;
+              };
+            };
+            systemd.sockets.${controlSocketName} = {
+              description = "${serviceName} Gondolin sandbox control plane";
+              wantedBy = [ "sockets.target" ];
+              socketConfig = {
+                ListenStream = controlSocketPath;
+                FileDescriptorName = "control";
+                Service = "${brokerName}.service";
                 SocketUser = user.userName;
                 SocketGroup = user.userName;
                 SocketMode = "0600";
@@ -141,6 +167,14 @@ in
             systemd.services.${brokerName} = {
               description = "${serviceName} Gondolin sandbox broker service";
               # The SDK spawns qemu-img (overlay creation) and
+              requires = [
+                "${executionSocketName}.socket"
+                "${controlSocketName}.socket"
+              ];
+              after = [
+                "${executionSocketName}.socket"
+                "${controlSocketName}.socket"
+              ];
               # qemu-system-* (VM runner) from PATH. This is the NixOS
               # service-level PATH, not a serviceConfig key.
               path = [ pkgs.qemu ];
@@ -148,24 +182,24 @@ in
               # start; there is no silent fallback to an unaccepted mode.
               unitConfig.ConditionPathExists = "/dev/kvm";
               environment = {
-                HERMES_BROKER_POLICY = "${policy.json}";
-                HERMES_BROKER_PROFILE = serviceName;
-                HERMES_BROKER_STATE_DIR = "/var/lib/${sandboxUser}";
-                HERMES_BROKER_CACHE_DIR = "/var/cache/${sandboxUser}";
-                HERMES_BROKER_RUNTIME_DIR = "/run/${sandboxUser}";
-                # Spike diagnostics: SDK component logs (boot, exec, vfs,
-                # net) land in the broker journal. Remove after the Phase 4
-                # decision (V3 section 19).
-                GONDOLIN_DEBUG = "all";
+                GONDOLIN_EFFECT_POLICY = "${policy.json}";
+                GONDOLIN_EFFECT_PROFILE = serviceName;
+                GONDOLIN_EFFECT_STATE_DIR = "/var/lib/${sandboxUser}";
+                GONDOLIN_EFFECT_SOCKET = executionSocketPath;
+                GONDOLIN_EFFECT_CONTROL_SOCKET = controlSocketPath;
+                # SDK boot/protocol metadata and Effect HTTP request spans
+                # go to journald. Do not enable Gondolin's `exec` or `vfs`
+                # debug channels: they include commands, env, and paths.
+                GONDOLIN_DEBUG = "protocol,net";
               };
               serviceConfig = {
                 Type = "exec";
                 User = sandboxUser;
                 Group = sandboxUser;
-                ExecStart = "${brokerPackage}/bin/hermes-gondolin-broker";
+                ExecStart = "${brokerPackage}/bin/gondolin-broker-effect";
 
-                # Delegated cgroup v2 subtree for per-VM limits (§16).
-                Delegate = true;
+                # Reserve the delegated subtree for the documented per-VM
+                # cgroup compatibility debt; this alone is not enforcement.
 
                 StateDirectory = sandboxUser;
                 StateDirectoryMode = "0700";
@@ -177,10 +211,9 @@ in
                 UMask = "0077";
                 PrivateTmp = true;
                 ProtectHome = true;
-                # ProtectKernelTunables makes /sys read-only; the delegated
-                # cgroup v2 subtree must stay writable or the broker (which
-                # fails closed rather than run ungoverned) cannot create
-                # per-VM cgroups (V3 section 16).
+                # Keep the delegated cgroup v2 subtree writable for the
+                # planned per-VM placement path. The current broker enforces
+                # static VM admission and guest sizing, not host cgroup caps.
                 ProtectSystem = "strict";
                 ReadWritePaths = [
                   "/var/lib/${sandboxUser}"

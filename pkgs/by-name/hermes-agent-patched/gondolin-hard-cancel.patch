@@ -1,0 +1,27 @@
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Tue, 21 Jul 2026 22:55:00 -0700
+Subject: [PATCH] fix(gondolin): close dedicated exec client on cancellation
+
+Use one HTTP client per streamed execution so hard cancellation can close the
+transport without poisoning the environment control client.
+---
+diff --git a/tools/environments/gondolin.py b/tools/environments/gondolin.py
+index 3f5cf9c..d2ef69d 100644
+--- a/tools/environments/gondolin.py
++++ b/tools/environments/gondolin.py
+@@ -277,0 +278 @@ class GondolinEnvironment(BaseEnvironment):
++        exec_client = BrokerClient(self._socket_path, timeout=30.0)
+@@ -285 +286 @@ class GondolinEnvironment(BaseEnvironment):
+-                events, result = self._client.execute(
++                events, result = exec_client.execute(
+@@ -298,0 +300,2 @@ class GondolinEnvironment(BaseEnvironment):
++            finally:
++                exec_client.close()
+@@ -315,2 +318,5 @@ class GondolinEnvironment(BaseEnvironment):
+-            if response is not None:
+-                response.close()
++            try:
++                if response is not None:
++                    response.close()
++            finally:
++                exec_client.close()
