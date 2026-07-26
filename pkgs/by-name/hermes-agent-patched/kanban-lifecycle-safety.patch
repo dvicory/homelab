@@ -1,0 +1,158 @@
+diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
+index 3ec4a40..a2ff84c 100644
+--- a/agent/prompt_builder.py
++++ b/agent/prompt_builder.py
+@@ -227,6 +227,9 @@ KANBAN_GUIDANCE = (
+     "reviewer can approve+unblock or request changes. Reviewing-then-"
+     "completing is more honest than auto-completing work that still needs "
+     "eyes on it.\n"
++    "A rejected `kanban_complete` call does not end the task: correct a safely "
++    "recoverable request, or call `kanban_block` once with the exact unresolved "
++    "error and stop.\n"
+     "6. **If follow-up work appears, create it; don't do it.** Use "
+     "`kanban_create(title=..., assignee=<right-profile>, parents=[your-task-id])` "
+     "to spawn a child task for the appropriate specialist profile instead of "
+diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
+index 2e81f94..9ee49e9 100644
+--- a/tools/kanban_tools.py
++++ b/tools/kanban_tools.py
+@@ -1550,16 +1550,18 @@ KANBAN_CREATE_SCHEMA = {
+ KANBAN_UNBLOCK_SCHEMA = {
+     "name": "kanban_unblock",
+     "description": (
+-        "Move a blocked Kanban task back to ready. Orchestrator-only — only "
+-        "profiles with the kanban toolset can unblock routed work; "
+-        "dispatcher-spawned task workers never see this tool."
++        "Move a blocked Kanban task back to ready only after the current task "
++        "contract or a human explicitly authorizes a retry and the blocker is "
++        "confirmed resolved. Never unblock merely to poll, retry speculatively, "
++        "or override a rejected completion. Orchestrator-only; dispatched task "
++        "workers never see this tool."
+     ),
+     "parameters": {
+         "type": "object",
+         "properties": {
+             "task_id": {
+                 "type": "string",
+-                "description": "Blocked task id to return to ready.",
++                "description": "Blocked task id whose blocker is confirmed resolved.",
+             },
+             "board": _board_schema_prop(),
+         },
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+index 6150b14..97c6873 100644
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -6529,6 +6529,47 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+             )
+             if tripped:
+                 auto_blocked.append(tid)
++                if protocol_violation:
++                    # Route the deterministic breaker trip through the same
++                    # recurrence semantics as an explicit capability block.
++                    # A repeated unblock/re-block cycle escalates to triage.
++                    with write_txn(conn):
++                        previous = conn.execute(
++                            "SELECT block_kind, block_recurrences FROM tasks "
++                            "WHERE id = ? AND status = 'blocked'",
++                            (tid,),
++                        ).fetchone()
++                        if previous is not None:
++                            previous_recurrences = int(previous["block_recurrences"] or 0)
++                            block_recurrences = (
++                                previous_recurrences + 1
++                                if previous["block_kind"] == "capability"
++                                else 1
++                            )
++                            routed_to = (
++                                "triage"
++                                if block_recurrences >= BLOCK_RECURRENCE_LIMIT
++                                else "blocked"
++                            )
++                            conn.execute(
++                                "UPDATE tasks SET status = ?, block_kind = 'capability', "
++                                "block_recurrences = ? WHERE id = ? AND status = 'blocked'",
++                                (routed_to, block_recurrences, tid),
++                            )
++                            payload = {
++                                "reason": error_text,
++                                "kind": "capability",
++                                "recurrences": block_recurrences,
++                                "source": "protocol_violation",
++                            }
++                            if routed_to == "triage":
++                                payload["limit"] = BLOCK_RECURRENCE_LIMIT
++                            _append_event(
++                                conn,
++                                tid,
++                                "block_loop_detected" if routed_to == "triage" else "blocked",
++                                payload,
++                            )
+     # Stash auto-blocked ids on the function for the dispatch loop to pick up.
+     # Keeps the public return type (``list[str]``) stable for direct callers
+     # and tests that destructure the result; ``dispatch_once`` reads this
+diff --git a/tests/hermes_cli/test_kanban_core_functionality.py b/tests/hermes_cli/test_kanban_core_functionality.py
+index 353722d..01d8e01 100644
+--- a/tests/hermes_cli/test_kanban_core_functionality.py
++++ b/tests/hermes_cli/test_kanban_core_functionality.py
+@@ -4453,6 +4453,27 @@ def test_detect_crashed_workers_protocol_violation_auto_blocks(kanban_home):
+         assert "gave_up" in kinds, (
+             f"breaker should trip, expected 'gave_up' event, got {kinds}"
+         )
++        assert task.block_kind == "capability"
++        assert task.block_recurrences == 1
++
++        assert kb.unblock_task(conn, tid)
++        kb.claim_task(conn, tid, claimer=lock)
++        second_pid = fake_pid + 1
++        kb._set_worker_pid(conn, tid, second_pid)
++        _kb._record_worker_exit(second_pid, 0)
++        _kb._pid_alive = lambda p: False
++        try:
++            second_crashed = kb.detect_crashed_workers(conn)
++        finally:
++            _kb._pid_alive = original_alive
++
++        assert tid in second_crashed
++        task = kb.get_task(conn, tid)
++        assert task.status == "triage"
++        assert task.block_kind == "capability"
++        assert task.block_recurrences == kb.BLOCK_RECURRENCE_LIMIT
++        kinds = [event.kind for event in kb.list_events(conn, tid)]
++        assert "block_loop_detected" in kinds
+     finally:
+         conn.close()
+ 
+diff --git a/tests/tools/test_kanban_tools.py b/tests/tools/test_kanban_tools.py
+index cdf8c4c..e129209 100644
+--- a/tests/tools/test_kanban_tools.py
++++ b/tests/tools/test_kanban_tools.py
+@@ -1430,10 +1430,19 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
+     assert "kanban_complete" in prompt
+     assert "kanban_block" in prompt
+     assert "kanban_create" in prompt
++    assert "rejected `kanban_complete` call does not end the task" in prompt
+     # Anti-shell guidance
+     assert "Do not shell out" in prompt or "tools — they work" in prompt
+ 
+ 
++def test_unblock_schema_forbids_speculative_retry():
++    from tools import kanban_tools as kt
++
++    description = kt.KANBAN_UNBLOCK_SCHEMA["description"]
++    assert "blocker is confirmed resolved" in description
++    assert "Never unblock merely to poll, retry speculatively" in description
++
++
+ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
+     """Sanity: the guidance block stays lean so it doesn't blow up the
+     cached prompt.
+@@ -1453,7 +1462,7 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
+     monkeypatch.setattr(_P, "home", lambda: tmp_path)
+ 
+     from agent.prompt_builder import KANBAN_GUIDANCE
+-    assert 1_500 < len(KANBAN_GUIDANCE) < 5_500, (
++    assert 1_500 < len(KANBAN_GUIDANCE) < 5_800, (
+         f"KANBAN_GUIDANCE is {len(KANBAN_GUIDANCE)} chars — too short (missing?) or too long"
+     )
+ 
