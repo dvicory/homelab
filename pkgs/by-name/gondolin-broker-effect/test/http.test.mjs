@@ -96,6 +96,25 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
     assert.equal(acquired.workspace.guestPath, "/workspace")
     assert.equal("workspacePath" in acquired.workspace, false)
 
+    const freshAcquiredResponse = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/workspaces/acquire", {
+        environmentKey: "task-fresh-control"
+      })
+    )
+    assert.equal(freshAcquiredResponse.status, 200)
+    const freshAcquired = JSON.parse(freshAcquiredResponse.text)
+    const defaultBind = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/authority/bind-default", {
+        environmentKey: "task-fresh-control",
+        workspaceId: freshAcquired.workspace.workspaceId,
+        leaseId: freshAcquired.lease.leaseId
+      })
+    )
+    assert.equal(defaultBind.status, 200)
+    const defaultAuthority = JSON.parse(defaultBind.text)
+    assert.equal(defaultAuthority.authorityClass, "default")
+    assert.equal(defaultAuthority.policyDigest, "a".repeat(64))
+
     const bind = yield* Effect.promise(() =>
       request(config.controlSocketPath, "/v1/control/authority/bind", {
         environmentKey: "conversation-control",

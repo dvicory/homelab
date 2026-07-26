@@ -278,7 +278,7 @@ diff --git a/plugins/workspace-service/__init__.py b/plugins/workspace-service/_
 +            os.getenv("HERMES_WORKSPACE_LEASE_ID", "").strip()
 +            or (cached["workspaceLeaseId"] if cached is not None else "")
          )
-@@ -216,4 +246,158 @@ def _acquire(task_id: str = "", session_id: str = "") -> dict[str, Any]:
+@@ -216,4 +246,160 @@ def _acquire(task_id: str = "", session_id: str = "") -> dict[str, Any]:
          return binding
  
  
@@ -416,9 +416,11 @@ diff --git a/plugins/workspace-service/__init__.py b/plugins/workspace-service/_
 +        else:
 +            binding = _acquire(task_id=task_id)
 +
-+    authority = _request(
-+        "/v1/control/authority/status", {"environmentKey": environment_key}
-+    )
++    authority = _request("/v1/control/authority/bind-default", {
++        "environmentKey": environment_key,
++        "workspaceId": binding["workspaceId"],
++        "leaseId": binding["workspaceLeaseId"],
++    })
 +    policy_digest = _required_identifier(authority.get("policyDigest"), "policyDigest")
 +    if (
 +        authority.get("workspaceId") != binding["workspaceId"]
@@ -534,10 +536,63 @@ diff --git a/tests/tools/test_gondolin_backend.py b/tests/tools/test_gondolin_ba
 diff --git a/tests/plugins/test_workspace_handoff.py b/tests/plugins/test_workspace_handoff.py
 --- a/tests/plugins/test_workspace_handoff.py
 +++ b/tests/plugins/test_workspace_handoff.py
-@@ -238,3 +238,229 @@ def test_create_requires_non_model_current_task_identity(monkeypatch, tmp_path):
+@@ -238,3 +238,282 @@ def test_create_requires_non_model_current_task_identity(monkeypatch, tmp_path):
          "inherit_parent_workspace_output": True,
      }))
      assert "trusted current task identity" in response["error"]
++
++def test_dispatch_binds_fresh_default_authority_before_activation(
++    monkeypatch, tmp_path
++):
++    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
++    monkeypatch.setenv("HERMES_WORKSPACE_HANDOFF", "1")
++    kb._INITIALIZED_PATHS.clear()
++    kb.init_db()
++    with kb.connect() as connection:
++        task_id = kb.create_task(connection, title="ordinary", assignee="default")
++        assert kb.claim_task(connection, task_id, claimer="dispatcher") is not None
++        task = kb.get_task(connection, task_id)
++
++    plugin = load_plugin(monkeypatch)
++    monkeypatch.setattr(
++        plugin.terminal_tool, "register_task_authority_binding", lambda *_: None
++    )
++    monkeypatch.setattr(plugin.terminal_tool, "environment_key", lambda *_: "environment-task")
++    calls = []
++
++    def request(route, body):
++        calls.append((route, body))
++        if route.endswith("/acquire"):
++            return {
++                "workspace": {"workspaceId": "workspace-task", "guestPath": "/workspace"},
++                "lease": {"leaseId": "lease-task"},
++            }
++        if route.endswith("/bind-default"):
++            assert body == {
++                "environmentKey": "environment-task",
++                "workspaceId": "workspace-task",
++                "leaseId": "lease-task",
++            }
++            return {
++                "workspaceId": "workspace-task",
++                "workspaceLeaseId": "lease-task",
++                "policyDigest": "b" * 64,
++            }
++        if route.endswith("/activate"):
++            return {"activation": {"activationId": "activation-task", "epoch": 1}}
++        raise AssertionError(route)
++
++    monkeypatch.setattr(plugin, "_request", request)
++    prepared = plugin._on_prepare_worker_environment(
++        task_id=task.id, run_id=task.current_run_id, board=kb.get_current_board()
++    )
++
++    assert prepared["workspaceMode"] == "broker"
++    assert [route for route, _ in calls] == [
++        "/v1/control/workspaces/acquire",
++        "/v1/control/authority/bind-default",
++        "/v1/control/task-runs/activate",
++    ]
 +
 +
 +def _ready_parent_and_claimed_child(monkeypatch, tmp_path):
@@ -617,14 +672,14 @@ diff --git a/tests/plugins/test_workspace_handoff.py b/tests/plugins/test_worksp
 +                },
 +                "lease": {"leaseId": "lease-child"},
 +            }
-+        if route.endswith("/status"):
++        if route.endswith("/bind-default"):
 +            return {
 +                "workspaceId": "workspace-child",
 +                "workspaceLeaseId": "lease-child",
 +                "policyDigest": "b" * 64,
 +            }
 +        if route.endswith("/activate"):
-+            return {"activationId": "activation-child", "epoch": 1}
++            return {"activation": {"activationId": "activation-child", "epoch": 1}}
 +        raise AssertionError(route)
 +
 +    monkeypatch.setattr(plugin, "_request", request)
@@ -698,14 +753,14 @@ diff --git a/tests/plugins/test_workspace_handoff.py b/tests/plugins/test_worksp
 +                },
 +                "lease": {"leaseId": "lease-recovered"},
 +            }
-+        if route.endswith("/status"):
++        if route.endswith("/bind-default"):
 +            return {
 +                "workspaceId": "workspace-recovered",
 +                "workspaceLeaseId": "lease-recovered",
 +                "policyDigest": "b" * 64,
 +            }
 +        if route.endswith("/activate"):
-+            return {"activationId": "activation-recovered", "epoch": 1}
++            return {"activation": {"activationId": "activation-recovered", "epoch": 1}}
 +        raise AssertionError(route)
 +
 +    monkeypatch.setattr(plugin, "_request", request)
@@ -909,7 +964,7 @@ diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
 diff --git a/tests/plugins/test_workspace_handoff.py b/tests/plugins/test_workspace_handoff.py
 --- a/tests/plugins/test_workspace_handoff.py
 +++ b/tests/plugins/test_workspace_handoff.py
-@@ -467,0 +468,49 @@
+@@ -520,0 +521,49 @@
 +
 +def test_dispatch_replays_publication_after_lost_response(monkeypatch, tmp_path):
 +    monkeypatch.setenv("HERMES_WORKSPACE_HANDOFF", "1")

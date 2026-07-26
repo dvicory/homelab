@@ -169,7 +169,7 @@ diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
 diff --git a/plugins/workspace-service/__init__.py b/plugins/workspace-service/__init__.py
 --- a/plugins/workspace-service/__init__.py
 +++ b/plugins/workspace-service/__init__.py
-@@ -77,4 +77,86 @@ def _request(route: str, body: dict[str, Any]) -> dict[str, Any]:
+@@ -77,4 +77,89 @@ def _request(route: str, body: dict[str, Any]) -> dict[str, Any]:
          connection.close()
  
  
@@ -196,9 +196,12 @@ diff --git a/plugins/workspace-service/__init__.py b/plugins/workspace-service/_
 +        "workspaceLeaseId": workspace_lease_id,
 +        "policyDigest": policy_digest,
 +    })
++    activation = response.get("activation")
++    if not isinstance(activation, dict):
++        raise RuntimeError("workspace.invalid_response: activation is missing")
 +    return {
-+        "activationId": _required_identifier(response.get("activationId"), "activationId"),
-+        "epoch": response.get("epoch"),
++        "activationId": _required_identifier(activation.get("activationId"), "activationId"),
++        "epoch": activation.get("epoch"),
 +    }
 +
 +
@@ -352,7 +355,7 @@ new file mode 100644
 +    def request(route, body):
 +        calls.append((route, body))
 +        if route.endswith("activate"):
-+            return {"activationId": "activation-opaque", "epoch": 7}
++            return {"activation": {"activationId": "activation-opaque", "epoch": 7}}
 +        if route.endswith("publish"):
 +            return {
 +                "revisionId": "revision-opaque",
