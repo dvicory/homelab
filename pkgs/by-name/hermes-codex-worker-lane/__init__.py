@@ -148,5 +148,7 @@ def register(ctx) -> None:
                 description=lane["description"],
                 spawn_fn=spawn,
                 max_concurrency=int(lane.get("maxConcurrency", 1)),
+                allowed_workspace_kinds=frozenset({"dir", "worktree"}),
+                default_workspace_kind="worktree",
             )
         )

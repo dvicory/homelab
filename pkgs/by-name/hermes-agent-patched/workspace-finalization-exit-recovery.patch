@@ -1,0 +1,204 @@
+From 8f761f875265a0cc6a01c77b628eb31633354e35 Mon Sep 17 00:00:00 2001
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Sun, 26 Jul 2026 15:39:17 -0700
+Subject: [PATCH] fix(kanban): recover finalization after worker exit
+
+---
+ hermes_cli/kanban_db.py                       |  32 ++++-
+ plugins/workspace-service/__init__.py         |   4 +
+ ...st_workspace_finalization_exit_recovery.py | 111 ++++++++++++++++++
+ 3 files changed, 146 insertions(+), 1 deletion(-)
+ create mode 100644 tests/plugins/test_workspace_finalization_exit_recovery.py
+
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+index ad7a9a8..d0fe71f 100644
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -6665,6 +6665,26 @@ def _error_fingerprint(error_text: str) -> str:
+     return fp.lower().strip()
+ 
+ 
++
++
++def _has_retryable_pending_workspace_finalization(
++    conn: sqlite3.Connection,
++    task_id: str,
++    run_id: Optional[int],
++) -> bool:
++    """Keep an exited producer recoverable while its broker request is ambiguous."""
++    if run_id is None:
++        return False
++    row = conn.execute(
++        "SELECT last_error FROM task_workspace_operations "
++        "WHERE task_id=? AND run_id=? AND kind='publication' AND state='pending'",
++        (task_id, int(run_id)),
++    ).fetchone()
++    if row is None:
++        return False
++    last_error = row["last_error"]
++    return last_error is None or str(last_error).startswith("broker.unavailable:")
++
+ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+     """Reclaim ``running`` tasks whose worker PID is no longer alive.
+ 
+@@ -6704,7 +6724,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+     # (task_id, pid, claimer, protocol_violation, error_text)
+     with write_txn(conn):
+         rows = conn.execute(
+-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
++            "SELECT id, worker_pid, claim_lock, started_at, current_run_id FROM tasks "
+             "WHERE status = 'running' AND worker_pid IS NOT NULL"
+         ).fetchall()
+         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+@@ -6721,6 +6741,16 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+                 grace = _resolve_crash_grace_seconds()
+                 if time.time() - started_at < grace:
+                     continue
++            # A worker may exit after persisting a finalization intent but
++            # before the broker response becomes durable in Kanban. Recovery
++            # runs at the start of every tick. Do not close that run while the
++            # stored error is an ambiguous broker outage; doing so would make
++            # the immutable operation impossible to replay without rerunning
++            # producer commands.
++            if _has_retryable_pending_workspace_finalization(
++                conn, row["id"], row["current_run_id"]
++            ):
++                continue
+             if _pid_alive(row["worker_pid"]):
+                 continue
+ 
+diff --git a/plugins/workspace-service/__init__.py b/plugins/workspace-service/__init__.py
+index 1d1acae..34ed6b1 100644
+--- a/plugins/workspace-service/__init__.py
++++ b/plugins/workspace-service/__init__.py
+@@ -78,6 +78,10 @@ def _request(route: str, body: dict[str, Any]) -> dict[str, Any]:
+         if not isinstance(decoded, dict):
+             raise RuntimeError("workspace.invalid_response: broker returned a non-object")
+         return decoded
++    except OSError as error:
++        raise RuntimeError(
++            "broker.unavailable: workspace control request could not reach the broker"
++        ) from error
+     finally:
+         connection.close()
+ 
+diff --git a/tests/plugins/test_workspace_finalization_exit_recovery.py b/tests/plugins/test_workspace_finalization_exit_recovery.py
+new file mode 100644
+index 0000000..27e5617
+--- /dev/null
++++ b/tests/plugins/test_workspace_finalization_exit_recovery.py
+@@ -0,0 +1,111 @@
++"""Crash-safe publication recovery after a worker exits during broker outage."""
++
++from __future__ import annotations
++
++import importlib.util
++import sys
++from pathlib import Path
++
++import pytest
++
++from hermes_cli import kanban_db as kb
++from hermes_cli import plugins
++
++
++PLUGIN = Path(__file__).parents[2] / "plugins" / "workspace-service" / "__init__.py"
++
++
++def _load_plugin(monkeypatch):
++    monkeypatch.setenv("HERMES_GONDOLIN_SOCKET", "/run/broker.sock")
++    monkeypatch.setenv("HERMES_SANDBOX_AUTHORITY_BINDING", "qa:gateway:default:v1")
++    sys.modules.pop("workspace_finalization_exit_recovery_test", None)
++    spec = importlib.util.spec_from_file_location(
++        "workspace_finalization_exit_recovery_test", PLUGIN
++    )
++    module = importlib.util.module_from_spec(spec)
++    assert spec.loader is not None
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_workspace_client_classifies_socket_failure_as_broker_unavailable(monkeypatch):
++    plugin = _load_plugin(monkeypatch)
++
++    class UnavailableConnection:
++        def request(self, *_args, **_kwargs):
++            raise FileNotFoundError("control socket missing")
++
++        def close(self):
++            pass
++
++    monkeypatch.setattr(plugin, "_UnixConnection", lambda *_args, **_kwargs: UnavailableConnection())
++    with pytest.raises(RuntimeError, match=r"^broker\.unavailable:"):
++        plugin._request("/v1/control/workspace-revisions/publish", {})
++
++
++def test_dispatch_recovers_publication_after_worker_exits_during_outage(
++    monkeypatch, tmp_path,
++):
++    monkeypatch.setenv("HERMES_WORKSPACE_HANDOFF", "1")
++    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
++    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
++    kb._INITIALIZED_PATHS.clear()
++    kb.init_db()
++    broker_available = False
++    finalization_ids = []
++
++    def finalize(name, **kwargs):
++        nonlocal broker_available
++        assert name == "finalize_kanban_task_completion"
++        finalization_ids.append(kwargs["finalization_id"])
++        if not broker_available:
++            raise RuntimeError(
++                "broker.unavailable: workspace control request could not reach the broker"
++            )
++        return {"revisionId": "revision-opaque", "manifestDigest": "a" * 64}
++
++    monkeypatch.setattr(plugins, "invoke_required_hook", finalize)
++    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
++
++    with kb.connect() as connection:
++        task_id = kb.create_task(connection, title="producer", assignee="worker")
++        assert kb.claim_task(connection, task_id, claimer=kb._claimer_id()) is not None
++        running = kb.get_task(connection, task_id)
++        with pytest.raises(RuntimeError, match=r"^broker\.unavailable:"):
++            kb.complete_task(
++                connection,
++                task_id,
++                summary="created output once",
++                workspace_outputs=["output"],
++                expected_run_id=running.current_run_id,
++            )
++        fake_pid = 31337
++        kb._set_worker_pid(connection, task_id, fake_pid)
++        kb._record_worker_exit(fake_pid, 0)
++
++        def unexpected_spawn(*_args, **_kwargs):
++            pytest.fail("publication recovery redispatched producer commands")
++
++        unavailable_tick = kb.dispatch_once(
++            connection,
++            spawn_fn=unexpected_spawn,
++            max_spawn=1,
++        )
++        assert task_id not in unavailable_tick.crashed
++        still_finalizing = kb.get_task(connection, task_id)
++        assert still_finalizing.status == "running"
++        assert still_finalizing.current_run_id == running.current_run_id
++        assert len(kb.list_runs(connection, task_id)) == 1
++
++        broker_available = True
++        recovered_tick = kb.dispatch_once(
++            connection,
++            spawn_fn=unexpected_spawn,
++            max_spawn=1,
++        )
++        assert task_id not in recovered_tick.crashed
++        completed = kb.get_task(connection, task_id)
++        assert completed.status == "done"
++        assert completed.workspace_outputs == ["output"]
++        assert len(kb.list_runs(connection, task_id)) == 1
++        assert len(set(finalization_ids)) == 1
+-- 
+2.49.0
+

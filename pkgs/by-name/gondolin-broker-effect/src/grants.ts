@@ -1,6 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import * as fs from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { Context, Effect, Layer, Schema } from "effect";
 import {
   type DecideAccessRequest,
@@ -15,6 +13,7 @@ import {
   resolveAuthorityPolicy,
 } from "./authority.js";
 import { BrokerConfig } from "./config.js";
+import { BrokerDatabase } from "./database.js";
 import {
   canonicalCapabilityKey,
   prepareCapabilityBatch,
@@ -23,6 +22,7 @@ import {
 import { BrokerError, brokerError } from "./errors.js";
 import { isCapabilityCoveredByStaticPolicy } from "./network.js";
 import { Registry, type AuthorityBindingRecord } from "./registry.js";
+import { Workspaces } from "./workspaces.js";
 
 export type AccessRequestState = "pending" | "approved" | "denied";
 export type RuntimeGrantState = "active" | "revoked" | "consumed" | "expired";
@@ -217,91 +217,85 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
   const config = yield* BrokerConfig;
   const authorization = yield* Authorization;
   const registry = yield* Registry;
+  const workspaces = yield* Workspaces;
+  const database = yield* BrokerDatabase;
+  const db = database.connection;
   const now = options.now ?? Date.now;
-  const db = yield* Effect.acquireRelease(
-    Effect.try({
-      try: () => {
-        fs.mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
-        const opened = new DatabaseSync(config.databasePath);
-        opened.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
-        const legacyRequestSchema = opened.prepare(
-          "SELECT 1 FROM pragma_table_info('access_requests') WHERE name='policy_generation'",
-        ).get();
-        const legacyGrantSchema = opened.prepare(
-          "SELECT 1 FROM pragma_table_info('runtime_grants') WHERE name='policy_generation'",
-        ).get();
-        if (legacyRequestSchema !== undefined || legacyGrantSchema !== undefined) {
-          // The prior integer cannot identify the immutable policy content.
-          // Fail closed by discarding only broker authorization overlays.
-          opened.exec("DROP TABLE IF EXISTS runtime_grants; DROP TABLE IF EXISTS access_requests;");
-        }
-        opened.exec(`
-          CREATE TABLE IF NOT EXISTS access_requests (
-            request_id TEXT PRIMARY KEY,
-            fingerprint TEXT NOT NULL,
-            binding_id TEXT NOT NULL,
-            environment_key TEXT NOT NULL,
-            profile TEXT NOT NULL,
-            executor TEXT NOT NULL,
-            authority_class TEXT NOT NULL,
-            policy_digest TEXT NOT NULL CHECK (length(policy_digest) = 64),
-            capabilities_json TEXT NOT NULL,
-            requested_scope TEXT NOT NULL CHECK (requested_scope IN ('once','task','conversation','timed','profile','executor')),
-            requested_duration_seconds INTEGER CHECK (requested_duration_seconds IS NULL OR requested_duration_seconds > 0),
-            state TEXT NOT NULL CHECK (state IN ('pending','approved','denied')),
-            created_at INTEGER NOT NULL,
-            decided_at INTEGER,
-            decision_principal TEXT
-          ) STRICT;
-          CREATE UNIQUE INDEX IF NOT EXISTS access_requests_one_pending_environment
-            ON access_requests(environment_key) WHERE state = 'pending';
-          CREATE INDEX IF NOT EXISTS access_requests_fingerprint_state
-            ON access_requests(fingerprint, state, decided_at);
-        `);
-        opened.exec(`
-          CREATE TABLE IF NOT EXISTS runtime_grants (
-            grant_id TEXT PRIMARY KEY,
-            request_id TEXT NOT NULL REFERENCES access_requests(request_id),
-            binding_id TEXT NOT NULL,
-            environment_key TEXT NOT NULL,
-            profile TEXT NOT NULL,
-            executor TEXT NOT NULL,
-            authority_class TEXT NOT NULL,
-            policy_digest TEXT NOT NULL CHECK (length(policy_digest) = 64),
-            capabilities_json TEXT NOT NULL,
-            scope TEXT NOT NULL CHECK (scope IN ('once','task','conversation','timed','profile','executor')),
-            state TEXT NOT NULL CHECK (state IN ('active','revoked','consumed','expired')),
-            uses_remaining INTEGER CHECK (uses_remaining IS NULL OR uses_remaining >= 0),
-            expires_at INTEGER,
-            approved_by TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            last_used_at INTEGER,
-            revoked_at INTEGER,
-            revoked_by TEXT
-          ) STRICT;
-          CREATE INDEX IF NOT EXISTS runtime_grants_active_environment
-            ON runtime_grants(environment_key, state, policy_digest);
-          CREATE INDEX IF NOT EXISTS runtime_grants_remembered_profile
-            ON runtime_grants(profile, executor, scope, state, policy_digest);
-        `);
-        fs.chmodSync(config.databasePath, 0o600);
-        const timestamp = now();
-        opened.prepare(`
-          UPDATE runtime_grants
-          SET state='expired'
-          WHERE state='active' AND expires_at IS NOT NULL AND expires_at <= ?
-        `).run(timestamp);
-        opened.prepare(`
-          UPDATE runtime_grants
-          SET state='revoked', revoked_at=?, revoked_by='policy-digest'
-          WHERE state='active' AND policy_digest <> ?
-        `).run(timestamp, config.policyFile.policyDigest);
-        return opened;
-      },
-      catch: (error) => grantFailure("open", error),
+  yield* Effect.try({
+    try: () => database.transaction(() => {
+      const legacyRequestSchema = db.prepare(
+        "SELECT 1 FROM pragma_table_info('access_requests') WHERE name='policy_generation'",
+      ).get();
+      const legacyGrantSchema = db.prepare(
+        "SELECT 1 FROM pragma_table_info('runtime_grants') WHERE name='policy_generation'",
+      ).get();
+      if (legacyRequestSchema !== undefined || legacyGrantSchema !== undefined) {
+        // The prior integer cannot identify the immutable policy content.
+        // Fail closed by discarding only broker authorization overlays.
+        db.exec("DROP TABLE IF EXISTS runtime_grants; DROP TABLE IF EXISTS access_requests;");
+      }
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS access_requests (
+          request_id TEXT PRIMARY KEY,
+          fingerprint TEXT NOT NULL,
+          binding_id TEXT NOT NULL,
+          environment_key TEXT NOT NULL,
+          profile TEXT NOT NULL,
+          executor TEXT NOT NULL,
+          authority_class TEXT NOT NULL,
+          policy_digest TEXT NOT NULL CHECK (length(policy_digest) = 64),
+          capabilities_json TEXT NOT NULL,
+          requested_scope TEXT NOT NULL CHECK (requested_scope IN ('once','task','conversation','timed','profile','executor')),
+          requested_duration_seconds INTEGER CHECK (requested_duration_seconds IS NULL OR requested_duration_seconds > 0),
+          state TEXT NOT NULL CHECK (state IN ('pending','approved','denied')),
+          created_at INTEGER NOT NULL,
+          decided_at INTEGER,
+          decision_principal TEXT
+        ) STRICT;
+        CREATE UNIQUE INDEX IF NOT EXISTS access_requests_one_pending_environment
+          ON access_requests(environment_key) WHERE state = 'pending';
+        CREATE INDEX IF NOT EXISTS access_requests_fingerprint_state
+          ON access_requests(fingerprint, state, decided_at);
+
+        CREATE TABLE IF NOT EXISTS runtime_grants (
+          grant_id TEXT PRIMARY KEY,
+          request_id TEXT NOT NULL REFERENCES access_requests(request_id),
+          binding_id TEXT NOT NULL,
+          environment_key TEXT NOT NULL,
+          profile TEXT NOT NULL,
+          executor TEXT NOT NULL,
+          authority_class TEXT NOT NULL,
+          policy_digest TEXT NOT NULL CHECK (length(policy_digest) = 64),
+          capabilities_json TEXT NOT NULL,
+          scope TEXT NOT NULL CHECK (scope IN ('once','task','conversation','timed','profile','executor')),
+          state TEXT NOT NULL CHECK (state IN ('active','revoked','consumed','expired')),
+          uses_remaining INTEGER CHECK (uses_remaining IS NULL OR uses_remaining >= 0),
+          expires_at INTEGER,
+          approved_by TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          last_used_at INTEGER,
+          revoked_at INTEGER,
+          revoked_by TEXT
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS runtime_grants_active_environment
+          ON runtime_grants(environment_key, state, policy_digest);
+        CREATE INDEX IF NOT EXISTS runtime_grants_remembered_profile
+          ON runtime_grants(profile, executor, scope, state, policy_digest);
+      `);
+      const timestamp = now();
+      db.prepare(`
+        UPDATE runtime_grants
+        SET state='expired'
+        WHERE state='active' AND expires_at IS NOT NULL AND expires_at <= ?
+      `).run(timestamp);
+      db.prepare(`
+        UPDATE runtime_grants
+        SET state='revoked', revoked_at=?, revoked_by='policy-digest'
+        WHERE state='active' AND policy_digest <> ?
+      `).run(timestamp, config.policyFile.policyDigest);
     }),
-    (opened) => Effect.sync(() => opened.close()),
-  );
+    catch: (error) => grantFailure("open", error),
+  });
 
   let revision = 0;
   let currentSnapshot: GrantSnapshot = Object.freeze({ revision, grants: Object.freeze([]) });
@@ -323,17 +317,12 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
   };
   const publishSnapshot = (): void => installSnapshot(buildSnapshot(revision + 1));
   const mutateWithSnapshot = <A>(mutation: () => A): A => {
-    db.exec("BEGIN IMMEDIATE");
-    try {
+    const committed = database.transaction(() => {
       const result = mutation();
-      const nextSnapshot = buildSnapshot(revision + 1);
-      db.exec("COMMIT");
-      installSnapshot(nextSnapshot);
-      return result;
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
+      return { result, snapshot: buildSnapshot(revision + 1) };
+    });
+    installSnapshot(committed.snapshot);
+    return committed.result;
   };
   yield* Effect.try({
     try: publishSnapshot,
@@ -366,7 +355,7 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
   };
 
   const requireBinding = (environmentKey: string): Effect.Effect<AuthorityBindingRecord, BrokerError> =>
-    getOrBindDefaultAuthority(registry, config, environmentKey);
+    getOrBindDefaultAuthority(registry, config, workspaces, environmentKey);
 
   const matching = (
     binding: AuthorityBindingRecord,
@@ -416,95 +405,83 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
       }
 
       return yield* Effect.try({
-        try: () => {
-          db.exec("BEGIN IMMEDIATE");
-          try {
-            const timestamp = now();
-            db.prepare(`UPDATE runtime_grants SET state='expired' WHERE state='active' AND expires_at IS NOT NULL AND expires_at <= ?`)
-              .run(timestamp);
-            const pending = db.prepare(`SELECT * FROM access_requests WHERE environment_key=? AND state='pending'`)
-              .get(request.environmentKey) as AccessRequestRow | undefined;
-            if (pending !== undefined) {
-              if (pending.fingerprint === fingerprint) {
-                const nextSnapshot = buildSnapshot(revision + 1);
-                db.exec("COMMIT");
-                installSnapshot(nextSnapshot);
-                return {
-                  state: "existing-pending",
-                  requestId: pending.request_id,
-                  fingerprint,
-                  environmentKey: request.environmentKey,
-                  requestedScope: request.requestedScope,
-                  durationSeconds: duration,
-                  capabilities,
-                  grantIds: [],
-                } satisfies PreparedAccess;
-              }
-              throw brokerError("approval.request_suppressed", "environment already has a pending access request", {
-                pendingRequestId: pending.request_id,
-              });
+        try: () => mutateWithSnapshot(() => {
+          const timestamp = now();
+          db.prepare(`UPDATE runtime_grants SET state='expired' WHERE state='active' AND expires_at IS NOT NULL AND expires_at <= ?`)
+            .run(timestamp);
+          const pending = db.prepare(`SELECT * FROM access_requests WHERE environment_key=? AND state='pending'`)
+            .get(request.environmentKey) as AccessRequestRow | undefined;
+          if (pending !== undefined) {
+            if (pending.fingerprint === fingerprint) {
+              return {
+                state: "existing-pending",
+                requestId: pending.request_id,
+                fingerprint,
+                environmentKey: request.environmentKey,
+                requestedScope: request.requestedScope,
+                durationSeconds: duration,
+                capabilities,
+                grantIds: [],
+              } satisfies PreparedAccess;
             }
-            const cooldownFloor = timestamp - config.policyFile.grantPolicy.denialCooldownSeconds * 1000;
-            const denied = db.prepare(`
-              SELECT decided_at FROM access_requests
-              WHERE fingerprint=? AND state='denied' AND decided_at >= ?
-              ORDER BY decided_at DESC LIMIT 1
-            `).get(fingerprint, cooldownFloor) as { decided_at: number } | undefined;
-            if (denied !== undefined) {
-              throw brokerError("approval.request_suppressed", "equivalent access request is in denial cooldown", {
-                cooldownUntil: denied.decided_at + config.policyFile.grantPolicy.denialCooldownSeconds * 1000,
-              });
-            }
-            const windowFloor = timestamp - config.policyFile.grantPolicy.promptBudget.windowSeconds * 1000;
-            const count = db.prepare(`
-              SELECT COUNT(*) AS count FROM access_requests
-              WHERE environment_key=? AND created_at >= ?
-            `).get(request.environmentKey, windowFloor) as { count: number };
-            if (count.count >= config.policyFile.grantPolicy.promptBudget.maxNewRequests) {
-              throw brokerError("approval.request_suppressed", "access request prompt budget is exhausted", {
-                maximum: config.policyFile.grantPolicy.promptBudget.maxNewRequests,
-                windowSeconds: config.policyFile.grantPolicy.promptBudget.windowSeconds,
-              });
-            }
-            const requestId = randomUUID();
-            db.prepare(`
-              INSERT INTO access_requests (
-                request_id, fingerprint, binding_id, environment_key, profile, executor,
-                authority_class, policy_digest, capabilities_json, requested_scope,
-                requested_duration_seconds, state, created_at, decided_at, decision_principal
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL)
-            `).run(
-              requestId,
-              fingerprint,
-              bindingIdFor(binding),
-              request.environmentKey,
-              binding.profile,
-              binding.executor,
-              binding.authorityClass,
-              binding.policyDigest,
-              JSON.stringify(capabilities),
-              request.requestedScope,
-              duration,
-              timestamp,
-            );
-            const nextSnapshot = buildSnapshot(revision + 1);
-            db.exec("COMMIT");
-            installSnapshot(nextSnapshot);
-            return {
-              state: "pending",
-              requestId,
-              fingerprint,
-              environmentKey: request.environmentKey,
-              requestedScope: request.requestedScope,
-              durationSeconds: duration,
-              capabilities,
-              grantIds: [],
-            } satisfies PreparedAccess;
-          } catch (error) {
-            db.exec("ROLLBACK");
-            throw error;
+            throw brokerError("approval.request_suppressed", "environment already has a pending access request", {
+              pendingRequestId: pending.request_id,
+            });
           }
-        },
+          const cooldownFloor = timestamp - config.policyFile.grantPolicy.denialCooldownSeconds * 1000;
+          const denied = db.prepare(`
+            SELECT decided_at FROM access_requests
+            WHERE fingerprint=? AND state='denied' AND decided_at >= ?
+            ORDER BY decided_at DESC LIMIT 1
+          `).get(fingerprint, cooldownFloor) as { decided_at: number } | undefined;
+          if (denied !== undefined) {
+            throw brokerError("approval.request_suppressed", "equivalent access request is in denial cooldown", {
+              cooldownUntil: denied.decided_at + config.policyFile.grantPolicy.denialCooldownSeconds * 1000,
+            });
+          }
+          const windowFloor = timestamp - config.policyFile.grantPolicy.promptBudget.windowSeconds * 1000;
+          const count = db.prepare(`
+            SELECT COUNT(*) AS count FROM access_requests
+            WHERE environment_key=? AND created_at >= ?
+          `).get(request.environmentKey, windowFloor) as { count: number };
+          if (count.count >= config.policyFile.grantPolicy.promptBudget.maxNewRequests) {
+            throw brokerError("approval.request_suppressed", "access request prompt budget is exhausted", {
+              maximum: config.policyFile.grantPolicy.promptBudget.maxNewRequests,
+              windowSeconds: config.policyFile.grantPolicy.promptBudget.windowSeconds,
+            });
+          }
+          const requestId = randomUUID();
+          db.prepare(`
+            INSERT INTO access_requests (
+              request_id, fingerprint, binding_id, environment_key, profile, executor,
+              authority_class, policy_digest, capabilities_json, requested_scope,
+              requested_duration_seconds, state, created_at, decided_at, decision_principal
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL)
+          `).run(
+            requestId,
+            fingerprint,
+            bindingIdFor(binding),
+            request.environmentKey,
+            binding.profile,
+            binding.executor,
+            binding.authorityClass,
+            binding.policyDigest,
+            JSON.stringify(capabilities),
+            request.requestedScope,
+            duration,
+            timestamp,
+          );
+          return {
+            state: "pending",
+            requestId,
+            fingerprint,
+            environmentKey: request.environmentKey,
+            requestedScope: request.requestedScope,
+            durationSeconds: duration,
+            capabilities,
+            grantIds: [],
+          } satisfies PreparedAccess;
+        }),
         catch: (error) => grantFailure("prepare access request", error),
       });
     });
@@ -552,48 +529,39 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
       const duration = yield* validateScope(scope, request.durationSeconds ?? row.requested_duration_seconds ?? undefined);
       const grantId = randomUUID();
       yield* Effect.try({
-        try: () => {
-          db.exec("BEGIN IMMEDIATE");
-          try {
-            const timestamp = now();
-            const latest = db.prepare("SELECT state FROM access_requests WHERE request_id=?").get(request.requestId) as { state: AccessRequestState };
-            if (latest.state !== "pending") throw brokerError("approval.invalid_state", "access request changed concurrently");
-            db.prepare(`
-              INSERT INTO runtime_grants (
-                grant_id, request_id, binding_id, environment_key, profile, executor,
-                authority_class, policy_digest, capabilities_json, scope, state,
-                uses_remaining, expires_at, approved_by, created_at, last_used_at,
-                revoked_at, revoked_by
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, NULL, NULL, NULL)
-            `).run(
-              grantId,
-              row.request_id,
-              row.binding_id,
-              row.environment_key,
-              row.profile,
-              row.executor,
-              row.authority_class,
-              row.policy_digest,
-              row.capabilities_json,
-              scope,
-              scope === "once" ? 1 : null,
-              scope === "timed" ? timestamp + (duration ?? 0) * 1000 : null,
-              request.principal,
-              timestamp,
-            );
-            db.prepare(`
-              UPDATE access_requests
-              SET state='approved', decided_at=?, decision_principal=?
-              WHERE request_id=? AND state='pending'
-            `).run(timestamp, request.principal, request.requestId);
-            const nextSnapshot = buildSnapshot(revision + 1);
-            db.exec("COMMIT");
-            installSnapshot(nextSnapshot);
-          } catch (error) {
-            db.exec("ROLLBACK");
-            throw error;
-          }
-        },
+        try: () => mutateWithSnapshot(() => {
+          const timestamp = now();
+          const latest = db.prepare("SELECT state FROM access_requests WHERE request_id=?").get(request.requestId) as { state: AccessRequestState };
+          if (latest.state !== "pending") throw brokerError("approval.invalid_state", "access request changed concurrently");
+          db.prepare(`
+            INSERT INTO runtime_grants (
+              grant_id, request_id, binding_id, environment_key, profile, executor,
+              authority_class, policy_digest, capabilities_json, scope, state,
+              uses_remaining, expires_at, approved_by, created_at, last_used_at,
+              revoked_at, revoked_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, NULL, NULL, NULL)
+          `).run(
+            grantId,
+            row.request_id,
+            row.binding_id,
+            row.environment_key,
+            row.profile,
+            row.executor,
+            row.authority_class,
+            row.policy_digest,
+            row.capabilities_json,
+            scope,
+            scope === "once" ? 1 : null,
+            scope === "timed" ? timestamp + (duration ?? 0) * 1000 : null,
+            request.principal,
+            timestamp,
+          );
+          db.prepare(`
+            UPDATE access_requests
+            SET state='approved', decided_at=?, decision_principal=?
+            WHERE request_id=? AND state='pending'
+          `).run(timestamp, request.principal, request.requestId);
+        }),
         catch: (error) => grantFailure("approve access request", error),
       });
       return { requestId: request.requestId, state: "approved", grantIds: [grantId] };

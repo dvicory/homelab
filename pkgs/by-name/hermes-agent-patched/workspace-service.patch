@@ -1,0 +1,287 @@
+diff --git a/plugins/workspace-service/__init__.py b/plugins/workspace-service/__init__.py
+new file mode 100644
+--- /dev/null
++++ b/plugins/workspace-service/__init__.py
+@@ -0,0 +1,158 @@
++"""Trusted lifecycle bridge between Hermes identities and broker workspaces."""
++
++from __future__ import annotations
++
++import http.client
++import json
++import os
++import socket
++import threading
++from typing import Any
++
++from tools import terminal_tool
++
++
++_CONTROL_SOCKET = os.getenv(
++    "GONDOLIN_EFFECT_CONTROL_SOCKET", "/run/hermes-gondolin/control.sock"
++)
++_AUTHORITY_BINDING = os.getenv("HERMES_SANDBOX_AUTHORITY_BINDING", "").strip()
++_ENABLED = bool(_AUTHORITY_BINDING) and bool(
++    os.getenv("HERMES_GONDOLIN_SOCKET", "").strip()
++)
++_WORKSPACE_TOOLS = frozenset(
++    {
++        "terminal",
++        "process",
++        "read_file",
++        "write_file",
++        "patch",
++        "search_files",
++        "close_terminal",
++        "execute_code",
++    }
++)
++_bindings: dict[str, dict[str, Any]] = {}
++_bindings_lock = threading.RLock()
++_BROKER_UNAVAILABLE_MESSAGE = (
++    "Execution workspace unavailable: broker.unavailable. "
++    "The Gondolin broker control plane is unreachable, so no workspace-backed execution tool can run. "
++    "No command ran, and workspace persistence state is unknown. Retry after broker recovery; "
++    "Hermes restart is not required."
++)
++
++
++class _UnixConnection(http.client.HTTPConnection):
++    def __init__(self, socket_path: str, timeout: float = 5.0) -> None:
++        super().__init__("localhost", timeout=timeout)
++        self._socket_path = socket_path
++
++    def connect(self) -> None:
++        transport = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
++        transport.settimeout(self.timeout)
++        transport.connect(self._socket_path)
++        self.sock = transport
++
++
++def _request(route: str, body: dict[str, Any]) -> dict[str, Any]:
++    connection = _UnixConnection(_CONTROL_SOCKET)
++    try:
++        payload = json.dumps(body, separators=(",", ":")).encode("utf-8")
++        connection.request(
++            "POST",
++            route,
++            body=payload,
++            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
++        )
++        response = connection.getresponse()
++        raw = response.read()
++        decoded = json.loads(raw) if raw else {}
++        if response.status != 200:
++            reason = decoded.get("reason", "workspace.failed") if isinstance(decoded, dict) else "workspace.failed"
++            detail = decoded.get("detail", "workspace request failed") if isinstance(decoded, dict) else "workspace request failed"
++            raise RuntimeError(f"{reason}: {detail}")
++        if not isinstance(decoded, dict):
++            raise RuntimeError("workspace.invalid_response: broker returned a non-object")
++        return decoded
++    finally:
++        connection.close()
++
++
++def _unavailable_message(error: Exception) -> str:
++    if isinstance(error, OSError):
++        return _BROKER_UNAVAILABLE_MESSAGE
++    return f"Execution workspace unavailable: {error}"
++
++
++def _identity(task_id: str = "", session_id: str = "") -> str:
++    identity = task_id or session_id
++    if not isinstance(identity, str) or not identity.strip():
++        raise RuntimeError("workspace.identity_missing: no trusted task or session identity")
++    return identity
++
++
++def _acquire(task_id: str = "", session_id: str = "") -> dict[str, Any]:
++    identity = _identity(task_id, session_id)
++    terminal_tool.register_task_authority_binding(identity, _AUTHORITY_BINDING)
++    environment_key = terminal_tool.environment_key(task_id or None, session_id or None)
++
++    with _bindings_lock:
++        cached = _bindings.get(environment_key)
++        if cached is not None:
++            return cached
++        acquired = _request(
++            "/v1/control/workspaces/acquire", {"environmentKey": environment_key}
++        )
++        workspace = acquired.get("workspace")
++        lease = acquired.get("lease")
++        if not isinstance(workspace, dict) or not isinstance(lease, dict):
++            raise RuntimeError("workspace.invalid_response: binding is incomplete")
++        if workspace.get("guestPath") != "/workspace":
++            raise RuntimeError("workspace.invalid_response: unexpected guest mount path")
++        if not isinstance(workspace.get("workspaceId"), str) or not isinstance(lease.get("leaseId"), str):
++            raise RuntimeError("workspace.invalid_response: opaque identifiers are missing")
++        binding = {
++            "environmentKey": environment_key,
++            "workspaceId": workspace["workspaceId"],
++            "workspaceLeaseId": lease["leaseId"],
++            "guestPath": "/workspace",
++        }
++        _bindings[environment_key] = binding
++        return binding
++
++
++def _on_pre_llm_call(
++    *, task_id: str = "", session_id: str = "", **_: Any
++) -> dict[str, str] | None:
++    if not _ENABLED:
++        return None
++    try:
++        binding = _acquire(task_id, session_id)
++    except Exception as error:  # Fail visibly before the model assumes a workspace exists.
++        return {"context": _unavailable_message(error)}
++    return {
++        "context": (
++            "Execution workspace (broker-authored):\n"
++            f"- Workspace ID: {binding['workspaceId']}\n"
++            "- Guest path: /workspace\n"
++            "- State: private writable lease\n"
++            "Use ordinary terminal and file tools inside /workspace. "
++            "Host paths and workspace-management controls are not model-selectable."
++        )
++    }
++
++
++def _on_pre_tool_call(
++    *, tool_name: str = "", task_id: str = "", session_id: str = "", **_: Any
++) -> dict[str, str] | None:
++    if not _ENABLED or tool_name not in _WORKSPACE_TOOLS:
++        return None
++    try:
++        _acquire(task_id, session_id)
++    except Exception as error:
++        return {"action": "block", "message": _unavailable_message(error)}
++    return None
++
++
++def register(ctx: Any) -> None:
++    ctx.register_hook("pre_llm_call", _on_pre_llm_call)
++    ctx.register_hook("pre_tool_call", _on_pre_tool_call)
+diff --git a/plugins/workspace-service/plugin.yaml b/plugins/workspace-service/plugin.yaml
+new file mode 100644
+--- /dev/null
++++ b/plugins/workspace-service/plugin.yaml
+@@ -0,0 +1,8 @@
++name: workspace-service
++version: "0.1.0"
++description: Broker-owned private workspace lifecycle bridge
++module: __init__.py
++hooks:
++  - pre_llm_call
++  - pre_tool_call
++config: {}
+diff --git a/tests/plugins/test_workspace_service.py b/tests/plugins/test_workspace_service.py
+new file mode 100644
+--- /dev/null
++++ b/tests/plugins/test_workspace_service.py
+@@ -0,0 +1,106 @@
++"""Contract tests for the broker workspace lifecycle plugin."""
++
++from __future__ import annotations
++
++import importlib.util
++import sys
++from pathlib import Path
++from types import SimpleNamespace
++
++
++PLUGIN = Path(__file__).parents[2] / "plugins" / "workspace-service" / "__init__.py"
++
++
++def load_plugin(monkeypatch):
++    monkeypatch.setenv("HERMES_GONDOLIN_SOCKET", "/run/broker.sock")
++    monkeypatch.setenv("GONDOLIN_EFFECT_CONTROL_SOCKET", "/run/control.sock")
++    monkeypatch.setenv("HERMES_SANDBOX_AUTHORITY_BINDING", "qa:gateway:default:v1")
++    sys.modules.pop("workspace_service_test", None)
++    spec = importlib.util.spec_from_file_location("workspace_service_test", PLUGIN)
++    module = importlib.util.module_from_spec(spec)
++    assert spec.loader is not None
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_plugin_acquires_once_and_injects_only_opaque_workspace_context(monkeypatch):
++    plugin = load_plugin(monkeypatch)
++    registered = []
++    monkeypatch.setattr(
++        plugin.terminal_tool,
++        "register_task_authority_binding",
++        lambda identity, binding: registered.append((identity, binding)),
++    )
++    monkeypatch.setattr(
++        plugin.terminal_tool,
++        "environment_key",
++        lambda task_id, session_id: "authority-" + (task_id or session_id),
++    )
++    calls = []
++
++    def request(route, body):
++        calls.append((route, body))
++        return {
++            "workspace": {"workspaceId": "workspace-opaque", "guestPath": "/workspace"},
++            "lease": {"leaseId": "lease-opaque"},
++        }
++
++    monkeypatch.setattr(plugin, "_request", request)
++    first = plugin._on_pre_llm_call(task_id="task-a", session_id="session-a")
++    second = plugin._on_pre_llm_call(task_id="task-a", session_id="session-a")
++
++    assert first == second
++    assert "workspace-opaque" in first["context"]
++    assert "/workspace" in first["context"]
++    assert "/run/control.sock" not in first["context"]
++    assert calls == [
++        ("/v1/control/workspaces/acquire", {"environmentKey": "authority-task-a"})
++    ]
++    assert registered == [
++        ("task-a", "qa:gateway:default:v1"),
++        ("task-a", "qa:gateway:default:v1"),
++    ]
++
++
++def test_workspace_tools_fail_closed_but_unrelated_tools_do_not_allocate(monkeypatch):
++    plugin = load_plugin(monkeypatch)
++    monkeypatch.setattr(plugin.terminal_tool, "register_task_authority_binding", lambda *_: None)
++    monkeypatch.setattr(plugin.terminal_tool, "environment_key", lambda *_: "authority-task")
++    monkeypatch.setattr(
++        plugin, "_request", lambda *_: (_ for _ in ()).throw(RuntimeError("broker offline"))
++    )
++
++    assert plugin._on_pre_tool_call(tool_name="web_search", task_id="task-a") is None
++    assert {"terminal", "process", "execute_code"}.issubset(plugin._WORKSPACE_TOOLS)
++    for tool_name in plugin._WORKSPACE_TOOLS:
++        blocked = plugin._on_pre_tool_call(tool_name=tool_name, task_id="task-a")
++        assert blocked["action"] == "block"
++        assert "broker offline" in blocked["message"]
++
++
++def test_transport_outage_message_states_shared_gate_and_recovery(monkeypatch):
++    plugin = load_plugin(monkeypatch)
++    monkeypatch.setattr(plugin.terminal_tool, "register_task_authority_binding", lambda *_: None)
++    monkeypatch.setattr(plugin.terminal_tool, "environment_key", lambda *_: "authority-task")
++    monkeypatch.setattr(
++        plugin, "_request", lambda *_: (_ for _ in ()).throw(FileNotFoundError(2, "missing"))
++    )
++
++    blocked = plugin._on_pre_tool_call(tool_name="execute_code", task_id="task-a")
++    context = plugin._on_pre_llm_call(task_id="task-a")
++
++    assert blocked == {"action": "block", "message": plugin._BROKER_UNAVAILABLE_MESSAGE}
++    assert context == {"context": plugin._BROKER_UNAVAILABLE_MESSAGE}
++    assert "broker control plane is unreachable" in plugin._BROKER_UNAVAILABLE_MESSAGE
++    assert "workspace persistence state is unknown" in plugin._BROKER_UNAVAILABLE_MESSAGE
++    assert "Hermes restart is not required" in plugin._BROKER_UNAVAILABLE_MESSAGE
++
++
++def test_register_uses_generic_lifecycle_hooks(monkeypatch):
++    plugin = load_plugin(monkeypatch)
++    hooks = []
++    context = SimpleNamespace(register_hook=lambda name, callback: hooks.append((name, callback)))
++
++    plugin.register(context)
++
++    assert [name for name, _ in hooks] == ["pre_llm_call", "pre_tool_call"]

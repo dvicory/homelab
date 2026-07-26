@@ -81,6 +81,13 @@
             "pypi-public"
           ];
         };
+        workspaceHandoffEnabled = true;
+        workspaceRevisionLimits = {
+          maxLogicalBytes = 67108864;
+          maxEntries = 8192;
+          maxFileBytes = 16777216;
+          maxPathBytes = 1024;
+        };
       };
 
       assetManifest =
@@ -113,11 +120,20 @@
         allowedPairs = qaSelections.allowedPairs;
         maximum = qaSelections.maximum;
         worklanes = qaSelections.worklanes;
+        workspaceHandoffEnabled = qaSelections.workspaceHandoffEnabled;
+        workspaceRevisionLimits = qaSelections.workspaceRevisionLimits;
       };
       qaHome = self.homeConfigurations."hermes-qa-runner@hvn-hyp1".config;
+      prodHome = self.homeConfigurations."hermes-prod-runner@hvn-hyp1".config;
       qaHost = self.nixosConfigurations.hvn-hyp1.config;
       qaExecutionSocket = qaHost.systemd.sockets.hermes-qa-broker-execution.socketConfig;
       qaControlSocket = qaHost.systemd.sockets.hermes-qa-broker-control.socketConfig;
+      qaBrokerEnvironment = qaHost.systemd.services.hermes-qa-broker.environment;
+      qaBrokerHardening = qaHost.systemd.services.hermes-qa-broker.serviceConfig;
+      qaGatewayEnvironment =
+        qaHome.virtualisation.quadlet.containers.hermes-qa.containerConfig.environments;
+      prodGatewayEnvironment =
+        prodHome.virtualisation.quadlet.containers.hermes-prod.containerConfig.environments;
       qaVolumes = qaHome.virtualisation.quadlet.containers.hermes-qa.containerConfig.volumes;
       brokerDirectoryMount = "/run/hermes-qa-broker:/run/hermes-sandbox:ro";
       hasLegacySocketMount =
@@ -150,6 +166,16 @@
         assert qaControlSocket.DirectoryMode == "0711";
         assert qaControlSocket.SocketMode == "0600";
         assert qaControlSocket.SocketUser == "hermes-qa-runner";
+        assert qaBrokerEnvironment.GONDOLIN_EFFECT_STATE_DIR == "/var/lib/hermes-qa-sandbox";
+        assert qaBrokerEnvironment.GONDOLIN_EFFECT_WORKSPACE_HANDOFF == "true";
+        assert qaGatewayEnvironment.HERMES_WORKSPACE_HANDOFF == "1";
+        assert qaBrokerHardening.ProtectControlGroups;
+        assert qaBrokerHardening.DevicePolicy == "closed";
+        assert lib.elem "/dev/kvm rw" qaBrokerHardening.DeviceAllow;
+        assert qaBrokerHardening.CapabilityBoundingSet == "";
+        assert qaBrokerHardening.RestrictSUIDSGID;
+        assert !(prodGatewayEnvironment ? HERMES_WORKSPACE_HANDOFF);
+        assert !(qaHost.systemd.services ? hermes-prod-broker);
         pkgs.runCommand "secure-terminal-socket-directory-mount" { } ''
           touch $out
         '';
@@ -165,6 +191,7 @@
             export GONDOLIN_EFFECT_STATE_DIR="$TMPDIR/state"
             export GONDOLIN_EFFECT_SOCKET="$TMPDIR/broker.sock"
             export GONDOLIN_EFFECT_CONTROL_SOCKET="$TMPDIR/control.sock"
+            export GONDOLIN_EFFECT_WORKSPACE_HANDOFF=true
             ${effectBroker}/bin/gondolin-broker-effect >"$TMPDIR/broker.log" 2>&1 &
             broker_pid=$!
             trap 'kill "$broker_pid" 2>/dev/null || true' EXIT

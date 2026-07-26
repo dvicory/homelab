@@ -1,0 +1,337 @@
+diff --git a/hermes_cli/plugins.py b/hermes_cli/plugins.py
+--- a/hermes_cli/plugins.py
++++ b/hermes_cli/plugins.py
+@@ -207,4 +207,5 @@ VALID_HOOKS: Set[str] = {
+     # kanban_task_blocked adds:   reason: str | None.
++    "prepare_worker_environment",
+     "kanban_task_claimed",
+     "kanban_task_completed",
+     "kanban_task_blocked",
+diff --git a/hermes_cli/worker_lanes.py b/hermes_cli/worker_lanes.py
+--- a/hermes_cli/worker_lanes.py
++++ b/hermes_cli/worker_lanes.py
+@@ -170,3 +170,35 @@ def kanban_worker_env(task, workspace, *, board=None, base=None) -> "dict[str, Any]":
+     if getattr(task, "tenant", None):
+         env["HERMES_TENANT"] = task.tenant
++    from hermes_cli.plugins import invoke_hook
++
++    broker_workspace = False
++    for result in invoke_hook(
++        "prepare_worker_environment",
++        task_id=task.id,
++        board=env["HERMES_KANBAN_BOARD"],
++        assignee=getattr(task, "assignee", None),
++        run_id=getattr(task, "current_run_id", None),
++    ):
++        if not isinstance(result, dict):
++            continue
++        error = result.get("error")
++        if isinstance(error, str) and error:
++            raise RuntimeError(error)
++        additions = result.get("environment")
++        if additions is not None:
++            if not isinstance(additions, dict):
++                raise RuntimeError("prepare_worker_environment returned invalid environment")
++            for key, value in additions.items():
++                if not isinstance(key, str) or not key.startswith("HERMES_"):
++                    raise RuntimeError("prepare_worker_environment returned an unsafe key")
++                if not isinstance(value, str):
++                    raise RuntimeError("prepare_worker_environment returned a non-string value")
++                previous = env.get(key)
++                if previous is not None and previous != value:
++                    raise RuntimeError(f"prepare_worker_environment conflicts on {key}")
++                env[key] = value
++        broker_workspace = broker_workspace or result.get("workspaceMode") == "broker"
++    if broker_workspace:
++        env.pop("HERMES_KANBAN_WORKSPACE", None)
++        env.pop("TERMINAL_CWD", None)
+     # Pin TERMINAL_CWD to the task's workspace so the worker's file tools and
+@@ -180,6 +212,6 @@ def kanban_worker_env(task, workspace, *, board=None, base=None) -> "dict[str, Any]":
+     # directory — file_tools rejects relative / sentinel TERMINAL_CWD values,
+     # so a non-dir workspace must NOT be set here (leave the inherited value
+     # rather than write a meaningless one).
+-    if workspace and os.path.isabs(workspace) and os.path.isdir(workspace):
++    if not broker_workspace and workspace and os.path.isabs(workspace) and os.path.isdir(workspace):
+         env["TERMINAL_CWD"] = workspace
+     return env
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -7814,7 +7814,11 @@ def _default_spawn(
+     log_f = open(log_path, "ab")
+     try:
++        worker_cwd = (
++            None if env.get("HERMES_WORKSPACE_GUEST_PATH")
++            else (workspace if os.path.isdir(workspace) else None)
++        )
+         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
+             cmd,
+-            cwd=workspace if os.path.isdir(workspace) else None,
++            cwd=worker_cwd,
+             stdin=subprocess.DEVNULL,
+             stdout=log_f,
+diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
+--- a/tools/terminal_tool.py
++++ b/tools/terminal_tool.py
+@@ -1179,5 +1179,5 @@ def environment_key(task_id: Optional[str] = None, session_id: Optional[str] = N
+       so subagents share the parent's long-lived environment.
+     * A trusted authority_binding_id registered through
+       register_task_authority_binding derives an opaque
+-      authority-<sha256> key from the task/session identity and binding.
++      authority-<sha256> key from that trusted binding.
+       This path takes precedence over ordinary backend overrides.
+@@ -1199,6 +1199,5 @@ def environment_key(task_id: Optional[str] = None, session_id: Optional[str] = N
+     if identity and _DERIVED_ENV_KEY_RE.match(identity):
+         return identity
+     authority_binding_id = None
+-    authority_identity_source = None
+     for raw in (task_id, session_id):
+         if not raw or raw not in _task_env_overrides:
+@@ -1207,9 +1206,7 @@ def environment_key(task_id: Optional[str] = None, session_id: Optional[str] = N
+         candidate = overrides.get("authority_binding_id")
+         if isinstance(candidate, str) and candidate.strip():
+             authority_binding_id = candidate
+-            authority_identity_source = raw
+             break
+     if authority_binding_id is not None:
+-        authority_identity = "\x00".join((authority_identity_source, authority_binding_id))
+-        digest = hashlib.sha256(authority_identity.encode("utf-8")).hexdigest()[:24]
++        digest = hashlib.sha256(authority_binding_id.encode("utf-8")).hexdigest()[:24]
+         return f"authority-{digest}"
+diff --git a/plugins/workspace-service/__init__.py b/plugins/workspace-service/__init__.py
+--- a/plugins/workspace-service/__init__.py
++++ b/plugins/workspace-service/__init__.py
+@@ -71,24 +71,32 @@ def _request(route: str, body: dict[str, Any]) -> dict[str, Any]:
+         connection.close()
+ 
+ 
+ def _identity(task_id: str = "", session_id: str = "") -> str:
+-    identity = task_id or session_id
++    identity = os.getenv("HERMES_KANBAN_TASK", "").strip() or task_id or session_id
+     if not isinstance(identity, str) or not identity.strip():
+         raise RuntimeError("workspace.identity_missing: no trusted task or session identity")
+     return identity
+ 
+ 
+ def _acquire(task_id: str = "", session_id: str = "") -> dict[str, Any]:
+     identity = _identity(task_id, session_id)
+-    terminal_tool.register_task_authority_binding(identity, _AUTHORITY_BINDING)
+-    environment_key = terminal_tool.environment_key(task_id or None, session_id or None)
++    scoped_authority = "\x00".join((_AUTHORITY_BINDING, identity))
++    for registration_id in {identity, task_id, session_id}:
++        if registration_id:
++            terminal_tool.register_task_authority_binding(registration_id, scoped_authority)
++    environment_key = terminal_tool.environment_key(
++        task_id or identity, session_id or None
++    )
+ 
+     with _bindings_lock:
+         cached = _bindings.get(environment_key)
+         if cached is not None:
+             return cached
+-        acquired = _request(
+-            "/v1/control/workspaces/acquire", {"environmentKey": environment_key}
+-        )
++        request = {"environmentKey": environment_key}
++        expected_workspace_id = os.getenv("HERMES_WORKSPACE_ID", "").strip()
++        expected_lease_id = os.getenv("HERMES_WORKSPACE_LEASE_ID", "").strip()
++        if expected_workspace_id:
++            request["workspaceId"] = expected_workspace_id
++        acquired = _request("/v1/control/workspaces/acquire", request)
+         workspace = acquired.get("workspace")
+         lease = acquired.get("lease")
+@@ -97,4 +105,8 @@ def _acquire(task_id: str = "", session_id: str = "") -> dict[str, Any]:
+             raise RuntimeError("workspace.invalid_response: unexpected guest mount path")
+         if not isinstance(workspace.get("workspaceId"), str) or not isinstance(lease.get("leaseId"), str):
+             raise RuntimeError("workspace.invalid_response: opaque identifiers are missing")
++        if expected_workspace_id and workspace["workspaceId"] != expected_workspace_id:
++            raise RuntimeError("workspace.conflict: broker returned another workspace")
++        if expected_lease_id and lease["leaseId"] != expected_lease_id:
++            raise RuntimeError("workspace.stale_lease: broker returned another lease")
+         binding = {
+@@ -129,4 +141,23 @@ def _on_pre_llm_call(
+     }
+ 
+ 
++def _on_prepare_worker_environment(
++    *, task_id: str = "", **_: Any
++) -> dict[str, Any] | None:
++    if not _ENABLED:
++        return None
++    try:
++        binding = _acquire(task_id=task_id)
++    except Exception as error:
++        return {"error": f"Execution workspace unavailable: {error}"}
++    return {
++        "workspaceMode": "broker",
++        "environment": {
++            "HERMES_WORKSPACE_ID": binding["workspaceId"],
++            "HERMES_WORKSPACE_LEASE_ID": binding["workspaceLeaseId"],
++            "HERMES_WORKSPACE_GUEST_PATH": binding["guestPath"],
++        },
++    }
++
++
+ def _on_pre_tool_call(
+@@ -143,3 +174,4 @@ def _on_pre_tool_call(
+ def register(ctx: Any) -> None:
+     ctx.register_hook("pre_llm_call", _on_pre_llm_call)
+     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
++    ctx.register_hook("prepare_worker_environment", _on_prepare_worker_environment)
+diff --git a/plugins/workspace-service/plugin.yaml b/plugins/workspace-service/plugin.yaml
+--- a/plugins/workspace-service/plugin.yaml
++++ b/plugins/workspace-service/plugin.yaml
+@@ -5,4 +5,5 @@ module: __init__.py
+ hooks:
+   - pre_llm_call
+   - pre_tool_call
++  - prepare_worker_environment
+ config: {}
+diff --git a/tests/plugins/test_workspace_service.py b/tests/plugins/test_workspace_service.py
+--- a/tests/plugins/test_workspace_service.py
++++ b/tests/plugins/test_workspace_service.py
+@@ -56,10 +56,11 @@ def test_plugin_acquires_once_and_injects_only_opaque_workspace_context(monkeypa
+     assert calls == [
+         ("/v1/control/workspaces/acquire", {"environmentKey": "authority-task-a"})
+     ]
+-    assert registered == [
+-        ("task-a", "qa:gateway:default:v1"),
+-        ("task-a", "qa:gateway:default:v1"),
+-    ]
++    assert len(registered) == 4
++    assert set(registered) == {
++        ("task-a", "qa:gateway:default:v1\x00task-a"),
++        ("session-a", "qa:gateway:default:v1\x00task-a"),
++    }
+ 
+ 
+ def test_workspace_tools_fail_closed_but_unrelated_tools_do_not_allocate(monkeypatch):
+@@ -83,4 +83,8 @@ def test_register_uses_generic_lifecycle_hooks(monkeypatch):
+ 
+     plugin.register(context)
+ 
+-    assert [name for name, _ in hooks] == ["pre_llm_call", "pre_tool_call"]
++    assert [name for name, _ in hooks] == [
++        "pre_llm_call",
++        "pre_tool_call",
++        "prepare_worker_environment",
++    ]
+diff --git a/tests/plugins/test_workspace_kanban.py b/tests/plugins/test_workspace_kanban.py
+new file mode 100644
+--- /dev/null
++++ b/tests/plugins/test_workspace_kanban.py
+@@ -0,0 +1,114 @@
++"""Kanban-to-broker workspace handoff contracts."""
++
++from __future__ import annotations
++
++import importlib.util
++import sys
++from pathlib import Path
++from types import SimpleNamespace
++
++from hermes_cli import kanban_db as kb
++from hermes_cli import plugins
++from hermes_cli import worker_lanes
++
++
++PLUGIN = Path(__file__).parents[2] / "plugins" / "workspace-service" / "__init__.py"
++
++
++def load_plugin(monkeypatch):
++    monkeypatch.setenv("HERMES_GONDOLIN_SOCKET", "/run/broker.sock")
++    monkeypatch.setenv("HERMES_SANDBOX_AUTHORITY_BINDING", "qa:gateway:default:v1")
++    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
++    sys.modules.pop("workspace_kanban_test", None)
++    spec = importlib.util.spec_from_file_location("workspace_kanban_test", PLUGIN)
++    module = importlib.util.module_from_spec(spec)
++    assert spec.loader is not None
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_prepare_worker_environment_returns_only_opaque_broker_binding(monkeypatch):
++    plugin = load_plugin(monkeypatch)
++    monkeypatch.setattr(plugin, "_acquire", lambda **_: {
++        "workspaceId": "workspace-opaque",
++        "workspaceLeaseId": "lease-opaque",
++        "guestPath": "/workspace",
++    })
++
++    result = plugin._on_prepare_worker_environment(task_id="task-a")
++
++    assert result == {
++        "workspaceMode": "broker",
++        "environment": {
++            "HERMES_WORKSPACE_ID": "workspace-opaque",
++            "HERMES_WORKSPACE_LEASE_ID": "lease-opaque",
++            "HERMES_WORKSPACE_GUEST_PATH": "/workspace",
++        },
++    }
++    assert all("/home/" not in value for value in result["environment"].values())
++
++
++def test_shared_worker_contract_removes_host_workspace_for_broker_mode(
++    monkeypatch, tmp_path
++):
++    workspace = tmp_path / "host-workspace"
++    workspace.mkdir()
++    task = SimpleNamespace(
++        id="task-a",
++        assignee="worker",
++        current_run_id=4,
++        claim_lock="claim",
++        tenant=None,
++    )
++    monkeypatch.setattr(kb, "kanban_home", lambda: tmp_path)
++    monkeypatch.setattr(kb, "kanban_db_path", lambda board=None: tmp_path / "kanban.db")
++    monkeypatch.setattr(kb, "workspaces_root", lambda board=None: tmp_path / "workspaces")
++    monkeypatch.setattr(kb, "get_current_board", lambda: "homelab")
++    monkeypatch.setattr(
++        plugins,
++        "invoke_hook",
++        lambda *args, **kwargs: [{
++            "workspaceMode": "broker",
++            "environment": {
++                "HERMES_WORKSPACE_ID": "workspace-opaque",
++                "HERMES_WORKSPACE_LEASE_ID": "lease-opaque",
++                "HERMES_WORKSPACE_GUEST_PATH": "/workspace",
++            },
++        }],
++    )
++
++    env = worker_lanes.kanban_worker_env(task, str(workspace), base={})
++
++    assert env["HERMES_KANBAN_TASK"] == "task-a"
++    assert env["HERMES_WORKSPACE_ID"] == "workspace-opaque"
++    assert env["HERMES_WORKSPACE_GUEST_PATH"] == "/workspace"
++    assert "HERMES_KANBAN_WORKSPACE" not in env
++    assert "TERMINAL_CWD" not in env
++
++
++def test_worker_preflight_reuses_dispatcher_workspace(monkeypatch):
++    plugin = load_plugin(monkeypatch)
++    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-a")
++    monkeypatch.setenv("HERMES_WORKSPACE_ID", "workspace-opaque")
++    monkeypatch.setenv("HERMES_WORKSPACE_LEASE_ID", "lease-opaque")
++    registered = []
++    monkeypatch.setattr(
++        plugin.terminal_tool,
++        "register_task_authority_binding",
++        lambda identity, binding: registered.append((identity, binding)),
++    )
++    monkeypatch.setattr(plugin.terminal_tool, "environment_key", lambda *_: "authority-stable")
++    requests = []
++    monkeypatch.setattr(plugin, "_request", lambda route, body: requests.append((route, body)) or {
++        "workspace": {"workspaceId": "workspace-opaque", "guestPath": "/workspace"},
++        "lease": {"leaseId": "lease-opaque"},
++    })
++
++    binding = plugin._acquire(task_id="worker-turn", session_id="worker-session")
++
++    assert binding["workspaceId"] == "workspace-opaque"
++    assert requests[0][1] == {
++        "environmentKey": "authority-stable",
++        "workspaceId": "workspace-opaque",
++    }
++    assert {item[0] for item in registered} == {"task-a", "worker-turn", "worker-session"}

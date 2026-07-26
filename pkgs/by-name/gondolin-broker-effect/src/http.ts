@@ -3,8 +3,10 @@ import * as HttpServerRequest from "@effect/platform/HttpServerRequest";
 import * as HttpServerResponse from "@effect/platform/HttpServerResponse";
 import { Effect, Schema, Stream } from "effect";
 import {
+  ActivateTaskRunRequest,
   BindAuthorityRequest,
   DecideAccessRequest,
+  ConsumeTaskRunRequest,
   EnvironmentRef,
   EnsureRequest,
   ExecRequest,
@@ -18,8 +20,17 @@ import {
   RevokeGrantRequest,
   RevokeEnvironmentGrantsRequest,
   StatusRequest,
+  WorkspaceAcquireRequest,
+  WorkspaceLeaseRef,
+  WorkspaceRef,
   WriteFileRequest,
 } from "./domain.js";
+import {
+  ImportWorkspaceRevisionRequest,
+  PublishWorkspaceRevisionRequest,
+} from "./revision-domain.js";
+import { TaskRunActivations } from "./task-run-activations.js";
+import { getOrBindDefaultAuthority } from "./authority.js";
 import { BrokerConfig } from "./config.js";
 import { Environments } from "./environments.js";
 import { asBrokerError, brokerError, publicErrorEvent, publicProblem, statusFor, type BrokerError } from "./errors.js";
@@ -27,6 +38,8 @@ import { Executor } from "./exec.js";
 import { Files } from "./files.js";
 import { AccessGrants } from "./grants.js";
 import { Registry } from "./registry.js";
+import { RevisionOperations } from "./revision-operations.js";
+import { Workspaces, type WorkspaceRecord } from "./workspaces.js";
 
 const encoder = new TextEncoder();
 const requestDecodeOptions = { onExcessProperty: "error" as const };
@@ -145,6 +158,10 @@ export const makeControlHttpApp = Effect.gen(function* () {
   const config = yield* BrokerConfig;
   const registry = yield* Registry;
   const grants = yield* AccessGrants;
+  const workspaces = yield* Workspaces;
+  const runActivations = yield* TaskRunActivations;
+  const environments = yield* Environments;
+  const revisionOperations = yield* RevisionOperations;
 
   const bindAuthority = (request: typeof BindAuthorityRequest.Type) =>
     Effect.gen(function* () {
@@ -165,7 +182,35 @@ export const makeControlHttpApp = Effect.gen(function* () {
           authorityClass: request.authorityClass,
         });
       }
-      return yield* registry.bindAuthority(request);
+      yield* workspaces.resolve(request.environmentKey, request.workspaceId, request.workspaceLeaseId);
+      const existing = yield* registry.getAuthority(request.environmentKey);
+      return yield* (
+        existing !== undefined && existing.policyDigest !== request.policyDigest
+          ? registry.rotateAuthorityPolicy(request)
+          : registry.bindAuthority(request)
+      );
+    });
+
+  const bindDefaultAuthority = (request: typeof WorkspaceLeaseRef.Type) =>
+    Effect.gen(function* () {
+      yield* workspaces.resolve(request.environmentKey, request.workspaceId, request.leaseId);
+      const binding = yield* getOrBindDefaultAuthority(
+        registry,
+        config,
+        workspaces,
+        request.environmentKey,
+      );
+      if (
+        binding.workspaceId !== request.workspaceId ||
+        binding.workspaceLeaseId !== request.leaseId
+      ) {
+        return yield* brokerError(
+          "authority.conflict",
+          "default authority does not match the acquired workspace",
+          { environmentKey: request.environmentKey },
+        );
+      }
+      return binding;
     });
 
   const authorityStatus = ({ environmentKey }: typeof StatusRequest.Type) =>
@@ -187,13 +232,59 @@ export const makeControlHttpApp = Effect.gen(function* () {
       return { ...binding, ...visibleEnvironment };
     });
 
+  const publicWorkspace = (workspace: WorkspaceRecord): Record<string, unknown> => ({
+    workspaceId: workspace.workspaceId,
+    ownerEnvironmentKey: workspace.ownerEnvironmentKey,
+    kind: workspace.kind,
+    state: workspace.state,
+    guestPath: "/workspace",
+    retentionExpiresAt: workspace.retentionExpiresAt,
+    lastAttachedAt: workspace.lastAttachedAt,
+    createdAt: workspace.createdAt,
+  });
+
+  const acquireWorkspace = (request: typeof WorkspaceAcquireRequest.Type) =>
+    workspaces.acquire(request.environmentKey, request.workspaceId).pipe(
+      Effect.map(({ workspace, lease }) => ({ workspace: publicWorkspace(workspace), lease })),
+    );
+  const describeWorkspace = (request: typeof WorkspaceRef.Type) =>
+    workspaces.describe(request.environmentKey, request.workspaceId).pipe(Effect.map(publicWorkspace));
+  const listWorkspaces = ({ environmentKey }: typeof StatusRequest.Type) =>
+    workspaces.list(environmentKey).pipe(Effect.map((items) => items.map(publicWorkspace)));
+  const releaseWorkspace = (request: typeof WorkspaceLeaseRef.Type) =>
+    workspaces.release(request.environmentKey, request.workspaceId, request.leaseId).pipe(
+      Effect.map((lease) => ({ lease })),
+    );
+  const closeWorkspace = (request: typeof WorkspaceRef.Type) =>
+    workspaces.close(request.environmentKey, request.workspaceId).pipe(Effect.map(publicWorkspace));
+  const deleteWorkspace = (request: typeof WorkspaceRef.Type) =>
+    workspaces.delete(request.environmentKey, request.workspaceId).pipe(Effect.as({ deleted: true }));
+
+  const activateTaskRun = (request: typeof ActivateTaskRunRequest.Type) =>
+    runActivations.activate(request).pipe(
+      Effect.tap(({ generationsToClose }) =>
+        Effect.forEach(generationsToClose, environments.closeForFence, {
+          concurrency: 1,
+          discard: true,
+        }),
+      ),
+      Effect.map(({ activation }) => ({ activation })),
+    );
+  const consumeTaskRun = (request: typeof ConsumeTaskRunRequest.Type) =>
+    runActivations.consume(request).pipe(
+      Effect.tap(({ generationToClose }) =>
+        generationToClose === null ? Effect.void : environments.closeForFence(generationToClose),
+      ),
+      Effect.map(({ activation }) => ({ activation })),
+    );
+
   const unary = <A, I>(
     operationName: string,
     schema: Schema.Schema<A, I>,
     operation: (request: A) => Effect.Effect<unknown, BrokerError>,
   ) => respond(operationName, Effect.flatMap(parseBody(schema), operation));
 
-  return HttpRouter.empty.pipe(
+  const routes = HttpRouter.empty.pipe(
     HttpRouter.get(
       "/v1/health",
       HttpServerResponse.unsafeJson(
@@ -202,12 +293,40 @@ export const makeControlHttpApp = Effect.gen(function* () {
       ),
     ),
     HttpRouter.post(
+      "/v1/control/workspaces/acquire",
+      unary("workspace.acquire", WorkspaceAcquireRequest, acquireWorkspace),
+    ),
+    HttpRouter.post(
+      "/v1/control/workspaces/describe",
+      unary("workspace.describe", WorkspaceRef, describeWorkspace),
+    ),
+    HttpRouter.post(
+      "/v1/control/workspaces/list",
+      unary("workspace.list", StatusRequest, listWorkspaces),
+    ),
+    HttpRouter.post(
+      "/v1/control/workspaces/release",
+      unary("workspace.release", WorkspaceLeaseRef, releaseWorkspace),
+    ),
+    HttpRouter.post(
+      "/v1/control/workspaces/close",
+      unary("workspace.close", WorkspaceRef, closeWorkspace),
+    ),
+    HttpRouter.post(
+      "/v1/control/workspaces/delete",
+      unary("workspace.delete", WorkspaceRef, deleteWorkspace),
+    ),
+    HttpRouter.post(
       "/v1/control/authority/bind",
       unary("authority.bind", BindAuthorityRequest, bindAuthority),
     ),
     HttpRouter.post(
       "/v1/control/authority/status",
       unary("authority.status", StatusRequest, authorityStatus),
+    ),
+    HttpRouter.post(
+      "/v1/control/authority/bind-default",
+      unary("authority.bind-default", WorkspaceLeaseRef, bindDefaultAuthority),
     ),
     HttpRouter.post(
       "/v1/control/access/prepare",
@@ -236,6 +355,29 @@ export const makeControlHttpApp = Effect.gen(function* () {
           ),
       ),
     ),
+  );
+
+  const configuredRoutes = config.workspaceHandoffEnabled
+    ? routes.pipe(
+        HttpRouter.post(
+          "/v1/control/task-runs/activate",
+          unary("run_activation.activate", ActivateTaskRunRequest, activateTaskRun),
+        ),
+        HttpRouter.post(
+          "/v1/control/task-runs/consume",
+          unary("run_activation.consume", ConsumeTaskRunRequest, consumeTaskRun),
+        ),
+        HttpRouter.post(
+          "/v1/control/workspace-revisions/publish",
+          unary("workspace.publish", PublishWorkspaceRevisionRequest, revisionOperations.publish),
+        ),
+        HttpRouter.post(
+          "/v1/control/workspace-revisions/import",
+          unary("workspace.import", ImportWorkspaceRevisionRequest, revisionOperations.importRevision),
+        ),
+      )
+    : routes;
+  return configuredRoutes.pipe(
     HttpRouter.catchAll(() =>
       Effect.succeed(errorResponse(brokerError("request.invalid", "control route does not exist"))),
     ),

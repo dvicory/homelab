@@ -9,6 +9,18 @@ export const Reason = Schema.Literal(
   "environment.tombstoned",
   "environment.stale_generation",
   "authority.conflict",
+  "workspace.not_found",
+  "workspace.conflict",
+  "workspace.stale_lease",
+  "workspace.path_forbidden",
+  "workspace.failed",
+  "run_activation.not_found",
+  "run_activation.stale",
+  "run_activation.conflict",
+  "revision.not_found",
+  "revision.conflict",
+  "revision.invalid_state",
+  "revision.failed",
   "capability.invalid",
   "capability.unsupported",
   "network.resolution_failed",
@@ -64,6 +76,7 @@ export const statusFor = (error: BrokerError): number => {
     case "fs.path_forbidden":
     case "capability.invalid":
     case "capability.unsupported":
+    case "workspace.path_forbidden":
       return 400;
     case "exec.timeout":
       return 408;
@@ -78,12 +91,21 @@ export const statusFor = (error: BrokerError): number => {
     case "fs.not_found":
     case "approval.request_not_found":
     case "grant.not_found":
+    case "workspace.not_found":
+    case "run_activation.not_found":
+    case "revision.not_found":
       return 404;
     case "environment.tombstoned":
     case "environment.stale_generation":
     case "fs.exists":
     case "authority.conflict":
     case "approval.invalid_state":
+    case "workspace.conflict":
+    case "workspace.stale_lease":
+    case "run_activation.stale":
+    case "run_activation.conflict":
+    case "revision.conflict":
+    case "revision.invalid_state":
       return 409;
     case "environment.capacity":
     case "exec.output_limit":
@@ -99,6 +121,8 @@ export const statusFor = (error: BrokerError): number => {
     case "registry.failed":
     case "fs.unsafe_type":
     case "internal.error":
+    case "workspace.failed":
+    case "revision.failed":
       return 500;
   }
 };

@@ -1,0 +1,258 @@
+From 38739f1bfffd84148185e04a1984a9be9bb8a937 Mon Sep 17 00:00:00 2001
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Sun, 26 Jul 2026 15:38:35 -0700
+Subject: [PATCH] feat(kanban): declare worker lane workspace policy
+
+---
+ hermes_cli/kanban_db.py               | 19 ++++++++-
+ hermes_cli/worker_lanes.py            | 20 +++++++++
+ tests/hermes_cli/test_worker_lanes.py | 45 ++++++++++++++++++++
+ tests/tools/test_kanban_tools.py      | 59 +++++++++++++++++++++++++++
+ tools/kanban_tools.py                 | 22 +++++++++-
+ 5 files changed, 163 insertions(+), 2 deletions(-)
+
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+index ad7a9a8..8cd9482 100644
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -7445,7 +7445,7 @@ def _dispatch_once_locked(
+         )
+ 
+     ready_rows = conn.execute(
+-        "SELECT id, assignee FROM tasks "
++        "SELECT id, assignee, workspace_kind FROM tasks "
+         "WHERE status = 'ready' AND claim_lock IS NULL "
+         "ORDER BY priority DESC, created_at ASC"
+     ).fetchall()
+@@ -7562,6 +7562,23 @@ def _dispatch_once_locked(
+         # A worker lane may declare its own max_concurrency (e.g. one external-CLI run
+         # at a time); otherwise the global per-profile cap applies.
+         _lane = _get_worker_lane(row_assignee)
++        if (
++            _lane is not None
++            and _lane.allowed_workspace_kinds is not None
++            and row["workspace_kind"] not in _lane.allowed_workspace_kinds
++        ):
++            allowed = ", ".join(sorted(_lane.allowed_workspace_kinds))
++            reason = (
++                f"worker lane {row_assignee!r} does not accept "
++                f"workspace_kind={row['workspace_kind']!r}; allowed: {allowed}"
++            )
++            if not dry_run and block_task(
++                conn, row["id"], reason=reason, kind="capability"
++            ):
++                result.auto_blocked.append(row["id"])
++            else:
++                result.skipped_nonspawnable.append(row["id"])
++            continue
+         _eff_cap = (
+             _lane.max_concurrency
+             if _lane is not None and _lane.max_concurrency is not None
+diff --git a/hermes_cli/worker_lanes.py b/hermes_cli/worker_lanes.py
+index 561374b..c8ba1fb 100644
+--- a/hermes_cli/worker_lanes.py
++++ b/hermes_cli/worker_lanes.py
+@@ -74,6 +74,8 @@ class WorkerLane:
+     kind: str = ""
+     description: str = ""
+     max_concurrency: Optional[int] = None
++    allowed_workspace_kinds: Optional[frozenset[str]] = None
++    default_workspace_kind: Optional[str] = None
+ 
+     def __post_init__(self) -> None:
+         self.name = normalize_lane_name(self.name)
+@@ -86,6 +88,24 @@ class WorkerLane:
+             if mc < 1:
+                 raise ValueError("worker lane max_concurrency must be >= 1")
+             self.max_concurrency = mc
++        valid_workspace_kinds = frozenset({"scratch", "dir", "worktree"})
++        if self.allowed_workspace_kinds is not None:
++            kinds = frozenset(str(kind).strip() for kind in self.allowed_workspace_kinds)
++            if not kinds or not kinds <= valid_workspace_kinds:
++                raise ValueError("worker lane allowed_workspace_kinds is invalid")
++            self.allowed_workspace_kinds = kinds
++        if self.default_workspace_kind is not None:
++            default_kind = str(self.default_workspace_kind).strip()
++            if default_kind not in valid_workspace_kinds:
++                raise ValueError("worker lane default_workspace_kind is invalid")
++            if (
++                self.allowed_workspace_kinds is not None
++                and default_kind not in self.allowed_workspace_kinds
++            ):
++                raise ValueError(
++                    "worker lane default workspace kind must be allowed"
++                )
++            self.default_workspace_kind = default_kind
+ 
+ 
+ def register_worker_lane(lane: WorkerLane, *, replace: bool = False) -> WorkerLane:
+diff --git a/tests/hermes_cli/test_worker_lanes.py b/tests/hermes_cli/test_worker_lanes.py
+index 9bfa638..dc3ea2d 100644
+--- a/tests/hermes_cli/test_worker_lanes.py
++++ b/tests/hermes_cli/test_worker_lanes.py
+@@ -326,3 +326,48 @@ def test_handoff_keeps_registered_lane_on_host_workspace(
+     assert task.workspace_path == workspace
+     assert env["HERMES_KANBAN_WORKSPACE"] == workspace
+     assert env["TERMINAL_CWD"] == workspace
++
++def test_worker_lane_workspace_policy_is_validated():
++    lane = wl.WorkerLane(
++        name="codex",
++        spawn_fn=lambda *_args, **_kwargs: 1,
++        allowed_workspace_kinds=frozenset({"worktree", "dir"}),
++        default_workspace_kind="worktree",
++    )
++    assert lane.allowed_workspace_kinds == frozenset({"worktree", "dir"})
++    assert lane.default_workspace_kind == "worktree"
++    with pytest.raises(ValueError, match="must be allowed"):
++        wl.WorkerLane(
++            name="bad",
++            spawn_fn=lambda *_args, **_kwargs: 1,
++            allowed_workspace_kinds=frozenset({"dir"}),
++            default_workspace_kind="worktree",
++        )
++
++def test_dispatch_blocks_workspace_disallowed_by_lane_before_claim(kanban_home):
++    lane = wl.WorkerLane(
++        name="codex",
++        spawn_fn=lambda *_args, **_kwargs: pytest.fail("lane must not spawn"),
++        allowed_workspace_kinds=frozenset({"worktree", "dir"}),
++        default_workspace_kind="worktree",
++    )
++    wl.register_worker_lane(lane)
++    with kb.connect() as connection:
++        task_id = kb.create_task(
++            connection,
++            title="incompatible scratch",
++            assignee="codex",
++            workspace_kind="scratch",
++        )
++        result = kb.dispatch_once(connection, max_spawn=1)
++        assert task_id in result.auto_blocked
++        task = kb.get_task(connection, task_id)
++        assert task.status == "blocked"
++        assert task.block_kind == "capability"
++        runs = kb.list_runs(connection, task_id)
++        assert len(runs) == 1
++        assert runs[0].status == "blocked"
++        kinds = [event.kind for event in kb.list_events(connection, task_id)]
++        assert "claimed" not in kinds
++        assert "spawned" not in kinds
++
+diff --git a/tests/tools/test_kanban_tools.py b/tests/tools/test_kanban_tools.py
+index 70023a1..584b94c 100644
+--- a/tests/tools/test_kanban_tools.py
++++ b/tests/tools/test_kanban_tools.py
+@@ -2260,3 +2260,62 @@ def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worke
+     d = json.loads(out)
+     assert d["ok"] is True, d
+     assert d["subscribed"] is False, d
++
++def test_create_uses_registered_lane_default_workspace(worker_env, monkeypatch):
++    from hermes_cli import kanban_db as kb
++    from hermes_cli import worker_lanes as wl
++    from tools import kanban_tools as kt
++
++    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
++    wl.clear_worker_lanes()
++    wl.register_worker_lane(
++        wl.WorkerLane(
++            name="codex",
++            spawn_fn=lambda *_args, **_kwargs: 1,
++            allowed_workspace_kinds=frozenset({"worktree", "dir"}),
++            default_workspace_kind="worktree",
++        )
++    )
++    try:
++        response = json.loads(
++            kt._handle_create({"title": "code task", "assignee": "codex"})
++        )
++        assert response["ok"] is True
++        with kb.connect() as connection:
++            task = kb.get_task(connection, response["task_id"])
++            assert task.workspace_kind == "worktree"
++            assert task.project_id is None
++    finally:
++        wl.clear_worker_lanes()
++
++
++def test_create_rejects_workspace_disallowed_by_registered_lane(
++    worker_env, monkeypatch,
++):
++    from hermes_cli import worker_lanes as wl
++    from tools import kanban_tools as kt
++
++    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
++    wl.clear_worker_lanes()
++    wl.register_worker_lane(
++        wl.WorkerLane(
++            name="codex",
++            spawn_fn=lambda *_args, **_kwargs: 1,
++            allowed_workspace_kinds=frozenset({"worktree", "dir"}),
++            default_workspace_kind="worktree",
++        )
++    )
++    try:
++        response = json.loads(
++            kt._handle_create(
++                {
++                    "title": "bad scratch",
++                    "assignee": "codex",
++                    "workspace_kind": "scratch",
++                }
++            )
++        )
++        assert "does not accept workspace_kind='scratch'" in response["error"]
++    finally:
++        wl.clear_worker_lanes()
++
+diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
+index 716c4e6..b31bf05 100644
+--- a/tools/kanban_tools.py
++++ b/tools/kanban_tools.py
+@@ -883,6 +883,16 @@ def _handle_create(args: dict, **kw) -> str:
+     workspace_kind = args.get("workspace_kind")
+     workspace_path = args.get("workspace_path")
+     project_id = args.get("project") or args.get("project_id")
++    from hermes_cli.worker_lanes import get_worker_lane
++
++    target_lane = get_worker_lane(str(assignee))
++    if (
++        target_lane is not None
++        and workspace_kind is None
++        and workspace_path is None
++        and target_lane.default_workspace_kind is not None
++    ):
++        workspace_kind = target_lane.default_workspace_kind
+     inherit_parent_workspace_output, inherit_error = _parse_bool_arg(
+         args, "inherit_parent_workspace_output"
+     )
+@@ -934,6 +944,16 @@ def _handle_create(args: dict, **kw) -> str:
+     _inherit_workspace = workspace_kind is None and workspace_path is None
+     if workspace_kind is None:
+         workspace_kind = "scratch"
++    if (
++        target_lane is not None
++        and target_lane.allowed_workspace_kinds is not None
++        and str(workspace_kind) not in target_lane.allowed_workspace_kinds
++    ):
++        allowed = ", ".join(sorted(target_lane.allowed_workspace_kinds))
++        return tool_error(
++            f"worker lane {target_lane.name!r} does not accept "
++            f"workspace_kind={workspace_kind!r}; allowed: {allowed}"
++        )
+     triage, bool_error = _parse_bool_arg(args, "triage")
+     if bool_error:
+         return tool_error(bool_error)
+@@ -964,7 +984,7 @@ def _handle_create(args: dict, **kw) -> str:
+         try:
+             # Inherit the spawning worker's own task workspace when the
+             # caller didn't specify one (see resolution note above).
+-            if _inherit_workspace:
++            if _inherit_workspace and target_lane is None:
+                 _self_tid = os.environ.get("HERMES_KANBAN_TASK")
+                 if _self_tid:
+                     _self_task = kb.get_task(conn, _self_tid)
+-- 
+2.49.0
+

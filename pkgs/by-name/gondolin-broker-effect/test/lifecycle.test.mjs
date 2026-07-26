@@ -11,6 +11,7 @@ import { Executor } from "../dist/exec.js"
 import { Files } from "../dist/files.js"
 import { EnsureRequest, decodeExact } from "../dist/domain.js"
 import { Registry } from "../dist/registry.js"
+import { Workspaces } from "../dist/workspaces.js"
 import { makeTestLayer } from "./fakes.mjs"
 
 const withHarness = async (run, options) => {
@@ -94,7 +95,9 @@ test("ensure binds broker-owned default authority and rejects conflicts", async 
       profile: "test",
       executor: "different-executor",
       authorityClass: "default",
-      policyDigest: "a".repeat(64)
+      policyDigest: "a".repeat(64),
+      workspaceId: binding.workspaceId,
+      workspaceLeaseId: binding.workspaceLeaseId
     }))
     assert.equal(conflict.reason, "authority.conflict")
   }))
@@ -102,17 +105,22 @@ test("ensure binds broker-owned default authority and rejects conflicts", async 
 
 test("authority bindings persist across broker registry restarts", async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), "gondolin-authority-test-"))
-  const request = {
-    environmentKey: "conversation-persisted",
-    profile: "test",
-    executor: "hermes-gateway",
-    authorityClass: "default",
-    policyDigest: "a".repeat(64)
-  }
+  let request
 
   const first = makeTestLayer(stateDir)
   await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const registry = yield* Registry
+    const workspaces = yield* Workspaces
+    const acquired = yield* workspaces.acquire("conversation-persisted")
+    request = {
+      environmentKey: "conversation-persisted",
+      profile: "test",
+      executor: "hermes-gateway",
+      authorityClass: "default",
+      policyDigest: "a".repeat(64),
+      workspaceId: acquired.workspace.workspaceId,
+      workspaceLeaseId: acquired.lease.leaseId
+    }
     yield* registry.bindAuthority(request)
   }).pipe(Effect.provide(first.layer))))
 
@@ -128,43 +136,40 @@ test("authority bindings persist across broker registry restarts", async () => {
   assert.equal(binding.policyDigest, request.policyDigest)
 })
 
-test("legacy numeric policy state is discarded without deleting workspaces", async () => {
-  const stateDir = await mkdtemp(path.join(os.tmpdir(), "gondolin-policy-digest-migration-"))
-  const workspaceFile = path.join(stateDir, "workspaces", "legacy", "fixture.txt")
-  await mkdir(path.dirname(workspaceFile), { recursive: true })
-  await writeFile(workspaceFile, "preserved")
-  const databasePath = path.join(stateDir, "broker.sqlite")
-  const legacy = new DatabaseSync(databasePath)
-  legacy.exec(`
-    CREATE TABLE environments (environment_key TEXT PRIMARY KEY, policy_generation INTEGER) STRICT;
-    CREATE TABLE authority_bindings (environment_key TEXT PRIMARY KEY, policy_generation INTEGER) STRICT;
-    CREATE TABLE access_requests (request_id TEXT PRIMARY KEY, policy_generation INTEGER) STRICT;
-    CREATE TABLE runtime_grants (grant_id TEXT PRIMARY KEY, policy_generation INTEGER) STRICT;
-  `)
-  legacy.close()
 
-  const harness = makeTestLayer(stateDir)
+test("restart rotates retained default authority to the active policy", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "gondolin-policy-rollover-"))
+  const firstHarness = makeTestLayer(stateDir)
+  const retained = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const environments = yield* Environments
+    return yield* environments.ensure({ environmentKey: "conversation-policy-rollover" })
+  }).pipe(Effect.provide(firstHarness.layer))))
+
+  const nextDigest = "b".repeat(64)
+  const secondHarness = makeTestLayer(stateDir, {
+    policyFile: {
+      ...firstHarness.config.policyFile,
+      policyDigest: nextDigest
+    }
+  })
   await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const environments = yield* Environments
     const registry = yield* Registry
-    yield* AccessGrants
-    const binding = yield* registry.bindAuthority({
-      environmentKey: "digest-migrated",
-      profile: "test",
-      executor: "hermes-gateway",
-      authorityClass: "default",
-      policyDigest: "a".repeat(64)
+    const recreated = yield* environments.ensure({
+      environmentKey: "conversation-policy-rollover"
     })
-    assert.equal(binding.policyDigest, "a".repeat(64))
-  }).pipe(Effect.provide(harness.layer))))
+    const binding = yield* registry.getAuthority("conversation-policy-rollover")
 
-  const migrated = new DatabaseSync(databasePath)
-  for (const table of ["environments", "authority_bindings", "access_requests", "runtime_grants"]) {
-    const columns = migrated.prepare(`SELECT name FROM pragma_table_info('${table}')`).all().map((row) => row.name)
-    assert.equal(columns.includes("policy_generation"), false)
-    assert.equal(columns.includes("policy_digest"), true)
-  }
-  migrated.close()
-  assert.equal(await readFile(workspaceFile, "utf8"), "preserved")
+    assert.equal(recreated.state, "created")
+    assert.equal(recreated.workspaceId, retained.workspaceId)
+    assert.equal(recreated.generation, retained.generation + 1)
+    assert.equal(binding?.policyDigest, nextDigest)
+    const liveRotation = yield* Effect.exit(registry.rotateAuthorityPolicy({
+      ...binding,
+      policyDigest: "c".repeat(64)
+    }))
+    assert.equal(Exit.isFailure(liveRotation), true)
+  }).pipe(Effect.provide(secondHarness.layer))))
 })
 
 test("ordinary ensure input rejects caller-selected authority", async () => {

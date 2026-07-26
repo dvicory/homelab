@@ -182,14 +182,15 @@ This is not permission to expose the current listener over TCP. A SaaS deploymen
 
 ### Why SQLite is currently `node:sqlite`
 
-The first registry uses Node's built-in synchronous SQLite API behind an Effect service:
+The broker uses Node's built-in synchronous SQLite API behind one scoped `BrokerDatabase` Effect service:
 
-- no additional native module;
-- no `better-sqlite3` build/package ownership;
-- explicit transactions and schema;
-- easy replacement behind `Registry` if product topology changes.
+- one connection and transaction boundary shared by workspace, environment, and grant repositories;
+- no additional native module or `better-sqlite3` build/package ownership;
+- explicit schema and synchronous database operations;
+- nested repository mutations join the caller's transaction;
+- easy replacement when product topology changes.
 
-`@effect/sql` was not rejected for being pre-1.0. It is deferred because the current single-table local registry does not yet justify another native driver or SQL abstraction. Reconsider it when Agent X/PostgreSQL repositories, migrations, telemetry, and transactional product state move into the implementation.
+`@effect/sql` core is present transitively, but no SQLite driver is installed. Adopting its standard Node SQLite path would add a driver and native packaging while leaving the broker's domain repositories and schema work intact. Reconsider it when Agent X/PostgreSQL, remote repositories, telemetry, or asynchronous query composition justify a driver migration rather than using it only to replace this narrow built-in adapter.
 
 ## Lifecycle statechart
 
@@ -306,6 +307,7 @@ Responses include `X-Content-Type-Options: nosniff`. The local socket is mode
 Only the control socket exposes:
 
 - `POST /v1/control/authority/bind`
+- `POST /v1/control/authority/bind-default`
 - `POST /v1/control/authority/status`
 - `POST /v1/control/access/prepare`
 - `POST /v1/control/access/decide`
@@ -313,7 +315,7 @@ Only the control socket exposes:
 - `POST /v1/control/grants/revoke`
 - `POST /v1/control/grants/revoke-environment`
 
-`bind` records `{environmentKey, profile, executor, authorityClass, policyDigest}` and rejects conflicting rebinding. `ensure` uses broker defaults only when no trusted hook has already bound the key; model-facing execution requests cannot select authority.
+`bind` records `{environmentKey, profile, executor, authorityClass, policyDigest}` and rejects conflicting rebinding. `bind-default` accepts an already acquired `{environmentKey, workspaceId, leaseId}`, resolves that active lease, and conflict-safely installs the broker-configured default authority; callers cannot select its profile, executor, class, or policy digest. `ensure` uses the same broker defaults only when no trusted hook has already bound the key. Model-facing execution requests cannot select authority.
 
 `prepare` accepts an environment key, a closed capability batch, requested scope, optional bounded duration, and rationale. If the trusted key is not yet bound, preparation conflict-safely installs the broker-configured default authority without creating a VM. It canonicalizes and deduplicates capabilities, resolves the effective immutable Nix network policy, classifies addresses, and enforces the policy ceiling. A batch already covered by the immutable policy returns `active` without an access request, runtime grant, or approval prompt. Otherwise preparation coalesces compatible pending requests and applies denial cooldown and rolling prompt budgets; the response is `pending`, `existing-pending`, `active` through a matching remembered grant, or a stable structured error such as `approval.request_suppressed`.
 

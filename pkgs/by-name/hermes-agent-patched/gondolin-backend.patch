@@ -2,7 +2,7 @@ diff --git a/tests/tools/test_gondolin_backend.py b/tests/tools/test_gondolin_ba
 new file mode 100644
 --- /dev/null
 +++ b/tests/tools/test_gondolin_backend.py
-@@ -0,0 +1,309 @@
+@@ -0,0 +1,320 @@
 +"""Contract tests for Hermes HTTP/1.1 over Unix-socket Gondolin client."""
 +
 +import base64
@@ -255,6 +255,17 @@ new file mode 100644
 +    assert check_gondolin_available(broker.socket_path)
 +    assert broker.calls[-1] == ("/v1/health", None)
 +    assert not check_gondolin_available(str(tmp_path / "missing.sock"))
++
++
++def test_terminal_registration_does_not_depend_on_broker_liveness(monkeypatch, tmp_path):
++    missing_socket = str(tmp_path / "missing.sock")
++    monkeypatch.setenv("TERMINAL_ENV", "gondolin")
++    monkeypatch.setenv("HERMES_GONDOLIN_SOCKET", missing_socket)
++
++    from tools.terminal_tool import check_terminal_requirements
++
++    assert not check_gondolin_available(missing_socket)
++    assert check_terminal_requirements()
 +
 +
 +def test_typed_file_round_trip_preserves_control_bytes():
@@ -697,13 +708,17 @@ diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
      elif env_type == "singularity":
          return _SingularityEnvironment(
              image=image, cwd=cwd, timeout=timeout,
-@@ -2857,6 +2866,10 @@
+@@ -2857,6 +2866,14 @@
              result = subprocess.run([docker, "version"], capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
              return result.returncode == 0
  
 +        elif env_type == "gondolin":
-+            from tools.environments.gondolin import check_gondolin_available
-+            return check_gondolin_available()
++            # Broker liveness is transient runtime state, not an installation
++            # requirement. The trusted workspace hook revalidates the lease
++            # before every workspace-backed tool call and blocks visibly while
++            # unavailable. Keeping schemas stable permits recovery without
++            # requiring a Hermes process restart.
++            return True
 +
          elif env_type == "singularity":
              executable = shutil.which("apptainer") or shutil.which("singularity")

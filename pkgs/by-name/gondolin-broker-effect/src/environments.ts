@@ -1,6 +1,3 @@
-import { createHash } from "node:crypto";
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
 import {
   Context,
   Effect,
@@ -11,13 +8,15 @@ import {
   TSemaphore,
   type Scope,
 } from "effect";
+import { TaskRunActivations } from "./task-run-activations.js";
 import { Authorization } from "./auth.js";
-import { resolveAuthorityPolicy } from "./authority.js";
+import { getOrBindDefaultAuthority, resolveAuthorityPolicy } from "./authority.js";
 import { BrokerConfig } from "./config.js";
 import type { EnvironmentRef, EnsureRequest, WorklaneLimits } from "./domain.js";
 import { brokerError, type BrokerError } from "./errors.js";
 import { AccessGrants } from "./grants.js";
 import { Registry } from "./registry.js";
+import { Workspaces } from "./workspaces.js";
 import { VmRuntime, type VmHandle } from "./runtime.js";
 
 export interface LiveEnvironment {
@@ -28,6 +27,9 @@ export interface LiveEnvironment {
   readonly authorityClass: string;
   readonly policyDigest: string;
   readonly decisionDigest: string;
+  readonly workspaceId: string;
+  readonly workspaceLeaseId: string;
+  readonly runActivationId: string | null;
   readonly workspacePath: string;
   readonly workspaceGuestPath: string;
   readonly limits: WorklaneLimits;
@@ -45,6 +47,8 @@ export interface EnsureResult {
   readonly executor: string;
   readonly authorityClass: string;
   readonly policyDigest: string;
+  readonly workspaceId: string;
+  readonly workspaceLeaseId: string;
   readonly decisionDigest: string;
 }
 
@@ -59,10 +63,13 @@ export interface EnvironmentService {
     readonly executor: string;
     readonly authorityClass: string;
     readonly policyDigest: string;
+    readonly workspaceId: string;
+    readonly workspaceLeaseId: string;
   }, BrokerError>;
   readonly lease: (reference: EnvironmentRef) => Effect.Effect<LiveEnvironment, BrokerError, Scope.Scope>;
   readonly close: (reference: EnvironmentRef) => Effect.Effect<void, BrokerError>;
   readonly hardTerminateLeased: (reference: EnvironmentRef, reason: string) => Effect.Effect<void, never>;
+  readonly closeForFence: (reference: EnvironmentRef) => Effect.Effect<void, BrokerError>;
 }
 
 export class Environments extends Context.Tag("@agent-x/gondolin-broker-effect/Environments")<
@@ -94,6 +101,8 @@ const make = Effect.gen(function* () {
   const registry = yield* Registry;
   const runtime = yield* VmRuntime;
   const grants = yield* AccessGrants;
+  const workspaces = yield* Workspaces;
+  const runActivations = yield* TaskRunActivations;
   const live = new Map<string, LiveEnvironment>();
   const mutation = yield* STM.commit(TSemaphore.make(1));
 
@@ -137,13 +146,18 @@ const make = Effect.gen(function* () {
 
   const ensureUnlocked = (request: EnsureRequest): Effect.Effect<EnsureResult, BrokerError> =>
     Effect.gen(function* () {
-      const binding = yield* registry.bindAuthority({
-        environmentKey: request.environmentKey,
-        profile: config.profile,
-        executor: config.policyFile.defaultExecutor,
-        authorityClass: config.policyFile.defaultAuthorityClass,
-        policyDigest: config.policyFile.policyDigest,
-      });
+      const activation = yield* runActivations.validate(request.environmentKey, request.taskRun);
+      const binding = yield* getOrBindDefaultAuthority(
+        registry,
+        config,
+        workspaces,
+        request.environmentKey,
+      );
+      const workspace = yield* workspaces.resolve(
+        request.environmentKey,
+        binding.workspaceId,
+        binding.workspaceLeaseId,
+      );
       const { worklaneName, worklane, asset, decision, network } =
         yield* resolveAuthorityPolicy(config, authorization, binding);
       const existing = live.get(request.environmentKey);
@@ -151,7 +165,10 @@ const make = Effect.gen(function* () {
         existing !== undefined &&
         existing.authorityClass === binding.authorityClass &&
         existing.policyDigest === decision.policyDigest &&
-        existing.decisionDigest === decision.decisionDigest
+        existing.decisionDigest === decision.decisionDigest &&
+        existing.workspaceId === binding.workspaceId &&
+        existing.workspaceLeaseId === binding.workspaceLeaseId &&
+        existing.runActivationId === (activation?.activationId ?? null)
       ) {
         return {
           environmentKey: existing.environmentKey,
@@ -162,6 +179,8 @@ const make = Effect.gen(function* () {
           authorityClass: existing.authorityClass,
           policyDigest: existing.policyDigest,
           decisionDigest: existing.decisionDigest,
+          workspaceId: existing.workspaceId,
+          workspaceLeaseId: existing.workspaceLeaseId,
         };
       }
       if (existing !== undefined) {
@@ -174,27 +193,20 @@ const make = Effect.gen(function* () {
         });
       }
 
-      const workspaceId = createHash("sha256").update(request.environmentKey).digest("hex");
-      const workspacePath = path.join(config.workspaceRoot, workspaceId);
-      yield* Effect.tryPromise({
-        try: () => fs.mkdir(workspacePath, { recursive: true, mode: 0o700 }),
-        catch: (error) =>
-          brokerError("runtime.start_failed", "cannot create environment workspace", {
-            cause: error instanceof Error ? error.message : String(error),
-          }),
-      });
       const record = yield* registry.reserve({
         environmentKey: request.environmentKey,
         policyDigest: decision.policyDigest,
         worklane: worklaneName,
         assetBuildId: asset.buildId,
-        workspacePath,
+        workspaceId: binding.workspaceId,
+        runActivationId: activation?.activationId ?? null,
+        workspaceLeaseId: binding.workspaceLeaseId,
       });
       const vm = yield* runtime.create({
         assetPath: asset.path,
         memoryMiB: Math.min(worklane.memoryMiB, decision.limits.memoryMiB ?? worklane.memoryMiB),
         cpus: Math.min(worklane.cpus, decision.limits.cpus ?? worklane.cpus),
-        workspaceHostPath: workspacePath,
+        workspaceHostPath: workspace.workspacePath,
         workspaceGuestPath: worklane.workspaceGuestPath,
         sessionLabel: `${config.profile}:${request.environmentKey}:${record.generation}`,
         network,
@@ -220,10 +232,13 @@ const make = Effect.gen(function* () {
         authorityClass: binding.authorityClass,
         policyDigest: decision.policyDigest,
         decisionDigest: decision.decisionDigest,
-        workspacePath,
         workspaceGuestPath: worklane.workspaceGuestPath,
         limits,
+        workspaceId: binding.workspaceId,
+        workspaceLeaseId: binding.workspaceLeaseId,
+        runActivationId: activation?.activationId ?? null,
         vm,
+        workspacePath: workspace.workspacePath,
         lifecycleLock,
         execPermits,
         closing,
@@ -241,6 +256,8 @@ const make = Effect.gen(function* () {
         authorityClass: binding.authorityClass,
         policyDigest: decision.policyDigest,
         decisionDigest: decision.decisionDigest,
+        workspaceId: environment.workspaceId,
+        workspaceLeaseId: environment.workspaceLeaseId,
       };
     });
 
@@ -272,11 +289,14 @@ const make = Effect.gen(function* () {
         executor: binding.executor,
         authorityClass: binding.authorityClass,
         policyDigest: record.policyDigest,
+        workspaceId: record.workspaceId,
+        workspaceLeaseId: record.workspaceLeaseId,
       };
     });
 
   const lease = (reference: EnvironmentRef): Effect.Effect<LiveEnvironment, BrokerError, Scope.Scope> =>
     Effect.gen(function* () {
+      const activation = yield* runActivations.validate(reference.environmentKey, reference.taskRun);
       const environment = live.get(reference.environmentKey);
       if (environment === undefined) {
         const persisted = yield* registry.get(reference.environmentKey);
@@ -294,6 +314,12 @@ const make = Effect.gen(function* () {
         return yield* brokerError("environment.stale_generation", "environment generation is stale", {
           expected: environment.generation,
           received: reference.generation,
+        });
+      }
+      if (environment.runActivationId !== (activation?.activationId ?? null)) {
+        return yield* brokerError("run_activation.stale", "environment generation belongs to a different task run", {
+          environmentKey: reference.environmentKey,
+          generation: reference.generation,
         });
       }
       yield* TReentrantLock.readLock(environment.lifecycleLock);
@@ -331,6 +357,28 @@ const make = Effect.gen(function* () {
       mutation,
     );
 
+  const closeForFence = (reference: EnvironmentRef): Effect.Effect<void, BrokerError> =>
+    TSemaphore.withPermit(
+      Effect.gen(function* () {
+        const environment = live.get(reference.environmentKey);
+        if (environment === undefined || environment.generation !== reference.generation) {
+          const persisted = yield* registry.get(reference.environmentKey);
+          if (
+            persisted !== undefined &&
+            persisted.generation === reference.generation &&
+            persisted.state !== "closed" &&
+            persisted.state !== "failed"
+          ) {
+            yield* registry.markClosed(reference.environmentKey, reference.generation);
+          }
+          return;
+        }
+        yield* closeLive(environment, "closed");
+        live.delete(reference.environmentKey);
+      }),
+      mutation,
+    );
+
   const hardTerminateLeased = (reference: EnvironmentRef, reason: string): Effect.Effect<void, never> =>
     TSemaphore.withPermit(
       Effect.gen(function* () {
@@ -345,7 +393,7 @@ const make = Effect.gen(function* () {
       mutation,
     );
 
-  return { ensure, status, lease, close, hardTerminateLeased } satisfies EnvironmentService;
+  return { ensure, status, lease, close, closeForFence, hardTerminateLeased } satisfies EnvironmentService;
 });
 
 export const EnvironmentsLive = Layer.scoped(Environments, make);

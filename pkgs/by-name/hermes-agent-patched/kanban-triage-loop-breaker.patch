@@ -1,0 +1,102 @@
+From 7001ab8d171290ae2fcf660285b364e96f25cd5d Mon Sep 17 00:00:00 2001
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Sun, 26 Jul 2026 13:23:58 -0700
+Subject: [PATCH] fix(kanban): keep blocker escalations out of auto-decompose
+
+---
+ gateway/kanban_watchers.py                |  2 +-
+ hermes_cli/kanban_decompose.py            | 16 +++++++++--
+ tests/hermes_cli/test_kanban_decompose.py | 35 +++++++++++++++++++++++
+ 3 files changed, 50 insertions(+), 3 deletions(-)
+
+diff --git a/gateway/kanban_watchers.py b/gateway/kanban_watchers.py
+index eb1c68f..267bd26 100644
+--- a/gateway/kanban_watchers.py
++++ b/gateway/kanban_watchers.py
+@@ -1161,7 +1161,7 @@ class GatewayKanbanWatchersMixin:
+                 try:
+                     os.environ["HERMES_KANBAN_BOARD"] = slug
+                     try:
+-                        triage_ids = _decomp.list_triage_ids()
++                        triage_ids = _decomp.list_triage_ids(auto_only=True)
+                     except Exception as exc:
+                         logger.debug(
+                             "kanban auto-decompose: list_triage_ids failed on board %s (%s)",
+diff --git a/hermes_cli/kanban_decompose.py b/hermes_cli/kanban_decompose.py
+index 8af2da9..f66e3da 100644
+--- a/hermes_cli/kanban_decompose.py
++++ b/hermes_cli/kanban_decompose.py
+@@ -465,8 +465,15 @@ def decompose_task(
+     )
+ 
+ 
+-def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
+-    """Return task ids currently in the triage column."""
++def list_triage_ids(
++    *, tenant: Optional[str] = None, auto_only: bool = False,
++) -> list[str]:
++    """Return triage ids, optionally excluding blocker escalations.
++
++    Automatic decomposition is only for rough, newly authored triage cards.
++    A task escalated by the block-loop breaker retains ``block_kind`` and
++    ``block_recurrences`` and must remain parked for explicit operator action.
++    """
+     with kb.connect_closing() as conn:
+         rows = kb.list_tasks(
+             conn,
+@@ -474,4 +481,9 @@ def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
+             tenant=tenant,
+             limit=1000,
+         )
++    if auto_only:
++        rows = [
++            row for row in rows
++            if row.block_kind is None and row.block_recurrences == 0
++        ]
+     return [row.id for row in rows]
+diff --git a/tests/hermes_cli/test_kanban_decompose.py b/tests/hermes_cli/test_kanban_decompose.py
+index 5ba17e5..9b0cd01 100644
+--- a/tests/hermes_cli/test_kanban_decompose.py
++++ b/tests/hermes_cli/test_kanban_decompose.py
+@@ -345,3 +345,38 @@ def test_decompose_no_aux_client_configured(kanban_home):
+ 
+     assert outcome.ok is False
+     assert "no auxiliary client" in outcome.reason
++
++def test_auto_triage_listing_excludes_block_loop_escalations(kanban_home):
++    with kb.connect() as conn:
++        rough = kb.create_task(conn, title="rough idea", triage=True)
++        escalated = kb.create_task(conn, title="blocked work", assignee="worker")
++        for expected_status in ("blocked", "blocked", "triage"):
++            claimed = kb.claim_task(conn, escalated, claimer="worker")
++            assert claimed is not None
++            assert kb.block_task(
++                conn,
++                escalated,
++                kind="capability",
++                reason="same blocker",
++                expected_run_id=claimed.current_run_id,
++            )
++            assert kb.get_task(conn, escalated).status == expected_status
++            if expected_status == "blocked":
++                assert kb.unblock_task(conn, escalated)
++
++    assert set(decomp.list_triage_ids()) == {rough, escalated}
++    assert decomp.list_triage_ids(auto_only=True) == [rough]
++
++    with kb.connect() as conn:
++        assert kb.specify_triage_task(
++            conn,
++            escalated,
++            body="operator-approved recovery",
++            author="operator",
++        )
++        recovered = kb.get_task(conn, escalated)
++
++    assert recovered.status == "ready"
++    assert recovered.block_kind == "capability"
++    assert recovered.block_recurrences == kb.BLOCK_RECURRENCE_LIMIT
++
+-- 
+2.49.0
+

@@ -17,7 +17,8 @@ let
         config = {
           model.default = "opencode-go/deepseek-v4-flash";
           agent.restart_drain_timeout = 120;
-        };
+        }
+        // (if instance == "qa" then { curator.enabled = false; } else { });
         tailscale.hostname = "hermes-${instance}";
       }
       // (
@@ -36,6 +37,15 @@ let
               enable = true;
               network = true;
               backend = "gondolin";
+              workspaceHandoff = {
+                enable = true;
+                revisionLimits = {
+                  maxLogicalBytes = 67108864;
+                  maxEntries = 8192;
+                  maxFileBytes = 16777216;
+                  maxPathBytes = 1024;
+                };
+              };
 
               defaultTemplate = "project";
               allowedPairs = [

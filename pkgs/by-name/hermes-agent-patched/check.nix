@@ -8,6 +8,7 @@
 runCommand "hermes-agent-patched-check" { } ''
   export PYTHONPATH=${patchedHermes.patchedSource}
   export PYTHONPYCACHEPREFIX=$TMPDIR/pycache
+  export RUFF_CACHE_DIR=$TMPDIR/ruff-cache
   # Nix sets SSL_CERT_FILE=/no-cert-file.crt in pure builds. Two upstream
   # prompt-construction tests initialize an OpenAI client and validate the CA
   # path even though they make no network requests.
@@ -28,17 +29,25 @@ runCommand "hermes-agent-patched-check" { } ''
     ${patchedHermes.patchedSource}/tests/gateway/test_approval_permanent_choices.py \
     ${patchedHermes.patchedSource}/tests/gateway/test_telegram_approval_buttons.py \
     ${patchedHermes.patchedSource}/tests/tools/test_gondolin_backend.py \
+    ${patchedHermes.patchedSource}/tests/plugins/test_workspace_service.py \
+    ${patchedHermes.patchedSource}/tests/plugins/test_workspace_kanban.py \
+    ${patchedHermes.patchedSource}/tests/plugins/test_workspace_handoff.py \
+    ${patchedHermes.patchedSource}/tests/plugins/test_workspace_finalizers.py \
     ${sandboxAccess.testSource}/tests \
     ${codexWorkerLane.testSource}/tests
   "$python" -m py_compile \
     ${codexWorkerLane}/share/hermes-agent/plugins/codex-worker-lane/__init__.py \
     ${codexWorkerLane}/share/hermes-agent/plugins/codex-worker-lane/worker.py \
-    ${sandboxAccess}/share/hermes-agent/plugins/sandbox-access/__init__.py
+    ${sandboxAccess}/share/hermes-agent/plugins/sandbox-access/__init__.py \
+    ${patchedHermes.patchedSource}/plugins/workspace-service/__init__.py
   "$python" -m ruff check \
     ${codexWorkerLane.testSource}/__init__.py \
     ${codexWorkerLane.testSource}/worker.py \
     ${codexWorkerLane.testSource}/tests \
     ${sandboxAccess.testSource}/__init__.py \
-    ${sandboxAccess.testSource}/tests
+    ${sandboxAccess.testSource}/tests \
+    ${patchedHermes.patchedSource}/plugins/workspace-service/__init__.py \
+    ${patchedHermes.patchedSource}/tests/plugins/test_workspace_service.py \
+    ${patchedHermes.patchedSource}/tests/plugins/test_workspace_kanban.py
   touch $out
 ''
