@@ -1,0 +1,114 @@
+From 4fe5eff42490795c3c6567d2fc5fdf11861fd6b1 Mon Sep 17 00:00:00 2001
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Sun, 26 Jul 2026 14:49:31 -0700
+Subject: [PATCH] fix(kanban): keep protocol violations blocked
+
+---
+ hermes_cli/kanban_db.py                       | 30 +++++++++++
+ .../test_kanban_core_functionality.py         | 52 +++++++++++++++++++
+ 2 files changed, 82 insertions(+)
+
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+index ad7a9a8..bc9f425 100644
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -6851,6 +6851,36 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+             )
+             if tripped:
+                 auto_blocked.append(tid)
++                if protocol_violation:
++                    # A clean worker exit without a terminal transition is
++                    # deterministic. Mark this breaker trip as a genuine
++                    # human-visible block so recompute_ready cannot promote
++                    # and respawn the same task on the next line of this tick.
++                    with write_txn(conn):
++                        cur = conn.execute(
++                            "UPDATE tasks SET block_kind = 'capability', "
++                            "block_recurrences = MAX(block_recurrences, 1) "
++                            "WHERE id = ? AND status = 'blocked'",
++                            (tid,),
++                        )
++                        if cur.rowcount == 1:
++                            block_recurrences = int(
++                                conn.execute(
++                                    "SELECT block_recurrences FROM tasks WHERE id = ?",
++                                    (tid,),
++                                ).fetchone()[0]
++                            )
++                            _append_event(
++                                conn,
++                                tid,
++                                "blocked",
++                                {
++                                    "reason": error_text,
++                                    "kind": "capability",
++                                    "recurrences": block_recurrences,
++                                    "source": "protocol_violation",
++                                },
++                            )
+     # Stash auto-blocked ids on the function for the dispatch loop to pick up.
+     # Keeps the public return type (``list[str]``) stable for direct callers
+     # and tests that destructure the result; ``dispatch_once`` reads this
+diff --git a/tests/hermes_cli/test_kanban_core_functionality.py b/tests/hermes_cli/test_kanban_core_functionality.py
+index 353722d..601eb35 100644
+--- a/tests/hermes_cli/test_kanban_core_functionality.py
++++ b/tests/hermes_cli/test_kanban_core_functionality.py
+@@ -4591,3 +4591,55 @@ def test_dispatch_once_stale_disabled_when_timeout_zero(kanban_home, monkeypatch
+         )
+         assert res.stale == [], "stale_timeout_seconds=0 should disable detection"
+         assert kb.get_task(conn, t).status == "running"
++
++def test_dispatch_protocol_violation_breaker_remains_blocked(
++    kanban_home, monkeypatch,
++):
++    """A clean worker exit must not be promoted and respawned by the same tick."""
++    import hermes_cli.kanban_db as _kb
++
++    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
++    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
++
++    with kb.connect() as conn:
++        task_id = kb.create_task(conn, title="quiet", assignee="worker")
++        assert kb.claim_task(
++            conn,
++            task_id,
++            claimer=f"{_kb._claimer_id().split(':', 1)[0]}:mock",
++        ) is not None
++        fake_pid = 999997
++        _kb._set_worker_pid(conn, task_id, fake_pid)
++        _kb._record_worker_exit(fake_pid, 0)
++
++        def unexpected_spawn(*_args, **_kwargs):
++            pytest.fail("protocol-violation task was promoted and respawned")
++
++        result = kb.dispatch_once(
++            conn,
++            spawn_fn=unexpected_spawn,
++            max_spawn=1,
++        )
++
++        assert task_id in result.crashed
++        assert task_id in result.auto_blocked
++        assert task_id not in result.promoted
++        task = kb.get_task(conn, task_id)
++        assert task.status == "blocked"
++        assert task.block_kind == "capability"
++        assert task.block_recurrences == 1
++        kinds = [event.kind for event in kb.list_events(conn, task_id)]
++        assert "protocol_violation" in kinds
++        assert "gave_up" in kinds
++        assert "blocked" in kinds
++        assert "promoted" not in kinds
++
++        second = kb.dispatch_once(
++            conn,
++            spawn_fn=unexpected_spawn,
++            max_spawn=1,
++        )
++        assert task_id not in second.promoted
++        assert kb.get_task(conn, task_id).status == "blocked"
++        assert len(kb.list_runs(conn, task_id)) == 1
++
+-- 
+2.49.0
+
