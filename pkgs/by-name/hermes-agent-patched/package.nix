@@ -30,6 +30,7 @@ let
       ./workspace-finalization-exit-recovery.patch
       ./kanban-triage-loop-breaker.patch
       ./kanban-protocol-violation-sticky.patch
+      ./worker-lane-workspace-policy.patch
     ];
   };
 in
