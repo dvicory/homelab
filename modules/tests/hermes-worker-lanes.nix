@@ -20,7 +20,7 @@
           ];
         };
         patchedHermes =
-          pkgs.callPackage (self + "/pkgs/by-name/hermes-agent-with-worker-lanes/package.nix")
+          pkgs.callPackage (self + "/pkgs/by-name/hermes-agent-patched/package.nix")
             {
               hermesAgent = hermesWithTestDependencies;
               src = inputs.hermes-agent;
@@ -58,7 +58,7 @@
         # the generic patched-Hermes/worker runtime test below.
         checks.hermes-codex-worker-lane-custom-skill = customCodexWorkerLane;
         checks.hermes-worker-lane =
-          pkgs.callPackage (self + "/pkgs/by-name/hermes-agent-with-worker-lanes/check.nix")
+          pkgs.callPackage (self + "/pkgs/by-name/hermes-agent-patched/check.nix")
             {
               inherit codexWorkerLane patchedHermes;
             };
