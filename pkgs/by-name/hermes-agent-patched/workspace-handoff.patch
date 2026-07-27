@@ -1,393 +1,1851 @@
-diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Mon, 27 Jul 2026 12:00:00 +0000
+Subject: [PATCH] feat(kanban): journal hashless broker workspace handoffs
+
+Represent completion, inheritance, import, and delivery facts as hidden events
+in Hermes' existing task-event schema. Do not persist broker workspace, lease,
+handoff, export, or hash authority in Hermes; exact-run intents make broker
+capture and import replayable before reclaim without exposing internal ids to
+models or activity readers.
+
+Validate completion as an immutable tuple of relative artifacts, metadata, and
+created cards. Native files enter existing attachment storage before cleanup;
+broker selections are preflighted beneath output/ before the writer fence and
+delivered from frozen bytes rather than live paths or prose discovery.
+
+Keep generic Kanban persistence, board-qualified recovery, artifact validation,
+and transport-neutral control primitives here. The following integration patch
+owns plugin registration, notifier delivery, and model-facing tool behavior.
+---
 --- a/hermes_cli/kanban_db.py
 +++ b/hermes_cli/kanban_db.py
-@@ -914,5 +914,11 @@ class Task:
-     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
-     block_recurrences: int = 0
-+    # Trusted task-creation intent. The dispatcher may import exactly one
-+    # parent revision before the worker starts; ordinary workers never resolve it.
-+    inherit_parent_workspace_output: bool = False
-+    # Selected relative roots requested for immutable publication on completion.
-+    # None means no handoff; an empty list is never persisted.
-+    workspace_outputs: Optional[list[str]] = None
- 
-     @classmethod
-     def from_row(cls, row: sqlite3.Row) -> "Task":
-@@ -998,4 +1004,16 @@ class Task:
-                 if "block_recurrences" in keys and row["block_recurrences"] is not None
-                 else 0
-             ),
-+            inherit_parent_workspace_output=(
-+                bool(row["inherit_parent_workspace_output"])
-+                if "inherit_parent_workspace_output" in keys
-+                else False
-+            ),
-+            workspace_outputs=(
-+                [str(value) for value in json.loads(row["workspace_outputs"])]
-+                if "workspace_outputs" in keys
-+                and row["workspace_outputs"]
-+                and isinstance(json.loads(row["workspace_outputs"]), list)
-+                else None
-+            ),
-         )
-@@ -1175,4 +1192,9 @@ CREATE TABLE IF NOT EXISTS tasks (
-     -- successful completion — NOT on unblock (resetting on unblock is exactly
-     -- the amnesia that let the loop run unbounded).
--    block_recurrences    INTEGER NOT NULL DEFAULT 0
-+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
-+    -- Child creation intent; interpreted only by trusted dispatch.
-+    inherit_parent_workspace_output INTEGER NOT NULL DEFAULT 0,
-+    -- JSON array of selected relative roots to publish after execution.
-+    -- NULL means ordinary completion without workspace handoff.
-+    workspace_outputs    TEXT
- );
-@@ -1985,4 +2007,17 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
-             "block_recurrences INTEGER NOT NULL DEFAULT 0",
-         )
- 
-+    if "inherit_parent_workspace_output" not in cols:
-+        _add_column_if_missing(
-+            conn,
-+            "tasks",
-+            "inherit_parent_workspace_output",
-+            "inherit_parent_workspace_output INTEGER NOT NULL DEFAULT 0",
-+        )
+@@ -81,6 +81,7 @@
+ import sqlite3
+ import subprocess
+ import sys
++import tempfile
+ import threading
+ import logging
+ import time
+@@ -132,24 +133,44 @@
+ # spirit (default 2) but counts a different signal: manual unblock recurrences,
+ # not dispatcher spawn/crash/timeout failures.
+ BLOCK_RECURRENCE_LIMIT = 2
+-VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
++VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir", "broker"}
 +
-+    if "workspace_outputs" not in cols:
-+        _add_column_if_missing(
-+            conn, "tasks", "workspace_outputs", "workspace_outputs TEXT"
-+        )
-+
-     # Indexes over additive ``tasks`` columns must be created after the
-@@ -2383,4 +2418,31 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
-     return normalize_profile_name(assignee)
++# Events carrying broker authority or recovery facts are durable but never a
++# model-facing activity feed.  Keep this list deliberately broader than the
++# two intent kinds so replay/ack records cannot leak through a future reader.
++_INTERNAL_EVENT_KINDS = frozenset({
++    "completion_intent",
++    "inheritance_intent",
++    "workspace_import_intent",
++    "workspace_artifact_delivered",
++    "workspace_recovery",
++})
+ KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
+ _IS_WINDOWS = sys.platform == "win32"
+ KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
  
  
-+def _normalize_workspace_outputs(
-+    workspace_outputs: Optional[Iterable[str]],
-+) -> Optional[list[str]]:
-+    if workspace_outputs is None:
-+        return None
-+    cleaned: list[str] = []
-+    seen: set[str] = set()
-+    for value in workspace_outputs:
-+        if not isinstance(value, str):
-+            raise ValueError("workspace_outputs entries must be strings")
-+        root = value.strip()
-+        if not root:
-+            raise ValueError("workspace_outputs entries must not be empty")
-+        if root.startswith("/") or "\x00" in root:
-+            raise ValueError("workspace_outputs entries must be relative paths")
-+        segments = root.split("/")
-+        if root != "." and any(segment in {"", ".", ".."} for segment in segments):
-+            raise ValueError("workspace_outputs entries must be normalized relative paths")
-+        if root in seen:
-+            continue
-+        seen.add(root)
-+        cleaned.append(root)
-+    if not cleaned:
-+        raise ValueError("workspace_outputs must contain at least one path")
-+    return cleaned
++def _board_for_connection(conn: sqlite3.Connection) -> str:
++    """Recover the explicit board owning *conn* without consulting UI state."""
++    try:
++        row = conn.execute("PRAGMA database_list").fetchone()
++        path = str(row[2]) if row is not None and len(row) > 2 else ""
++        if path:
++            parent = Path(path).parent
++            if parent.name == "boards" and parent.parent.name == "kanban":
++                return Path(path).stem
++            if parent.parent.name == "boards":
++                return parent.name
++    except Exception:
++        pass
++    return DEFAULT_BOARD
 +
 +
- def create_task(
-@@ -2405,4 +2467,5 @@ def create_task(
-     goal_max_turns: Optional[int] = None,
-     initial_status: str = "running",
+ def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
+-    """Fire a kanban lifecycle plugin hook, fully best-effort.
+-
+-    Called by the claim/complete/block transitions AFTER their write txn has
+-    committed, so plugin code never runs while a SQLite write lock is held and
+-    always observes durable board state. Any failure (plugins unavailable,
+-    a plugin raising, import error) is swallowed — a misbehaving observer must
+-    never break a board state transition.
+-
+-    ``profile_name`` is resolved from the active HERMES_HOME so dispatcher- and
+-    worker-side hooks both carry the right profile without the caller plumbing
+-    it through.
++    """Fire a kanban lifecycle plugin hook with an explicit board context.
++
++    Called after the board transaction commits, so a hook observes durable
++    state and never holds a SQLite write lock. Observer failures are swallowed.
+     """
+     try:
+         from hermes_cli.plugins import invoke_hook
+@@ -158,6 +179,11 @@
+             profile_name = get_active_profile_name()
+         except Exception:
+             profile_name = "default"
++        if not fields.get("board"):
++            # Lifecycle hooks are board-scoped.  Derive the board only from the
++            # connection supplied by the caller; never consult the mutable
++            # process-wide current-board selector.
++            fields["board"] = fields.pop("_connection_board", DEFAULT_BOARD)
+         invoke_hook(event, task_id=task_id, profile_name=profile_name, **fields)
+     except Exception as exc:  # pragma: no cover - defensive
+         _log.debug("kanban lifecycle hook %s failed: %s", event, exc)
+@@ -2408,6 +2434,7 @@
      session_id: Optional[str] = None,
-+    inherit_parent_workspace_output: bool = False,
      board: Optional[str] = None,
-@@ -2444,3 +2507,5 @@ def create_task(
-             f"got {workspace_kind!r}"
+     project_id: Optional[str] = None,
++    inherit_parent_output: bool = False,
+ ) -> str:
+     """Create a new task and optionally link it under parent tasks.
+ 
+@@ -2448,6 +2475,12 @@
+         branch_name = str(branch_name).strip() or None
+     if branch_name and workspace_kind != "worktree":
+         raise ValueError("branch_name is only valid for worktree workspaces")
++    if inherit_parent_output and workspace_kind != "broker":
++        raise ValueError("workspace inheritance is only valid for broker workspaces")
++    if workspace_kind == "broker":
++        if workspace_path or branch_name or project_id:
++            raise ValueError("broker workspaces do not accept host paths, branches, or projects")
++        workspace_path = None
+ 
+     # Resolve an optional first-class Project link. A project-linked task is
+     # anchored to the project's primary repo as a git worktree, so its branch
+@@ -2491,6 +2524,8 @@
+                 project_repo = str(project_obj.primary_path)
+ 
+     parents = tuple(p for p in parents if p)
++    if workspace_kind == "broker" and inherit_parent_output and len(parents) != 1:
++        raise ValueError("broker workspace inheritance requires exactly one parent")
+ 
+     # Normalise + validate skills: strip whitespace, drop empties, dedupe
+     # (preserving order). Refuse commas inside a single name so we don't
+@@ -2666,6 +2701,26 @@
+                     conn.execute(
+                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
+                         (pid, task_id),
++                    )
++                if inherit_parent_output:
++                    source = conn.execute(
++                        "SELECT status, tenant, current_run_id FROM tasks WHERE id = ?",
++                        (parents[0],),
++                    ).fetchone()
++                    if source is None or source["tenant"] != tenant:
++                        raise ValueError("inherited broker parent is missing or tenant-mismatched")
++                    _append_event(
++                        conn, task_id, "inheritance_intent",
++                        {
++                            "intent_id": "i_" + secrets.token_hex(16),
++                            "task_id": task_id,
++                            "run_id": None,
++                            "kind": "inheritance",
++                            "source_task_id": parents[0],
++                            "source_run_id": source["current_run_id"],
++                            "tenant": tenant,
++                            "creator": created_by,
++                        },
+                     )
+                 _append_event(
+                     conn,
+@@ -3185,11 +3240,22 @@
+     return att
+ 
+ 
+-def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
+-    rows = conn.execute(
+-        "SELECT * FROM task_events WHERE task_id = ? ORDER BY created_at ASC, id ASC",
+-        (task_id,),
+-    ).fetchall()
++def list_events(
++    conn: sqlite3.Connection, task_id: str, *, include_internal: bool = False
++) -> list[Event]:
++    """Return model-safe events; internal broker journals require opt-in."""
++    if include_internal:
++        rows = conn.execute(
++            "SELECT * FROM task_events WHERE task_id = ? ORDER BY created_at ASC, id ASC",
++            (task_id,),
++        ).fetchall()
++    else:
++        placeholders = ",".join("?" for _ in _INTERNAL_EVENT_KINDS)
++        rows = conn.execute(
++            "SELECT * FROM task_events WHERE task_id = ? "
++            f"AND kind NOT IN ({placeholders}) ORDER BY created_at ASC, id ASC",
++            (task_id, *_INTERNAL_EVENT_KINDS),
++        ).fetchall()
+     out = []
+     for r in rows:
+         try:
+@@ -3207,6 +3273,289 @@
+             )
          )
-+    if not isinstance(inherit_parent_workspace_output, bool):
-+        raise ValueError("inherit_parent_workspace_output must be a boolean")
-     if branch_name is not None:
-@@ -2637,3 +2703,4 @@ def create_task(
-                         max_runtime_seconds,
--                        skills, max_retries, goal_mode, goal_max_turns, session_id
--                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-+                        skills, max_retries, goal_mode, goal_max_turns, session_id,
-+                        inherit_parent_workspace_output
-+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-@@ -2659,4 +2725,5 @@ def create_task(
-                         1 if goal_mode else 0,
-                         int(goal_max_turns) if goal_max_turns is not None else None,
-                         session_id,
-+                        1 if inherit_parent_workspace_output else 0,
-                     ),
-@@ -2678,4 +2745,5 @@ def create_task(
-                         "branch_name": branch_name,
-                         "skills": list(skills_list) if skills_list else None,
-                         "goal_mode": bool(goal_mode) or None,
-+                        "inherit_parent_workspace_output": inherit_parent_workspace_output or None,
-                     },
-@@ -3983,4 +4051,5 @@ def complete_task(
-     summary: Optional[str] = None,
+     return out
++
++
++def _internal_events_for(
++    conn: sqlite3.Connection, task_id: str, kind: str
++) -> list[Event]:
++    rows = conn.execute(
++        "SELECT * FROM task_events WHERE task_id = ? AND kind = ? "
++        "ORDER BY created_at ASC, id ASC",
++        (task_id, kind),
++    ).fetchall()
++    out: list[Event] = []
++    for r in rows:
++        try:
++            payload = json.loads(r["payload"]) if r["payload"] else {}
++        except Exception:
++            payload = {}
++        out.append(Event(
++            id=r["id"], task_id=r["task_id"], kind=r["kind"], payload=payload,
++            created_at=r["created_at"],
++            run_id=(int(r["run_id"]) if r["run_id"] is not None else None),
++        ))
++    return out
++
++
++def get_completion_intent(
++    conn: sqlite3.Connection, task_id: str, run_id: Optional[int] = None
++) -> Optional[dict[str, Any]]:
++    """Return the newest hidden completion intent for an exact run."""
++    events = _internal_events_for(conn, task_id, "completion_intent")
++    for event in reversed(events):
++        payload = event.payload if isinstance(event.payload, dict) else {}
++        if run_id is None or int(payload.get("run_id", -1)) == int(run_id):
++            return dict(payload)
++    return None
++
++
++def get_inheritance_intent(
++    conn: sqlite3.Connection, task_id: str
++) -> Optional[dict[str, Any]]:
++    """Return the newest child workspace inheritance intent."""
++    events = _internal_events_for(conn, task_id, "inheritance_intent")
++    if not events:
++        return None
++    payload = events[-1].payload
++    return dict(payload) if isinstance(payload, dict) else None
++
++
++def get_workspace_import_intent(
++    conn: sqlite3.Connection, task_id: str, run_id: Optional[int] = None
++) -> Optional[dict[str, Any]]:
++    events = _internal_events_for(conn, task_id, "workspace_import_intent")
++    for event in reversed(events):
++        payload = event.payload if isinstance(event.payload, dict) else {}
++        if run_id is None or int(payload.get("run_id", -1)) == int(run_id):
++            return dict(payload)
++    return None
++
++
++def _workspace_import_recovered(
++    conn: sqlite3.Connection, task_id: str, run_id: int
++) -> bool:
++    for event in _internal_events_for(conn, task_id, "workspace_import_recovered"):
++        payload = event.payload if isinstance(event.payload, dict) else {}
++        if int(payload.get("run_id", -1)) == int(run_id):
++            return True
++    return False
++
++
++
++def get_workspace_capture(
++    conn: sqlite3.Connection, task_id: str, run_id: Optional[int] = None
++) -> Optional[dict[str, Any]]:
++    events = _internal_events_for(conn, task_id, "workspace_capture")
++    for event in reversed(events):
++        payload = event.payload if isinstance(event.payload, dict) else {}
++        if run_id is None or int(payload.get("run_id", -1)) == int(run_id):
++            return dict(payload)
++    return None
++
++
++def append_workspace_capture(
++    conn: sqlite3.Connection,
++    task_id: str,
++    *,
++    run_id: int,
++    handoff_id: str,
++    finalization_id: str,
++    artifacts: list[str],
++    board: Optional[str] = None,
++) -> dict[str, Any]:
++    payload = {
++        "task_id": task_id,
++        "run_id": int(run_id),
++        "handoff_id": str(handoff_id),
++        "finalization_id": str(finalization_id),
++        "artifacts": list(artifacts),
++        "board": board or _board_for_connection(conn),
++        "kind": "capture",
++    }
++    with write_txn(conn):
++        _append_event(conn, task_id, "workspace_capture", payload, run_id=int(run_id))
++    return payload
++
++def append_workspace_import_intent(
++    conn: sqlite3.Connection, task_id: str, *, run_id: int, preparation_id: str,
++    board: Optional[str] = None
++) -> dict[str, Any]:
++    payload = {
++        "intent_id": "i_" + secrets.token_hex(16),
++        "preparation_id": str(preparation_id),
++        "task_id": task_id,
++        "run_id": int(run_id),
++        "board": board or _board_for_connection(conn),
++        "kind": "import",
++    }
++    with write_txn(conn):
++        _append_event(conn, task_id, "workspace_import_intent", payload, run_id=int(run_id))
++    return payload
++
++
++def _was_artifact_delivered(
++    conn: sqlite3.Connection, task_id: str, delivery_id: str
++) -> bool:
++    for event in _internal_events_for(conn, task_id, "workspace_artifact_delivered"):
++        payload = event.payload if isinstance(event.payload, dict) else {}
++        if payload.get("delivery_id") == delivery_id:
++            return True
++    return False
++
++
++def record_artifact_delivered(
++    conn: sqlite3.Connection, task_id: str, *, delivery_id: str,
++    run_id: Optional[int] = None, board: Optional[str] = None
++) -> None:
++    """Durably acknowledge one notifier delivery without exposing its ID."""
++    with write_txn(conn):
++        _append_event(
++            conn, task_id, "workspace_artifact_delivered",
++            {"delivery_id": str(delivery_id), "kind": "artifact"}, run_id=run_id,
++        )
++
++
++def _attachment_for_delivery(
++    conn: sqlite3.Connection, task_id: str, delivery_id: str
++) -> Optional[Attachment]:
++    """Return the durable attachment recorded for one export delivery."""
++    for event in reversed(_internal_events_for(conn, task_id, "workspace_artifact_delivered")):
++        payload = event.payload if isinstance(event.payload, dict) else {}
++        if payload.get("delivery_id") != str(delivery_id):
++            continue
++        attachment_id = payload.get("attachment_id")
++        if attachment_id is None:
++            continue
++        try:
++            attachment = get_attachment(conn, int(attachment_id))
++        except (TypeError, ValueError):
++            attachment = None
++        if attachment is not None and Path(attachment.stored_path).is_file():
++            return attachment
++    return None
++
++
++def find_workspace_export_attachment(
++    conn: sqlite3.Connection, task_id: str, filename: str
++) -> Optional[Attachment]:
++    """Find an already copied broker artifact by its trusted manifest name."""
++    row = conn.execute(
++        "SELECT * FROM task_attachments "
++        "WHERE task_id = ? AND filename = ? AND uploaded_by = 'workspace_export' "
++        "ORDER BY id DESC LIMIT 1",
++        (task_id, str(filename)),
++    ).fetchone()
++    if row is None:
++        return None
++    attachment = Attachment(
++        id=row["id"], task_id=row["task_id"], filename=row["filename"],
++        stored_path=row["stored_path"], content_type=row["content_type"],
++        size=row["size"] or 0, uploaded_by=row["uploaded_by"],
++        created_at=row["created_at"],
++    )
++    return attachment if Path(attachment.stored_path).is_file() else None
++
++
++def store_workspace_export_attachment(
++    conn: sqlite3.Connection,
++    task_id: str,
++    *,
++    filename: str,
++    data: bytes,
++    delivery_id: str,
++    run_id: Optional[int] = None,
++    board: Optional[str] = None,
++) -> Attachment:
++    """Atomically persist broker bytes and their hidden delivery marker.
++
++    The blob is fsynced and installed before a single SQLite transaction inserts
++    both the existing attachment row and the internal idempotency marker. A
++    notifier restart therefore reuses the same row instead of copying another
++    file; recipient send retries remain independent of broker token lifetimes.
++    """
++    if len(data) > KANBAN_ATTACHMENT_MAX_BYTES:
++        raise ArtifactPreservationError("export exceeds attachment limit")
++    if not filename or not str(filename).strip():
++        raise ArtifactPreservationError("export filename is required")
++    prior = _attachment_for_delivery(conn, task_id, str(delivery_id))
++    if prior is not None:
++        return prior
++    destination_dir = task_attachments_dir(task_id, board=board)
++    destination_dir.mkdir(parents=True, exist_ok=True)
++    destination = _collision_free_path(
++        destination_dir, _safe_attachment_name(str(filename)), set()
++    )
++    temporary = destination.with_name(
++        f".{destination.name}.{secrets.token_hex(8)}.tmp"
++    )
++    installed = False
++    try:
++        with temporary.open("xb") as output:
++            output.write(data)
++            output.flush()
++            os.fsync(output.fileno())
++        os.replace(temporary, destination)
++        installed = True
++        with write_txn(conn):
++            prior = _attachment_for_delivery(conn, task_id, str(delivery_id))
++            if prior is None:
++                if not conn.execute(
++                    "SELECT 1 FROM tasks WHERE id = ?", (task_id,)
++                ).fetchone():
++                    raise ValueError(f"unknown task {task_id}")
++                now = int(time.time())
++                cur = conn.execute(
++                    "INSERT INTO task_attachments "
++                    "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
++                    "VALUES (?, ?, ?, NULL, ?, 'workspace_export', ?)",
++                    (
++                        task_id, str(filename).strip(), str(destination.resolve()),
++                        len(data), now,
++                    ),
++                )
++                attachment_id = int(cur.lastrowid or 0)
++                _append_event(
++                    conn, task_id, "attached",
++                    {
++                        "filename": str(filename).strip(),
++                        "size": len(data),
++                        "by": "workspace_export",
++                    },
++                )
++                _append_event(
++                    conn, task_id, "workspace_artifact_delivered",
++                    {
++                        "delivery_id": str(delivery_id),
++                        "attachment_id": attachment_id,
++                        "filename": str(filename).strip(),
++                        "kind": "artifact",
++                    },
++                    run_id=run_id,
++                )
++            else:
++                try:
++                    destination.unlink(missing_ok=True)
++                except OSError:
++                    pass
++                installed = False
++        if prior is not None:
++            return prior
++        attachment = get_attachment(conn, attachment_id)
++        if attachment is None:
++            raise ArtifactPreservationError("stored export attachment disappeared")
++        return attachment
++    except Exception:
++        if installed:
++            try:
++                destination.unlink(missing_ok=True)
++            except OSError:
++                pass
++        try:
++            temporary.unlink(missing_ok=True)
++        except OSError:
++            pass
++        raise
++
+ 
+ 
+ def _append_event(
+@@ -3596,7 +3945,7 @@
+     _fire_kanban_lifecycle_hook(
+         "kanban_task_claimed",
+         task_id,
+-        board=get_current_board(),
++        board=_board_for_connection(conn),
+         assignee=claimed.assignee if claimed else None,
+         run_id=run_id,
+     )
+@@ -3713,6 +4062,7 @@
+     conn: sqlite3.Connection,
+     *,
+     signal_fn=None,
++    board: Optional[str] = None,
+ ) -> int:
+     """Reset any ``running`` task whose claim has expired.
+ 
+@@ -3750,6 +4100,20 @@
+         (now,),
+     ).fetchall()
+     for row in stale:
++        pending_run_id = _current_run_id(conn, row["id"])
++        if (
++            pending_run_id is not None
++            and (
++                get_completion_intent(conn, row["id"], pending_run_id) is not None
++                or (
++                    get_workspace_import_intent(conn, row["id"], pending_run_id) is not None
++                    and not _workspace_import_recovered(conn, row["id"], pending_run_id)
++                )
++            )
++        ):
++            # Broker capture/import has already fenced the worker. Leave the
++            # exact run in place until its durable recovery can succeed.
++            continue
+         lock = row["claim_lock"] or ""
+         host_local = lock.startswith(host_prefix)
+         hb = row["last_heartbeat_at"]
+@@ -3852,6 +4216,11 @@
+                 run_id=run_id,
+             )
+             reclaimed += 1
++        if run_id is not None:
++            _fire_kanban_lifecycle_hook(
++                "kanban_task_reclaimed", row["id"],
++                board=board or _board_for_connection(conn), run_id=run_id,
++            )
+     return reclaimed
+ 
+ 
+@@ -3921,6 +4290,10 @@
+     # a fresh budget. (_clear_failure_counter opens its own write_txn,
+     # so it runs after the enclosing one commits.)
+     _clear_failure_counter(conn, task_id)
++    _fire_kanban_lifecycle_hook(
++        "kanban_task_reclaimed", task_id,
++        board=_board_for_connection(conn), run_id=run_id,
++    )
+     return True
+ 
+ 
+@@ -4091,6 +4464,27 @@
+     """Raised when a declared scratch deliverable cannot be preserved."""
+ 
+ 
++def _run_required_workspace_hook(
++    hook_name: str, *, task_id: str, board: str, run_id: int, **fields: Any
++) -> dict[str, Any]:
++    """Run a broker finalization hook and fail closed on missing/failed work."""
++    try:
++        from hermes_cli.plugins import has_hook, invoke_hook
++        if not has_hook(hook_name):
++            raise RuntimeError(f"{hook_name} is not registered")
++        results = invoke_hook(
++            hook_name, task_id=task_id, board=board, run_id=int(run_id), **fields
++        )
++    except Exception as exc:
++        raise RuntimeError(f"workspace finalization unavailable: {exc}") from exc
++    for result in results:
++        if result is True:
++            return {"ready": True}
++        if isinstance(result, dict) and result.get("ready") is True:
++            return dict(result)
++    raise RuntimeError("workspace finalization did not report broker-ready")
++
++
+ def complete_task(
+     conn: sqlite3.Connection,
+     task_id: str,
+@@ -4100,203 +4494,177 @@
      metadata: Optional[dict] = None,
      created_cards: Optional[Iterable[str]] = None,
-+    workspace_outputs: Optional[Iterable[str]] = None,
      expected_run_id: Optional[int] = None,
-@@ -4014,4 +4083,6 @@ def complete_task(
-     and never blocks.
-     """
++    artifacts: Optional[Iterable[str]] = None,
++    board: Optional[str] = None,
+ ) -> bool:
+-    """Transition ``running|ready -> done`` and record ``result``.
+-
+-    Accepts a task that is merely ``ready`` too, so a manual CLI
+-    completion (``hermes kanban complete <id>``) works without requiring
+-    a claim/start/complete sequence.
+-
+-    ``summary`` and ``metadata`` are stored on the closing run (if any)
+-    and surfaced to downstream children via :func:`build_worker_context`.
+-    When ``summary`` is omitted we fall back to ``result`` so single-run
+-    callers do not have to pass both. ``metadata`` is a free-form dict
+-    (e.g. ``{"changed_files": [...], "tests_run": [...]}``) — workers
+-    are encouraged to use it for structured handoff facts.
+-
+-    ``created_cards`` is an optional list of task ids the completing
+-    worker claims to have created. Each id is verified against
+-    ``tasks.created_by``. If any id is phantom (does not exist or was
+-    not created by this worker's assignee profile), completion is blocked
+-    with a ``HallucinatedCardsError`` and a
+-    ``completion_blocked_hallucination`` event is emitted so the rejected
+-    attempt is auditable. When all ids verify, they are recorded on the
+-    ``completed`` event payload.
+-
+-    After a successful completion, ``summary`` and ``result`` are scanned
+-    for prose references like ``t_deadbeefcafe`` that do not resolve.
+-    Any suspected phantom references are recorded as a
+-    ``suspected_hallucinated_references`` event. This pass is advisory
+-    and never blocks.
+-    """
++    """Persist completion intent, finalize workspace, then close one exact run."""
      now = int(time.time())
-+    selected_outputs = _normalize_workspace_outputs(workspace_outputs)
-+    workspace_outputs_json = json.dumps(selected_outputs) if selected_outputs else None
+-
+-    # Gate: verify created_cards BEFORE the main write txn. A rejected
+-    # completion still needs an auditable event, so we emit it in a
+-    # tiny dedicated txn, then raise. The caller is responsible for
+-    # surfacing HallucinatedCardsError to the worker; this function
+-    # never mutates task state on a phantom-card rejection.
++    board_slug = board or _board_for_connection(conn)
++    task = get_task(conn, task_id)
++    if task is None:
++        return False
++
+     if created_cards:
+-        verified_cards, phantom_cards = _verify_created_cards(
+-            conn, task_id, created_cards
+-        )
++        verified_cards, phantom_cards = _verify_created_cards(conn, task_id, created_cards)
+         if phantom_cards:
+             with write_txn(conn):
+                 _append_event(
+                     conn, task_id, "completion_blocked_hallucination",
+-                    {
+-                        "phantom_cards": phantom_cards,
+-                        "verified_cards": verified_cards,
+-                        "summary_preview": (
+-                            (summary or result or "").strip().splitlines()[0][:200]
+-                            if (summary or result)
+-                            else None
+-                        ),
+-                    },
++                    {"phantom_cards": phantom_cards, "verified_cards": verified_cards},
+                 )
+             raise HallucinatedCardsError(phantom_cards, task_id)
+     else:
+         verified_cards = []
  
-@@ -4054,8 +4125,9 @@ def complete_task(
-                        worker_pid   = NULL,
-                        block_kind   = NULL,
--                       block_recurrences = 0
-+                       block_recurrences = 0,
-+                       workspace_outputs = ?
-                  WHERE id = ?
-                    AND status IN ('running', 'ready', 'blocked')
-                 """,
--                (result, now, task_id),
-+                (result, now, workspace_outputs_json, task_id),
-             )
-@@ -4071,9 +4143,10 @@ def complete_task(
-                        worker_pid   = NULL,
-                        block_kind   = NULL,
--                       block_recurrences = 0
-+                       block_recurrences = 0,
-+                       workspace_outputs = ?
-                  WHERE id = ?
-                    AND status IN ('running', 'ready', 'blocked')
-                    AND current_run_id = ?
-                 """,
--                (result, now, task_id, int(expected_run_id)),
-+                (result, now, workspace_outputs_json, task_id, int(expected_run_id)),
-             )
-@@ -4118,3 +4191,5 @@ def complete_task(
-         if isinstance(metadata, dict):
-             md_artifacts = metadata.get("artifacts")
-+            if selected_outputs:
-+                completed_payload["workspace_outputs"] = selected_outputs
-             if isinstance(md_artifacts, (list, tuple)):
-diff --git a/plugins/workspace-service/__init__.py b/plugins/workspace-service/__init__.py
---- a/plugins/workspace-service/__init__.py
-+++ b/plugins/workspace-service/__init__.py
-@@ -77,4 +77,89 @@ def _request(route: str, body: dict[str, Any]) -> dict[str, Any]:
-         connection.close()
- 
- 
-+def _required_identifier(value: Any, field: str) -> str:
-+    if not isinstance(value, str) or not value:
-+        raise RuntimeError(f"workspace.invalid_response: {field} is missing")
-+    return value
-+
-+
-+def _activate_task_run(
-+    *,
-+    environment_key: str,
-+    task_id: str,
-+    run_id: str,
-+    workspace_id: str,
-+    workspace_lease_id: str,
-+    policy_digest: str,
-+) -> dict[str, Any]:
-+    response = _request("/v1/control/task-runs/activate", {
-+        "environmentKey": environment_key,
-+        "taskId": task_id,
-+        "runId": run_id,
-+        "workspaceId": workspace_id,
-+        "workspaceLeaseId": workspace_lease_id,
-+        "policyDigest": policy_digest,
-+    })
-+    activation = response.get("activation")
-+    if not isinstance(activation, dict):
-+        raise RuntimeError("workspace.invalid_response: activation is missing")
-+    return {
-+        "activationId": _required_identifier(activation.get("activationId"), "activationId"),
-+        "epoch": activation.get("epoch"),
-+    }
-+
-+
-+def _publish_workspace_revision(
-+    *,
-+    finalization_id: str,
-+    environment_key: str,
-+    task_id: str,
-+    run_id: str,
-+    selected_roots: list[str],
-+) -> dict[str, Any]:
-+    response = _request("/v1/control/workspace-revisions/publish", {
-+        "finalizationId": finalization_id,
-+        "environmentKey": environment_key,
-+        "taskId": task_id,
-+        "runId": run_id,
-+        "selectedRoots": selected_roots,
-+    })
-+    return {
-+        "revisionId": _required_identifier(response.get("revisionId"), "revisionId"),
-+        "manifestDigest": _required_identifier(response.get("manifestDigest"), "manifestDigest"),
-+        "entryCount": response.get("entryCount"),
-+        "logicalBytes": response.get("logicalBytes"),
-+    }
-+
-+
-+def _import_workspace_revision(
-+    *,
-+    preparation_id: str,
-+    source_revision_id: str,
-+    source_task_id: str,
-+    destination_task_id: str,
-+    destination_run_id: str,
-+    destination_environment_key: str,
-+    relation_digest: str,
-+) -> dict[str, Any]:
-+    response = _request("/v1/control/workspace-revisions/import", {
-+        "preparationId": preparation_id,
-+        "sourceRevisionId": source_revision_id,
-+        "sourceTaskId": source_task_id,
-+        "destinationTaskId": destination_task_id,
-+        "destinationRunId": destination_run_id,
-+        "destinationEnvironmentKey": destination_environment_key,
-+        "relationDigest": relation_digest,
-+    })
-+    workspace = response.get("workspace")
-+    lease = response.get("lease")
-+    if not isinstance(workspace, dict) or not isinstance(lease, dict):
-+        raise RuntimeError("workspace.invalid_response: imported binding is incomplete")
-+    return {
-+        "workspaceId": _required_identifier(workspace.get("workspaceId"), "workspaceId"),
-+        "workspaceLeaseId": _required_identifier(lease.get("leaseId"), "workspaceLeaseId"),
-+        "guestPath": workspace.get("guestPath"),
-+    }
-+
-+
- def _unavailable_message(error: Exception) -> str:
-diff --git a/tests/plugins/test_workspace_handoff.py b/tests/plugins/test_workspace_handoff.py
-new file mode 100644
---- /dev/null
-+++ b/tests/plugins/test_workspace_handoff.py
-@@ -0,0 +1,127 @@
-+"""Durable Kanban fields and broker client contracts for workspace handoff."""
-+
-+from __future__ import annotations
-+
-+import importlib.util
-+import json
-+import sqlite3
-+import sys
-+from pathlib import Path
-+
-+import pytest
-+
-+from hermes_cli import kanban_db as kb
-+
-+
-+PLUGIN = Path(__file__).parents[2] / "plugins" / "workspace-service" / "__init__.py"
-+
-+
-+def load_plugin(monkeypatch):
-+    monkeypatch.setenv("HERMES_GONDOLIN_SOCKET", "/run/broker.sock")
-+    monkeypatch.setenv("HERMES_SANDBOX_AUTHORITY_BINDING", "qa:gateway:default:v1")
-+    sys.modules.pop("workspace_handoff_test", None)
-+    spec = importlib.util.spec_from_file_location("workspace_handoff_test", PLUGIN)
-+    module = importlib.util.module_from_spec(spec)
-+    assert spec.loader is not None
-+    spec.loader.exec_module(module)
-+    return module
-+
-+
-+def test_handoff_intent_and_outputs_round_trip(monkeypatch, tmp_path):
-+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
-+    kb._INITIALIZED_PATHS.clear()
-+    kb.init_db()
-+    with kb.connect() as connection:
-+        task_id = kb.create_task(
-+            connection,
-+            title="child",
-+            inherit_parent_workspace_output=True,
-+        )
-+        assert kb.complete_task(
-+            connection,
-+            task_id,
-+            workspace_outputs=["output", "reports/final.json", "output"],
-+        )
-+        task = kb.get_task(connection, task_id)
-+        assert task.inherit_parent_workspace_output is True
-+        assert task.workspace_outputs == ["output", "reports/final.json"]
-+        raw = connection.execute(
-+            "SELECT inherit_parent_workspace_output, workspace_outputs FROM tasks WHERE id=?",
-+            (task_id,),
+-    metadata = _merge_completion_prose_artifacts(
+-        conn, task_id, metadata, summary=summary, result=result,
++    current_run_id = task.current_run_id
++    if expected_run_id is not None and current_run_id != int(expected_run_id):
++        return False
++    if task.workspace_kind == "broker" and (
++        task.status == "running" and current_run_id is None
++    ):
++        raise RuntimeError("broker completion requires an active task run")
++    run_id = int(expected_run_id) if expected_run_id is not None else current_run_id
++    if run_id is not None:
++        run_row = conn.execute(
++            "SELECT id FROM task_runs WHERE id = ? AND task_id = ?",
++            (int(run_id), task_id),
 +        ).fetchone()
-+        assert raw[0] == 1
-+        assert json.loads(raw[1]) == ["output", "reports/final.json"]
++        if run_row is None and task.workspace_kind == "broker":
++            raise RuntimeError("broker completion run is not durable")
 +
++    raw_artifacts = artifacts
++    if raw_artifacts is None and isinstance(metadata, dict):
++        raw_artifacts = metadata.get("artifacts")
++    selected_artifacts = _normalize_completion_artifacts(
++        raw_artifacts, workspace_kind=task.workspace_kind or "scratch"
+     )
++    cleaned_metadata = dict(metadata) if isinstance(metadata, dict) else metadata
++    if isinstance(cleaned_metadata, dict):
++        if selected_artifacts:
++            cleaned_metadata["artifacts"] = list(selected_artifacts)
++        else:
++            cleaned_metadata.pop("artifacts", None)
 +
-+def test_handoff_columns_migrate_with_safe_defaults(tmp_path):
-+    database = tmp_path / "legacy.db"
-+    with kb.connect(database):
-+        pass
-+    kb._INITIALIZED_PATHS.discard(str(database.resolve()))
-+    connection = sqlite3.connect(database)
-+    connection.execute("ALTER TABLE tasks DROP COLUMN inherit_parent_workspace_output")
-+    connection.execute("ALTER TABLE tasks DROP COLUMN workspace_outputs")
-+    connection.commit()
-+    connection.close()
-+    kb._INITIALIZED_PATHS.discard(str(database.resolve()))
-+    with kb.connect(database) as migrated:
-+        columns = {row["name"] for row in migrated.execute("PRAGMA table_info(tasks)")}
-+        assert "inherit_parent_workspace_output" in columns
-+        assert "workspace_outputs" in columns
-+
-+
-+@pytest.mark.parametrize("outputs", [[], ["/host"], ["../escape"], ["a//b"], [3]])
-+def test_completion_rejects_invalid_workspace_outputs(monkeypatch, tmp_path, outputs):
-+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
-+    kb._INITIALIZED_PATHS.clear()
-+    kb.init_db()
-+    with kb.connect() as connection:
-+        task_id = kb.create_task(connection, title="task")
-+        with pytest.raises(ValueError, match="workspace_outputs"):
-+            kb.complete_task(connection, task_id, workspace_outputs=outputs)
-+        assert kb.get_task(connection, task_id).status == "ready"
-+
-+
-+def test_broker_handoff_client_uses_control_routes_and_opaque_results(monkeypatch):
-+    plugin = load_plugin(monkeypatch)
-+    calls = []
-+
-+    def request(route, body):
-+        calls.append((route, body))
-+        if route.endswith("activate"):
-+            return {"activation": {"activationId": "activation-opaque", "epoch": 7}}
-+        if route.endswith("publish"):
-+            return {
-+                "revisionId": "revision-opaque",
-+                "manifestDigest": "a" * 64,
-+                "entryCount": 2,
-+                "logicalBytes": 9,
++    intent: Optional[dict[str, Any]] = None
++    if task.workspace_kind == "broker":
++        if run_id is None:
++            raise RuntimeError("broker completion requires an active run")
++        requested_tuple = {
++            "artifacts": list(selected_artifacts),
++            "result": result,
++            "summary": summary,
++            "metadata": cleaned_metadata,
++            "created_cards": list(verified_cards),
++        }
++        intent = get_completion_intent(conn, task_id, run_id)
++        if intent is None:
++            intent = {
++                "intent_id": "i_" + secrets.token_hex(16),
++                "finalization_id": "f_" + secrets.token_hex(16),
++                "task_id": task_id,
++                "run_id": int(run_id),
++                "kind": "completion",
++                **requested_tuple,
 +            }
++            with write_txn(conn):
++                live = conn.execute(
++                    "SELECT status, current_run_id, workspace_kind FROM tasks WHERE id = ?",
++                    (task_id,),
++                ).fetchone()
++                if (
++                    live is None
++                    or live["workspace_kind"] != "broker"
++                    or live["current_run_id"] != int(run_id)
++                ):
++                    return False
++                _append_event(conn, task_id, "completion_intent", intent, run_id=int(run_id))
++        else:
++            stored_tuple = {
++                "artifacts": list(intent.get("artifacts", [])),
++                "result": intent.get("result"),
++                "summary": intent.get("summary"),
++                "metadata": intent.get("metadata"),
++                "created_cards": list(intent.get("created_cards", [])),
++            }
++            if stored_tuple != requested_tuple:
++                raise RuntimeError("broker completion intent does not match retry")
++            selected_artifacts = stored_tuple["artifacts"]
++            result = stored_tuple["result"]
++            summary = stored_tuple["summary"]
++            cleaned_metadata = stored_tuple["metadata"]
++            verified_cards = stored_tuple["created_cards"]
++        # The intent is durable before any broker request. A retry/restart uses
++        # the same finalization id and broker replay state.
++        _run_required_workspace_hook(
++            "kanban_workspace_completion_intent",
++            task_id=task_id, board=board_slug, run_id=int(run_id),
++            finalization_id=str(intent["finalization_id"]),
++            artifacts=list(selected_artifacts),
++        )
++    else:
++        # Native completion has the same trusted relative manifest, but no
++        # broker operation. Copy bytes before terminalizing and record only the
++        # existing task_attachments rows.
++        _persist_native_completion_artifacts(
++            conn, task_id, selected_artifacts, board=board_slug
++        )
++
+     with write_txn(conn):
+-        if expected_run_id is None:
+-            cur = conn.execute(
+-                """
+-                UPDATE tasks
+-                   SET status       = 'done',
+-                       result       = ?,
+-                       completed_at = ?,
+-                       claim_lock   = NULL,
+-                       claim_expires= NULL,
+-                       worker_pid   = NULL,
+-                       block_kind   = NULL,
+-                       block_recurrences = 0
+-                 WHERE id = ?
+-                   AND status IN ('running', 'ready', 'blocked')
+-                """,
+-                (result, now, task_id),
+-            )
+-        else:
+-            cur = conn.execute(
+-                """
+-                UPDATE tasks
+-                   SET status       = 'done',
+-                       result       = ?,
+-                       completed_at = ?,
+-                       claim_lock   = NULL,
+-                       claim_expires= NULL,
+-                       worker_pid   = NULL,
+-                       block_kind   = NULL,
+-                       block_recurrences = 0
+-                 WHERE id = ?
+-                   AND status IN ('running', 'ready', 'blocked')
+-                   AND current_run_id = ?
+-                """,
+-                (result, now, task_id, int(expected_run_id)),
+-            )
++        status_clause = "status IN ('running', 'ready', 'blocked')"
++        params: list[Any] = [result, now, task_id]
++        if task.workspace_kind == "broker" or expected_run_id is not None:
++            status_clause = "status IN ('running', 'ready') AND current_run_id = ?"
++            params.append(int(run_id))
++        cur = conn.execute(
++            "UPDATE tasks SET status = 'done', result = ?, completed_at = ?, "
++            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
++            "block_kind = NULL, block_recurrences = 0 WHERE id = ? AND "
++            + status_clause,
++            tuple(params),
++        )
+         if cur.rowcount != 1:
+             return False
+-        if isinstance(metadata, dict):
+-            _persist_scratch_completion_artifacts(conn, task_id, metadata)
+-            for stored_path in metadata.pop("_staged_artifacts", []):
+-                path = Path(stored_path)
+-                _insert_completion_attachment(
+-                    conn,
+-                    task_id,
+-                    filename=path.name,
+-                    stored_path=str(path),
+-                    size=path.stat().st_size,
+-                    created_at=now,
+-                )
+-        run_id = _end_run(
+-            conn, task_id,
+-            outcome="completed", status="done",
+-            summary=summary if summary is not None else result,
+-            metadata=metadata,
+-        )
+-        # If complete_task was called on a never-claimed task (ready or
+-        # blocked → done with no run in flight), synthesize a
+-        # zero-duration run so the handoff fields are persisted in
+-        # attempt history instead of silently lost.
+-        if run_id is None and (summary or metadata or result):
+-            run_id = _synthesize_ended_run(
+-                conn, task_id,
+-                outcome="completed",
+-                summary=summary if summary is not None else result,
+-                metadata=metadata,
++        final_summary = summary if summary is not None else result
++        closed_run_id = _end_run(
++            conn, task_id, outcome="completed", status="done",
++            summary=final_summary, metadata=cleaned_metadata,
++        )
++        if closed_run_id is None and (final_summary or cleaned_metadata or result):
++            closed_run_id = _synthesize_ended_run(
++                conn, task_id, outcome="completed",
++                summary=final_summary, metadata=cleaned_metadata,
+             )
+-        # Carry the handoff summary in the event payload so gateway
+-        # notifiers and dashboard WS consumers can render it without a
+-        # second SQL round-trip. First line only, 400 char cap — the
+-        # full summary stays on the run row.
+-        ev_summary = (summary if summary is not None else result) or ""
+-        ev_summary = ev_summary.strip().splitlines()[0][:400] if ev_summary else ""
+-        completed_payload: dict = {
++        ev_summary = (final_summary or "").strip().splitlines()[0][:400] if final_summary else ""
++        completed_payload: dict[str, Any] = {
+             "result_len": len(result) if result else 0,
+             "summary": ev_summary or None,
+         }
+         if verified_cards:
+             completed_payload["verified_cards"] = verified_cards
+-        # Carry artifact paths in the event payload so the gateway
+-        # notifier can upload them as native attachments alongside the
+-        # completion message. Workers pass these via
+-        # ``kanban_complete(artifacts=[...])`` which stashes the list in
+-        # ``metadata["artifacts"]`` — we promote it onto the event so
+-        # consumers don't have to fetch the run row to find it.
+-        if isinstance(metadata, dict):
+-            md_artifacts = metadata.get("artifacts")
+-            if isinstance(md_artifacts, (list, tuple)):
+-                cleaned_artifacts = [
+-                    str(p).strip() for p in md_artifacts if isinstance(p, str) and str(p).strip()
+-                ]
+-                if cleaned_artifacts:
+-                    completed_payload["artifacts"] = cleaned_artifacts
+-        _append_event(
+-            conn, task_id, "completed",
+-            completed_payload,
+-            run_id=run_id,
+-        )
+-    # Prose-scan the summary + result for t_<hex> references that do
+-    # not resolve. Advisory — does not block the completion. Runs in
+-    # its own txn so the completion itself is already durable by the
+-    # time we emit the warning.
++        if selected_artifacts:
++            completed_payload["artifacts"] = list(selected_artifacts)
++        _append_event(conn, task_id, "completed", completed_payload, run_id=closed_run_id)
++        run_id = closed_run_id or run_id
++
+     scan_text = " ".join(filter(None, [summary, result]))
+     if scan_text:
+         phantom_refs = _scan_prose_for_phantom_ids(conn, scan_text)
+-        # Drop any phantom refs that were already flagged as verified
+-        # above (shouldn't happen — verified means they exist — but
+-        # belt-and-suspenders).
+         phantom_refs = [p for p in phantom_refs if p not in set(verified_cards)]
+         if phantom_refs:
+             with write_txn(conn):
+                 _append_event(
+                     conn, task_id, "suspected_hallucinated_references",
+-                    {
+-                        "phantom_refs": phantom_refs,
+-                        "source": "completion_summary",
+-                    },
++                    {"phantom_refs": phantom_refs, "source": "completion_summary"},
+                     run_id=run_id,
+                 )
+-    # Successful completion — wipe the consecutive-failures counter.
+-    # Failure history stays on the event log for audit; the counter
+-    # just tracks "is there a current pathology the breaker should
+-    # care about", and a success resets that question.
+     _clear_failure_counter(conn, task_id)
+-    # Recompute ready status for dependents (separate txn so children see done).
+     recompute_ready(conn)
+-    # Clean up the scratch workspace and any stale tmux session for the worker.
+     _cleanup_workspace(conn, task_id)
+-    _done_task = get_task(conn, task_id)
++    done_task = get_task(conn, task_id)
+     _fire_kanban_lifecycle_hook(
+-        "kanban_task_completed",
+-        task_id,
+-        board=get_current_board(),
+-        assignee=_done_task.assignee if _done_task else None,
+-        run_id=run_id,
+-        summary=(summary if summary is not None else result),
++        "kanban_task_completed", task_id, board=board_slug,
++        assignee=done_task.assignee if done_task else None,
++        run_id=run_id, summary=(summary if summary is not None else result),
+     )
+     return True
+ 
+@@ -4306,184 +4674,127 @@
+ # ---------------------------------------------------------------------------
+ 
+ 
+-def _merge_completion_prose_artifacts(
+-    conn: sqlite3.Connection,
+-    task_id: str,
+-    metadata: Optional[dict],
+-    *,
+-    summary: Optional[str],
+-    result: Optional[str],
+-) -> Optional[dict]:
+-    """Promote existing scratch files named in legacy completion prose.
+-
+-    ``artifacts=[...]`` is preferred. Older workers only wrote an absolute
+-    deliverable path in ``summary``/``result``; discover it while scratch still
+-    exists so cleanup cannot erase the file the user was promised.
+-    """
++def _normalize_completion_artifacts(
++    raw_artifacts: Any, *, workspace_kind: str
++) -> list[str]:
++    """Validate model-selected artifact names as relative POSIX paths."""
++    if raw_artifacts is None:
++        return []
++    if not isinstance(raw_artifacts, (list, tuple)):
++        raise ArtifactPreservationError("artifacts must be a list of relative paths")
++    normalized: list[str] = []
++    seen: set[str] = set()
++    for raw in raw_artifacts:
++        if not isinstance(raw, str):
++            raise ArtifactPreservationError("artifact paths must be strings")
++        value = raw.strip().replace("\\", "/")
++        if not value or "\x00" in value:
++            raise ArtifactPreservationError("artifact paths must be non-empty relative paths")
++        # Backslashes are normalized for portability, but a caller may not use
++        # them to smuggle an absolute Windows path or traversal component.
++        if raw.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", raw):
++            raise ArtifactPreservationError("artifact paths must be relative")
++        parts = value.split("/")
++        if any(part in {"", ".", ".."} for part in parts):
++            raise ArtifactPreservationError("artifact paths may not contain traversal components")
++        value = "/".join(parts)
++        if workspace_kind == "broker" and not value.startswith("output/"):
++            raise ArtifactPreservationError("broker artifacts must be under output/")
++        if value not in seen:
++            normalized.append(value)
++            seen.add(value)
++    if len(normalized) > 128:
++        raise ArtifactPreservationError("too many selected artifacts")
++    return sorted(normalized)
++
++
++def _native_artifact_sources(
++    conn: sqlite3.Connection, task_id: str, artifacts: Iterable[str]
++) -> tuple[Path, list[tuple[str, Path]]]:
+     row = conn.execute(
+-        "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+-        (task_id,),
++        "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?", (task_id,)
+     ).fetchone()
+-    if not row or row["workspace_kind"] != "scratch" or not row["workspace_path"]:
+-        return metadata
+-    workspace = Path(row["workspace_path"]).expanduser()
+-    if not _is_managed_scratch_path(workspace):
+-        return metadata
+-    text = "\n".join(part for part in (summary, result) if part)
+-    if not text:
+-        return metadata
+-    prefix = re.escape(str(workspace))
+-    discovered: list[str] = []
+-    for match in re.finditer(prefix + r"(?:[/\\][^\s`\"'<>]+)", text):
+-        raw = match.group(0).rstrip(".,;:!?)]}")
+-        candidate = Path(raw)
+-        if candidate.is_file():
+-            discovered.append(str(candidate))
+-    if not discovered:
+-        return metadata
+-    updated = dict(metadata) if isinstance(metadata, dict) else {}
+-    existing = updated.get("artifacts")
+-    merged = list(existing) if isinstance(existing, (list, tuple)) else []
+-    seen = {str(path) for path in merged}
+-    for path in discovered:
+-        if path not in seen:
+-            merged.append(path)
+-            seen.add(path)
+-    updated["artifacts"] = merged
+-    return updated
+-
+-
+-def _persist_scratch_completion_artifacts(
+-    conn: sqlite3.Connection,
+-    task_id: str,
+-    metadata: dict,
++    if not row or not row["workspace_path"]:
++        raise ArtifactPreservationError("native workspace is unavailable")
++    if row["workspace_kind"] == "broker":
++        raise ArtifactPreservationError("broker artifacts are broker-owned")
++    try:
++        root = Path(row["workspace_path"]).expanduser().resolve(strict=True)
++    except OSError as exc:
++        raise ArtifactPreservationError("native workspace is unavailable") from exc
++    selected: list[tuple[str, Path]] = []
++    for relative in artifacts:
++        try:
++            source = (root / relative).resolve(strict=True)
++        except OSError as exc:
++            raise ArtifactPreservationError(
++                f"declared artifact is unavailable or not a regular file: {relative}"
++            ) from exc
++        if not source.is_relative_to(root) or not source.is_file():
++            raise ArtifactPreservationError(
++                f"declared artifact is unavailable or not a regular file: {relative}"
++            )
++        if source.stat().st_size > KANBAN_ATTACHMENT_MAX_BYTES:
++            raise ArtifactPreservationError(
++                f"declared artifact exceeds the {KANBAN_ATTACHMENT_MAX_BYTES}-byte limit: {relative}"
++            )
++        selected.append((relative, source))
++    return root, selected
++
++
++def _persist_native_completion_artifacts(
++    conn: sqlite3.Connection, task_id: str, artifacts: list[str], *,
++    board: Optional[str] = None
+ ) -> None:
+-    """Copy scratch-workspace completion artifacts before cleanup removes them."""
+-    raw_artifacts = metadata.get("artifacts")
+-    if not isinstance(raw_artifacts, (list, tuple)):
++    """Copy only the trusted completion manifest into attachment storage."""
++    if not artifacts:
+         return
+-
+-    row = conn.execute(
+-        "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+-        (task_id,),
+-    ).fetchone()
+-    if not row or row["workspace_kind"] != "scratch" or not row["workspace_path"]:
+-        return
+-
+-    workspace = Path(row["workspace_path"]).expanduser()
+-    is_managed, board = _managed_scratch_path_info(workspace)
+-    if not is_managed:
+-        return
+-
++    _root, selected = _native_artifact_sources(conn, task_id, artifacts)
++    destination_dir = task_attachments_dir(task_id, board=board)
++    destination_dir.mkdir(parents=True, exist_ok=True)
++    created: list[Path] = []
++    used: set[Path] = set()
+     try:
+-        workspace_root = workspace.resolve()
+-    except OSError:
+-        return
+-
+-    attachment_dir = task_attachments_dir(task_id, board=board)
+-    persisted: list[str] = []
+-    used_destinations: set[Path] = set()
+-    changed = False
+-
+-    def _discard_copies() -> None:
+-        for copied in used_destinations:
+-            try:
+-                copied.unlink(missing_ok=True)
+-            except OSError:
+-                pass
+-        try:
+-            attachment_dir.rmdir()
+-        except OSError:
+-            pass
+-
+-    for item in raw_artifacts:
+-        artifact = str(item).strip() if isinstance(item, str) else ""
+-        if not artifact:
+-            continue
+-        src = Path(artifact).expanduser()
+-        try:
+-            resolved_src = src.resolve()
+-        except OSError:
+-            persisted.append(artifact)
+-            continue
+-
+-        if not resolved_src.is_relative_to(workspace_root):
+-            persisted.append(artifact)
+-            continue
+-
+-        if not src.is_file():
+-            _discard_copies()
+-            raise ArtifactPreservationError(
+-                f"declared scratch artifact is unavailable or not a regular file: {artifact}"
+-            )
+-
+-        size = resolved_src.stat().st_size
+-        if size > KANBAN_ATTACHMENT_MAX_BYTES:
+-            _discard_copies()
+-            raise ArtifactPreservationError(
+-                f"declared scratch artifact exceeds the "
+-                f"{KANBAN_ATTACHMENT_MAX_BYTES}-byte limit: {artifact}"
+-            )
+-
+-        dest: Optional[Path] = None
+-        try:
+-            attachment_dir.mkdir(parents=True, exist_ok=True)
+-            dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations)
+-            with resolved_src.open("rb") as source_file, dest.open("xb") as destination_file:
++        for relative, source in selected:
++            existing = conn.execute(
++                "SELECT stored_path, size FROM task_attachments "
++                "WHERE task_id = ? AND filename = ? AND uploaded_by = 'kanban_complete' "
++                "ORDER BY id DESC LIMIT 1",
++                (task_id, relative),
++            ).fetchone()
++            if existing and Path(existing["stored_path"]).is_file() and int(existing["size"] or 0) == source.stat().st_size:
++                continue
++            destination = _unique_attachment_path(destination_dir, source.name, used)
++            temporary = destination.with_name(f".{destination.name}.{secrets.token_hex(8)}.tmp")
++            with source.open("rb") as source_file, temporary.open("xb") as destination_file:
+                 copied = 0
+-                while chunk := source_file.read(1024 * 1024):
++                while True:
++                    chunk = source_file.read(1024 * 1024)
++                    if not chunk:
++                        break
+                     copied += len(chunk)
+                     if copied > KANBAN_ATTACHMENT_MAX_BYTES:
+                         raise ArtifactPreservationError(
+-                            f"declared scratch artifact grew beyond the size limit: {artifact}"
++                            f"declared artifact grew beyond the size limit: {relative}"
+                         )
+                     destination_file.write(chunk)
+-        except Exception as exc:
+-            if dest is not None:
+-                try:
+-                    dest.unlink(missing_ok=True)
+-                except OSError:
+-                    pass
+-            _discard_copies()
+-            if isinstance(exc, ArtifactPreservationError):
+-                raise
+-            raise ArtifactPreservationError(
+-                f"could not preserve declared scratch artifact {artifact}: {exc}"
+-            ) from exc
+-
+-        used_destinations.add(dest)
+-        persisted.append(str(dest.resolve()))
+-        changed = True
+-
+-    if changed:
+-        metadata["artifacts"] = persisted
+-        metadata["_staged_artifacts"] = [
+-            path for path in persisted if path.startswith(str(attachment_dir.resolve()))
+-        ]
+-
+-
+-def _insert_completion_attachment(
+-    conn: sqlite3.Connection,
+-    task_id: str,
+-    *,
+-    filename: str,
+-    stored_path: str,
+-    size: int,
+-    created_at: int,
+-) -> None:
+-    """Record a worker-produced artifact in the existing attachment table."""
+-    conn.execute(
+-        "INSERT INTO task_attachments "
+-        "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
+-        "VALUES (?, ?, ?, NULL, ?, 'kanban_complete', ?)",
+-        (task_id, filename, stored_path, size, created_at),
+-    )
+-    _append_event(
+-        conn,
+-        task_id,
+-        "attached",
+-        {"filename": filename, "size": size, "by": "kanban_complete"},
+-    )
++                destination_file.flush()
++                os.fsync(destination_file.fileno())
++            os.replace(temporary, destination)
++            created.append(destination)
++            used.add(destination)
++            add_attachment(
++                conn, task_id, filename=relative,
++                stored_path=str(destination.resolve()), size=copied,
++                uploaded_by="kanban_complete",
++            )
++    except Exception:
++        for path in created:
++            try:
++                path.unlink(missing_ok=True)
++            except OSError:
++                pass
++        raise
+ 
+ 
+ def _unique_attachment_path(directory: Path, filename: str, used: set[Path]) -> Path:
+@@ -4968,7 +5279,7 @@
+             _fire_kanban_lifecycle_hook(
+                 "kanban_task_blocked",
+                 task_id,
+-                board=get_current_board(),
++                board=_board_for_connection(conn),
+                 assignee=_blocked_task.assignee if _blocked_task else None,
+                 run_id=run_id,
+                 reason=reason,
+@@ -5080,7 +5391,7 @@
+     _fire_kanban_lifecycle_hook(
+         "kanban_task_blocked",
+         task_id,
+-        board=get_current_board(),
++        board=_board_for_connection(conn),
+         assignee=_blocked_task.assignee if _blocked_task else None,
+         run_id=run_id,
+         reason=reason,
+@@ -5864,6 +6175,10 @@
+     so subsequent runs reuse the same directory.
+     """
+     kind = task.workspace_kind or "scratch"
++    if kind == "broker":
++        # Broker workers see the fixed guest mount; never persist or expose a
++        # host path for this workspace kind.
++        return Path(os.environ.get("HERMES_BROKER_WORKSPACE", "/workspace"))
+     if kind == "scratch":
+         if task.workspace_path:
+             # Legacy scratch tasks that were set to an explicit path get the
+@@ -6462,6 +6777,18 @@
+ 
+         pid = int(row["worker_pid"])
+         tid = row["id"]
++        pending_run_id = _current_run_id(conn, tid)
++        if (
++            pending_run_id is not None
++            and (
++                get_completion_intent(conn, tid, pending_run_id) is not None
++                or (
++                    get_workspace_import_intent(conn, tid, pending_run_id) is not None
++                    and not _workspace_import_recovered(conn, tid, pending_run_id)
++                )
++            )
++        ):
++            continue
+         # SIGTERM then SIGKILL. Keep it simple: 5 s grace. Workers that
+         # want a cleaner shutdown can install their own SIGTERM handler
+         # before the grace expires.
+@@ -6528,6 +6855,10 @@
+                 end_run=False,
+                 event_payload_extra={"pid": pid, "sigkill": killed},
+             )
++            _fire_kanban_lifecycle_hook(
++                "kanban_task_timed_out", tid,
++                board=_board_for_connection(conn), run_id=run_id,
++            )
+     return timed_out
+ 
+ 
+@@ -6599,6 +6930,18 @@
+         pid = row["worker_pid"]
+         tid = row["id"]
+         lock = row["claim_lock"] or ""
++        pending_run_id = _current_run_id(conn, tid)
++        if (
++            pending_run_id is not None
++            and (
++                get_completion_intent(conn, tid, pending_run_id) is not None
++                or (
++                    get_workspace_import_intent(conn, tid, pending_run_id) is not None
++                    and not _workspace_import_recovered(conn, tid, pending_run_id)
++                )
++            )
++        ):
++            continue
+ 
+         # Terminate the worker if it's still host-local.
+         termination = _terminate_reclaimed_worker(
+@@ -6653,6 +6996,10 @@
+                 conn, tid, "stale", payload, run_id=run_id,
+             )
+             reclaimed.append(tid)
++        _fire_kanban_lifecycle_hook(
++            "kanban_task_reclaimed", tid,
++            board=_board_for_connection(conn), run_id=run_id,
++        )
+ 
+         # Intentionally NOT calling _record_task_failure here. Stale reclaim
+         # is dispatcher-side detection of an absent heartbeat; the task is
+@@ -7583,34 +7930,39 @@
+     ``board`` pins workspace/log/db resolution for this tick to a specific
+     board. When omitted, the current-board resolution chain is used.
+     """
++    result = DispatchResult()
+     # Reap zombie children from previously spawned workers. See
+     # reap_worker_zombies() for the full rationale.
+-    reap_worker_zombies()
+-
+-    result = DispatchResult()
+-    result.reclaimed = release_stale_claims(conn)
+-    result.stale = detect_stale_running(
+-        conn, stale_timeout_seconds=stale_timeout_seconds,
+-    )
+-    result.crashed = detect_crashed_workers(conn)
+-    # detect_crashed_workers stashes protocol-violation auto-blocks on
+-    # itself so the public list-return stays stable. Pull them into the
+-    # DispatchResult here so telemetry / tests see the trip.
+-    _crash_auto_blocked = getattr(
+-        detect_crashed_workers, "_last_auto_blocked", []
+-    )
+-    if _crash_auto_blocked:
+-        result.auto_blocked.extend(_crash_auto_blocked)
+-    # Rate-limited requeues (quota wall, no failure counted) — surface for
+-    # telemetry / tests. These tasks went back to ``ready`` and the respawn
+-    # guard will defer them until the quota window clears.
+-    _crash_rate_limited = getattr(
+-        detect_crashed_workers, "_last_rate_limited", []
+-    )
+-    if _crash_rate_limited:
+-        result.rate_limited.extend(_crash_rate_limited)
+-    result.timed_out = enforce_max_runtime(conn)
+-    result.promoted = recompute_ready(conn, failure_limit=failure_limit)
++    if not dry_run:
++        reap_worker_zombies()
++
++    if not dry_run:
++        recover_workspace_import_intents(
++            conn, board=board or _board_for_connection(conn)
++        )
++        recover_completion_intents(conn, board=board or _board_for_connection(conn))
++        result.reclaimed = release_stale_claims(
++            conn, board=board or _board_for_connection(conn)
++        )
++        result.stale = detect_stale_running(
++            conn, stale_timeout_seconds=stale_timeout_seconds,
++        )
++        result.crashed = detect_crashed_workers(conn)
++        # detect_crashed_workers stashes protocol-violation auto-blocks on
++        # itself so the public list-return stays stable. Pull them into the
++        # DispatchResult here so telemetry / tests see the trip.
++        _crash_auto_blocked = getattr(
++            detect_crashed_workers, "_last_auto_blocked", []
++        )
++        if _crash_auto_blocked:
++            result.auto_blocked.extend(_crash_auto_blocked)
++        _crash_rate_limited = getattr(
++            detect_crashed_workers, "_last_rate_limited", []
++        )
++        if _crash_rate_limited:
++            result.rate_limited.extend(_crash_rate_limited)
++        result.timed_out = enforce_max_runtime(conn)
++        result.promoted = recompute_ready(conn, failure_limit=failure_limit)
+ 
+     # Count tasks already running so max_spawn enforces concurrency rather
+     # than a per-tick spawn budget. See the docstring above for the full
+@@ -7736,6 +8088,18 @@
+         if not _assignee_is_spawnable(row_assignee):
+             result.skipped_nonspawnable.append(row["id"])
+             continue
++        # Broker handoff children require a Hermes profile worker. External
++        # ``sa-*`` lanes do not carry broker authority and are rejected rather
++        # than silently inheriting a host workspace.
++        broker_kind = conn.execute(
++            "SELECT workspace_kind FROM tasks WHERE id = ?", (row["id"],)
++        ).fetchone()
++        if broker_kind is not None and broker_kind["workspace_kind"] == "broker" and str(row_assignee).startswith("sa-"):
++            result.skipped_nonspawnable.append(row["id"])
++            if not dry_run:
++                with write_txn(conn):
++                    _append_event(conn, row["id"], "dispatch_rejected", {"reason": "broker_external_lane"})
++            continue
+         # Per-profile concurrency cap (#21582): even if there's global
+         # headroom, refuse to spawn for an assignee that's already at
+         # its in-flight cap. Prevents one profile's local model / API
+@@ -7792,6 +8156,26 @@
+         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
+         if claimed is None:
+             continue
++        if claimed.workspace_kind == "broker":
++            try:
++                _run_required_workspace_hook(
++                    "kanban_workspace_pre_spawn",
++                    task_id=claimed.id, board=board or _board_for_connection(conn),
++                    run_id=int(claimed.current_run_id or 0),
++                )
++            except Exception as exc:
++                _fire_kanban_lifecycle_hook(
++                    "kanban_workspace_spawn_failed", claimed.id,
++                    board=board or _board_for_connection(conn),
++                    run_id=claimed.current_run_id, reason=str(exc),
++                )
++                auto = _record_spawn_failure(
++                    conn, claimed.id, f"workspace: {exc}",
++                    failure_limit=failure_limit,
++                )
++                if auto:
++                    result.auto_blocked.append(claimed.id)
++                continue
+         try:
+             resolved_branch_name = None
+             if claimed.workspace_kind == "worktree":
+@@ -7806,8 +8190,11 @@
+             if auto:
+                 result.auto_blocked.append(claimed.id)
+             continue
+-        # Persist the resolved workspace path so the worker can cd there.
+-        set_workspace_path(conn, claimed.id, str(workspace))
++        # Native workers need a host path persisted for the child process.
++        # Broker workers receive the fixed guest mount from the broker and must
++        # never write that guest path into Hermes' board row.
++        if claimed.workspace_kind != "broker":
++            set_workspace_path(conn, claimed.id, str(workspace))
+         if claimed.workspace_kind == "worktree":
+             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+@@ -7847,6 +8234,12 @@
+                     _per_profile_running.get(claimed.assignee, 0) + 1
+                 )
+         except Exception as exc:
++            if claimed.workspace_kind == "broker":
++                _fire_kanban_lifecycle_hook(
++                    "kanban_workspace_spawn_failed", claimed.id,
++                    board=board or _board_for_connection(conn),
++                    run_id=claimed.current_run_id, reason=str(exc),
++                )
+             auto = _record_spawn_failure(
+                 conn, claimed.id, str(exc),
+                 failure_limit=failure_limit,
+@@ -7897,8 +8290,11 @@
+             if auto:
+                 result.auto_blocked.append(claimed.id)
+             continue
+-        # Persist the resolved workspace path so the worker can cd there.
+-        set_workspace_path(conn, claimed.id, str(workspace))
++        # Native workers need a host path persisted for the child process.
++        # Broker workers receive the fixed guest mount from the broker and must
++        # never write that guest path into Hermes' board row.
++        if claimed.workspace_kind != "broker":
++            set_workspace_path(conn, claimed.id, str(workspace))
+         if claimed.workspace_kind == "worktree":
+             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+@@ -7931,6 +8327,74 @@
+             if auto:
+                 result.auto_blocked.append(claimed.id)
+     return result
++
++
++def recover_completion_intents(
++    conn: sqlite3.Connection, *, board: Optional[str] = None
++) -> list[str]:
++    """Reconcile hidden broker intents before reclaiming/spawning workers."""
++    board_slug = board or _board_for_connection(conn)
++    rows = conn.execute(
++        "SELECT id, current_run_id FROM tasks WHERE status = 'running' "
++        "AND workspace_kind = 'broker' AND current_run_id IS NOT NULL"
++    ).fetchall()
++    recovered: list[str] = []
++    for row in rows:
++        task_id = str(row["id"])
++        run_id = int(row["current_run_id"])
++        intent = get_completion_intent(conn, task_id, run_id)
++        if not isinstance(intent, dict):
++            continue
++        try:
++            if complete_task(
++                conn, task_id, result=intent.get("result"),
++                summary=intent.get("summary"),
++                metadata=(
++                    dict(intent["metadata"])
++                    if isinstance(intent.get("metadata"), dict)
++                    else intent.get("metadata")
++                ),
++                created_cards=list(intent.get("created_cards", [])),
++                expected_run_id=run_id, artifacts=list(intent.get("artifacts", [])),
++                board=board_slug,
++            ):
++                recovered.append(task_id)
++        except Exception as exc:
++            _log.warning("kanban recovery for %s failed: %s", task_id, exc)
++    return recovered
++
++
++def recover_workspace_import_intents(
++    conn: sqlite3.Connection, *, board: Optional[str] = None
++) -> list[str]:
++    """Retry durable child-workspace imports before worker reclaim/spawn."""
++    board_slug = board or _board_for_connection(conn)
++    rows = conn.execute(
++        "SELECT id, current_run_id FROM tasks WHERE status = 'running' "
++        "AND workspace_kind = 'broker' AND current_run_id IS NOT NULL"
++    ).fetchall()
++    recovered: list[str] = []
++    for row in rows:
++        task_id = str(row["id"])
++        run_id = int(row["current_run_id"])
++        intent = get_workspace_import_intent(conn, task_id, run_id)
++        if not isinstance(intent, dict) or _workspace_import_recovered(conn, task_id, run_id):
++            continue
++        try:
++            _run_required_workspace_hook(
++                "kanban_workspace_recovery",
++                task_id=task_id, board=board_slug, run_id=run_id,
++            )
++            with write_txn(conn):
++                _append_event(
++                    conn, task_id, "workspace_import_recovered",
++                    {"run_id": run_id, "preparation_id": intent.get("preparation_id")},
++                    run_id=run_id,
++                )
++            recovered.append(task_id)
++        except Exception as exc:
++            _log.warning("kanban workspace import recovery for %s failed: %s", task_id, exc)
++    return recovered
+ 
+ 
+ def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
+@@ -8470,7 +8934,10 @@
+     lines.append(f"Status:   {task.status}")
+     if task.tenant:
+         lines.append(f"Tenant:   {task.tenant}")
+-    lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")
++    if task.workspace_kind == "broker":
++        lines.append("Workspace: broker @ /workspace")
++    else:
++        lines.append(f"Workspace: {task.workspace_kind} (managed workspace; path intentionally omitted)")
+     if task.max_runtime_seconds is not None:
+         terminal_timeout = _worker_terminal_timeout_env(
+             task.max_runtime_seconds,
+@@ -8489,23 +8956,18 @@
+         lines.append(_cap(task.body, _CTX_MAX_BODY_BYTES))
+         lines.append("")
+ 
+-    # Attachments — files uploaded to this task (PDFs, source docs,
+-    # images). Surface the absolute on-disk path so the worker, which has
+-    # full file-tool access, can read them directly (read_file, terminal
+-    # `pdftotext`, etc.). On the local terminal backend the path resolves
+-    # as-is; remote backends need the kanban attachments dir mounted.
++    # Attachments are metadata-only in model context.  The storage path and
++    # database row id are internal; workers use their relative completion
++    # manifest or the broker's fixed /workspace mount instead of path discovery.
+     attachments = list_attachments(conn, task_id)
+     if attachments:
+         lines.append("## Attachments")
+-        lines.append(
+-            "Files attached to this task. Read them with the file/terminal "
+-            "tools at the absolute paths below:"
+-        )
++        lines.append("Attached files (metadata only; do not infer host paths):")
+         for att in attachments:
+             size_kb = max(1, (att.size + 1023) // 1024) if att.size else 0
+             size_str = f", {size_kb} KB" if size_kb else ""
+             ctype = f", {att.content_type}" if att.content_type else ""
+-            lines.append(f"- `{att.filename}`{ctype}{size_str} → `{att.stored_path}`")
++            lines.append(f"- `{att.filename}`{ctype}{size_str}")
+         lines.append("")
+ 
+     # Prior attempts — show closed runs so a retrying worker sees the
+@@ -8849,12 +9311,14 @@
+         return 0, []
+     cursor = int(row["last_event_id"])
+     kind_list = list(kinds) if kinds else None
++    hidden = tuple(_INTERNAL_EVENT_KINDS)
+     q = (
+         "SELECT * FROM task_events WHERE task_id = ? AND id > ? "
++        + "AND kind NOT IN (" + ",".join("?" * len(hidden)) + ") "
+         + ("AND kind IN (" + ",".join("?" * len(kind_list)) + ") " if kind_list else "")
+         + "ORDER BY id ASC"
+     )
+-    params: list[Any] = [task_id, cursor]
++    params: list[Any] = [task_id, cursor, *hidden]
+     if kind_list:
+         params.extend(kind_list)
+     rows = conn.execute(q, params).fetchall()
+--- a/tools/environments/gondolin.py
++++ b/tools/environments/gondolin.py
+@@ -23,6 +23,17 @@
+ _DEFAULT_SOCKET = "/run/hermes-sandbox/broker.sock"
+ _BASE_URL = "http://localhost"
+ 
++
++
++def broker_environment_key(task_id: str) -> str:
++    """Derive the scoped environment key used by broker workspace routes."""
++    from tools import terminal_tool
++    binding = os.environ.get("HERMES_SANDBOX_AUTHORITY_BINDING", "").strip()
++    if not binding:
++        raise BrokerError("workspace.identity_missing", "sandbox authority binding is missing")
++    scoped = "\x00".join((binding, str(task_id)))
++    terminal_tool.register_task_authority_binding(str(task_id), scoped)
++    return terminal_tool.environment_key(str(task_id), None)
+ 
+ def broker_task_identity(board: str, task_id: str) -> str:
+     """Encode a board/task pair without collisions in the shared broker."""
+@@ -127,6 +138,259 @@
+         if task_run is not None:
+             body["taskRun"] = task_run
+         return body
++
++    def _json_post(
++        self, route: str, payload: dict, *, timeout: float | None = None
++    ) -> dict:
++        response = self._client.post(
++            route,
++            json=payload,
++            timeout=timeout or self._timeout,
++            headers={
++                "accept": "application/json",
++                "content-type": "application/json",
++            },
++        )
++        self._raise_for_status(response)
++        try:
++            body = response.json()
++        except (ValueError, json.JSONDecodeError) as exc:
++            raise BrokerError(
++                "protocol.invalid_response", "broker returned invalid JSON"
++            ) from exc
++        if not isinstance(body, dict):
++            raise BrokerError(
++                "protocol.invalid_response", "broker response is not an object"
++            )
++        return body
++
++    @staticmethod
++    def _required_text(body: dict, field: str) -> str:
++        value = body.get(field)
++        if not isinstance(value, str) or not value.strip():
++            raise BrokerError(
++                "protocol.invalid_response", f"broker response missing {field}"
++            )
++        return value
++
++    def capture_handoff(
++        self,
++        *,
++        finalization_id: str,
++        environment_key: str,
++        task_id: str,
++        run_id: int,
++        selected_artifacts: Optional[list[str]] = None,
++    ) -> dict:
++        body = self._json_post(
++            "/v1/control/workspace-handoffs/capture",
++            {
++                "finalizationId": str(finalization_id),
++                "environmentKey": str(environment_key),
++                "taskId": str(task_id),
++                "runId": str(int(run_id)),
++                "selectedArtifacts": list(selected_artifacts or []),
++            },
++            timeout=max(self._timeout, 180.0),
++        )
 +        return {
-+            "workspace": {"workspaceId": "workspace-opaque", "guestPath": "/workspace"},
-+            "lease": {"leaseId": "lease-opaque"},
++            "handoffId": self._required_text(body, "handoffId"),
++            "entryCount": int(body.get("entryCount", 0)),
++            "totalBytes": int(body.get("totalBytes", 0)),
 +        }
 +
-+    monkeypatch.setattr(plugin, "_request", request)
-+    assert plugin._activate_task_run(
-+        environment_key="environment", task_id="task", run_id="run",
-+        workspace_id="workspace", workspace_lease_id="lease", policy_digest="a" * 64,
-+    )["activationId"] == "activation-opaque"
-+    assert plugin._publish_workspace_revision(
-+        finalization_id="finalization", environment_key="environment", task_id="task",
-+        run_id="run", selected_roots=["output"],
-+    )["revisionId"] == "revision-opaque"
-+    assert plugin._import_workspace_revision(
-+        preparation_id="preparation", source_revision_id="revision", source_task_id="parent",
-+        destination_task_id="child", destination_run_id="run", destination_environment_key="child-env",
-+        relation_digest="b" * 64,
-+    ) == {
-+        "workspaceId": "workspace-opaque",
-+        "workspaceLeaseId": "lease-opaque",
-+        "guestPath": "/workspace",
-+    }
-+    assert [route for route, _ in calls] == [
-+        "/v1/control/task-runs/activate",
-+        "/v1/control/workspace-revisions/publish",
-+        "/v1/control/workspace-revisions/import",
-+    ]
++    def import_handoff(
++        self,
++        *,
++        preparation_id: str,
++        source_handoff_id: str,
++        source_task_id: str,
++        destination_task_id: str,
++        destination_run_id: int,
++        destination_environment_key: str,
++    ) -> dict:
++        body = self._json_post(
++            "/v1/control/workspace-handoffs/import",
++            {
++                "preparationId": str(preparation_id),
++                "sourceHandoffId": str(source_handoff_id),
++                "sourceTaskId": str(source_task_id),
++                "destinationTaskId": str(destination_task_id),
++                "destinationRunId": str(int(destination_run_id)),
++                "destinationEnvironmentKey": str(destination_environment_key),
++            },
++            timeout=max(self._timeout, 180.0),
++        )
++        workspace = body.get("workspace")
++        lease = body.get("lease")
++        if (
++            not isinstance(workspace, dict)
++            or not isinstance(lease, dict)
++            or workspace.get("guestPath") != "/workspace"
++        ):
++            raise BrokerError(
++                "protocol.invalid_response", "broker import binding is invalid"
++            )
++        return {
++            "preparationId": self._required_text(body, "preparationId"),
++            "sourceHandoffId": self._required_text(body, "sourceHandoffId"),
++            "workspaceId": self._required_text(workspace, "workspaceId"),
++            "ownerEnvironmentKey": self._required_text(
++                workspace, "ownerEnvironmentKey"
++            ),
++            "workspaceLeaseId": self._required_text(lease, "leaseId"),
++            "guestPath": "/workspace",
++        }
++
++    def acquire_workspace(
++        self, environment_key: str, *, workspace_id: str | None = None
++    ) -> dict:
++        payload = {"environmentKey": str(environment_key)}
++        if workspace_id:
++            payload["workspaceId"] = str(workspace_id)
++        body = self._json_post("/v1/control/workspaces/acquire", payload)
++        workspace = body.get("workspace")
++        lease = body.get("lease")
++        if (
++            not isinstance(workspace, dict)
++            or not isinstance(lease, dict)
++            or workspace.get("guestPath") != "/workspace"
++        ):
++            raise BrokerError(
++                "protocol.invalid_response", "broker workspace binding is invalid"
++            )
++        return {
++            "workspaceId": self._required_text(workspace, "workspaceId"),
++            "ownerEnvironmentKey": self._required_text(
++                workspace, "ownerEnvironmentKey"
++            ),
++            "workspaceLeaseId": self._required_text(lease, "leaseId"),
++            "guestPath": "/workspace",
++        }
++
++    def activate_task_run(
++        self,
++        *,
++        environment_key: str,
++        task_id: str,
++        run_id: int,
++        workspace_id: str,
++        workspace_lease_id: str,
++    ) -> dict:
++        authority = self._json_post(
++            "/v1/control/authority/bind-default",
++            {
++                "environmentKey": environment_key,
++                "workspaceId": workspace_id,
++                "leaseId": workspace_lease_id,
++            },
++        )
++        policy_digest = self._required_text(authority, "policyDigest")
++        body = self._json_post(
++            "/v1/control/task-runs/activate",
++            {
++                "environmentKey": environment_key,
++                "taskId": task_id,
++                "runId": str(int(run_id)),
++                "workspaceId": workspace_id,
++                "workspaceLeaseId": workspace_lease_id,
++                "policyDigest": policy_digest,
++            },
++        )
++        activation = body.get("activation")
++        if not isinstance(activation, dict):
++            raise BrokerError(
++                "protocol.invalid_response", "broker activation is missing"
++            )
++        return {"activationId": self._required_text(activation, "activationId")}
++
++    def consume_task_run(
++        self, *, environment_key: str, task_id: str, run_id: int
++    ) -> None:
++        body = self._json_post(
++            "/v1/control/task-runs/consume",
++            {
++                "environmentKey": environment_key,
++                "taskId": task_id,
++                "runId": str(int(run_id)),
++            },
++        )
++        if body.get("consumed") is not True:
++            raise BrokerError(
++                "protocol.invalid_response", "broker activation was not consumed"
++            )
++
++    def prepare_export(
++        self, *, delivery_id: str, handoff_id: str, relative_path: str
++    ) -> dict:
++        body = self._json_post(
++            "/v1/control/workspace-handoffs/exports/prepare",
++            {
++                "deliveryId": str(delivery_id),
++                "handoffId": str(handoff_id),
++                "relativePath": str(relative_path),
++            },
++        )
++        token = self._required_text(body, "exportToken")
++        name = self._required_text(body, "fileName")
++        size = body.get("size")
++        expires = body.get("expiresAt")
++        if (
++            not isinstance(size, int)
++            or size < 0
++            or not isinstance(expires, int)
++            or expires <= 0
++        ):
++            raise BrokerError(
++                "protocol.invalid_response", "broker export metadata is invalid"
++            )
++        return {
++            "exportToken": token,
++            "fileName": name,
++            "size": size,
++            "expiresAt": expires,
++        }
++
++    def read_export_bytes(
++        self,
++        export_token: str,
++        *,
++        expected_size: int,
++        max_bytes: int = 25 * 1024 * 1024,
++    ) -> bytes:
++        if expected_size < 0 or expected_size > max_bytes:
++            raise BrokerError("policy.exceeded", "export exceeds attachment limit")
++        response = self._client.post(
++            "/v1/control/workspace-handoffs/exports/read",
++            json={"exportToken": str(export_token)},
++            timeout=self._timeout,
++            headers={
++                "accept": "application/octet-stream",
++                "content-type": "application/json",
++            },
++        )
++        self._raise_for_status(response)
++        content_length = response.headers.get("content-length")
++        if content_length is not None and int(content_length) != expected_size:
++            raise BrokerError(
++                "protocol.invalid_response", "export content length mismatch"
++            )
++        data = response.content
++        if len(data) != expected_size:
++            raise BrokerError(
++                "protocol.invalid_response", "export byte count mismatch"
++            )
++        return bytes(data)
++
++    def release_export(self, export_token: str) -> None:
++        body = self._json_post(
++            "/v1/control/workspace-handoffs/exports/release",
++            {"exportToken": str(export_token)},
++        )
++        if body.get("released") is not True:
++            raise BrokerError(
++                "protocol.invalid_response", "broker export was not released"
++            )
+ 
+ 
+     def health(self) -> bool:

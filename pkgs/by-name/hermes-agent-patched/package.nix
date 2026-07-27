@@ -16,30 +16,18 @@ let
       # Secure-terminal and Gondolin execution backend.
       ./secure-terminal-isolation.patch
       ./gondolin-backend.patch
-      ./gondolin-hard-cancel.patch
       ./task-authority-binding.patch
-      # Gondolin workspace broker, handoff, and trusted finalization.
-      ./workspace-service.patch
-      ./workspace-kanban.patch
-      ./workspace-lifecycle.patch
+      # Hashless Gondolin workspace broker lifecycle, operation journal, and
+      # trusted direct-child handoff.
       ./workspace-handoff.patch
-      ./workspace-finalizers.patch
-      ./workspace-schemas.patch
+      # Hermes task hooks, broker-worker validation, and native attachment
+      # delivery. Generic worker lanes remain in the patches above.
       ./workspace-integration.patch
-      # Generic approval semantics.
-      ./approval-choice-result.patch
-      ./approval-permanent-control.patch
-      ./approval-surface-permanent-control.patch
-      ./approval-rich-choice-control.patch
-      # Workspace recovery and model-facing handoff contract.
-      ./workspace-finalization-exit-recovery.patch
-      ./workspace-orchestration-guidance.patch
-      # Generic Kanban safety and worker workspace policy.
+      # Canonical approval choices and caller-scoped durable-grant policy.
+      ./approval-tool-contract.patch
       ./kanban-triage-loop-breaker.patch
-      # Generated against pristine Hermes; no Gondolin/workspace dependency.
       ./kanban-lifecycle-safety.patch
       ./worker-lane-workspace-policy.patch
-      # Deployment-specific compact guidance preserving the generic invariants.
       ./kanban-worker-guidance.patch
     ];
   };

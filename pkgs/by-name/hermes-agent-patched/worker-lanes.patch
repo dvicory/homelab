@@ -1,5 +1,5 @@
 From 3461018948b3c603306a37c0e67ea7fd985447c9 Mon Sep 17 00:00:00 2001
-From: Nikita Barkov <nikita.barkov@jetbrains.com>
+From: Daniel Vicory <dvicory@gmail.com>
 Date: Fri, 3 Jul 2026 10:07:13 +0200
 Subject: [PATCH] feat(kanban): add worker-lane registry for the dispatcher
 

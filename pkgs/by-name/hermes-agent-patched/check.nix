@@ -7,6 +7,12 @@
 }:
 runCommand "hermes-agent-patched-check" { } ''
   export PYTHONPATH=${patchedHermes.patchedSource}
+  # Nix builders may expose a single-component, read-only HOME such as
+  # /homeless-shelter. Native approval tests construct absolute home paths and
+  # the detector intentionally ignores degenerate prefixes, so give the test
+  # process a writable multi-component home instead.
+  export HOME="$TMPDIR/home"
+  mkdir -p "$HOME"
   export PYTHONPYCACHEPREFIX=$TMPDIR/pycache
   export RUFF_CACHE_DIR=$TMPDIR/ruff-cache
   # Nix sets SSL_CERT_FILE=/no-cert-file.crt in pure builds. Two upstream
@@ -14,25 +20,39 @@ runCommand "hermes-agent-patched-check" { } ''
   # path even though they make no network requests.
   export SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt
   python=${patchedHermes.hermesVenv}/bin/python3
+  export HERMES_SANDBOX_ACCESS_SOURCE=${sandboxAccess.testSource}
   test "$(readlink -f ${patchedHermes}/share/hermes-agent/plugins)" = \
     "${patchedHermes.patchedSource}/plugins"
 
   "$python" -m pytest -q -o cache_dir=$TMPDIR/pytest-cache \
+    ${patchedHermes.patchedSource}/tests/tools/test_approval_choice_result.py \
+    ${patchedHermes.patchedSource}/tests/tools/test_request_tool_approval.py \
+    ${patchedHermes.patchedSource}/tests/tools/test_approval.py \
+    ${patchedHermes.patchedSource}/tests/tools/test_command_guards.py \
+    ${patchedHermes.patchedSource}/tests/tools/test_execute_code_approval_cluster.py \
+    ${patchedHermes.patchedSource}/tests/acp/test_permissions.py \
+    ${patchedHermes.patchedSource}/tests/gateway/test_api_server_runs.py \
+    ${patchedHermes.patchedSource}/tests/gateway/test_plaintext_approval_routing.py \
+    ${patchedHermes.patchedSource}/tests/gateway/test_tui_approval_redaction.py \
+    ${patchedHermes.patchedSource}/tests/gateway/test_telegram_approval_buttons.py \
+    ${patchedHermes.patchedSource}/tests/gateway/test_slack_approval_buttons.py \
     ${patchedHermes.patchedSource}/tests/hermes_cli/test_worker_lanes.py \
     ${patchedHermes.patchedSource}/tests/hermes_cli/test_worker_lane_discovery.py \
+    ${patchedHermes.patchedSource}/tests/hermes_cli/test_kanban_decompose.py \
+    ${patchedHermes.patchedSource}/tests/hermes_cli/test_kanban_swarm.py \
+    ${patchedHermes.patchedSource}/tests/hermes_cli/test_kanban_cli_dispatch_passthrough.py \
     ${patchedHermes.patchedSource}/tests/hermes_cli/test_kanban_worker_spawn_toolsets.py \
     ${patchedHermes.patchedSource}/tests/tools/test_kanban_tools.py \
+    ${patchedHermes.patchedSource}/tests/tools/test_kanban_role_boundaries.py \
     ${patchedHermes.patchedSource}/tests/tools/test_secure_terminal_scope.py \
     ${patchedHermes.patchedSource}/tests/tools/test_secure_terminal_identity_integration.py \
+    ${patchedHermes.patchedSource}/tests/tools/test_file_tools_cwd_resolution.py \
+    ${patchedHermes.patchedSource}/tests/tools/test_shared_container_task_id.py \
+    ${patchedHermes.patchedSource}/tests/tools/test_terminal_task_cwd.py \
     ${patchedHermes.patchedSource}/tests/tools/test_task_authority_binding.py \
-    ${patchedHermes.patchedSource}/tests/tools/test_approval_choice_result.py \
-    ${patchedHermes.patchedSource}/tests/gateway/test_approval_permanent_choices.py \
-    ${patchedHermes.patchedSource}/tests/gateway/test_telegram_approval_buttons.py \
     ${patchedHermes.patchedSource}/tests/tools/test_gondolin_backend.py \
-    ${patchedHermes.patchedSource}/tests/plugins/test_workspace_service.py \
-    ${patchedHermes.patchedSource}/tests/plugins/test_workspace_kanban.py \
-    ${patchedHermes.patchedSource}/tests/plugins/test_workspace_handoff.py \
-    ${patchedHermes.patchedSource}/tests/plugins/test_workspace_finalizers.py \
+    ${patchedHermes.patchedSource}/tests/gateway/test_kanban_notifier.py \
+    ${patchedHermes.patchedSource}/tests/plugins/test_workspace_zero_schema.py \
     ${sandboxAccess.testSource}/tests \
     ${codexWorkerLane.testSource}/tests
   "$python" -m py_compile \
@@ -47,7 +67,6 @@ runCommand "hermes-agent-patched-check" { } ''
     ${sandboxAccess.testSource}/__init__.py \
     ${sandboxAccess.testSource}/tests \
     ${patchedHermes.patchedSource}/plugins/workspace-service/__init__.py \
-    ${patchedHermes.patchedSource}/tests/plugins/test_workspace_service.py \
-    ${patchedHermes.patchedSource}/tests/plugins/test_workspace_kanban.py
+    ${patchedHermes.patchedSource}/tests/plugins/test_workspace_zero_schema.py
   touch $out
 ''

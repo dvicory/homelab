@@ -1,0 +1,589 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Mon, 27 Jul 2026 00:00:00 -0700
+Subject: [PATCH] feat(approvals): expose effective scope and durable-grant ceiling
+
+Approval consumers need an explicit, canonical scope so they can distinguish a
+one-operation decision from a session grant or a durable grant without
+parsing prompt text. Report that effective scope for fresh, cached, bypass,
+and non-interactive approvals.
+
+Thread an allow_permanent capability through the shared gate. Callers that do
+not permit durable grants ignore permanent cache entries, retain eligible
+session grants, and attenuate legacy CLI callback choices before persistence.
+Gateway choices are normalized at the authority boundary; unknown choices and
+unavailable permanent choices fail closed without changing approval state.
+
+Keep native rendering and command/execute-code guard policy unchanged. The
+implementation is intentionally shaped as two reusable upstream changes:
+first canonical effective-scope metadata, then the durable-grant ceiling that
+protects callers with narrower authority.
+
+---
+ tools/approval.py                         | 132 ++++++++++++++++++++++---
+ tests/tools/test_request_tool_approval.py  |  17 +++-
+ tests/tools/test_approval_choice_result.py | 220 +++++++++++++++++++++++++++++
+ tests/tools/test_approval.py               |  6 ++++--
+ 4 files changed, 347 insertions(+), 28 deletions(-)
+diff --git a/tools/approval.py b/tools/approval.py
+index ea3bb82..988dce8 100644
+--- a/tools/approval.py
++++ b/tools/approval.py
+@@ -2175,12 +2175,28 @@ def is_approved(session_key: str, pattern_key: str) -> bool:
+     Accept both the current canonical key and the legacy regex-derived key so
+     existing command_allowlist entries continue to work after key migrations.
+     """
++    return _approved_scope(session_key, pattern_key) is not None
++
++
++def _approved_scope(
++    session_key: str,
++    pattern_key: str,
++    *,
++    allow_permanent: bool = True,
++) -> Optional[str]:
++    """Return the effective persisted scope permitted for a pattern.
++
++    Permanent state is considered only when the caller explicitly allows it;
++    a session grant remains usable when a caller suppresses durable grants.
++    """
+     aliases = _approval_key_aliases(pattern_key)
+     with _lock:
+-        if any(alias in _permanent_approved for alias in aliases):
+-            return True
++        if allow_permanent and any(alias in _permanent_approved for alias in aliases):
++            return "always"
+         session_approvals = _session_approved.get(session_key, set())
+-        return any(alias in session_approvals for alias in aliases)
++        if any(alias in session_approvals for alias in aliases):
++            return "session"
++    return None
+ 
+ 
+ def approve_permanent(pattern_key: str):
+@@ -2635,6 +2651,32 @@ def _smart_approve(command: str, description: str) -> str:
+         return "escalate"
+ 
+ 
++def _normalize_gateway_choice(choice: object) -> Optional[str]:
++    """Normalize gateway outcomes to the public approval-choice contract."""
++    if not isinstance(choice, str):
++        return None
++    if choice == "approve":
++        return "once"
++    if choice in {"once", "session", "always", "deny"}:
++        return choice
++    return None
++
++
++def _invalid_gateway_choice_result(pattern_key: str, description: str) -> dict:
++    """Fail closed when a gateway returns an unknown or unavailable scope."""
++    return {
++        "approved": False,
++        "choice": "deny",
++        "message": (
++            "BLOCKED: The approval surface returned an unsupported or "
++            "unavailable choice; no approval state was changed."
++        ),
++        "pattern_key": pattern_key,
++        "description": description,
++        "user_consent": False,
++    }
++
++
+ def _run_approval_gate(
+     *,
+     pattern_key: str,
+@@ -2645,6 +2687,7 @@ def _run_approval_gate(
+     autoapprove_log_prefix: str,
+     fail_closed_when_no_human: bool = False,
+     no_human_block_message: str = "",
++    allow_permanent: bool = True,
+ ) -> dict:
+     """Shared human-approval gate for a flagged action (command or tool).
+ 
+@@ -2681,6 +2724,8 @@ def _run_approval_gate(
+             plugin-flagged action never runs ungated without a human.
+         no_human_block_message: Message returned when
+             ``fail_closed_when_no_human`` blocks.
++        allow_permanent: Whether this caller may use or grant a durable
++            approval. False suppresses permanent cache use and grants.
+ 
+     Returns:
+         ``{"approved": bool, "message": str|None, ...}`` — shape shared with
+@@ -2690,11 +2735,14 @@ def _run_approval_gate(
+     # Hardline blocks are handled by the caller BEFORE this gate, so yolo
+     # here only skips the recoverable approval layer.
+     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
+-        return {"approved": True, "message": None}
++        return {"approved": True, "message": None, "choice": "once"}
+ 
+     session_key = get_current_session_key()
+-    if is_approved(session_key, pattern_key):
+-        return {"approved": True, "message": None}
++    cached_scope = _approved_scope(
++        session_key, pattern_key, allow_permanent=allow_permanent
++    )
++    if cached_scope is not None:
++        return {"approved": True, "message": None, "choice": cached_scope}
+ 
+     if approval_callback is None:
+         try:
+@@ -2742,7 +2790,7 @@ def _run_approval_gate(
+             "HERMES_GATEWAY_SESSION to require approval.",
+             autoapprove_log_prefix, pattern_key, description,
+         )
+-        return {"approved": True, "message": None}
++        return {"approved": True, "message": None, "choice": "once"}
+ 
+     if is_gateway or env_var_enabled("HERMES_EXEC_ASK"):
+         # Interactive gateway round-trip when a notify callback is
+@@ -2762,7 +2810,7 @@ def _run_approval_gate(
+                 "pattern_key": pattern_key,
+                 "pattern_keys": [pattern_key],
+                 "description": redact_sensitive_text(description),
+-                "allow_permanent": True,
++                "allow_permanent": allow_permanent,
+             }
+             decision = _await_gateway_decision(
+                 session_key, notify_cb, approval_data, surface="gateway"
+@@ -2775,19 +2823,13 @@ def _run_approval_gate(
+                     "description": description,
+                 }
+             resolved = decision["resolved"]
+-            choice = decision["choice"]
++            raw_choice = decision.get("choice")
+             deny_reason = decision.get("reason")
+ 
+-            if not resolved or choice is None or choice == "deny":
+-                if not resolved:
+-                    reason = "timed out without user response"
+-                    timeout_addendum = " Silence is not consent."
+-                else:
+-                    reason = "denied by user"
+-                    timeout_addendum = ""
++            if not resolved:
++                reason = "timed out without user response"
++                timeout_addendum = " Silence is not consent."
+                 reason_addendum = ""
+-                if resolved and deny_reason:
+-                    reason_addendum = f' Reason given by the user: "{deny_reason}".'
+                 return {
+                     "approved": False,
+                     "message": (
+@@ -2801,13 +2843,33 @@ def _run_approval_gate(
+                     "user_consent": False,
+                 }
+ 
++            choice = _normalize_gateway_choice(raw_choice)
++            if choice == "deny":
++                reason_addendum = ""
++                if deny_reason:
++                    reason_addendum = f' Reason given by the user: "{deny_reason}".'
++                return {
++                    "approved": False,
++                    "message": (
++                        f"BLOCKED: Action denied by user.{reason_addendum} The user "
++                        f"has NOT consented to this action. Do NOT retry it, "
++                        f"do NOT rephrase it, and do NOT attempt the same "
++                        "outcome via a different path."
++                    ),
++                    "pattern_key": pattern_key,
++                    "description": description,
++                    "user_consent": False,
++                }
++            if choice is None or (choice == "always" and not allow_permanent):
++                return _invalid_gateway_choice_result(pattern_key, description)
++
+             if choice == "session":
+                 approve_session(session_key, pattern_key)
+             elif choice == "always":
+                 approve_session(session_key, pattern_key)
+                 approve_permanent(pattern_key)
+                 save_permanent_allowlist(_permanent_approved)
+-            return {"approved": True, "message": None}
++            return {"approved": True, "message": None, "choice": choice}
+ 
+         # No notify callback (e.g. API server without an attached chat):
+         # queue for /approve /deny review, agent sees approval_required.
+@@ -2828,8 +2890,17 @@ def _run_approval_gate(
+             ),
+         }
+ 
+-    choice = prompt_dangerous_approval(display_target, description,
+-                                       approval_callback=approval_callback)
++    choice = prompt_dangerous_approval(
++        display_target,
++        description,
++        allow_permanent=allow_permanent,
++        approval_callback=approval_callback,
++    )
++    # Legacy CLI callbacks may still return "always" after receiving a
++    # restricted prompt. Attenuate that response to a session grant so it
++    # cannot create durable state.
++    if choice == "always" and not allow_permanent:
++        choice = "session"
+ 
+     if choice == "deny":
+         return {
+@@ -2843,6 +2914,16 @@ def _run_approval_gate(
+             "description": description,
+         }
+ 
++    if choice not in {"once", "session", "always"}:
++        return {
++            "approved": False,
++            "choice": "deny",
++            "message": "BLOCKED: Approval returned an unsupported choice.",
++            "pattern_key": pattern_key,
++            "description": description,
++            "user_consent": False,
++        }
++
+     if choice == "session":
+         approve_session(session_key, pattern_key)
+     elif choice == "always":
+@@ -2850,7 +2931,7 @@ def _run_approval_gate(
+         approve_permanent(pattern_key)
+         save_permanent_allowlist(_permanent_approved)
+ 
+-    return {"approved": True, "message": None}
++    return {"approved": True, "message": None, "choice": choice}
+ 
+ 
+ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) -> bool:
+@@ -2943,6 +3024,7 @@ def request_tool_approval(
+     *,
+     rule_key: str = "",
+     approval_callback=None,
++    allow_permanent: bool = True,
+ ) -> dict:
+     """Escalate an arbitrary tool call to the human-approval gate.
+ 
+@@ -2970,9 +3052,12 @@ def request_tool_approval(
+             on the same tool).
+         approval_callback: Optional CLI callback for interactive prompts
+             (same contract as ``check_dangerous_command``).
++        allow_permanent: Whether this tool caller may use or grant a durable
++            approval. False suppresses permanent cache use and grants.
+ 
+     Returns:
+-        ``{"approved": True, "message": None}`` when allowed, or
++        ``{"approved": True, "message": None, "choice": <scope>}`` when
++        allowed, or
+         ``{"approved": False, "message": <reason>, ...}`` when denied /
+         blocked. Shape matches ``check_dangerous_command`` so callers handle
+         both paths identically.
+@@ -3005,6 +3090,7 @@ def request_tool_approval(
+         description=description,
+         display_target=display_target,
+         approval_callback=approval_callback,
++        allow_permanent=allow_permanent,
+         cron_deny_message=(
+             f"BLOCKED: Tool '{tool_name}' requires approval ({description}) "
+             "but cron jobs run without a user present to approve it. Find an "
+diff --git a/tests/tools/test_request_tool_approval.py b/tests/tools/test_request_tool_approval.py
+index 16414fc..704bde8 100644
+--- a/tests/tools/test_request_tool_approval.py
++++ b/tests/tools/test_request_tool_approval.py
+@@ -20,7 +20,11 @@ def _isolate_approval_state(monkeypatch):
+         lambda default="default": "test-session",
+     )
+     # Empty session + permanent approval stores so nothing pre-approves.
+-    monkeypatch.setattr(approval, "is_approved", lambda sk, pk: False)
++    monkeypatch.setattr(
++        approval,
++        "_approved_scope",
++        lambda sk, pk, *, allow_permanent=True: None,
++    )
+     # Not a yolo session (the shared gate checks this first).
+     monkeypatch.setattr(approval, "is_current_session_yolo_enabled", lambda: False)
+     monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False, raising=False)
+@@ -39,8 +43,12 @@ class TestRequestToolApproval:
+             approval, "prompt_dangerous_approval",
+             lambda *a, **k: pytest.fail("should not prompt when already approved"),
+         )
++        monkeypatch.setattr(
++            approval, "_approved_scope",
++            lambda sk, pk, *, allow_permanent=True: "session",
++        )
+         res = request_tool_approval("write_file", "sensitive path", rule_key="ssh")
+-        assert res == {"approved": True, "message": None}
++        assert res == {"approved": True, "message": None, "choice": "session"}
+ 
+     def test_cli_approve_once(self, monkeypatch):
+         monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+@@ -70,6 +78,7 @@ class TestRequestToolApproval:
+         monkeypatch.setattr(approval, "save_permanent_allowlist", lambda x: None)
+         res = request_tool_approval("write_file", "reason", rule_key="ssh-writes")
+         assert res["approved"] is True
++        assert res["choice"] == "session"
+         assert calls["session"] == ["plugin_rule:ssh-writes"]
+         assert calls["permanent"] == []  # session != always
+ 
+@@ -85,6 +94,7 @@ class TestRequestToolApproval:
+                             lambda x: persisted.setdefault("saved", True))
+         res = request_tool_approval("write_file", "reason", rule_key="ssh-writes")
+         assert res["approved"] is True
++        assert res["choice"] == "always"
+         assert persisted["key"] == "plugin_rule:ssh-writes"
+         assert persisted["saved"] is True
+ 
+@@ -118,6 +128,7 @@ class TestRequestToolApproval:
+         monkeypatch.setattr(approval, "_get_cron_approval_mode", lambda: "approve")
+         res = request_tool_approval("terminal", "smtp send")
+         assert res["approved"] is True
++        assert res["choice"] == "once"
+ 
+     def test_rule_key_derived_from_tool_and_reason(self, monkeypatch):
+         """With no explicit rule_key, the pattern key is derived from
+@@ -164,4 +175,4 @@ class TestRequestToolApproval:
+             lambda *a, **k: pytest.fail("yolo must not prompt"),
+         )
+         res = request_tool_approval("terminal", "curl PUT", rule_key="ext")
+-        assert res == {"approved": True, "message": None}
++        assert res == {"approved": True, "message": None, "choice": "once"}
+diff --git a/tests/tools/test_approval_choice_result.py b/tests/tools/test_approval_choice_result.py
+new file mode 100644
+index 0000000..f70bf7d
+--- /dev/null
++++ b/tests/tools/test_approval_choice_result.py
+@@ -0,0 +1,220 @@
++"""Canonical effective choices for the shared Hermes approval gate."""
++
++from __future__ import annotations
++
++import importlib.util
++import json
++import os
++from pathlib import Path
++import sys
++
++import pytest
++
++from tools import approval
++
++
++@pytest.fixture(autouse=True)
++def _clean_approval_state(monkeypatch):
++    monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False)
++    monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
++    monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
++    monkeypatch.setattr(approval, "get_current_session_key", lambda default=None: "scope-test")
++    approval.clear_session("scope-test")
++    approval._permanent_approved.clear()
++    approval._gateway_notify_cbs.pop("scope-test", None)
++    yield
++    approval.clear_session("scope-test")
++    approval._permanent_approved.clear()
++    approval._gateway_notify_cbs.pop("scope-test", None)
++
++
++def _request(monkeypatch, choice, **kwargs):
++    monkeypatch.setattr(
++        approval,
++        "prompt_dangerous_approval",
++        lambda *args, **prompt_kwargs: choice,
++    )
++    return approval.request_tool_approval(
++        "sandbox_request_access",
++        "canonical capability request",
++        rule_key="scope-test-rule",
++        **kwargs,
++    )
++
++
++@pytest.mark.parametrize("choice", ["once", "session", "always"])
++def test_fresh_approval_reports_canonical_choice(monkeypatch, choice):
++    result = _request(monkeypatch, choice)
++
++    assert result["approved"] is True
++    assert result["choice"] == choice
++
++
++def test_cached_scopes_and_simultaneous_fallback(monkeypatch):
++    pattern = "plugin_rule:scope-test-rule"
++    approval.approve_session("scope-test", pattern)
++    assert _request(monkeypatch, "once")["choice"] == "session"
++
++    approval.clear_session("scope-test")
++    approval.approve_permanent(pattern)
++    assert _request(monkeypatch, "once")["choice"] == "always"
++
++    approval.approve_session("scope-test", pattern)
++    assert _request(monkeypatch, "once", allow_permanent=False)["choice"] == "session"
++    assert _request(monkeypatch, "once")["choice"] == "always"
++
++
++def test_permanent_suppression_prompts_and_never_grants_always(monkeypatch):
++    pattern = "plugin_rule:scope-test-rule"
++    approval.approve_permanent(pattern)
++    seen = {}
++
++    def choose_once(*args, **kwargs):
++        seen.update(kwargs)
++        return "once"
++
++    monkeypatch.setattr(approval, "prompt_dangerous_approval", choose_once)
++    result = approval.request_tool_approval(
++        "sandbox_request_access",
++        "canonical capability request",
++        rule_key="scope-test-rule",
++        allow_permanent=False,
++    )
++
++    assert seen["allow_permanent"] is False
++    assert result == {"approved": True, "message": None, "choice": "once"}
++    assert approval._approved_scope("scope-test", pattern, allow_permanent=False) is None
++    assert approval._approved_scope("scope-test", pattern) == "always"
++
++
++def test_yolo_and_cron_success_report_once(monkeypatch):
++    monkeypatch.setattr(approval, "is_current_session_yolo_enabled", lambda: True)
++    assert _request(monkeypatch, "deny") == {
++        "approved": True,
++        "message": None,
++        "choice": "once",
++    }
++
++    monkeypatch.setattr(approval, "is_current_session_yolo_enabled", lambda: False)
++    monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
++    monkeypatch.setattr(approval, "env_var_enabled", lambda name: name == "HERMES_CRON_SESSION")
++    monkeypatch.setattr(approval, "_get_cron_approval_mode", lambda: "approve")
++    result = _request(monkeypatch, "deny")
++    assert result["approved"] is True
++    assert result["choice"] == "once"
++
++
++def test_cli_legacy_always_is_attenuated_when_disabled(monkeypatch):
++    result = _request(monkeypatch, "always", allow_permanent=False)
++    pattern = "plugin_rule:scope-test-rule"
++
++    assert result["approved"] is True
++    assert result["choice"] == "session"
++    assert approval._approved_scope("scope-test", pattern) == "session"
++    assert pattern not in approval._permanent_approved
++
++
++def _gateway_request(monkeypatch, raw_choice, **kwargs):
++    monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: True)
++    approval.register_gateway_notify("scope-test", lambda _data: None)
++    monkeypatch.setattr(
++        approval,
++        "_await_gateway_decision",
++        lambda *args, **decision_kwargs: {"resolved": True, "choice": raw_choice},
++    )
++    return approval.request_tool_approval(
++        "sandbox_request_access",
++        "canonical capability request",
++        rule_key="gateway-scope-test-rule",
++        **kwargs,
++    )
++
++
++def test_gateway_approve_alias_normalizes_to_once(monkeypatch):
++    result = _gateway_request(monkeypatch, "approve")
++
++    assert result == {"approved": True, "message": None, "choice": "once"}
++    assert not approval._session_approved
++    assert not approval._permanent_approved
++
++
++@pytest.mark.parametrize("raw_choice", ["always", "unknown", None, {"choice": "always"}])
++def test_gateway_stale_or_unknown_choice_fails_closed(monkeypatch, raw_choice):
++    result = _gateway_request(monkeypatch, raw_choice, allow_permanent=False)
++
++    assert result["approved"] is False
++    assert result["choice"] == "deny"
++    assert result["user_consent"] is False
++    assert not approval._session_approved
++    assert not approval._permanent_approved
++
++
++def test_sandbox_access_uses_real_approval_contract_when_harness_provides_it(monkeypatch):
++    source = os.environ.get("HERMES_SANDBOX_ACCESS_SOURCE")
++    if not source:
++        pytest.skip("sandbox-access package harness is unavailable")
++
++    plugin_path = Path(source) / "__init__.py"
++    spec = importlib.util.spec_from_file_location("hermes_sandbox_access_contract", plugin_path)
++    assert spec is not None and spec.loader is not None
++    plugin = importlib.util.module_from_spec(spec)
++    sys.modules[spec.name] = plugin
++    try:
++        spec.loader.exec_module(plugin)
++    except ImportError as exc:
++        if "environment_key" in str(exc):
++            pytest.skip("sandbox-access consumer requires workspace integration")
++        raise
++
++    class FakeClient:
++        def __init__(self):
++            self.calls = []
++
++        def post(self, path, payload):
++            self.calls.append((path, payload))
++            if path.endswith("/prepare"):
++                return {
++                    "state": "pending",
++                    "requestId": "request-1",
++                    "fingerprint": "fingerprint-1",
++                    "requestedScope": "task",
++                    "durationSeconds": None,
++                    "capabilities": [{
++                        "version": 1,
++                        "kind": "network-origin",
++                        "scheme": "https",
++                        "host": "api.example.com",
++                        "ports": [443],
++                        "addressMode": "public",
++                        "pinnedAddresses": [],
++                    }],
++                    "grantIds": [],
++                }
++            return {
++                "state": "approved",
++                "requestId": "request-1",
++                "grantIds": ["grant-1"],
++            }
++
++    client = FakeClient()
++    monkeypatch.setenv("HERMES_SANDBOX_AUTHORITY_BINDING", "qa-authority")
++    monkeypatch.setenv("GONDOLIN_EFFECT_CONTROL_SOCKET", "/run/test/control.sock")
++    monkeypatch.setattr(plugin, "BrokerClient", lambda: client)
++    monkeypatch.setattr(plugin, "register_task_authority_binding", lambda *_args: None)
++    monkeypatch.setattr(plugin, "environment_key", lambda *_args: "authority-test")
++    monkeypatch.setattr(approval, "prompt_dangerous_approval", lambda *args, **kwargs: "session")
++
++    result = json.loads(plugin.handle_request_access({
++        "capabilities": [{
++            "kind": "network-origin",
++            "scheme": "https",
++            "host": "api.example.com",
++            "address_mode": "public",
++        }],
++        "requested_scope": "task",
++        "rationale": "Needed for the vendor API",
++    }, task_id="turn-1", session_id="session-1"))
++
++    assert result["ok"] is True
++    assert result["scope"] == "task"
++    assert client.calls[1][1]["decision"] == "approve"
+diff --git a/tests/tools/test_approval.py b/tests/tools/test_approval.py
+index 1ebb3efe6d98d4629af03cae36c2a3978a9fcaae..81d1165b53dcc6ddb6dd6778549919c14675e2e0 100644
+--- a/tests/tools/test_approval.py
++++ b/tests/tools/test_approval.py
+@@ -120,9 +120,11 @@ class TestDetectDangerousRm:
+         assert "delete" in desc.lower()
+ 
+     def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
+-        with mock_patch("tempfile.gettempdir", return_value="/tmp"):
++        temp_root = os.path.realpath(tempfile.gettempdir())
++        with mock_patch("tempfile.gettempdir", return_value=temp_root):
+             for prefix in ("hermes-verify-", "hermes-ad-hoc-"):
+-                assert detect_dangerous_command(f"rm -f /tmp/{prefix}example.py") == (
++                operand = Path(temp_root) / f"{prefix}example.py"
++                assert detect_dangerous_command(f"rm -f {operand}") == (
+                     False,
+                     None,
+                     None,
