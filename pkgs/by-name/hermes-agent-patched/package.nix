@@ -9,13 +9,16 @@ let
     name = "hermes-agent-patched-source";
     inherit src;
     patches = [
+      # Generic Hermes worker-lane and platform toolset support.
       ./worker-lanes.patch
       ./worker-lane-discovery.patch
       ./kanban-platform-toolsets.patch
+      # Secure-terminal and Gondolin execution backend.
       ./secure-terminal-isolation.patch
       ./gondolin-backend.patch
       ./gondolin-hard-cancel.patch
       ./task-authority-binding.patch
+      # Gondolin workspace broker, handoff, and trusted finalization.
       ./workspace-service.patch
       ./workspace-kanban.patch
       ./workspace-lifecycle.patch
@@ -23,16 +26,21 @@ let
       ./workspace-finalizers.patch
       ./workspace-schemas.patch
       ./workspace-integration.patch
+      # Generic approval semantics.
       ./approval-choice-result.patch
       ./approval-permanent-control.patch
       ./approval-surface-permanent-control.patch
       ./approval-rich-choice-control.patch
+      # Workspace recovery and model-facing handoff contract.
       ./workspace-finalization-exit-recovery.patch
       ./workspace-orchestration-guidance.patch
+      # Generic Kanban safety and worker workspace policy.
       ./kanban-triage-loop-breaker.patch
-      # Standalone Kanban lifecycle safety; generated against pristine Hermes.
+      # Generated against pristine Hermes; no Gondolin/workspace dependency.
       ./kanban-lifecycle-safety.patch
       ./worker-lane-workspace-policy.patch
+      # Deployment-specific compact guidance preserving the generic invariants.
+      ./kanban-worker-guidance.patch
     ];
   };
 in

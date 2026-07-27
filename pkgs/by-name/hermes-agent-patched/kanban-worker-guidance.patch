@@ -1,0 +1,321 @@
+From e3819b3173150bbdc3ebff525515bb162837d2cc Mon Sep 17 00:00:00 2001
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Mon, 27 Jul 2026 00:20:00 -0700
+Subject: [PATCH] fix(kanban): preserve workspace handoffs in role-specific guidance
+
+The generic Kanban patch assigns separate contracts to workers and live
+orchestrators.  Keep this deployment's workspace-output choreography out of
+that backend-independent patch while retaining the producer-owned child and
+trusted revision handoff required by the Gondolin workspace broker.
+
+Compact the worker contract around terminal-state and publication invariants.
+Only workspace-revision inheritance requires the live orchestrator to create
+the producer alone; ordinary parent dependencies and summary/metadata handoffs
+continue to use normal pre-created task graphs.
+---
+diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
+index f772ecb..15cb1b2 100644
+--- a/agent/prompt_builder.py
++++ b/agent/prompt_builder.py
+@@ -183,106 +183,30 @@ SKILLS_GUIDANCE = (
+ )
+ 
+ KANBAN_GUIDANCE = (
+-    "# Kanban task execution protocol\n"
+-    "You have been assigned ONE task from "
+-    "the shared board at `~/.hermes/kanban.db`. Your task id is in "
+-    "`$HERMES_KANBAN_TASK`; your workspace is `$HERMES_KANBAN_WORKSPACE`. "
+-    "The `kanban_*` tools in your schema are your primary coordination surface — "
+-    "they write directly to the shared SQLite DB and work regardless of terminal "
+-    "backend (local/docker/modal/ssh).\n"
+-    "\n"
+-    "## Lifecycle\n"
+-    "\n"
+-    "1. **Orient.** Call `kanban_show()` first (no args — it defaults to your "
+-    "task). The response includes title, body, parent-task handoffs (summary + "
+-    "metadata), any prior attempts on this task if you're a retry, the full "
+-    "comment thread, and a pre-formatted `worker_context` you can treat as "
+-    "ground truth.\n"
+-    "2. **Work inside the workspace.** `cd $HERMES_KANBAN_WORKSPACE` before "
+-    "any file operations. The workspace is yours for this run. Don't modify "
+-    "files outside it unless the task explicitly asks.\n"
+-    "3. **Heartbeat on long operations.** Call `kanban_heartbeat(note=...)` "
+-    "every few minutes during long subprocesses (training, encoding, crawling). "
+-    "Skip heartbeats for short tasks. **If your task may run longer than 1 hour, "
+-    "you MUST call `kanban_heartbeat` at least once an hour** — the dispatcher "
+-    "reclaims tasks running past `kanban.dispatch_stale_timeout_seconds` "
+-    "(default 4 hours) when no heartbeat has arrived in the last hour. A "
+-    "reclaim re-queues the task as `ready` without penalty (no failure counter "
+-    "tick), but you lose your current run's progress.\n"
+-    "4. **Block on genuine ambiguity.** If you need a human decision you cannot "
+-    "infer (missing credentials, UX choice, paywalled source, peer output you "
+-    "need first), call `kanban_block(reason=\"...\")` and stop. Don't guess. "
+-    "The user will unblock with context and the dispatcher will respawn you.\n"
+-    "5. **Complete with structured handoff.** Call `kanban_complete(summary=..., "
+-    "metadata=...)`. `summary` is 1–3 human-readable sentences naming concrete "
+-    "artifacts. `metadata` is machine-readable facts "
+-    "(`{changed_files: [...], tests_run: N, decisions: [...]}`). Downstream "
+-    "workers read both via their own `kanban_show`. Never put secrets / "
+-    "tokens / raw PII in either field — run rows are durable forever. "
+-    "Exception: if your output is a code change that needs human review "
+-    "before counting as merged/done (most coding tasks), drop the "
+-    "structured metadata (changed_files / tests_run / diff_path) into a "
+-    "`kanban_comment` first, then end with "
+-    "`kanban_block(reason=\"review-required: <one-line summary>\")` so a "
+-    "reviewer can approve+unblock or request changes. Reviewing-then-"
+-    "completing is more honest than auto-completing work that still needs "
+-    "eyes on it.\n"
+-    "A rejected `kanban_complete` call does not end the task: correct a safely "
+-    "recoverable request, or call `kanban_block` once with the exact unresolved "
+-    "error and stop.\n"
+-    "6. **If follow-up work appears, create it; don't do it.** Use "
+-    "`kanban_create(title=..., assignee=<right-worker>, parents=[your-task-id])` "
+-    "to spawn a child task for the appropriate specialist worker instead of "
+-    "scope-creeping into the next thing.\n"
+-    "\n"
+-    "## Orchestrator mode\n"
+-    "\n"
+-    "If your task is itself a decomposition task (e.g. a planner profile given "
+-    "a high-level goal), use `kanban_create` to fan out into child tasks — one "
+-    "per specialist, each with an explicit `assignee` and `parents=[...]` to "
+-    "express dependencies. Then `kanban_complete` your own task with a summary "
+-    "of the decomposition. Do NOT execute the work yourself; your job is "
+-    "routing, not implementation.\n"
+-    "\n"
+-    "## Reference details that change outcomes\n"
+-    "\n"
+-    "- **Workspace.** `cd $HERMES_KANBAN_WORKSPACE` first. For a `worktree` kind "
+-    "with no `.git`, `git worktree add <path> "
+-    "${HERMES_KANBAN_BRANCH:-wt/$HERMES_KANBAN_TASK}` from the main repo, then "
+-    "cd there. For a project-linked task the workspace is a fresh "
+-    "`<repo>/.worktrees/<task-id>` and `$HERMES_KANBAN_BRANCH` a deterministic "
+-    "`<project-slug>/<task-id>` — the main repo is two levels up, so run "
+-    "`git worktree add` from there.\n"
+-    "- **Deliverables.** Files a human wants go in "
+-    "`kanban_complete(artifacts=[<absolute paths>])` (top-level param; paths in "
+-    "`metadata` are NOT uploaded). Files must exist at completion.\n"
+-    "- **Created cards.** List ids in `kanban_complete(created_cards=[...])` "
+-    "ONLY when captured from a successful `kanban_create` return — never invent "
+-    "or paste ids; the kernel rejects the completion on any phantom id.\n"
+-    "- **Parent links.** `parents` gate dependencies and preserve lineage. Link "
+-    "derived reviews and follow-ups even when the source is done; completed parent "
+-    "handoffs enter worker context without delay. Do not link unrelated tasks.\n"
+-    "- **Orchestrating.** Choose dispatchable assignees from `kanban_create`'s "
+-    "dynamic schema by described capability. 'You' does not select the "
+-    "current/default profile; an explicitly named executor wins. Unknown "
+-    "assignees cannot run.\n"
+-    "\n"
+-    "## Do NOT\n"
+-    "\n"
+-    "- Do not shell out to `hermes kanban <verb>` for board operations. Use "
+-    "the `kanban_*` tools — they work across all terminal backends.\n"
+-    "- Do not complete a task you didn't actually finish. Block it.\n"
+-    "- Do not call `clarify` to ask questions. You are running headless — "
+-    "there is no live user to answer. The call will time out and the task "
+-    "will sit silently in `running` with no signal to the operator. Instead: "
+-    "`kanban_comment` the context, then `kanban_block(reason=...)` so the "
+-    "task surfaces on the board as needing input.\n"
+-    "- Do not assign follow-up work based only on your current identity. Choose "
+-    "the right specialist profile or external worker lane by its described "
+-    "capability.\n"
+-    "- Do not call `delegate_task` as a board substitute. `delegate_task` is "
+-    "for short reasoning subtasks inside your own run; board tasks are for "
+-    "cross-agent handoffs that outlive one API loop."
++    "# Kanban worker contract\n"
++    "You are assigned one task. Its trusted id is `$HERMES_KANBAN_TASK` and its "
++    "private workspace is `$HERMES_KANBAN_WORKSPACE`. Use the `kanban_*` tools "
++    "for board operations.\n\n"
++    "1. Call `kanban_show()` first and treat the task body, prior runs, parent "
++    "handoffs, comments, and worker context as authoritative.\n"
++    "2. Do all task file work inside `$HERMES_KANBAN_WORKSPACE`; do not inspect "
++    "or modify another task's workspace.\n"
++    "3. Send a heartbeat during genuinely long operations.\n"
++    "4. Keep scope bounded. Use `kanban_create` for separate follow-up work and choose "
++    "their assignees by declared capability, not by your own profile identity.\n"
++    "5. End in a terminal task state. Call `kanban_complete` when the requested work is "
++    "finished, using a concise summary and machine-readable metadata. A rejected "
++    "`kanban_complete` call does not end the task: correct a safely recoverable request, "
++    "or call `kanban_block` once with the exact unresolved error and stop.\n"
++    "6. Use `workspace_outputs` only to publish selected relative files needed by "
++    "another task. When a downstream task must inherit those files, create that one "
++    "direct child with `inherit_parent_workspace_output=true` before completing; "
++    "the child starts after the published revision is available. Importing does not "
++    "publish the child's later changes: when those changed files are deliverables or "
++    "inputs to further work, require the child task body to complete with the exact "
++    "relative paths in its own `workspace_outputs`.\n\n"
++    "Do not shell out to `hermes kanban`, call `clarify` from a headless worker, or "
++    "use `delegate_task` as a substitute for a durable board task."
+ )
+ 
+ 
+@@ -304,6 +228,13 @@ KANBAN_ORCHESTRATOR_GUIDANCE = (
+     "it in the live session.\n"
+     "5. Use `kanban_comment` for relevant routing context. Never put secrets, "
+     "tokens, or raw PII in board data; task history is durable.\n"
++    "6. When a downstream task must inherit a producer's `workspace_outputs`, "
++    "create only the producer and include the downstream contract in its body. "
++    "The producer creates the one direct child with "
++    "`inherit_parent_workspace_output=true`. If that child must return changed "
++    "files, the producer must require it to complete with those exact relative "
++    "paths in its own `workspace_outputs`; inheritance alone does not publish "
++    "child changes.\n"
+ )
+ 
+ 
+diff --git a/tests/hermes_cli/test_worker_lane_discovery.py b/tests/hermes_cli/test_worker_lane_discovery.py
+index 90aa8b9..1110398 100644
+--- a/tests/hermes_cli/test_worker_lane_discovery.py
++++ b/tests/hermes_cli/test_worker_lane_discovery.py
+@@ -122,14 +122,29 @@ def test_kanban_create_routes_by_capability_not_current_identity():
+     assert "completed parents' summary and metadata" in parents_description
+ 
+ 
+-def test_kanban_guidance_recognizes_profiles_and_external_lanes():
+-    from agent.prompt_builder import KANBAN_GUIDANCE
+-
+-    assert "Choose dispatchable assignees" in KANBAN_GUIDANCE
+-    assert "does not select the current/default profile" in KANBAN_GUIDANCE
+-    assert "handoffs enter worker context without delay" in KANBAN_GUIDANCE
+-    assert "assignee=<right-profile>" not in KANBAN_GUIDANCE
+-    assert "Ground every assignee in a real profile" not in KANBAN_GUIDANCE
++def test_deployment_kanban_guidance_preserves_workspace_handoff_invariants():
++    from agent.prompt_builder import KANBAN_GUIDANCE, KANBAN_ORCHESTRATOR_GUIDANCE
++
++    assert len(KANBAN_GUIDANCE.split()) < 300
++    assert "terminal task state" in KANBAN_GUIDANCE
++    assert "rejected `kanban_complete` call does not end the task" in KANBAN_GUIDANCE
++    assert "$HERMES_KANBAN_WORKSPACE" in KANBAN_GUIDANCE
++    assert "assignees by declared capability" in KANBAN_GUIDANCE
++    assert "workspace_outputs" in KANBAN_GUIDANCE
++    assert "inherit_parent_workspace_output=true" in KANBAN_GUIDANCE
++    assert "Importing does not publish the child's later changes" in KANBAN_GUIDANCE
++    assert "its own `workspace_outputs`" in KANBAN_GUIDANCE
++    assert "kanban_complete(artifacts=" not in KANBAN_GUIDANCE
++    assert "review-required" not in KANBAN_GUIDANCE
++    assert "git worktree add" not in KANBAN_GUIDANCE
++    assert "shared SQLite DB" not in KANBAN_GUIDANCE
++    assert "must inherit a producer's `workspace_outputs`" in (
++        KANBAN_ORCHESTRATOR_GUIDANCE
++    )
++    assert "inherit_parent_workspace_output=true" in KANBAN_ORCHESTRATOR_GUIDANCE
++    assert "inheritance alone does not publish child changes" in (
++        KANBAN_ORCHESTRATOR_GUIDANCE
++    )
+ 
+ 
+ def test_kanban_create_without_registered_lanes_keeps_generic_schema():
+diff --git a/tests/plugins/test_workspace_handoff.py b/tests/plugins/test_workspace_handoff.py
+index 4c2da66..d25ae18 100644
+--- a/tests/plugins/test_workspace_handoff.py
++++ b/tests/plugins/test_workspace_handoff.py
+@@ -624,9 +624,10 @@ def test_failed_publication_replay_does_not_skip_crash_detection(
+ def test_create_schema_explains_trusted_sequential_handoff():
+     description = kanban_tools.KANBAN_CREATE_SCHEMA["description"]
+ 
+-    assert "do not pre-create the receiver outside the producer task" in description
++    assert "must import a producer's workspace_outputs" in description
++    assert "do not pre-create that receiver" in description
+     assert "inherit_parent_workspace_output=true" in description
+-    assert "complete with workspace_outputs" in description
++    assert "before publishing" in description
+     complete = kanban_tools.KANBAN_COMPLETE_SCHEMA["parameters"]["properties"]
+     assert "transfers file bytes between tasks" in complete["workspace_outputs"]["description"]
+     assert "do not transfer bytes to child tasks" in complete["artifacts"]["description"]
+diff --git a/tests/tools/test_kanban_tools.py b/tests/tools/test_kanban_tools.py
+index aa12f9d..191f574 100644
+--- a/tests/tools/test_kanban_tools.py
++++ b/tests/tools/test_kanban_tools.py
+@@ -1458,7 +1458,7 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
+     )
+     prompt = a._build_system_prompt()
+     # Header phrase (identity-free — SOUL.md owns identity, layer 3 is protocol)
+-    assert "Kanban task execution protocol" in prompt
++    assert "Kanban worker contract" in prompt
+     # Lifecycle signals
+     assert "kanban_show()" in prompt
+     assert "kanban_complete" in prompt
+@@ -1477,16 +1477,24 @@ def test_unblock_schema_forbids_speculative_retry():
+     assert "Never unblock merely to poll, retry speculatively" in description
+ 
+ 
++def test_inherited_workspace_schema_requires_explicit_republication():
++    from tools import kanban_tools as kt
++
++    description = (
++        kt.KANBAN_CREATE_SCHEMA["parameters"]["properties"]
++        ["inherit_parent_workspace_output"]["description"]
++    )
++    assert "Importing does not publish later child changes" in description
++    assert "kanban_complete(workspace_outputs=[...])" in description
++
++
+ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
+     """Sanity: the guidance block stays lean so it doesn't blow up the
+     cached prompt.
+ 
+-    The ceiling guards against unbounded growth, not against any growth.
+-    The block absorbed the load-bearing worker/orchestrator reference
+-    details (workspace kinds, deliverable artifacts, created-card claims,
+-    profile discovery) when the standalone kanban-worker / kanban-orchestrator
+-    skills were removed and folded into this always-injected guidance, so the
+-    ceiling is sized to fit that content with a little headroom.
++    Tool schemas own argument details. This always-injected block carries only
++    worker invariants, so both a lower bound and a tight ceiling catch accidental
++    deletion or renewed instruction accretion.
+     """
+     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+     home = tmp_path / ".hermes"
+@@ -1496,7 +1504,7 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
+     monkeypatch.setattr(_P, "home", lambda: tmp_path)
+ 
+     from agent.prompt_builder import KANBAN_GUIDANCE
+-    assert 1_500 < len(KANBAN_GUIDANCE) < 5_800, (
++    assert 900 < len(KANBAN_GUIDANCE) < 2_500, (
+         f"KANBAN_GUIDANCE is {len(KANBAN_GUIDANCE)} chars — too short (missing?) or too long"
+     )
+ 
+diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
+index fe36108..bc775a4 100644
+--- a/tools/kanban_tools.py
++++ b/tools/kanban_tools.py
+@@ -1498,16 +1498,13 @@ KANBAN_COMMENT_SCHEMA = {
+ KANBAN_CREATE_SCHEMA = {
+     "name": "kanban_create",
+     "description": (
+-        "Create a new kanban task, optionally as a child of the current "
+-        "one (pass the current task id in ``parents``). Used by "
+-        "orchestrator workers to fan out — decompose work into child "
+-        "tasks with specific assignees, link them into a pipeline, "
+-        "then complete your own task. The dispatcher picks up the new "
+-        "tasks on its next tick and spawns the assigned workers. For a sequential "
+-        "file handoff, do not pre-create the receiver outside the producer task. "
+-        "Instead, tell the producer to create its one direct child with "
+-        "inherit_parent_workspace_output=true, then complete with workspace_outputs; "
+-        "trusted producer identity is required for that import."
++        "Create a durable board task for a specific assignee. Workers use this "
++        "for bounded follow-up work; live orchestrators use it to route work and "
++        "encode dependencies with parents. The dispatcher picks up ready tasks "
++        "on its next tick. When a downstream task must import a producer's "
++        "workspace_outputs, do not pre-create that receiver: tell the producer "
++        "to create its one direct child with "
++        "inherit_parent_workspace_output=true before publishing."
+     ),
+     "parameters": {
+         "type": "object",
+@@ -1551,8 +1548,11 @@ KANBAN_CREATE_SCHEMA = {
+                 "description": (
+                     "Import the trusted current task's one published revision into this direct "
+                     "child's new private workspace before it starts. Requires parents to contain "
+-                    "exactly the caller's current task id. The caller cannot select a source, "
+-                    "revision, storage id, destination remapping, host path, or multiple inputs."
++                    "exactly the caller's current task id. Importing does not publish later child "
++                    "changes: put every file the child must return or pass onward in its body and "
++                    "require `kanban_complete(workspace_outputs=[...])`. The caller cannot select "
++                    "a source, revision, storage id, destination remapping, host path, or multiple "
++                    "inputs."
+                 ),
+             },
+             "tenant": {
+
+-- 
+2.50.1

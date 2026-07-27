@@ -1,5 +1,49 @@
+From 78a451dd07ed4c107c096af25a37c23c48ecfe1b Mon Sep 17 00:00:00 2001
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Sun, 26 Jul 2026 23:55:00 -0700
+Subject: [PATCH] fix(kanban): harden lifecycle and separate orchestration authority
+
+Rejected completion must leave a worker responsible for reaching a real
+terminal state, and repeated unblock/re-block cycles must escalate instead of
+looping forever.  Live board sessions also need different authority from a
+dispatcher-assigned worker: sharing one guidance block and lifecycle tool gate
+allowed the live model to complete or block tasks it did not own.
+
+Preserve rejected-completion recovery, count recurring blockers, select the
+role contract from HERMES_KANBAN_TASK, and reserve complete, block, and
+heartbeat tools for assigned workers.  This patch is backend-independent and
+should survive Hermes upgrades regardless of the execution or workspace
+backend.
+---
+diff --git a/agent/agent_init.py b/agent/agent_init.py
+index 495260d..efbc8fd 100644
+--- a/agent/agent_init.py
++++ b/agent/agent_init.py
+@@ -1177,15 +1177,13 @@ def init_agent(
+     elif not agent.quiet_mode:
+         print("🛠️  No tools loaded (all tools filtered out or unavailable)")
+ 
+-    # Kanban worker/orchestrator lifecycle guidance is session-static:
+-    # the dispatcher decides at spawn time whether this process is a kanban
+-    # worker (kanban_show tool is present iff HERMES_KANBAN_TASK is set).
+-    # Resolving the ~835-token block once here avoids re-running the
+-    # membership test + reference on every system-prompt rebuild
+-    # (init + each context compression).
+-    from agent.prompt_builder import KANBAN_GUIDANCE
+-    agent._kanban_worker_guidance = (
+-        KANBAN_GUIDANCE if "kanban_show" in agent.valid_tool_names else ""
++    # Kanban role guidance is session-static. The dispatcher provides the
++    # trusted task identity for workers; kanban_list is orchestrator-only.
++    # Resolve the contract once here so prompt rebuilds remain byte-stable.
++    from agent.prompt_builder import select_kanban_guidance
++    agent._kanban_worker_guidance = select_kanban_guidance(
++        task_id=os.environ.get("HERMES_KANBAN_TASK"),
++        tool_names=agent.valid_tool_names,
+     )
+ 
+     # Check tool requirements
 diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
-index 3ec4a40..a2ff84c 100644
+index 3ec4a40..a222c4c 100644
 --- a/agent/prompt_builder.py
 +++ b/agent/prompt_builder.py
 @@ -227,6 +227,9 @@ KANBAN_GUIDANCE = (
@@ -12,33 +56,78 @@ index 3ec4a40..a2ff84c 100644
      "6. **If follow-up work appears, create it; don't do it.** Use "
      "`kanban_create(title=..., assignee=<right-profile>, parents=[your-task-id])` "
      "to spawn a child task for the appropriate specialist profile instead of "
-diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
-index 2e81f94..9ee49e9 100644
---- a/tools/kanban_tools.py
-+++ b/tools/kanban_tools.py
-@@ -1550,16 +1550,18 @@ KANBAN_CREATE_SCHEMA = {
- KANBAN_UNBLOCK_SCHEMA = {
-     "name": "kanban_unblock",
-     "description": (
--        "Move a blocked Kanban task back to ready. Orchestrator-only — only "
--        "profiles with the kanban toolset can unblock routed work; "
--        "dispatcher-spawned task workers never see this tool."
-+        "Move a blocked Kanban task back to ready only after the current task "
-+        "contract or a human explicitly authorizes a retry and the blocker is "
-+        "confirmed resolved. Never unblock merely to poll, retry speculatively, "
-+        "or override a rejected completion. Orchestrator-only; dispatched task "
-+        "workers never see this tool."
-     ),
-     "parameters": {
-         "type": "object",
-         "properties": {
-             "task_id": {
-                 "type": "string",
--                "description": "Blocked task id to return to ready.",
-+                "description": "Blocked task id whose blocker is confirmed resolved.",
-             },
-             "board": _board_schema_prop(),
-         },
+@@ -278,6 +281,38 @@ KANBAN_GUIDANCE = (
+     "cross-agent handoffs that outlive one API loop."
+ )
+ 
++
++KANBAN_ORCHESTRATOR_GUIDANCE = (
++    "# Kanban orchestration protocol\n"
++    "You route durable work on the shared Kanban board; you are not a "
++    "dispatcher-assigned task worker.\n"
++    "1. Use the `kanban_*` tools to create, inspect, link, comment on, and "
++    "observe tasks. Do not execute a task body yourself or substitute "
++    "`delegate_task` for board work the user requested.\n"
++    "2. Create each intended task once. A `ready` task is queued work, not "
++    "evidence that the dispatcher is unavailable. Judge dispatcher progress "
++    "from authoritative task events, not a terminal process view.\n"
++    "3. Worker lifecycle belongs to the assigned worker. Do not complete, "
++    "block, or heartbeat on its behalf. Unblock only when the task contract "
++    "or a human authorizes a retry and the recorded blocker is resolved.\n"
++    "4. Report outcomes from authoritative task state. Claim success only when "
++    "the required tasks are `done`; report a blocker instead of working around "
++    "it in the live session.\n"
++    "5. Use `kanban_comment` for relevant routing context. Never put secrets, "
++    "tokens, or raw PII in board data; task history is durable.\n"
++)
++
++
++def select_kanban_guidance(
++    *, task_id: str | None, tool_names: set[str]
++) -> str:
++    """Select the session-static Kanban contract from trusted role signals."""
++    if task_id:
++        return KANBAN_GUIDANCE
++    if "kanban_list" in tool_names:
++        return KANBAN_ORCHESTRATOR_GUIDANCE
++    return ""
++
+ TOOL_USE_ENFORCEMENT_GUIDANCE = (
+     "# Tool-use enforcement\n"
+     "You MUST use your tools to take action — do not describe what you would do "
+diff --git a/agent/system_prompt.py b/agent/system_prompt.py
+index b9b26e0..b9b4104 100644
+--- a/agent/system_prompt.py
++++ b/agent/system_prompt.py
+@@ -192,10 +192,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None)
+         tool_guidance.append(SESSION_SEARCH_GUIDANCE)
+     if "skill_manage" in agent.valid_tool_names:
+         tool_guidance.append(SKILLS_GUIDANCE)
+-    # Kanban worker/orchestrator lifecycle — only present when the
+-    # dispatcher spawned this process (kanban_show check_fn gates on
+-    # HERMES_KANBAN_TASK env var). Normal chat sessions never see
+-    # this block. Resolved once at __init__ (see _kanban_worker_guidance).
++    # Kanban worker/orchestrator contract, selected once during agent_init from
++    # the role-specific tool surface and trusted dispatcher task identity.
+     _kanban_guidance = getattr(agent, "_kanban_worker_guidance", None)
+     if _kanban_guidance:
+         tool_guidance.append(_kanban_guidance)
+@@ -242,7 +240,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None)
+             # "auto" or any unrecognised value — use hardcoded defaults
+             model_lower = (agent.model or "").lower()
+             _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
+-        if _inject:
++        # Live orchestrators must be able to wait for asynchronous workers.
++        # The generic "keep working until complete" block otherwise tells
++        # tool-eager models to poll or execute child work themselves.
++        _live_kanban_orchestrator = (
++            "kanban_list" in agent.valid_tool_names
++            and "kanban_complete" not in agent.valid_tool_names
++        )
++        if _inject and not _live_kanban_orchestrator:
+             stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
+             _model_lower = (agent.model or "").lower()
+             # Google model operational guidance (conciseness, absolute
 diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
 index 6150b14..97c6873 100644
 --- a/hermes_cli/kanban_db.py
@@ -123,11 +212,128 @@ index 353722d..01d8e01 100644
      finally:
          conn.close()
  
+diff --git a/tests/tools/test_kanban_role_boundaries.py b/tests/tools/test_kanban_role_boundaries.py
+new file mode 100644
+index 0000000..4bb681d
+--- /dev/null
++++ b/tests/tools/test_kanban_role_boundaries.py
+@@ -0,0 +1,79 @@
++"""Regression tests for worker versus live-orchestrator Kanban authority."""
++
++
++def test_kanban_guidance_in_orchestrator_prompt(monkeypatch, tmp_path):
++    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
++    home = tmp_path / ".hermes"
++    home.mkdir()
++    (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
++    monkeypatch.setenv("HERMES_HOME", str(home))
++    from pathlib import Path
++
++    monkeypatch.setattr(Path, "home", lambda: tmp_path)
++
++    from model_tools import _clear_tool_defs_cache
++    from tools.registry import invalidate_check_fn_cache
++
++    invalidate_check_fn_cache()
++    _clear_tool_defs_cache()
++
++    from run_agent import AIAgent
++
++    agent = AIAgent(
++        api_key="test",
++        base_url="https://openrouter.ai/api/v1",
++        model="deepseek-v4-flash",
++        quiet_mode=True,
++        skip_context_files=True,
++        skip_memory=True,
++    )
++    prompt = agent._build_system_prompt()
++    assert "Kanban orchestration protocol" in prompt
++    assert "Kanban task execution protocol" not in prompt
++    assert "Do not execute a task body yourself" in prompt
++    assert "# Tool-use enforcement" not in prompt
++    assert "Keep working until the task is actually complete" not in prompt
++
++
++def test_kanban_guidance_selection_separates_worker_and_orchestrator():
++    from agent.prompt_builder import (
++        KANBAN_GUIDANCE,
++        KANBAN_ORCHESTRATOR_GUIDANCE,
++        select_kanban_guidance,
++    )
++
++    assert select_kanban_guidance(
++        task_id="t_worker", tool_names={"kanban_show", "kanban_list"}
++    ) == KANBAN_GUIDANCE
++    assert select_kanban_guidance(
++        task_id=None, tool_names={"kanban_show", "kanban_list"}
++    ) == KANBAN_ORCHESTRATOR_GUIDANCE
++    assert select_kanban_guidance(
++        task_id=None, tool_names={"kanban_show"}
++    ) == ""
++
++
++def test_kanban_orchestrator_guidance_forbids_worker_substitution():
++    from agent.prompt_builder import KANBAN_ORCHESTRATOR_GUIDANCE
++
++    assert "Do not execute a task body yourself" in KANBAN_ORCHESTRATOR_GUIDANCE
++    assert "substitute `delegate_task`" in KANBAN_ORCHESTRATOR_GUIDANCE
++    assert "A `ready` task is queued work" in KANBAN_ORCHESTRATOR_GUIDANCE
++    assert "Worker lifecycle belongs to the assigned worker" in (
++        KANBAN_ORCHESTRATOR_GUIDANCE
++    )
++    assert "Claim success only when" in KANBAN_ORCHESTRATOR_GUIDANCE
++
++
++def test_kanban_worker_lifecycle_gate_excludes_orchestrator(monkeypatch):
++    from tools import kanban_tools as kanban
++
++    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
++    monkeypatch.setattr(kanban, "_profile_has_kanban_toolset", lambda: True)
++    assert kanban._check_kanban_mode()
++    assert kanban._check_kanban_orchestrator_mode()
++    assert not kanban._check_kanban_worker_mode()
++
++    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
++    assert kanban._check_kanban_worker_mode()
++    assert not kanban._check_kanban_orchestrator_mode()
 diff --git a/tests/tools/test_kanban_tools.py b/tests/tools/test_kanban_tools.py
-index cdf8c4c..e129209 100644
+index cdf8c4c..9234b96 100644
 --- a/tests/tools/test_kanban_tools.py
 +++ b/tests/tools/test_kanban_tools.py
-@@ -1430,10 +1430,19 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
+@@ -1,8 +1,7 @@
+ """Tests for the Kanban tool surface (tools/kanban_tools.py).
+ 
+ Verifies:
+-  - Tools are gated on HERMES_KANBAN_TASK: a normal chat session sees
+-    zero kanban tools in its schema; a worker session sees the kanban set.
++  - Kanban tools are partitioned between normal, worker, and orchestrator sessions.
+   - Each handler's happy path.
+   - Error paths (missing required args, bad metadata type, etc).
+ """
+@@ -118,7 +117,7 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
+ 
+ 
+ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
+-    """Orchestrator profiles with toolsets: [kanban] see all kanban tools."""
++    """Orchestrators get board-routing tools, not worker lifecycle tools."""
+     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+     home = tmp_path / ".hermes"
+     home.mkdir()
+@@ -134,10 +133,8 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
+     names = {s["function"].get("name") for s in schema if "function" in s}
+     kanban = {n for n in names if n and n.startswith("kanban_")}
+     expected = {
+-        "kanban_list",
+-        "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
+-        "kanban_comment", "kanban_create", "kanban_link",
+-        "kanban_unblock",
++        "kanban_list", "kanban_show", "kanban_comment", "kanban_create",
++        "kanban_link", "kanban_unblock",
+     }
+     assert kanban == expected, f"expected {expected}, got {kanban}"
+ 
+@@ -1430,10 +1427,19 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
      assert "kanban_complete" in prompt
      assert "kanban_block" in prompt
      assert "kanban_create" in prompt
@@ -147,7 +353,7 @@ index cdf8c4c..e129209 100644
  def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
      """Sanity: the guidance block stays lean so it doesn't blow up the
      cached prompt.
-@@ -1453,7 +1462,7 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
+@@ -1453,7 +1459,7 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
      monkeypatch.setattr(_P, "home", lambda: tmp_path)
  
      from agent.prompt_builder import KANBAN_GUIDANCE
@@ -156,3 +362,122 @@ index cdf8c4c..e129209 100644
          f"KANBAN_GUIDANCE is {len(KANBAN_GUIDANCE)} chars — too short (missing?) or too long"
      )
  
+@@ -1462,17 +1468,14 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
+ # Worker task-ownership enforcement (regression tests for #19534)
+ # ---------------------------------------------------------------------------
+ #
+-# A worker process has HERMES_KANBAN_TASK set to its own task id. The
+-# destructive tools (kanban_complete, kanban_block, kanban_heartbeat,
+-# kanban_unblock) must refuse to operate
+-# on any OTHER task id, even if the caller supplies an explicit `task_id`
+-# argument. Workers legitimately call kanban_show / kanban_list /
+-# kanban_comment / kanban_create / kanban_link on other tasks, so those
+-# are unrestricted.
++# A worker process has HERMES_KANBAN_TASK set to its own task id. Lifecycle
++# handlers must refuse to mutate any other task even if an explicit task_id is
++# supplied. Workers may inspect, comment on, create, or link related tasks.
+ #
+-# Orchestrator profiles (no HERMES_KANBAN_TASK in env) are intentionally
+-# exempt — their job is routing, and they sometimes close out child
+-# tasks on behalf of the child.
++# Calls with no worker identity remain available to trusted internal/operator
++# recovery code. Model-facing live orchestrators do not receive complete,
++# block, or heartbeat definitions because the registry applies the separate
++# worker lifecycle gate.
+ 
+ 
+ def test_worker_complete_rejects_foreign_task_id(worker_env):
+@@ -1664,9 +1667,8 @@ def test_worker_complete_rejects_stale_run_id(worker_env, monkeypatch):
+     assert d.get("ok") is True
+ 
+ 
+-def test_orchestrator_complete_any_task_allowed(monkeypatch, tmp_path):
+-    """Orchestrator profiles (no HERMES_KANBAN_TASK) can still complete
+-    any task via explicit task_id. The check only applies to workers."""
++def test_unscoped_complete_handler_retains_operator_recovery(monkeypatch, tmp_path):
++    """The internal handler remains usable outside a model-facing worker."""
+     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+     home = tmp_path / ".hermes"
+     home.mkdir()
+diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
+index 2e81f94..2f826e7 100644
+--- a/tools/kanban_tools.py
++++ b/tools/kanban_tools.py
+@@ -79,6 +79,11 @@ def _check_kanban_mode() -> bool:
+     return _profile_has_kanban_toolset()
+ 
+ 
++def _check_kanban_worker_mode() -> bool:
++    """Worker lifecycle tools require a dispatcher-assigned task identity."""
++    return bool(os.environ.get("HERMES_KANBAN_TASK"))
++
++
+ def _check_kanban_orchestrator_mode() -> bool:
+     """Board-routing tools (kanban_list, kanban_unblock) are intentionally
+     hidden from task workers.
+@@ -1490,9 +1495,9 @@ KANBAN_CREATE_SCHEMA = {
+             "max_runtime_seconds": {
+                 "type": "integer",
+                 "description": (
+-                    "Per-task runtime cap. When exceeded, the "
+-                    "dispatcher SIGTERMs the worker and re-queues the "
+-                    "task with outcome='timed_out'."
++                    "Per-task runtime cap. When exceeded, the dispatcher "
++                    "terminates the worker, records outcome='timed_out', and "
++                    "applies the configured retry and circuit-breaker policy."
+                 ),
+             },
+             "initial_status": {
+@@ -1550,16 +1555,18 @@ KANBAN_CREATE_SCHEMA = {
+ KANBAN_UNBLOCK_SCHEMA = {
+     "name": "kanban_unblock",
+     "description": (
+-        "Move a blocked Kanban task back to ready. Orchestrator-only — only "
+-        "profiles with the kanban toolset can unblock routed work; "
+-        "dispatcher-spawned task workers never see this tool."
++        "Move a blocked Kanban task back to ready only after the current task "
++        "contract or a human explicitly authorizes a retry and the blocker is "
++        "confirmed resolved. Never unblock merely to poll, retry speculatively, "
++        "or override a rejected completion. Orchestrator-only; dispatched task "
++        "workers never see this tool."
+     ),
+     "parameters": {
+         "type": "object",
+         "properties": {
+             "task_id": {
+                 "type": "string",
+-                "description": "Blocked task id to return to ready.",
++                "description": "Blocked task id whose blocker is confirmed resolved.",
+             },
+             "board": _board_schema_prop(),
+         },
+@@ -1613,7 +1620,7 @@ registry.register(
+     toolset="kanban",
+     schema=KANBAN_COMPLETE_SCHEMA,
+     handler=_handle_complete,
+-    check_fn=_check_kanban_mode,
++    check_fn=_check_kanban_worker_mode,
+     emoji="✔",
+ )
+ 
+@@ -1622,7 +1629,7 @@ registry.register(
+     toolset="kanban",
+     schema=KANBAN_BLOCK_SCHEMA,
+     handler=_handle_block,
+-    check_fn=_check_kanban_mode,
++    check_fn=_check_kanban_worker_mode,
+     emoji="⏸",
+ )
+ 
+@@ -1631,7 +1638,7 @@ registry.register(
+     toolset="kanban",
+     schema=KANBAN_HEARTBEAT_SCHEMA,
+     handler=_handle_heartbeat,
+-    check_fn=_check_kanban_mode,
++    check_fn=_check_kanban_worker_mode,
+     emoji="💓",
+ )
+ 
+
+-- 
+2.50.1
