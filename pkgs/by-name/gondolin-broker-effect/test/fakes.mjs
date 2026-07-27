@@ -9,9 +9,9 @@ import { EnvironmentsLive } from "../dist/environments.js"
 import { ExecutorLive } from "../dist/exec.js"
 import { FilesLive } from "../dist/files.js"
 import { makeAccessGrantsLayer } from "../dist/grants.js"
-import { RevisionOperationsLive } from "../dist/revision-operations.js"
-import { RevisionStoreLive } from "../dist/revision-store.js"
-import { RevisionStorageLive } from "../dist/revision-storage.js"
+import { HandoffOperationsLive } from "../dist/workspace-handoff/service.js"
+import { HandoffStoreLive } from "../dist/workspace-handoff/repository.js"
+import { HandoffStorageLive } from "../dist/workspace-handoff/frozen-tree.js"
 import { RegistryLive } from "../dist/registry.js"
 import { VmRuntime } from "../dist/runtime.js"
 import { WorkspacesLive } from "../dist/workspaces.js"
@@ -57,7 +57,7 @@ const makeFileSystem = () => {
   }
 }
 
-export const makeFakeRuntime = () => {
+export const makeFakeRuntime = (options = {}) => {
   const state = { created: [], closed: [], execs: [] }
   const runtime = {
     create: (spec) => Effect.sync(() => {
@@ -108,6 +108,7 @@ export const makeFakeRuntime = () => {
           }
         },
         close: async () => {
+          if (options.closeFailure === true) throw new Error("fake close failure")
           if (!closed) state.closed.push(id)
           closed = true
         }
@@ -135,7 +136,7 @@ export const makePolicyFile = (overrides = {}) => ({
           maxCommandMs: 1000,
           maxOutputBytes: 4096,
           maxInputBytes: 1024,
-          maxFileBytes: 1024,
+          maxFileBytes: 256 * 1024,
           maxListEntries: 32,
           maxConcurrentExecs: 2,
           timeoutMs: 1000,
@@ -159,7 +160,7 @@ export const makePolicyFile = (overrides = {}) => ({
           maxCommandMs: 1000,
           maxOutputBytes: 4096,
           maxInputBytes: 1024,
-          maxFileBytes: 1024,
+          maxFileBytes: 256 * 1024,
           maxListEntries: 32,
           maxConcurrentExecs: 2,
           timeoutMs: 1000,
@@ -207,12 +208,13 @@ export const makePolicyFile = (overrides = {}) => ({
 })
 
 export const makeTestLayer = (stateDir, options = {}) => {
-  const fake = makeFakeRuntime()
+  const fake = makeFakeRuntime(options)
   const config = {
     policyPath: path.join(stateDir, "policy.json"),
     stateDir,
     workspaceRoot: path.join(stateDir, "workspaces"),
-    workspaceRevisionRoot: path.join(stateDir, "workspace-revisions"),
+    workspaceHandoffRoot: path.join(stateDir, "workspace-handoffs"),
+    workspaceHandoffExportTtlMs: 5 * 60 * 1000,
     workspaceHandoffEnabled: options.workspaceHandoffEnabled ?? false,
     databasePath: path.join(stateDir, "broker.sqlite"),
     socketPath: path.join(stateDir, "broker.sock"),
@@ -228,15 +230,15 @@ export const makeTestLayer = (stateDir, options = {}) => {
   const workspaces = WorkspacesLive.pipe(Layer.provideMerge(database))
   const registry = RegistryLive.pipe(Layer.provideMerge(workspaces))
   const runActivations = TaskRunActivationsLive.pipe(Layer.provideMerge(registry))
-  const revisions = RevisionStoreLive.pipe(Layer.provideMerge(runActivations))
-  const revisionStorage = RevisionStorageLive.pipe(Layer.provideMerge(revisions))
+  const handoffs = HandoffStoreLive.pipe(Layer.provideMerge(runActivations))
+  const handoffStorage = HandoffStorageLive.pipe(Layer.provideMerge(handoffs))
   const grants = makeAccessGrantsLayer({
     ...(options.grantResolver === undefined ? {} : { resolver: options.grantResolver }),
     ...(options.now === undefined ? {} : { now: options.now })
-  }).pipe(Layer.provideMerge(revisionStorage))
+  }).pipe(Layer.provideMerge(handoffStorage))
   const environments = EnvironmentsLive.pipe(Layer.provideMerge(grants))
-  const revisionOperations = RevisionOperationsLive.pipe(Layer.provideMerge(environments))
-  const executor = ExecutorLive.pipe(Layer.provideMerge(revisionOperations))
+  const handoffOperations = HandoffOperationsLive.pipe(Layer.provideMerge(environments))
+  const executor = ExecutorLive.pipe(Layer.provideMerge(handoffOperations))
   const layer = FilesLive.pipe(Layer.provideMerge(executor))
   return { config, fake, layer }
 }

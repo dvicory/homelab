@@ -26,9 +26,12 @@ import {
   WriteFileRequest,
 } from "./domain.js";
 import {
-  ImportWorkspaceRevisionRequest,
-  PublishWorkspaceRevisionRequest,
-} from "./revision-domain.js";
+  CaptureWorkspaceHandoffRequest,
+  ImportWorkspaceHandoffRequest,
+  PrepareWorkspaceExportRequest,
+  ReadWorkspaceExportRequest,
+  ReleaseWorkspaceExportRequest,
+} from "./workspace-handoff/model.js";
 import { TaskRunActivations } from "./task-run-activations.js";
 import { getOrBindDefaultAuthority } from "./authority.js";
 import { BrokerConfig } from "./config.js";
@@ -38,11 +41,21 @@ import { Executor } from "./exec.js";
 import { Files } from "./files.js";
 import { AccessGrants } from "./grants.js";
 import { Registry } from "./registry.js";
-import { RevisionOperations } from "./revision-operations.js";
+import { HandoffOperations } from "./workspace-handoff/service.js";
 import { Workspaces, type WorkspaceRecord } from "./workspaces.js";
 
 const encoder = new TextEncoder();
 const requestDecodeOptions = { onExcessProperty: "error" as const };
+const encodeFilenameParameter = (fileName: string): string =>
+  encodeURIComponent(fileName).replace(/[!'()*]/g, (character) =>
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+
+export const contentDispositionFor = (fileName: string): string => {
+  const asciiFallback =
+    fileName.replace(/[^\x20-\x7e]/g, "_").replace(/[/"\\]/g, "_") || "download";
+  return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodeFilenameParameter(fileName)}`;
+};
 
 const errorResponse = (error: BrokerError) =>
   HttpServerResponse.unsafeJson(publicProblem(error), {
@@ -161,7 +174,7 @@ export const makeControlHttpApp = Effect.gen(function* () {
   const workspaces = yield* Workspaces;
   const runActivations = yield* TaskRunActivations;
   const environments = yield* Environments;
-  const revisionOperations = yield* RevisionOperations;
+  const handoffOperations = yield* HandoffOperations;
 
   const bindAuthority = (request: typeof BindAuthorityRequest.Type) =>
     Effect.gen(function* () {
@@ -277,12 +290,31 @@ export const makeControlHttpApp = Effect.gen(function* () {
       ),
       Effect.map(({ activation }) => ({ activation })),
     );
-
   const unary = <A, I>(
     operationName: string,
     schema: Schema.Schema<A, I>,
     operation: (request: A) => Effect.Effect<unknown, BrokerError>,
   ) => respond(operationName, Effect.flatMap(parseBody(schema), operation));
+
+  const readExport = parseBody(ReadWorkspaceExportRequest).pipe(
+    Effect.flatMap(handoffOperations.readExport),
+    Effect.match({
+      onFailure: errorResponse,
+      onSuccess: (exportFile) => HttpServerResponse.stream(
+        Stream.fromAsyncIterable(exportFile.body, (error) => asBrokerError(error)),
+        {
+          status: 200,
+          contentType: "application/octet-stream",
+          headers: {
+            "cache-control": "no-store",
+            "content-length": String(exportFile.byteSize),
+            "content-disposition": contentDispositionFor(exportFile.fileName),
+            "x-content-type-options": "nosniff",
+          },
+        },
+      ),
+    }),
+  );
 
   const routes = HttpRouter.empty.pipe(
     HttpRouter.get(
@@ -368,12 +400,24 @@ export const makeControlHttpApp = Effect.gen(function* () {
           unary("run_activation.consume", ConsumeTaskRunRequest, consumeTaskRun),
         ),
         HttpRouter.post(
-          "/v1/control/workspace-revisions/publish",
-          unary("workspace.publish", PublishWorkspaceRevisionRequest, revisionOperations.publish),
+          "/v1/control/workspace-handoffs/capture",
+          unary("workspace.capture", CaptureWorkspaceHandoffRequest, handoffOperations.capture),
         ),
         HttpRouter.post(
-          "/v1/control/workspace-revisions/import",
-          unary("workspace.import", ImportWorkspaceRevisionRequest, revisionOperations.importRevision),
+          "/v1/control/workspace-handoffs/import",
+          unary("workspace.import", ImportWorkspaceHandoffRequest, handoffOperations.importHandoff),
+        ),
+        HttpRouter.post(
+          "/v1/control/workspace-handoffs/exports/prepare",
+          unary("workspace.export.prepare", PrepareWorkspaceExportRequest, handoffOperations.prepareExport),
+        ),
+        HttpRouter.post(
+          "/v1/control/workspace-handoffs/exports/read",
+          readExport,
+        ),
+        HttpRouter.post(
+          "/v1/control/workspace-handoffs/exports/release",
+          unary("workspace.export.release", ReleaseWorkspaceExportRequest, handoffOperations.releaseExport),
         ),
       )
     : routes;

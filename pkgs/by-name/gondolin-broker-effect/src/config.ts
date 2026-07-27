@@ -85,7 +85,8 @@ export interface BrokerConfigService {
   readonly policyPath: string;
   readonly stateDir: string;
   readonly workspaceRoot: string;
-  readonly workspaceRevisionRoot: string;
+  readonly workspaceHandoffRoot: string;
+  readonly workspaceHandoffExportTtlMs: number;
   readonly workspaceHandoffEnabled: boolean;
   readonly databasePath: string;
   readonly socketPath: string;
@@ -181,7 +182,8 @@ const load = Effect.gen(function* () {
     policyPath: path.resolve(raw.policyPath),
     stateDir,
     workspaceRoot: path.join(stateDir, "workspaces"),
-    workspaceRevisionRoot: path.join(stateDir, "workspace-revisions"),
+    workspaceHandoffRoot: path.join(stateDir, "workspace-handoffs"),
+    workspaceHandoffExportTtlMs: 5 * 60 * 1000,
     workspaceHandoffEnabled: raw.workspaceHandoffEnabled,
     databasePath: path.join(stateDir, "broker.sqlite"),
     socketPath: raw.socketPath._tag === "Some" ? path.resolve(raw.socketPath.value) : path.join(stateDir, "broker.sock"),

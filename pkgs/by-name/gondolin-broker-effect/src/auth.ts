@@ -13,8 +13,9 @@ export const BrokerActions = [
   "fs.write",
   "fs.mkdir",
   "fs.remove",
-  "workspace.publish",
+  "workspace.capture",
   "workspace.import",
+  "workspace.export",
 ] as const;
 
 export type BrokerAction = (typeof BrokerActions)[number];

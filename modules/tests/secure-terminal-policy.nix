@@ -82,7 +82,7 @@
           ];
         };
         workspaceHandoffEnabled = true;
-        workspaceRevisionLimits = {
+        workspaceHandoffLimits = {
           maxLogicalBytes = 67108864;
           maxEntries = 8192;
           maxFileBytes = 16777216;
@@ -121,7 +121,7 @@
         maximum = qaSelections.maximum;
         worklanes = qaSelections.worklanes;
         workspaceHandoffEnabled = qaSelections.workspaceHandoffEnabled;
-        workspaceRevisionLimits = qaSelections.workspaceRevisionLimits;
+        workspaceHandoffLimits = qaSelections.workspaceHandoffLimits;
       };
       qaHome = self.homeConfigurations."hermes-qa-runner@hvn-hyp1".config;
       prodHome = self.homeConfigurations."hermes-prod-runner@hvn-hyp1".config;
@@ -161,14 +161,20 @@
         assert !hasLegacySocketMount;
         assert lib.elem "d /run/hermes-qa-broker 0711 root root -" qaHost.systemd.tmpfiles.rules;
         assert qaExecutionSocket.DirectoryMode == "0711";
+        assert qaExecutionSocket.ListenStream == "/run/hermes-qa-broker/broker.sock";
         assert qaExecutionSocket.SocketMode == "0600";
         assert qaExecutionSocket.SocketUser == "hermes-qa-runner";
         assert qaControlSocket.DirectoryMode == "0711";
+        assert qaControlSocket.ListenStream == "/run/hermes-qa-broker/control.sock";
         assert qaControlSocket.SocketMode == "0600";
         assert qaControlSocket.SocketUser == "hermes-qa-runner";
         assert qaBrokerEnvironment.GONDOLIN_EFFECT_STATE_DIR == "/var/lib/hermes-qa-sandbox";
         assert qaBrokerEnvironment.GONDOLIN_EFFECT_WORKSPACE_HANDOFF == "true";
         assert qaGatewayEnvironment.HERMES_WORKSPACE_HANDOFF == "1";
+        assert qaGatewayEnvironment.HERMES_GONDOLIN_SOCKET == "/run/hermes-sandbox/broker.sock";
+        assert qaGatewayEnvironment.GONDOLIN_EFFECT_CONTROL_SOCKET == "/run/hermes-sandbox/control.sock";
+        assert qaBrokerEnvironment.GONDOLIN_EFFECT_SOCKET == "/run/hermes-qa-broker/broker.sock";
+        assert qaBrokerEnvironment.GONDOLIN_EFFECT_CONTROL_SOCKET == "/run/hermes-qa-broker/control.sock";
         assert qaBrokerHardening.ProtectControlGroups;
         assert qaBrokerHardening.DevicePolicy == "closed";
         assert lib.elem "/dev/kvm rw" qaBrokerHardening.DeviceAllow;

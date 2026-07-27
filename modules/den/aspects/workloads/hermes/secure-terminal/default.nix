@@ -103,9 +103,9 @@ in
       worklanes = secureTerminal.worklanes or { };
       workspaceHandoff = secureTerminal.workspaceHandoff or { };
       workspaceHandoffEnabled = workspaceHandoff.enable or false;
-      workspaceRevisionLimits =
-        policyLib.workspaceRevisionLimitCeilings
-        // (workspaceHandoff.revisionLimits or { });
+      workspaceHandoffLimits =
+        policyLib.workspaceHandoffLimitCeilings
+        // (workspaceHandoff.handoffLimits or { });
     in
     {
       name = "workloads/hermes-secure-terminal/${user.userName}";
@@ -133,7 +133,7 @@ in
                 maximum
                 worklanes
                 workspaceHandoffEnabled
-                workspaceRevisionLimits
+                workspaceHandoffLimits
                 ;
             };
           in

@@ -9,8 +9,15 @@ import test from "node:test"
 import { Effect } from "effect"
 import { BrokerDatabase } from "../dist/database.js"
 import { BrokerConfig } from "../dist/config.js"
-import { makeControlHttpApp, makeHttpApp } from "../dist/http.js"
+import { contentDispositionFor, makeControlHttpApp, makeHttpApp } from "../dist/http.js"
 import { makeTestLayer } from "./fakes.mjs"
+test("export content-disposition is ASCII-safe and RFC5987 encoded", () => {
+  const header = contentDispositionFor("résumé\"\r\n.txt")
+  assert.equal(header.includes("\r"), false)
+  assert.equal(header.includes("\n"), false)
+  assert.match(header, /filename="r_sum____\.txt"/)
+  assert.match(header, /filename\*=UTF-8''r%C3%A9sum%C3%A9%22%0D%0A\.txt$/)
+})
 
 const request = (socketPath, route, body) => new Promise((resolve, reject) => {
   const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body))
@@ -255,18 +262,18 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
     assert.equal(deletedWorkspace.status, 200)
     assert.deepEqual(JSON.parse(deletedWorkspace.text), { deleted: true })
 
-    const recognizedControlRevisionRoute = yield* Effect.promise(() =>
-      request(config.controlSocketPath, "/v1/control/workspace-revisions/publish", {})
+    const recognizedControlHandoffRoute = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/workspace-handoffs/capture", {})
     )
-    assert.equal(recognizedControlRevisionRoute.status, 400)
+    assert.equal(recognizedControlHandoffRoute.status, 400)
     assert.equal(
-      JSON.parse(recognizedControlRevisionRoute.text).detail,
+      JSON.parse(recognizedControlHandoffRoute.text).detail,
       "request body does not match the endpoint schema"
     )
-    const hiddenRevisionRoute = yield* Effect.promise(() =>
-      request(config.socketPath, "/v1/control/workspace-revisions/publish", {})
+    const hiddenHandoffRoute = yield* Effect.promise(() =>
+      request(config.socketPath, "/v1/control/workspace-handoffs/capture", {})
     )
-    assert.equal(hiddenRevisionRoute.status, 404)
+    assert.equal(hiddenHandoffRoute.status, 404)
     const invalid = yield* Effect.promise(() => request(config.socketPath, "/v1/environments/ensure", {
       environmentKey: "conversation-http",
       unexpected: true
@@ -280,7 +287,7 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
   }).pipe(Effect.provide(harness.layer))))
 })
 
-test("disabled handoff exposes no routes, tables, or revision root", async () => {
+test("disabled handoff exposes no routes, tables, or handoff root", async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), "gondolin-effect-disabled-handoff-"))
   const harness = makeTestLayer(stateDir)
   await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
@@ -293,18 +300,18 @@ test("disabled handoff exposes no routes, tables, or revision root", async () =>
     const activate = yield* Effect.promise(() =>
       request(config.controlSocketPath, "/v1/control/task-runs/activate", {})
     )
-    const publish = yield* Effect.promise(() =>
-      request(config.controlSocketPath, "/v1/control/workspace-revisions/publish", {})
+    const capture = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/workspace-handoffs/capture", {})
     )
     assert.equal(activate.status, 404)
-    assert.equal(publish.status, 404)
-    const revisionTables = database.connection.prepare(`
+    assert.equal(capture.status, 404)
+    const handoffTables = database.connection.prepare(`
       SELECT count(*) AS count FROM sqlite_schema
       WHERE type='table' AND (
-        name='task_run_activations' OR name LIKE 'workspace_revision%'
+        name='task_run_activations' OR name LIKE 'workspace_handoff%'
       )
     `).get().count
-    assert.equal(revisionTables, 0)
-    yield* Effect.promise(() => assert.rejects(access(config.workspaceRevisionRoot)))
+    assert.equal(handoffTables, 0)
+    yield* Effect.promise(() => assert.rejects(access(config.workspaceHandoffRoot)))
   }).pipe(Effect.provide(harness.layer))))
 })

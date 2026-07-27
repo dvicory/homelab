@@ -39,16 +39,23 @@ export interface WorkspaceBinding {
 
 export interface AtomicWorkspaceBinding<A> extends WorkspaceBinding {
   readonly result: A;
+  readonly created: boolean;
 }
 
 export interface WorkspaceService {
   readonly acquireAtomically: <A>(
     environmentKey: string,
     requestedWorkspaceId: string | undefined,
-    operation: (binding: WorkspaceBinding) => A,
+    operation: (binding: WorkspaceBinding, created: boolean) => A,
   ) => Effect.Effect<AtomicWorkspaceBinding<A>, BrokerError>;
   readonly acquire: (environmentKey: string, workspaceId?: string) => Effect.Effect<WorkspaceBinding, BrokerError>;
   readonly resolve: (environmentKey: string, workspaceId: string, leaseId: string) => Effect.Effect<WorkspaceBinding & { readonly workspacePath: string }, BrokerError>;
+  readonly resolveJournaled: (
+    environmentKey: string,
+    workspaceId: string,
+    leaseId: string,
+    fencingToken: number,
+  ) => Effect.Effect<WorkspaceBinding & { readonly workspacePath: string }, BrokerError>;
   readonly describe: (environmentKey: string, workspaceId: string) => Effect.Effect<WorkspaceRecord, BrokerError>;
   readonly list: (environmentKey: string) => Effect.Effect<readonly WorkspaceRecord[], BrokerError>;
   readonly release: (environmentKey: string, workspaceId: string, leaseId: string) => Effect.Effect<WorkspaceLeaseRecord, BrokerError>;
@@ -196,6 +203,9 @@ const make = Effect.gen(function* () {
     "SELECT * FROM workspace_leases WHERE environment_key = ? AND state = 'active'",
   );
   const leaseQuery = db.prepare("SELECT * FROM workspace_leases WHERE lease_id = ?");
+  const activeWorkspaceLeaseQuery = db.prepare(
+    "SELECT * FROM workspace_leases WHERE workspace_id = ? AND state = 'active'",
+  );
 
   const workspacePath = (workspaceId: string): string => {
     const root = path.resolve(config.workspaceRoot, "data");
@@ -209,7 +219,7 @@ const make = Effect.gen(function* () {
   const acquireAtomically = <A>(
     environmentKey: string,
     requestedWorkspaceId: string | undefined,
-    operation: (binding: WorkspaceBinding) => A,
+    operation: (binding: WorkspaceBinding, created: boolean) => A,
   ): Effect.Effect<AtomicWorkspaceBinding<A>, BrokerError> =>
     Effect.try({
       try: () => {
@@ -228,7 +238,7 @@ const make = Effect.gen(function* () {
                 workspace: fromWorkspaceRow(workspaceQuery.get(active.workspace_id) as WorkspaceRow),
                 lease: fromLeaseRow(active),
               };
-              return { ...binding, result: operation(binding) };
+              return { ...binding, result: operation(binding, false), created: false };
             }
 
             const now = Date.now();
@@ -270,7 +280,7 @@ const make = Effect.gen(function* () {
               workspace: fromWorkspaceRow(workspaceQuery.get(workspaceId) as WorkspaceRow),
               lease: fromLeaseRow(leaseQuery.get(leaseId) as LeaseRow),
             };
-            return { ...binding, result: operation(binding) };
+            return { ...binding, result: operation(binding, true), created: true };
           });
         } catch (error) {
           if (createdPath !== undefined) fs.rmSync(createdPath, { recursive: true, force: true });
@@ -315,6 +325,49 @@ const make = Effect.gen(function* () {
         };
       },
       catch: (error) => error instanceof BrokerError ? error : workspaceFailure("resolve", error),
+    });
+
+  const resolveJournaled = (
+    environmentKey: string,
+    workspaceId: string,
+    leaseId: string,
+    fencingToken: number,
+  ) =>
+    Effect.try({
+      try: () => {
+        const workspaceRow = workspaceQuery.get(workspaceId) as WorkspaceRow | undefined;
+        const leaseRow = leaseQuery.get(leaseId) as LeaseRow | undefined;
+        const activeLease = activeWorkspaceLeaseQuery.get(workspaceId) as LeaseRow | undefined;
+        if (workspaceRow === undefined || workspaceRow.state !== "active") {
+          throw brokerError("workspace.not_found", "journaled workspace does not exist", { workspaceId });
+        }
+        if (
+          workspaceRow.owner_environment_key !== environmentKey ||
+          leaseRow === undefined ||
+          leaseRow.workspace_id !== workspaceId ||
+          leaseRow.environment_key !== environmentKey ||
+          leaseRow.fencing_token !== fencingToken ||
+          (leaseRow.state !== "active" && leaseRow.state !== "released")
+        ) {
+          throw brokerError("workspace.stale_lease", "journaled workspace lease facts do not match", {
+            workspaceId,
+            leaseId,
+          });
+        }
+        if (activeLease !== undefined && activeLease.lease_id !== leaseId) {
+          throw brokerError("workspace.conflict", "journaled workspace has a newer active writer lease", {
+            workspaceId,
+            leaseId,
+            activeLeaseId: activeLease.lease_id,
+          });
+        }
+        return {
+          workspace: fromWorkspaceRow(workspaceRow),
+          lease: fromLeaseRow(leaseRow),
+          workspacePath: workspacePath(workspaceId),
+        };
+      },
+      catch: (error) => error instanceof BrokerError ? error : workspaceFailure("resolve journaled", error),
     });
 
   const describe = (environmentKey: string, workspaceId: string) =>
@@ -396,6 +449,7 @@ const make = Effect.gen(function* () {
     acquireAtomically,
     acquire,
     resolve,
+    resolveJournaled,
     describe,
     list,
     release,

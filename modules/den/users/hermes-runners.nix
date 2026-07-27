@@ -54,7 +54,7 @@ let
               backend = "gondolin";
               workspaceHandoff = {
                 enable = true;
-                revisionLimits = {
+                handoffLimits = {
                   maxLogicalBytes = 67108864;
                   maxEntries = 8192;
                   maxFileBytes = 16777216;

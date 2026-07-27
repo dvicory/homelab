@@ -8,24 +8,53 @@ if (JSON.stringify(policyDoc.grantPolicy.allowedScopes) !== JSON.stringify(["onc
 if (!/^[0-9a-f]{64}$/.test(policyDoc.policyDigest)) {
   throw new Error("rendered policy digest is not a full SHA-256 value")
 }
-const handoff = policyDoc.policy.statements.find(
+const captureImport = policyDoc.policy.statements.find(
   (candidate) =>
     candidate.resources.includes("task-run:*") &&
-    candidate.actions.includes("workspace.publish") &&
+    candidate.actions.includes("workspace.capture") &&
     candidate.actions.includes("workspace.import"),
 )
-if (!handoff) throw new Error("QA policy omitted workspace handoff actions")
-const expectedRevisionLimits = {
+const exportPolicy = policyDoc.policy.statements.find(
+  (candidate) =>
+    candidate.resources.includes("handoff:*") &&
+    candidate.actions.includes("workspace.export"),
+)
+if (!captureImport || !exportPolicy) throw new Error("QA policy omitted workspace handoff actions")
+if (JSON.stringify(captureImport.actions) !== JSON.stringify(["workspace.capture", "workspace.import"])) {
+  throw new Error(`unexpected capture/import actions: ${JSON.stringify(captureImport.actions)}`)
+}
+if (JSON.stringify(exportPolicy.actions) !== JSON.stringify(["workspace.export"])) {
+  throw new Error(`unexpected export actions: ${JSON.stringify(exportPolicy.actions)}`)
+}
+const expectedHandoffLimits = {
   maxLogicalBytes: 67108864,
   maxEntries: 8192,
   maxFileBytes: 16777216,
   maxPathBytes: 1024,
 }
-for (const [name, value] of Object.entries(expectedRevisionLimits)) {
-  if (handoff.limits?.[name] !== value) {
-    throw new Error(`unexpected workspace revision limit ${name}: ${handoff.limits?.[name]}`)
+for (const [name, value] of Object.entries(expectedHandoffLimits)) {
+  for (const [label, statement] of [["capture/import", captureImport], ["export", exportPolicy]]) {
+    if (statement.limits?.[name] !== value) {
+      throw new Error(`unexpected ${label} handoff limit ${name}: ${statement.limits?.[name]}`)
+    }
   }
 }
+for (const field of [
+  "manifest",
+  "contentDigest",
+  "workspace_outputs",
+  "workspaceOutputs",
+  "sharedSpool",
+  "spool",
+]) {
+  if (Object.hasOwn(policyDoc, field) ||
+      [captureImport, exportPolicy].some((statement) =>
+        Object.hasOwn(statement, field) || Object.hasOwn(statement.limits ?? {}, field))) {
+    throw new Error(`legacy or unsupported handoff policy field is present: ${field}`)
+  }
+}
+// The Hermes endpoint client also accepts https:// URLs; this check intentionally
+// exercises the local broker UDS topology configured by the Nix module.
 
 const request = (socketPath, route, method = "GET", payload) =>
   new Promise((resolve, reject) => {
@@ -83,6 +112,18 @@ const escapedExecution = await request(
 if (escapedControl.status !== 404 || escapedExecution.status !== 404) {
   throw new Error("execution/control routes are not isolated")
 }
+const handoffRoutes = [
+  "/v1/control/workspace-handoffs/capture",
+  "/v1/control/workspace-handoffs/import",
+  "/v1/control/workspace-handoffs/exports/prepare",
+  "/v1/control/workspace-handoffs/exports/read",
+  "/v1/control/workspace-handoffs/exports/release",
+]
+for (const route of handoffRoutes) {
+  const response = await request(process.env.GONDOLIN_EFFECT_CONTROL_SOCKET, route, "POST", {})
+  if (response.status !== 400) throw new Error(`handoff route is missing or accepted an invalid request: ${route}`)
+}
+
 
 for (const lane of ["default", "codex"]) {
   const resource = `worklane:${lane}:environment:*`

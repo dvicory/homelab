@@ -27,10 +27,10 @@ let
   };
 
   # The Effect broker consumes these ceilings through authorization limits.
-  # Keep them outside `floor`: the rollback broker validates that legacy
-  # policy object with an exact, closed schema.
-  workspaceRevisionLimitCeilings = {
-    maxLogicalBytes = 67108864; # 64 MiB per immutable revision
+  # Keep them outside `floor`: the rollback broker validates the closed
+  # policy object with an exact schema.
+  workspaceHandoffLimitCeilings = {
+    maxLogicalBytes = 67108864; # 64 MiB per frozen handoff
     maxEntries = 8192;
     maxFileBytes = 16777216; # 16 MiB per regular file
     maxPathBytes = 1024;
@@ -222,7 +222,7 @@ let
 
 in
 {
-  inherit floor templates credentialCapabilities workspaceRevisionLimitCeilings;
+  inherit floor templates credentialCapabilities workspaceHandoffLimitCeilings;
 
   # Render policy.json with a content-derived policyId (§11: inert,
   # versioned JSON; the policy hash feeds VM generation identity).
@@ -252,7 +252,7 @@ in
       maximum,
       worklanes ? { },
       workspaceHandoffEnabled ? false,
-      workspaceRevisionLimits ? workspaceRevisionLimitCeilings,
+      workspaceHandoffLimits ? workspaceHandoffLimitCeilings,
       ...
     }:
     let
@@ -354,15 +354,15 @@ in
         bytes = floor.maxInputBytes;
         entries = 4096;
       };
-      revisionLimit =
+      handoffLimit =
         name:
         let
-          hardLimit = workspaceRevisionLimitCeilings.${name};
-          configuredLimit = workspaceRevisionLimits.${name} or hardLimit;
+          hardLimit = workspaceHandoffLimitCeilings.${name};
+          configuredLimit = workspaceHandoffLimits.${name} or hardLimit;
         in
         if configuredLimit < hardLimit then configuredLimit else hardLimit;
-      effectiveRevisionLimits =
-        builtins.mapAttrs (name: _: revisionLimit name) workspaceRevisionLimitCeilings;
+      effectiveHandoffLimits =
+        builtins.mapAttrs (name: _: handoffLimit name) workspaceHandoffLimitCeilings;
       policy = {
         version = 1;
         statements = [
@@ -390,11 +390,17 @@ in
               {
                 effect = "allow";
                 actions = [
-                  "workspace.publish"
+                  "workspace.capture"
                   "workspace.import"
                 ];
                 resources = [ "task-run:*" ];
-                limits = effectiveRevisionLimits;
+                limits = effectiveHandoffLimits;
+              }
+              {
+                effect = "allow";
+                actions = [ "workspace.export" ];
+                resources = [ "handoff:*" ];
+                limits = effectiveHandoffLimits;
               }
             ]
           else
