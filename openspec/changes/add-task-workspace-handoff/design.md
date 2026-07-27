@@ -1,132 +1,136 @@
 ## Context
 
-`add-sandbox-workspace-service` gives each QA Hermes conversation or Kanban task one broker-owned mutable workspace, one fenced writer lease, and a Gondolin VM mounted at `/workspace`. The Kanban dispatcher automatically acquires the task workspace and removes the upstream host scratch path from the worker environment. Completion currently records prose and closes the VM, but no immutable filesystem output is created and no other task can consume the bytes.
+`add-sandbox-workspace-service` gives each QA Hermes conversation or Kanban task a broker-owned mutable workspace, one writer lease, and a Gondolin VM mounted at `/workspace`. This slice makes only `/workspace/output` durable for cross-task transfer. Everything outside that subtree remains scratch and is never captured.
 
-The security boundary spans two SQLite databases and three processes: Kanban owns task graph and attempt state; the broker owns workspace, lease, environment, and filesystem state; the Hermes workspace-service plugin bridges trusted lifecycle hooks. There is no atomic transaction across Kanban and broker databases. Guest output is untrusted, may contain hostile paths or files, and must not become a host path capability. Existing model-facing Kanban tools may express task relationships and selected output paths, but storage identifiers remain non-authoritative.
+The boundary crosses Kanban, the Hermes workspace-service bridge, and the broker. Kanban owns the task graph, direct-child relation, board and tenant, source task state, completion metadata, and ordinary attempt lifecycle. The broker owns workspace leases, task-run activations, the handoff operation journal, frozen trees, private destination workspaces, and export tokens. Hermes owns required-finalizer invocation and recipient/channel delivery retry. No cross-database transaction is assumed.
 
-## Goals / Non-Goals
+Guest output is untrusted. Names, links, special files, unreadable entries, and resource excess must not become host capabilities. The broker copies bytes into broker-owned storage after fencing and validates structure; it performs no content scanning and does not compare canonical content to establish authority.
+
+## Goals and Non-goals
 
 **Goals:**
 
-- Complete one useful vertical slice: publish one task revision and privately fork it into one directly linked consumer.
-- Fence the producing run before reading bytes, and make completion truthful and recoverable across the Kanban and broker databases.
-- Keep task/run identity, host paths, storage IDs, manifest validation, and import inside trusted dispatcher/broker code.
-- Extend existing Kanban operations; add no model-facing workspace-management tool.
-- Exercise the slice only on `hvn-hyp1` QA.
+- Capture exactly `/workspace/output` automatically on successful broker-backed completion, including a valid empty tree.
+- Validate completion metadata before the broker call, then have one broker capture call preflight the live tree, fence the run, close/drain the VM, and publish one immutable handoff.
+- Make response loss and post-fence failure recoverable without redispatching producer work or reopening an old activation.
+- Give an authorized direct child a private writable copy of its creating parent's frozen output.
+- Keep direct-child and task-state validation in Kanban and mutable workspace/handoff authority in the broker.
+- Deliver explicit relative files through broker-owned expiring export tokens, with Hermes owning recipient retry.
+- Use the same authenticated HTTP contract over local UDS and remote HTTPS, and run only on `hvn-hyp1` QA.
 
-**Non-Goals for this increment:**
+**Non-goals:**
 
-- Multiple inputs, labels, merges, destination remapping, reviewer mode, shared mutable workspaces, or multi-writer leases.
-- Revision grants, revocation, retention/deletion APIs, deduplication, or durable project storage.
-- New cancellation semantics or broad Kanban lifecycle redesign beyond completion finalization.
-- Repository credentials, VCS operations, project promotion, cross-board/tenant handoff, or production activation.
+- Capturing the whole workspace, selecting another output root, dependency/sibling inputs, multiple sources, labels, remapping, merging, shared mutable workspaces, or multi-writer leases.
+- Content scanning, semantic analysis, deduplication, content-derived authority, retention, deletion, grants, or long-term project storage.
+- New model-facing workspace, handoff, import, export, republication, or cancel tools.
+- A Kanban lifecycle redesign, production activation, repository credentials, VCS operations, or project promotion.
 
 ## Component Model
 
 ```mermaid
 flowchart LR
-  M[Hermes model] -->|existing create/complete fields| K[Kanban DB and dispatcher]
-  K -->|trusted run, relation, selection| P[workspace-service plugin]
-  P -->|control Unix socket| B[Gondolin broker]
-  B --> W[mutable workspaces]
-  B --> R[immutable revisions]
-  B --> E[Gondolin environments]
-  E --> V[QEMU VM]
+  M[Hermes model] -->|existing create/complete fields| K[Kanban and trusted dispatcher]
+  K -->|derived task/run/import/delivery facts| P[workspace-service bridge]
+  P -->|authenticated HTTP over UDS or HTTPS| B[Gondolin broker]
+  B --> W[private mutable workspaces]
+  B --> H[immutable frozen handoffs]
+  B --> X[expiring export tokens]
+  H --> C[direct-child copy or explicit delivery]
 ```
 
-The model may name relative output paths and may ask a newly created child to inherit the current parent task's output. It cannot name another source task and never invokes broker publication/import operations or supplies a workspace, lease, revision, or host path. The gateway/plugin/backend and protected Unix sockets are trusted; compromise of that account remains outside this increment.
+The model may create a directly linked child and explicitly name human-delivery files through existing `artifacts`, but each model-facing artifact is a relative regular-file path under the trusted task workspace; broker-backed selections additionally lie below `output/`. It cannot name a source task, workspace, lease, handoff, export token, or host path. The dispatcher derives the creating task and current direct-parent facts. Summary/result prose or fields cannot discover or add paths, and a subscription supplies recipients and channels only.
 
 ## Decisions
 
-### 1. Ship one end-to-end handoff before generalizing
+### 1. Fixed output source and one capture call
 
-A producer completion may carry `workspace_outputs`, a non-empty list of relative paths; exact `.` means the whole workspace. One successful completion creates one revision containing those paths at their original workspace-relative locations.
+Every successful broker-backed completion invokes one required finalizer. Before the capture call, Kanban validates the claimed run and selected artifacts using syntax only: each is a normalized relative path under the trusted task workspace and, for broker-backed work, below `output/`; absolute, traversal, URI/drive/host, empty-segment, and symlink-escape syntax fails while Kanban remains `running`. This pre-capture check does not inspect contents or filesystem nodes; `exports/prepare` checks each frozen path is a regular file. Native scratch/dir/worktree flows instead copy each selected relative file into native attachment storage before `done`. Summary/result prose or fields never discover paths.
 
-A parent worker's task-creation request may carry `inherit_parent_workspace_output: true`. Kanban records the caller's trusted current task as the sole workspace source and requires the new child to link that parent. The model cannot choose a different source task. After the parent is `done` with one ready revision, trusted dispatch creates one new private writable child workspace containing the entire revision at the same relative paths. The child gets an independent lease. Parent and child never share mutable bytes.
+The finalizer sends one authenticated `POST /v1/control/workspace-handoffs/capture` request containing exactly `finalizationId`, trusted `environmentKey`, `taskId`, and `runId`; schemas reject extras. The broker authorizes the operation and resolves the active activation. It preflights `/workspace/output` while that activation and writer lease are still active. A preflight error leaves the activation, lease, VM, and Kanban `running` state available for correction.
 
-This deliberately defers dependency/sibling imports, labels, multiple sources, path remapping, read-only review, and merging. Those features can be added from observed usage without changing the immutable revision boundary.
+After preflight succeeds, one broker transaction consumes the exact activation and stages the finalization. The broker then revokes the writer lease, marks the VM generation closing, waits for VM exit and VFS callback drain, copies only `/workspace/output` to broker-owned destination-temporary storage, validates the detached tree, fsyncs it, and atomically renames it into finalized handoff storage. An empty output directory follows the same sequence. Before Kanban marks the task `done`, the finalizer calls `exports/prepare` for every selected artifact against the ready frozen handoff; a prepare failure is a completion-operation failure and keeps the task non-done. Later read or platform-delivery failures remain retryable after `done`. Kanban does not enter a new `finalizing` or `publication_failed` task state.
 
-Alternative: share the parent workspace. Rejected because concurrent writes destroy completion stability and attribution. Alternative: split publication and consumption into separate changes. Rejected because neither half proves the collaboration path; this one-source slice is the smallest end-to-end result.
 
-### 2. Use small broker records, not a general artifact service
+`staging`, `ready`, `publication_failed`, `quarantined`, and `failed` are broker handoff-operation states. If an integration surface uses `finalizing` or `publication_failed` labels, they describe the workspace operation and recovery record, never a newly dispatched Kanban task status. A post-fence failure therefore leaves the task not done under existing lifecycle/retry handling and retains journaled broker recovery state.
 
-Add broker records conceptually equivalent to:
+### 2. Replay after fencing and fresh-run separation
 
-- `task_run_activations`: broker-issued activation ID, unique Kanban run ID, task, workspace, lease, policy digest, and state (`active`, `consumed`, `superseded`).
-- `workspace_revisions`: opaque revision ID, unique finalization ID, source activation/task/run/workspace/lease provenance, selected roots, state (`staging`, `ready`, `quarantined`, `failed`), broker-owned manifest version/digest, counts, failure detail, and timestamps.
-- `workspace_revision_imports`: unique preparation ID, source revision, destination task/run/workspace/lease, trusted relation and policy provenance, state, failure detail, and timestamps.
+The broker persists the finalization operation before filesystem mutation and binds the finalization ID to the source activation, task, run, environment, policy decision, and fixed output source. An identical request with the same immutable facts is idempotent.
 
-There is no grant, retention, deletion, label, or deduplication model in this increment. Revisions are disposable QA data retained until an explicit QA reset.
+Replay first resolves the journal. If the operation already consumed the activation, resumed replay follows the recorded operation and returns the existing ready handoff or resumes its staged/post-fence work without validating the active source again. This is required because a consumed activation is intentionally no longer active. A changed task, run, environment, policy, source, or finalization binding is a conflict.
 
-The workspace, environment registry, and existing access-grant services previously opened the same SQLite path through separate connections. One scoped `BrokerDatabase` Effect service now owns the built-in `node:sqlite` connection and transaction helper, so workspace lease, task-run activation, environment, revision, and operation mutations can share real transactions. Repository transaction callbacks are deliberately synchronous: nested callbacks join the outer transaction, and no Effect suspension or asynchronous work may occur inside them. `@effect/sql` core is present transitively, but no SQLite driver is installed; adopting it is deferred until a driver or remote-database migration removes more code than it adds. Independent connections or independently started nested transactions are not atomic and must not be treated as such.
+A response lost before the broker has staged or consumed the activation is retried with the same finalization ID; the still-active run can be preflighted again. A response lost after staging, fencing, or publication is retried with that same finalization ID and operation journal. A transient post-fence error is retried through the journal and never redispatches the producer body. If trusted lifecycle deliberately starts a fresh producer attempt, it first activates a fresh globally unique run ID and allocates a fresh finalization ID; the old activation and operation remain fenced and are not reused.
 
-### 3. Fence by trusted task-run activation, not another bearer secret
+### 3. Activation fencing covers completion, block, and reclaim
 
-Before worker spawn, trusted dispatch activates a unique Kanban run against its task, workspace, active lease, and policy digest. The broker issues an opaque activation ID, and the terminal backend attaches task/run identity from trusted process state to every broker ensure, execution, and file request; model-facing schemas cannot set or override it. The broker resolves and requires the exact active activation. Stable task identity and a retained lease are insufficient.
+Before worker spawn, trusted dispatch activates a globally unique Kanban run against the task, workspace, active lease, and policy digest. The backend attaches task/run identity to every ensure, execution, and file request. Stable task identity and lease knowledge alone cannot create a VM or access files.
 
-Completion transactionally consumes the activation and marks its environment generation closing. Further requests from that run fail immediately. Publication waits for QEMU exit and VFS callback drain. A trusted retry with a fresh globally unique run ID supersedes the prior activation and closes its generation over the retained workspace; prior run IDs cannot be reactivated and remain stale. The broker orders these serialized state transitions itself rather than trusting a caller-maintained epoch.
+Successful capture consumes the activation before reading output bytes. A block, timeout, or operator reclaim also consumes or supersedes the active activation before asking the environment to close. The close operation is ordered after that state transition. Thus a late request from the old run cannot recreate a VM generation or mutate retained output, and every later retry obtains a fresh run activation. Reclaim does not capture, import, export, or deliver data.
 
-A separate random credential on every broker request is deferred. It would not improve the stated boundary because the gateway account and backend are already trusted and can access both protected sockets. If the trust boundary later moves inside the gateway process, capability credentials can be added then.
+### 4. Handoff records and journal, not a path service
 
-The existing `@agent-x/policy-kernel` remains the static authorization upper bound. Handoff-enabled policy registers explicit task-run activation/consumption and workspace publication/import actions, resource classes derived by trusted broker code, and numeric publication limits. The high-level broker operation authorizes through the existing `Authorization` service and persists its policy and decision digests. Mutable facts—active run, lease, direct parent/child relation, board/tenant equality, revision readiness, and idempotency state—remain broker/Kanban transaction checks: the current kernel matches action/resource and aggregates limits/obligations, but does not evaluate arbitrary request parameters as predicates. Fencing, quarantine, and canonical filesystem validation are unconditional mechanism invariants, not optional policy obligations.
+The broker uses records conceptually equivalent to:
 
-Agent X should separately design proof-carrying authorization rather than expand this handoff change: the pure kernel would produce a `PolicyPermit`; authoritative state machines would mint typed, process-local witnesses only after atomic reservations or transitions; and a closed action recipe would seal the permit plus required witnesses into the final `AuthorizedAction`. This avoids database access or a condition language in the kernel while making dynamic authority composable. This handoff preserves the migration path by recording canonical action/resource, policy and decision digests, activation and lease generations, finalization/preparation IDs, relation digest, and operation result identity. No witness framework or transferable capability is introduced here.
+- `task_run_activations`: random activation ID, Kanban task/run, environment, workspace, lease, policy digest, and `active`/`consumed`/`superseded` state.
+- `workspace_handoffs`: random opaque handoff ID, finalization ID, source activation/task/run/workspace/lease provenance, policy digests, `staging`/`ready`/failure state, structural counts, and failure detail.
+- `workspace_handoff_imports`: preparation ID, ready source handoff, derived destination task/run/environment, policy provenance, private workspace/lease, and import state.
+- `workspace_handoff_exports`: delivery ID, handoff ID, normalized relative file, opaque expiring export token, size, expiry, and `active`/`released`/`expired` state.
+- An operation journal that records preflight, fencing, copy, detached validation, fsync/rename, import, and export outcomes before filesystem mutation where applicable.
 
-### 4. Make completion a recoverable saga
+The final tree is broker-owned and immutable. IDs are never paths and never accepted as model authority. Failed temporary or quarantine state remains accounted for through the journal; no entry is silently removed to make publication succeed.
 
-Kanban and broker use different SQLite databases, so completion cannot be one transaction:
+### 5. Validate structure with only wired limits
 
-1. Kanban validates the claimed run and output selection, writes an immutable finalization ID and selection, and moves `running -> finalizing`.
-2. A required completion-finalizer invokes the repository-owned workspace-service plugin. Unlike current best-effort observers, its error propagates.
-3. The broker binds the finalization ID to source authority, policy decision, and selected roots, consumes the task-run activation, closes the VM, publishes and verifies the revision, then returns its opaque ID and digest.
-4. Kanban records broker provenance and moves `finalizing -> done`.
-5. Dispatcher recovery claims stale finalizations and repeats the same ID. An identical request returns the same revision; changed source or selection conflicts.
+The source and detached destination are checked in two phases. Preflight uses trusted `lstat`/no-follow operations on the fixed output root and rejects absolute or host paths, empty or traversal segments, NUL, invalid UTF-8, normalization collisions, symlinks, disallowed hardlinks, sockets, devices, FIFOs, unreadable entries, and excess of these four policy limits only:
 
-If publication fails, the task remains visibly `finalizing` with failure detail. A trusted operator/retry transition may return it to runnable state with a fresh run ID; model summary prose cannot make it `done` or substitute files.
+- `maxLogicalBytes` (sparse files count by logical size),
+- `maxEntries`,
+- `maxFileBytes`, and
+- `maxPathBytes`.
 
-```mermaid
-sequenceDiagram
-  participant W as Worker
-  participant K as Kanban
-  participant P as workspace-service
-  participant B as Broker
-  participant V as QEMU
-  W->>K: complete + workspace_outputs
-  K->>K: running -> finalizing
-  K->>P: required finalizer
-  P->>B: publish(finalization, trusted run, paths)
-  B->>B: consume run; mark VM closing
-  B->>V: close and drain VFS
-  B->>B: copy, fsync, verify, ready
-  B-->>K: revision provenance
-  K->>K: finalizing -> done
-```
+Post-fence copying follows no links, crosses no source filesystem boundary, preserves no hardlinks, and carries no host ownership/ACL/xattr authority. Detached validation checks node kind, independent destination identity, readability, normalized modes, and the same four limits before fsync and atomic rename. Copying bytes is storage, not content inspection.
+After Kanban validation, trusted dispatch passes exactly `preparationId`, `sourceHandoffId`, `sourceTaskId`, `destinationTaskId`, `destinationRunId`, and `destinationEnvironmentKey` to `POST /v1/control/workspace-handoffs/import`; schemas reject extras and no source-run, board, tenant, parent/link, source-state, policy, workspace, lease, or host-path assertion is accepted. The broker derives source provenance from the immutable handoff record (producing task/run/environment and ready frozen storage), rejects a source-task mismatch, derives destination provenance from trusted destination task/run/environment records, binds the derived IDs to one preparation ID, verifies the ready handoff, copies only the frozen tree into a destination temporary, atomically installs one private writable workspace, and issues an independent lease.
+A preflight failure leaves the source untouched and recoverable. A fenced copy or detached-validation failure records `publication_failed`, `quarantined`, or `failed` operation state with the temporary/failure detail. No partial tree is exposed and no offending entry is silently deleted or skipped.
 
-### 5. Keep filesystem publication conservative
+### 6. Kanban owns every import proof
 
-The manifest contains directories and regular files only. Selected roots are relative POSIX paths; exact `.` is the only whole-workspace selector and is not a manifest entry. Names must be strict UTF-8 and NFC. Paths reject empty segments, `.`, `..`, absolute paths, NUL, normalization collisions, and configured byte-length excess. Symlinks, sockets, FIFOs, and devices are rejected. A pinned `rsync` invocation crosses no filesystem boundaries, preserves no ownership, timestamps, ACLs, or xattrs, does not preserve source hardlink identity, and materializes sparse inputs as ordinary files. A broker-owned filesystem quota bounds copy-time amplification; detached staging validation enforces logical bytes, entries, individual file size, and path bytes before ready state.
+A child may inherit output only through the current Kanban operation. On every import attempt, including recovery after a preparation response loss, Kanban revalidates:
 
-Modes normalize to `0755` for directories and executable regular files, `0644` otherwise. Entries sort by UTF-8 bytes. The SHA-256 digest covers a documented, broker-versioned, domain-separated canonical JSON projection of those fields and has a fixed test vector. Revision IDs remain random and publication-specific.
+1. the destination was created by the recorded source task as a direct child;
+2. the direct-parent link still exists;
+3. source and destination are on the same board and tenant;
+4. the source task is `done` under existing Kanban semantics and has exactly one ready handoff;
+5. source and destination assignee policies permit the copy; and
+6. the source handoff still belongs to that source task and policy.
 
-After activation consumption, VM exit, and VFS drain, the broker validates selected roots and delegates the full copy to the pinned copier. It then walks only the detached broker-owned staging tree to enforce node/path/resource rules and build the manifest, fsyncs content and parent metadata, atomically renames on one filesystem, makes the result read-only as defense in depth, and reopens and rehashes it before ready state and before import. Source metadata race checks are intentionally excluded: under this increment's stated trusted-gateway boundary they add complexity without establishing a security boundary. A future malicious-gateway boundary requires separate OS ownership, not a TypeScript imitation of `openat` or rsync.
+If the link, board, tenant, source state, handoff, or policy changes before import, Kanban rejects before calling the broker and leaves the destination blocked/non-runnable. The broker never receives a model-selected proof. After Kanban validation, trusted dispatch passes exactly `preparationId`, `sourceHandoffId`, `sourceTaskId`, `destinationTaskId`, `destinationRunId`, and `destinationEnvironmentKey` to `POST /v1/control/workspace-handoffs/import`; schemas reject extras. The broker derives source provenance from the immutable handoff record, rejects a source-task mismatch, derives destination provenance from trusted destination task/run/environment records, binds the IDs to one preparation ID, verifies the ready handoff, copies only the frozen tree into a destination temporary, atomically installs one private writable workspace, and issues an independent lease.
 
-### 6. Make consumer preparation idempotent
+An identical preparation replay returns the same destination workspace and lease. A changed source, destination, relation-derived fact, handoff, or policy conflicts. A blocked/rejected reviewer or child receives no empty substitute and no live-parent read; it cannot promote, complete, capture, or deliver a parent draft. Child changes remain private and are captured automatically on child completion.
 
-Kanban persists a preparation ID before calling the broker. It verifies the destination was created by the source worker with `inherit_parent_workspace_output`, retains that direct parent link on the same board/tenant, and the source is `done` with a ready revision. The broker control route receives those trusted source/destination authority and policy facts, binds every field to the preparation ID, re-verifies the revision, stages a new private child workspace, records the import, and issues its independent lease.
+### 7. Export-token protocol and ownership
 
-Kanban records the broker result before spawn. If either process crashes, dispatcher recovery repeats the same preparation ID and receives the same workspace/lease. Reusing the ID with a different source, destination, revision, or policy fails. Revision IDs never enter model requests or ordinary prompt context and are not accepted on the execution listener.
+Human delivery is explicit and separate from capture. Hermes stores recipients/channels and explicit relative artifact selections, owns retry scheduling, and does not infer files from subscriptions or summary prose. Before `done`, the required finalizer prepares every selected path against the ready frozen handoff. For each selected file it uses:
 
-### 7. Keep ownership and rollout narrow
+1. `POST /v1/control/workspace-handoffs/exports/prepare` with exactly `deliveryId`, opaque `handoffId`, and normalized `relativePath`; schemas reject extras, and the broker verifies that the path is one regular file in frozen storage, returning an expiring opaque `exportToken`, basename, size, and expiry.
+2. `POST /v1/control/workspace-handoffs/exports/read` with only `exportToken`; the broker reauthorizes the handoff and streams that one frozen file with no shared spool.
+3. `POST /v1/control/workspace-handoffs/exports/release` with only `exportToken`; Hermes calls this after successful, failed, or interrupted delivery. Expiry or release makes subsequent reads fail; an interrupted stream cannot make the token permanent.
 
-`pkgs/by-name/gondolin-broker-effect` owns task-run activation/revision/import data, filesystem validation, control routes, and recovery. `pkgs/by-name/hermes-agent-patched` owns generic Kanban fields/finalization plus the repository workspace-service bridge. `modules/den/aspects/workloads/hermes/secure-terminal/default.nix` owns QA roots, limits, policy actions, and service hardening. Only the `hvn-hyp1` QA Gondolin profile enables the feature.
+The active prepare idempotency tuple is `(deliveryId, handoffId, relativePath)`: an identical retry after response loss returns the same active token/name/size/expiry, a changed tuple conflicts, an expired or released delivery ID fails, and a fresh delivery uses a new delivery ID. The same HTTP request/response and streaming contract runs over the local broker UDS client and over remote HTTPS. Remote HTTPS requires a principal's mandatory bearer credential from a trusted deployer secret, standard CA and hostname verification, and disabled redirects; TLS terminates at the remote service. The current QA UDS mode configures no remote HTTPS or bearer credential. Transport selection does not alter route names, schemas, authorization, or token ownership. Recipient outages are Hermes delivery failures, not broker handoff failures; the handoff and Kanban `done` result remain valid while Hermes retries later read/platform delivery.
 
-## Risks / Trade-offs
+### 8. Listener, gate, and rollout boundaries
 
-- **Two databases.** Completion and preparation can fail between commits. Mitigation: durable Kanban intent, broker-bound idempotency IDs, and dispatcher replay.
-- **Old workers.** Stable task identity could recreate a closed VM. Mitigation: a unique broker-active task/run binding on every operation, consumed before publication; prior run IDs cannot be reactivated.
-- **Hostile trees.** Paths and resource amplification attack the broker. Mitigation: close and drain all writers first, allowlist node kinds, bound streaming, copy rather than link, and verify after copy.
-- **Trusted gateway boundary.** Run identity is not a bearer secret from the gateway. This is intentional: the gateway account already controls both sockets and Hermes credentials. Moving that boundary requires a later capability design, not hidden complexity in this slice.
-- **Storage growth.** There is no retention API. Mitigation: QA-only limits and explicit disposable reset; production is blocked until retention is designed from measured usage.
-- **Single source only.** Some workflows need aggregation or review. Mitigation: prove the immutable parent/child seam first; add labels/multi-input/reviewer modes as separate changes without weakening revision immutability.
-- **Model overclaiming.** Completion prose may name unpublished files. Mitigation: only broker-recorded revision facts satisfy downstream input.
-- **External Codex isolation.** Registered Codex lanes remain host-process lanes with host-visible worktrees; this slice preserves their existing CLI sandbox but does not put them behind Gondolin. Treating Codex as Gondolin-isolated would be a security overclaim. A brokered Codex lane requires a separate trusted-controller and credential-mediation design.
+Capture, import, and the three export routes exist only on the authenticated control listener. They are absent when `workspaceHandoffEnabled` is false; disabled startup also creates no handoff schema/root or migration behavior. The execution listener has no handoff-management route and receives no handoff IDs, export tokens, broker roots, or content paths.
+
+Ordinary/non-Gondolin workers retain existing per-session CWD and workspace behavior. A broker-backed Kanban worker receives only guest `/workspace`; host scratch and host process CWD are not authority. A broker outage fails workspace-backed work closed or leaves it retryable without local, Docker, Podman, host-path, or empty-handoff fallback, and recovery happens in process.
+
+Only `hvn-hyp1` enables the feature. Rollback disables the QA gate and restarts only QA services. A destructive QA reset stops QA gateway/sockets/service, verifies and quarantines the whole canonical `/var/lib/hermes-qa-sandbox` state directory (never production or Podman), recreates it with mode `0700`, and verifies fresh capture, import, and export prepare/read/release before quarantine deletion. Acceptance records disabled routes, reset, rollback, and unchanged production/Podman state.
+
+## Risks and Trade-offs
+
+- **Two databases:** durable Kanban intent and broker-bound IDs make completion/import replayable without pretending the databases share a transaction.
+- **Hostile trees:** no-follow preflight, fencing before copy, four explicit limits, detached validation, atomic rename, and quarantine prevent capability leakage.
+- **Response loss:** journal-first operation identity separates same-operation replay from a deliberate fresh run.
+- **Storage lifecycle:** no retention or deletion API is exposed; QA reset is the explicit operator lifecycle for this disposable slice.
+- **Single source:** direct-child proof is deliberately narrow; aggregation, reviewer modes, and multiple sources remain separate changes.
+- **Trusted gateway:** local UDS and authenticated remote HTTPS protect transport, but the trusted dispatcher remains the source of task/run identity; gateway-account compromise is outside this slice.
+- **External Codex:** registered external Codex lanes retain their existing host-visible worktrees and are not claimed as Gondolin-isolated.

@@ -1,84 +1,64 @@
 ## Why
 
-The QA Gondolin backend gives each Hermes Kanban task a durable private workspace, but one task cannot pass filesystem results to a child. The smallest useful collaboration increment is an immutable handoff: a producer publishes selected files when it completes, and one directly linked consumer starts from a private copy.
+QA Gondolin gives each Hermes Kanban task a durable private workspace, but completion has no stable, trusted boundary for transferring output to a directly linked child. This change makes the fixed guest subtree `/workspace/output` the automatic handoff source while keeping human delivery explicit and task state owned by Kanban.
 
 ## What Changes
 
-- Publish one immutable, bounded workspace revision from a task's selected relative paths after its VM is fenced and closed.
-- Add broker task-run activation so stable task identity and a retained workspace lease cannot recreate a VM after completion; retry requires trusted dispatch to activate a newer run.
-- Make publication a recoverable completion saga. Kanban enters `finalizing`, the broker publishes idempotently, and only then does the task become `done`.
-- Let a producer create a child with `inherit_parent_workspace_output: true`. The caller's current task becomes the sole workspace source; trusted dispatch later resolves its revision and creates one new private writable child workspace. The model cannot name another source task.
-- Extend existing Kanban create/completion requests only. Add no model-facing workspace-management tool, and accept no workspace, lease, revision, or host path as model authority.
-- Gate the vertical slice to the `hvn-hyp1` QA Gondolin profile. Production Hermes and Podman remain unchanged.
+- A successful broker-backed completion automatically captures exactly `/workspace/output`. An empty directory is valid for prose-only work; every other workspace path remains scratch.
+- Kanban requires every model-facing `artifacts` entry to be an explicitly selected normalized relative regular-file path under the trusted task workspace; broker-backed entries additionally lie below `output/`. Before invoking the broker, Kanban validates only path syntax and rejects absolute, traversal, URI/drive/host, empty-segment, or symlink-escape forms without inspecting contents or filesystem nodes. Summary/result prose or fields cannot discover paths. Native scratch/dir/worktree flows copy each selected relative file into native attachment storage before `done`; broker-backed completion uses one capture call containing exactly `finalizationId`, trusted `environmentKey`, `taskId`, and `runId`, with schemas rejecting extras. The broker preflights the live output while the activation is active, then consumes the activation, revokes the writer lease, closes the VM, drains callbacks, copies to broker-owned temporary storage, validates the detached tree, fsyncs it, and atomically installs one immutable handoff.
+- Kanban remains in its existing `running` state until a ready handoff is returned. Before `done`, the broker-backed finalizer calls `exports/prepare` for every selected artifact against the frozen handoff; prepare failure is a completion-operation failure, while later read/platform-delivery failure remains retryable after `done`. Native attachment-copy failure is also completion-critical. This change does not introduce Kanban `finalizing` or `publication_failed` task states. A preflight failure leaves the run active. A post-fence failure is journaled and remains non-done/retryable without publishing a partial tree.
+- Replaying an identical finalization ID uses its journaled operation after activation consumption and returns or resumes the original handoff without rechecking the active source. A genuinely fresh attempt activates a fresh run ID and uses a fresh finalization ID; it never reopens an old run.
+- Structural validation rejects traversal, malformed or colliding names, symlinks, disallowed hardlinks, special files, unreadable entries, and excess of the four wired limits: `maxLogicalBytes`, `maxEntries`, `maxFileBytes`, and `maxPathBytes`. The broker copies bytes but performs no content scanning and never silently deletes an entry.
+- A directly linked child may receive only the creating parent's finalized output after Kanban revalidates the direct-child, board, tenant, source-state, handoff, and policy facts on every import. The broker request contains exactly `preparationId`, `sourceHandoffId`, `sourceTaskId`, `destinationTaskId`, `destinationRunId`, and `destinationEnvironmentKey`; it derives source handoff provenance from immutable broker records, rejects mismatches, and creates a private writable copy with an independent lease.
+- Block and reclaim paths consume or supersede the active run before closing its VM. A stale run or retained lease cannot recreate a generation or mutate retained output.
+- Human delivery uses the exact broker export protocol: `exports/prepare` accepts exactly `deliveryId`, `handoffId`, and `relativePath`, returns an expiring opaque export token for one explicit frozen regular file, and is idempotent for an identical active tuple; changed tuples conflict, expired/released delivery IDs fail, and a fresh delivery uses a new ID. `exports/read` accepts only the token and `exports/release` accepts only the token. Hermes owns recipient/channel retry and releases tokens after success, failure, or interrupted reads; the broker does not infer files or maintain a shared spool. Remote HTTPS requires a mandatory bearer credential from a trusted deployer secret, standard CA/hostname verification, no redirects, and remote-service TLS termination; current QA UDS mode configures no remote HTTPS or bearer credential.
+- Gate the vertical slice to the `hvn-hyp1` QA Gondolin profile. When disabled, capture, import, and all three export routes are absent. Production Hermes, local workers, Podman, and nix-darwin remain unchanged.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `task-workspace-revisions`: Fenced publication, canonical manifest verification, idempotent private fork, and task-run activation fencing.
-- `kanban-workspace-handoff`: Truthful completion publication and one-source parent-to-child handoff through existing Kanban operations.
+- `task-workspace-handoffs`: broker-owned task/run fencing, automatic capture, immutable handoff storage, private child import, and expiring export-token operations.
 
 ### Modified Capabilities
 
-None. `add-sandbox-workspace-service` remains the prerequisite private-workspace and broker-authority change until it is verified and archived.
+- `kanban-sandbox-workspace`: existing Kanban workspace acquisition, completion, direct-child validation, retry/block/reclaim lifecycle, delivery, and outage behavior are updated to use the handoff boundary.
 
 ## Impact
 
-- `pkgs/by-name/gondolin-broker-effect`: task-run activation, revision, manifest, publication, private-import, and recovery state plus control routes and tests.
-- `pkgs/by-name/hermes-agent-patched`: generic Kanban finalization/input metadata, required completion-finalizer support, dispatcher preparation, and the repository-owned workspace-service integration.
-- `modules/den/aspects/workloads/hermes/secure-terminal/default.nix`: QA-only revision root, limits, policy actions, and feature wiring.
-- `modules/den/users/hermes-runners.nix`: explicit QA selection only if the existing secure-terminal setting cannot carry the subfeature.
-- `hvn-hyp1`: QA-only migration and activation. nix-darwin remains package/test evaluation; production and Podman state do not change.
+- `pkgs/by-name/gondolin-broker-effect`: task-run activation fencing, handoff/import records, operation journal, structural validation, frozen storage, and the five gated handoff routes (`capture`, `import`, `exports/prepare`, `exports/read`, `exports/release`).
+- `pkgs/by-name/hermes-agent-patched`: generic Kanban completion/finalization and import persistence, pre-broker completion validation, trusted dispatcher facts, export-token delivery retry, and the repository workspace-service bridge.
+- `modules/den/aspects/workloads/hermes/secure-terminal/default.nix`: QA-only handoff gate, the four structural limits, policy actions, transport/authentication, and service wiring.
+- `hvn-hyp1`: QA-only enablement, reset, rollback, and acceptance evidence. Production and Podman state do not change.
 
 ## Deferred Follow-ups
 
-- Dependency/sibling imports, multiple input revisions, labels, destination remapping, merge/conflict policies, and aggregation.
-- Read-only reviewer mounts and separate reviewer scratch space.
-- Revision grants, revocation, retention, deletion, deduplication, and long-term artifact storage.
-- New cancellation states or broader replacement of Kanban's existing best-effort non-completion lifecycle hooks.
+- Dependency or sibling inputs, multiple sources, labels, destination remapping, merge/conflict policies, aggregation, reviewer mounts, and reviewer scratch space.
+- Handoff grants, retention or deletion APIs, deduplication, long-term project storage, and any shared mutable workspace.
+- Content scanning, semantic validation, secret/malware inspection, and content-derived authority.
+- New model-facing cancel, publication, import, export, or workspace-management tools; existing upstream retry/reclaim mechanics remain the lifecycle surface.
 - Git/Mercurial providers, credentials, pull requests, and promotion into canonical project state.
 
 ## Non-goals
 
-- Shared mutable project directories, live co-editing, or multi-writer leases.
-- Model-selectable storage identifiers or host paths.
-- Cross-board or cross-tenant handoff, public artifacts, executable import hooks, or production activation.
+- Whole-workspace capture, arbitrary output-root selection, model-selected storage identifiers, host paths, live co-editing, multi-writer leases, cross-board or cross-tenant handoff, public artifacts, executable import hooks, or production activation.
 
 ## Technical Assumptions
 
-- `add-sandbox-workspace-service` has passed QA and provides broker-owned paths, one active writer lease, trusted backend-derived task identity, and fail-closed execution.
-- The gateway/plugin/backend process and the mode-restricted control/execution Unix sockets are trusted. The model cannot set the task/run identity attached by the backend. Gateway-account compromise remains outside this increment's boundary.
-- Before worker spawn, trusted dispatch registers a broker activation bound to a globally unique Kanban run ID, task, workspace, lease, and policy digest. Every ensure, execution, and file request is checked against that active binding. Completion consumes it before VM closure; a trusted retry uses a fresh run ID and supersedes the prior activation.
-- Revision IDs are random and publication-specific. A versioned canonical SHA-256 manifest digest verifies content but is retained in broker/Kanban provenance rather than ordinary model context.
-- The initial store uses bounded full copies made by a pinned standard copier into broker-owned staging directories, followed by manifest validation of the detached tree. It accepts directories and regular files only, never shares mutable links, crosses no source filesystem boundary, and rejects traversal, unsupported nodes, and configured resource-limit excess before ready state. Gateway-account compromise remains outside this increment; source-race resistance requires later OS-account separation.
-- Revisions are QA data retained until explicit QA reset in this increment. No deletion or retention API is exposed.
+- `add-sandbox-workspace-service` has passed QA, is verified, and is archived before this change is implemented.
+- Trusted dispatch attaches task/run identity and policy facts; model-facing schemas cannot set workspace, lease, handoff, source, destination, or host-path authority. Ordinary/non-Gondolin workers retain their existing per-session CWD and workspace behavior.
+- Before worker spawn, trusted dispatch activates a globally unique Kanban run against its task, workspace, lease, and policy digest. Every execution/file request is checked against that binding. Completion consumes it before output bytes are read. Block and reclaim consume or supersede it before VM closure.
+- The broker writes its operation journal before filesystem mutation and keeps source provenance, staging, failure, and ready state. A replay with identical immutable facts is idempotent; a changed fact conflicts. Handoff IDs and operation IDs are random opaque identifiers, never content-derived authorities and never model inputs.
+- Structural limits are exactly `maxLogicalBytes`, `maxEntries`, `maxFileBytes`, and `maxPathBytes`. Symlinks, disallowed hardlinks, special files, traversal, unreadable entries, and limit excess fail closed. No content scanning occurs.
+- Kanban is authoritative for direct-child, board, tenant, source-task-state, and policy validation on every import. The broker receives only the exact trusted import fields, derives source provenance from the handoff record, and binds them to a preparation ID.
+- Export clients use the same authenticated HTTP request/response contract through local UDS or remote HTTPS. Hermes owns recipient retry; the broker owns token preparation, streaming read, expiry, and release. Remote HTTPS authentication uses the trusted-deployer bearer credential with standard CA/hostname verification and redirects disabled; the current QA UDS mode does not configure it.
 
 ## Refactoring
 
-First extract the broker's repeated SQLite connection/migration/transaction setup from workspace, environment registry, and access-grant services into one shared database service so lease, task-run activation, environment, and revision state can share real transactions. Keep storage logic in the broker and generic lifecycle/request plumbing in Hermes. Do not extend `sandbox-access` or add a provider abstraction.
+Extract the broker's repeated SQLite connection, migration, and transaction setup from workspace, environment registry, and access-grant services into one shared database service. Keep handoff storage and filesystem operations in the broker, generic lifecycle and delivery retry in Hermes, and Kanban graph/state validation in Kanban. Do not add a provider abstraction or extend `sandbox-access`.
 
-## Rollback
+## Rollback and QA Reset
 
-The feature remains off outside `hvn-hyp1` QA. A normal rollback disables
-`secureTerminal.workspaceHandoff.enable` (or restores the preceding NixOS and
-QA Home Manager generations), stops the `hermes-qa` user service, then restarts
-`hermes-qa-broker-{execution,control}.socket` and
-`hermes-qa-broker.service`. The disabled broker neither installs revision
-routes nor opens revision storage; existing QA state can remain quarantined for
-diagnosis. Production's `hermes-prod` services, rootless-Podman storage, and
-gateway credentials are outside this path and MUST NOT be stopped, moved, or
-deleted.
+The feature remains off outside `hvn-hyp1`. Rollback disables `secureTerminal.workspaceHandoff.enable` (or restores the preceding NixOS and QA Home Manager generations), stops the `hermes-qa` user service, and restarts the QA broker sockets and service. Disabled configuration installs no handoff storage and exposes none of the five handoff routes. Production Hermes, rootless Podman storage, and gateway credentials are not stopped, moved, or deleted.
 
-A destructive QA reset is deliberately broader than revision deletion because
-this increment has no retention/delete API and revision rows have activation,
-workspace, and import foreign keys. Stop the QA gateway, both QA broker sockets,
-and the QA broker service; verify the candidate resolves beneath exactly
-`/var/lib/hermes-qa-sandbox` and is neither
-`/var/lib/hermes-prod-sandbox` nor any Podman storage path; then move the whole
-QA broker state directory to an operator-named quarantine on the same
-filesystem. Start the broker sockets and QA gateway only after the empty
-`StateDirectory` has been recreated with mode `0700`. Delete the quarantine
-only after broker health, a fresh QA workspace, and unchanged production
-service state have been observed. Never edit `broker.sqlite` or delete
-`workspace-revisions` independently: that can manufacture references to
-missing immutable content.
+A destructive QA reset stops the QA gateway, both QA broker sockets, and the QA broker service; verifies that the candidate is exactly beneath `/var/lib/hermes-qa-sandbox` and is neither `/var/lib/hermes-prod-sandbox` nor a Podman path; then moves the whole canonical QA broker state directory to an operator-named same-filesystem quarantine. It recreates the empty state directory with mode `0700`, starts only QA services, and verifies fresh capture, private import, and prepare/read/release export before deleting the quarantine. It never edits the database or removes a handoff tree independently. Acceptance records a fresh reset cycle, disabled-route behavior, rollback, and unchanged production/Podman state.

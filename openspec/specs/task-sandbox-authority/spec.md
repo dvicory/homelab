@@ -48,6 +48,7 @@ Authority mutation MUST be exposed only through the broker control listener. Env
 ### Requirement: Task-scoped canonical environment identity
 
 Hermes MUST provide one generic, infrastructure-only way to associate a trusted authority binding with a task or session. Every environment-backed surface MUST continue to derive its opaque environment key through the canonical identity helper. A task carrying distinct authority MUST NOT share an environment with a conversation or task carrying different authority.
+Upstream per-session CWD is orthogonal to the opaque authority-bearing environment key and MUST NOT be supplied by model arguments.
 
 #### Scenario: Concurrent tasks with different authority
 - **GIVEN** two tasks in one gateway process with different authority binding IDs

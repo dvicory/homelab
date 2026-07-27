@@ -45,6 +45,7 @@ The plugin MUST send the proposed batch to the broker for validation and canonic
 ### Requirement: Existing Hermes approval integration
 
 The plugin SHOULD reuse Hermes' existing paired-user and surface-specific approval mechanism. A denial, timeout, callback failure, or malformed response MUST fail closed. Approval choices MUST map only to broker-supported scopes.
+The generic approval core determines and returns the effective choice; each adapter is a rendering surface and MUST honor the per-request permanent-choice restriction; an adapter response outside that restriction is a denial, not a downgrade.
 
 #### Scenario: Approved task grant
 - **GIVEN** a canonical request whose requested task scope is permitted
