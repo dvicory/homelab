@@ -1,10 +1,7 @@
 { self, ... }:
 {
-  # Golden policy rendering test (V3 §19 Phase 5): the Nix-rendered
-  # policy.json for the QA profile shape must parse under the broker's
-  # strict validator and compose for every declared pair, worklane, and
-  # template. This is the contract between the Nix authoring DSL and the
-  # broker evaluator.
+  # Policy rendering tests for the active Effect broker. Nix renders the QA
+  # profile policy; the broker's strict evaluator must accept and enforce it.
   perSystem =
     { pkgs, ... }:
     let
@@ -16,7 +13,6 @@
         inherit net;
       };
       policyLib = import (self + "/modules/den/aspects/workloads/hermes/secure-terminal/_policy.nix") { };
-      broker = pkgs.callPackage (self + "/pkgs/by-name/hermes-gondolin-broker/package.nix") { };
       effectBroker = pkgs.callPackage (self + "/pkgs/by-name/gondolin-broker-effect/package.nix") { };
 
       # Mirror of the QA selections in modules/den/users/hermes-runners.nix.
@@ -101,16 +97,6 @@
         minimal = assetManifest "minimal" "golden-build-minimal";
       };
 
-      policy = policyLib.mkPolicy {
-        inherit pkgs;
-        assets = lib.mapAttrs (_: asset: { path = "${asset}"; }) assets;
-        bundles = networkBundles;
-        profile = qaSelections.profile;
-        defaultTemplate = qaSelections.defaultTemplate;
-        allowedPairs = qaSelections.allowedPairs;
-        maximum = qaSelections.maximum;
-        worklanes = qaSelections.worklanes;
-      };
       effectPolicy = policyLib.mkEffectPolicy {
         inherit pkgs;
         assets = lib.mapAttrs (_: asset: { path = "${asset}"; }) assets;
@@ -144,18 +130,6 @@
         ) qaVolumes;
     in
     {
-      checks.secure-terminal-policy-golden =
-        pkgs.runCommand "secure-terminal-policy-golden"
-          {
-            nativeBuildInputs = [ broker.nodejs ];
-            policyJson = "${policy.json}";
-          }
-          ''
-            HERMES_GONDOLIN_BROKER_LIB=${broker}/lib/node_modules/hermes-gondolin-broker/dist \
-              POLICY_JSON="$policyJson" \
-              node ${self + "/modules/tests/secure-terminal-policy-golden.mjs"}
-            touch $out
-          '';
       checks.secure-terminal-socket-directory-mount =
         assert lib.elem brokerDirectoryMount qaVolumes;
         assert !hasLegacySocketMount;
