@@ -1,0 +1,236 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Tue, 28 Jul 2026 11:00:00 +0000
+Subject: [PATCH] fix(workspaces): align broker task-run identities
+
+The workspace control client activated task runs with raw Hermes task and run
+ids, while worker execution requests used board-qualified broker identities.
+Once workers were pinned to the correct environment, every terminal and file
+operation failed the broker's exact activation comparison as stale.
+
+Make activate, consume, capture, and import accept board context and derive all
+task-run fields through the same broker_task_run encoding used by execution.
+Add a regression that compares the activation payload with the trusted worker
+execution envelope byte for byte.
+---
+--- a/tools/environments/gondolin.py
++++ b/tools/environments/gondolin.py
+@@ -178,17 +178,19 @@
+         *,
+         finalization_id: str,
+         environment_key: str,
++        board: str,
+         task_id: str,
+         run_id: int,
+         selected_artifacts: Optional[list[str]] = None,
+     ) -> dict:
++        task_run = broker_task_run(board, task_id, run_id)
+         body = self._json_post(
+             "/v1/control/workspace-handoffs/capture",
+             {
+                 "finalizationId": str(finalization_id),
+                 "environmentKey": str(environment_key),
+-                "taskId": str(task_id),
+-                "runId": str(int(run_id)),
++                "taskId": task_run["taskId"],
++                "runId": task_run["runId"],
+                 "selectedArtifacts": list(selected_artifacts or []),
+             },
+             timeout=max(self._timeout, 180.0),
+@@ -203,20 +205,24 @@
+         self,
+         *,
+         preparation_id: str,
++        board: str,
+         source_handoff_id: str,
+         source_task_id: str,
+         destination_task_id: str,
+         destination_run_id: int,
+         destination_environment_key: str,
+     ) -> dict:
++        destination_run = broker_task_run(
++            board, destination_task_id, destination_run_id
++        )
+         body = self._json_post(
+             "/v1/control/workspace-handoffs/import",
+             {
+                 "preparationId": str(preparation_id),
+                 "sourceHandoffId": str(source_handoff_id),
+-                "sourceTaskId": str(source_task_id),
+-                "destinationTaskId": str(destination_task_id),
+-                "destinationRunId": str(int(destination_run_id)),
++                "sourceTaskId": broker_task_identity(board, source_task_id),
++                "destinationTaskId": destination_run["taskId"],
++                "destinationRunId": destination_run["runId"],
+                 "destinationEnvironmentKey": str(destination_environment_key),
+             },
+             timeout=max(self._timeout, 180.0),
+@@ -272,11 +278,13 @@
+         self,
+         *,
+         environment_key: str,
++        board: str,
+         task_id: str,
+         run_id: int,
+         workspace_id: str,
+         workspace_lease_id: str,
+     ) -> dict:
++        task_run = broker_task_run(board, task_id, run_id)
+         authority = self._json_post(
+             "/v1/control/authority/bind-default",
+             {
+@@ -290,8 +298,8 @@
+             "/v1/control/task-runs/activate",
+             {
+                 "environmentKey": environment_key,
+-                "taskId": task_id,
+-                "runId": str(int(run_id)),
++                "taskId": task_run["taskId"],
++                "runId": task_run["runId"],
+                 "workspaceId": workspace_id,
+                 "workspaceLeaseId": workspace_lease_id,
+                 "policyDigest": policy_digest,
+@@ -305,14 +313,15 @@
+         return {"activationId": self._required_text(activation, "activationId")}
+ 
+     def consume_task_run(
+-        self, *, environment_key: str, task_id: str, run_id: int
++        self, *, environment_key: str, board: str, task_id: str, run_id: int
+     ) -> None:
++        task_run = broker_task_run(board, task_id, run_id)
+         body = self._json_post(
+             "/v1/control/task-runs/consume",
+             {
+                 "environmentKey": environment_key,
+-                "taskId": task_id,
+-                "runId": str(int(run_id)),
++                "taskId": task_run["taskId"],
++                "runId": task_run["runId"],
+             },
+         )
+         if body.get("consumed") is not True:
+--- a/plugins/workspace-service/__init__.py
++++ b/plugins/workspace-service/__init__.py
+@@ -52,6 +52,7 @@
+ 
+ def _capture_replay(
+     client: BrokerClient,
++    board: str,
+     task_id: str,
+     run_id: int,
+     finalization_id: str,
+@@ -60,6 +61,7 @@
+     return client.capture_handoff(
+         finalization_id=finalization_id,
+         environment_key=broker_environment_key(task_id),
++        board=board,
+         task_id=task_id,
+         run_id=run_id,
+         selected_artifacts=list(artifacts),
+@@ -102,7 +104,7 @@
+     client = _client()
+     try:
+         captured = _capture_replay(
+-            client, task_id, int(run_id), finalization_id, list(artifacts)
++            client, board, task_id, int(run_id), finalization_id, list(artifacts)
+         )
+         intent = f"{finalization_id}:{task_id}:{run_id}"
+         _prepare_and_release_selected(client, captured["handoffId"], intent, list(artifacts))
+@@ -159,7 +161,7 @@
+             if source is not None:
+                 source_run_id = int(facts["source_run_id"])
+                 source_capture = _capture_replay(
+-                    client, source.id, source_run_id,
++                    client, board, source.id, source_run_id,
+                     str(facts["source_intent"]["finalization_id"]),
+                 )
+                 import_intent = kb.get_workspace_import_intent(conn, task_id, int(run_id))
+@@ -171,6 +173,7 @@
+                     )
+                 imported = client.import_handoff(
+                     preparation_id=str(import_intent["preparation_id"]),
++                    board=board,
+                     source_handoff_id=source_capture["handoffId"],
+                     source_task_id=source.id,
+                     destination_task_id=task_id,
+@@ -185,6 +188,7 @@
+             else:
+                 binding = client.acquire_workspace(destination_key)
+             client.activate_task_run(
++                board=board,
+                 environment_key=destination_key, task_id=task_id, run_id=int(run_id),
+                 workspace_id=binding["workspaceId"],
+                 workspace_lease_id=binding["workspaceLeaseId"],
+@@ -203,6 +207,7 @@
+         client = _client()
+         try:
+             client.consume_task_run(
++                board=board,
+                 environment_key=broker_environment_key(task_id),
+                 task_id=task_id, run_id=int(run_id),
+             )
+@@ -224,6 +229,7 @@
+         client = _client()
+         try:
+             client.consume_task_run(
++                board=board,
+                 environment_key=broker_environment_key(task_id),
+                 task_id=task_id,
+                 run_id=int(run_id),
+--- a/tests/tools/test_gondolin_backend.py
++++ b/tests/tools/test_gondolin_backend.py
+@@ -13,6 +13,7 @@
+ import pytest
+ from tools.environments.gondolin import (
+     BrokerError,
++    BrokerClient,
+     GondolinEnvironment,
+     check_gondolin_available,
+ )
+@@ -275,7 +276,46 @@
+ 
+     assert handle.returncode == 1
+     assert "[broker error] policy.denied: command blocked" in handle.output
++
++
++def test_control_activation_matches_worker_execution_identity(monkeypatch):
++    calls = []
++    client = BrokerClient.__new__(BrokerClient)
++    client._timeout = 1.0
++
++    def fake_post(route, payload, timeout=None):
++        calls.append((route, payload))
++        if route == "/v1/control/authority/bind-default":
++            return {"policyDigest": "a" * 64}
++        if route == "/v1/control/task-runs/activate":
++            return {"activation": {"activationId": "activation-test"}}
++        raise AssertionError(route)
++
++    client._json_post = fake_post
++    environment_key = "authority-test"
++    monkeypatch.setenv("HERMES_BROKER_ENVIRONMENT_KEY", environment_key)
++    monkeypatch.setenv("HERMES_KANBAN_BOARD", "homelab")
++    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_identity")
++    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "142")
+ 
++    client.activate_task_run(
++        environment_key=environment_key,
++        board="homelab",
++        task_id="t_identity",
++        run_id=142,
++        workspace_id="workspace-test",
++        workspace_lease_id="lease-test",
++    )
++    activation_payload = calls[-1][1]
++    execution_payload = client._execution_payload(
++        environment_key,
++        {"environmentKey": environment_key},
++    )
++
++    assert activation_payload["taskId"] == execution_payload["taskRun"]["taskId"]
++    assert activation_payload["runId"] == execution_payload["taskRun"]["runId"]
++
++
+ def test_gondolin_process_schema_hides_stdin_actions(monkeypatch):
+     from types import SimpleNamespace
+     from tools import process_registry
