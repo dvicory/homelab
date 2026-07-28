@@ -1,0 +1,646 @@
+diff --git a/gateway/platforms/api_server.py b/gateway/platforms/api_server.py
+index 65d5b32..d889b13 100644
+--- a/gateway/platforms/api_server.py
++++ b/gateway/platforms/api_server.py
+@@ -2448,6 +2448,7 @@ class APIServerAdapter(BasePlatformAdapter):
+             "api_server",
+             model=source.get("model"),
+             system_prompt=source.get("system_prompt"),
++            model_config={"_branched_from": source_id},
+             parent_session_id=source_id,
+         )
+         messages = await asyncio.to_thread(db.get_messages, source_id)
+@@ -2463,6 +2464,26 @@ class APIServerAdapter(BasePlatformAdapter):
+             await asyncio.to_thread(db.set_session_title, fork_id, str(title))
+         except ValueError as exc:
+             return web.json_response(_openai_error(str(exc), code="invalid_title"), status=400)
++        try:
++            from gateway.workspace_branch import prepare_workspace_branch
++
++            await asyncio.to_thread(
++                prepare_workspace_branch,
++                db,
++                source_id,
++                fork_id,
++            )
++        except Exception as exc:
++            await asyncio.to_thread(db.delete_session, fork_id)
++            await asyncio.to_thread(db.reopen_session, source_id)
++            return web.json_response(
++                _openai_error(
++                    f"Failed to prepare branch workspace: {exc}",
++                    code="workspace_branch_failed",
++                ),
++                status=503,
++            )
++
+         fork = await asyncio.to_thread(db.get_session, fork_id) or {"id": fork_id, "parent_session_id": source_id}
+         return web.json_response({"object": "hermes.session", "session": self._session_response(fork)}, status=201)
+ 
+diff --git a/gateway/run.py b/gateway/run.py
+index f59e006..83341e1 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -16361,7 +16361,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+         Returns a list of reset tokens; pass them to ``_clear_session_env``
+         in a ``finally`` block.
+         """
+-        from gateway.session_context import set_session_vars
++        from gateway.session_context import (
++            resolve_workspace_session_id,
++            set_session_vars,
++        )
+         # Propagate the adapter's async-delivery capability so async tools
+         # (terminal notify_on_complete / watch_patterns, delegate_task
+         # background=True) know whether this channel can wake a later turn.
+@@ -16372,6 +16375,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+         _adapters = getattr(self, "adapters", None) or {}
+         _adapter = _adapters.get(context.source.platform)
+         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
++        workspace_session_id = resolve_workspace_session_id(
++            getattr(self, "_session_db", None),
++            context.session_id,
++        )
+         return set_session_vars(
+             platform=context.source.platform.value,
+             chat_id=context.source.chat_id,
+@@ -16380,6 +16387,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+             user_id=str(context.source.user_id) if context.source.user_id else "",
+             user_name=str(context.source.user_name) if context.source.user_name else "",
+             session_key=context.session_key,
++            session_id=context.session_id,
++            workspace_session_id=workspace_session_id,
+             message_id=str(context.source.message_id) if context.source.message_id else "",
+             profile=getattr(context.source, "profile", "") or "",
+             async_delivery=_async_delivery,
+diff --git a/gateway/session_context.py b/gateway/session_context.py
+index a8e7c02..e71773e 100644
+--- a/gateway/session_context.py
++++ b/gateway/session_context.py
+@@ -79,6 +79,11 @@ _SESSION_USER_ID: ContextVar = ContextVar("HERMES_SESSION_USER_ID", default=_UNS
+ _SESSION_USER_NAME: ContextVar = ContextVar("HERMES_SESSION_USER_NAME", default=_UNSET)
+ _SESSION_KEY: ContextVar = ContextVar("HERMES_SESSION_KEY", default=_UNSET)
+ _SESSION_ID: ContextVar = ContextVar("HERMES_SESSION_ID", default=_UNSET)
++# Stable execution workspace ownership, kept in trusted task-local context and
++# never exported to child processes or guests.
++_WORKSPACE_SESSION_ID: ContextVar = ContextVar(
++    "workspace_session_id", default=_UNSET
++)
+ # In-process UI session/window id for multi-session desktop/TUI hosts. This is
+ # intentionally separate from HERMES_SESSION_ID: the latter is the durable
+ # conversation/session-db id, while the UI id is the live frontend tab/window
+@@ -164,6 +169,7 @@ def set_session_vars(
+     user_name: str = "",
+     session_key: str = "",
+     session_id: str = "",
++    workspace_session_id: str = "",
+     message_id: str = "",
+     profile: str = "",
+     cwd: str = "",
+@@ -200,6 +206,7 @@ def set_session_vars(
+         _SESSION_USER_NAME.set(user_name),
+         _SESSION_KEY.set(session_key),
+         _SESSION_ID.set(session_id),
++        _WORKSPACE_SESSION_ID.set(workspace_session_id),
+         _SESSION_UI_SESSION_ID.set(ui_session_id),
+         _SESSION_MESSAGE_ID.set(message_id),
+         _SESSION_PROFILE.set(profile),
+@@ -235,6 +242,7 @@ def clear_session_vars(tokens: list) -> None:
+         _SESSION_USER_NAME,
+         _SESSION_KEY,
+         _SESSION_ID,
++        _WORKSPACE_SESSION_ID,
+         _SESSION_UI_SESSION_ID,
+         _SESSION_MESSAGE_ID,
+         _SESSION_PROFILE,
+@@ -289,6 +297,7 @@ def reset_session_vars() -> None:
+     """
+     for var in _VAR_MAP.values():
+         var.set(_UNSET)
++    _WORKSPACE_SESSION_ID.set(_UNSET)
+     # Reset the async-delivery capability to "never bound here" (_UNSET) for the
+     # same inheritance-leak reason as the mapped vars above — see clear_session_vars,
+     # which resets this var on the handler-exit path for the symmetric concern.
+@@ -301,6 +310,40 @@ def reset_session_vars() -> None:
+         pass
+ 
+ 
++def get_workspace_session_id(default: str = "") -> str:
++    """Return the trusted workspace owner bound to this task context."""
++    value = _WORKSPACE_SESSION_ID.get()
++    return default if value is _UNSET else value
++
++
++def resolve_workspace_session_id(session_db, session_id: str) -> str:
++    """Return the stable compression root used for workspace ownership.
++
++    Branches, delegates, and ordinary sessions resolve to themselves because
++    SessionDB.get_compression_lineage follows compression edges only. Failure
++    falls back to the current durable segment, preserving isolation at the cost
++    of continuity rather than aliasing two conversations.
++    """
++    if not isinstance(session_id, str) or not session_id:
++        return ""
++    database = getattr(session_db, "_db", session_db)
++    lineage_for = getattr(database, "get_compression_lineage", None)
++    if not callable(lineage_for):
++        return session_id
++    try:
++        lineage = lineage_for(session_id)
++    except Exception:
++        return session_id
++    if (
++        isinstance(lineage, list)
++        and lineage
++        and isinstance(lineage[0], str)
++        and lineage[0]
++    ):
++        return lineage[0]
++    return session_id
++
++
+ def get_session_env(name: str, default: str = "") -> str:
+     """Read a session context variable by its legacy ``HERMES_SESSION_*`` name.
+ 
+diff --git a/gateway/slash_commands.py b/gateway/slash_commands.py
+index 4aa75fa..94af22f 100644
+--- a/gateway/slash_commands.py
++++ b/gateway/slash_commands.py
+@@ -4126,6 +4126,29 @@ class GatewaySlashCommandsMixin:
+         except Exception:
+             pass
+ 
++        # Broker-backed branches must receive a private copy before the route
++        # can select the child. Required preparer failures are transactional:
++        # remove the provisional session and leave the parent selected.
++        try:
++            from gateway.workspace_branch import prepare_workspace_branch
++
++            await asyncio.to_thread(
++                prepare_workspace_branch,
++                self._session_db,
++                parent_session_id,
++                new_session_id,
++            )
++        except Exception as exc:
++            logger.error("Failed to prepare branch workspace: %s", exc)
++            try:
++                await self._session_db.delete_session(new_session_id)
++            except Exception:
++                logger.exception(
++                    "Failed to remove provisional branch session %s",
++                    new_session_id,
++                )
++            return t("gateway.branch.create_failed", error=exc)
++
+         # Switch the session store entry to the new session
+         new_entry = await self.async_session_store.switch_session(session_key, new_session_id)
+         if not new_entry:
+diff --git a/gateway/workspace_branch.py b/gateway/workspace_branch.py
+new file mode 100644
+index 0000000..19736a2
+--- /dev/null
++++ b/gateway/workspace_branch.py
+@@ -0,0 +1,37 @@
++"""Trusted lifecycle bridge for private broker-backed conversation branches."""
++
++from __future__ import annotations
++
++import os
++from typing import Any
++
++
++def prepare_workspace_branch(
++    session_db: Any,
++    source_session_id: str,
++    destination_session_id: str,
++) -> None:
++    """Prepare durable branch state before a caller activates the child.
++
++    Native environments have no registered preparer and need no extra work.
++    A configured broker control socket makes preparation mandatory: missing,
++    failed, or malformed plugin results block the branch instead of silently
++    selecting an empty workspace.
++    """
++    from gateway.session_context import resolve_workspace_session_id
++    from hermes_cli.plugins import invoke_required_hook
++
++    source_owner = resolve_workspace_session_id(session_db, source_session_id)
++    results = invoke_required_hook(
++        "on_session_branch",
++        source_session_id=source_session_id,
++        source_workspace_session_id=source_owner,
++        destination_session_id=destination_session_id,
++    )
++    required = bool(os.environ.get("GONDOLIN_EFFECT_CONTROL_SOCKET", "").strip())
++    if required and not results:
++        raise RuntimeError("broker-backed branch preparation is unavailable")
++    for result in results:
++        if not isinstance(result, dict) or result.get("ok") is not True:
++            detail = result.get("detail") if isinstance(result, dict) else None
++            raise RuntimeError(str(detail or "branch workspace preparation failed"))
+diff --git a/hermes_cli/cli_commands_mixin.py b/hermes_cli/cli_commands_mixin.py
+index e108243..aef4061 100644
+--- a/hermes_cli/cli_commands_mixin.py
++++ b/hermes_cli/cli_commands_mixin.py
+@@ -976,6 +976,26 @@ class CLICommandsMixin:
+         except Exception:
+             pass
+ 
++        try:
++            from gateway.workspace_branch import prepare_workspace_branch
++
++            prepare_workspace_branch(
++                self._session_db,
++                parent_session_id,
++                new_session_id,
++            )
++        except Exception as exc:
++            try:
++                self._session_db.delete_session(new_session_id)
++                self._session_db.reopen_session(parent_session_id)
++            except Exception:
++                logger.exception(
++                    "Failed to roll back provisional branch %s",
++                    new_session_id,
++                )
++            _cprint(f"  Failed to prepare branch workspace: {exc}")
++            return
++
+         # Switch to the new session
+         self._transfer_session_yolo(self.session_id, new_session_id)
+         self.session_id = new_session_id
+diff --git a/hermes_cli/plugins.py b/hermes_cli/plugins.py
+index 258dcd6..043eca8 100644
+--- a/hermes_cli/plugins.py
++++ b/hermes_cli/plugins.py
+@@ -161,6 +161,7 @@ VALID_HOOKS: Set[str] = {
+     "on_session_end",
+     "on_session_finalize",
+     "on_session_reset",
++    "on_session_branch",
+     "subagent_start",
+     "subagent_stop",
+     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
+@@ -1973,6 +1974,17 @@ class PluginManager:
+                 )
+         return results
+ 
++    def invoke_required_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
++        """Call transactional lifecycle callbacks without swallowing failure."""
++        kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
++        results: List[Any] = []
++        for callback in self._hooks.get(hook_name, []):
++            result = callback(**kwargs)
++            if result is not None:
++                results.append(result)
++        return results
++
++
+     def has_hook(self, hook_name: str) -> bool:
+         """Return True when at least one callback is registered for a hook."""
+         return bool(self._hooks.get(hook_name))
+@@ -2100,6 +2112,11 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
+     """
+     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
+ 
++def invoke_required_hook(hook_name: str, **kwargs: Any) -> List[Any]:
++    """Invoke callbacks whose failure must abort the lifecycle transition."""
++    return get_plugin_manager().invoke_required_hook(hook_name, **kwargs)
++
++
+ 
+ def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:
+     """Invoke registered middleware callbacks.
+diff --git a/hermes_state.py b/hermes_state.py
+index 8d8ff6b..a3cda1f 100644
+--- a/hermes_state.py
++++ b/hermes_state.py
+@@ -5953,6 +5953,17 @@ class SessionDB:
+         parent_id = child.get("parent_session_id")
+         if not parent_id or self._is_branch_child_row(child):
+             return False
++        raw = child.get("model_config")
++        try:
++            cfg = json.loads(raw) if isinstance(raw, str) else (raw or {})
++        except (TypeError, json.JSONDecodeError):
++            return False
++        if (
++            not isinstance(cfg, dict)
++            or cfg.get("_delegate_from") is not None
++            or child.get("source") == "tool"
++        ):
++            return False
+         parent = self.get_session(parent_id)
+         return bool(parent and parent.get("end_reason") == "compression")
+ 
+@@ -5987,7 +5998,7 @@ class SessionDB:
+             next_child = None
+             for row in rows:
+                 candidate = dict(row)
+-                if not self._is_branch_child_row(candidate):
++                if self._is_compression_child_row(candidate):
+                     next_child = candidate
+                     break
+             if not next_child or next_child["id"] in seen:
+diff --git a/tests/gateway/test_session_boundary_security_state.py b/tests/gateway/test_session_boundary_security_state.py
+index b00ae1d..50b8683 100644
+--- a/tests/gateway/test_session_boundary_security_state.py
++++ b/tests/gateway/test_session_boundary_security_state.py
+@@ -193,6 +193,26 @@ async def test_branch_clears_session_scoped_approval_and_yolo_state():
+     assert other_key in runner._pending_skills_reload_notes
+ 
+ 
++@pytest.mark.asyncio
++async def test_branch_workspace_failure_keeps_parent_selected(monkeypatch):
++    from gateway import workspace_branch
++
++    runner, session_key = _make_branch_runner()
++    approve_session(session_key, "recursive delete")
++    monkeypatch.setattr(
++        workspace_branch,
++        "prepare_workspace_branch",
++        lambda *_args: (_ for _ in ()).throw(RuntimeError("copy failed")),
++    )
++
++    result = await runner._handle_branch_command(_make_event("/branch"))
++
++    assert "copy failed" in result
++    runner.session_store.switch_session.assert_not_called()
++    runner._session_db._db.delete_session.assert_called_once()
++    assert is_approved(session_key, "recursive delete") is True
++
++
+ @pytest.mark.asyncio
+ async def test_branch_preserves_persisted_assistant_metadata():
+     runner, _session_key = _make_branch_runner()
+diff --git a/tests/hermes_state/test_session_md_export.py b/tests/hermes_state/test_session_md_export.py
+index 8efbd2f..29772b7 100644
+--- a/tests/hermes_state/test_session_md_export.py
++++ b/tests/hermes_state/test_session_md_export.py
+@@ -54,6 +54,13 @@ def test_get_compression_lineage_returns_only_compression_chain(tmp_path):
+     try:
+         db.create_session("root", source="cli")
+         db.end_session("root", "compression")
++        db.create_session(
++            "delegate",
++            source="cli",
++            parent_session_id="root",
++            model_config={"_delegate_from": "root"},
++        )
++        db.create_session("tool-child", source="tool", parent_session_id="root")
+         db.create_session("child", source="cli", parent_session_id="root")
+         db.end_session("child", "compression")
+         db.create_session("tip", source="cli", parent_session_id="child")
+@@ -61,6 +68,8 @@ def test_get_compression_lineage_returns_only_compression_chain(tmp_path):
+ 
+         assert db.get_compression_lineage("tip") == ["root", "child", "tip"]
+         assert db.get_compression_lineage("branch") == ["branch"]
++        assert db.get_compression_lineage("delegate") == ["delegate"]
++        assert db.get_compression_lineage("tool-child") == ["tool-child"]
+     finally:
+         db.close()
+ 
+diff --git a/tests/tools/test_secure_terminal_scope.py b/tests/tools/test_secure_terminal_scope.py
+index 9cdb422..9ecfe8b 100644
+--- a/tests/tools/test_secure_terminal_scope.py
++++ b/tests/tools/test_secure_terminal_scope.py
+@@ -8,7 +8,7 @@ pin its scope semantics; the cross-surface integration lives in
+ """
+ 
+ from tools import terminal_tool
+-from tools.terminal_tool import environment_key
++from tools.terminal_tool import environment_key, trusted_session_key
+ 
+ 
+ def test_upstream_default_remains_shared(monkeypatch):
+@@ -64,6 +64,195 @@ def test_derived_keys_pass_through_unchanged(monkeypatch):
+     assert environment_key(key, "conversation-b") == environment_key(None, "conversation-b")
+ 
+ 
++def test_gateway_workspace_root_survives_resume_alias_and_compression(monkeypatch):
++    from gateway.session_context import clear_session_vars, set_session_vars
++    from tools.approval import reset_current_session_key, set_current_session_key
++
++    monkeypatch.setenv("TERMINAL_ISOLATION_SCOPE", "conversation")
++    keys = []
++    for route, live_segment in (
++        ("discord:chat-a", "compression-tip"),
++        ("telegram:chat-b", "compression-tip"),
++    ):
++        tokens = set_session_vars(
++            session_key=route,
++            session_id=live_segment,
++            workspace_session_id="conversation-root",
++        )
++        approval_token = set_current_session_key(route)
++        try:
++            owner = trusted_session_key("turn", live_segment)
++            assert owner == "conversation-root"
++            keys.append(environment_key("turn", owner))
++        finally:
++            reset_current_session_key(approval_token)
++            clear_session_vars(tokens)
++
++    assert keys[0] == keys[1]
++
++
++def test_new_and_branch_workspace_roots_remain_isolated(monkeypatch):
++    from gateway.session_context import clear_session_vars, set_session_vars
++
++    monkeypatch.setenv("TERMINAL_ISOLATION_SCOPE", "conversation")
++    keys = []
++    for root in ("original-root", "new-root", "branch-root"):
++        tokens = set_session_vars(
++            session_key="same-gateway-route",
++            session_id=root,
++            workspace_session_id=root,
++        )
++        try:
++            owner = trusted_session_key("turn", root)
++            keys.append(environment_key("turn", owner))
++        finally:
++            clear_session_vars(tokens)
++
++    assert len(set(keys)) == 3
++
++
++def test_workspace_root_resolver_follows_only_compression_lineage():
++    from gateway.session_context import resolve_workspace_session_id
++
++    class SessionDb:
++        def get_compression_lineage(self, session_id):
++            return {
++                "compression-tip": ["conversation-root", "compression-tip"],
++                "branch-root": ["branch-root"],
++                "delegate-root": ["delegate-root"],
++            }[session_id]
++
++    database = SessionDb()
++    assert (
++        resolve_workspace_session_id(database, "compression-tip")
++        == "conversation-root"
++    )
++    assert resolve_workspace_session_id(database, "branch-root") == "branch-root"
++    assert resolve_workspace_session_id(database, "delegate-root") == "delegate-root"
++
++
++def test_workspace_root_resolution_failure_isolates_on_current_segment():
++    from gateway.session_context import resolve_workspace_session_id
++
++    class UnavailableDb:
++        def get_compression_lineage(self, _session_id):
++            raise RuntimeError("database unavailable")
++
++    assert resolve_workspace_session_id(UnavailableDb(), "current-tip") == "current-tip"
++
++
++def test_gateway_binds_compression_root_into_tool_context():
++    from types import SimpleNamespace
++
++    from gateway.run import GatewayRunner
++    from gateway.session_context import (
++        clear_session_vars,
++        get_session_env,
++        get_workspace_session_id,
++    )
++
++    class SessionDb:
++        def get_compression_lineage(self, _session_id):
++            return ["conversation-root", "compression-tip"]
++
++    class Platform:
++        value = "discord"
++
++
++    runner = GatewayRunner.__new__(GatewayRunner)
++    runner._session_db = SessionDb()
++    runner.adapters = {}
++    source = SimpleNamespace(
++        platform=Platform(),
++        chat_id="chat",
++        chat_name="",
++        thread_id=None,
++        user_id="user",
++        user_name="",
++        message_id="message",
++        profile="",
++    )
++    context = SimpleNamespace(
++        source=source,
++        session_key="gateway-route",
++        session_id="compression-tip",
++    )
++
++    tokens = runner._set_session_env(context)
++    try:
++        assert get_session_env("HERMES_SESSION_ID") == "compression-tip"
++        assert get_workspace_session_id() == "conversation-root"
++    finally:
++        clear_session_vars(tokens)
++
++
++def test_workspace_owner_is_not_exported_to_subprocess_environment():
++    from gateway.session_context import clear_session_vars, set_session_vars
++    from tools.environments.local import _inject_session_context_env
++
++    tokens = set_session_vars(
++        session_key="gateway-route",
++        session_id="compression-tip",
++        workspace_session_id="private-workspace-root",
++    )
++    child_env = {}
++    try:
++        _inject_session_context_env(child_env)
++        assert "private-workspace-root" not in child_env.values()
++    finally:
++        clear_session_vars(tokens)
++
++
++def test_broker_branch_preparation_is_required_and_uses_compression_root(
++    monkeypatch,
++):
++    import pytest
++
++    from gateway.workspace_branch import prepare_workspace_branch
++    from hermes_cli import plugins
++
++    class SessionDb:
++        def get_compression_lineage(self, _session_id):
++            return ["conversation-root", "compression-tip"]
++
++    calls = []
++    monkeypatch.setenv(
++        "GONDOLIN_EFFECT_CONTROL_SOCKET",
++        "/run/hermes-gondolin/control.sock",
++    )
++    monkeypatch.setattr(
++        plugins,
++        "invoke_required_hook",
++        lambda name, **kwargs: calls.append((name, kwargs)) or [],
++    )
++    with pytest.raises(
++        RuntimeError,
++        match="broker-backed branch preparation is unavailable",
++    ):
++        prepare_workspace_branch(
++            SessionDb(),
++            "compression-tip",
++            "branch-root",
++        )
++    assert calls == [(
++        "on_session_branch",
++        {
++            "source_session_id": "compression-tip",
++            "source_workspace_session_id": "conversation-root",
++            "destination_session_id": "branch-root",
++        },
++    )]
++
++
++def test_native_branch_needs_no_workspace_preparer(monkeypatch):
++    from gateway.workspace_branch import prepare_workspace_branch
++    from hermes_cli import plugins
++
++    monkeypatch.delenv("GONDOLIN_EFFECT_CONTROL_SOCKET", raising=False)
++    monkeypatch.setattr(plugins, "invoke_required_hook", lambda *_args, **_kwargs: [])
++    prepare_workspace_branch(None, "source-root", "branch-root")
++
++
+ def test_isolation_override_wins_in_both_scopes(monkeypatch):
+     terminal_tool.register_task_env_overrides(
+         "tb2-task", {"docker_image": "tb2:image", "cwd": "/app"}
+diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
+index 7a3ccbc..852c012 100644
+--- a/tools/terminal_tool.py
++++ b/tools/terminal_tool.py
+@@ -1258,13 +1258,23 @@ def trusted_session_key(
+     *,
+     default: str = "default",
+ ) -> str:
+-    """Return the one raw session key shared by all terminal surfaces.
+-
+-    ``agent.session_id`` is a durable transcript identifier and is not the
+-    gateway's routing/ownership key. Tool worker threads inherit the trusted
+-    approval/session context, so prefer it over caller metadata and only use
+-    explicit ids when no context is bound (CLI/tests).
++    """Return the stable raw identity shared by terminal-backed surfaces.
++
++    Gateway routing keys vary by platform/chat/thread and are rebound by
++    ``/resume``. Live transcript ids rotate on compression. The gateway binds
++    a private, non-exported ContextVar to the persisted compression root, which
++    changes for ``/new`` and branches but survives resume aliases and
++    compression continuations. CLI/tests fall back to their explicit session
++    metadata; approval routing remains independent.
+     """
++    try:
++        from gateway.session_context import get_workspace_session_id
++
++        workspace_session_id = get_workspace_session_id("")
++    except Exception:
++        workspace_session_id = ""
++    if isinstance(workspace_session_id, str) and workspace_session_id.strip():
++        return workspace_session_id
+     try:
+         from tools.approval import get_current_session_key
+ 

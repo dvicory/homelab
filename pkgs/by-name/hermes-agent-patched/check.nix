@@ -44,6 +44,7 @@ runCommand "hermes-agent-patched-check" { } ''
     ${patchedHermes.patchedSource}/tests/hermes_cli/test_kanban_worker_spawn_toolsets.py \
     ${patchedHermes.patchedSource}/tests/tools/test_kanban_tools.py \
     ${patchedHermes.patchedSource}/tests/tools/test_kanban_role_boundaries.py \
+    ${patchedHermes.patchedSource}/tests/hermes_state/test_session_md_export.py \
     ${patchedHermes.patchedSource}/tests/tools/test_secure_terminal_scope.py \
     ${patchedHermes.patchedSource}/tests/tools/test_secure_terminal_identity_integration.py \
     ${patchedHermes.patchedSource}/tests/tools/test_file_tools_cwd_resolution.py \
@@ -51,6 +52,7 @@ runCommand "hermes-agent-patched-check" { } ''
     ${patchedHermes.patchedSource}/tests/tools/test_terminal_task_cwd.py \
     ${patchedHermes.patchedSource}/tests/tools/test_task_authority_binding.py \
     ${patchedHermes.patchedSource}/tests/tools/test_gondolin_backend.py \
+    ${patchedHermes.patchedSource}/tests/gateway/test_session_boundary_security_state.py \
     ${patchedHermes.patchedSource}/tests/gateway/test_kanban_notifier.py \
     ${patchedHermes.patchedSource}/tests/plugins/test_workspace_zero_schema.py \
     ${sandboxAccess.testSource}/tests \

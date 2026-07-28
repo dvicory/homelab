@@ -15,6 +15,7 @@ import { HandoffStorageLive } from "../dist/workspace-handoff/frozen-tree.js"
 import { RegistryLive } from "../dist/registry.js"
 import { VmRuntime } from "../dist/runtime.js"
 import { WorkspacesLive } from "../dist/workspaces.js"
+import { WorkspaceBranchesLive } from "../dist/workspace-branches.js"
 
 const errno = (code, message) => Object.assign(new Error(message), { code })
 
@@ -237,7 +238,8 @@ export const makeTestLayer = (stateDir, options = {}) => {
     ...(options.now === undefined ? {} : { now: options.now })
   }).pipe(Layer.provideMerge(handoffStorage))
   const environments = EnvironmentsLive.pipe(Layer.provideMerge(grants))
-  const handoffOperations = HandoffOperationsLive.pipe(Layer.provideMerge(environments))
+  const workspaceBranches = WorkspaceBranchesLive.pipe(Layer.provideMerge(environments))
+  const handoffOperations = HandoffOperationsLive.pipe(Layer.provideMerge(workspaceBranches))
   const executor = ExecutorLive.pipe(Layer.provideMerge(handoffOperations))
   const layer = FilesLive.pipe(Layer.provideMerge(executor))
   return { config, fake, layer }

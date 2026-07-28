@@ -29,6 +29,8 @@ let
       ./kanban-lifecycle-safety.patch
       ./worker-lane-workspace-policy.patch
       ./kanban-worker-guidance.patch
+      # Stable conversation workspace ownership and private branch preparation.
+      ./workspace-resume-identity.patch
     ];
   };
 in

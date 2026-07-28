@@ -93,6 +93,26 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
     )
     assert.equal(controlRejectsExecution.status, 404)
 
+    const executionRejectsBranchPreparation = yield* Effect.promise(() =>
+      request(config.socketPath, "/v1/control/workspace-branches/prepare", {
+        operationId: "c303d62f-f6df-428f-8f27-206b9e17f5c8",
+        sourceEnvironmentKey: "branch-source-http",
+        destinationEnvironmentKey: "branch-destination-http",
+      })
+    )
+    assert.equal(executionRejectsBranchPreparation.status, 404)
+
+    const preparedBranch = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/workspace-branches/prepare", {
+        operationId: "c303d62f-f6df-428f-8f27-206b9e17f5c8",
+        sourceEnvironmentKey: "branch-source-http",
+        destinationEnvironmentKey: "branch-destination-http",
+      })
+    )
+    assert.equal(preparedBranch.status, 200)
+    const branch = JSON.parse(preparedBranch.text)
+    assert.notEqual(branch.sourceWorkspaceId, branch.destinationWorkspaceId)
+
     const acquiredResponse = yield* Effect.promise(() =>
       request(config.controlSocketPath, "/v1/control/workspaces/acquire", {
         environmentKey: "conversation-control"

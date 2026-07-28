@@ -70,6 +70,10 @@ export interface EnvironmentService {
   readonly close: (reference: EnvironmentRef) => Effect.Effect<void, BrokerError>;
   readonly hardTerminateLeased: (reference: EnvironmentRef, reason: string) => Effect.Effect<void, never>;
   readonly closeForFence: (reference: EnvironmentRef) => Effect.Effect<void, BrokerError>;
+  readonly runWithEnvironmentStopped: <A, E, R>(
+    environmentKey: string,
+    operation: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, BrokerError | E, R>;
 }
 
 export class Environments extends Context.Tag("@agent-x/gondolin-broker-effect/Environments")<
@@ -379,6 +383,23 @@ const make = Effect.gen(function* () {
       mutation,
     );
 
+  const runWithEnvironmentStopped = <A, E, R>(
+    environmentKey: string,
+    operation: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, BrokerError | E, R> =>
+    TSemaphore.withPermit(
+      Effect.gen(function* () {
+        const environment = live.get(environmentKey);
+        if (environment !== undefined) {
+          yield* closeLive(environment, "closed");
+          live.delete(environmentKey);
+        }
+        return yield* operation;
+      }),
+      mutation,
+    );
+
+
   const hardTerminateLeased = (reference: EnvironmentRef, reason: string): Effect.Effect<void, never> =>
     TSemaphore.withPermit(
       Effect.gen(function* () {
@@ -393,7 +414,15 @@ const make = Effect.gen(function* () {
       mutation,
     );
 
-  return { ensure, status, lease, close, closeForFence, hardTerminateLeased } satisfies EnvironmentService;
+  return {
+    ensure,
+    status,
+    lease,
+    close,
+    closeForFence,
+    runWithEnvironmentStopped,
+    hardTerminateLeased,
+  } satisfies EnvironmentService;
 });
 
 export const EnvironmentsLive = Layer.scoped(Environments, make);

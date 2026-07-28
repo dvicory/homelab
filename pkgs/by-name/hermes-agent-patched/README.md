@@ -136,6 +136,22 @@ The workspace broker, not the prompt, enforces:
 - revocation and cleanup.
 
 
+### Planned: shared broker workspace staging primitives
+
+**Not implemented.** Kanban handoffs and conversation branches now both
+quiesce a broker-owned source, copy through detached staging, install private
+destination storage, and journal replay. Their policy contracts differ:
+Kanban captures validated immutable `/workspace/output` artifacts, while a
+conversation branch copies the complete working project and preserves ordinary
+repository symlinks.
+
+Extract the common mechanics into broker-internal primitives for detached
+staging allocation, atomic directory installation, crash/replay state
+transitions, and staging cleanup. Keep source selection and validation
+caller-specific. The refactor must not weaken Kanban traversal/type/size
+validation, apply artifact-export restrictions to project branches, introduce a
+model-facing generic copy API, or permit caller-selected host paths.
+
 ### Planned: guest source introspection
 
 **Not implemented.** Gondolin workers can read only their guest image and

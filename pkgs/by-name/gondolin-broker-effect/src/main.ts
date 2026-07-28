@@ -23,6 +23,7 @@ import { HandoffStorageLive } from "./workspace-handoff/frozen-tree.js";
 import { RegistryLive } from "./registry.js";
 import { VmRuntimeLive } from "./runtime.js";
 import { WorkspacesLive } from "./workspaces.js";
+import { WorkspaceBranchesLive } from "./workspace-branches.js";
 
 export const BrokerLive = (() => {
   const infrastructure = Layer.mergeAll(BrokerConfigLive, VmRuntimeLive);
@@ -36,7 +37,8 @@ export const BrokerLive = (() => {
   const handoffStorage = HandoffStorageLive.pipe(Layer.provideMerge(handoffs));
   const grants = AccessGrantsLive.pipe(Layer.provideMerge(handoffStorage));
   const environments = EnvironmentsLive.pipe(Layer.provideMerge(grants));
-  const handoffOperations = HandoffOperationsLive.pipe(Layer.provideMerge(environments));
+  const workspaceBranches = WorkspaceBranchesLive.pipe(Layer.provideMerge(environments));
+  const handoffOperations = HandoffOperationsLive.pipe(Layer.provideMerge(workspaceBranches));
   const executor = ExecutorLive.pipe(Layer.provideMerge(handoffOperations));
   return FilesLive.pipe(Layer.provideMerge(executor));
 })();

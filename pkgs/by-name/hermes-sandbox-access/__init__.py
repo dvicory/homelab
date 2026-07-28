@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -134,22 +135,43 @@ def _binding_id() -> str:
     return value
 
 
-def _authority_context(kwargs: dict[str, Any]) -> tuple[str, str | None]:
-    task_id = kwargs.get("task_id")
-    session_id = kwargs.get("session_id")
+def _workspace_owner(task_id: Any = None, session_id: Any = None) -> str:
+    try:
+        from gateway.session_context import get_workspace_session_id
+
+        owner = get_workspace_session_id("")
+    except Exception:
+        owner = ""
+    if isinstance(owner, str) and owner.strip():
+        return owner
     identity = session_id or task_id
     if not isinstance(identity, str) or not identity.strip():
         raise RuntimeError("sandbox authority requires a trusted task or session identity")
-    register_task_authority_binding(identity, _binding_id())
+    return identity
+
+
+def _bind_authority_context(
+    task_id: Any = None,
+    session_id: Any = None,
+) -> tuple[str, str | None]:
+    owner = _workspace_owner(task_id, session_id)
+    register_task_authority_binding(owner, _binding_id())
     key = environment_key(
         task_id if isinstance(task_id, str) else None,
-        session_id if isinstance(session_id, str) else None,
+        owner,
     )
     if isinstance(task_id, str) and task_id:
         _TASK_ENVIRONMENTS[task_id] = key
     if isinstance(session_id, str) and session_id:
         _SESSION_ENVIRONMENTS[session_id] = key
     return key, session_id if isinstance(session_id, str) else None
+
+
+def _authority_context(kwargs: dict[str, Any]) -> tuple[str, str | None]:
+    return _bind_authority_context(
+        task_id=kwargs.get("task_id"),
+        session_id=kwargs.get("session_id"),
+    )
 
 
 
@@ -327,8 +349,49 @@ def _revoke_environment(key: str, scopes: list[str]) -> None:
 def _on_session_start(**kwargs: Any) -> None:
     session_id = kwargs.get("session_id")
     if isinstance(session_id, str) and session_id:
-        register_task_authority_binding(session_id, _binding_id())
-        _SESSION_ENVIRONMENTS[session_id] = environment_key(None, session_id)
+        _bind_authority_context(session_id=session_id)
+
+
+def _on_pre_tool_call(**kwargs: Any) -> None:
+    _bind_authority_context(
+        task_id=kwargs.get("task_id"),
+        session_id=kwargs.get("session_id"),
+    )
+
+
+def _on_session_branch(**kwargs: Any) -> dict[str, Any]:
+    source_owner = kwargs.get("source_workspace_session_id")
+    destination_session_id = kwargs.get("destination_session_id")
+    if not isinstance(source_owner, str) or not source_owner.strip():
+        raise RuntimeError("branch source workspace identity is missing")
+    if (
+        not isinstance(destination_session_id, str)
+        or not destination_session_id.strip()
+    ):
+        raise RuntimeError("branch destination session identity is missing")
+    binding_id = _binding_id()
+    register_task_authority_binding(source_owner, binding_id)
+    register_task_authority_binding(destination_session_id, binding_id)
+    source_key = environment_key(None, source_owner)
+    destination_key = environment_key(None, destination_session_id)
+    operation_id = str(uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"hermes-workspace-branch:{source_key}:{destination_key}",
+    ))
+    try:
+        prepared = BrokerClient().post(
+            "/v1/control/workspace-branches/prepare",
+            {
+                "operationId": operation_id,
+                "sourceEnvironmentKey": source_key,
+                "destinationEnvironmentKey": destination_key,
+            },
+        )
+    except Exception:
+        clear_task_env_overrides(destination_session_id)
+        raise
+    _SESSION_ENVIRONMENTS[destination_session_id] = destination_key
+    return {"ok": True, "operation_id": prepared["operationId"]}
 
 
 def _on_session_boundary(**kwargs: Any) -> None:
@@ -378,4 +441,6 @@ def register(ctx) -> None:
     ctx.register_hook("on_session_start", _on_session_start)
     ctx.register_hook("on_session_finalize", _on_session_boundary)
     ctx.register_hook("on_session_reset", _on_session_boundary)
+    ctx.register_hook("on_session_branch", _on_session_branch)
+    ctx.register_hook("pre_tool_call", _on_pre_tool_call)
     ctx.register_hook("kanban_task_completed", _on_task_completed)

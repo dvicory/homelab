@@ -43,6 +43,10 @@ import { AccessGrants } from "./grants.js";
 import { Registry } from "./registry.js";
 import { HandoffOperations } from "./workspace-handoff/service.js";
 import { Workspaces, type WorkspaceRecord } from "./workspaces.js";
+import {
+  PrepareWorkspaceBranchRequest,
+  WorkspaceBranches,
+} from "./workspace-branches.js";
 
 const encoder = new TextEncoder();
 const requestDecodeOptions = { onExcessProperty: "error" as const };
@@ -175,6 +179,7 @@ export const makeControlHttpApp = Effect.gen(function* () {
   const runActivations = yield* TaskRunActivations;
   const environments = yield* Environments;
   const handoffOperations = yield* HandoffOperations;
+  const workspaceBranches = yield* WorkspaceBranches;
 
   const bindAuthority = (request: typeof BindAuthorityRequest.Type) =>
     Effect.gen(function* () {
@@ -347,6 +352,14 @@ export const makeControlHttpApp = Effect.gen(function* () {
     HttpRouter.post(
       "/v1/control/workspaces/delete",
       unary("workspace.delete", WorkspaceRef, deleteWorkspace),
+    ),
+    HttpRouter.post(
+      "/v1/control/workspace-branches/prepare",
+      unary(
+        "workspace.branch.prepare",
+        PrepareWorkspaceBranchRequest,
+        workspaceBranches.prepare,
+      ),
     ),
     HttpRouter.post(
       "/v1/control/authority/bind",

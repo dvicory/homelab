@@ -214,6 +214,68 @@ def test_list_and_revoke_expose_only_current_or_matching_remembered_grants(plugi
     assert hidden["reason"] == "grant.not_found"
 
 
+def test_pre_tool_hook_restores_stable_workspace_authority(plugin, monkeypatch):
+    registrations = []
+    monkeypatch.setattr(
+        plugin,
+        "_workspace_owner",
+        lambda task_id=None, session_id=None: "conversation-root",
+    )
+    monkeypatch.setattr(
+        plugin,
+        "register_task_authority_binding",
+        lambda identity, binding: registrations.append((identity, binding)),
+    )
+    monkeypatch.setattr(
+        plugin,
+        "environment_key",
+        lambda task_id=None, session_id=None: f"{task_id}:{session_id}",
+    )
+
+    plugin._on_pre_tool_call(task_id="turn-id", session_id="compression-tip")
+
+    assert registrations == [("conversation-root", "qa-default-authority")]
+    assert plugin._SESSION_ENVIRONMENTS["compression-tip"] == (
+        "turn-id:conversation-root"
+    )
+
+
+def test_branch_prepares_distinct_private_workspace_keys(plugin, monkeypatch):
+    registrations = []
+    client = FakeClient({
+        "/v1/control/workspace-branches/prepare": lambda payload: {
+            "operationId": payload["operationId"],
+        },
+    })
+    monkeypatch.setattr(plugin, "BrokerClient", lambda: client)
+    monkeypatch.setattr(
+        plugin,
+        "register_task_authority_binding",
+        lambda identity, binding: registrations.append((identity, binding)),
+    )
+    monkeypatch.setattr(
+        plugin,
+        "environment_key",
+        lambda task_id=None, session_id=None: f"key:{session_id}",
+    )
+
+    result = plugin._on_session_branch(
+        source_workspace_session_id="conversation-root",
+        destination_session_id="branch-root",
+    )
+
+    assert result["ok"] is True
+    assert registrations == [
+        ("conversation-root", "qa-default-authority"),
+        ("branch-root", "qa-default-authority"),
+    ]
+    path, payload = client.calls[0]
+    assert path == "/v1/control/workspace-branches/prepare"
+    assert payload["sourceEnvironmentKey"] == "key:conversation-root"
+    assert payload["destinationEnvironmentKey"] == "key:branch-root"
+    assert payload["sourceEnvironmentKey"] != payload["destinationEnvironmentKey"]
+
+
 def test_registration_exposes_only_explicit_tools_and_lifecycle_hooks(plugin):
     context = SimpleNamespace(tools=[], hooks=[])
     context.register_tool = lambda **kwargs: context.tools.append(kwargs)
@@ -230,6 +292,8 @@ def test_registration_exposes_only_explicit_tools_and_lifecycle_hooks(plugin):
         "on_session_start",
         "on_session_finalize",
         "on_session_reset",
+        "on_session_branch",
+        "pre_tool_call",
         "kanban_task_completed",
     }
 
