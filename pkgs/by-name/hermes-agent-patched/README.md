@@ -108,6 +108,11 @@ full DAG, receive read-only namespaced parent inputs at
 then, only one-parent writable `inherit_parent_output` and metadata-only Swarm
 fan-in are supported.
 
+The implementation sequence is explicit worker lanes, immutable-output handoffs,
+broker Project workspaces, then multi-task inputs. The handoff workstream removes
+the current writable `inherit_parent_output` path rather than completing or
+extending it; the later input workstream starts from reusable immutable handoffs.
+
 `kanban_block` is not cancellation: it changes task state but does not terminate
 a running worker. Use `max_runtime_seconds` when work needs a runtime bound; the
 dispatcher terminates an overrun and applies retry/circuit-breaker policy.
@@ -131,7 +136,7 @@ The workspace broker, not the prompt, enforces:
 - private task workspaces;
 - activation-bound execution authority;
 - hashless frozen selected-output manifests;
-- direct-child-only trusted import;
+- direct-child-only trusted import (current implementation, removed by the immutable-output handoff workstream);
 - finalization replay after broker outages; and
 - revocation and cleanup.
 
