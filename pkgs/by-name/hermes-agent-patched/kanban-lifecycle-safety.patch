@@ -12,9 +12,11 @@ heartbeat only to workers, and allow orchestrators to unblock only after the
 recorded blocker is confirmed resolved. Internal recovery retains unscoped
 handlers without exposing those lifecycle transitions to the model.
 ---
+diff --git a/agent/agent_init.py b/agent/agent_init.py
+index a8773dd..28729fb 100644
 --- a/agent/agent_init.py
 +++ b/agent/agent_init.py
-@@ -1232,15 +1232,13 @@
+@@ -1232,15 +1232,13 @@ def init_agent(
      elif not agent.quiet_mode:
          print("🛠️  No tools loaded (all tools filtered out or unavailable)")
  
@@ -37,9 +39,11 @@ handlers without exposing those lifecycle transitions to the model.
      )
  
      # Check tool requirements
+diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
+index 892fe77..0ca1727 100644
 --- a/agent/prompt_builder.py
 +++ b/agent/prompt_builder.py
-@@ -240,6 +240,9 @@
+@@ -240,6 +240,9 @@ KANBAN_GUIDANCE = (
      "reviewer can approve+unblock or request changes. Reviewing-then-"
      "completing is more honest than auto-completing work that still needs "
      "eyes on it.\n"
@@ -49,11 +53,10 @@ handlers without exposing those lifecycle transitions to the model.
      "6. **If follow-up work appears, create it; don't do it.** Use "
      "`kanban_create(title=..., assignee=<right-worker>, parents=[your-task-id])` "
      "to spawn a child task for the appropriate specialist worker instead of "
-@@ -298,6 +301,38 @@
-     "for short reasoning subtasks inside your own run; board tasks are for "
+@@ -299,6 +302,41 @@ KANBAN_GUIDANCE = (
      "cross-agent handoffs that outlive one API loop."
  )
-+
+ 
 +
 +KANBAN_ORCHESTRATOR_GUIDANCE = (
 +    "# Kanban orchestration protocol\n"
@@ -62,9 +65,12 @@ handlers without exposing those lifecycle transitions to the model.
 +    "1. Use the `kanban_*` tools to create, inspect, link, comment on, and "
 +    "observe tasks. Do not execute a task body yourself or substitute "
 +    "`delegate_task` for board work the user requested.\n"
-+    "2. Create each intended task once. A `ready` task is queued work, not "
-+    "evidence that the dispatcher is unavailable. Judge dispatcher progress "
-+    "from authoritative task events, not a terminal process view.\n"
++    "2. Create each intended task once. A `ready` or `running` task is queued "
++    "or executing, not evidence that the dispatcher is unavailable or the "
++    "worker is stalled. Short tasks need not emit heartbeats. Do not create a "
++    "replacement merely because status or heartbeat is unchanged within the "
++    "claim lease. Judge progress from authoritative task events, not a terminal "
++    "process view.\n"
 +    "3. Worker lifecycle belongs to the assigned worker. Do not complete, "
 +    "block, or heartbeat on its behalf. Unblock only when the task contract "
 +    "or a human authorizes a retry and the recorded blocker is resolved.\n"
@@ -85,12 +91,15 @@ handlers without exposing those lifecycle transitions to the model.
 +    if "kanban_list" in tool_names:
 +        return KANBAN_ORCHESTRATOR_GUIDANCE
 +    return ""
- 
++
  TOOL_USE_ENFORCEMENT_GUIDANCE = (
      "# Tool-use enforcement\n"
+     "You MUST use your tools to take action — do not describe what you would do "
+diff --git a/agent/system_prompt.py b/agent/system_prompt.py
+index aab34cb..a6628d3 100644
 --- a/agent/system_prompt.py
 +++ b/agent/system_prompt.py
-@@ -226,10 +226,8 @@
+@@ -226,10 +226,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None)
          tool_guidance.append(SESSION_SEARCH_GUIDANCE)
      if "skill_manage" in agent.valid_tool_names:
          tool_guidance.append(SKILLS_GUIDANCE)
@@ -103,7 +112,7 @@ handlers without exposing those lifecycle transitions to the model.
      _kanban_guidance = getattr(agent, "_kanban_worker_guidance", None)
      if _kanban_guidance:
          tool_guidance.append(_kanban_guidance)
-@@ -276,7 +274,14 @@
+@@ -276,7 +274,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None)
              # "auto" or any unrecognised value — use hardcoded defaults
              model_lower = (agent.model or "").lower()
              _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
@@ -119,9 +128,12 @@ handlers without exposing those lifecycle transitions to the model.
              stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
              _model_lower = (agent.model or "").lower()
              # Google model operational guidance (conciseness, absolute
+diff --git a/tmp/hermes-guidance-desired/tests/tools/test_kanban_role_boundaries.py b/tests/tools/test_kanban_role_boundaries.py
+new file mode 100644
+index 0000000..edae1a2
 --- /dev/null
 +++ b/tests/tools/test_kanban_role_boundaries.py
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,81 @@
 +"""Regression tests for worker versus live-orchestrator Kanban authority."""
 +
 +
@@ -182,7 +194,9 @@ handlers without exposing those lifecycle transitions to the model.
 +
 +    assert "Do not execute a task body yourself" in KANBAN_ORCHESTRATOR_GUIDANCE
 +    assert "substitute `delegate_task`" in KANBAN_ORCHESTRATOR_GUIDANCE
-+    assert "A `ready` task is queued work" in KANBAN_ORCHESTRATOR_GUIDANCE
++    assert "A `ready` or `running` task is queued" in KANBAN_ORCHESTRATOR_GUIDANCE
++    assert "Short tasks need not emit heartbeats" in KANBAN_ORCHESTRATOR_GUIDANCE
++    assert "Do not create a replacement" in KANBAN_ORCHESTRATOR_GUIDANCE
 +    assert "Worker lifecycle belongs to the assigned worker" in (
 +        KANBAN_ORCHESTRATOR_GUIDANCE
 +    )
@@ -201,6 +215,8 @@ handlers without exposing those lifecycle transitions to the model.
 +    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
 +    assert kanban._check_kanban_worker_mode()
 +    assert not kanban._check_kanban_orchestrator_mode()
+diff --git a/tests/tools/test_kanban_tools.py b/tests/tools/test_kanban_tools.py
+index 1cabc82..2b3ca13 100644
 --- a/tests/tools/test_kanban_tools.py
 +++ b/tests/tools/test_kanban_tools.py
 @@ -1,8 +1,7 @@
@@ -213,7 +229,7 @@ handlers without exposing those lifecycle transitions to the model.
    - Each handler's happy path.
    - Error paths (missing required args, bad metadata type, etc).
  """
-@@ -119,7 +118,7 @@
+@@ -119,7 +118,7 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
  
  
  def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
@@ -222,7 +238,7 @@ handlers without exposing those lifecycle transitions to the model.
      monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
      home = tmp_path / ".hermes"
      home.mkdir()
-@@ -135,10 +134,8 @@
+@@ -135,10 +134,8 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
      names = {s["function"].get("name") for s in schema if "function" in s}
      kanban = {n for n in names if n and n.startswith("kanban_")}
      expected = {
@@ -235,25 +251,27 @@ handlers without exposing those lifecycle transitions to the model.
          "kanban_attach", "kanban_attach_url", "kanban_attachments",
      }
      assert kanban == expected, f"expected {expected}, got {kanban}"
-@@ -1530,8 +1527,17 @@
+@@ -1530,10 +1527,19 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
      assert "kanban_complete" in prompt
      assert "kanban_block" in prompt
      assert "kanban_create" in prompt
 +    assert "rejected `kanban_complete` call does not end the task" in prompt
      # Anti-shell guidance
      assert "Do not shell out" in prompt or "tools — they work" in prompt
-+
-+
+ 
+ 
 +def test_unblock_schema_forbids_speculative_retry():
 +    from tools import kanban_tools as kt
 +
 +    description = kt.KANBAN_UNBLOCK_SCHEMA["description"]
 +    assert "blocker is confirmed resolved" in description
 +    assert "Never unblock merely to poll, retry speculatively" in description
- 
- 
++
++
  def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
-@@ -1553,7 +1559,7 @@
+     """Sanity: the guidance block stays lean so it doesn't blow up the
+     cached prompt.
+@@ -1553,7 +1559,7 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
      monkeypatch.setattr(_P, "home", lambda: tmp_path)
  
      from agent.prompt_builder import KANBAN_GUIDANCE
@@ -262,7 +280,7 @@ handlers without exposing those lifecycle transitions to the model.
          f"KANBAN_GUIDANCE is {len(KANBAN_GUIDANCE)} chars — too short (missing?) or too long"
      )
  
-@@ -1562,17 +1568,14 @@
+@@ -1562,17 +1568,14 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
  # Worker task-ownership enforcement (regression tests for #19534)
  # ---------------------------------------------------------------------------
  #
@@ -287,7 +305,7 @@ handlers without exposing those lifecycle transitions to the model.
  
  
  def test_worker_complete_rejects_foreign_task_id(worker_env):
-@@ -1764,9 +1767,8 @@
+@@ -1764,9 +1767,8 @@ def test_worker_complete_rejects_stale_run_id(worker_env, monkeypatch):
      assert d.get("ok") is True
  
  
@@ -299,21 +317,23 @@ handlers without exposing those lifecycle transitions to the model.
      monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
      home = tmp_path / ".hermes"
      home.mkdir()
+diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
+index aeccddf..acc6750 100644
 --- a/tools/kanban_tools.py
 +++ b/tools/kanban_tools.py
-@@ -94,6 +94,11 @@
-     if os.environ.get("HERMES_WORKSPACE_MODE", "").strip().lower() == "broker":
-         return False
+@@ -96,6 +96,11 @@ def _check_kanban_attachment_mode() -> bool:
      return _check_kanban_mode()
-+
-+
+ 
+ 
 +def _check_kanban_worker_mode() -> bool:
 +    """Worker lifecycle tools require a dispatcher-assigned task identity."""
 +    return bool(os.environ.get("HERMES_KANBAN_TASK"))
- 
- 
++
++
  def _check_kanban_orchestrator_mode() -> bool:
-@@ -1857,9 +1862,9 @@
+     """Board-routing tools (kanban_list, kanban_unblock) are intentionally
+     hidden from task workers.
+@@ -1857,9 +1862,9 @@ KANBAN_CREATE_SCHEMA = {
              "max_runtime_seconds": {
                  "type": "integer",
                  "description": (
@@ -326,7 +346,7 @@ handlers without exposing those lifecycle transitions to the model.
                  ),
              },
              "initial_status": {
-@@ -1991,17 +1996,18 @@
+@@ -1991,17 +1996,18 @@ def _kanban_create_schema_overrides() -> dict:
  KANBAN_UNBLOCK_SCHEMA = {
      "name": "kanban_unblock",
      "description": (
@@ -350,7 +370,7 @@ handlers without exposing those lifecycle transitions to the model.
              },
              "board": _board_schema_prop(),
          },
-@@ -2055,7 +2061,7 @@
+@@ -2055,7 +2061,7 @@ registry.register(
      toolset="kanban",
      schema=KANBAN_COMPLETE_SCHEMA,
      handler=_handle_complete,
@@ -359,7 +379,7 @@ handlers without exposing those lifecycle transitions to the model.
      emoji="✔",
  )
  
-@@ -2064,7 +2070,7 @@
+@@ -2064,7 +2070,7 @@ registry.register(
      toolset="kanban",
      schema=KANBAN_BLOCK_SCHEMA,
      handler=_handle_block,
@@ -368,7 +388,7 @@ handlers without exposing those lifecycle transitions to the model.
      emoji="⏸",
  )
  
-@@ -2073,7 +2079,7 @@
+@@ -2073,7 +2079,7 @@ registry.register(
      toolset="kanban",
      schema=KANBAN_HEARTBEAT_SCHEMA,
      handler=_handle_heartbeat,
