@@ -31,6 +31,9 @@ let
       ./kanban-worker-guidance.patch
       # Stable conversation workspace ownership and private branch preparation.
       ./workspace-resume-identity.patch
+      # Pin broker task workers to their pre-spawn environment, propagate
+      # required finalization failures, and surface loop-breaker triage.
+      ./workspace-runtime-identity.patch
     ];
   };
 in
