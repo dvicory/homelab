@@ -34,6 +34,9 @@ let
       # Pin broker task workers to their pre-spawn environment, propagate
       # required finalization failures, and surface loop-breaker triage.
       ./workspace-runtime-identity.patch
+      # Use one board-qualified task/run identity across broker control and
+      # execution requests.
+      ./workspace-task-run-identity.patch
     ];
   };
 in
