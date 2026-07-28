@@ -30,6 +30,7 @@ policy = {
     "defaultExecutor": "hermes-gateway",
     "defaultAuthorityClass": "default",
     "maxEnvironments": 1,
+    "environmentIdleTimeoutMs": 900000,
     "grantPolicy": {
         "allowedScopes": ["once", "task", "conversation", "timed"],
         "maxDurationSeconds": 3600,

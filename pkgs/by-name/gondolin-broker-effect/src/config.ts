@@ -35,6 +35,7 @@ const BrokerPolicyFileSchema = Schema.Struct({
   defaultExecutor: Schema.String.pipe(Schema.minLength(1)),
   defaultAuthorityClass: Schema.String.pipe(Schema.minLength(1)),
   maxEnvironments: Schema.Int.pipe(Schema.greaterThan(0)),
+  environmentIdleTimeoutMs: Schema.Int.pipe(Schema.greaterThan(0)),
   assets: Schema.Record({ key: Schema.String, value: Asset }),
   networkPolicies: Schema.Record({ key: Schema.String, value: NetworkPolicy }),
   worklanes: Schema.Record({ key: Schema.String, value: Worklane }),

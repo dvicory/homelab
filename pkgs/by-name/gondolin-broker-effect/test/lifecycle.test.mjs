@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
-import { Effect, Exit, Stream } from "effect"
+import { Effect, Exit, Fiber, Stream } from "effect"
 import { AccessGrants } from "../dist/grants.js"
 import { Environments } from "../dist/environments.js"
 import { Executor } from "../dist/exec.js"
@@ -290,6 +290,45 @@ test("environment admission enforces the configured live VM ceiling", async () =
     assert.equal(rejected.reason, "environment.capacity")
     assert.equal(harness.fake.state.created.length, 1)
   }), { policyFile: { maxEnvironments: 1 } })
+})
+
+test("capacity admission reclaims environments past the broker-owned idle timeout", async () => {
+  await withHarness((harness) => Effect.gen(function* () {
+    const environments = yield* Environments
+    const first = yield* environments.ensure({ environmentKey: "conversation-idle-a" })
+    yield* Effect.sleep("50 millis")
+
+    const second = yield* environments.ensure({ environmentKey: "conversation-idle-b" })
+    const live = yield* environments.listLive
+    const firstStatus = yield* environments.status(first.environmentKey)
+
+    assert.equal(second.state, "created")
+    assert.equal(firstStatus.state, "closed")
+    assert.deepEqual(live.map((item) => item.environmentKey), ["conversation-idle-b"])
+    assert.equal(harness.fake.state.closed.length, 1)
+  }), { policyFile: { maxEnvironments: 1, environmentIdleTimeoutMs: 40 } })
+})
+
+test("idle reclamation does not close an environment with an active operation lease", async () => {
+  await withHarness((harness) => Effect.gen(function* () {
+    const environments = yield* Environments
+    const environment = yield* environments.ensure({ environmentKey: "conversation-active" })
+    const operation = yield* Effect.fork(
+      environments.lease(environment).pipe(
+        Effect.andThen(Effect.sleep("80 millis")),
+        Effect.scoped,
+      ),
+    )
+
+    yield* Effect.sleep("35 millis")
+    assert.equal(harness.fake.state.closed.length, 0)
+    const rejected = yield* Effect.flip(
+      environments.ensure({ environmentKey: "conversation-active-capacity" }),
+    )
+    assert.equal(rejected.reason, "environment.capacity")
+    yield* Fiber.join(operation)
+    assert.equal(harness.fake.state.closed.length, 0)
+  }), { policyFile: { maxEnvironments: 1, environmentIdleTimeoutMs: 20 } })
 })
 
 test("output limit failures hard-close the environment", async () => {

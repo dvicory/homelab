@@ -176,6 +176,7 @@ export const makePolicyFile = (overrides = {}) => ({
   defaultExecutor: "hermes-gateway",
   defaultAuthorityClass: "default",
   maxEnvironments: 4,
+  environmentIdleTimeoutMs: 15 * 60 * 1000,
   grantPolicy: {
     allowedScopes: ["once", "task", "conversation", "timed", "profile", "executor"],
     maxDurationSeconds: 3600,

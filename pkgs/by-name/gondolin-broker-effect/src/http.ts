@@ -329,6 +329,17 @@ export const makeControlHttpApp = Effect.gen(function* () {
         { headers: { "cache-control": "no-store" } },
       ),
     ),
+    HttpRouter.get(
+      "/v1/control/environments/live",
+      environments.listLive.pipe(
+        Effect.map((items) =>
+          HttpServerResponse.unsafeJson(
+            { environments: items },
+            { headers: { "cache-control": "no-store" } },
+          ),
+        ),
+      ),
+    ),
     HttpRouter.post(
       "/v1/control/workspaces/acquire",
       unary("workspace.acquire", WorkspaceAcquireRequest, acquireWorkspace),

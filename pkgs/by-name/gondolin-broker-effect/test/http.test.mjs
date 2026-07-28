@@ -68,6 +68,21 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
     const environment = JSON.parse(ensure.text)
     assert.equal(environment.state, "created")
 
+    const liveStatus = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/environments/live")
+    )
+    assert.equal(liveStatus.status, 200)
+    const liveEnvironments = JSON.parse(liveStatus.text).environments
+    assert.equal(liveEnvironments.length, 1)
+    assert.equal(liveEnvironments[0].environmentKey, environment.environmentKey)
+    assert.equal(liveEnvironments[0].generation, environment.generation)
+    assert.equal(typeof liveEnvironments[0].idleForMs, "number")
+
+    const executionHidesLiveStatus = yield* Effect.promise(() =>
+      request(config.socketPath, "/v1/control/environments/live")
+    )
+    assert.equal(executionHidesLiveStatus.status, 404)
+
     const exec = yield* Effect.promise(() => request(config.socketPath, "/v1/exec", {
       environmentKey: environment.environmentKey,
       generation: environment.generation,

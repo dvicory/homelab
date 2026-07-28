@@ -26,6 +26,11 @@ let
     maxInputBytes = 1048576;
   };
 
+  # The Effect broker owns orphan reclamation. This is immutable policy,
+  # rather than a caller-controlled ensure parameter, so a compromised
+  # gateway cannot extend abandoned VM lifetime.
+  environmentIdleTimeoutMs = 15 * 60 * 1000;
+
   # The Effect broker consumes these ceilings through authorization limits.
   # Keep them outside `floor`: the rollback broker validates the closed
   # policy object with an exact schema.
@@ -222,7 +227,7 @@ let
 
 in
 {
-  inherit floor templates credentialCapabilities workspaceHandoffLimitCeilings;
+  inherit floor templates credentialCapabilities workspaceHandoffLimitCeilings environmentIdleTimeoutMs;
 
   # Render policy.json with a content-derived policyId (§11: inert,
   # versioned JSON; the policy hash feeds VM generation identity).
@@ -422,6 +427,7 @@ in
         defaultExecutor = "hermes-gateway";
         defaultAuthorityClass = "default";
         maxEnvironments = floor.maxVms;
+        inherit environmentIdleTimeoutMs;
         worklanes = lanes;
       };
       # The full immutable Nix policy digest fences persisted environments,

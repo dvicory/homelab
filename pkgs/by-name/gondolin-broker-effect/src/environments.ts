@@ -1,5 +1,6 @@
 import {
   Context,
+  Duration,
   Effect,
   Layer,
   Ref,
@@ -36,7 +37,8 @@ export interface LiveEnvironment {
   readonly vm: VmHandle;
   readonly lifecycleLock: TReentrantLock.TReentrantLock;
   readonly execPermits: TSemaphore.TSemaphore;
-  readonly closing: Ref.Ref<boolean>;
+  readonly lifecycleState: Ref.Ref<{ readonly closing: boolean; readonly activeOperations: number }>;
+  readonly lastActivityAt: Ref.Ref<number>;
 }
 
 export interface EnsureResult {
@@ -52,8 +54,21 @@ export interface EnsureResult {
   readonly decisionDigest: string;
 }
 
+export interface LiveEnvironmentStatus {
+  readonly environmentKey: string;
+  readonly generation: number;
+  readonly hostPid: number | null;
+  readonly profile: string;
+  readonly executor: string;
+  readonly runBound: boolean;
+  readonly lastActivityAt: number;
+  readonly idleForMs: number;
+}
+
+
 export interface EnvironmentService {
   readonly ensure: (request: EnsureRequest) => Effect.Effect<EnsureResult, BrokerError>;
+  readonly listLive: Effect.Effect<ReadonlyArray<LiveEnvironmentStatus>>;
   readonly status: (environmentKey: string) => Effect.Effect<{
     readonly environmentKey: string;
     readonly generation: number;
@@ -110,39 +125,102 @@ const make = Effect.gen(function* () {
   const live = new Map<string, LiveEnvironment>();
   const mutation = yield* STM.commit(TSemaphore.make(1));
 
+  const closeLocked = (
+    environment: LiveEnvironment,
+    terminalState: "closed" | "failed",
+    failureReason = "lifecycle close",
+  ) =>
+    Effect.gen(function* () {
+      yield* Ref.update(environment.lifecycleState, (state) => ({ ...state, closing: true }));
+      yield* registry.markClosing(environment.environmentKey, environment.generation).pipe(Effect.ignore);
+      yield* Effect.tryPromise({
+        try: () => environment.vm.close(),
+        catch: (error) =>
+          brokerError("runtime.operation_failed", "failed to close Gondolin VM", {
+            environmentKey: environment.environmentKey,
+            generation: environment.generation,
+            cause: error instanceof Error ? error.message : String(error),
+          }),
+      }).pipe(
+        Effect.tapError((error) =>
+          registry.markFailed(environment.environmentKey, environment.generation, error.message).pipe(Effect.ignore),
+        ),
+      );
+      if (terminalState === "closed") {
+        yield* registry.markClosed(environment.environmentKey, environment.generation);
+      } else {
+        yield* registry.markFailed(environment.environmentKey, environment.generation, failureReason);
+      }
+      yield* Effect.logInfo("closed environment").pipe(Effect.annotateLogs({
+        environmentKey: environment.environmentKey,
+        generation: environment.generation,
+        hostPid: environment.vm.hostPid(),
+        terminalState,
+        closeReason: failureReason,
+      }));
+    });
   const closeLive = (
     environment: LiveEnvironment,
     terminalState: "closed" | "failed",
-    failureReason = "broker shutdown",
+    failureReason = "lifecycle close",
   ) =>
-    TReentrantLock.withWriteLock(
-      Effect.gen(function* () {
-        yield* Ref.set(environment.closing, true);
-        yield* registry.markClosing(environment.environmentKey, environment.generation).pipe(Effect.ignore);
-        yield* Effect.tryPromise({
-          try: () => environment.vm.close(),
-          catch: (error) =>
-            brokerError("runtime.operation_failed", "failed to close Gondolin VM", {
+    Ref.update(environment.lifecycleState, (state) => ({ ...state, closing: true })).pipe(
+      Effect.andThen(TReentrantLock.withWriteLock(
+        closeLocked(environment, terminalState, failureReason),
+        environment.lifecycleLock,
+      )),
+    );
+  const closeIfIdle = (environment: LiveEnvironment, now: number) =>
+    Effect.gen(function* () {
+      const observedLastActivityAt = yield* Ref.get(environment.lastActivityAt);
+      if (now - observedLastActivityAt < config.policyFile.environmentIdleTimeoutMs) return false;
+      const claimed = yield* Ref.modify(environment.lifecycleState, (state) =>
+        state.closing || state.activeOperations > 0
+          ? [false, state]
+          : [true, { ...state, closing: true }],
+      );
+      if (!claimed) return false;
+      return yield* TReentrantLock.withWriteLock(
+        Effect.gen(function* () {
+          const lastActivityAt = yield* Ref.get(environment.lastActivityAt);
+          if (now - lastActivityAt < config.policyFile.environmentIdleTimeoutMs) {
+            yield* Ref.update(environment.lifecycleState, (state) => ({ ...state, closing: false }));
+            return false;
+          }
+          yield* closeLocked(environment, "closed", "idle timeout");
+          live.delete(environment.environmentKey);
+          yield* Effect.logInfo("reaped idle environment").pipe(Effect.annotateLogs({
+            environmentKey: environment.environmentKey,
+            generation: environment.generation,
+            hostPid: environment.vm.hostPid(),
+            idleForMs: now - lastActivityAt,
+          }));
+          return true;
+        }),
+        environment.lifecycleLock,
+      );
+    });
+
+  const reapIdleWhileMutationHeld = (now = Date.now()) =>
+    Effect.forEach(
+      [...live.values()],
+      (environment) =>
+        closeIfIdle(environment, now).pipe(
+          Effect.catchAll((error) =>
+            Effect.logError("failed to reap idle environment").pipe(Effect.annotateLogs({
               environmentKey: environment.environmentKey,
               generation: environment.generation,
-              cause: error instanceof Error ? error.message : String(error),
-            }),
-        }).pipe(
-          Effect.tapError((error) =>
-            registry.markFailed(environment.environmentKey, environment.generation, error.message).pipe(Effect.ignore),
+              errorMessage: error.message,
+            })),
           ),
-        );
-        if (terminalState === "closed") {
-          yield* registry.markClosed(environment.environmentKey, environment.generation);
-        } else {
-          yield* registry.markFailed(environment.environmentKey, environment.generation, failureReason);
-        }
-      }),
-      environment.lifecycleLock,
+        ),
+      { concurrency: 1, discard: true },
     );
 
+  const reapIdle = TSemaphore.withPermit(reapIdleWhileMutationHeld(), mutation);
+
   yield* Effect.addFinalizer(() =>
-    Effect.forEach([...live.values()], (environment) => closeLive(environment, "closed").pipe(Effect.ignore), {
+    Effect.forEach([...live.values()], (environment) => closeLive(environment, "closed", "broker shutdown").pipe(Effect.ignore), {
       concurrency: "unbounded",
       discard: true,
     }),
@@ -174,6 +252,7 @@ const make = Effect.gen(function* () {
         existing.workspaceLeaseId === binding.workspaceLeaseId &&
         existing.runActivationId === (activation?.activationId ?? null)
       ) {
+        yield* Ref.set(existing.lastActivityAt, Date.now());
         return {
           environmentKey: existing.environmentKey,
           generation: existing.generation,
@@ -188,13 +267,16 @@ const make = Effect.gen(function* () {
         };
       }
       if (existing !== undefined) {
-        yield* closeLive(existing, "closed");
+        yield* closeLive(existing, "closed", "environment superseded");
         live.delete(request.environmentKey);
       }
       if (live.size >= config.policyFile.maxEnvironments) {
-        return yield* brokerError("environment.capacity", "environment capacity reached", {
-          maxEnvironments: config.policyFile.maxEnvironments,
-        });
+        yield* reapIdleWhileMutationHeld();
+        if (live.size >= config.policyFile.maxEnvironments) {
+          return yield* brokerError("environment.capacity", "environment capacity reached", {
+            maxEnvironments: config.policyFile.maxEnvironments,
+          });
+        }
       }
 
       const record = yield* registry.reserve({
@@ -227,7 +309,8 @@ const make = Effect.gen(function* () {
       const lifecycleLock = yield* STM.commit(TReentrantLock.make);
       const limits = clampLimits(worklane.limits, decision.limits);
       const execPermits = yield* STM.commit(TSemaphore.make(limits.maxConcurrentExecs));
-      const closing = yield* Ref.make(false);
+      const lifecycleState = yield* Ref.make({ closing: false, activeOperations: 0 });
+      const lastActivityAt = yield* Ref.make(Date.now());
       const environment: LiveEnvironment = {
         environmentKey: request.environmentKey,
         generation: record.generation,
@@ -245,7 +328,8 @@ const make = Effect.gen(function* () {
         workspacePath: workspace.workspacePath,
         lifecycleLock,
         execPermits,
-        closing,
+        lifecycleState,
+        lastActivityAt,
       };
       yield* registry.markActive(request.environmentKey, record.generation, vm.id, vm.hostPid()).pipe(
         Effect.tapError(() => Effect.tryPromise(() => vm.close()).pipe(Effect.ignore)),
@@ -267,6 +351,22 @@ const make = Effect.gen(function* () {
 
   const ensure = (request: EnsureRequest) =>
     TSemaphore.withPermit(ensureUnlocked(request), mutation);
+
+  const listLive = Effect.gen(function* () {
+    const now = Date.now();
+    return yield* Effect.forEach([...live.values()], (environment): Effect.Effect<LiveEnvironmentStatus> =>
+      Ref.get(environment.lastActivityAt).pipe(Effect.map((lastActivityAt) => ({
+        environmentKey: environment.environmentKey,
+        generation: environment.generation,
+        hostPid: environment.vm.hostPid(),
+        profile: environment.profile,
+        executor: environment.executor,
+        runBound: environment.runActivationId !== null,
+        lastActivityAt,
+        idleForMs: Math.max(0, now - lastActivityAt),
+      }))),
+    );
+  });
 
   const status = (environmentKey: string) =>
     Effect.gen(function* () {
@@ -326,8 +426,28 @@ const make = Effect.gen(function* () {
           generation: reference.generation,
         });
       }
+      const admitted = yield* Ref.modify(environment.lifecycleState, (state) =>
+        state.closing
+          ? [false, state]
+          : [true, { ...state, activeOperations: state.activeOperations + 1 }],
+      );
+      if (!admitted) {
+        return yield* brokerError("environment.tombstoned", "environment is closing", {
+          environmentKey: reference.environmentKey,
+          generation: reference.generation,
+        });
+      }
+      yield* Ref.set(environment.lastActivityAt, Date.now());
+      yield* Effect.addFinalizer(() =>
+        Ref.set(environment.lastActivityAt, Date.now()).pipe(
+          Effect.andThen(Ref.update(environment.lifecycleState, (state) => ({
+            ...state,
+            activeOperations: Math.max(0, state.activeOperations - 1),
+          }))),
+        ),
+      );
       yield* TReentrantLock.readLock(environment.lifecycleLock);
-      if (yield* Ref.get(environment.closing)) {
+      if ((yield* Ref.get(environment.lifecycleState)).closing) {
         return yield* brokerError("environment.tombstoned", "environment is closing", {
           environmentKey: reference.environmentKey,
           generation: reference.generation,
@@ -355,7 +475,7 @@ const make = Effect.gen(function* () {
             received: reference.generation,
           });
         }
-        yield* closeLive(environment, "closed");
+        yield* closeLive(environment, "closed", "client request");
         live.delete(reference.environmentKey);
       }),
       mutation,
@@ -377,7 +497,7 @@ const make = Effect.gen(function* () {
           }
           return;
         }
-        yield* closeLive(environment, "closed");
+        yield* closeLive(environment, "closed", "task-run fence");
         live.delete(reference.environmentKey);
       }),
       mutation,
@@ -391,7 +511,7 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const environment = live.get(environmentKey);
         if (environment !== undefined) {
-          yield* closeLive(environment, "closed");
+          yield* closeLive(environment, "closed", "workspace operation");
           live.delete(environmentKey);
         }
         return yield* operation;
@@ -405,7 +525,7 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const environment = live.get(reference.environmentKey);
         if (environment === undefined || environment.generation !== reference.generation) return;
-        yield* Ref.set(environment.closing, true);
+        yield* Ref.update(environment.lifecycleState, (state) => ({ ...state, closing: true }));
         yield* registry.markClosing(environment.environmentKey, environment.generation).pipe(Effect.ignore);
         yield* Effect.tryPromise({ try: () => environment.vm.close(), catch: () => undefined }).pipe(Effect.ignore);
         yield* registry.markFailed(environment.environmentKey, environment.generation, reason).pipe(Effect.ignore);
@@ -414,8 +534,17 @@ const make = Effect.gen(function* () {
       mutation,
     );
 
+  const idleSweepMs = Math.min(
+    60_000,
+    Math.max(10, Math.floor(config.policyFile.environmentIdleTimeoutMs / 4)),
+  );
+  yield* Effect.forkScoped(Effect.forever(
+    Effect.sleep(Duration.millis(idleSweepMs)).pipe(Effect.andThen(reapIdle)),
+  ));
+
   return {
     ensure,
+    listLive,
     status,
     lease,
     close,

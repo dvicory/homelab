@@ -475,6 +475,7 @@ Example file:
   "defaultExecutor": "hermes-gateway",
   "defaultAuthorityClass": "default",
   "maxEnvironments": 4,
+  "environmentIdleTimeoutMs": 900000,
   "assets": {
     "default": {
       "path": "/nix/store/...-gondolin-root.qcow2",
@@ -501,6 +502,32 @@ Example file:
 ```
 
 `environment.ensure` advertises only the implemented `network` obligation; other actions advertise none. Any policy statement requiring an obligation not explicitly supported by that enforcement point fails closed.
+
+### Idle lifecycle and capacity recovery
+
+The broker, rather than the Hermes caller, owns abandoned-VM reclamation.
+`environmentIdleTimeoutMs` is required immutable policy; the QA profile renders
+it as 900,000 ms (15 minutes). A compatible `ensure` and the start and completion
+of every leased exec/file operation refresh activity. The periodic sweep runs
+at most once per minute. It acquires the lifecycle write lock and rechecks the
+timestamp before closing, so it cannot interrupt an active operation. Admission
+at `maxEnvironments` performs the same eligibility check before returning
+`environment.capacity`; it never evicts a VM younger than the idle timeout.
+
+The trusted control socket exposes current live ownership without publishing it
+on the execution socket:
+
+```sh
+curl --unix-socket /run/hermes-qa-broker/control.sock \
+  http://localhost/v1/control/environments/live
+```
+
+Each entry includes its environment key, generation, host PID, last activity,
+idle duration, profile/executor, and whether it is bound to a task run. Successful
+closes and idle reaps emit structured logs with the key, generation, host PID,
+and close reason. An explicit client close, task-run fence, fatal runtime error,
+or broker shutdown may intentionally close an environment before the idle
+timeout.
 
 ## V3 compatibility matrix
 
