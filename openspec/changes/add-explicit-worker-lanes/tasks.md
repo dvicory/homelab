@@ -1,6 +1,6 @@
 ## 1. Nix declarations and validation
 
-- [ ] 1.1 Define typed instance-wide worker-lane declarations for runtime, optional profile, agent configuration, memory, workspace, policy, approval, execution limits, and concurrency.
+- [x] 1.1 Define typed instance-wide worker-lane declarations for runtime, optional profile, agent configuration, memory, workspace, policy, approval, execution limits, and concurrency.
 - [ ] 1.2 Define Nix-authoritative board declarations with allowed lanes, allowed Projects, and optional default Project.
 - [ ] 1.3 Define Nix-authoritative Project source identities and the single per-Project `laneAccess` map without provider allowlists.
 - [ ] 1.4 Reject duplicate lane names, unknown board/project references, invalid permission escalation, unsupported source/provider combinations, and implicit profile assignments during evaluation.

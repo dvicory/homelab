@@ -265,6 +265,9 @@ in
       packages.hermes-agent-image = mkHermesImage { inherit pkgs system; };
     };
 
+  den.aspects.workloads.hermes.settings.options =
+    import ./hermes/_settings.nix { inherit lib; };
+
   # A resolved registry user contributes the static host platform and its own
   # secret requests. The profile data still comes only from the registry entry.
   den.aspects.workloads.hermes.account =
