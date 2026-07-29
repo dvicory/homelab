@@ -59,7 +59,7 @@ def test_register_passes_description_to_worker_lane(plugin, monkeypatch):
                 {
                     "name": "architecture-review",
                     "description": "read-only architecture and code review",
-                    "approvalPolicy": "on-request",
+                    "approvalPolicy": "never",
                     "approvalsReviewer": "auto_review",
                     "sandboxMode": "read-only",
                     "networkAccess": False,
@@ -80,21 +80,34 @@ def test_register_passes_description_to_worker_lane(plugin, monkeypatch):
     assert registered[0].default_workspace_kind == "worktree"
 
 
+def test_declared_lanes_rejects_headless_approval_policy(plugin, monkeypatch):
+    lane = {
+        "name": "architecture-review",
+        "description": "read-only architecture and code review",
+        "approvalPolicy": "on-request",
+        "approvalsReviewer": "user",
+        "sandboxMode": "read-only",
+        "networkAccess": True,
+    }
+    monkeypatch.setenv("CODEX_WORKER_LANES", json.dumps([lane]))
+    with pytest.raises(ValueError, match="must disable approvals"):
+        plugin._declared_lanes()
+
+
 def test_worker_environment_does_not_forward_gateway_secrets(plugin, monkeypatch):
     monkeypatch.setattr(
         plugin,
-        "kanban_worker_env",
+        "kanban_worker_identity_env",
         lambda *args, **kwargs: {
             "PATH": "/bin",
             "PYTHONPATH": "/patched-hermes",
             "HERMES_KANBAN_TASK": "task-1",
-            "TERMINAL_CWD": "/workspace",
             "TELEGRAM_BOT_TOKEN": "must-not-escape",
             "OPENAI_API_KEY": "must-not-escape",
         },
     )
 
-    env = plugin._isolated_worker_env(SimpleNamespace(), "/workspace", board=None)
+    env = plugin._isolated_worker_env(SimpleNamespace(), board=None)
 
     assert env["HERMES_KANBAN_TASK"] == "task-1"
     assert env["PYTHONPATH"] == "/patched-hermes"
@@ -117,23 +130,70 @@ def test_workspace_must_be_below_declared_root(plugin, monkeypatch, tmp_path):
 
 def test_codex_command_enforces_declared_headless_policy(worker, monkeypatch, tmp_path):
     monkeypatch.setenv("CODEX_EXECUTABLE", "/nix/store/codex/bin/codex")
-    monkeypatch.setenv("CODEX_APPROVAL_POLICY", "on-request")
-    monkeypatch.setenv("CODEX_APPROVALS_REVIEWER", "auto_review")
-    monkeypatch.setenv("CODEX_SANDBOX_MODE", "workspace-write")
-    monkeypatch.setenv("CODEX_NETWORK_ACCESS", "false")
 
-    command = worker._codex_command(tmp_path, tmp_path / "result.json")
+    worker_spec = SimpleNamespace(
+        permission="workspace-write",
+        policy={
+            "approvalPolicy": "never",
+            "approvalReviewer": "user",
+            "networkAccess": False,
+        },
+        agent={},
+    )
+    command = worker._codex_command(
+        tmp_path,
+        tmp_path / "result.json",
+        worker_spec,
+    )
 
     assert "--ignore-user-config" in command
-    assert "workspace-write" in command
-    assert 'approvals_reviewer="auto_review"' in command
-    assert "sandbox_workspace_write.network_access=false" in command
+    assert 'default_permissions="hermes-worker"' in command
+    assert 'permissions.hermes-worker.extends=":workspace"' in command
+    assert not any(arg.startswith("sandbox_workspace_write.") for arg in command)
+
+
+def test_codex_command_makes_read_only_policy_non_elevating(
+    worker, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("CODEX_EXECUTABLE", "/nix/store/codex/bin/codex")
+    worker_spec = SimpleNamespace(
+        permission="read-only",
+        policy={
+            "approvalPolicy": "never",
+            "approvalReviewer": "user",
+            "networkAccess": True,
+        },
+        agent={},
+    )
+
+    command = worker._codex_command(
+        tmp_path,
+        tmp_path / "result.json",
+        worker_spec,
+    )
+
+    assert command[command.index("--ask-for-approval") + 1] == "never"
+    assert "--sandbox" not in command
+    assert 'permissions.hermes-worker.extends=":read-only"' in command
+    assert "permissions.hermes-worker.network.enabled=true" in command
+    assert 'permissions.hermes-worker.network.mode="full"' in command
+
+
+def test_codex_command_rejects_missing_policy_facts(worker, monkeypatch, tmp_path):
+    monkeypatch.setenv("CODEX_EXECUTABLE", "/nix/store/codex/bin/codex")
+    incomplete = SimpleNamespace(
+        permission="workspace-write",
+        policy={},
+        agent={},
+    )
+
+    with pytest.raises(RuntimeError, match="must disable approvals"):
+        worker._codex_command(tmp_path, tmp_path / "result.json", incomplete)
 
 
 def test_successful_worker_completes_with_changed_file_metadata(worker, monkeypatch):
     connection = object()
     completed = {}
-    monkeypatch.setenv("HERMES_PROFILE", "codex")
     monkeypatch.setattr(worker.kanban_db, "connect", lambda: nullcontext(connection))
     monkeypatch.setattr(
         worker.kanban_db,
@@ -162,6 +222,7 @@ def test_successful_worker_completes_with_changed_file_metadata(worker, monkeypa
             "remaining_issues": [],
         },
         ["src/change.py"],
+        "codex",
     )
     assert completed["task_id"] == "task-1"
     assert completed["expected_run_id"] == 42

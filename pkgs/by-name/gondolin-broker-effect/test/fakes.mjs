@@ -12,9 +12,9 @@ import { makeAccessGrantsLayer } from "../dist/grants.js"
 import { HandoffOperationsLive } from "../dist/workspace-handoff/service.js"
 import { HandoffStoreLive } from "../dist/workspace-handoff/repository.js"
 import { HandoffStorageLive } from "../dist/workspace-handoff/frozen-tree.js"
-import { RegistryLive } from "../dist/registry.js"
+import { Registry, RegistryLive } from "../dist/registry.js"
 import { VmRuntime } from "../dist/runtime.js"
-import { WorkspacesLive } from "../dist/workspaces.js"
+import { Workspaces, WorkspacesLive } from "../dist/workspaces.js"
 import { WorkspaceBranchesLive } from "../dist/workspace-branches.js"
 
 const errno = (code, message) => Object.assign(new Error(message), { code })
@@ -206,7 +206,48 @@ export const makePolicyFile = (overrides = {}) => ({
       }
     }
   },
+  laneAuthorities: {
+    default: {
+      authorityClass: "default",
+      workspaceProvider: "broker-scratch",
+      maximumPermission: "workspace-write"
+    }
+  },
   ...overrides
+})
+
+export const testTaskAuthority = (overrides = {}) => ({
+  catalogueRevision: "a".repeat(64),
+  lane: "default",
+  laneRevision: "b".repeat(64),
+  permission: "workspace-write",
+  workspaceProvider: "broker-scratch",
+  authorityClass: "default",
+  policyRevision: "c".repeat(64),
+  ...overrides,
+})
+
+export const bindTestAuthority = (environmentKey, overrides = {}) => Effect.gen(function* () {
+  const registry = yield* Registry
+  const config = yield* BrokerConfig
+  const workspaces = yield* Workspaces
+  const acquired = yield* workspaces.acquire(environmentKey)
+  const request = {
+    environmentKey,
+    profile: config.profile,
+    executor: config.policyFile.defaultExecutor,
+    authorityClass: config.policyFile.defaultAuthorityClass,
+    policyDigest: config.policyFile.policyDigest,
+    workspaceId: acquired.workspace.workspaceId,
+    workspaceLeaseId: acquired.lease.leaseId,
+    ...overrides,
+  }
+  const existing = yield* registry.getAuthority(environmentKey)
+  return yield* (
+    existing !== undefined && existing.policyDigest !== request.policyDigest
+      ? registry.rotateAuthorityPolicy(request)
+      : registry.bindAuthority(request)
+  )
 })
 
 export const makeTestLayer = (stateDir, options = {}) => {

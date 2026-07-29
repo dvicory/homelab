@@ -11,6 +11,7 @@ import type {
 } from "./domain.js";
 import { Environments, type LiveEnvironment } from "./environments.js";
 import { brokerError, type BrokerError } from "./errors.js";
+import { TaskRunActivations } from "./task-run-activations.js";
 
 export interface FileStatResult {
   readonly path: string;
@@ -72,6 +73,7 @@ const decodeBase64 = (encoded: string): Effect.Effect<Buffer, BrokerError> =>
 const make = Effect.gen(function* () {
   const authorization = yield* Authorization;
   const environments = yield* Environments;
+  const runActivations = yield* TaskRunActivations;
 
   const withFile = <A>(
     request: FileRef,
@@ -81,6 +83,19 @@ const make = Effect.gen(function* () {
   ): Effect.Effect<A, BrokerError> =>
     Effect.scoped(
       Effect.gen(function* () {
+        const activation = yield* runActivations.validate(
+          request.environmentKey,
+          request.taskRun,
+        );
+        if (
+          activation?.authority.permission === "read-only" &&
+          (action === "fs.write" || action === "fs.mkdir" || action === "fs.remove")
+        ) {
+          return yield* brokerError(
+            "policy.denied",
+            "task-run workspace permission is read-only",
+          );
+        }
         const environment = yield* environments.lease({
           environmentKey: request.environmentKey,
           generation: request.generation,

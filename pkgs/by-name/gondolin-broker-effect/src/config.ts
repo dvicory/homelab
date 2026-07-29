@@ -2,7 +2,7 @@ import { Config, Context, Effect, Layer, Schema } from "effect";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { Asset, decodeExact, GrantScope, NetworkPolicy, Worklane } from "./domain.js";
+import { Asset, decodeExact, GrantScope, LaneAuthority, NetworkPolicy, Worklane } from "./domain.js";
 import { brokerError, type BrokerError } from "./errors.js";
 import { validateNetworkPolicy } from "./network.js";
 const canonicalize = (value: unknown): unknown => {
@@ -39,6 +39,7 @@ const BrokerPolicyFileSchema = Schema.Struct({
   assets: Schema.Record({ key: Schema.String, value: Asset }),
   networkPolicies: Schema.Record({ key: Schema.String, value: NetworkPolicy }),
   worklanes: Schema.Record({ key: Schema.String, value: Worklane }),
+  laneAuthorities: Schema.Record({ key: Schema.String, value: LaneAuthority }),
   grantPolicy: GrantPolicy,
 });
 

@@ -256,6 +256,7 @@ in
       allowedPairs,
       maximum,
       worklanes ? { },
+      laneAuthorities ? { },
       workspaceHandoffEnabled ? false,
       workspaceHandoffLimits ? workspaceHandoffLimitCeilings,
       ...
@@ -269,6 +270,18 @@ in
         "profile"
         "executor"
       ];
+      supportedWorkspacePermissions = [
+        "read-only"
+        "workspace-write"
+      ];
+      invalidLaneAuthorityPermissions = builtins.filter (
+        permission: !(builtins.elem permission supportedWorkspacePermissions)
+      ) (map (authority: authority.maximumPermission or null) (builtins.attrValues laneAuthorities));
+      validatedLaneAuthorities =
+        if invalidLaneAuthorityPermissions == [ ] then
+          laneAuthorities
+        else
+          throw "Gondolin Effect policy has invalid lane authority permissions";
       configuredGrantScopes = maximum.grantScopes or [ ];
       unknownGrantScopes = builtins.filter (
         scope: !(builtins.elem scope supportedGrantScopes)
@@ -424,6 +437,7 @@ in
       policyMaterial = {
         version = 1;
         inherit policy networkPolicies grantPolicy assets;
+        laneAuthorities = validatedLaneAuthorities;
         defaultExecutor = "hermes-gateway";
         defaultAuthorityClass = "default";
         maxEnvironments = floor.maxVms;

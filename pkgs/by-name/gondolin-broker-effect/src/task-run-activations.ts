@@ -5,6 +5,7 @@ import { BrokerDatabase } from "./database.js";
 import type {
   ActivateTaskRunRequest,
   ConsumeTaskRunRequest,
+  TaskRunAuthority,
   TaskRunIdentity,
 } from "./domain.js";
 import { BrokerError, brokerError } from "./errors.js";
@@ -20,6 +21,7 @@ export interface TaskRunActivationRecord {
   readonly workspaceId: string;
   readonly workspaceLeaseId: string;
   readonly policyDigest: string;
+  readonly authority: TaskRunAuthority;
   readonly state: TaskRunActivationState;
   readonly activatedAt: number;
   readonly consumedAt: number | null;
@@ -75,6 +77,7 @@ type ActivationRow = {
   workspace_id: string;
   workspace_lease_id: string;
   policy_digest: string;
+  authority_facts: string | null;
   state: TaskRunActivationState;
   activated_at: number;
   consumed_at: number | null;
@@ -88,6 +91,30 @@ type EnvironmentRow = {
   state: "creating" | "active" | "closing" | "closed" | "failed";
 };
 
+const authorityFromRequest = (
+  request: ActivateTaskRunRequest,
+  policyDigest: string,
+): TaskRunAuthority => ({
+  catalogueRevision: request.catalogueRevision,
+  lane: request.lane,
+  laneRevision: request.laneRevision,
+  ...(request.project === undefined ? {} : { project: request.project }),
+  ...(request.projectRevision === undefined ? {} : { projectRevision: request.projectRevision }),
+  ...(request.sourceGeneration === undefined ? {} : { sourceGeneration: request.sourceGeneration }),
+  permission: request.permission,
+  workspaceProvider: request.workspaceProvider,
+  authorityClass: request.authorityClass,
+  policyRevision: request.policyRevision,
+  policyDigest,
+});
+
+const authorityFromRow = (row: ActivationRow): TaskRunAuthority => {
+  if (row.authority_facts === null) {
+    throw brokerError("run_activation.stale", "task-run activation predates typed authority binding");
+  }
+  return JSON.parse(row.authority_facts) as TaskRunAuthority;
+};
+
 const fromRow = (row: ActivationRow): TaskRunActivationRecord => ({
   activationId: row.activation_id,
   taskId: row.task_id,
@@ -96,6 +123,7 @@ const fromRow = (row: ActivationRow): TaskRunActivationRecord => ({
   workspaceId: row.workspace_id,
   workspaceLeaseId: row.workspace_lease_id,
   policyDigest: row.policy_digest,
+  authority: authorityFromRow(row),
   state: row.state,
   activatedAt: row.activated_at,
   consumedAt: row.consumed_at,
@@ -137,6 +165,7 @@ const make = Effect.gen(function* () {
           workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
           workspace_lease_id TEXT NOT NULL REFERENCES workspace_leases(lease_id),
           policy_digest TEXT NOT NULL CHECK (length(policy_digest) = 64),
+          authority_facts TEXT,
           state TEXT NOT NULL CHECK (state IN ('active','consumed','superseded')),
           activated_at INTEGER NOT NULL,
           consumed_at INTEGER,
@@ -151,6 +180,17 @@ const make = Effect.gen(function* () {
         CREATE INDEX IF NOT EXISTS task_run_activations_environment_time
           ON task_run_activations(environment_key, activated_at DESC);
       `);
+      const columns = db.prepare(
+        "SELECT name FROM pragma_table_info('task_run_activations')",
+      ).all() as ReadonlyArray<{ readonly name: string }>;
+      if (!columns.some(({ name }) => name === "authority_facts")) {
+        db.exec("ALTER TABLE task_run_activations ADD COLUMN authority_facts TEXT");
+      }
+      db.prepare(`
+        UPDATE task_run_activations
+        SET state='superseded', superseded_at=COALESCE(superseded_at, ?)
+        WHERE state='active' AND authority_facts IS NULL
+      `).run(Date.now());
       db.prepare(`
         UPDATE task_run_activations
         SET state='superseded', superseded_at=COALESCE(superseded_at, ?)
@@ -196,36 +236,118 @@ const make = Effect.gen(function* () {
   ): Effect.Effect<TaskRunActivationResult, BrokerError> =>
     Effect.try({
       try: () => database.transaction(() => {
-        if (request.policyDigest !== config.policyFile.policyDigest) {
-          throw brokerError("run_activation.conflict", "task-run activation policy digest is not active", {
-            activePolicyDigest: config.policyFile.policyDigest,
-            requestedPolicyDigest: request.policyDigest,
+        if (!(request.authorityClass in config.policyFile.worklanes)) {
+          throw brokerError("run_activation.conflict", "task-run authority class is not configured", {
+            authorityClass: request.authorityClass,
           });
         }
-
-        const binding = db.prepare(`
-          SELECT ab.workspace_id, ab.workspace_lease_id, ab.policy_digest, wl.state AS lease_state
-          FROM authority_bindings ab
-          JOIN workspace_leases wl ON wl.lease_id = ab.workspace_lease_id
-          WHERE ab.environment_key = ?
-        `).get(request.environmentKey) as {
-          workspace_id: string;
-          workspace_lease_id: string;
-          policy_digest: string;
-          lease_state: "active" | "released";
-        } | undefined;
-        if (binding === undefined) {
-          throw brokerError("run_activation.conflict", "task run has no broker authority binding", {
-            environmentKey: request.environmentKey,
+        const laneAuthority = config.policyFile.laneAuthorities[request.lane];
+        if (laneAuthority === undefined) {
+          throw brokerError("run_activation.conflict", "task-run lane is not configured", {
+            lane: request.lane,
           });
         }
         if (
-          binding.workspace_id !== request.workspaceId ||
-          binding.workspace_lease_id !== request.workspaceLeaseId ||
-          binding.policy_digest !== request.policyDigest ||
-          binding.lease_state !== "active"
+          laneAuthority.authorityClass !== request.authorityClass ||
+          laneAuthority.workspaceProvider !== request.workspaceProvider ||
+          (
+            request.permission === "workspace-write" &&
+            laneAuthority.maximumPermission !== "workspace-write"
+          )
         ) {
-          throw brokerError("run_activation.conflict", "task run does not match the active workspace authority");
+          throw brokerError(
+            "run_activation.conflict",
+            "task-run authority exceeds the immutable lane policy",
+          );
+        }
+        const hasProject = request.project !== undefined;
+        const hasProjectSource =
+          request.projectRevision !== undefined && request.sourceGeneration !== undefined;
+        if (hasProject !== hasProjectSource) {
+          throw brokerError(
+            "run_activation.conflict",
+            "task-run Project source identity is incomplete",
+          );
+        }
+        const workspace = db.prepare(`
+          SELECT
+            wl.workspace_id,
+            wl.environment_key,
+            wl.state AS lease_state,
+            w.owner_environment_key,
+            w.state AS workspace_state
+          FROM workspace_leases wl
+          JOIN workspaces w ON w.workspace_id = wl.workspace_id
+          WHERE wl.lease_id = ?
+        `).get(request.workspaceLeaseId) as {
+          workspace_id: string;
+          environment_key: string;
+          lease_state: "active" | "released";
+          owner_environment_key: string;
+          workspace_state: "active" | "closed" | "deleted";
+        } | undefined;
+        if (
+          workspace === undefined ||
+          workspace.workspace_id !== request.workspaceId ||
+          workspace.environment_key !== request.environmentKey ||
+          workspace.owner_environment_key !== request.environmentKey ||
+          workspace.lease_state !== "active" ||
+          workspace.workspace_state !== "active"
+        ) {
+          throw brokerError(
+            "run_activation.conflict",
+            "task run does not hold the active private workspace lease",
+          );
+        }
+
+        const existingAuthority = db.prepare(
+          "SELECT * FROM authority_bindings WHERE environment_key = ?",
+        ).get(request.environmentKey) as {
+          profile: string;
+          executor: string;
+          authority_class: string;
+          policy_digest: string;
+          workspace_id: string;
+          workspace_lease_id: string;
+        } | undefined;
+        if (
+          existingAuthority !== undefined &&
+          (
+            existingAuthority.profile !== config.profile ||
+            existingAuthority.executor !== config.policyFile.defaultExecutor ||
+            existingAuthority.authority_class !== request.authorityClass ||
+            existingAuthority.workspace_id !== request.workspaceId ||
+            existingAuthority.workspace_lease_id !== request.workspaceLeaseId
+          )
+        ) {
+          throw brokerError(
+            "run_activation.conflict",
+            "environment authority is already bound to different task-run facts",
+          );
+        }
+        const now = Date.now();
+        if (existingAuthority === undefined) {
+          db.prepare(`
+            INSERT INTO authority_bindings (
+              environment_key, profile, executor, authority_class, policy_digest,
+              workspace_id, workspace_lease_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            request.environmentKey,
+            config.profile,
+            config.policyFile.defaultExecutor,
+            request.authorityClass,
+            config.policyFile.policyDigest,
+            request.workspaceId,
+            request.workspaceLeaseId,
+            now,
+            now,
+          );
+        } else if (existingAuthority.policy_digest !== config.policyFile.policyDigest) {
+          db.prepare(`
+            UPDATE authority_bindings SET policy_digest=?, updated_at=?
+            WHERE environment_key=?
+          `).run(config.policyFile.policyDigest, now, request.environmentKey);
         }
 
         const priorRun = byRun.get(request.runId) as ActivationRow | undefined;
@@ -235,7 +357,9 @@ const make = Effect.gen(function* () {
             priorRun.environment_key !== request.environmentKey ||
             priorRun.workspace_id !== request.workspaceId ||
             priorRun.workspace_lease_id !== request.workspaceLeaseId ||
-            priorRun.policy_digest !== request.policyDigest
+            priorRun.policy_digest !== config.policyFile.policyDigest ||
+            JSON.stringify(authorityFromRow(priorRun)) !==
+              JSON.stringify(authorityFromRequest(request, config.policyFile.policyDigest))
           ) {
             throw brokerError("run_activation.conflict", "Kanban run is already bound to different activation facts");
           }
@@ -275,7 +399,6 @@ const make = Effect.gen(function* () {
           SELECT * FROM task_run_activations
           WHERE state='active' AND (task_id=? OR environment_key=? OR workspace_id=?)
         `).all(request.taskId, request.environmentKey, request.workspaceId) as unknown as ActivationRow[];
-        const now = Date.now();
         db.prepare(`
           UPDATE task_run_activations SET state='superseded', superseded_at=?
           WHERE state='active' AND (task_id=? OR environment_key=? OR workspace_id=?)
@@ -299,8 +422,8 @@ const make = Effect.gen(function* () {
         db.prepare(`
           INSERT INTO task_run_activations (
             activation_id, task_id, run_id, environment_key, workspace_id, workspace_lease_id,
-            policy_digest, state, activated_at, consumed_at, superseded_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, NULL)
+            policy_digest, authority_facts, state, activated_at, consumed_at, superseded_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, NULL)
         `).run(
           activationId,
           request.taskId,
@@ -308,7 +431,8 @@ const make = Effect.gen(function* () {
           request.environmentKey,
           request.workspaceId,
           request.workspaceLeaseId,
-          request.policyDigest,
+          config.policyFile.policyDigest,
+          JSON.stringify(authorityFromRequest(request, config.policyFile.policyDigest)),
           now,
         );
         return {

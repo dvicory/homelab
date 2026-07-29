@@ -38,6 +38,7 @@ runCommand "hermes-agent-patched-check" { } ''
     ${patchedHermes.patchedSource}/tests/gateway/test_slack_approval_buttons.py \
     ${patchedHermes.patchedSource}/tests/hermes_cli/test_worker_lanes.py \
     ${patchedHermes.patchedSource}/tests/hermes_cli/test_worker_lane_discovery.py \
+    ${patchedHermes.patchedSource}/tests/hermes_cli/test_explicit_worker_lanes.py \
     ${patchedHermes.patchedSource}/tests/hermes_cli/test_kanban_decompose.py \
     ${patchedHermes.patchedSource}/tests/hermes_cli/test_kanban_swarm.py \
     ${patchedHermes.patchedSource}/tests/hermes_cli/test_kanban_cli_dispatch_passthrough.py \
@@ -69,6 +70,8 @@ runCommand "hermes-agent-patched-check" { } ''
     ${sandboxAccess.testSource}/__init__.py \
     ${sandboxAccess.testSource}/tests \
     ${patchedHermes.patchedSource}/plugins/workspace-service/__init__.py \
+    ${patchedHermes.patchedSource}/hermes_cli/worker_catalogue.py \
+    ${patchedHermes.patchedSource}/tests/hermes_cli/test_explicit_worker_lanes.py \
     ${patchedHermes.patchedSource}/tests/plugins/test_workspace_zero_schema.py
   touch $out
 ''

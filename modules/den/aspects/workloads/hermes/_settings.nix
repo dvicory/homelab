@@ -111,6 +111,11 @@ let
         default = null;
         description = "Trusted approval reviewer identifier.";
       };
+      networkAccess = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Whether the external worker sandbox may use network access.";
+      };
     };
   };
 
@@ -204,6 +209,64 @@ let
     };
   };
 
+  boardType = types.submodule {
+    options = {
+      allowedLanes = mkOption {
+        type = types.listOf types.str;
+        description = "Global worker lanes permitted to participate on this board.";
+      };
+      allowedProjects = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        description = "Managed Projects permitted on this board.";
+      };
+      defaultProject = mkOption {
+        type = nullableString;
+        default = null;
+        description = "Optional managed Project selected when a task omits one.";
+      };
+    };
+  };
+
+  projectType = types.submodule {
+    options = {
+      title = mkOption {
+        type = types.str;
+        description = "Operator-facing Project title.";
+      };
+      source = mkOption {
+        type = types.submodule {
+          options = {
+            type = mkOption {
+              type = types.enum [ "git" ];
+              description = "Trusted Project source kind.";
+            };
+            repositoryId = mkOption {
+              type = types.str;
+              description = "Stable provider-side repository identity.";
+            };
+            defaultRef = mkOption {
+              type = types.str;
+              default = "main";
+              description = "Default trusted source reference.";
+            };
+          };
+        };
+        description = "Nix-authoritative Project source identity.";
+      };
+      laneAccess = mkOption {
+        type = types.attrsOf (
+          types.enum [
+            "read-only"
+            "workspace-write"
+          ]
+        );
+        default = { };
+        description = "Maximum direct Project permission granted to each worker lane.";
+      };
+    };
+  };
+
   legacyPayload =
     description:
     mkOption {
@@ -215,7 +278,8 @@ let
   optionalString =
     description:
     mkOption {
-      type = types.str;
+      type = nullableString;
+      default = null;
       inherit description;
     };
 in
@@ -247,5 +311,15 @@ in
     type = types.attrsOf workerLaneType;
     default = { };
     description = "Instance-wide explicit worker-lane declarations keyed by stable lane name.";
+  };
+  boards = mkOption {
+    type = types.attrsOf boardType;
+    default = { };
+    description = "Instance-wide boards and their permitted lanes and Projects.";
+  };
+  projects = mkOption {
+    type = types.attrsOf projectType;
+    default = { };
+    description = "Instance-wide Nix-authoritative managed Project catalogue.";
   };
 }

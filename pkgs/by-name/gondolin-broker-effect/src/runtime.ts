@@ -1,5 +1,6 @@
 import {
   RealFSProvider,
+  ReadonlyProvider,
   VM as GondolinVM,
   type DebugComponent,
   type DebugConfig,
@@ -16,6 +17,7 @@ export interface VmCreateSpec {
   readonly cpus: number;
   readonly workspaceHostPath: string;
   readonly workspaceGuestPath: string;
+  readonly workspaceReadOnly: boolean;
   readonly sessionLabel: string;
   readonly network: NetworkPolicy;
   readonly dynamicNetwork?: DynamicNetworkAuthority;
@@ -130,7 +132,11 @@ export const makeCreateVm = (createGondolinVm: typeof GondolinVM.create) =>
           ...(debugLog === undefined ? {} : { debugLog }),
           vfs: {
             fuseMount: spec.workspaceGuestPath,
-            mounts: { "/": new RealFSProvider(spec.workspaceHostPath) },
+            mounts: {
+              "/": spec.workspaceReadOnly
+                ? new ReadonlyProvider(new RealFSProvider(spec.workspaceHostPath))
+                : new RealFSProvider(spec.workspaceHostPath),
+            },
           },
         });
         const startedVm = vm;

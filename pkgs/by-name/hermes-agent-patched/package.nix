@@ -12,11 +12,12 @@ let
       # Generic Hermes worker-lane and platform toolset support.
       ./worker-lanes.patch
       ./worker-lane-discovery.patch
+      # Generic trusted catalogue types and deterministic resolution.
+      ./worker-catalogue.patch
       ./kanban-platform-toolsets.patch
       # Secure-terminal and Gondolin execution backend.
       ./secure-terminal-isolation.patch
       ./gondolin-backend.patch
-      ./task-authority-binding.patch
       # Hashless Gondolin workspace broker lifecycle, operation journal, and
       # trusted direct-child handoff.
       ./workspace-handoff.patch
@@ -37,7 +38,44 @@ let
       # Use one board-qualified task/run identity across broker control and
       # execution requests.
       ./workspace-task-run-identity.patch
+      # Persist resolved specifications through existing task event/run metadata.
+      ./worker-spec-persistence.patch
+      # Cut dispatch and the model-facing API over to explicit catalogue lanes.
+      ./explicit-worker-routing.patch
+      # Apply frozen lane behavior in spawned Hermes and external workers.
+      ./worker-lane-agent-behavior.patch
+      # Process-local opaque environment identities remain separate from
+      # ordinary terminal overrides and are covered by concurrency tests.
+      ./task-authority-registry.patch
+      # Atomically bind the frozen lane worklane while activating a task run.
+      ./task-authority-binding.patch
+      # Resolve worker behavior from the lease-fenced durable run rather than
+      # copying specification and authority fields into the process environment.
+      ./durable-worker-specification.patch
+      # Restrict managed task creation to intent and declared lane selection.
+      ./managed-task-api.patch
+      # Bind the complete durable worker authority into each broker task-run.
+      ./task-authority-facts.patch
+      # Let external workers request only opaque task-run identity variables.
+      ./worker-identity-env.patch
+      # Resolve backend, workspace, and prompt surfaces from the durable run.
+      ./worker-authority-surfaces.patch
+      # Give broker-owned scratch workspaces writable task authority without
+      # granting any Project source authority.
+      ./scratch-workspace-authority.patch
+      # Tell live orchestrators that identically named worker paths remain
+      # unreachable across isolated conversation and task environments.
+      ./orchestrator-workspace-boundary.patch
     ];
+    postPatch = ''
+      rm -f \
+        agent/prompt_builder.py.orig \
+        hermes_cli/kanban_db.py.orig \
+        hermes_cli/plugins.py.orig \
+        tests/tools/test_kanban_tools.py.orig \
+        tools/kanban_tools.py.orig \
+        tools/terminal_tool.py.orig
+    '';
   };
 in
 hermesAgent.overrideAttrs (old: {
@@ -59,8 +97,5 @@ hermesAgent.overrideAttrs (old: {
   '';
   passthru = (old.passthru or { }) // {
     patchedSource = patchedSource;
-    # Compatibility alias for the worker-lane plugin/check while downstream
-    # consumers migrate to the capability-neutral package name.
-    workerLanesSource = patchedSource;
   };
 })

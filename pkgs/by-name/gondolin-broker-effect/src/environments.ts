@@ -11,7 +11,7 @@ import {
 } from "effect";
 import { TaskRunActivations } from "./task-run-activations.js";
 import { Authorization } from "./auth.js";
-import { getOrBindDefaultAuthority, resolveAuthorityPolicy } from "./authority.js";
+import { requireAuthorityBinding, resolveAuthorityPolicy } from "./authority.js";
 import { BrokerConfig } from "./config.js";
 import type { EnvironmentRef, EnsureRequest, WorklaneLimits } from "./domain.js";
 import { brokerError, type BrokerError } from "./errors.js";
@@ -229,12 +229,25 @@ const make = Effect.gen(function* () {
   const ensureUnlocked = (request: EnsureRequest): Effect.Effect<EnsureResult, BrokerError> =>
     Effect.gen(function* () {
       const activation = yield* runActivations.validate(request.environmentKey, request.taskRun);
-      const binding = yield* getOrBindDefaultAuthority(
+      const binding = yield* requireAuthorityBinding(
         registry,
         config,
-        workspaces,
         request.environmentKey,
       );
+      if (
+        activation !== undefined &&
+        (
+          activation.authority.authorityClass !== binding.authorityClass ||
+          activation.authority.policyDigest !== binding.policyDigest ||
+          activation.workspaceId !== binding.workspaceId ||
+          activation.workspaceLeaseId !== binding.workspaceLeaseId
+        )
+      ) {
+        return yield* brokerError(
+          "run_activation.conflict",
+          "task-run authority no longer matches the broker binding",
+        );
+      }
       const workspace = yield* workspaces.resolve(
         request.environmentKey,
         binding.workspaceId,
@@ -293,6 +306,7 @@ const make = Effect.gen(function* () {
         memoryMiB: Math.min(worklane.memoryMiB, decision.limits.memoryMiB ?? worklane.memoryMiB),
         cpus: Math.min(worklane.cpus, decision.limits.cpus ?? worklane.cpus),
         workspaceHostPath: workspace.workspacePath,
+        workspaceReadOnly: activation?.authority.permission === "read-only",
         workspaceGuestPath: worklane.workspaceGuestPath,
         sessionLabel: `${config.profile}:${request.environmentKey}:${record.generation}`,
         network,

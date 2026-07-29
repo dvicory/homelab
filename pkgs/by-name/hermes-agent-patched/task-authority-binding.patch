@@ -1,277 +1,105 @@
-From 95fa1834b65e34d8a7087861d52625cc16aa63bf Mon Sep 17 00:00:00 2001
-From: Daniel Vicory <dvicory@gmail.com>
-Date: Mon, 27 Jul 2026 22:25:32 -0700
-Subject: [PATCH] feat(terminal): bind environments to trusted task authority
-
-Add an infrastructure-only hook that combines raw task or session identity with
-a broker-supplied binding to derive an opaque authority-scoped environment key.
-Authority bindings outrank ordinary backend overrides and are absent from model
-tool schemas, so model-selected task ids cannot select another sandbox.
-
-Serialize the shared override registry so concurrent CWD or backend updates
-cannot discard authority. Preserve the exact pre-spawn environment binding and
-board-qualified task-run identity across the worker process boundary, then
-remove that binding with the task's remaining override state during cleanup.
-
-Keep this extension separate from secure-terminal-isolation.patch: generic
-cross-surface identity and shared-owner cleanup remain backend-independent,
-while broker deployments opt into stronger lifecycle fencing.
----
- tests/tools/test_task_authority_binding.py | 116 +++++++++++++++++++++
- tools/terminal_tool.py                     |  69 +++++++++---
- 2 files changed, 172 insertions(+), 13 deletions(-)
- create mode 100644 tests/tools/test_task_authority_binding.py
-
-diff --git a/tests/tools/test_task_authority_binding.py b/tests/tools/test_task_authority_binding.py
-new file mode 100644
-index 0000000..88d375b
---- /dev/null
-+++ b/tests/tools/test_task_authority_binding.py
-@@ -0,0 +1,116 @@
-+"""Tests for the infrastructure-only task authority binding hook."""
-+
-+from concurrent.futures import ThreadPoolExecutor
-+import threading
-+
-+import pytest
-+
-+from tools import terminal_tool
-+from tools.terminal_tool import environment_key
-+
-+
-+@pytest.fixture(autouse=True)
-+def clean_authority_registry():
-+    before = dict(terminal_tool._task_env_overrides)
-+    terminal_tool._task_env_overrides.clear()
-+    try:
-+        yield
-+    finally:
-+        terminal_tool._task_env_overrides.clear()
-+        terminal_tool._task_env_overrides.update(before)
-+
-+
-+def test_authority_binding_derives_opaque_distinct_key(monkeypatch):
-+    monkeypatch.delenv("TERMINAL_ISOLATION_SCOPE", raising=False)
-+    terminal_tool.register_task_authority_binding("task-a", "binding-a")
-+    terminal_tool.register_task_authority_binding("task-b", "binding-b")
-+
-+    key_a = environment_key("task-a", "session-a")
-+    key_b = environment_key("task-b", "session-a")
-+
-+    assert key_a.startswith("authority-")
-+    assert key_b.startswith("authority-")
-+    assert key_a != key_b
-+    assert key_a == environment_key("task-a")
-+    assert "task-a" not in key_a
-+    assert "binding-a" not in key_a
-+
-+
-+def test_session_binding_resolves_without_task_id():
-+    terminal_tool.register_task_authority_binding("session-a", "binding-a")
-+
-+    key = environment_key(None, "session-a")
-+
-+    assert key.startswith("authority-")
-+    assert key != "default"
-+
-+
-+def test_authority_registration_preserves_existing_environment_overrides():
-+    terminal_tool.register_task_env_overrides("task-a", {"cwd": "/workspace/a"})
-+    terminal_tool.register_task_authority_binding("task-a", "binding-a")
-+    terminal_tool.register_task_env_overrides("task-a", {"cwd": "/workspace/b"})
-+
-+    assert terminal_tool.resolve_task_overrides("task-a")["cwd"] == "/workspace/b"
-+    assert terminal_tool.resolve_task_overrides("task-a")["authority_binding_id"] == "binding-a"
-+    assert environment_key("task-a") != "default"
-+
-+    terminal_tool.clear_task_env_overrides("task-a")
-+    assert environment_key("task-a") == "default"
-+
-+
-+def test_concurrent_task_session_bindings_do_not_bleed(monkeypatch):
-+    monkeypatch.setenv("TERMINAL_ISOLATION_SCOPE", "conversation")
-+    registrations = {
-+        "task-a": ("session-shared", "binding-a"),
-+        "task-b": ("session-shared", "binding-b"),
-+    }
-+
-+    def resolve(item):
-+        task_id, (session_id, binding_id) = item
-+        terminal_tool.register_task_authority_binding(task_id, binding_id)
-+        return {
-+            environment_key(task_id, session_id)
-+            for _ in range(100)
-+        }
-+
-+    with ThreadPoolExecutor(max_workers=2) as pool:
-+        results = list(pool.map(resolve, registrations.items()))
-+
-+    assert len(results[0]) == 1
-+    assert len(results[1]) == 1
-+    assert results[0].isdisjoint(results[1])
-+
-+
-+def test_authority_survives_concurrent_ordinary_override_updates(monkeypatch):
-+    """Same-key updates serialize without dropping the trusted binding."""
-+    monkeypatch.delenv("TERMINAL_ISOLATION_SCOPE", raising=False)
-+    barrier = threading.Barrier(2)
-+
-+    def bind():
-+        barrier.wait()
-+        for _ in range(200):
-+            terminal_tool.register_task_authority_binding("same-task", "trusted")
-+
-+    def override():
-+        barrier.wait()
-+        for index in range(200):
-+            terminal_tool.register_task_env_overrides(
-+                "same-task", {"cwd": f"/workspace/{index}"}
-+            )
-+
-+
-+    with ThreadPoolExecutor(max_workers=2) as pool:
-+        futures = [pool.submit(bind), pool.submit(override)]
-+        for future in futures:
-+            future.result()
-+
-+    overrides = terminal_tool.resolve_task_overrides("same-task")
-+    assert overrides["authority_binding_id"] == "trusted"
-+    assert environment_key("same-task").startswith("authority-")
-+
-+
-+def test_authority_binding_requires_nonempty_trusted_values():
-+    with pytest.raises(ValueError):
-+        terminal_tool.register_task_authority_binding("", "binding")
-+    with pytest.raises(ValueError):
-+        terminal_tool.register_task_authority_binding("task", "")
-diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
-index 8fb8794..9360c42 100644
---- a/tools/terminal_tool.py
-+++ b/tools/terminal_tool.py
-@@ -1069,6 +1069,7 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
- # This is never exposed to the model -- only infrastructure code calls it.
- # Thread-safe because each task_id is unique per rollout.
- _task_env_overrides: Dict[str, Dict[str, Any]] = {}
-+_task_env_overrides_lock = threading.RLock()
- # Raw session ownership is tracked separately from canonical environment
- # identity. Shared environments can be used by multiple conversations; an
- # agent may release only its own ownership token and must not tear down a
-@@ -1178,19 +1179,25 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
-         - modal_image: str -- Path to Dockerfile or Docker Hub image name
-         - docker_image: str -- Docker image name
-         - cwd: str -- Working directory inside the sandbox
-+        - authority_binding_id: str -- Trusted broker authority identity
- 
-     Args:
-         task_id: The rollout's unique task identifier
-         overrides: Dict of config keys to override
-     """
--    _task_env_overrides[task_id] = overrides
-+    with _task_env_overrides_lock:
-+        existing = _task_env_overrides.get(task_id) or {}
-+        merged = dict(overrides)
-+        if "authority_binding_id" in existing and "authority_binding_id" not in merged:
-+            merged["authority_binding_id"] = existing["authority_binding_id"]
-+        _task_env_overrides[task_id] = merged
- 
-     # If a live environment already exists for this task, a freshly registered
-     # ``cwd`` override (e.g. the ACP client switching the editor's project root
-     # mid-session via ``session/load`` / ``session/resume``) must take effect
-     # immediately. The session record is what commands resolve against;
-     # the live env's cwd is also updated so env-side seeding stays consistent.
--    new_cwd = overrides.get("cwd")
-+    new_cwd = merged.get("cwd")
-     if isinstance(new_cwd, str) and new_cwd.strip():
-         # A registered workspace cwd IS the session's working directory until
-         # a `cd` changes it.
-@@ -1213,14 +1220,27 @@ def clear_task_env_overrides(task_id: str):
- 
-     Called during cleanup to avoid stale entries accumulating.
-     """
--    _task_env_overrides.pop(task_id, None)
-+    with _task_env_overrides_lock:
-+        _task_env_overrides.pop(task_id, None)
-     clear_session_cwd(task_id)
+diff --git a/plugins/workspace-service/__init__.py b/plugins/workspace-service/__init__.py
+index 5629d21..aa40bc0 100644
+--- a/plugins/workspace-service/__init__.py
++++ b/plugins/workspace-service/__init__.py
+@@ -149,6 +149,18 @@ def _source_facts(conn: Any, task_id: str, board: str, run_id: int) -> tuple[Any
+     return task, source, {"inheritance": inheritance, "source_intent": source_intent, "source_run_id": source_run_id}
  
  
-+def register_task_authority_binding(task_id: str, authority_binding_id: str) -> None:
-+    """Bind a trusted opaque broker authority identity to a task or session."""
-+    if not isinstance(task_id, str) or not task_id.strip():
-+        raise ValueError("task_id must be a non-empty string")
-+    if not isinstance(authority_binding_id, str) or not authority_binding_id.strip():
-+        raise ValueError("authority_binding_id must be a non-empty string")
-+    with _task_env_overrides_lock:
-+        overrides = dict(_task_env_overrides.get(task_id) or {})
-+        overrides["authority_binding_id"] = authority_binding_id
-+        _task_env_overrides[task_id] = overrides
++def _worklane_for_run(conn: Any, task_id: str, run_id: int) -> str:
++    specification = kb.get_task_worker_specification(
++        conn, task_id, run_id=int(run_id)
++    )
++    if specification is None:
++        raise RuntimeError("durable worker specification is missing")
++    worklane = specification.policy.get("worklane")
++    if not isinstance(worklane, str) or not worklane:
++        raise RuntimeError("worker specification has no broker worklane")
++    return worklane
 +
 +
- # Derived environment keys are opaque: they never embed the platform
- # session/conversation identifier, so engine metadata (container names,
- # volume labels, process bookkeeping) cannot leak or be guessed from it.
--_DERIVED_ENV_KEY_RE = re.compile(r"^conversation-[0-9a-f]{24}$")
-+_DERIVED_ENV_KEY_RE = re.compile(r"^(?:conversation|authority)-[0-9a-f]{24}$")
+ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[str, bool]:
+     if not _enabled():
+         raise RuntimeError("workspace handoff is disabled")
+@@ -157,6 +169,7 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
+     try:
+         with contextlib.closing(kb.connect(board=board)) as conn:
+             task, source, facts = _source_facts(conn, task_id, board, int(run_id))
++            worklane = _worklane_for_run(conn, task_id, int(run_id))
+             destination_key = broker_environment_key(task_id)
+             if source is not None:
+                 source_run_id = int(facts["source_run_id"])
+@@ -192,6 +205,7 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
+                 environment_key=destination_key, task_id=task_id, run_id=int(run_id),
+                 workspace_id=binding["workspaceId"],
+                 workspace_lease_id=binding["workspaceLeaseId"],
++                authority_class=worklane,
+             )
+     except BrokerError:
+         raise
+diff --git a/tests/tools/test_gondolin_backend.py b/tests/tools/test_gondolin_backend.py
+index 66eb3b0..625c4bd 100644
+--- a/tests/tools/test_gondolin_backend.py
++++ b/tests/tools/test_gondolin_backend.py
+@@ -285,8 +285,6 @@ def test_control_activation_matches_worker_execution_identity(monkeypatch):
  
- # Overrides containing any of these keys request an isolated per-task
- # sandbox (RL / benchmark rollouts); CWD-only overrides are *not*
-@@ -1298,12 +1318,35 @@ def environment_key(task_id: Optional[str] = None, session_id: Optional[str] = N
-         return trusted_broker_key
-     scope = os.getenv("TERMINAL_ISOLATION_SCOPE", "shared").strip().lower()
-     identity = (session_id or task_id) if scope == "conversation" else task_id
-+    with _task_env_overrides_lock:
-+        overrides_by_raw = {
-+            raw: dict(_task_env_overrides[raw])
-+            for raw in (task_id, session_id)
-+            if raw and raw in _task_env_overrides
-+        }
-+    authority_binding_id = None
-+    authority_identity_source = None
-+    for raw in (task_id, session_id):
-+        overrides = overrides_by_raw.get(raw)
-+        if overrides is None:
-+            continue
-+        candidate = overrides.get("authority_binding_id")
-+        if isinstance(candidate, str) and candidate.strip():
-+            authority_binding_id = candidate
-+            authority_identity_source = raw
-+            break
-+    if authority_binding_id is not None:
-+        authority_identity = "\x00".join(
-+            (authority_identity_source, authority_binding_id)
-+        )
-+        digest = hashlib.sha256(authority_identity.encode("utf-8")).hexdigest()[:24]
-+        return f"authority-{digest}"
-     # Backend-specific overrides are trusted infrastructure bindings and must
-     # win even when the caller has no task id but does have a session id.
-     for raw in (task_id, session_id):
--        if raw and raw in _task_env_overrides:
--            if set(_task_env_overrides[raw].keys()) & _ISOLATION_OVERRIDE_KEYS:
--                return raw
-+        overrides = overrides_by_raw.get(raw)
-+        if overrides is not None and set(overrides.keys()) & _ISOLATION_OVERRIDE_KEYS:
-+            return raw
-     if not identity:
-         return "default"
-     if _DERIVED_ENV_KEY_RE.match(identity):
-@@ -1327,12 +1370,12 @@ def resolve_task_overrides(task_id: Optional[str], session_id: Optional[str] = N
-     the single source of that lookup so the terminal and file layers can't
-     drift apart.
-     """
--    return (
--        _task_env_overrides.get(task_id or "")
--        or _task_env_overrides.get(session_id or "")
--        or _task_env_overrides.get(environment_key(task_id, session_id))
--        or {}
--    )
-+    with _task_env_overrides_lock:
-+        for key in (task_id or "", session_id or "", environment_key(task_id, session_id)):
-+            overrides = _task_env_overrides.get(key)
-+            if overrides is not None:
-+                return dict(overrides)
-+    return {}
+     def fake_post(route, payload, timeout=None):
+         calls.append((route, payload))
+-        if route == "/v1/control/authority/bind-default":
+-            return {"policyDigest": "a" * 64}
+         if route == "/v1/control/task-runs/activate":
+             return {"activation": {"activationId": "activation-test"}}
+         raise AssertionError(route)
+@@ -305,13 +303,18 @@ def test_control_activation_matches_worker_execution_identity(monkeypatch):
+         run_id=142,
+         workspace_id="workspace-test",
+         workspace_lease_id="lease-test",
++        authority_class="research",
+     )
+-    activation_payload = calls[-1][1]
++    activation_payload = calls[0][1]
+     execution_payload = client._execution_payload(
+         environment_key,
+         {"environmentKey": environment_key},
+     )
  
++    assert calls[0][0] == "/v1/control/task-runs/activate"
++    assert activation_payload["authorityClass"] == "research"
++    assert activation_payload["workspaceId"] == "workspace-test"
++    assert activation_payload["workspaceLeaseId"] == "lease-test"
+     assert activation_payload["taskId"] == execution_payload["taskRun"]["taskId"]
+     assert activation_payload["runId"] == execution_payload["taskRun"]["runId"]
  
- # Configuration from environment variables
--- 
-2.49.0
-
+diff --git a/tools/environments/gondolin.py b/tools/environments/gondolin.py
+index e73edb8..f805314 100644
+--- a/tools/environments/gondolin.py
++++ b/tools/environments/gondolin.py
+@@ -283,26 +283,18 @@ class BrokerClient:
+         run_id: int,
+         workspace_id: str,
+         workspace_lease_id: str,
++        authority_class: str,
+     ) -> dict:
+         task_run = broker_task_run(board, task_id, run_id)
+-        authority = self._json_post(
+-            "/v1/control/authority/bind-default",
+-            {
+-                "environmentKey": environment_key,
+-                "workspaceId": workspace_id,
+-                "leaseId": workspace_lease_id,
+-            },
+-        )
+-        policy_digest = self._required_text(authority, "policyDigest")
+         body = self._json_post(
+             "/v1/control/task-runs/activate",
+             {
+                 "environmentKey": environment_key,
+                 "taskId": task_run["taskId"],
+                 "runId": task_run["runId"],
++                "authorityClass": authority_class,
+                 "workspaceId": workspace_id,
+                 "workspaceLeaseId": workspace_lease_id,
+-                "policyDigest": policy_digest,
+             },
+         )
+         activation = body.get("activation")

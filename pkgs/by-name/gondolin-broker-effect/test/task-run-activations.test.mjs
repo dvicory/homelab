@@ -9,10 +9,9 @@ import { BrokerDatabase } from "../dist/database.js"
 import { Environments } from "../dist/environments.js"
 import { Executor } from "../dist/exec.js"
 import { Files } from "../dist/files.js"
-import { Registry } from "../dist/registry.js"
 import { TaskRunActivations } from "../dist/task-run-activations.js"
 import { Workspaces } from "../dist/workspaces.js"
-import { makeTestLayer } from "./fakes.mjs"
+import { makeTestLayer, testTaskAuthority } from "./fakes.mjs"
 
 const policyDigest = "a".repeat(64)
 
@@ -76,14 +75,15 @@ test("startup supersedes active task runs from a prior policy", async () => {
   const firstHarness = makeTestLayer(stateDir, { workspaceHandoffEnabled: true })
   await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const runActivations = yield* TaskRunActivations
-    const acquired = yield* bindWorkspace("task-policy-rollover")
+    const acquired = yield* acquireWorkspace("task-policy-rollover")
     yield* runActivations.activate({
       environmentKey: "task-policy-rollover",
       taskId: "task-policy-rollover",
       runId: "run-policy-rollover",
+      ...testTaskAuthority(),
+      authorityClass: "default",
       workspaceId: acquired.workspace.workspaceId,
       workspaceLeaseId: acquired.lease.leaseId,
-      policyDigest
     })
   }).pipe(Effect.provide(firstHarness.layer))))
 
@@ -107,20 +107,9 @@ test("startup supersedes active task runs from a prior policy", async () => {
   }).pipe(Effect.provide(secondHarness.layer))))
 })
 
-const bindWorkspace = (environmentKey) => Effect.gen(function* () {
+const acquireWorkspace = (environmentKey) => Effect.gen(function* () {
   const workspaces = yield* Workspaces
-  const registry = yield* Registry
-  const acquired = yield* workspaces.acquire(environmentKey)
-  yield* registry.bindAuthority({
-    environmentKey,
-    profile: "test",
-    executor: "hermes-gateway",
-    authorityClass: "default",
-    policyDigest,
-    workspaceId: acquired.workspace.workspaceId,
-    workspaceLeaseId: acquired.lease.leaseId
-  })
-  return acquired
+  return yield* workspaces.acquire(environmentKey)
 })
 
 const activationRequest = (acquired, overrides = {}) => ({
@@ -129,7 +118,7 @@ const activationRequest = (acquired, overrides = {}) => ({
   runId: "run-a",
   workspaceId: acquired.workspace.workspaceId,
   workspaceLeaseId: acquired.lease.leaseId,
-  policyDigest,
+  ...testTaskAuthority(),
   ...overrides
 })
 
@@ -139,7 +128,7 @@ test("task-run activation fences ensure, execution, and files after consumption"
     const environments = yield* Environments
     const executor = yield* Executor
     const files = yield* Files
-    const acquired = yield* bindWorkspace("task-environment")
+    const acquired = yield* acquireWorkspace("task-environment")
     const firstRequest = activationRequest(acquired)
     const firstActivation = yield* runActivations.activate(firstRequest)
     assert.equal(firstActivation.activation.state, "active")
@@ -196,7 +185,7 @@ test("newer task-run activation recreates the VM and supersedes older runs", asy
     const environments = yield* Environments
     const executor = yield* Executor
     const files = yield* Files
-    const acquired = yield* bindWorkspace("task-environment")
+    const acquired = yield* acquireWorkspace("task-environment")
     const firstRequest = activationRequest(acquired)
     yield* runActivations.activate(firstRequest)
     const firstTaskRun = { taskId: firstRequest.taskId, runId: firstRequest.runId }
@@ -276,7 +265,7 @@ test("task-run activations persist across broker restart", async () => {
   const firstHarness = makeTestLayer(stateDir, { workspaceHandoffEnabled: true })
   await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const runActivations = yield* TaskRunActivations
-    const acquired = yield* bindWorkspace("task-environment")
+    const acquired = yield* acquireWorkspace("task-environment")
     request = activationRequest(acquired)
     yield* runActivations.activate(request)
   }).pipe(Effect.provide(firstHarness.layer))))

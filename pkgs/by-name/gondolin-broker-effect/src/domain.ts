@@ -8,6 +8,7 @@ const Identifier = Schema.String.pipe(
 
 const PositiveInt = Schema.Int.pipe(Schema.greaterThan(0));
 const NonNegativeInt = Schema.Int.pipe(Schema.greaterThanOrEqualTo(0));
+const Revision = Schema.String.pipe(Schema.pattern(/^[0-9a-f]{64}$/));
 
 export const EnvironmentKey = Identifier;
 export type EnvironmentKey = typeof EnvironmentKey.Type;
@@ -21,6 +22,36 @@ export type WorkspaceId = typeof WorkspaceId.Type;
 
 export const WorkspaceLeaseId = WorkspaceId;
 export type WorkspaceLeaseId = typeof WorkspaceLeaseId.Type;
+
+export const WorkspacePermission = Schema.Literal("read-only", "workspace-write");
+export type WorkspacePermission = typeof WorkspacePermission.Type;
+
+export const LaneAuthority = Schema.Struct({
+  authorityClass: Identifier,
+  workspaceProvider: Identifier,
+  maximumPermission: WorkspacePermission,
+});
+export type LaneAuthority = typeof LaneAuthority.Type;
+
+export const TaskRunAuthorityFacts = Schema.Struct({
+  catalogueRevision: Revision,
+  lane: Identifier,
+  laneRevision: Revision,
+  project: Schema.optional(Identifier),
+  projectRevision: Schema.optional(Revision),
+  sourceGeneration: Schema.optional(Revision),
+  permission: WorkspacePermission,
+  workspaceProvider: Identifier,
+  authorityClass: Identifier,
+  policyRevision: Revision,
+});
+export type TaskRunAuthorityFacts = typeof TaskRunAuthorityFacts.Type;
+
+export const TaskRunAuthority = Schema.Struct({
+  ...TaskRunAuthorityFacts.fields,
+  policyDigest: Revision,
+});
+export type TaskRunAuthority = typeof TaskRunAuthority.Type;
 
 export const TaskRunIdentity = Schema.Struct({
   taskId: Identifier,
@@ -50,17 +81,20 @@ export type AuthorityBinding = typeof AuthorityBinding.Type;
 
 export const BindAuthorityRequest = Schema.Struct({
   environmentKey: EnvironmentKey,
-  ...AuthorityBinding.fields,
+  authorityClass: Identifier,
+  workspaceId: WorkspaceId,
+  workspaceLeaseId: WorkspaceLeaseId,
 });
 export type BindAuthorityRequest = typeof BindAuthorityRequest.Type;
+
 
 export const ActivateTaskRunRequest = Schema.Struct({
   environmentKey: EnvironmentKey,
   taskId: Identifier,
   runId: Identifier,
+  ...TaskRunAuthorityFacts.fields,
   workspaceId: WorkspaceId,
   workspaceLeaseId: WorkspaceLeaseId,
-  policyDigest: Schema.String.pipe(Schema.pattern(/^[0-9a-f]{64}$/)),
 });
 export type ActivateTaskRunRequest = typeof ActivateTaskRunRequest.Type;
 

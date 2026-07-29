@@ -3,8 +3,8 @@
     {
       name = "codex-plan";
       description = "read-only software architecture, investigation, planning, and code review";
-      approvalPolicy = "on-request";
-      approvalsReviewer = "auto_review";
+      approvalPolicy = "never";
+      approvalsReviewer = "user";
       sandboxMode = "read-only";
       networkAccess = false;
       maxConcurrency = 1;
@@ -12,8 +12,8 @@
     {
       name = "codex";
       description = "implementation, debugging, refactoring, and verification that may modify files";
-      approvalPolicy = "on-request";
-      approvalsReviewer = "auto_review";
+      approvalPolicy = "never";
+      approvalsReviewer = "user";
       sandboxMode = "workspace-write";
       networkAccess = false;
       maxConcurrency = 1;
@@ -38,11 +38,7 @@ let
       "read-only"
       "workspace-write"
     ]
-    && lib.elem (lane.approvalPolicy or null) [
-      "untrusted"
-      "on-request"
-      "never"
-    ]
+    && (lane.approvalPolicy or null) == "never"
     && lib.elem (lane.approvalsReviewer or null) [
       "user"
       "auto_review"
@@ -52,7 +48,7 @@ let
     && lane.maxConcurrency >= 1;
   laneGuide = lib.concatMapStringsSep "\n" (lane: ''
     - `${lane.name}` — ${lane.description}.
-      Operator policy: sandbox `${lane.sandboxMode}`, network ${
+      Codex-native policy: sandbox `${lane.sandboxMode}`, network ${
         if lane.networkAccess then "enabled" else "disabled"
       }, approvals `${lane.approvalPolicy}` reviewed by `${lane.approvalsReviewer}`.
   '') lanes;
@@ -91,11 +87,11 @@ stdenvNoCC.mkDerivation {
 
     grep -Fx 'name: codex' ${skillFile}
     grep -F 'kanban_create' ${skillFile}
-    grep -F 'Every delegated Codex task uses its own project-backed worktree' ${skillFile}
+    grep -F 'Every delegated Codex task receives its own project-backed worktree' ${skillFile}
     grep -F 'exact source branch or commit' ${skillFile}
     grep -F 'it does not select a Git revision' ${skillFile}
-    if grep -F 'workspace_kind="dir"' ${skillFile}; then
-      echo "The managed Codex skill must not route delegated work into a shared directory" >&2
+    if grep -F 'workspace_kind' ${skillFile}; then
+      echo "The managed Codex skill must not select a workspace mechanism" >&2
       exit 1
     fi
     if grep -F '@lane-guide@' ${skillFile}; then

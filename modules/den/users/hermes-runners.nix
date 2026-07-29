@@ -35,6 +35,106 @@ let
             { }
         );
         tailscale.hostname = "hermes-${instance}";
+        workerLanes = {
+          research = {
+            description = "bounded research and analysis in a private broker workspace";
+            runtime = "hermes";
+            profile = "default";
+            agent = {
+              model = "opencode-go/deepseek-v4-flash";
+              role = "research";
+              toolsets = [
+                "file"
+                "terminal"
+              ];
+            };
+            workspace = {
+              projectMode = "none";
+              scratchProvider = "broker-scratch";
+            };
+            policy.worklane = "default";
+            execution = {
+              timeoutSeconds = 3600;
+              maxTurns = 40;
+              cpus = 4;
+              memoryMiB = 8192;
+              diskMiB = 32768;
+            };
+          };
+        }
+        // (
+          if instance == "qa" then
+            {
+              codex-plan = {
+                description = "read-only software architecture, investigation, planning, and review";
+                runtime = "external";
+                plugin = "codex-cli";
+                workspace = {
+                  projectMode = "required";
+                  projectProvider = "host-worktree";
+                  maximumPermission = "read-only";
+                  supportedSourceKinds = [ "git" ];
+                };
+                policy = {
+                  worklane = "codex";
+                  approvalPolicy = "never";
+                  approvalReviewer = "user";
+                  networkAccess = true;
+                };
+              };
+              codex = {
+                description = "software implementation, debugging, refactoring, and verification";
+                runtime = "external";
+                plugin = "codex-cli";
+                workspace = {
+                  projectMode = "required";
+                  projectProvider = "host-worktree";
+                  maximumPermission = "workspace-write";
+                  supportedSourceKinds = [ "git" ];
+                };
+                policy = {
+                  worklane = "codex";
+                  approvalPolicy = "never";
+                  approvalReviewer = "user";
+                  networkAccess = true;
+                };
+              };
+            }
+          else
+            { }
+        );
+        boards.homelab = {
+          allowedLanes = [
+            "research"
+          ]
+          ++ (
+            if instance == "qa" then
+              [
+                "codex-plan"
+                "codex"
+              ]
+            else
+              [ ]
+          );
+          allowedProjects = [ "homelab" ];
+          defaultProject = "homelab";
+        };
+        projects.homelab = {
+          title = "Homelab";
+          source = {
+            type = "git";
+            repositoryId = "homelab";
+            defaultRef = "main";
+          };
+          laneAccess =
+            if instance == "qa" then
+              {
+                codex-plan = "read-only";
+                codex = "workspace-write";
+              }
+            else
+              { };
+        };
       }
       // (
         if instance == "qa" then

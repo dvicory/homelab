@@ -137,7 +137,7 @@ Provider selection is deterministic from the lane rather than an intersection: t
 
 The persisted binding includes the board-qualified task and run, lane revision, Project/source generation when present, runtime/profile, provider, permission, workspace/lease, policy worklane/digest, agent configuration revision, and memory namespace. Retries create a new run binding; active operations remain fenced to the exact run and workspace generation that created them.
 
-The dispatcher, worker process, terminal, execute-code, file, search, patch, process, and completion surfaces all receive this binding. A worker process CWD and its secure tools must not resolve different logical workspaces.
+The worker process receives only the opaque board/task/run/lease identity needed to retrieve this specification from the durable run record or trusted broker control plane. The dispatcher, terminal, execute-code, file, search, patch, process, and completion surfaces all resolve that same record. `HERMES_WORKER_SPEC` is a temporary implementation transport for the pre-broker slice, not a source of authority; the sandbox-authority integration must remove it and must not replace it with derived policy, tool, workspace, or permission environment variables. A worker process CWD and its secure tools must not resolve different logical workspaces.
 
 ### 8. Cross-lane collaboration is intentional, not noninterference
 
@@ -161,6 +161,19 @@ This change defines lane input capability and the task-run fields needed by late
 - `inputs_from`: ordering plus explicit immutable producer-output access.
 
 A task does not name the same predecessor twice: `inputs_from` implies readiness gating, and dispatch gates on the union of both sets. This avoids automatically mounting every parent's files while keeping the model contract concise.
+
+### 11. Detached Codex lanes use capability profiles, not interactive elevation
+
+The Codex adapter maps the frozen filesystem and network fields to a Codex
+permission profile. It does not use the legacy `--sandbox` projection, which
+cannot represent filesystem mode and network access independently.
+
+`codex exec` cannot surface command or file approval requests to Hermes or a
+human operator. Detached Codex lanes therefore require `approvalPolicy =
+"never"` and treat the resolved permission profile as a hard ceiling. A future
+human-in-the-loop design requires an explicit Codex-to-Hermes approval bridge;
+Codex `auto_review` is not a substitute because it can approve additional
+permissions beyond the frozen lane profile.
 
 ## Risks / Trade-offs
 

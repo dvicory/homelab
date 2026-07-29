@@ -33,7 +33,6 @@ import {
   ReleaseWorkspaceExportRequest,
 } from "./workspace-handoff/model.js";
 import { TaskRunActivations } from "./task-run-activations.js";
-import { getOrBindDefaultAuthority } from "./authority.js";
 import { BrokerConfig } from "./config.js";
 import { Environments } from "./environments.js";
 import { asBrokerError, brokerError, publicErrorEvent, publicProblem, statusFor, type BrokerError } from "./errors.js";
@@ -181,54 +180,32 @@ export const makeControlHttpApp = Effect.gen(function* () {
   const handoffOperations = yield* HandoffOperations;
   const workspaceBranches = yield* WorkspaceBranches;
 
+
+
   const bindAuthority = (request: typeof BindAuthorityRequest.Type) =>
     Effect.gen(function* () {
-      if (request.profile !== config.profile) {
-        return yield* brokerError("authority.conflict", "authority profile does not match this broker", {
-          expectedProfile: config.profile,
-          requestedProfile: request.profile,
-        });
-      }
-      if (request.policyDigest !== config.policyFile.policyDigest) {
-        return yield* brokerError("authority.conflict", "authority policy digest is not active", {
-          activePolicyDigest: config.policyFile.policyDigest,
-          requestedPolicyDigest: request.policyDigest,
-        });
-      }
+      yield* workspaces.resolve(
+        request.environmentKey,
+        request.workspaceId,
+        request.workspaceLeaseId,
+      );
       if (!(request.authorityClass in config.policyFile.worklanes)) {
-        return yield* brokerError("request.invalid", "authority class is not installed", {
+        return yield* brokerError("authority.conflict", "authority class is not configured", {
           authorityClass: request.authorityClass,
         });
       }
-      yield* workspaces.resolve(request.environmentKey, request.workspaceId, request.workspaceLeaseId);
+      const binding = {
+        ...request,
+        profile: config.profile,
+        executor: config.policyFile.defaultExecutor,
+        policyDigest: config.policyFile.policyDigest,
+      };
       const existing = yield* registry.getAuthority(request.environmentKey);
       return yield* (
-        existing !== undefined && existing.policyDigest !== request.policyDigest
-          ? registry.rotateAuthorityPolicy(request)
-          : registry.bindAuthority(request)
+        existing !== undefined && existing.policyDigest !== binding.policyDigest
+          ? registry.rotateAuthorityPolicy(binding)
+          : registry.bindAuthority(binding)
       );
-    });
-
-  const bindDefaultAuthority = (request: typeof WorkspaceLeaseRef.Type) =>
-    Effect.gen(function* () {
-      yield* workspaces.resolve(request.environmentKey, request.workspaceId, request.leaseId);
-      const binding = yield* getOrBindDefaultAuthority(
-        registry,
-        config,
-        workspaces,
-        request.environmentKey,
-      );
-      if (
-        binding.workspaceId !== request.workspaceId ||
-        binding.workspaceLeaseId !== request.leaseId
-      ) {
-        return yield* brokerError(
-          "authority.conflict",
-          "default authority does not match the acquired workspace",
-          { environmentKey: request.environmentKey },
-        );
-      }
-      return binding;
     });
 
   const authorityStatus = ({ environmentKey }: typeof StatusRequest.Type) =>
@@ -379,10 +356,6 @@ export const makeControlHttpApp = Effect.gen(function* () {
     HttpRouter.post(
       "/v1/control/authority/status",
       unary("authority.status", StatusRequest, authorityStatus),
-    ),
-    HttpRouter.post(
-      "/v1/control/authority/bind-default",
-      unary("authority.bind-default", WorkspaceLeaseRef, bindDefaultAuthority),
     ),
     HttpRouter.post(
       "/v1/control/access/prepare",

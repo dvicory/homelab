@@ -1,0 +1,250 @@
+diff --git a/authority-reg-work/tests/tools/test_task_authority_binding.py b/tests/tools/test_task_authority_binding.py
+new file mode 100644
+index 0000000..88d375b
+--- /dev/null
++++ b/tests/tools/test_task_authority_binding.py
+@@ -0,0 +1,116 @@
++"""Tests for the infrastructure-only task authority binding hook."""
++
++from concurrent.futures import ThreadPoolExecutor
++import threading
++
++import pytest
++
++from tools import terminal_tool
++from tools.terminal_tool import environment_key
++
++
++@pytest.fixture(autouse=True)
++def clean_authority_registry():
++    before = dict(terminal_tool._task_env_overrides)
++    terminal_tool._task_env_overrides.clear()
++    try:
++        yield
++    finally:
++        terminal_tool._task_env_overrides.clear()
++        terminal_tool._task_env_overrides.update(before)
++
++
++def test_authority_binding_derives_opaque_distinct_key(monkeypatch):
++    monkeypatch.delenv("TERMINAL_ISOLATION_SCOPE", raising=False)
++    terminal_tool.register_task_authority_binding("task-a", "binding-a")
++    terminal_tool.register_task_authority_binding("task-b", "binding-b")
++
++    key_a = environment_key("task-a", "session-a")
++    key_b = environment_key("task-b", "session-a")
++
++    assert key_a.startswith("authority-")
++    assert key_b.startswith("authority-")
++    assert key_a != key_b
++    assert key_a == environment_key("task-a")
++    assert "task-a" not in key_a
++    assert "binding-a" not in key_a
++
++
++def test_session_binding_resolves_without_task_id():
++    terminal_tool.register_task_authority_binding("session-a", "binding-a")
++
++    key = environment_key(None, "session-a")
++
++    assert key.startswith("authority-")
++    assert key != "default"
++
++
++def test_authority_registration_preserves_existing_environment_overrides():
++    terminal_tool.register_task_env_overrides("task-a", {"cwd": "/workspace/a"})
++    terminal_tool.register_task_authority_binding("task-a", "binding-a")
++    terminal_tool.register_task_env_overrides("task-a", {"cwd": "/workspace/b"})
++
++    assert terminal_tool.resolve_task_overrides("task-a")["cwd"] == "/workspace/b"
++    assert terminal_tool.resolve_task_overrides("task-a")["authority_binding_id"] == "binding-a"
++    assert environment_key("task-a") != "default"
++
++    terminal_tool.clear_task_env_overrides("task-a")
++    assert environment_key("task-a") == "default"
++
++
++def test_concurrent_task_session_bindings_do_not_bleed(monkeypatch):
++    monkeypatch.setenv("TERMINAL_ISOLATION_SCOPE", "conversation")
++    registrations = {
++        "task-a": ("session-shared", "binding-a"),
++        "task-b": ("session-shared", "binding-b"),
++    }
++
++    def resolve(item):
++        task_id, (session_id, binding_id) = item
++        terminal_tool.register_task_authority_binding(task_id, binding_id)
++        return {
++            environment_key(task_id, session_id)
++            for _ in range(100)
++        }
++
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        results = list(pool.map(resolve, registrations.items()))
++
++    assert len(results[0]) == 1
++    assert len(results[1]) == 1
++    assert results[0].isdisjoint(results[1])
++
++
++def test_authority_survives_concurrent_ordinary_override_updates(monkeypatch):
++    """Same-key updates serialize without dropping the trusted binding."""
++    monkeypatch.delenv("TERMINAL_ISOLATION_SCOPE", raising=False)
++    barrier = threading.Barrier(2)
++
++    def bind():
++        barrier.wait()
++        for _ in range(200):
++            terminal_tool.register_task_authority_binding("same-task", "trusted")
++
++    def override():
++        barrier.wait()
++        for index in range(200):
++            terminal_tool.register_task_env_overrides(
++                "same-task", {"cwd": f"/workspace/{index}"}
++            )
++
++
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        futures = [pool.submit(bind), pool.submit(override)]
++        for future in futures:
++            future.result()
++
++    overrides = terminal_tool.resolve_task_overrides("same-task")
++    assert overrides["authority_binding_id"] == "trusted"
++    assert environment_key("same-task").startswith("authority-")
++
++
++def test_authority_binding_requires_nonempty_trusted_values():
++    with pytest.raises(ValueError):
++        terminal_tool.register_task_authority_binding("", "binding")
++    with pytest.raises(ValueError):
++        terminal_tool.register_task_authority_binding("task", "")
+diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
+index a58b8f6..852c012 100644
+--- a/tools/terminal_tool.py
++++ b/tools/terminal_tool.py
+@@ -1070,6 +1070,7 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
+ # This is never exposed to the model -- only infrastructure code calls it.
+ # Thread-safe because each task_id is unique per rollout.
+ _task_env_overrides: Dict[str, Dict[str, Any]] = {}
++_task_env_overrides_lock = threading.RLock()
+ # Raw session ownership is tracked separately from canonical environment
+ # identity. Shared environments can be used by multiple conversations; an
+ # agent may release only its own ownership token and must not tear down a
+@@ -1179,19 +1180,25 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
+         - modal_image: str -- Path to Dockerfile or Docker Hub image name
+         - docker_image: str -- Docker image name
+         - cwd: str -- Working directory inside the sandbox
++        - authority_binding_id: str -- Trusted broker authority identity
+ 
+     Args:
+         task_id: The rollout's unique task identifier
+         overrides: Dict of config keys to override
+     """
+-    _task_env_overrides[task_id] = overrides
++    with _task_env_overrides_lock:
++        existing = _task_env_overrides.get(task_id) or {}
++        merged = dict(overrides)
++        if "authority_binding_id" in existing and "authority_binding_id" not in merged:
++            merged["authority_binding_id"] = existing["authority_binding_id"]
++        _task_env_overrides[task_id] = merged
+ 
+     # If a live environment already exists for this task, a freshly registered
+     # ``cwd`` override (e.g. the ACP client switching the editor's project root
+     # mid-session via ``session/load`` / ``session/resume``) must take effect
+     # immediately. The session record is what commands resolve against;
+     # the live env's cwd is also updated so env-side seeding stays consistent.
+-    new_cwd = overrides.get("cwd")
++    new_cwd = merged.get("cwd")
+     if isinstance(new_cwd, str) and new_cwd.strip():
+         # A registered workspace cwd IS the session's working directory until
+         # a `cd` changes it.
+@@ -1214,14 +1221,27 @@ def clear_task_env_overrides(task_id: str):
+ 
+     Called during cleanup to avoid stale entries accumulating.
+     """
+-    _task_env_overrides.pop(task_id, None)
++    with _task_env_overrides_lock:
++        _task_env_overrides.pop(task_id, None)
+     clear_session_cwd(task_id)
+ 
+ 
++def register_task_authority_binding(task_id: str, authority_binding_id: str) -> None:
++    """Bind a trusted opaque broker authority identity to a task or session."""
++    if not isinstance(task_id, str) or not task_id.strip():
++        raise ValueError("task_id must be a non-empty string")
++    if not isinstance(authority_binding_id, str) or not authority_binding_id.strip():
++        raise ValueError("authority_binding_id must be a non-empty string")
++    with _task_env_overrides_lock:
++        overrides = dict(_task_env_overrides.get(task_id) or {})
++        overrides["authority_binding_id"] = authority_binding_id
++        _task_env_overrides[task_id] = overrides
++
++
+ # Derived environment keys are opaque: they never embed the platform
+ # session/conversation identifier, so engine metadata (container names,
+ # volume labels, process bookkeeping) cannot leak or be guessed from it.
+-_DERIVED_ENV_KEY_RE = re.compile(r"^conversation-[0-9a-f]{24}$")
++_DERIVED_ENV_KEY_RE = re.compile(r"^(?:conversation|authority)-[0-9a-f]{24}$")
+ 
+ # Overrides containing any of these keys request an isolated per-task
+ # sandbox (RL / benchmark rollouts); CWD-only overrides are *not*
+@@ -1309,12 +1329,35 @@ def environment_key(task_id: Optional[str] = None, session_id: Optional[str] = N
+         return trusted_broker_key
+     scope = os.getenv("TERMINAL_ISOLATION_SCOPE", "shared").strip().lower()
+     identity = (session_id or task_id) if scope == "conversation" else task_id
++    with _task_env_overrides_lock:
++        overrides_by_raw = {
++            raw: dict(_task_env_overrides[raw])
++            for raw in (task_id, session_id)
++            if raw and raw in _task_env_overrides
++        }
++    authority_binding_id = None
++    authority_identity_source = None
++    for raw in (task_id, session_id):
++        overrides = overrides_by_raw.get(raw)
++        if overrides is None:
++            continue
++        candidate = overrides.get("authority_binding_id")
++        if isinstance(candidate, str) and candidate.strip():
++            authority_binding_id = candidate
++            authority_identity_source = raw
++            break
++    if authority_binding_id is not None:
++        authority_identity = "\x00".join(
++            (authority_identity_source, authority_binding_id)
++        )
++        digest = hashlib.sha256(authority_identity.encode("utf-8")).hexdigest()[:24]
++        return f"authority-{digest}"
+     # Backend-specific overrides are trusted infrastructure bindings and must
+     # win even when the caller has no task id but does have a session id.
+     for raw in (task_id, session_id):
+-        if raw and raw in _task_env_overrides:
+-            if set(_task_env_overrides[raw].keys()) & _ISOLATION_OVERRIDE_KEYS:
+-                return raw
++        overrides = overrides_by_raw.get(raw)
++        if overrides is not None and set(overrides.keys()) & _ISOLATION_OVERRIDE_KEYS:
++            return raw
+     if not identity:
+         return "default"
+     if _DERIVED_ENV_KEY_RE.match(identity):
+@@ -1338,12 +1381,12 @@ def resolve_task_overrides(task_id: Optional[str], session_id: Optional[str] = N
+     the single source of that lookup so the terminal and file layers can't
+     drift apart.
+     """
+-    return (
+-        _task_env_overrides.get(task_id or "")
+-        or _task_env_overrides.get(session_id or "")
+-        or _task_env_overrides.get(environment_key(task_id, session_id))
+-        or {}
+-    )
++    with _task_env_overrides_lock:
++        for key in (task_id or "", session_id or "", environment_key(task_id, session_id)):
++            overrides = _task_env_overrides.get(key)
++            if overrides is not None:
++                return dict(overrides)
++    return {}
+ 
+ 
+ # Configuration from environment variables

@@ -6,7 +6,7 @@ import test from "node:test"
 import { Effect } from "effect"
 import { AccessGrants } from "../dist/grants.js"
 import { Environments } from "../dist/environments.js"
-import { makeTestLayer } from "./fakes.mjs"
+import { bindTestAuthority, makeTestLayer } from "./fakes.mjs"
 import { buildNetworkEnforcement } from "../dist/network.js"
 
 const capability = {
@@ -30,7 +30,7 @@ test("secure terminal smoke: deny, approve, same-VM retry, revoke, and restart",
     const environments = yield* Environments
     const grants = yield* AccessGrants
 
-    const first = yield* environments.ensure({ environmentKey: "conversation-smoke" })
+    const first = yield* Effect.zipRight(bindTestAuthority("conversation-smoke"), environments.ensure({ environmentKey: "conversation-smoke" }))
     const firstVm = harness.fake.state.created[0]
     const dynamic = firstVm.spec.dynamicNetwork
     assert.ok(dynamic)
@@ -61,7 +61,7 @@ test("secure terminal smoke: deny, approve, same-VM retry, revoke, and restart",
     assert.equal(approved.state, "approved")
     assert.equal(approved.grantIds.length, 1)
 
-    const reused = yield* environments.ensure({ environmentKey: first.environmentKey })
+    const reused = yield* Effect.zipRight(bindTestAuthority(first.environmentKey), environments.ensure({ environmentKey: first.environmentKey }))
     assert.equal(reused.state, "reused")
     assert.equal(reused.generation, first.generation)
     assert.equal(harness.fake.state.created.length, 1)
@@ -76,7 +76,7 @@ test("secure terminal smoke: deny, approve, same-VM retry, revoke, and restart",
       environmentKey: first.environmentKey,
       generation: first.generation
     })
-    const restarted = yield* environments.ensure({ environmentKey: first.environmentKey })
+    const restarted = yield* Effect.zipRight(bindTestAuthority(first.environmentKey), environments.ensure({ environmentKey: first.environmentKey }))
     assert.equal(restarted.generation, first.generation + 1)
     assert.equal(harness.fake.state.created.length, 2)
     const restartedDynamic = harness.fake.state.created[1].spec.dynamicNetwork

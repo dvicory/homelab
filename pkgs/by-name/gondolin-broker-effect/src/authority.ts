@@ -20,26 +20,19 @@ export interface ResolvedAuthorityPolicy {
   readonly network: NetworkPolicy;
 }
 
-export const getOrBindDefaultAuthority = (
+export const requireAuthorityBinding = (
   registry: RegistryService,
   config: BrokerConfigService,
-  workspaces: WorkspaceService,
   environmentKey: string,
 ): Effect.Effect<AuthorityBindingRecord, BrokerError> =>
   registry.getAuthority(environmentKey).pipe(
     Effect.flatMap((existing) => {
       if (existing === undefined) {
-        return workspaces.acquire(environmentKey).pipe(
-          Effect.flatMap((acquired) => registry.bindAuthority({
-            environmentKey,
-            profile: config.profile,
-            executor: config.policyFile.defaultExecutor,
-            authorityClass: config.policyFile.defaultAuthorityClass,
-            policyDigest: config.policyFile.policyDigest,
-            workspaceId: acquired.workspace.workspaceId,
-            workspaceLeaseId: acquired.lease.leaseId,
-          })),
-        );
+        return Effect.fail(brokerError(
+          "policy.indeterminate",
+          "environment authority binding is missing",
+          { environmentKey },
+        ));
       }
       if (existing.profile !== config.profile) {
         return Effect.fail(brokerError("authority.conflict", "environment authority belongs to another profile", {
@@ -49,15 +42,15 @@ export const getOrBindDefaultAuthority = (
         }));
       }
       if (existing.policyDigest !== config.policyFile.policyDigest) {
-        return registry.rotateAuthorityPolicy({
-          environmentKey,
-          profile: config.profile,
-          executor: config.policyFile.defaultExecutor,
-          authorityClass: config.policyFile.defaultAuthorityClass,
-          policyDigest: config.policyFile.policyDigest,
-          workspaceId: existing.workspaceId,
-          workspaceLeaseId: existing.workspaceLeaseId,
-        });
+        return Effect.fail(brokerError(
+          "authority.conflict",
+          "environment authority uses a stale policy digest",
+          {
+            environmentKey,
+            bindingPolicyDigest: existing.policyDigest,
+            activePolicyDigest: config.policyFile.policyDigest,
+          },
+        ));
       }
       return Effect.succeed(existing);
     }),

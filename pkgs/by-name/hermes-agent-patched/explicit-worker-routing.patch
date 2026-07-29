@@ -1,0 +1,259 @@
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+index be82b27..fac3b3b 100644
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -7977,39 +7977,49 @@ def _get_worker_lane(assignee: Optional[str]):
+ 
+ 
+ def _assignee_is_spawnable(assignee: Optional[str]) -> bool:
+-    """True if ``assignee`` names a Hermes profile (default lane) or a
+-    registered external worker lane (plugin lane).
+-
+-    Unresolvable assignees (e.g. interactive terminal lanes pulled via
+-    ``claim_task``) are NOT spawnable: auto-spawning ``hermes -p <assignee>``
+-    for them would crash on startup and loop the task back to ``ready`` forever
+-    (#kanban-dispatcher-crash-loop 2026-05-05).
+-    """
++    """Return whether a trusted catalogue lane has an executable runtime."""
+     if not assignee:
+         return False
+     try:
+-        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
++        from hermes_cli.worker_catalogue import load_worker_catalogue
++        catalogue = load_worker_catalogue()
+     except Exception:
+-        # profiles module unavailable — preserve legacy behavior (don't block).
+-        return True
+-    if profile_exists(assignee):
+-        return True
+-    return _get_worker_lane(assignee) is not None
+-
++        return False
++    if catalogue is not None:
++        lane = catalogue["lanes"].get(str(assignee))
++        if not isinstance(lane, dict):
++            return False
++        if lane.get("runtime") == "hermes":
++            return bool(lane.get("profile"))
++        return lane.get("runtime") == "external" and _get_worker_lane(assignee) is not None
++    try:
++        from hermes_cli.profiles import profile_exists
++        return bool(profile_exists(assignee) or _get_worker_lane(assignee))
++    except Exception:
++        return _get_worker_lane(assignee) is not None
+ 
+-def _resolve_spawn_fn(assignee: Optional[str], spawn_fn):
+-    """Pick the spawn callable: explicit override > registered lane > default.
+ 
+-    An explicit ``spawn_fn`` (passed by tests / callers) always wins. Otherwise
+-    a registered worker lane's ``spawn_fn`` is used when the assignee resolves
+-    to one; profile assignees fall back to ``_default_spawn`` (``hermes -p``).
+-    """
++def _resolve_spawn_fn(task: Task, spawn_fn):
++    """Resolve a frozen worker specification to its runtime adapter."""
+     if spawn_fn is not None:
+         return spawn_fn
+-    lane = _get_worker_lane(assignee)
+-    if lane is not None:
+-        return lane.spawn_fn
+-    return _default_spawn
++    if isinstance(task, str) or task is None:
++        lane = _get_worker_lane(task)
++        return lane.spawn_fn if lane is not None else _default_spawn
++    spec = getattr(task, "_worker_specification", None)
++    if spec is None:
++        lane = _get_worker_lane(task.assignee)
++        return lane.spawn_fn if lane is not None else _default_spawn
++    if spec.runtime == "hermes":
++        return _default_spawn
++    lane = _get_worker_lane(spec.lane)
++    if lane is None or lane.kind != spec.plugin:
++        from hermes_cli.worker_catalogue import WorkerResolutionError
++        raise WorkerResolutionError(
++            "external_adapter_missing",
++            f"worker lane {spec.lane!r} has no registered {spec.plugin!r} adapter",
++        )
++    return lane.spawn_fn
+ 
+ 
+ def dispatch_once(
+@@ -8211,7 +8221,9 @@ def _dispatch_once_locked(
+     # Normalize default_assignee once: empty/whitespace string → None so the
+     # rest of the loop can use ``if default_assignee:`` as a single check.
+     # We also resolve profile_exists once here for the same reason.
+-    _default_assignee = (default_assignee or "").strip() or None
++    from hermes_cli.worker_catalogue import load_worker_catalogue
++    _managed_catalogue = load_worker_catalogue()
++    _default_assignee = None if _managed_catalogue is not None else ((default_assignee or "").strip() or None)
+     _default_assignee_resolved = False
+     if _default_assignee:
+         try:
+@@ -8319,10 +8331,15 @@ def _dispatch_once_locked(
+             continue
+         # A worker lane may declare its own max_concurrency (e.g. one external-CLI run
+         # at a time); otherwise the global per-profile cap applies.
++        _resolved_spec = get_task_worker_specification(conn, row["id"])
+         _eff_cap = (
+-            _lane.max_concurrency
+-            if _lane is not None and _lane.max_concurrency is not None
+-            else _per_profile_cap
++            _resolved_spec.max_concurrency
++            if _resolved_spec is not None
++            else (
++                _lane.max_concurrency
++                if _lane is not None and _lane.max_concurrency is not None
++                else _per_profile_cap
++            )
+         )
+         if _eff_cap is not None:
+             current = _per_profile_running.get(row_assignee, 0)
+@@ -8366,6 +8383,7 @@ def _dispatch_once_locked(
+         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
+         if claimed is None:
+             continue
++        claimed._worker_specification = get_task_worker_specification(conn, claimed.id)
+         if claimed.workspace_kind == "broker":
+             try:
+                 _run_required_workspace_hook(
+@@ -8410,7 +8428,7 @@ def _dispatch_once_locked(
+         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+         # Route to the assignee's worker lane when no explicit spawn_fn override
+         # is supplied; profile assignees fall back to _default_spawn (hermes -p).
+-        _spawn = _resolve_spawn_fn(row_assignee, spawn_fn)
++        _spawn = _resolve_spawn_fn(claimed, spawn_fn)
+         try:
+             # Back-compat: older spawn_fn signatures accept only
+             # (task, workspace). Test stubs in the suite rely on that.
+@@ -8486,6 +8504,34 @@ def _dispatch_once_locked(
+         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
+         if claimed is None:
+             continue
++        claimed._worker_specification = get_task_worker_specification(
++            conn, claimed.id, run_id=claimed.current_run_id
++        )
++        if claimed.workspace_kind == "broker":
++            try:
++                _run_required_workspace_hook(
++                    "kanban_workspace_pre_spawn",
++                    task_id=claimed.id,
++                    board=board or _board_for_connection(conn),
++                    run_id=int(claimed.current_run_id or 0),
++                )
++            except Exception as exc:
++                _fire_kanban_lifecycle_hook(
++                    "kanban_workspace_spawn_failed",
++                    claimed.id,
++                    board=board or _board_for_connection(conn),
++                    run_id=claimed.current_run_id,
++                    reason=str(exc),
++                )
++                auto = _record_spawn_failure(
++                    conn,
++                    claimed.id,
++                    f"workspace: {exc}",
++                    failure_limit=failure_limit,
++                )
++                if auto:
++                    result.auto_blocked.append(claimed.id)
++                continue
+         try:
+             resolved_branch_name = None
+             if claimed.workspace_kind == "worktree":
+@@ -8508,13 +8554,12 @@ def _dispatch_once_locked(
+         if claimed.workspace_kind == "worktree":
+             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+-        # Force-load the sdlc-review skill for review agents — it carries
+-        # the review logic (AC verification, merge, etc.). The mandatory
+-        # kanban lifecycle is already injected into every worker's system
+-        # prompt via KANBAN_GUIDANCE, so this is the only extra skill the
+-        # review agent needs.
+-        claimed.skills = ["sdlc-review"]
+-        _spawn = _resolve_spawn_fn(row["assignee"], spawn_fn)
++        # Managed reviews consume the same frozen lane behavior as the original
++        # worker. Preserve upstream's implicit review skill only when no trusted
++        # catalogue specification exists.
++        if claimed._worker_specification is None:
++            claimed.skills = ["sdlc-review"]
++        _spawn = _resolve_spawn_fn(claimed, spawn_fn)
+         try:
+             import inspect
+             try:
+diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
+index 701c6c2..9a29214 100644
+--- a/tools/kanban_tools.py
++++ b/tools/kanban_tools.py
+@@ -28,6 +28,7 @@ through the board.
+ """
+ from __future__ import annotations
+ 
++import copy
+ import json
+ import logging
+ import os
+@@ -1103,12 +1104,26 @@ def _handle_create(args: dict, **kw) -> str:
+     title = args.get("title")
+     if not title or not str(title).strip():
+         return tool_error("title is required")
++    from hermes_cli.worker_catalogue import load_worker_catalogue
++    managed_catalogue = load_worker_catalogue()
++    if managed_catalogue is not None:
++        forbidden_fields = (
++            "lane", "profile", "workspace_kind", "workspace_path", "provider",
++            "permission", "policy_worklane", "source_url", "host_path",
++            "workspace_id", "lease_id", "environment_key", "skills",
++            "max_runtime_seconds", "goal_mode", "goal_max_turns",
++        )
++        supplied = sorted(field for field in forbidden_fields if field in args)
++        if supplied:
++            return tool_error(
++                "managed worker tasks do not accept infrastructure fields: "
++                + ", ".join(supplied)
++            )
+     assignee = args.get("assignee")
+     if not assignee:
+         return tool_error(
+-            "assignee is required — name the Hermes profile or registered "
+-            "worker lane that should execute this "
+-            "task (the dispatcher will only spawn tasks with an assignee)"
++            "assignee is required — name a registered worker lane "
++            "(the dispatcher does not infer lanes from profiles)"
+         )
+     body = args.get("body")
+     parents = args.get("parents") or []
+@@ -1980,7 +1995,34 @@ KANBAN_CREATE_SCHEMA = {
+ 
+ 
+ def _kanban_create_schema_overrides() -> dict:
+-    """Advertise every assignee dispatchable by this gateway process."""
++    """Advertise trusted lanes, or preserve legacy discovery when unmanaged."""
++    try:
++        from hermes_cli.worker_catalogue import catalogue_lane_names, load_worker_catalogue
++        from hermes_cli.kanban_db import get_current_board
++        catalogue = load_worker_catalogue()
++    except Exception:
++        catalogue = None
++    if catalogue is not None:
++        board = os.environ.get("HERMES_KANBAN_BOARD") or get_current_board()
++        names = catalogue_lane_names(board=board)
++        parameters = copy.deepcopy(KANBAN_CREATE_SCHEMA["parameters"])
++        assignee_schema = parameters["properties"]["assignee"]
++        assignee_schema["description"] = "Declared worker lane capability."
++        assignee_schema["enum"] = names
++        descriptions = [
++            f"- {name}: {catalogue['lanes'][name].get('description') or 'no description'}"
++            for name in names
++        ]
++        assignee_schema["description"] += (
++            "\n\nAvailable lanes on this board:\n" + "\n".join(descriptions)
++        )
++        for managed_field in (
++            "workspace_kind", "workspace_path", "skills", "max_runtime_seconds",
++            "goal_mode", "goal_max_turns",
++        ):
++            parameters["properties"].pop(managed_field, None)
++        parameters["required"] = ["title", "assignee"]
++        return {"parameters": parameters}
+     try:
+         from hermes_cli.worker_lanes import list_worker_lanes
+ 

@@ -13,13 +13,11 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 import { Deferred, Effect, Fiber } from "effect"
-import { getOrBindDefaultAuthority } from "../dist/authority.js"
-import { BrokerConfig } from "../dist/config.js"
 import { Environments } from "../dist/environments.js"
 import { Registry } from "../dist/registry.js"
 import { WorkspaceBranches } from "../dist/workspace-branches.js"
 import { Workspaces } from "../dist/workspaces.js"
-import { makeTestLayer } from "./fakes.mjs"
+import { bindTestAuthority, makeTestLayer } from "./fakes.mjs"
 
 const operationId = "8f66f7f4-7a14-4eb9-92ea-e7f1f516f821"
 
@@ -31,12 +29,11 @@ const withHarness = async (run) => {
 
 test("branch creates a private byte copy, stops the source VM, and replays idempotently", async () => {
   await withHarness((harness) => Effect.gen(function* () {
-    const config = yield* BrokerConfig
-    const registry = yield* Registry
     const workspaces = yield* Workspaces
+    const registry = yield* Registry
     const environments = yield* Environments
     const branches = yield* WorkspaceBranches
-    const source = yield* getOrBindDefaultAuthority(registry, config, workspaces, "source-key")
+    const source = yield* bindTestAuthority("source-key")
     const sourceWorkspace = yield* workspaces.resolve(
       "source-key",
       source.workspaceId,
@@ -99,6 +96,7 @@ test("branching an unused source creates an independent empty workspace", async 
     const registry = yield* Registry
     const workspaces = yield* Workspaces
     const branches = yield* WorkspaceBranches
+    yield* bindTestAuthority("empty-source")
     const prepared = yield* branches.prepare({
       operationId,
       sourceEnvironmentKey: "empty-source",
@@ -123,6 +121,7 @@ test("branch copy does not start when the source VM cannot stop", async () => {
     const environments = yield* Environments
     const registry = yield* Registry
     const branches = yield* WorkspaceBranches
+    yield* bindTestAuthority("close-failure-source")
     yield* environments.ensure({ environmentKey: "close-failure-source" })
     const failure = yield* Effect.flip(branches.prepare({
       operationId,
@@ -145,6 +144,7 @@ test("ready branch replay survives broker restart", async () => {
   const first = await Effect.runPromise(Effect.scoped(
     Effect.gen(function* () {
       const branches = yield* WorkspaceBranches
+      yield* bindTestAuthority(request.sourceEnvironmentKey)
       return yield* branches.prepare(request)
     }).pipe(Effect.provide(firstHarness.layer)),
   ))
@@ -152,6 +152,7 @@ test("ready branch replay survives broker restart", async () => {
   const replayed = await Effect.runPromise(Effect.scoped(
     Effect.gen(function* () {
       const branches = yield* WorkspaceBranches
+      yield* bindTestAuthority(request.sourceEnvironmentKey)
       return yield* branches.prepare(request)
     }).pipe(Effect.provide(secondHarness.layer)),
   ))
@@ -163,6 +164,7 @@ test("ready branch replay survives broker restart", async () => {
 test("environment restart remains blocked while stopped workspace work is running", async () => {
   await withHarness(() => Effect.gen(function* () {
     const environments = yield* Environments
+    yield* bindTestAuthority("locked-source")
     yield* environments.ensure({ environmentKey: "locked-source" })
     const entered = yield* Deferred.make()
     const release = yield* Deferred.make()

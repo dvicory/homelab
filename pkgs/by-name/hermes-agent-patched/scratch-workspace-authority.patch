@@ -1,0 +1,27 @@
+diff --git a/hermes_cli/worker_catalogue.py b/hermes_cli/worker_catalogue.py
+index 4e48fcb..556595f 100644
+--- a/hermes_cli/worker_catalogue.py
++++ b/hermes_cli/worker_catalogue.py
+@@ -333,7 +333,9 @@ def resolve_worker_specification(
+ 
+     project_spec = None
+     project_revision = None
+-    permission = "none"
++    # A scratch workspace has no Project source authority, but its private
++    # broker-owned filesystem must remain writable by the task.
++    permission = "workspace-write"
+     provider = workspace.get("scratchProvider")
+     if project:
+         project_spec = catalogue["projects"].get(project)
+diff --git a/tests/hermes_cli/test_explicit_worker_lanes.py b/tests/hermes_cli/test_explicit_worker_lanes.py
+index 98b368d..af635bb 100644
+--- a/tests/hermes_cli/test_explicit_worker_lanes.py
++++ b/tests/hermes_cli/test_explicit_worker_lanes.py
+@@ -87,6 +87,7 @@ def test_catalogue_digest_and_resolution_are_fail_closed(managed_catalogue):
+     assert spec.profile == "default"
+     assert spec.execution["timeoutSeconds"] == 90
+     assert spec.workspace_generation == 0
++    assert spec.permission == "workspace-write"
+ 
+     with pytest.raises(WorkerResolutionError, match="unknown_lane"):
+         resolve_worker_specification("default", board="default")

@@ -11,8 +11,9 @@ import { Executor } from "../dist/exec.js"
 import { Files } from "../dist/files.js"
 import { EnsureRequest, decodeExact } from "../dist/domain.js"
 import { Registry } from "../dist/registry.js"
+import { TaskRunActivations } from "../dist/task-run-activations.js"
 import { Workspaces } from "../dist/workspaces.js"
-import { makeTestLayer } from "./fakes.mjs"
+import { bindTestAuthority, makeTestLayer, testTaskAuthority } from "./fakes.mjs"
 
 const withHarness = async (run, options) => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), "gondolin-effect-test-"))
@@ -23,8 +24,8 @@ const withHarness = async (run, options) => {
 test("ensure reuses a compatible live generation and increments after close", async () => {
   await withHarness((harness) => Effect.gen(function* () {
     const environments = yield* Environments
-    const first = yield* environments.ensure({ environmentKey: "conversation-a" })
-    const reused = yield* environments.ensure({ environmentKey: "conversation-a" })
+    const first = yield* Effect.zipRight(bindTestAuthority("conversation-a"), environments.ensure({ environmentKey: "conversation-a" }))
+    const reused = yield* Effect.zipRight(bindTestAuthority("conversation-a"), environments.ensure({ environmentKey: "conversation-a" }))
     assert.equal(first.state, "created")
     assert.equal(reused.state, "reused")
     assert.equal(reused.generation, first.generation)
@@ -34,7 +35,7 @@ test("ensure reuses a compatible live generation and increments after close", as
     })
 
     yield* environments.close({ environmentKey: first.environmentKey, generation: first.generation })
-    const next = yield* environments.ensure({ environmentKey: "conversation-a" })
+    const next = yield* Effect.zipRight(bindTestAuthority("conversation-a"), environments.ensure({ environmentKey: "conversation-a" }))
     assert.equal(next.generation, first.generation + 1)
   }))
 })
@@ -43,7 +44,7 @@ test("an existing VM observes approval and revocation through its live grant vie
   await withHarness((harness) => Effect.gen(function* () {
     const environments = yield* Environments
     const grants = yield* AccessGrants
-    const environment = yield* environments.ensure({ environmentKey: "conversation-live-network" })
+    const environment = yield* Effect.zipRight(bindTestAuthority("conversation-live-network"), environments.ensure({ environmentKey: "conversation-live-network" }))
     const dynamic = harness.fake.state.created[0].spec.dynamicNetwork
 
     assert.ok(dynamic)
@@ -74,11 +75,11 @@ test("an existing VM observes approval and revocation through its live grant vie
   })
 })
 
-test("ensure binds broker-owned default authority and rejects conflicts", async () => {
+test("ensure requires an explicit authority binding and rejects conflicts", async () => {
   await withHarness(() => Effect.gen(function* () {
     const environments = yield* Environments
     const registry = yield* Registry
-    const ensured = yield* environments.ensure({ environmentKey: "conversation-authority" })
+    const ensured = yield* Effect.zipRight(bindTestAuthority("conversation-authority"), environments.ensure({ environmentKey: "conversation-authority" }))
 
     assert.equal(ensured.profile, "test")
     assert.equal(ensured.executor, "hermes-gateway")
@@ -142,7 +143,7 @@ test("restart rotates retained default authority to the active policy", async ()
   const firstHarness = makeTestLayer(stateDir)
   const retained = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const environments = yield* Environments
-    return yield* environments.ensure({ environmentKey: "conversation-policy-rollover" })
+    return yield* Effect.zipRight(bindTestAuthority("conversation-policy-rollover"), environments.ensure({ environmentKey: "conversation-policy-rollover" }))
   }).pipe(Effect.provide(firstHarness.layer))))
 
   const nextDigest = "b".repeat(64)
@@ -155,9 +156,7 @@ test("restart rotates retained default authority to the active policy", async ()
   await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const environments = yield* Environments
     const registry = yield* Registry
-    const recreated = yield* environments.ensure({
-      environmentKey: "conversation-policy-rollover"
-    })
+    const recreated = yield* Effect.zipRight(bindTestAuthority("conversation-policy-rollover"), environments.ensure({ environmentKey: "conversation-policy-rollover" }))
     const binding = yield* registry.getAuthority("conversation-policy-rollover")
 
     assert.equal(recreated.state, "created")
@@ -184,9 +183,9 @@ test("ordinary ensure input rejects caller-selected authority", async () => {
 test("stale generations are rejected after recreation", async () => {
   await withHarness(() => Effect.gen(function* () {
     const environments = yield* Environments
-    const first = yield* environments.ensure({ environmentKey: "conversation-a" })
+    const first = yield* Effect.zipRight(bindTestAuthority("conversation-a"), environments.ensure({ environmentKey: "conversation-a" }))
     yield* environments.close({ environmentKey: first.environmentKey, generation: first.generation })
-    const next = yield* environments.ensure({ environmentKey: "conversation-a" })
+    const next = yield* Effect.zipRight(bindTestAuthority("conversation-a"), environments.ensure({ environmentKey: "conversation-a" }))
     const result = yield* Effect.exit(environments.lease(first).pipe(Effect.scoped))
     assert.equal(Exit.isFailure(result), true)
     assert.equal(next.generation, 2)
@@ -196,7 +195,7 @@ test("stale generations are rejected after recreation", async () => {
 test("missing policy allow fails closed before VM creation", async () => {
   await withHarness((harness) => Effect.gen(function* () {
     const environments = yield* Environments
-    const error = yield* Effect.flip(environments.ensure({ environmentKey: "conversation-denied" }))
+    const error = yield* Effect.flip(Effect.zipRight(bindTestAuthority("conversation-denied"), environments.ensure({ environmentKey: "conversation-denied" })))
     assert.equal(error.reason, "policy.denied")
     assert.equal(harness.fake.state.created.length, 0)
   }), {
@@ -215,7 +214,7 @@ test("ensure requires one resolvable policy-authorized network obligation", asyn
   }
   await withHarness((harness) => Effect.gen(function* () {
     const environments = yield* Environments
-    const error = yield* Effect.flip(environments.ensure({ environmentKey: "conversation-no-network" }))
+    const error = yield* Effect.flip(Effect.zipRight(bindTestAuthority("conversation-no-network"), environments.ensure({ environmentKey: "conversation-no-network" })))
     assert.equal(error.reason, "policy.indeterminate")
     assert.equal(harness.fake.state.created.length, 0)
   }), { policyFile: { policy: allowWithoutNetwork } })
@@ -231,7 +230,7 @@ test("ensure requires one resolvable policy-authorized network obligation", asyn
   }
   await withHarness((harness) => Effect.gen(function* () {
     const environments = yield* Environments
-    const error = yield* Effect.flip(environments.ensure({ environmentKey: "conversation-unknown-network" }))
+    const error = yield* Effect.flip(Effect.zipRight(bindTestAuthority("conversation-unknown-network"), environments.ensure({ environmentKey: "conversation-unknown-network" })))
     assert.equal(error.reason, "policy.indeterminate")
     assert.equal(harness.fake.state.created.length, 0)
   }), { policyFile: { policy: unknownNetwork } })
@@ -241,7 +240,7 @@ test("file operations enforce workspace paths and byte ceilings", async () => {
   await withHarness(() => Effect.gen(function* () {
     const environments = yield* Environments
     const files = yield* Files
-    const environment = yield* environments.ensure({ environmentKey: "conversation-files" })
+    const environment = yield* Effect.zipRight(bindTestAuthority("conversation-files"), environments.ensure({ environmentKey: "conversation-files" }))
     const reference = { environmentKey: environment.environmentKey, generation: environment.generation }
 
     yield* files.write({ ...reference, path: "note.txt", dataBase64: Buffer.from("hello").toString("base64") })
@@ -259,11 +258,43 @@ test("file operations enforce workspace paths and byte ceilings", async () => {
   }))
 })
 
+test("read-only task authority denies every workspace mutation path", async () => {
+  await withHarness((harness) => Effect.gen(function* () {
+    const workspaces = yield* Workspaces
+    const activations = yield* TaskRunActivations
+    const environments = yield* Environments
+    const files = yield* Files
+    const environmentKey = "task-read-only"
+    const taskRun = { taskId: "task-read-only", runId: "run-read-only" }
+    const acquired = yield* workspaces.acquire(environmentKey)
+    yield* activations.activate({
+      environmentKey,
+      ...taskRun,
+      ...testTaskAuthority({
+        permission: "read-only"
+      }),
+      workspaceId: acquired.workspace.workspaceId,
+      workspaceLeaseId: acquired.lease.leaseId,
+    })
+    const environment = yield* environments.ensure({ environmentKey, taskRun })
+    assert.equal(harness.fake.state.created[0].spec.workspaceReadOnly, true)
+
+    const denied = yield* Effect.flip(files.write({
+      environmentKey,
+      generation: environment.generation,
+      taskRun,
+      path: "forbidden.txt",
+      dataBase64: Buffer.from("no").toString("base64"),
+    }))
+    assert.equal(denied.reason, "policy.denied")
+  }), { workspaceHandoffEnabled: true })
+})
+
 test("file operations reject non-canonical data and workspace-root removal", async () => {
   await withHarness(() => Effect.gen(function* () {
     const environments = yield* Environments
     const files = yield* Files
-    const environment = yield* environments.ensure({ environmentKey: "conversation-file-guards" })
+    const environment = yield* Effect.zipRight(bindTestAuthority("conversation-file-guards"), environments.ensure({ environmentKey: "conversation-file-guards" }))
     const reference = { environmentKey: environment.environmentKey, generation: environment.generation }
 
     const malformed = yield* Effect.flip(files.write({
@@ -285,8 +316,8 @@ test("file operations reject non-canonical data and workspace-root removal", asy
 test("environment admission enforces the configured live VM ceiling", async () => {
   await withHarness((harness) => Effect.gen(function* () {
     const environments = yield* Environments
-    yield* environments.ensure({ environmentKey: "conversation-capacity-a" })
-    const rejected = yield* Effect.flip(environments.ensure({ environmentKey: "conversation-capacity-b" }))
+    yield* Effect.zipRight(bindTestAuthority("conversation-capacity-a"), environments.ensure({ environmentKey: "conversation-capacity-a" }))
+    const rejected = yield* Effect.flip(Effect.zipRight(bindTestAuthority("conversation-capacity-b"), environments.ensure({ environmentKey: "conversation-capacity-b" })))
     assert.equal(rejected.reason, "environment.capacity")
     assert.equal(harness.fake.state.created.length, 1)
   }), { policyFile: { maxEnvironments: 1 } })
@@ -295,10 +326,10 @@ test("environment admission enforces the configured live VM ceiling", async () =
 test("capacity admission reclaims environments past the broker-owned idle timeout", async () => {
   await withHarness((harness) => Effect.gen(function* () {
     const environments = yield* Environments
-    const first = yield* environments.ensure({ environmentKey: "conversation-idle-a" })
+    const first = yield* Effect.zipRight(bindTestAuthority("conversation-idle-a"), environments.ensure({ environmentKey: "conversation-idle-a" }))
     yield* Effect.sleep("50 millis")
 
-    const second = yield* environments.ensure({ environmentKey: "conversation-idle-b" })
+    const second = yield* Effect.zipRight(bindTestAuthority("conversation-idle-b"), environments.ensure({ environmentKey: "conversation-idle-b" }))
     const live = yield* environments.listLive
     const firstStatus = yield* environments.status(first.environmentKey)
 
@@ -312,7 +343,7 @@ test("capacity admission reclaims environments past the broker-owned idle timeou
 test("idle reclamation does not close an environment with an active operation lease", async () => {
   await withHarness((harness) => Effect.gen(function* () {
     const environments = yield* Environments
-    const environment = yield* environments.ensure({ environmentKey: "conversation-active" })
+    const environment = yield* Effect.zipRight(bindTestAuthority("conversation-active"), environments.ensure({ environmentKey: "conversation-active" }))
     const operation = yield* Effect.fork(
       environments.lease(environment).pipe(
         Effect.andThen(Effect.sleep("80 millis")),
@@ -323,7 +354,7 @@ test("idle reclamation does not close an environment with an active operation le
     yield* Effect.sleep("35 millis")
     assert.equal(harness.fake.state.closed.length, 0)
     const rejected = yield* Effect.flip(
-      environments.ensure({ environmentKey: "conversation-active-capacity" }),
+      Effect.zipRight(bindTestAuthority("conversation-active-capacity"), environments.ensure({ environmentKey: "conversation-active-capacity" })),
     )
     assert.equal(rejected.reason, "environment.capacity")
     yield* Fiber.join(operation)
@@ -335,7 +366,7 @@ test("output limit failures hard-close the environment", async () => {
   await withHarness((harness) => Effect.gen(function* () {
     const environments = yield* Environments
     const executor = yield* Executor
-    const environment = yield* environments.ensure({ environmentKey: "conversation-output-limit" })
+    const environment = yield* Effect.zipRight(bindTestAuthority("conversation-output-limit"), environments.ensure({ environmentKey: "conversation-output-limit" }))
     const failure = yield* Effect.flip(Stream.runCollect(executor.execute({
       environmentKey: environment.environmentKey,
       generation: environment.generation,
@@ -354,7 +385,7 @@ test("guest input setup failures are typed and hard-close the environment", asyn
   await withHarness((harness) => Effect.gen(function* () {
     const environments = yield* Environments
     const executor = yield* Executor
-    const environment = yield* environments.ensure({ environmentKey: "conversation-input-failure" })
+    const environment = yield* Effect.zipRight(bindTestAuthority("conversation-input-failure"), environments.ensure({ environmentKey: "conversation-input-failure" }))
     const failure = yield* Effect.flip(Stream.runCollect(executor.execute({
       environmentKey: environment.environmentKey,
       generation: environment.generation,
@@ -370,7 +401,7 @@ test("early stream consumer termination hard-closes the environment", async () =
   await withHarness((harness) => Effect.gen(function* () {
     const environments = yield* Environments
     const executor = yield* Executor
-    const environment = yield* environments.ensure({ environmentKey: "conversation-disconnect" })
+    const environment = yield* Effect.zipRight(bindTestAuthority("conversation-disconnect"), environments.ensure({ environmentKey: "conversation-disconnect" }))
     const events = yield* Stream.runCollect(executor.execute({
       environmentKey: environment.environmentKey,
       generation: environment.generation,
@@ -391,7 +422,7 @@ test("deadline failure hard-closes an uncooperative environment", async () => {
   await withHarness((harness) => Effect.gen(function* () {
     const environments = yield* Environments
     const executor = yield* Executor
-    const environment = yield* environments.ensure({ environmentKey: "conversation-hang" })
+    const environment = yield* Effect.zipRight(bindTestAuthority("conversation-hang"), environments.ensure({ environmentKey: "conversation-hang" }))
     const result = yield* Effect.exit(Stream.runCollect(executor.execute({
       environmentKey: environment.environmentKey,
       generation: environment.generation,

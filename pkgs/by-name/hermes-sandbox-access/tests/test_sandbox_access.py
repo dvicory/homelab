@@ -216,6 +216,14 @@ def test_list_and_revoke_expose_only_current_or_matching_remembered_grants(plugi
 
 def test_pre_tool_hook_restores_stable_workspace_authority(plugin, monkeypatch):
     registrations = []
+    client = FakeClient({
+        "/v1/control/workspaces/acquire": {
+            "workspace": {"workspaceId": "workspace-1"},
+            "lease": {"leaseId": "lease-1"},
+        },
+        "/v1/control/authority/bind": {"policyDigest": "a" * 64},
+    })
+    monkeypatch.setattr(plugin, "BrokerClient", lambda: client)
     monkeypatch.setattr(
         plugin,
         "_workspace_owner",
@@ -233,11 +241,42 @@ def test_pre_tool_hook_restores_stable_workspace_authority(plugin, monkeypatch):
     )
 
     plugin._on_pre_tool_call(task_id="turn-id", session_id="compression-tip")
+    plugin._on_pre_tool_call(task_id="turn-id", session_id="compression-tip")
 
-    assert registrations == [("conversation-root", "qa-default-authority")]
+    assert registrations == [
+        ("conversation-root", "qa-default-authority"),
+        ("conversation-root", "qa-default-authority"),
+    ]
     assert plugin._SESSION_ENVIRONMENTS["compression-tip"] == (
         "turn-id:conversation-root"
     )
+    assert client.calls == [
+        (
+            "/v1/control/workspaces/acquire",
+            {"environmentKey": "turn-id:conversation-root"},
+        ),
+        (
+            "/v1/control/authority/bind",
+            {
+                "environmentKey": "turn-id:conversation-root",
+                "authorityClass": "default",
+                "workspaceId": "workspace-1",
+                "workspaceLeaseId": "lease-1",
+            },
+        ),
+    ]
+
+
+def test_worker_hook_preserves_pre_spawn_task_run_authority(plugin, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-1")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "17")
+    monkeypatch.setattr(
+        plugin,
+        "BrokerClient",
+        lambda: pytest.fail("worker hook attempted to bind default authority"),
+    )
+
+    plugin._on_pre_tool_call(task_id="task-1", session_id="worker-session")
 
 
 def test_branch_prepares_distinct_private_workspace_keys(plugin, monkeypatch):
@@ -311,6 +350,7 @@ def test_registration_uses_openai_function_schema_envelopes(plugin):
     assert request["parameters"]["properties"]["capabilities"]["items"]["properties"]["address_mode"] == {
         "enum": ["public", "pinned-private"],
     }
+    assert "duration_seconds" not in request["parameters"]["properties"]
     assert request["parameters"]["required"] == ["capabilities", "requested_scope", "rationale"]
     assert definitions["sandbox_access_list"]["parameters"]["properties"] == {}
     assert definitions["sandbox_access_revoke"]["parameters"]["required"] == ["grant_id"]

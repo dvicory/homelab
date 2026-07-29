@@ -112,6 +112,48 @@ const escapedExecution = await request(
 if (escapedControl.status !== 404 || escapedExecution.status !== 404) {
   throw new Error("execution/control routes are not isolated")
 }
+const conversationKey = "nix-conversation-check"
+const acquired = await request(
+  process.env.GONDOLIN_EFFECT_CONTROL_SOCKET,
+  "/v1/control/workspaces/acquire",
+  "POST",
+  { environmentKey: conversationKey },
+)
+if (acquired.status !== 200) {
+  throw new Error(`conversation workspace acquisition failed: ${acquired.status} ${acquired.body}`)
+}
+const acquiredBody = JSON.parse(acquired.body)
+const bound = await request(
+  process.env.GONDOLIN_EFFECT_CONTROL_SOCKET,
+  "/v1/control/authority/bind",
+  "POST",
+  {
+    environmentKey: conversationKey,
+    authorityClass: "default",
+    workspaceId: acquiredBody.workspace.workspaceId,
+    workspaceLeaseId: acquiredBody.lease.leaseId,
+  },
+)
+if (bound.status !== 200) {
+  throw new Error(`conversation authority binding failed: ${bound.status} ${bound.body}`)
+}
+const authority = await request(
+  process.env.GONDOLIN_EFFECT_CONTROL_SOCKET,
+  "/v1/control/authority/status",
+  "POST",
+  { environmentKey: conversationKey },
+)
+if (authority.status !== 200) {
+  throw new Error(`conversation authority status failed: ${authority.status} ${authority.body}`)
+}
+const authorityBody = JSON.parse(authority.body)
+if (
+  authorityBody.authorityClass !== "default" ||
+  authorityBody.workspaceId !== acquiredBody.workspace.workspaceId ||
+  authorityBody.workspaceLeaseId !== acquiredBody.lease.leaseId
+) {
+  throw new Error(`conversation authority does not match its acquired workspace: ${authority.body}`)
+}
 const handoffRoutes = [
   "/v1/control/workspace-handoffs/capture",
   "/v1/control/workspace-handoffs/import",

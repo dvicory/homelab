@@ -46,6 +46,12 @@ A worker lane MUST be able to declare its runtime, optional profile, model, reas
 - **WHEN** a worker invokes an unexposed backend operation through a stale or indirect client
 - **THEN** the backend MUST enforce the frozen lane and task-run authority independently of model-visible tool filtering
 
+#### Scenario: Detached external runtime cannot surface operator approval
+- **GIVEN** an external worker runtime whose noninteractive execution mode cannot route approval requests to the Hermes operator
+- **WHEN** trusted configuration declares that runtime as a worker lane
+- **THEN** configuration MUST reject approval behavior that can broaden the frozen permission profile
+- **AND** filesystem and network policy MUST be projected independently without silently dropping either field
+
 ### Requirement: Worker durable memory is explicit and off by default
 Task worker lanes MUST default to no durable memory. A trusted lane declaration MAY select lane-scoped or shared-profile durable memory, while task/run transcript state MUST remain scoped to the task run.
 

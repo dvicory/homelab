@@ -9,14 +9,13 @@ import subprocess
 import sys
 
 from hermes_cli import kanban_db
-from hermes_cli.worker_lanes import WorkerLane, kanban_worker_env
+from hermes_cli.worker_lanes import WorkerLane, kanban_worker_identity_env
+from hermes_cli.worker_catalogue import WorkerResolutionError, WorkerSpecification
 
 
 _WORKER_ENV_KEYS = {
     "CODEX_EXECUTABLE",
     "CODEX_HOME",
-    "CODEX_MODEL",
-    "CODEX_REASONING_EFFORT",
     "HOME",
     "HERMES_HOME",
     "LANG",
@@ -29,15 +28,13 @@ _WORKER_ENV_KEYS = {
 }
 
 
-def _isolated_worker_env(task, workspace: str, *, board: str | None) -> dict[str, str]:
-    """Build the Kanban contract without forwarding gateway credentials."""
-    inherited = kanban_worker_env(task, workspace, board=board)
+def _isolated_worker_env(task, *, board: str | None) -> dict[str, str]:
+    """Build the opaque Kanban identity contract without gateway credentials."""
+    inherited = kanban_worker_identity_env(task, board=board)
     return {
         key: value
         for key, value in inherited.items()
-        if key in _WORKER_ENV_KEYS
-        or key.startswith("HERMES_KANBAN_")
-        or key == "TERMINAL_CWD"
+        if key in _WORKER_ENV_KEYS or key.startswith("HERMES_KANBAN_")
     }
 
 
@@ -53,6 +50,58 @@ def _validated_workspace(workspace: str) -> Path:
     return path
 
 
+def _resolved_worker_spec(task, lane: dict) -> WorkerSpecification:
+    spec = getattr(task, "_worker_specification", None)
+    if not isinstance(spec, WorkerSpecification):
+        raise WorkerResolutionError(
+            "worker_spec_missing", "Codex workers require a resolved worker specification"
+        )
+    if spec.runtime != "external" or spec.plugin != "codex-cli":
+        raise WorkerResolutionError(
+            "external_runtime_mismatch", "worker specification does not select Codex CLI"
+        )
+    if spec.lane != lane["name"]:
+        raise WorkerResolutionError(
+            "external_lane_mismatch", "registered Codex lane conflicts with worker specification"
+        )
+    sandbox = {
+        "read-only": "read-only",
+        "workspace-write": "workspace-write",
+    }.get(spec.permission)
+    if sandbox is None or sandbox != lane["sandboxMode"]:
+        raise WorkerResolutionError(
+            "external_permission_unsupported",
+            "Codex sandbox cannot enforce the resolved permission",
+        )
+    expected_policy = {
+        "approvalPolicy": lane["approvalPolicy"],
+        "approvalReviewer": lane["approvalsReviewer"],
+        "networkAccess": lane["networkAccess"],
+    }
+    for field, expected in expected_policy.items():
+        if spec.policy.get(field) != expected:
+            raise WorkerResolutionError(
+                "external_policy_mismatch",
+                f"Codex lane configuration conflicts with policy field {field}",
+            )
+    unsupported = [
+        field
+        for field in ("soul", "tools", "toolsets", "skills")
+        if spec.agent.get(field)
+    ]
+    if unsupported:
+        raise WorkerResolutionError(
+            "external_worker_field_unsupported",
+            "Codex adapter does not support agent fields: " + ", ".join(unsupported),
+        )
+    if spec.memory != "disabled":
+        raise WorkerResolutionError(
+            "external_worker_field_unsupported",
+            "Codex adapter supports only disabled Hermes memory",
+        )
+    return spec
+
+
 def _spawn_codex_worker(
     task,
     workspace: str,
@@ -62,12 +111,8 @@ def _spawn_codex_worker(
 ) -> int:
     """Start one detached worker and return its PID to the dispatcher."""
     path = _validated_workspace(workspace)
-    env = _isolated_worker_env(task, str(path), board=board)
-    env["HERMES_PROFILE"] = lane["name"]
-    env["CODEX_APPROVAL_POLICY"] = lane["approvalPolicy"]
-    env["CODEX_APPROVALS_REVIEWER"] = lane["approvalsReviewer"]
-    env["CODEX_SANDBOX_MODE"] = lane["sandboxMode"]
-    env["CODEX_NETWORK_ACCESS"] = str(lane["networkAccess"]).lower()
+    _resolved_worker_spec(task, lane)
+    env = _isolated_worker_env(task, board=board)
     if task.branch_name:
         env["HERMES_KANBAN_BRANCH"] = task.branch_name
 
@@ -125,6 +170,10 @@ def _declared_lanes() -> list[dict]:
             raise ValueError(f"unsupported approvals reviewer for lane {lane['name']!r}")
         if not isinstance(lane["networkAccess"], bool):
             raise ValueError(f"networkAccess must be boolean for lane {lane['name']!r}")
+        if lane["approvalPolicy"] != "never":
+            raise ValueError(
+                f"detached Codex lane {lane['name']!r} must disable approvals"
+            )
         normalized.append(lane)
     return normalized
 

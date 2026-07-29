@@ -131,6 +131,14 @@ The NixOS Hermes account aspect supplies the dedicated sandbox account and
 systemd-activated capability sockets. Gondolin execution and control use
 separate sockets; the gateway receives only the paths required by its role.
 
+Detached Codex lanes receive one frozen permission profile that projects
+filesystem and network policy independently. Their non-interactive process
+cannot surface approvals to the live operator, so configured lanes must disable
+Codex approval escalation. The live orchestrator's `terminal`, `file`,
+`process`, and `sandbox` tools continue to address only its conversation
+environment; a worker path such as `/workspace` is descriptive, not a
+cross-environment address.
+
 The workspace broker, not the prompt, enforces:
 
 - private task workspaces;

@@ -10,7 +10,7 @@ import { Effect } from "effect"
 import { BrokerDatabase } from "../dist/database.js"
 import { BrokerConfig } from "../dist/config.js"
 import { contentDispositionFor, makeControlHttpApp, makeHttpApp } from "../dist/http.js"
-import { makeTestLayer } from "./fakes.mjs"
+import { makeTestLayer, testTaskAuthority } from "./fakes.mjs"
 test("export content-disposition is ASCII-safe and RFC5987 encoded", () => {
   const header = contentDispositionFor("résumé\"\r\n.txt")
   assert.equal(header.includes("\r"), false)
@@ -60,6 +60,23 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
     const health = yield* Effect.promise(() => request(config.socketPath, "/v1/health"))
     assert.equal(health.status, 200)
     assert.deepEqual(JSON.parse(health.text), { status: "ok", plane: "execution" })
+
+    const conversationWorkspaceResponse = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/workspaces/acquire", {
+        environmentKey: "conversation-http"
+      })
+    )
+    assert.equal(conversationWorkspaceResponse.status, 200)
+    const conversationWorkspace = JSON.parse(conversationWorkspaceResponse.text)
+    const conversationAuthority = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/authority/bind", {
+        environmentKey: "conversation-http",
+        authorityClass: "default",
+        workspaceId: conversationWorkspace.workspace.workspaceId,
+        workspaceLeaseId: conversationWorkspace.lease.leaseId
+      })
+    )
+    assert.equal(conversationAuthority.status, 200)
 
     const ensure = yield* Effect.promise(() => request(config.socketPath, "/v1/environments/ensure", {
       environmentKey: "conversation-http"
@@ -116,6 +133,22 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
       })
     )
     assert.equal(executionRejectsBranchPreparation.status, 404)
+    const branchSourceWorkspaceResponse = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/workspaces/acquire", {
+        environmentKey: "branch-source-http"
+      })
+    )
+    const branchSourceWorkspace = JSON.parse(branchSourceWorkspaceResponse.text)
+    const branchSourceAuthority = yield* Effect.promise(() =>
+      request(config.controlSocketPath, "/v1/control/authority/bind", {
+        environmentKey: "branch-source-http",
+        authorityClass: "default",
+        workspaceId: branchSourceWorkspace.workspace.workspaceId,
+        workspaceLeaseId: branchSourceWorkspace.lease.leaseId
+      })
+    )
+    assert.equal(branchSourceAuthority.status, 200)
+
 
     const preparedBranch = yield* Effect.promise(() =>
       request(config.controlSocketPath, "/v1/control/workspace-branches/prepare", {
@@ -138,38 +171,6 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
     assert.equal(acquired.workspace.guestPath, "/workspace")
     assert.equal("workspacePath" in acquired.workspace, false)
 
-    const freshAcquiredResponse = yield* Effect.promise(() =>
-      request(config.controlSocketPath, "/v1/control/workspaces/acquire", {
-        environmentKey: "task-fresh-control"
-      })
-    )
-    assert.equal(freshAcquiredResponse.status, 200)
-    const freshAcquired = JSON.parse(freshAcquiredResponse.text)
-    const defaultBind = yield* Effect.promise(() =>
-      request(config.controlSocketPath, "/v1/control/authority/bind-default", {
-        environmentKey: "task-fresh-control",
-        workspaceId: freshAcquired.workspace.workspaceId,
-        leaseId: freshAcquired.lease.leaseId
-      })
-    )
-    assert.equal(defaultBind.status, 200)
-    const defaultAuthority = JSON.parse(defaultBind.text)
-    assert.equal(defaultAuthority.authorityClass, "default")
-    assert.equal(defaultAuthority.policyDigest, "a".repeat(64))
-
-    const bind = yield* Effect.promise(() =>
-      request(config.controlSocketPath, "/v1/control/authority/bind", {
-        environmentKey: "conversation-control",
-        profile: "test",
-        executor: "hermes-gateway",
-        authorityClass: "default",
-        policyDigest: "a".repeat(64),
-        workspaceId: acquired.workspace.workspaceId,
-        workspaceLeaseId: acquired.lease.leaseId
-      })
-    )
-    assert.equal(bind.status, 200)
-    assert.equal(JSON.parse(bind.text).authorityClass, "default")
 
     const described = yield* Effect.promise(() =>
       request(config.controlSocketPath, "/v1/control/workspaces/describe", {
@@ -191,9 +192,9 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
         environmentKey: "conversation-control",
         taskId: "task-http",
         runId: "run-http",
+        ...testTaskAuthority(),
         workspaceId: acquired.workspace.workspaceId,
         workspaceLeaseId: acquired.lease.leaseId,
-        policyDigest: "a".repeat(64),
       })
     )
     assert.equal(activated.status, 200)

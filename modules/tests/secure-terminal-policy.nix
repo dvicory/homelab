@@ -77,6 +77,23 @@
             "pypi-public"
           ];
         };
+        laneAuthorities = {
+          research = {
+            authorityClass = "default";
+            workspaceProvider = "broker-scratch";
+            maximumPermission = "workspace-write";
+          };
+          codex-plan = {
+            authorityClass = "codex";
+            workspaceProvider = "host-worktree";
+            maximumPermission = "read-only";
+          };
+          codex = {
+            authorityClass = "codex";
+            workspaceProvider = "host-worktree";
+            maximumPermission = "workspace-write";
+          };
+        };
         workspaceHandoffEnabled = true;
         workspaceHandoffLimits = {
           maxLogicalBytes = 67108864;
@@ -105,7 +122,7 @@
         defaultTemplate = qaSelections.defaultTemplate;
         allowedPairs = qaSelections.allowedPairs;
         maximum = qaSelections.maximum;
-        worklanes = qaSelections.worklanes;
+        inherit (qaSelections) worklanes laneAuthorities;
         workspaceHandoffEnabled = qaSelections.workspaceHandoffEnabled;
         workspaceHandoffLimits = qaSelections.workspaceHandoffLimits;
       };

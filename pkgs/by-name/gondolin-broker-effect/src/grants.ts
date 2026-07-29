@@ -9,7 +9,7 @@ import {
 } from "./domain.js";
 import { Authorization } from "./auth.js";
 import {
-  getOrBindDefaultAuthority,
+  requireAuthorityBinding,
   resolveAuthorityPolicy,
 } from "./authority.js";
 import { BrokerConfig } from "./config.js";
@@ -355,7 +355,7 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
   };
 
   const requireBinding = (environmentKey: string): Effect.Effect<AuthorityBindingRecord, BrokerError> =>
-    getOrBindDefaultAuthority(registry, config, workspaces, environmentKey);
+    requireAuthorityBinding(registry, config, environmentKey);
 
   const matching = (
     binding: AuthorityBindingRecord,

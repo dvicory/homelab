@@ -1,0 +1,341 @@
+diff --git a/hermes-spec-work/__pycache__/model_tools.cpython-310.pyc b/__pycache__/model_tools.cpython-310.pyc
+new file mode 100644
+index 0000000..420345a
+Binary files /dev/null and b/__pycache__/model_tools.cpython-310.pyc differ
+diff --git a/hermes-spec-work/agent/__pycache__/prompt_builder.cpython-310.pyc b/agent/__pycache__/prompt_builder.cpython-310.pyc
+new file mode 100644
+index 0000000..fab69c1
+Binary files /dev/null and b/agent/__pycache__/prompt_builder.cpython-310.pyc differ
+diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
+index 7d383a8..c6dba55 100644
+--- a/agent/prompt_builder.py
++++ b/agent/prompt_builder.py
+@@ -1880,11 +1880,10 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
+         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
+ 
+     soul_path = get_hermes_home() / "SOUL.md"
+-    raw_worker_spec = os.environ.get("HERMES_WORKER_SPEC")
+-    if raw_worker_spec:
+-        from hermes_cli.worker_catalogue import WorkerSpecification
++    from hermes_cli.worker_catalogue import load_current_worker_specification
+ 
+-        worker_spec = WorkerSpecification.from_json(raw_worker_spec)
++    worker_spec = load_current_worker_specification()
++    if worker_spec is not None:
+         if worker_spec.agent.get("soul"):
+             soul_path = Path(str(worker_spec.agent["soul"]))
+             if not soul_path.is_absolute():
+diff --git a/hermes-spec-work/hermes_cli/__pycache__/config.cpython-310.pyc b/hermes_cli/__pycache__/config.cpython-310.pyc
+new file mode 100644
+index 0000000..745757f
+Binary files /dev/null and b/hermes_cli/__pycache__/config.cpython-310.pyc differ
+diff --git a/hermes-spec-work/hermes_cli/__pycache__/worker_catalogue.cpython-310.pyc b/hermes_cli/__pycache__/worker_catalogue.cpython-310.pyc
+new file mode 100644
+index 0000000..8016277
+Binary files /dev/null and b/hermes_cli/__pycache__/worker_catalogue.cpython-310.pyc differ
+diff --git a/hermes-spec-work/hermes_cli/__pycache__/worker_lanes.cpython-310.pyc b/hermes_cli/__pycache__/worker_lanes.cpython-310.pyc
+new file mode 100644
+index 0000000..8e8c3c5
+Binary files /dev/null and b/hermes_cli/__pycache__/worker_lanes.cpython-310.pyc differ
+diff --git a/hermes_cli/config.py b/hermes_cli/config.py
+index dc85038..206e2f6 100644
+--- a/hermes_cli/config.py
++++ b/hermes_cli/config.py
+@@ -7134,15 +7134,12 @@ def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
+ 
+ 
+ def _apply_worker_spec_config(config: Dict[str, Any]) -> Dict[str, Any]:
+-    """Apply behavior-only overrides from a dispatcher-frozen worker spec."""
+-    raw = os.environ.get("HERMES_WORKER_SPEC")
+-    if not raw:
++    """Apply behavior-only overrides from the durable frozen worker spec."""
++    from hermes_cli.worker_catalogue import load_current_worker_specification
++
++    worker_spec = load_current_worker_specification()
++    if worker_spec is None:
+         return config
+-    from hermes_cli.worker_catalogue import WorkerSpecification
+-    try:
+-        worker_spec = WorkerSpecification.from_json(raw)
+-    except Exception as exc:
+-        raise RuntimeError("HERMES_WORKER_SPEC is invalid") from exc
+     spec = worker_spec.as_dict()
+     resolved = copy.deepcopy(config)
+     agent_spec = spec.get("agent") if isinstance(spec.get("agent"), dict) else {}
+diff --git a/hermes_cli/worker_catalogue.py b/hermes_cli/worker_catalogue.py
+index 02741db..4e48fcb 100644
+--- a/hermes_cli/worker_catalogue.py
++++ b/hermes_cli/worker_catalogue.py
+@@ -3,6 +3,7 @@ from __future__ import annotations
+ 
+ import hashlib
+ import json
++import os
+ from dataclasses import dataclass, replace
+ from typing import Any, Mapping, Optional
+ 
+@@ -159,6 +160,82 @@ class WorkerSpecification:
+         except (KeyError, TypeError, ValueError) as exc:
+             raise WorkerResolutionError("worker_spec_invalid", "worker specification is incomplete") from exc
+ 
++def load_current_worker_specification(
++    *, required: bool = False,
++) -> Optional[WorkerSpecification]:
++    """Load and fence the immutable worker specification for this task-run.
++
++    Spawned workers receive only the pre-existing board/task/run/lease
++    identity. Behavior and authorization data remain in the durable run
++    record and are revalidated against the active task lease on every process
++    lookup.
++    """
++    identity = {
++        "board": os.environ.get("HERMES_KANBAN_BOARD"),
++        "task_id": os.environ.get("HERMES_KANBAN_TASK"),
++        "run_id": os.environ.get("HERMES_KANBAN_RUN_ID"),
++        "lease_id": os.environ.get("HERMES_KANBAN_CLAIM_LOCK"),
++    }
++    present = {name for name, value in identity.items() if value}
++    has_run_identity = bool(identity["run_id"] or identity["lease_id"])
++    if not has_run_identity:
++        if required:
++            raise WorkerResolutionError(
++                "worker_identity_missing", "task-run identity is not configured"
++            )
++        return None
++    if present != set(identity):
++        raise WorkerResolutionError(
++            "worker_identity_incomplete",
++            "board, task, run, and lease identity must be supplied together",
++        )
++    try:
++        run_id = int(identity["run_id"])
++    except (TypeError, ValueError) as exc:
++        raise WorkerResolutionError(
++            "worker_identity_invalid", "task-run id must be a positive integer"
++        ) from exc
++    if run_id < 1:
++        raise WorkerResolutionError(
++            "worker_identity_invalid", "task-run id must be a positive integer"
++        )
++
++    from hermes_cli import kanban_db as kb
++
++    board = kb._normalize_board_slug(identity["board"])
++    if not board:
++        raise WorkerResolutionError(
++            "worker_identity_invalid", "board identity is invalid"
++        )
++    with kb.connect(board=board) as conn:
++        task = kb.get_task(conn, identity["task_id"])
++        worker_spec = kb.get_task_worker_specification(
++            conn, identity["task_id"], run_id=run_id
++        )
++    if task is None or worker_spec is None:
++        raise WorkerResolutionError(
++            "worker_spec_missing", "durable task-run worker specification is missing"
++        )
++    if task.current_run_id != run_id or task.claim_lock != identity["lease_id"]:
++        raise WorkerResolutionError(
++            "worker_identity_stale", "task-run lease is no longer active"
++        )
++    if (
++        worker_spec.board != board
++        or worker_spec.task_id != identity["task_id"]
++        or worker_spec.run_id != run_id
++        or worker_spec.lease_id != identity["lease_id"]
++    ):
++        raise WorkerResolutionError(
++            "worker_spec_identity_mismatch",
++            "durable worker specification does not match the active task-run",
++        )
++    if worker_spec.workspace_generation < 1:
++        raise WorkerResolutionError(
++            "workspace_generation_stale", "worker workspace generation is stale"
++        )
++    return worker_spec
++
+ 
+ def _catalogue_config() -> Optional[dict[str, Any]]:
+     from hermes_cli.config import load_config_readonly
+diff --git a/hermes_cli/worker_lanes.py b/hermes_cli/worker_lanes.py
+index 93cd669..c054e4b 100644
+--- a/hermes_cli/worker_lanes.py
++++ b/hermes_cli/worker_lanes.py
+@@ -163,8 +163,8 @@ def kanban_worker_env(task, workspace, *, board=None, base=None) -> "dict[str, A
+     factored out so external lane ``spawn_fn`` implementations don't each
+     re-derive it.
+ 
+-    Lane-specific vars (``HERMES_PROFILE``, ``HERMES_WORKER_LANE``, runtime
+-    auth, ``PYTHONPATH``, …) are intentionally left to the caller.
++    Lane-specific behavior and authorization are deliberately absent. Workers
++    resolve the frozen specification from the durable run using these pins.
+     """
+     from hermes_cli import kanban_db as kb  # local import: avoids import cycle
+ 
+@@ -220,23 +220,6 @@ def kanban_worker_env(task, workspace, *, board=None, base=None) -> "dict[str, A
+             raise WorkerResolutionError(
+                 "workspace_generation_stale", "worker workspace generation is stale"
+             )
+-        env["HERMES_WORKER_SPEC"] = worker_spec.to_json()
+-        env["HERMES_WORKER_LANE"] = worker_spec.lane
+-        env["HERMES_WORKER_CATALOGUE_REVISION"] = worker_spec.catalogue_revision
+-        env["HERMES_WORKSPACE_ID"] = worker_spec.workspace_id
+-        env["HERMES_WORKSPACE_GENERATION"] = str(worker_spec.workspace_generation)
+-        env["HERMES_WORKSPACE_LEASE_ID"] = worker_spec.lease_id
+-        env.pop("HERMES_WORKER_MEMORY_DIR", None)
+-        if worker_spec.memory == "lane":
+-            env["HERMES_WORKER_MEMORY_DIR"] = str(
+-                kb.kanban_home().parent
+-                / "worker-memory"
+-                / worker_spec.instance
+-                / worker_spec.lane
+-            )
+-        if worker_spec.project:
+-            env["HERMES_PROJECT_ID"] = worker_spec.project
+-            env["HERMES_PROJECT_SOURCE_GENERATION"] = worker_spec.source_generation
+     # Pin TERMINAL_CWD to the task's workspace so the worker's file tools and
+     # context-file loader anchor on the workspace, not whatever cwd the
+     # dispatching gateway happened to export. TERMINAL_CWD takes precedence
+diff --git a/model_tools.py b/model_tools.py
+index adc0092..ebf7116 100644
+--- a/model_tools.py
++++ b/model_tools.py
+@@ -39,12 +39,11 @@ logger = logging.getLogger(__name__)
+ _WARNED_DISABLED_BUNDLES: set = set()
+ def _worker_allowed_tools() -> Optional[set[str]]:
+     """Derive the model-visible ceiling from the single frozen worker spec."""
+-    raw = os.environ.get("HERMES_WORKER_SPEC")
+-    if not raw:
+-        return None
+-    from hermes_cli.worker_catalogue import WorkerSpecification
++    from hermes_cli.worker_catalogue import load_current_worker_specification
+ 
+-    spec = WorkerSpecification.from_json(raw)
++    spec = load_current_worker_specification()
++    if spec is None:
++        return None
+     explicit = spec.agent.get("tools", [])
+     toolsets = spec.agent.get("toolsets", [])
+     if not isinstance(explicit, list) or not all(isinstance(name, str) for name in explicit):
+diff --git a/hermes-spec-work/tests/hermes_cli/__pycache__/test_explicit_worker_lanes.cpython-310.pyc b/tests/hermes_cli/__pycache__/test_explicit_worker_lanes.cpython-310.pyc
+new file mode 100644
+index 0000000..94f7d78
+Binary files /dev/null and b/tests/hermes_cli/__pycache__/test_explicit_worker_lanes.cpython-310.pyc differ
+diff --git a/hermes-spec-work/tests/hermes_cli/__pycache__/test_worker_lanes.cpython-310.pyc b/tests/hermes_cli/__pycache__/test_worker_lanes.cpython-310.pyc
+new file mode 100644
+index 0000000..2fa5665
+Binary files /dev/null and b/tests/hermes_cli/__pycache__/test_worker_lanes.cpython-310.pyc differ
+diff --git a/tests/hermes_cli/test_explicit_worker_lanes.py b/tests/hermes_cli/test_explicit_worker_lanes.py
+index d92590a..150bbb1 100644
+--- a/tests/hermes_cli/test_explicit_worker_lanes.py
++++ b/tests/hermes_cli/test_explicit_worker_lanes.py
+@@ -8,6 +8,8 @@ import pytest
+ from hermes_cli import config as config_mod
+ from hermes_cli import kanban_db as kb
+ import model_tools
++from hermes_cli import worker_catalogue as catalogue_mod
++from hermes_cli import worker_lanes as wl
+ from tools import kanban_tools
+ from hermes_cli.worker_catalogue import (
+     WorkerResolutionError,
+@@ -125,6 +127,45 @@ def test_task_persists_spec_event_and_run_metadata(tmp_path, managed_catalogue):
+     assert run_spec["workspace_id"].endswith(f":{task_id}:{claimed.current_run_id}")
+     assert run_spec["lease_id"] == claimed.claim_lock
+ 
++    env = wl.kanban_worker_env(claimed, str(tmp_path), board="default", base={})
++    for name in (
++        "HERMES_WORKER_SPEC",
++        "HERMES_WORKER_LANE",
++        "HERMES_WORKER_CATALOGUE_REVISION",
++        "HERMES_WORKSPACE_ID",
++        "HERMES_WORKSPACE_GENERATION",
++        "HERMES_WORKSPACE_LEASE_ID",
++        "HERMES_WORKER_MEMORY_DIR",
++        "HERMES_PROJECT_ID",
++        "HERMES_PROJECT_SOURCE_GENERATION",
++    ):
++        assert name not in env
++
++
++def test_current_worker_spec_is_loaded_and_fenced_by_durable_run(
++    tmp_path, monkeypatch, managed_catalogue
++):
++    db_path = tmp_path / "kanban.db"
++    with kb.connect(db_path) as conn:
++        task_id = kb.create_task(
++            conn, title="work", assignee="worker", board="default"
++        )
++        claimed = kb.claim_task(conn, task_id)
++    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
++    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
++    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
++    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
++    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", claimed.claim_lock)
++
++    loaded = catalogue_mod.load_current_worker_specification(required=True)
++    assert loaded.lane == "worker"
++    assert loaded.run_id == claimed.current_run_id
++    assert loaded.lease_id == claimed.claim_lock
++
++    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "stale")
++    with pytest.raises(WorkerResolutionError, match="worker_identity_stale"):
++        catalogue_mod.load_current_worker_specification(required=True)
++
+ 
+ def test_catalogue_change_creates_coherent_new_run_binding(tmp_path, managed_catalogue):
+     conn = kb.connect(tmp_path / "kanban.db")
+@@ -166,7 +207,9 @@ def test_worker_spec_overrides_behavior_without_mutating_base(monkeypatch, manag
+         workspace_generation=1,
+         lease_id="test:1",
+     )
+-    monkeypatch.setenv("HERMES_WORKER_SPEC", spec.to_json())
++    monkeypatch.setattr(
++        catalogue_mod, "load_current_worker_specification", lambda: spec
++    )
+     resolved = config_mod._apply_worker_spec_config(base_config)
+     assert resolved["model"]["default"] == "test/model"
+     assert resolved["agent"] == {"reasoning_effort": "high", "max_turns": 7}
+@@ -184,7 +227,9 @@ def test_worker_tool_ceiling_is_derived_only_from_frozen_spec(
+         workspace_generation=1,
+         lease_id="test:1",
+     )
+-    monkeypatch.setenv("HERMES_WORKER_SPEC", spec.to_json())
++    monkeypatch.setattr(
++        catalogue_mod, "load_current_worker_specification", lambda: spec
++    )
+     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
+ 
+     allowed = model_tools._worker_allowed_tools()
+diff --git a/hermes-spec-work/tools/__pycache__/memory_tool.cpython-310.pyc b/tools/__pycache__/memory_tool.cpython-310.pyc
+new file mode 100644
+index 0000000..ca3d050
+Binary files /dev/null and b/tools/__pycache__/memory_tool.cpython-310.pyc differ
+diff --git a/tools/memory_tool.py b/tools/memory_tool.py
+index bf4ae5b..3df2a41 100644
+--- a/tools/memory_tool.py
++++ b/tools/memory_tool.py
+@@ -52,12 +52,18 @@ logger = logging.getLogger(__name__)
+ # the default while trusted worker lanes can select a separate durable namespace.
+ def get_memory_dir() -> Path:
+     """Return the trusted lane namespace or profile-scoped memories directory."""
+-    worker_dir = os.environ.get("HERMES_WORKER_MEMORY_DIR")
+-    if worker_dir:
+-        path = Path(worker_dir)
+-        if not path.is_absolute():
+-            raise RuntimeError("HERMES_WORKER_MEMORY_DIR must be absolute")
+-        return path
++    from hermes_cli.worker_catalogue import load_current_worker_specification
++
++    worker_spec = load_current_worker_specification()
++    if worker_spec is not None and worker_spec.memory == "lane":
++        from hermes_cli import kanban_db as kb
++
++        return (
++            kb.kanban_home().parent
++            / "worker-memory"
++            / worker_spec.instance
++            / worker_spec.lane
++        )
+     return get_hermes_home() / "memories"
+ 
+ # Stable header prefixes for the system-prompt memory blocks rendered by

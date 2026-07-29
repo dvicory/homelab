@@ -14,10 +14,8 @@ import { BrokerDatabase } from "../dist/database.js"
 import { TaskRunActivations } from "../dist/task-run-activations.js"
 import { Environments } from "../dist/environments.js"
 import { Workspaces } from "../dist/workspaces.js"
-import { Registry } from "../dist/registry.js"
-import { makeTestLayer } from "./fakes.mjs"
+import { makeTestLayer, testTaskAuthority } from "./fakes.mjs"
 
-const policyDigest = "a".repeat(64)
 const run = async (stateDir, callback) => {
   const harness = makeTestLayer(stateDir, { workspaceHandoffEnabled: true })
   return Effect.runPromise(Effect.scoped(callback.pipe(Effect.provide(harness.layer))))
@@ -25,12 +23,17 @@ const run = async (stateDir, callback) => {
 
 const producer = (environmentKey = "producer", taskId = "task-a", runId = "run-a", createOutput = true) => Effect.gen(function* () {
   const workspaces = yield* Workspaces
-  const registry = yield* Registry
   const activations = yield* TaskRunActivations
   const acquired = yield* workspaces.acquire(environmentKey)
   const resolved = yield* workspaces.resolve(environmentKey, acquired.workspace.workspaceId, acquired.lease.leaseId)
-  yield* registry.bindAuthority({ environmentKey, profile: "test", executor: "hermes-gateway", authorityClass: "default", policyDigest, workspaceId: acquired.workspace.workspaceId, workspaceLeaseId: acquired.lease.leaseId })
-  yield* activations.activate({ environmentKey, taskId, runId, workspaceId: acquired.workspace.workspaceId, workspaceLeaseId: acquired.lease.leaseId, policyDigest })
+  yield* activations.activate({
+    environmentKey,
+    taskId,
+    runId,
+    ...testTaskAuthority(),
+    workspaceId: acquired.workspace.workspaceId,
+    workspaceLeaseId: acquired.lease.leaseId,
+  })
   if (createOutput) yield* Effect.promise(() => mkdir(path.join(resolved.workspacePath, "output")))
   return { acquired, resolved, environmentKey, taskId, runId }
 })

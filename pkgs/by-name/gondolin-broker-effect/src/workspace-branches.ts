@@ -1,7 +1,7 @@
 import { Context, Effect, Layer, Schema } from "effect";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { getOrBindDefaultAuthority } from "./authority.js";
+import { requireAuthorityBinding } from "./authority.js";
 import { BrokerConfig } from "./config.js";
 import { BrokerDatabase } from "./database.js";
 import { EnvironmentKey } from "./domain.js";
@@ -159,10 +159,9 @@ const make = Effect.gen(function* () {
           { operationId: request.operationId },
         );
       }
-      const sourceAuthority = yield* getOrBindDefaultAuthority(
+      const sourceAuthority = yield* requireAuthorityBinding(
         registry,
         config,
-        workspaces,
         request.sourceEnvironmentKey,
       );
       if (row === undefined) {

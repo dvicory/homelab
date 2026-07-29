@@ -43,7 +43,7 @@ const bind = (registry, environmentKey, overrides = {}) => Effect.gen(function* 
   })
 })
 
-test("proactive preparation binds defaults without a VM and skips approval for static policy", async () => {
+test("proactive preparation uses explicit authority without starting a VM", async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), "gondolin-effect-proactive-"))
   const harness = makeTestLayer(stateDir, {
     grantResolver: resolver,
@@ -59,6 +59,7 @@ test("proactive preparation binds defaults without a VM and skips approval for s
   await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const registry = yield* Registry
     const grants = yield* AccessGrants
+    yield* bind(registry, "task-proactive")
 
     const covered = yield* grants.prepare({
       environmentKey: "task-proactive",
@@ -98,6 +99,8 @@ test("a static hostname does not bypass pinned-private approval", async () => {
   })
   await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const grants = yield* AccessGrants
+    const registry = yield* Registry
+    yield* bind(registry, "task-private")
     const prepared = yield* grants.prepare({
       environmentKey: "task-private",
       capabilities: [{

@@ -39,10 +39,11 @@ to change those settings from a task.
 2. Write a self-contained task body with the objective, motivation, relevant
    context, constraints, acceptance criteria, and expected validation. Preserve
    any explicit limits the user gave Hermes.
-3. Every delegated Codex task uses its own project-backed worktree. Call
-   `kanban_create` with the exact lane assignee, the existing project slug, and
-   `workspace_kind="worktree"`. This isolates the task from canonical and other
-   task checkouts and gives it a deterministic branch.
+3. Every delegated Codex task receives its own project-backed worktree from the
+   selected lane and Project. Call `kanban_create` with the exact lane assignee
+   and existing Project slug. Do not send a workspace kind, path, provider,
+   permission, or other infrastructure mechanism; trusted dispatch derives
+   those from the lane and Project catalogues.
 4. For a read-only review of an existing Kanban task, first inspect that task
    with `kanban_show`, follow the generic Kanban parent-link guidance, and put
    the exact source branch or commit in the review body. The reviewer should
@@ -59,7 +60,6 @@ kanban_create(
   title="Design the cache invalidation boundary",
   assignee="<selected lane name>",
   project="existing-project",
-  workspace_kind="worktree",
   body="Why this is needed, current constraints, questions to answer, and the expected design deliverable."
 )
 
@@ -68,7 +68,6 @@ kanban_create(
   assignee="<selected read-only lane name>",
   parents=["<source task id>"],
   project="existing-project",
-  workspace_kind="worktree",
   body="Review scope, acceptance criteria, expected findings, and the exact source revision. Do not modify files."
 )
 
@@ -76,7 +75,6 @@ kanban_create(
   title="Implement bounded cache invalidation",
   assignee="<selected lane name>",
   project="existing-project",
-  workspace_kind="worktree",
   body="Why this is needed, scoped implementation requirements, acceptance criteria, and checks to run."
 )
 ```

@@ -1,0 +1,43 @@
+diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
+index f3974f4..3226b44 100644
+--- a/agent/prompt_builder.py
++++ b/agent/prompt_builder.py
+@@ -273,10 +273,16 @@ KANBAN_ORCHESTRATOR_GUIDANCE = (
+     "4. Report outcomes from authoritative task state. Claim success only when "
+     "the required tasks are `done`; report a blocker instead of working around "
+     "it in the live session.\n"
+-    "5. Use `kanban_comment` for relevant routing context. Never put secrets, "
++    "5. Your terminal, file, process, and sandbox tools address only the live "
++    "conversation environment. They cannot inspect, repair, clean, approve, or "
++    "verify a worker workspace. A worker path is descriptive, not an address "
++    "available to your tools; the same path such as `/workspace` may name a "
++    "different isolated environment. Use authoritative task events, comments, "
++    "and results instead. Do not claim filesystem state you cannot observe.\n"
++    "6. Use `kanban_comment` for relevant routing context. Never put secrets, "
+     "tokens, raw PII, host paths, or broker authority in board data; task history "
+     "is durable.\n"
+-    "6. When a downstream task must import a producer's selected broker output, "
++    "7. When a downstream task must import a producer's selected broker output, "
+     "create only that producer and include the downstream contract in its body. "
+     "The producer creates the one direct child with `inherit_parent_output=true` "
+     "before completion. Broker preparation freezes the producer manifest and the "
+diff --git a/tests/tools/test_kanban_role_boundaries.py b/tests/tools/test_kanban_role_boundaries.py
+index edae1a2..5a5ff8b 100644
+--- a/tests/tools/test_kanban_role_boundaries.py
++++ b/tests/tools/test_kanban_role_boundaries.py
+@@ -65,6 +65,15 @@ def test_kanban_orchestrator_guidance_forbids_worker_substitution():
+         KANBAN_ORCHESTRATOR_GUIDANCE
+     )
+     assert "Claim success only when" in KANBAN_ORCHESTRATOR_GUIDANCE
++    assert "address only the live conversation environment" in (
++        KANBAN_ORCHESTRATOR_GUIDANCE
++    )
++    assert "A worker path is descriptive, not an address" in (
++        KANBAN_ORCHESTRATOR_GUIDANCE
++    )
++    assert "Do not claim filesystem state you cannot observe" in (
++        KANBAN_ORCHESTRATOR_GUIDANCE
++    )
+ 
+ 
+ def test_kanban_worker_lifecycle_gate_excludes_orchestrator(monkeypatch):

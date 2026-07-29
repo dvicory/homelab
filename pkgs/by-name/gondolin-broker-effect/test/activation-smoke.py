@@ -59,6 +59,13 @@ policy = {
             },
         }
     },
+    "laneAuthorities": {
+        "default": {
+            "authorityClass": "default",
+            "workspaceProvider": "broker-scratch",
+            "maximumPermission": "workspace-write",
+        }
+    },
 }
 policy["policyDigest"] = hashlib.sha256(json.dumps(
     {key: value for key, value in policy.items() if key != "policyDigest"},
@@ -173,10 +180,7 @@ try:
 
     bound = request(control_socket_path, "/v1/control/authority/bind", {
         "environmentKey": "activation-environment",
-        "profile": "activation-test",
-        "executor": "hermes-gateway",
         "authorityClass": "default",
-        "policyDigest": policy["policyDigest"],
         "workspaceId": acquired["workspace"]["workspaceId"],
         "workspaceLeaseId": acquired["lease"]["leaseId"],
     })

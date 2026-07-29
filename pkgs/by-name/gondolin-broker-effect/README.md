@@ -307,7 +307,6 @@ Responses include `X-Content-Type-Options: nosniff`. The local socket is mode
 Only the control socket exposes:
 
 - `POST /v1/control/authority/bind`
-- `POST /v1/control/authority/bind-default`
 - `POST /v1/control/authority/status`
 - `POST /v1/control/access/prepare`
 - `POST /v1/control/access/decide`
@@ -315,9 +314,9 @@ Only the control socket exposes:
 - `POST /v1/control/grants/revoke`
 - `POST /v1/control/grants/revoke-environment`
 
-`bind` records `{environmentKey, profile, executor, authorityClass, policyDigest}` and rejects conflicting rebinding. `bind-default` accepts an already acquired `{environmentKey, workspaceId, leaseId}`, resolves that active lease, and conflict-safely installs the broker-configured default authority; callers cannot select its profile, executor, class, or policy digest. `ensure` uses the same broker defaults only when no trusted hook has already bound the key. Model-facing execution requests cannot select authority.
+`bind` accepts an already acquired `{environmentKey, authorityClass, workspaceId, workspaceLeaseId}` and records an explicit non-task authority. The broker supplies and persists its configured profile, executor, and policy digest; callers cannot override them. Task workers instead use `task-runs/activate`, which atomically validates the active private workspace lease, binds the requested policy worklane, and activates the exact task/run. `ensure`, access preparation, execution, and file operations reject missing or conflicting authority rather than installing defaults.
 
-`prepare` accepts an environment key, a closed capability batch, requested scope, optional bounded duration, and rationale. If the trusted key is not yet bound, preparation conflict-safely installs the broker-configured default authority without creating a VM. It canonicalizes and deduplicates capabilities, resolves the effective immutable Nix network policy, classifies addresses, and enforces the policy ceiling. A batch already covered by the immutable policy returns `active` without an access request, runtime grant, or approval prompt. Otherwise preparation coalesces compatible pending requests and applies denial cooldown and rolling prompt budgets; the response is `pending`, `existing-pending`, `active` through a matching remembered grant, or a stable structured error such as `approval.request_suppressed`.
+`prepare` accepts an explicitly bound environment key, a closed capability batch, requested scope, optional bounded duration, and rationale. It canonicalizes and deduplicates capabilities, resolves the effective immutable Nix network policy, classifies addresses, and enforces the policy ceiling. A batch already covered by the immutable policy returns `active` without an access request, runtime grant, or approval prompt. Otherwise preparation coalesces compatible pending requests and applies denial cooldown and rolling prompt budgets; the response is `pending`, `existing-pending`, `active` through a matching remembered grant, or a stable typed denial.
 
 Here “immutable” means fixed for the active Nix policy digest, not permanent across deployments. A `once` or expiring grant remains consumable or expirable when it supplies authority outside that baseline. A request cannot use a narrower dynamic scope to remove authority that Nix already grants; operators who require temporary-only access must omit that origin from the baseline.
 

@@ -25,6 +25,8 @@ _VALID_SCOPES = {"once", "task"}
 _APPROVAL_PRINCIPAL = "paired-user"
 
 _TASK_ENVIRONMENTS: dict[str, str] = {}
+_PROVISIONED_ENVIRONMENTS: set[str] = set()
+
 
 @dataclass(frozen=True)
 class BrokerProblem(Exception):
@@ -105,7 +107,6 @@ _REQUEST_PARAMETERS = {
             },
         },
         "requested_scope": {"enum": sorted(_VALID_SCOPES)},
-        "duration_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
         "rationale": {"type": "string", "minLength": 1, "maxLength": 2048},
     },
 }
@@ -165,6 +166,55 @@ def _bind_authority_context(
     if isinstance(session_id, str) and session_id:
         _SESSION_ENVIRONMENTS[session_id] = key
     return key, session_id if isinstance(session_id, str) else None
+
+
+def _is_durable_worker() -> bool:
+    return bool(
+        os.environ.get("HERMES_KANBAN_TASK", "").strip()
+        and os.environ.get("HERMES_KANBAN_RUN_ID", "").strip()
+    )
+
+
+def _provision_conversation_authority(key: str) -> None:
+    """Create the private workspace and default authority before first use."""
+    if _is_durable_worker() or key in _PROVISIONED_ENVIRONMENTS:
+        return
+    client = BrokerClient()
+    acquired = client.post(
+        "/v1/control/workspaces/acquire",
+        {"environmentKey": key},
+    )
+    workspace = acquired.get("workspace") if isinstance(acquired, dict) else None
+    lease = acquired.get("lease") if isinstance(acquired, dict) else None
+    workspace_id = workspace.get("workspaceId") if isinstance(workspace, dict) else None
+    lease_id = lease.get("leaseId") if isinstance(lease, dict) else None
+    if not isinstance(workspace_id, str) or not isinstance(lease_id, str):
+        raise BrokerProblem(
+            502,
+            "broker.invalid_response",
+            "sandbox broker returned an invalid workspace binding",
+            {},
+        )
+    client.post(
+        "/v1/control/authority/bind",
+        {
+            "environmentKey": key,
+            "authorityClass": "default",
+            "workspaceId": workspace_id,
+            "workspaceLeaseId": lease_id,
+        },
+    )
+    _PROVISIONED_ENVIRONMENTS.add(key)
+
+
+def _ensure_conversation_authority(
+    task_id: Any = None,
+    session_id: Any = None,
+) -> tuple[str, str | None]:
+    context = _bind_authority_context(task_id=task_id, session_id=session_id)
+    _provision_conversation_authority(context[0])
+    return context
+
 
 
 def _authority_context(kwargs: dict[str, Any]) -> tuple[str, str | None]:
@@ -237,8 +287,6 @@ def handle_request_access(args: dict[str, Any], **kwargs: Any) -> str:
             "requestedScope": args["requested_scope"],
             "rationale": args["rationale"],
         }
-        if "duration_seconds" in args:
-            payload["durationSeconds"] = args["duration_seconds"]
         prepared = client.post("/v1/control/access/prepare", payload)
         if prepared.get("state") in {"active", "existing-pending"}:
             return json.dumps({"ok": True, **prepared}, sort_keys=True)
@@ -269,8 +317,6 @@ def handle_request_access(args: dict[str, Any], **kwargs: Any) -> str:
             "scope": scope,
             "principal": _APPROVAL_PRINCIPAL,
         }
-        if scope == "timed" and "duration_seconds" in args:
-            decision["durationSeconds"] = args["duration_seconds"]
         activated = client.post("/v1/control/access/decide", decision)
         return json.dumps({
             "ok": True,
@@ -349,11 +395,11 @@ def _revoke_environment(key: str, scopes: list[str]) -> None:
 def _on_session_start(**kwargs: Any) -> None:
     session_id = kwargs.get("session_id")
     if isinstance(session_id, str) and session_id:
-        _bind_authority_context(session_id=session_id)
+        _ensure_conversation_authority(session_id=session_id)
 
 
 def _on_pre_tool_call(**kwargs: Any) -> None:
-    _bind_authority_context(
+    _ensure_conversation_authority(
         task_id=kwargs.get("task_id"),
         session_id=kwargs.get("session_id"),
     )
@@ -391,6 +437,8 @@ def _on_session_branch(**kwargs: Any) -> dict[str, Any]:
         clear_task_env_overrides(destination_session_id)
         raise
     _SESSION_ENVIRONMENTS[destination_session_id] = destination_key
+    _PROVISIONED_ENVIRONMENTS.add(source_key)
+    _PROVISIONED_ENVIRONMENTS.add(destination_key)
     return {"ok": True, "operation_id": prepared["operationId"]}
 
 
@@ -404,6 +452,7 @@ def _on_session_boundary(**kwargs: Any) -> None:
         for task_id, environment in list(_TASK_ENVIRONMENTS.items()):
             if environment == key:
                 _TASK_ENVIRONMENTS.pop(task_id, None)
+        _PROVISIONED_ENVIRONMENTS.discard(key)
     clear_task_env_overrides(session_id)
 
 

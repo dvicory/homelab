@@ -17,6 +17,7 @@ const vmSpec = {
   cpus: 1,
   workspaceHostPath: "/host-workspace",
   workspaceGuestPath: "/workspace",
+  workspaceReadOnly: false,
   sessionLabel: "test:environment:1",
   network: { mode: "deny-all", destinations: [] },
 }

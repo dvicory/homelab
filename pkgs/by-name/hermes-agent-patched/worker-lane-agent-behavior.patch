@@ -1,0 +1,492 @@
+diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
+index 98db75d..7d383a8 100644
+--- a/agent/prompt_builder.py
++++ b/agent/prompt_builder.py
+@@ -1880,6 +1880,17 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
+         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
+ 
+     soul_path = get_hermes_home() / "SOUL.md"
++    raw_worker_spec = os.environ.get("HERMES_WORKER_SPEC")
++    if raw_worker_spec:
++        from hermes_cli.worker_catalogue import WorkerSpecification
++
++        worker_spec = WorkerSpecification.from_json(raw_worker_spec)
++        if worker_spec.agent.get("soul"):
++            soul_path = Path(str(worker_spec.agent["soul"]))
++            if not soul_path.is_absolute():
++                raise RuntimeError(
++                    "worker_spec_invalid: agent.soul must be an absolute path"
++                )
+     if not soul_path.exists():
+         return None
+     try:
+diff --git a/hermes_cli/config.py b/hermes_cli/config.py
+index 947fdda..dc85038 100644
+--- a/hermes_cli/config.py
++++ b/hermes_cli/config.py
+@@ -7133,6 +7133,38 @@ def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
+     atomic_yaml_write(config_path, data, **kwargs)
+ 
+ 
++def _apply_worker_spec_config(config: Dict[str, Any]) -> Dict[str, Any]:
++    """Apply behavior-only overrides from a dispatcher-frozen worker spec."""
++    raw = os.environ.get("HERMES_WORKER_SPEC")
++    if not raw:
++        return config
++    from hermes_cli.worker_catalogue import WorkerSpecification
++    try:
++        worker_spec = WorkerSpecification.from_json(raw)
++    except Exception as exc:
++        raise RuntimeError("HERMES_WORKER_SPEC is invalid") from exc
++    spec = worker_spec.as_dict()
++    resolved = copy.deepcopy(config)
++    agent_spec = spec.get("agent") if isinstance(spec.get("agent"), dict) else {}
++    if agent_spec.get("model"):
++        resolved.setdefault("model", {})["default"] = str(agent_spec["model"])
++    if agent_spec.get("reasoningEffort"):
++        resolved.setdefault("agent", {})["reasoning_effort"] = str(agent_spec["reasoningEffort"])
++    execution = spec.get("execution") if isinstance(spec.get("execution"), dict) else {}
++    if execution.get("maxTurns"):
++        resolved.setdefault("agent", {})["max_turns"] = int(execution["maxTurns"])
++    memory_mode = worker_spec.memory
++    memory = resolved.setdefault("memory", {})
++    if memory_mode == "disabled":
++        memory["memory_enabled"] = False
++        memory["user_profile_enabled"] = False
++        memory["nudge_interval"] = 0
++    else:
++        memory["memory_enabled"] = True
++        memory["user_profile_enabled"] = True
++    return resolved
++
++
+ def load_config() -> Dict[str, Any]:
+     """Load configuration from ~/.hermes/config.yaml.
+ 
+@@ -7147,7 +7179,7 @@ def load_config() -> Dict[str, Any]:
+     defensive deepcopy — that path matters in agent-loop hot spots like
+     ``get_provider_request_timeout`` which is called once per API turn.
+     """
+-    return _load_config_impl(want_deepcopy=True)
++    return _apply_worker_spec_config(_load_config_impl(want_deepcopy=True))
+ 
+ 
+ def load_config_readonly() -> Dict[str, Any]:
+@@ -7170,7 +7202,7 @@ def load_config_readonly() -> Dict[str, Any]:
+     existing ``isinstance(x, dict)`` guards downstream keep working. The
+     safety guarantee is purely documented, not enforced — be careful.
+     """
+-    return _load_config_impl(want_deepcopy=False)
++    return _apply_worker_spec_config(_load_config_impl(want_deepcopy=False))
+ 
+ 
+ def write_platform_config_field(
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+index fac3b3b..4378b66 100644
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -8938,9 +8938,13 @@ def _default_spawn(
+ 
+     from hermes_cli.profiles import normalize_profile_name
+ 
+-    profile_arg = normalize_profile_name(task.assignee)
++    worker_spec = getattr(task, "_worker_specification", None)
++    profile_name = worker_spec.profile if worker_spec is not None else task.assignee
++    profile_arg = normalize_profile_name(profile_name)
+ 
+     prompt = f"work kanban task {task.id}"
++    if worker_spec is not None and worker_spec.agent.get("role"):
++        prompt = f"Role: {worker_spec.agent['role']}\n\n{prompt}"
+     # Build the shared HERMES_KANBAN_* worker contract once.
+     # ``kanban_worker_env`` (in worker_lanes) is the single source of truth
+     # for the env a spawned worker needs to converge on the dispatcher's
+@@ -9021,13 +9025,22 @@ def _default_spawn(
+     # accepts both forms (action='append' + comma-split), but
+     # per-name pairs are easier to read in `ps` output and avoid any
+     # quoting ambiguity if a skill name ever contains unusual chars.
+-    if task.skills:
+-        for sk in task.skills:
+-            if sk:
+-                cmd.extend(["--skills", sk])
+-    if task.model_override:
+-        cmd.extend(["-m", task.model_override])
+-    worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
++    selected_skills = (
++        worker_spec.agent.get("skills", []) if worker_spec is not None else task.skills
++    ) or []
++    for skill in selected_skills:
++        if skill:
++            cmd.extend(["--skills", str(skill)])
++    selected_model = (
++        worker_spec.agent.get("model") if worker_spec is not None else None
++    ) or task.model_override
++    if selected_model:
++        cmd.extend(["-m", str(selected_model)])
++    worker_toolsets = (
++        worker_spec.agent.get("toolsets", [])
++        if worker_spec is not None
++        else _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
++    )
+     if worker_toolsets:
+         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
+     cmd.extend([
+diff --git a/hermes_cli/worker_lanes.py b/hermes_cli/worker_lanes.py
+index bb01d34..93cd669 100644
+--- a/hermes_cli/worker_lanes.py
++++ b/hermes_cli/worker_lanes.py
+@@ -200,6 +200,43 @@ def kanban_worker_env(task, workspace, *, board=None, base=None) -> "dict[str, A
+         env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
+     if getattr(task, "tenant", None):
+         env["HERMES_TENANT"] = task.tenant
++    worker_spec = getattr(task, "_worker_specification", None)
++    if worker_spec is not None:
++        from hermes_cli.worker_catalogue import WorkerResolutionError
++
++        if worker_spec.task_id != task.id:
++            raise WorkerResolutionError(
++                "worker_spec_task_mismatch", "worker specification targets another task"
++            )
++        if worker_spec.run_id != getattr(task, "current_run_id", None):
++            raise WorkerResolutionError(
++                "worker_spec_run_mismatch", "worker specification targets another run"
++            )
++        if worker_spec.lease_id != getattr(task, "claim_lock", None):
++            raise WorkerResolutionError(
++                "worker_spec_lease_mismatch", "worker specification carries a stale lease"
++            )
++        if worker_spec.workspace_generation < 1:
++            raise WorkerResolutionError(
++                "workspace_generation_stale", "worker workspace generation is stale"
++            )
++        env["HERMES_WORKER_SPEC"] = worker_spec.to_json()
++        env["HERMES_WORKER_LANE"] = worker_spec.lane
++        env["HERMES_WORKER_CATALOGUE_REVISION"] = worker_spec.catalogue_revision
++        env["HERMES_WORKSPACE_ID"] = worker_spec.workspace_id
++        env["HERMES_WORKSPACE_GENERATION"] = str(worker_spec.workspace_generation)
++        env["HERMES_WORKSPACE_LEASE_ID"] = worker_spec.lease_id
++        env.pop("HERMES_WORKER_MEMORY_DIR", None)
++        if worker_spec.memory == "lane":
++            env["HERMES_WORKER_MEMORY_DIR"] = str(
++                kb.kanban_home().parent
++                / "worker-memory"
++                / worker_spec.instance
++                / worker_spec.lane
++            )
++        if worker_spec.project:
++            env["HERMES_PROJECT_ID"] = worker_spec.project
++            env["HERMES_PROJECT_SOURCE_GENERATION"] = worker_spec.source_generation
+     # Pin TERMINAL_CWD to the task's workspace so the worker's file tools and
+     # context-file loader anchor on the workspace, not whatever cwd the
+     # dispatching gateway happened to export. TERMINAL_CWD takes precedence
+diff --git a/model_tools.py b/model_tools.py
+index 57bba57..adc0092 100644
+--- a/model_tools.py
++++ b/model_tools.py
+@@ -37,6 +37,33 @@ logger = logging.getLogger(__name__)
+ # Tracks platform-bundle names already flagged in disabled_toolsets so the
+ # advisory (#33924) is logged once per name, not on every tool recompute.
+ _WARNED_DISABLED_BUNDLES: set = set()
++def _worker_allowed_tools() -> Optional[set[str]]:
++    """Derive the model-visible ceiling from the single frozen worker spec."""
++    raw = os.environ.get("HERMES_WORKER_SPEC")
++    if not raw:
++        return None
++    from hermes_cli.worker_catalogue import WorkerSpecification
++
++    spec = WorkerSpecification.from_json(raw)
++    explicit = spec.agent.get("tools", [])
++    toolsets = spec.agent.get("toolsets", [])
++    if not isinstance(explicit, list) or not all(isinstance(name, str) for name in explicit):
++        raise RuntimeError("worker_spec_invalid: agent.tools must be a string list")
++    if not isinstance(toolsets, list) or not all(isinstance(name, str) for name in toolsets):
++        raise RuntimeError("worker_spec_invalid: agent.toolsets must be a string list")
++    allowed = set(explicit)
++    for toolset_name in toolsets:
++        if not validate_toolset(toolset_name):
++            raise RuntimeError(
++                f"worker_spec_invalid: unknown worker toolset {toolset_name!r}"
++            )
++        allowed.update(resolve_toolset(toolset_name))
++    if os.environ.get("HERMES_KANBAN_TASK"):
++        allowed.update(resolve_toolset("kanban"))
++    allowed.update({"tool_search", "tool_describe", "tool_call"})
++    return allowed
++
++
+ 
+ 
+ # =============================================================================
+@@ -442,6 +469,10 @@ def _compute_tool_definitions(
+             elif not quiet_mode:
+                 print(f"⚠️  Unknown toolset: {toolset_name}")
+ 
++    worker_allowed = _worker_allowed_tools()
++    if worker_allowed is not None:
++        tools_to_include.intersection_update(worker_allowed)
++
+     # Plugin-registered tools are now resolved through the normal toolset
+     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()
+     # all check the tool registry for plugin-provided toolsets.  No bypass
+@@ -1069,6 +1100,17 @@ def handle_function_call(
+     Returns:
+         Function result as a JSON string.
+     """
++    worker_allowed = _worker_allowed_tools()
++    if worker_allowed is not None and function_name not in worker_allowed:
++        return json.dumps(
++            {
++                "error": (
++                    f"worker_tool_denied: {function_name!r} is outside the "
++                    "frozen worker specification"
++                )
++            },
++            ensure_ascii=False,
++        )
+     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
+     function_args = coerce_tool_args(function_name, function_args)
+     if not isinstance(function_args, dict):
+diff --git a/b/tests/hermes_cli/test_explicit_worker_lanes.py b/tests/hermes_cli/test_explicit_worker_lanes.py
+new file mode 100644
+index 0000000..d92590a
+--- /dev/null
++++ b/tests/hermes_cli/test_explicit_worker_lanes.py
+@@ -0,0 +1,213 @@
++from __future__ import annotations
++
++import hashlib
++import json
++
++import pytest
++
++from hermes_cli import config as config_mod
++from hermes_cli import kanban_db as kb
++import model_tools
++from tools import kanban_tools
++from hermes_cli.worker_catalogue import (
++    WorkerResolutionError,
++    load_worker_catalogue,
++    resolve_worker_specification,
++)
++
++
++def _hash(value):
++    return hashlib.sha256(
++        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
++    ).hexdigest()
++
++
++def _catalogue():
++    lanes = {
++        "worker": {
++            "description": "bounded worker",
++            "runtime": "hermes",
++            "profile": "default",
++            "agent": {"model": "test/model", "reasoningEffort": "high", "tools": ["terminal"]},
++            "memory": "disabled",
++            "workspace": {
++                "projectMode": "none",
++                "scratchProvider": "local-scratch",
++                "maximumPermission": "workspace-write",
++                "supportedSourceKinds": [],
++            },
++            "policy": {"worklane": "default"},
++            "execution": {"timeoutSeconds": 90, "maxTurns": 7},
++            "maxConcurrency": 2,
++        }
++    }
++    boards = {"default": {"allowedLanes": ["worker"], "allowedProjects": []}}
++    projects = {}
++    lane_revisions = {name: _hash(lane) for name, lane in lanes.items()}
++    project_revisions = {name: _hash(project) for name, project in projects.items()}
++    payload = {
++        "version": 1,
++        "instance": "test",
++        "workerLanes": lanes,
++        "laneRevisions": lane_revisions,
++        "boards": boards,
++        "projects": projects,
++        "projectRevisions": project_revisions,
++    }
++    revision = _hash(payload)
++    return {
++        "version": 1,
++        "instance": "test",
++        "revision": revision,
++        "lanes": lanes,
++        "laneRevisions": lane_revisions,
++        "boards": boards,
++        "projects": projects,
++        "projectRevisions": project_revisions,
++    }
++
++
++@pytest.fixture
++def managed_catalogue(monkeypatch):
++    holder = {"value": _catalogue()}
++    monkeypatch.setattr(
++        config_mod,
++        "load_config_readonly",
++        lambda: {"kanban": {"worker_catalogue": holder["value"]}},
++    )
++    return holder
++
++
++def test_catalogue_digest_and_resolution_are_fail_closed(managed_catalogue):
++    catalogue = load_worker_catalogue(required=True)
++    assert catalogue["instance"] == "test"
++    spec = resolve_worker_specification("worker", board="default")
++    assert spec.profile == "default"
++    assert spec.execution["timeoutSeconds"] == 90
++    assert spec.workspace_generation == 0
++
++    with pytest.raises(WorkerResolutionError, match="unknown_lane"):
++        resolve_worker_specification("default", board="default")
++    with pytest.raises(WorkerResolutionError, match="unknown_board"):
++        resolve_worker_specification("worker", board="other")
++
++    managed_catalogue["value"]["revision"] = "0" * 64
++    with pytest.raises(WorkerResolutionError, match="catalogue_revision_invalid"):
++        load_worker_catalogue(required=True)
++
++
++def test_task_persists_spec_event_and_run_metadata(tmp_path, managed_catalogue):
++    conn = kb.connect(tmp_path / "kanban.db")
++    task_id = kb.create_task(conn, title="work", assignee="worker", board="default")
++
++    spec = kb.get_task_worker_specification(conn, task_id)
++    assert spec is not None
++    assert spec.lane == "worker"
++    assert spec.task_id == task_id
++    assert spec.run_id is None
++    task = kb.get_task(conn, task_id)
++    assert task.workspace_kind == "scratch"
++    assert task.max_runtime_seconds == 90
++    assert task.goal_max_turns == 7
++
++    claimed = kb.claim_task(conn, task_id)
++    assert claimed is not None
++    run = conn.execute(
++        "SELECT metadata FROM task_runs WHERE id = ?", (claimed.current_run_id,)
++    ).fetchone()
++    metadata = json.loads(run["metadata"])
++    run_spec = metadata["worker_spec"]
++    assert run_spec["catalogue_revision"] == managed_catalogue["value"]["revision"]
++    assert run_spec["lane_revision"] == managed_catalogue["value"]["laneRevisions"]["worker"]
++    assert run_spec["task_id"] == task_id
++    assert run_spec["run_id"] == claimed.current_run_id
++    assert run_spec["workspace_generation"] == claimed.current_run_id
++    assert run_spec["workspace_id"].endswith(f":{task_id}:{claimed.current_run_id}")
++    assert run_spec["lease_id"] == claimed.claim_lock
++
++
++def test_catalogue_change_creates_coherent_new_run_binding(tmp_path, managed_catalogue):
++    conn = kb.connect(tmp_path / "kanban.db")
++    task_id = kb.create_task(conn, title="work", assignee="worker", board="default")
++    changed = _catalogue()
++    changed["lanes"]["worker"]["description"] = "changed"
++    changed["laneRevisions"]["worker"] = _hash(changed["lanes"]["worker"])
++    payload = {
++        "version": 1,
++        "instance": changed["instance"],
++        "workerLanes": changed["lanes"],
++        "laneRevisions": changed["laneRevisions"],
++        "boards": changed["boards"],
++        "projects": changed["projects"],
++        "projectRevisions": changed["projectRevisions"],
++    }
++    changed["revision"] = _hash(payload)
++    managed_catalogue["value"] = changed
++
++    claimed = kb.claim_task(conn, task_id)
++    assert claimed is not None
++    run_spec = kb.get_task_worker_specification(
++        conn, task_id, run_id=claimed.current_run_id
++    )
++    assert run_spec.catalogue_revision == changed["revision"]
++    assert run_spec.lane_revision == changed["laneRevisions"]["worker"]
++
++
++def test_worker_spec_overrides_behavior_without_mutating_base(monkeypatch, managed_catalogue):
++    base_config = {
++        "model": {"default": "base/model"},
++        "agent": {"reasoning_effort": "low", "max_turns": 20},
++        "memory": {"memory_enabled": True, "user_profile_enabled": True},
++    }
++    spec = resolve_worker_specification("worker", board="default").bind_run(
++        task_id="t_worker",
++        run_id=1,
++        workspace_id="default:local-scratch:t_worker:1",
++        workspace_generation=1,
++        lease_id="test:1",
++    )
++    monkeypatch.setenv("HERMES_WORKER_SPEC", spec.to_json())
++    resolved = config_mod._apply_worker_spec_config(base_config)
++    assert resolved["model"]["default"] == "test/model"
++    assert resolved["agent"] == {"reasoning_effort": "high", "max_turns": 7}
++    assert resolved["memory"]["memory_enabled"] is False
++    assert base_config["model"]["default"] == "base/model"
++
++
++def test_worker_tool_ceiling_is_derived_only_from_frozen_spec(
++    monkeypatch, managed_catalogue
++):
++    spec = resolve_worker_specification("worker", board="default").bind_run(
++        task_id="t_worker",
++        run_id=1,
++        workspace_id="default:local-scratch:t_worker:1",
++        workspace_generation=1,
++        lease_id="test:1",
++    )
++    monkeypatch.setenv("HERMES_WORKER_SPEC", spec.to_json())
++    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
++
++    allowed = model_tools._worker_allowed_tools()
++    assert "terminal" in allowed
++    assert set(("kanban_complete", "kanban_block")) <= allowed
++    assert "web_search" not in allowed
++
++
++def test_managed_schema_retains_assignee_and_hides_infrastructure(monkeypatch, managed_catalogue):
++    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
++    overrides = kanban_tools._kanban_create_schema_overrides()
++    parameters = overrides["parameters"]
++    assert parameters["required"] == ["title", "assignee"]
++    assert parameters["properties"]["assignee"]["enum"] == ["worker"]
++    assert "lane" not in parameters["properties"]
++    for field in ("workspace_kind", "workspace_path", "skills", "max_runtime_seconds"):
++        assert field not in parameters["properties"]
++
++
++def test_managed_handler_rejects_lane_alias_and_infrastructure(managed_catalogue):
++    result = kanban_tools._handle_create(
++        {"title": "work", "assignee": "worker", "workspace_path": "/tmp/escape"}
++    )
++    assert "do not accept infrastructure fields" in result
++    result = kanban_tools._handle_create({"title": "work", "lane": "worker"})
++    assert "do not accept infrastructure fields: lane" in result
+diff --git a/tools/memory_tool.py b/tools/memory_tool.py
+index f5b866b..bf4ae5b 100644
+--- a/tools/memory_tool.py
++++ b/tools/memory_tool.py
+@@ -48,12 +48,16 @@ except ImportError:
+ 
+ logger = logging.getLogger(__name__)
+ 
+-# Where memory files live — resolved dynamically so profile overrides
+-# (HERMES_HOME env var changes) are always respected.  The old module-level
+-# constant was cached at import time and could go stale if a profile switch
+-# happened after the first import.
++# Where memory files live — resolved dynamically so profile overrides remain
++# the default while trusted worker lanes can select a separate durable namespace.
+ def get_memory_dir() -> Path:
+-    """Return the profile-scoped memories directory."""
++    """Return the trusted lane namespace or profile-scoped memories directory."""
++    worker_dir = os.environ.get("HERMES_WORKER_MEMORY_DIR")
++    if worker_dir:
++        path = Path(worker_dir)
++        if not path.is_absolute():
++            raise RuntimeError("HERMES_WORKER_MEMORY_DIR must be absolute")
++        return path
+     return get_hermes_home() / "memories"
+ 
+ # Stable header prefixes for the system-prompt memory blocks rendered by

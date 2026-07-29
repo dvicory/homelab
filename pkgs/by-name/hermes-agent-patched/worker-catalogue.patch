@@ -1,0 +1,340 @@
+diff --git a/b/hermes_cli/worker_catalogue.py b/hermes_cli/worker_catalogue.py
+new file mode 100644
+index 0000000..02741db
+--- /dev/null
++++ b/hermes_cli/worker_catalogue.py
+@@ -0,0 +1,334 @@
++"""Trusted worker-lane catalogue and immutable task-run worker specifications."""
++from __future__ import annotations
++
++import hashlib
++import json
++from dataclasses import dataclass, replace
++from typing import Any, Mapping, Optional
++
++
++class WorkerResolutionError(ValueError):
++    """Stable fail-closed worker resolution failure."""
++
++    def __init__(self, code: str, message: str):
++        self.code = code
++        super().__init__(f"{code}: {message}")
++
++
++def _digest(value: Any) -> str:
++    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
++    return hashlib.sha256(canonical.encode()).hexdigest()
++
++
++def _mapping(value: Any, code: str, field: str) -> Mapping[str, Any]:
++    if not isinstance(value, dict):
++        raise WorkerResolutionError(code, f"{field} must be an object")
++    return value
++
++
++@dataclass(frozen=True)
++class WorkerSpecification:
++    instance: str
++    catalogue_revision: str
++    lane: str
++    lane_revision: str
++    board: str
++    project: Optional[str]
++    project_revision: Optional[str]
++    source_generation: Optional[str]
++    runtime: str
++    profile: Optional[str]
++    plugin: Optional[str]
++    provider: str
++    permission: str
++    workspace_id: Optional[str]
++    workspace_generation: int
++    lease_id: Optional[str]
++    policy_revision: str
++    agent_revision: str
++    agent: Mapping[str, Any]
++    memory: str
++    memory_namespace: Optional[str]
++    workspace: Mapping[str, Any]
++    policy: Mapping[str, Any]
++    execution: Mapping[str, Any]
++    max_concurrency: int
++    task_id: Optional[str] = None
++    run_id: Optional[int] = None
++
++    def bind_task(self, task_id: str) -> "WorkerSpecification":
++        if not task_id:
++            raise WorkerResolutionError("worker_spec_incomplete", "task id is required")
++        return replace(self, task_id=str(task_id))
++
++    def bind_run(
++        self,
++        *,
++        task_id: str,
++        run_id: int,
++        workspace_id: str,
++        workspace_generation: int,
++        lease_id: str,
++    ) -> "WorkerSpecification":
++        if not task_id or int(run_id) < 1 or not workspace_id or not lease_id:
++            raise WorkerResolutionError("worker_spec_incomplete", "task-run workspace binding is incomplete")
++        if int(workspace_generation) < 1:
++            raise WorkerResolutionError("workspace_generation_stale", "workspace generation must be positive")
++        return replace(
++            self,
++            task_id=str(task_id),
++            run_id=int(run_id),
++            workspace_id=str(workspace_id),
++            workspace_generation=int(workspace_generation),
++            lease_id=str(lease_id),
++        )
++
++    def as_dict(self) -> dict[str, Any]:
++        return {
++            "version": 1,
++            "instance": self.instance,
++            "catalogue_revision": self.catalogue_revision,
++            "lane": self.lane,
++            "lane_revision": self.lane_revision,
++            "board": self.board,
++            "project": self.project,
++            "project_revision": self.project_revision,
++            "source_generation": self.source_generation,
++            "runtime": self.runtime,
++            "profile": self.profile,
++            "plugin": self.plugin,
++            "provider": self.provider,
++            "permission": self.permission,
++            "workspace_id": self.workspace_id,
++            "workspace_generation": self.workspace_generation,
++            "lease_id": self.lease_id,
++            "policy_revision": self.policy_revision,
++            "agent_revision": self.agent_revision,
++            "agent": dict(self.agent),
++            "memory": self.memory,
++            "memory_namespace": self.memory_namespace,
++            "workspace": dict(self.workspace),
++            "policy": dict(self.policy),
++            "execution": dict(self.execution),
++            "max_concurrency": self.max_concurrency,
++            "task_id": self.task_id,
++            "run_id": self.run_id,
++        }
++
++    def to_json(self) -> str:
++        return json.dumps(self.as_dict(), sort_keys=True, separators=(",", ":"))
++
++    @classmethod
++    def from_json(cls, value: str) -> "WorkerSpecification":
++        try:
++            data = json.loads(value)
++        except (TypeError, json.JSONDecodeError) as exc:
++            raise WorkerResolutionError("worker_spec_invalid", "worker specification is not valid JSON") from exc
++        if not isinstance(data, dict) or data.get("version") != 1:
++            raise WorkerResolutionError("worker_spec_invalid", "unsupported worker specification version")
++        try:
++            return cls(
++                instance=str(data["instance"]),
++                catalogue_revision=str(data["catalogue_revision"]),
++                lane=str(data["lane"]),
++                lane_revision=str(data["lane_revision"]),
++                board=str(data["board"]),
++                project=str(data["project"]) if data.get("project") is not None else None,
++                project_revision=str(data["project_revision"]) if data.get("project_revision") is not None else None,
++                source_generation=str(data["source_generation"]) if data.get("source_generation") is not None else None,
++                runtime=str(data["runtime"]),
++                profile=str(data["profile"]) if data.get("profile") is not None else None,
++                plugin=str(data["plugin"]) if data.get("plugin") is not None else None,
++                provider=str(data["provider"]),
++                permission=str(data["permission"]),
++                workspace_id=str(data["workspace_id"]) if data.get("workspace_id") is not None else None,
++                workspace_generation=int(data["workspace_generation"]),
++                lease_id=str(data["lease_id"]) if data.get("lease_id") is not None else None,
++                policy_revision=str(data["policy_revision"]),
++                agent_revision=str(data["agent_revision"]),
++                agent=_mapping(data.get("agent"), "worker_spec_invalid", "agent"),
++                memory=str(data["memory"]),
++                memory_namespace=str(data["memory_namespace"]) if data.get("memory_namespace") is not None else None,
++                workspace=_mapping(data.get("workspace"), "worker_spec_invalid", "workspace"),
++                policy=_mapping(data.get("policy"), "worker_spec_invalid", "policy"),
++                execution=_mapping(data.get("execution"), "worker_spec_invalid", "execution"),
++                max_concurrency=int(data["max_concurrency"]),
++                task_id=str(data["task_id"]) if data.get("task_id") is not None else None,
++                run_id=int(data["run_id"]) if data.get("run_id") is not None else None,
++            )
++        except (KeyError, TypeError, ValueError) as exc:
++            raise WorkerResolutionError("worker_spec_invalid", "worker specification is incomplete") from exc
++
++
++def _catalogue_config() -> Optional[dict[str, Any]]:
++    from hermes_cli.config import load_config_readonly
++
++    config = load_config_readonly()
++    kanban = config.get("kanban") if isinstance(config, dict) else None
++    if not isinstance(kanban, dict):
++        return None
++    value = kanban.get("worker_catalogue")
++    return value if isinstance(value, dict) else None
++
++
++def load_worker_catalogue(*, required: bool = False) -> Optional[dict[str, Any]]:
++    value = _catalogue_config()
++    if value is None:
++        if required:
++            raise WorkerResolutionError("catalogue_missing", "kanban.worker_catalogue is not configured")
++        return None
++    version = value.get("version")
++    revision = value.get("revision")
++    instance = value.get("instance")
++    lanes = value.get("lanes")
++    lane_revisions = value.get("laneRevisions")
++    boards = value.get("boards")
++    projects = value.get("projects")
++    project_revisions = value.get("projectRevisions")
++    if version != 1 or not isinstance(instance, str) or not instance:
++        raise WorkerResolutionError("catalogue_invalid", "worker catalogue header is invalid")
++    for name, item in (
++        ("lanes", lanes),
++        ("laneRevisions", lane_revisions),
++        ("boards", boards),
++        ("projects", projects),
++        ("projectRevisions", project_revisions),
++    ):
++        if not isinstance(item, dict):
++            raise WorkerResolutionError("catalogue_invalid", f"worker catalogue {name} must be an object")
++    if set(lane_revisions) != set(lanes) or any(lane_revisions[name] != _digest(lane) for name, lane in lanes.items()):
++        raise WorkerResolutionError("lane_revision_invalid", "worker lane revisions do not match their declarations")
++    if set(project_revisions) != set(projects) or any(project_revisions[name] != _digest(project) for name, project in projects.items()):
++        raise WorkerResolutionError("project_revision_invalid", "Project revisions do not match their declarations")
++    canonical = {
++        "version": version,
++        "instance": instance,
++        "workerLanes": lanes,
++        "laneRevisions": lane_revisions,
++        "boards": boards,
++        "projects": projects,
++        "projectRevisions": project_revisions,
++    }
++    if not isinstance(revision, str) or revision != _digest(canonical):
++        raise WorkerResolutionError("catalogue_revision_invalid", "worker catalogue digest does not match its contents")
++    return value
++
++
++def catalogue_lane_names(*, board: Optional[str] = None) -> list[str]:
++    catalogue = load_worker_catalogue()
++    if catalogue is None:
++        return []
++    lanes = catalogue["lanes"]
++    if board is None:
++        return sorted(lanes)
++    board_spec = catalogue["boards"].get(board)
++    if not isinstance(board_spec, dict):
++        return []
++    return sorted(name for name in board_spec.get("allowedLanes", []) if name in lanes)
++
++
++def resolve_worker_specification(
++    lane_name: str,
++    *,
++    board: str,
++    project: Optional[str] = None,
++) -> WorkerSpecification:
++    catalogue = load_worker_catalogue(required=True)
++    assert catalogue is not None
++    lane_name = str(lane_name or "").strip().lower()
++    lane = catalogue["lanes"].get(lane_name)
++    if not isinstance(lane, dict):
++        raise WorkerResolutionError("unknown_lane", f"worker lane {lane_name!r} is not declared")
++    board_spec = catalogue["boards"].get(board)
++    if not isinstance(board_spec, dict):
++        raise WorkerResolutionError("unknown_board", f"board {board!r} is not declared")
++    if lane_name not in board_spec.get("allowedLanes", []):
++        raise WorkerResolutionError("lane_not_allowed", f"lane {lane_name!r} is not allowed on board {board!r}")
++    workspace = _mapping(lane.get("workspace"), "catalogue_invalid", f"lane {lane_name} workspace")
++    project_mode = workspace.get("projectMode")
++    project = str(project).strip() if project is not None else None
++    if not project and project_mode != "none":
++        project = board_spec.get("defaultProject") or None
++    if project_mode == "required" and not project:
++        raise WorkerResolutionError("project_required", f"lane {lane_name!r} requires a Project")
++    if project_mode == "none" and project:
++        raise WorkerResolutionError("project_forbidden", f"lane {lane_name!r} does not accept a Project")
++
++    project_spec = None
++    project_revision = None
++    permission = "none"
++    provider = workspace.get("scratchProvider")
++    if project:
++        project_spec = catalogue["projects"].get(project)
++        if not isinstance(project_spec, dict):
++            raise WorkerResolutionError("unknown_project", f"Project {project!r} is not declared")
++        if project not in board_spec.get("allowedProjects", []):
++            raise WorkerResolutionError("project_not_allowed", f"Project {project!r} is not allowed on board {board!r}")
++        permission = project_spec.get("laneAccess", {}).get(lane_name)
++        if permission not in ("read-only", "workspace-write"):
++            raise WorkerResolutionError("project_access_denied", f"lane {lane_name!r} has no access to Project {project!r}")
++        ranks = {"none": 0, "read-only": 1, "workspace-write": 2}
++        maximum = workspace.get("maximumPermission")
++        if maximum not in ranks or ranks[permission] > ranks[maximum]:
++            raise WorkerResolutionError("permission_conflict", f"Project permission exceeds lane {lane_name!r} ceiling")
++        source = _mapping(project_spec.get("source"), "catalogue_invalid", f"Project {project} source")
++        if source.get("type") not in workspace.get("supportedSourceKinds", []):
++            raise WorkerResolutionError("source_kind_unsupported", f"lane {lane_name!r} cannot use Project source kind {source.get('type')!r}")
++        provider = workspace.get("projectProvider")
++        project_revision = catalogue["projectRevisions"][project]
++    if not isinstance(provider, str) or not provider:
++        raise WorkerResolutionError("provider_missing", f"lane {lane_name!r} has no workspace provider")
++
++    runtime = str(lane.get("runtime") or "")
++    profile = lane.get("profile")
++    plugin = lane.get("plugin")
++    if runtime == "hermes" and not profile:
++        raise WorkerResolutionError("profile_missing", f"Hermes lane {lane_name!r} has no backing profile")
++    if runtime == "external" and not plugin:
++        raise WorkerResolutionError("plugin_missing", f"external lane {lane_name!r} has no plugin")
++    if runtime not in ("hermes", "external"):
++        raise WorkerResolutionError("runtime_unsupported", f"worker runtime {runtime!r} is unsupported")
++
++    agent = _mapping(lane.get("agent", {}), "catalogue_invalid", "agent")
++    policy = _mapping(lane.get("policy", {}), "catalogue_invalid", "policy")
++    memory = str(lane.get("memory") or "disabled")
++    if memory not in ("disabled", "lane", "shared-profile"):
++        raise WorkerResolutionError("memory_mode_unsupported", f"worker memory mode {memory!r} is unsupported")
++    memory_namespace = None
++    if memory == "lane":
++        memory_namespace = f"lane:{lane_name}"
++    elif memory == "shared-profile":
++        if not profile:
++            raise WorkerResolutionError("memory_profile_missing", "shared-profile memory requires a profile")
++        memory_namespace = f"profile:{profile}"
++
++    resolved_workspace = dict(workspace)
++    if project_spec is not None:
++        resolved_workspace["projectSource"] = project_spec["source"]
++    return WorkerSpecification(
++        instance=str(catalogue["instance"]),
++        catalogue_revision=str(catalogue["revision"]),
++        lane=lane_name,
++        lane_revision=str(catalogue["laneRevisions"][lane_name]),
++        board=board,
++        project=project,
++        project_revision=project_revision,
++        source_generation=project_revision,
++        runtime=runtime,
++        profile=str(profile) if profile else None,
++        plugin=str(plugin) if plugin else None,
++        provider=provider,
++        permission=str(permission),
++        workspace_id=None,
++        workspace_generation=0,
++        lease_id=None,
++        policy_revision=_digest(policy),
++        agent_revision=_digest(agent),
++        agent=agent,
++        memory=memory,
++        memory_namespace=memory_namespace,
++        workspace=resolved_workspace,
++        policy=policy,
++        execution=_mapping(lane.get("execution", {}), "catalogue_invalid", "execution"),
++        max_concurrency=int(lane.get("maxConcurrency") or 1),
++    )
