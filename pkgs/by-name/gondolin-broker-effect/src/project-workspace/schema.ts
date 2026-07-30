@@ -52,7 +52,7 @@ export const initializeProjectWorkspaceSchema = (database: BrokerDatabaseService
         source_revision TEXT NOT NULL CHECK (length(source_revision) = 64),
         provider_revision TEXT NOT NULL CHECK (length(provider_revision) = 64),
         resolved_revision TEXT NOT NULL,
-        adapter_revision TEXT NOT NULL CHECK (length(adapter_revision) = 64),
+        adapter_revision TEXT NOT NULL CHECK (adapter_revision = '' OR length(adapter_revision) = 64),
         policy_digest TEXT NOT NULL CHECK (length(policy_digest) = 64),
         state TEXT NOT NULL CHECK (state IN ('resolving','ready','failed')),
         failure_reason TEXT,

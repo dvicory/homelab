@@ -131,6 +131,9 @@ export const ActivateTaskRunRequest = Schema.Struct({
   ...TaskRunAuthorityFacts.fields,
   workspaceId: WorkspaceId,
   workspaceLeaseId: WorkspaceLeaseId,
+  inputPreparationId: Schema.optional(Identifier),
+  inputGeneration: Schema.optional(PositiveInt),
+  inputDigest: Schema.optional(Revision),
 });
 export type ActivateTaskRunRequest = typeof ActivateTaskRunRequest.Type;
 
@@ -169,6 +172,17 @@ export const StatusRequest = Schema.Struct({
   environmentKey: EnvironmentKey,
 });
 export type StatusRequest = typeof StatusRequest.Type;
+
+export const MarkWorkspaceHandoffsReclaimableRequest = Schema.Struct({
+  handoffIds: Schema.Array(Identifier).pipe(Schema.maxItems(256)),
+});
+export type MarkWorkspaceHandoffsReclaimableRequest = typeof MarkWorkspaceHandoffsReclaimableRequest.Type;
+
+export const ReleaseTaskRunInputsRequest = Schema.Struct({
+  environmentKey: EnvironmentKey,
+  taskId: Identifier,
+});
+export type ReleaseTaskRunInputsRequest = typeof ReleaseTaskRunInputsRequest.Type;
 
 export const ExecRequest = Schema.Struct({
   environmentKey: EnvironmentKey,

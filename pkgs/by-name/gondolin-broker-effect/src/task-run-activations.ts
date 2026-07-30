@@ -8,9 +8,9 @@ import type {
   TaskRunAuthority,
   TaskRunIdentity,
 } from "./domain.js";
-import { BrokerError, brokerError } from "./errors.js";
 import { Registry } from "./registry.js";
-
+import { BrokerError, brokerError } from "./errors.js";
+import { InputPreparations } from "./task-run-inputs/service.js";
 export type TaskRunActivationState = "active" | "consumed" | "superseded";
 
 export interface TaskRunActivationRecord {
@@ -151,6 +151,7 @@ const make = Effect.gen(function* () {
   }
   const database = yield* BrokerDatabase;
   yield* Registry;
+  const inputPreparations = yield* InputPreparations;
   const db = database.connection;
 
 
@@ -234,8 +235,9 @@ const make = Effect.gen(function* () {
   const activate = (
     request: ActivateTaskRunRequest,
   ): Effect.Effect<TaskRunActivationResult, BrokerError> =>
-    Effect.try({
-      try: () => database.transaction(() => {
+    inputPreparations.validateActivation(request).pipe(
+      Effect.andThen(Effect.try({
+        try: () => database.transaction(() => {
         if (!(request.authorityClass in config.policyFile.worklanes)) {
           throw brokerError("run_activation.conflict", "task-run authority class is not configured", {
             authorityClass: request.authorityClass,
@@ -486,9 +488,10 @@ const make = Effect.gen(function* () {
           activation: fromRow(byRun.get(request.runId) as ActivationRow),
           generationsToClose: [...closeReferences.values()],
         };
-      }),
-      catch: (error) => activationFailure("activation", error),
-    });
+        }),
+        catch: (error) => activationFailure("activation", error),
+      })),
+    );
 
   const validate = (
     environmentKey: string,

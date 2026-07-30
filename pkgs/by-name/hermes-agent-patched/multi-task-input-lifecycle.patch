@@ -1,0 +1,439 @@
+From bcf4d59fa52653d1fbb245cf2c202d7c2bbd87a1 Mon Sep 17 00:00:00 2001
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Sat, 1 Aug 2026 02:00:00 -0700
+Subject: [PATCH] feat(workspaces): prepare and retire immutable task inputs
+
+Prepare exact input generations before broker activation, pass opaque handoff bindings through the trusted Gondolin control client, release destination references on finalization or archive, and mark producer handoffs reclaimable only after archive.
+
+Startup reconciliation replays missed archive pushes; no model-facing API receives handoff, mount, lease, or provider selectors.
+---
+diff --git a/hermes_cli/kanban.py b/hermes_cli/kanban.py
+index c6f9688..4258437 100644
+--- a/hermes_cli/kanban.py
++++ b/hermes_cli/kanban.py
+@@ -17,6 +17,7 @@ from __future__ import annotations
+ import argparse
+ import contextlib
+ import json
++import logging
+ import os
+ import shlex
+ import sys
+@@ -29,6 +30,10 @@ from hermes_cli import kanban_swarm as ks
+ from hermes_cli.profiles import get_active_profile_name
+ 
+ 
++_log = logging.getLogger(__name__)
++_CONTROL_ENV = "GONDOLIN_EFFECT_CONTROL_SOCKET"
++
++
+ # ---------------------------------------------------------------------------
+ # Small formatting helpers
+ # ---------------------------------------------------------------------------
+@@ -2214,6 +2219,67 @@ def _cmd_promote(args: argparse.Namespace) -> int:
+     return 0 if not failed else 1
+ 
+ 
++def _reclaim_archived_broker_task(
++    conn: Any, task_id: str
++) -> None:
++    """Best-effort broker cleanup after archiving a broker workspace task."""
++    endpoint = os.environ.get(_CONTROL_ENV, "").strip()
++    if not endpoint:
++        return
++    task = kb.get_task(conn, task_id)
++    if task is None or task.workspace_kind != "broker":
++        return
++    board = kb._board_for_connection(conn)
++    try:
++        from tools.environments.gondolin import (
++            BrokerClient,
++            broker_environment_key,
++        )
++        client = BrokerClient(endpoint, timeout=30.0)
++    except Exception as exc:
++        _log.warning("archive broker reclaim setup failed for %s: %s", task_id, exc)
++        return
++    try:
++        try:
++            client.release_task_run_inputs(
++                environment_key=broker_environment_key(task_id),
++                board=board,
++                task_id=task_id,
++            )
++        except Exception as exc:
++            _log.warning("archive broker input release failed for %s: %s", task_id, exc)
++
++        handoff_ids: list[str] = []
++        try:
++            completed_runs = kb.list_runs(
++                conn,
++                task_id,
++                include_active=False,
++                state_type="outcome",
++                state_name="completed",
++            )
++            seen: set[str] = set()
++            for run in completed_runs:
++                capture = kb.get_workspace_capture(conn, task_id, run_id=run.id)
++                if not capture:
++                    continue
++                handoff_id = capture.get("handoff_id", capture.get("handoffId"))
++                if handoff_id and str(handoff_id) not in seen:
++                    seen.add(str(handoff_id))
++                    handoff_ids.append(str(handoff_id))
++        except Exception as exc:
++            _log.warning("archive broker capture lookup failed for %s: %s", task_id, exc)
++        try:
++            client.mark_handoffs_reclaimable(handoff_ids)
++        except Exception as exc:
++            _log.warning("archive broker handoff reclaim failed for %s: %s", task_id, exc)
++    finally:
++        try:
++            client.close()
++        except Exception as exc:
++            _log.warning("archive broker client close failed for %s: %s", task_id, exc)
++
++
+ def _cmd_archive(args: argparse.Namespace) -> int:
+     ids = list(args.task_ids or [])
+     purge_ids = list(getattr(args, "purge_ids", None) or [])
+@@ -2239,6 +2305,7 @@ def _cmd_archive(args: argparse.Namespace) -> int:
+                 print(f"cannot archive {tid}", file=sys.stderr)
+             else:
+                 print(f"Archived {tid}")
++                _reclaim_archived_broker_task(conn, tid)
+     return 0 if not failed else 1
+ 
+ 
+diff --git a/plugins/workspace-service/__init__.py b/plugins/workspace-service/__init__.py
+index 1d47213..235d252 100644
+--- a/plugins/workspace-service/__init__.py
++++ b/plugins/workspace-service/__init__.py
+@@ -198,6 +198,77 @@ def _bind_source_generation(conn: Any, client: BrokerClient, task_id: str, run_i
+     return rebound
+ 
+ 
++_reconciled_boards: set[str] = set()
++
++
++def _push_archive_reclaim(conn: Any, client: BrokerClient, board: str, task_id: str) -> None:
++    """Best-effort broker pushes for one archived task.
++
++    Releases any input preparations the task held as a destination and marks
++    every handoff it produced reclaimable.  Idempotent on the broker side.
++    """
++    try:
++        client.release_task_run_inputs(
++            environment_key=broker_environment_key(task_id),
++            board=board,
++            task_id=task_id,
++        )
++    except Exception:
++        pass
++    handoff_ids: list[str] = []
++    for event in kb._internal_events_for(conn, task_id, "workspace_capture"):
++        payload = event.payload if isinstance(event.payload, dict) else {}
++        handoff_id = payload.get("handoff_id")
++        if isinstance(handoff_id, str) and handoff_id:
++            handoff_ids.append(handoff_id)
++    if handoff_ids:
++        try:
++            client.mark_handoffs_reclaimable(handoff_ids)
++        except Exception:
++            pass
++
++
++def _reconcile_archived_once(conn: Any, client: BrokerClient, board: str) -> None:
++    """Re-push archive reclaim for every archived capture-holding task once.
++
++    Closes gaps left by archives made while the broker or control socket was
++    unreachable; everything derives from durable kanban records.
++    """
++    if board in _reconciled_boards:
++        return
++    _reconciled_boards.add(board)
++    try:
++        rows = conn.execute(
++            "SELECT DISTINCT task_id FROM task_events "
++            "WHERE kind = 'workspace_capture' AND task_id IN "
++            "(SELECT id FROM tasks WHERE status = 'archived')"
++        ).fetchall()
++        for row in rows:
++            _push_archive_reclaim(conn, client, board, row[0])
++    except Exception:
++        _reconciled_boards.discard(board)
++
++
++def _input_generation_for(conn: Any, task_id: str, run_id: int) -> Any:
++    """Resolve the pinned input generation, tolerating pre-input-edge schemas.
++
++    A kanban database created before input edges existed cannot contain
++    ``inputs_from`` edges, so missing tables mean "no inputs" rather than an
++    error.  Once the tables exist the helpers stay strict.
++    """
++    import sqlite3 as _sqlite3
++
++    try:
++        generation = kb.get_task_input_generation(conn, task_id)
++        if generation is None and kb.task_has_input_edges(conn, task_id):
++            generation = kb.resolve_task_input_generation(conn, task_id, run_id=run_id)
++        return generation
++    except _sqlite3.OperationalError as exc:
++        if "no such table" not in str(exc):
++            raise
++        return None
++
++
+ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[str, bool]:
+     if not _enabled():
+         raise RuntimeError("workspace handoff is disabled")
+@@ -205,6 +276,7 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
+     client = _client()
+     try:
+         with contextlib.closing(kb.connect(board=board)) as conn:
++            _reconcile_archived_once(conn, client, board)
+             task = kb.get_task(conn, task_id)
+             if task is None or task.workspace_kind != "broker" or task.status != "running":
+                 raise RuntimeError("workspace destination is stale")
+@@ -217,7 +289,37 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
+                 conn, client, task_id, int(run_id), specification
+             )
+             authority = _authority_for_specification(specification)
++            generation = _input_generation_for(conn, task_id, int(run_id))
+         destination_key = broker_environment_key(task_id)
++        preparation_id = None
++        if generation is not None:
++            workspace_contract = specification.workspace
++            limits = workspace_contract.get("inputs") if isinstance(workspace_contract, dict) else None
++            if not isinstance(limits, dict):
++                raise RuntimeError(
++                    "worker specification lane lacks immutable input capability"
++                )
++            preparation = client.prepare_task_run_inputs(
++                board=board,
++                environment_key=destination_key,
++                task_id=task_id,
++                run_id=int(run_id),
++                generation=int(generation["generation"]),
++                digest=str(generation["digest"]),
++                lane=specification.lane,
++                lane_revision=specification.lane_revision,
++                policy_revision=specification.policy_revision,
++                limits=limits,
++                inputs=[
++                    {
++                        "producerTaskId": str(binding["producerTaskId"]),
++                        "producerRunId": int(binding["producerRunId"]),
++                        "handoffId": str(binding["handoffId"]),
++                    }
++                    for binding in generation["bindings"]
++                ],
++            )
++            preparation_id = str(preparation["preparationId"])
+         binding = client.acquire_workspace(destination_key)
+         client.activate_task_run(
+             board=board,
+@@ -227,6 +329,7 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
+             workspace_id=binding["workspaceId"],
+             workspace_lease_id=binding["workspaceLeaseId"],
+             authority=authority,
++            input_preparation_id=preparation_id,
+         )
+     except BrokerError:
+         raise
+diff --git a/var/folders/1l/zc5_6cyd57gbxrmvvq8_jv6h0000gn/T/tmp.o4OYq97Pfa/after-multi-task-input-lifecycle.patch/tests/hermes_cli/test_input_reclaim_guards.py b/tests/hermes_cli/test_input_reclaim_guards.py
+new file mode 100644
+index 0000000..c509463
+--- /dev/null
++++ b/tests/hermes_cli/test_input_reclaim_guards.py
+@@ -0,0 +1,77 @@
++from __future__ import annotations
++
++import argparse
++
++import pytest
++
++from hermes_cli import kanban as kc
++from hermes_cli import kanban_db as kb
++
++
++@pytest.fixture
++def conn(tmp_path, monkeypatch):
++    monkeypatch.setattr("hermes_cli.worker_catalogue.load_worker_catalogue", lambda: None)
++    connection = kb.connect(tmp_path / "kanban.db")
++    try:
++        yield connection
++    finally:
++        connection.close()
++
++
++def test_archive_refuses_live_input_consumers(conn):
++    producer = kb.create_task(conn, title="producer")
++    destination = kb.create_task(conn, title="destination", inputs_from=[producer])
++
++    with pytest.raises(ValueError, match=rf"live input consumers:.*{destination}"):
++        kb.archive_task(conn, producer)
++
++    assert kb.get_task(conn, producer).status != "archived"
++
++
++def test_archive_allows_done_and_archived_input_consumers(conn):
++    producer = kb.create_task(conn, title="producer")
++    done_destination = kb.create_task(
++        conn, title="done destination", inputs_from=[producer]
++    )
++    archived_destination = kb.create_task(
++        conn, title="archived destination", inputs_from=[producer]
++    )
++    conn.execute(
++        "UPDATE tasks SET status = 'done' WHERE id = ?", (done_destination,)
++    )
++    conn.execute(
++        "UPDATE tasks SET status = 'archived' WHERE id = ?", (archived_destination,)
++    )
++    conn.commit()
++
++    assert kb.archive_task(conn, producer) is True
++    assert kb.get_task(conn, producer).status == "archived"
++
++
++def test_create_rejects_archived_input_producer(conn):
++    producer = kb.create_task(conn, title="producer")
++    assert kb.archive_task(conn, producer) is True
++
++    with pytest.raises(
++        ValueError, match=rf"inputs_from producer {producer} is archived"
++    ):
++        kb.create_task(conn, title="destination", inputs_from=[producer])
++
++
++def test_archive_broker_hook_is_noop_without_control_socket(
++    tmp_path, monkeypatch
++):
++    monkeypatch.setattr("hermes_cli.worker_catalogue.load_worker_catalogue", lambda: None)
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
++    monkeypatch.delenv("GONDOLIN_EFFECT_CONTROL_SOCKET", raising=False)
++    kb.init_db()
++    with kb.connect_closing() as connection:
++        task_id = kb.create_task(connection, title="broker task", workspace_kind="broker")
++
++    result = kc._cmd_archive(
++        argparse.Namespace(task_ids=[task_id], purge_ids=None)
++    )
++
++    assert result == 0
++    with kb.connect_closing() as connection:
++        assert kb.get_task(connection, task_id).status == "archived"
+diff --git a/tools/environments/gondolin.py b/tools/environments/gondolin.py
+index ebbe770..fedfd2d 100644
+--- a/tools/environments/gondolin.py
++++ b/tools/environments/gondolin.py
+@@ -278,6 +278,91 @@ class BrokerClient:
+             "workspaceLeaseId": self._required_text(body, "workspaceLeaseId"),
+         }
+ 
++    def release_task_run_inputs(
++        self, *, environment_key: str, board: str, task_id: str
++    ) -> dict:
++        """Idempotently release every input preparation of a destination task."""
++        body = self._json_post(
++            "/v1/control/task-run-inputs/release",
++            {
++                "environmentKey": environment_key,
++                "taskId": broker_task_identity(board, task_id),
++            },
++        )
++        if not isinstance(body.get("released"), int):
++            raise BrokerError(
++                "protocol.invalid_response", "broker input release is invalid"
++            )
++        return body
++
++    def mark_handoffs_reclaimable(self, handoff_ids: list[str]) -> dict:
++        """Idempotently mark ready handoffs reclaimable after producer archive."""
++        body = self._json_post(
++            "/v1/control/workspace-handoffs/mark-reclaimable",
++            {"handoffIds": [str(handoff_id) for handoff_id in handoff_ids]},
++        )
++        if not isinstance(body.get("results"), list):
++            raise BrokerError(
++                "protocol.invalid_response", "broker reclaim marking is invalid"
++            )
++        return body
++
++    def prepare_task_run_inputs(
++        self,
++        *,
++        environment_key: str,
++        board: str,
++        task_id: str,
++        run_id: int,
++        generation: int,
++        digest: str,
++        lane: str,
++        lane_revision: str,
++        policy_revision: str,
++        limits: dict,
++        inputs: list[dict],
++    ) -> dict:
++        task_run = broker_task_run(board, task_id, run_id)
++        prepared_inputs = []
++        for entry in inputs:
++            producer_task_id = str(entry["producerTaskId"])
++            producer_run_id = int(entry["producerRunId"])
++            producer_run = broker_task_run(board, producer_task_id, producer_run_id)
++            prepared_inputs.append({
++                "producerTaskId": producer_run["taskId"],
++                "producerRunId": producer_run["runId"],
++                "mountName": producer_task_id,
++                "handoffId": str(entry["handoffId"]),
++            })
++            prepared_inputs[-1]["producerLane"] = str(entry["producerLane"])
++            if entry.get("project"):
++                prepared_inputs[-1]["producerProject"] = str(entry["project"])
++            if entry.get("sourceGeneration"):
++                prepared_inputs[-1]["producerSourceGeneration"] = str(
++                    entry["sourceGeneration"]
++                )
++        body = self._json_post(
++            "/v1/control/task-run-inputs/prepare",
++            {
++                "environmentKey": environment_key,
++                "board": board,
++                "taskId": task_run["taskId"],
++                "runId": task_run["runId"],
++                "generation": int(generation),
++                "digest": str(digest),
++                "lane": str(lane),
++                "laneRevision": str(lane_revision),
++                "policyRevision": str(policy_revision),
++                "limits": dict(limits),
++                "inputs": prepared_inputs,
++            },
++        )
++        if not isinstance(body.get("preparationId"), str):
++            raise BrokerError(
++                "protocol.invalid_response", "broker input preparation is missing"
++            )
++        return {"preparationId": body["preparationId"], "inputs": body.get("inputs") or []}
++
+     def activate_task_run(
+         self,
+         *,
+@@ -288,6 +373,7 @@ class BrokerClient:
+         workspace_id: str,
+         workspace_lease_id: str,
+         authority: dict,
++        input_preparation_id: str | None = None,
+     ) -> dict:
+         task_run = broker_task_run(board, task_id, run_id)
+         body = self._json_post(
+@@ -299,6 +385,7 @@ class BrokerClient:
+                 **authority,
+                 "workspaceId": workspace_id,
+                 "workspaceLeaseId": workspace_lease_id,
++                "inputPreparationId": input_preparation_id,
+             },
+         )
+         activation = body.get("activation")

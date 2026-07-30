@@ -306,6 +306,17 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
       JSON.parse(recognizedControlHandoffRoute.text).detail,
       "request body does not match the endpoint schema"
     )
+    for (const route of [
+      "/v1/control/task-run-inputs/prepare",
+      "/v1/control/task-run-inputs/release",
+      "/v1/control/workspace-handoffs/mark-reclaimable",
+    ]) {
+      const recognized = yield* Effect.promise(() => request(config.controlSocketPath, route, {}))
+      assert.equal(recognized.status, 400)
+      assert.equal(JSON.parse(recognized.text).detail, "request body does not match the endpoint schema")
+      const hidden = yield* Effect.promise(() => request(config.socketPath, route, {}))
+      assert.equal(hidden.status, 404)
+    }
     const hiddenHandoffRoute = yield* Effect.promise(() =>
       request(config.socketPath, "/v1/control/workspace-handoffs/capture", {})
     )

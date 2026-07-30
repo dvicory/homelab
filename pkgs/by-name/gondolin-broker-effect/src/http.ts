@@ -14,7 +14,9 @@ import {
   ListFileRequest,
   MakeDirectoryRequest,
   ListGrantsRequest,
+  MarkWorkspaceHandoffsReclaimableRequest,
   ReadFileRequest,
+  ReleaseTaskRunInputsRequest,
   RemoveFileRequest,
   PrepareAccessRequest,
   RevokeGrantRequest,
@@ -29,6 +31,8 @@ import {
   CaptureWorkspaceHandoffRequest,
   ReadWorkspaceArtifactRequest,
 } from "./workspace-handoff/model.js";
+import { PrepareTaskRunInputsRequest } from "./task-run-inputs/model.js";
+import { InputPreparations } from "./task-run-inputs/service.js";
 import { TaskRunActivations } from "./task-run-activations.js";
 import { ProjectWorkspaces } from "./project-workspace/service.js";
 import {
@@ -179,6 +183,7 @@ export const makeControlHttpApp = Effect.gen(function* () {
   const grants = yield* AccessGrants;
   const workspaces = yield* Workspaces;
   const runActivations = yield* TaskRunActivations;
+  const inputPreparations = yield* InputPreparations;
   const environments = yield* Environments;
   const handoffOperations = yield* HandoffOperations;
   const workspaceBranches = yield* WorkspaceBranches;
@@ -259,9 +264,14 @@ export const makeControlHttpApp = Effect.gen(function* () {
     workspaces.close(request.environmentKey, request.workspaceId).pipe(Effect.map(publicWorkspace));
   const deleteWorkspace = (request: typeof WorkspaceRef.Type) =>
     workspaces.delete(request.environmentKey, request.workspaceId).pipe(Effect.as({ deleted: true }));
-
   const activateTaskRun = (request: typeof ActivateTaskRunRequest.Type) =>
     Effect.gen(function* () {
+      const workspace = yield* workspaces.resolve(
+        request.environmentKey,
+        request.workspaceId,
+        request.workspaceLeaseId,
+      );
+      yield* inputPreparations.materialize(request, workspace.workspacePath);
       // Project materialization is staged, journaled, and committed to the
       // task workspace before activation publishes the sandbox authority.
       if (request.workspaceProvider === "broker-project") {
@@ -440,6 +450,26 @@ export const makeControlHttpApp = Effect.gen(function* () {
         HttpRouter.post(
           "/v1/control/task-runs/consume",
           unary("run_activation.consume", ConsumeTaskRunRequest, consumeTaskRun),
+        ),
+        HttpRouter.post(
+          "/v1/control/task-run-inputs/prepare",
+          unary("task_run_inputs.prepare", PrepareTaskRunInputsRequest, inputPreparations.prepare),
+        ),
+        HttpRouter.post(
+          "/v1/control/task-run-inputs/release",
+          unary(
+            "task_run_inputs.release",
+            ReleaseTaskRunInputsRequest,
+            ({ environmentKey, taskId }) => inputPreparations.releaseTask(environmentKey, taskId),
+          ),
+        ),
+        HttpRouter.post(
+          "/v1/control/workspace-handoffs/mark-reclaimable",
+          unary(
+            "workspace_handoffs.mark_reclaimable",
+            MarkWorkspaceHandoffsReclaimableRequest,
+            ({ handoffIds }) => inputPreparations.markReclaimable(handoffIds),
+          ),
         ),
         HttpRouter.post(
           "/v1/control/workspace-handoffs/capture",

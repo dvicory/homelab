@@ -16,6 +16,7 @@ import {
   type HandoffLimits,
 } from "./frozen-tree.js";
 import { HandoffStore, type HandoffRecord } from "./repository.js";
+import { InputPreparations } from "../task-run-inputs/service.js";
 import { ProjectWorkspaces } from "../project-workspace/service.js";
 
 export interface CapturedHandoff {
@@ -83,6 +84,7 @@ const make = Effect.gen(function* () {
   const storage = yield* HandoffStorage;
   const store = yield* HandoffStore;
   const activations = yield* TaskRunActivations;
+  const inputPreparations = yield* InputPreparations;
   const workspaces = yield* Workspaces;
   const projectWorkspaces = yield* ProjectWorkspaces;
   const mutation = yield* STM.commit(TSemaphore.make(1));
@@ -193,6 +195,11 @@ const make = Effect.gen(function* () {
         ? error
         : brokerError("handoff.failed", "failed to commit handoff state"),
     });
+    yield* inputPreparations.releaseRun(
+      staged.sourceEnvironmentKey,
+      staged.sourceTaskId,
+      staged.sourceRunId,
+    );
     return captured(committed);
   });
 
@@ -233,7 +240,10 @@ const make = Effect.gen(function* () {
             "finalization ID is bound to different authority facts",
           );
         }
-        if (prior.state === "ready") return captured(prior);
+        if (prior.state === "ready") {
+          yield* inputPreparations.releaseRun(prior.sourceEnvironmentKey, prior.sourceTaskId, prior.sourceRunId);
+          return captured(prior);
+        }
         if (prior.state === "staging") return yield* fenceAndCapture(prior, limits);
         return yield* brokerError("handoff.invalid_state", "workspace handoff is terminal");
       }

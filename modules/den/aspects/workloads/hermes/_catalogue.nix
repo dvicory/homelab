@@ -99,6 +99,15 @@ in
             (check (
               projectCapable -> lib.all (kind: lib.elem kind providerSourceKinds) workspace.supportedSourceKinds
             ) "Project-capable worker lane '${name}' declares a source kind unsupported by the broker-project provider")
+            (check (
+              (workspace.inputs or null) == null || (
+                (workspace.inputs.enabled or true)
+                && (workspace.inputs.maxInputs or 0) >= 1
+                && (workspace.inputs.maxBytes or 0) >= 1
+                && (workspace.inputs.maxEntries or 0) >= 1
+                && (workspace.inputs.maxPathBytes or 0) >= 256
+              ) || (!(workspace.inputs.enabled or true))
+            ) "Worker lane '${name}' declares enabled inputs without positive count/byte/entry/path ceilings")
           ]
         ) workerLanes
       );

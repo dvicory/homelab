@@ -1,0 +1,933 @@
+From ea1e198e3ed46454874497d8faec26b180b407f7 Mon Sep 17 00:00:00 2001
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Sat, 1 Aug 2026 02:00:00 -0700
+Subject: [PATCH] feat(kanban): add immutable task input edges
+
+Add board-local inputs_from edges distinct from ordering-only parents, pin exact producer task/run and handoff provenance per destination generation, enforce same-board readiness and lane limits, and expose only task IDs through the model-facing API.
+
+Destination retries reuse the frozen generation; fan-in and fan-out remain namespaced under /workspace/inputs without granting producer Project authority.
+---
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+index 7263a7c..bcad157 100644
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -1207,6 +1207,24 @@ CREATE TABLE IF NOT EXISTS task_links (
+     child_id   TEXT NOT NULL,
+     PRIMARY KEY (parent_id, child_id)
+ );
++CREATE TABLE IF NOT EXISTS task_input_edges (
++    board          TEXT NOT NULL,
++    destination_id TEXT NOT NULL,
++    producer_id    TEXT NOT NULL,
++    created_at     INTEGER NOT NULL,
++    PRIMARY KEY (board, destination_id, producer_id)
++);
++
++CREATE TABLE IF NOT EXISTS task_input_generations (
++    board          TEXT NOT NULL,
++    destination_id TEXT NOT NULL,
++    generation     INTEGER NOT NULL,
++    state          TEXT NOT NULL CHECK (state IN ('bound', 'prepared', 'failed')),
++    bindings_json  TEXT NOT NULL,
++    digest         TEXT NOT NULL,
++    created_at     INTEGER NOT NULL,
++    PRIMARY KEY (board, destination_id, generation)
++);
+ 
+ CREATE TABLE IF NOT EXISTS task_comments (
+     id         INTEGER PRIMARY KEY AUTOINCREMENT,
+@@ -1291,6 +1309,12 @@ CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
+ CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
+ CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
+ CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
++CREATE INDEX IF NOT EXISTS idx_input_edges_destination
++    ON task_input_edges(board, destination_id, producer_id);
++CREATE INDEX IF NOT EXISTS idx_input_edges_producer
++    ON task_input_edges(board, producer_id, destination_id);
++CREATE INDEX IF NOT EXISTS idx_input_generations_destination
++    ON task_input_generations(board, destination_id, generation);
+ CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
+ CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
+ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
+@@ -2478,6 +2502,7 @@ def create_task(
+     tenant: Optional[str] = None,
+     priority: int = 0,
+     parents: Iterable[str] = (),
++    inputs_from: Iterable[str] = (),
+     triage: bool = False,
+     idempotency_key: Optional[str] = None,
+     max_runtime_seconds: Optional[int] = None,
+@@ -2490,12 +2515,17 @@ def create_task(
+     board: Optional[str] = None,
+     project_id: Optional[str] = None,
+ ) -> str:
+-    """Create a new task and optionally link it under parent tasks.
++    """Create a new task and optionally link it under parent/input tasks.
++
++    ``parents`` provide ordering and summary-only handoffs. ``inputs_from``
++    provide the same readiness dependency plus an immutable filesystem input.
++    A producer named in both collections is normalized to the stronger input
++    edge.
+ 
+-    Returns the new task id.  Status is ``ready`` when there are no
+-    parents (or all parents already ``done``), otherwise ``todo``.
++    Returns the new task id.  Status is ``ready`` when all dependencies are
++    done, otherwise ``todo``.
+     If ``triage=True``, status is forced to ``triage`` regardless of
+-    parents — a specifier/triager is expected to promote the task to
++    dependencies — a specifier/triager is expected to promote the task to
+     ``todo`` once the spec is fleshed out.
+ 
+     If ``idempotency_key`` is provided and a non-archived task with the
+@@ -2609,7 +2639,12 @@ def create_task(
+                 # ``<repo>/.worktrees/<task-id>`` dir keyed on the new task id.
+                 project_repo = str(project_obj.primary_path)
+ 
+-    parents = tuple(p for p in parents if p)
++    parents = tuple(dict.fromkeys(str(p).strip() for p in parents if p and str(p).strip()))
++    inputs = tuple(dict.fromkeys(str(p).strip() for p in inputs_from if p and str(p).strip()))
++    # An input edge is also an ordering edge, but it must not be duplicated in
++    # task_links where it would incorrectly expose a summary-only relationship.
++    input_set = set(inputs)
++    parents = tuple(p for p in parents if p not in input_set)
+ 
+     # Normalise + validate skills: strip whitespace, drop empties, dedupe
+     # (preserving order). Refuse commas inside a single name so we don't
+@@ -2701,34 +2736,31 @@ def create_task(
+                 # Determine task status from parent status, unless the caller
+                 # parks it directly in blocked for human-ops review or in
+                 # triage for a specifier.
++                dependencies = parents + inputs
++                missing = _find_missing_parents(conn, dependencies)
++                if missing:
++                    raise ValueError(f"unknown task(s): {', '.join(missing)}")
++                archived_producers = _find_archived_input_producers(conn, inputs)
++                if archived_producers:
++                    raise ValueError(
++                        f"inputs_from producer {archived_producers[0]} is archived"
++                    )
+                 if initial_status == "blocked":
+                     task_status = "blocked"
+-                    if parents:
+-                        missing = _find_missing_parents(conn, parents)
+-                        if missing:
+-                            raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
+                 elif triage:
+                     task_status = "triage"
+                 else:
+                     task_status = "ready"
+                     if parents:
+-                        missing = _find_missing_parents(conn, parents)
+-                        if missing:
+-                            raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
+-                        # If any parent is not yet done, we're todo.
+                         rows = conn.execute(
+                             "SELECT status FROM tasks WHERE id IN "
+                             "(" + ",".join("?" * len(parents)) + ")",
+                             parents,
+                         ).fetchall()
+-                        if any(r["status"] != "done" for r in rows):
++                        if any(r["status"] not in ("done", "archived") for r in rows):
+                             task_status = "todo"
+-                # Even in triage mode we still need to validate parent ids
+-                # so the eventual link rows don't dangle.
+-                if triage and parents:
+-                    missing = _find_missing_parents(conn, parents)
+-                    if missing:
+-                        raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
++                    if inputs and _task_input_readiness_reasons(conn, task_id=None, producer_ids=inputs):
++                        task_status = "todo"
+ 
+                 # Project-linked worktree: a fresh worktree dir under the repo
+                 # plus a deterministic branch (project slug + task id). Together
+@@ -2798,12 +2830,20 @@ def create_task(
+                         "assignee": assignee,
+                         "status": task_status,
+                         "parents": list(parents),
++                        "inputs_from": list(inputs),
+                         "tenant": tenant,
+                         "branch_name": branch_name,
+                         "skills": list(skills_list) if skills_list else None,
+                         "goal_mode": bool(goal_mode) or None,
+                     },
+                 )
++                for producer_id in inputs:
++                    conn.execute(
++                        "INSERT INTO task_input_edges "
++                        "(board, destination_id, producer_id, created_at) "
++                        "VALUES (?, ?, ?, ?)",
++                        (_board_for_connection(conn), task_id, producer_id, now),
++                    )
+             return task_id
+         except sqlite3.IntegrityError:
+             if attempt == 1:
+@@ -2825,6 +2865,24 @@ def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> l
+     present = {r["id"] for r in rows}
+     return [p for p in parents if p not in present]
+ 
++def _find_archived_input_producers(
++    conn: sqlite3.Connection, producer_ids: Iterable[str]
++) -> list[str]:
++    producer_ids = list(producer_ids)
++    if not producer_ids:
++        return []
++    placeholders = ",".join("?" * len(producer_ids))
++    rows = conn.execute(
++        f"SELECT id, status FROM tasks WHERE id IN ({placeholders})",
++        producer_ids,
++    ).fetchall()
++    statuses = {row["id"]: row["status"] for row in rows}
++    return [
++        producer_id
++        for producer_id in producer_ids
++        if statuses.get(producer_id) == "archived"
++    ]
++
+ 
+ def get_task(conn: sqlite3.Connection, task_id: str) -> Optional[Task]:
+     row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+@@ -3024,6 +3082,225 @@ def child_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
+     return [r["child_id"] for r in rows]
+ 
+ 
++INPUT_READINESS_REASONS = (
++    "missing",
++    "incomplete",
++    "failed",
++    "ambiguous",
++    "expired",
++    "quarantined",
++    "publication_failed",
++)
++
++
++def input_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
++    """Return board-local producer ids for a destination task."""
++    rows = conn.execute(
++        "SELECT producer_id FROM task_input_edges "
++        "WHERE board = ? AND destination_id = ? ORDER BY producer_id",
++        (_board_for_connection(conn), task_id),
++    ).fetchall()
++    return [r["producer_id"] for r in rows]
++
++
++def _capture_failure_reason(payload: dict[str, Any]) -> Optional[str]:
++    value = str(
++        payload.get("reason")
++        or payload.get("state")
++        or payload.get("status")
++        or ""
++    ).strip().lower().replace("-", "_").replace(".", "_")
++    for reason in ("publication_failed", "quarantined", "ambiguous", "incomplete", "expired", "failed", "missing"):
++        if reason in value:
++            return reason
++    if value and value not in {"ready", "published", "complete", "completed"}:
++        return "incomplete"
++    if payload.get("ready") is False:
++        return "incomplete"
++    return None
++
++
++def _producer_input_readiness(
++    conn: sqlite3.Connection, producer_id: str
++) -> tuple[Optional[str], Optional[dict[str, Any]]]:
++    """Return ``(stable_reason, ready_capture)`` for one producer."""
++    task = get_task(conn, producer_id)
++    if task is None:
++        return "missing", None
++    if task.status != "done":
++        latest = conn.execute(
++            "SELECT outcome, status FROM task_runs WHERE task_id = ? "
++            "ORDER BY id DESC LIMIT 1",
++            (producer_id,),
++        ).fetchone()
++        if latest and str(latest["outcome"] or latest["status"] or "").lower() in {
++            "failed", "spawn_failed", "crashed", "timed_out", "gave_up", "reclaimed",
++        }:
++            return "failed", None
++        return "incomplete", None
++    rows = conn.execute(
++        "SELECT payload, run_id FROM task_events "
++        "WHERE task_id = ? AND kind = 'workspace_capture' ORDER BY id DESC",
++        (producer_id,),
++    ).fetchall()
++    if not rows:
++        return "incomplete", None
++    completed = conn.execute(
++        "SELECT id FROM task_runs WHERE task_id = ? AND outcome = 'completed' "
++        "ORDER BY ended_at DESC, id DESC LIMIT 1",
++        (producer_id,),
++    ).fetchone()
++    selected = rows
++    if completed is not None:
++        selected = [r for r in rows if r["run_id"] == completed["id"]]
++        if not selected:
++            return "incomplete", None
++    if len(selected) != 1:
++        return "ambiguous", None
++    try:
++        payload = json.loads(selected[0]["payload"] or "{}")
++    except (TypeError, json.JSONDecodeError):
++        return "incomplete", None
++    if not isinstance(payload, dict):
++        return "incomplete", None
++    reason = _capture_failure_reason(payload)
++    if reason:
++        return reason, None
++    handoff_id = payload.get("handoff_id", payload.get("handoffId"))
++    finalization_id = payload.get("finalization_id", payload.get("finalizationId"))
++    if not handoff_id or not finalization_id:
++        return "incomplete", None
++    payload = dict(payload)
++    payload["run_id"] = int(payload.get("run_id", selected[0]["run_id"] or 0))
++    payload["handoff_id"] = str(handoff_id)
++    payload["finalization_id"] = str(finalization_id)
++    payload["artifacts"] = list(payload.get("artifacts") or [])
++    return None, payload
++
++
++def _task_input_readiness_reasons(
++    conn: sqlite3.Connection,
++    task_id: Optional[str],
++    *,
++    producer_ids: Optional[Iterable[str]] = None,
++) -> list[str]:
++    ids = list(producer_ids) if producer_ids is not None else input_ids(conn, str(task_id))
++    return [reason for producer_id in ids
++            if (reason := _producer_input_readiness(conn, producer_id)[0]) is not None]
++
++
++def task_input_readiness(
++    conn: sqlite3.Connection, task_id: str
++) -> list[dict[str, str]]:
++    """Return stable non-runnable input reasons, one item per producer."""
++    out: list[dict[str, str]] = []
++    for producer_id in input_ids(conn, task_id):
++        reason, _ = _producer_input_readiness(conn, producer_id)
++        if reason:
++            out.append({"producer_id": producer_id, "reason": reason})
++    return out
++
++
++def input_readiness_reasons(conn: sqlite3.Connection, task_id: str) -> list[str]:
++    """Return stable ``inputs.<reason>`` values for dispatcher diagnostics."""
++    return [f"inputs.{item['reason']}" for item in task_input_readiness(conn, task_id)]
++
++
++def task_has_input_edges(conn: sqlite3.Connection, task_id: str) -> bool:
++    return bool(input_ids(conn, task_id))
++
++
++def _input_generation_dict(row: sqlite3.Row) -> dict[str, Any]:
++    try:
++        bindings = json.loads(row["bindings_json"])
++    except (TypeError, json.JSONDecodeError):
++        bindings = []
++    return {
++        "board": row["board"],
++        "destination_id": row["destination_id"],
++        "generation": int(row["generation"]),
++        "state": row["state"],
++        "bindings_json": row["bindings_json"],
++        "bindings": bindings,
++        "digest": row["digest"],
++        "created_at": int(row["created_at"]),
++    }
++
++
++def get_task_input_generation(
++    conn: sqlite3.Connection, task_id: str
++) -> Optional[dict[str, Any]]:
++    row = conn.execute(
++        "SELECT * FROM task_input_generations WHERE board = ? "
++        "AND destination_id = ? ORDER BY generation DESC LIMIT 1",
++        (_board_for_connection(conn), task_id),
++    ).fetchone()
++    return _input_generation_dict(row) if row else None
++
++
++def _resolve_task_input_generation_in_txn(
++    conn: sqlite3.Connection, task_id: str
++) -> Optional[dict[str, Any]]:
++    existing = get_task_input_generation(conn, task_id)
++    if existing is not None:
++        return existing
++    task = get_task(conn, task_id)
++    if task is None:
++        raise ValueError(f"unknown task {task_id}")
++    producers = input_ids(conn, task_id)
++    if not producers:
++        return None
++    bindings: list[dict[str, Any]] = []
++    for producer_id in producers:
++        reason, capture = _producer_input_readiness(conn, producer_id)
++        if reason or capture is None:
++            raise ValueError(f"inputs.{reason or 'incomplete'}: producer {producer_id}")
++        producer = get_task(conn, producer_id)
++        spec = get_task_worker_specification(
++            conn, producer_id, run_id=int(capture["run_id"])
++        )
++        lane = spec.lane if spec is not None else producer.assignee
++        project = (
++            spec.project if spec is not None and spec.project is not None
++            else producer.project_id
++        )
++        source_generation = (
++            spec.source_generation if spec is not None else None
++        )
++        bindings.append({
++            "producerTaskId": producer_id,
++            "producerRunId": int(capture["run_id"]),
++            "producerLane": lane,
++            "handoffId": capture["handoff_id"],
++            "finalizationId": capture["finalization_id"],
++            "artifacts": list(capture.get("artifacts") or []),
++            "project": project,
++            "sourceGeneration": source_generation,
++        })
++    bindings.sort(key=lambda item: item["producerTaskId"])
++    bindings_json = json.dumps(
++        bindings, ensure_ascii=False, sort_keys=True, separators=(",", ":")
++    )
++    digest = hashlib.sha256(bindings_json.encode("utf-8")).hexdigest()
++    now = int(time.time())
++    board = _board_for_connection(conn)
++    conn.execute(
++        "INSERT INTO task_input_generations "
++        "(board, destination_id, generation, state, bindings_json, digest, created_at) "
++        "VALUES (?, ?, 1, 'bound', ?, ?, ?)",
++        (board, task_id, bindings_json, digest, now),
++    )
++    return get_task_input_generation(conn, task_id)  # type: ignore[return-value]
++
++
++def resolve_task_input_generation(
++    conn: sqlite3.Connection, task_id: str, *, run_id: Optional[int] = None
++) -> Optional[dict[str, Any]]:
++    """Pin and return exact producer bindings for a destination."""
++    with write_txn(conn):
++        return _resolve_task_input_generation_in_txn(conn, task_id)
++
++
+ def parent_results(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, Optional[str]]]:
+     """Return ``(parent_id, result)`` for every done parent of ``task_id``."""
+     rows = conn.execute(
+@@ -3799,7 +4076,11 @@ def recompute_ready(
+                 "WHERE l.child_id = ?",
+                 (task_id,),
+             ).fetchall()
+-            if all(p["status"] in ("done", "archived") for p in parents):
++            deps_ready = (
++                all(p["status"] in ("done", "archived") for p in parents)
++                and not task_input_readiness(conn, task_id)
++            )
++            if deps_ready:
+                 if cur_status == "blocked":
+                     # Don't auto-recover tasks that have hit the
+                     # circuit-breaker failure limit.  Without this
+@@ -3905,6 +4186,33 @@ def claim_task(
+                 {"reason": "parents_not_done"},
+             )
+             return None
++        input_reasons = task_input_readiness(conn, task_id)
++        if input_reasons:
++            conn.execute(
++                "UPDATE tasks SET status = 'todo' "
++                "WHERE id = ? AND status = 'ready'",
++                (task_id,),
++            )
++            first = input_reasons[0]
++            _append_event(
++                conn, task_id, "claim_rejected",
++                {"reason": f"inputs.{first['reason']}",
++                 "producer_id": first["producer_id"]},
++            )
++            return None
++        try:
++            _resolve_task_input_generation_in_txn(conn, task_id)
++        except ValueError as exc:
++            conn.execute(
++                "UPDATE tasks SET status = 'todo' "
++                "WHERE id = ? AND status = 'ready'",
++                (task_id,),
++            )
++            _append_event(
++                conn, task_id, "claim_rejected",
++                {"reason": str(exc).split(":", 1)[0]},
++            )
++            return None
+         # Defensive: if a prior run somehow leaked (invariant violation from
+         # an unknown code path), close it as 'reclaimed' so we don't strand
+         # it when the CAS resets the pointer below. No-op when the invariant
+@@ -5945,6 +6253,26 @@ def decompose_triage_task(
+ 
+ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
+     with write_txn(conn):
++        row = conn.execute(
++            "SELECT status FROM tasks WHERE id = ?",
++            (task_id,),
++        ).fetchone()
++        if not row or row["status"] == "archived":
++            return False
++        blocking = conn.execute(
++            "SELECT e.destination_id "
++            "FROM task_input_edges e "
++            "JOIN tasks destination ON destination.id = e.destination_id "
++            "WHERE e.board = ? AND e.producer_id = ? "
++            "AND destination.status NOT IN ('done', 'archived') "
++            "ORDER BY e.destination_id",
++            (_board_for_connection(conn), task_id),
++        ).fetchall()
++        if blocking:
++            destination_ids = ", ".join(row["destination_id"] for row in blocking)
++            raise ValueError(
++                f"cannot archive {task_id}: live input consumers: {destination_ids}"
++            )
+         cur = conn.execute(
+             "UPDATE tasks SET status = 'archived', "
+             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+@@ -9075,6 +9403,24 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
+                 f"source generation {str(_run_spec.source_generation or 'unresolved')[:12]})"
+             )
+             lines.append(f"Project permission: {_run_spec.permission}")
++        generation = get_task_input_generation(conn, task_id)
++        if generation and generation["bindings"]:
++            lines.append("Inputs (read-only):")
++            for binding in generation["bindings"]:
++                producer = get_task(conn, binding["producerTaskId"])
++                title = producer.title if producer is not None else "(unknown)"
++                details = (
++                    f"lane {binding.get('producerLane') or '(unknown)'}, "
++                    f"run {binding['producerRunId']}"
++                )
++                if binding.get("project"):
++                    details += f", project {binding['project']}"
++                    if binding.get("sourceGeneration"):
++                        details += f" @ {binding['sourceGeneration']}"
++                lines.append(
++                    f"- `/workspace/inputs/{binding['producerTaskId']}` — "
++                    f"\"{title}\" ({details})"
++                )
+     else:
+         lines.append(f"Workspace: {task.workspace_kind} (managed workspace; path intentionally omitted)")
+     if task.max_runtime_seconds is not None:
+diff --git a/tests/hermes_cli/test_explicit_worker_lanes.py b/tests/hermes_cli/test_explicit_worker_lanes.py
+index 5ce1f7a..4c1a6e1 100644
+--- a/tests/hermes_cli/test_explicit_worker_lanes.py
++++ b/tests/hermes_cli/test_explicit_worker_lanes.py
+@@ -273,8 +273,9 @@ def test_managed_schema_exposes_only_intent_and_allowed_lane(
+     overrides = kanban_tools._kanban_create_schema_overrides()
+     parameters = overrides["parameters"]
+     assert parameters["required"] == ["title", "assignee"]
++    # add-multi-task-inputs 2.1 extends model intent with board-local inputs.
+     assert set(parameters["properties"]) == {
+-        "title", "body", "parents", "assignee", "project"
++        "title", "body", "parents", "inputs_from", "assignee", "project"
+     }
+     assert parameters["properties"]["assignee"]["enum"] == ["worker"]
+ 
+diff --git a/var/folders/1l/zc5_6cyd57gbxrmvvq8_jv6h0000gn/T/tmp.o4OYq97Pfa/after-multi-task-inputs.patch/tests/hermes_cli/test_multi_task_inputs.py b/tests/hermes_cli/test_multi_task_inputs.py
+new file mode 100644
+index 0000000..f30798a
+--- /dev/null
++++ b/tests/hermes_cli/test_multi_task_inputs.py
+@@ -0,0 +1,152 @@
++from __future__ import annotations
++
++import hashlib
++import json
++import sqlite3
++
++import pytest
++
++from hermes_cli import kanban_db as kb
++
++
++@pytest.fixture
++def conn(tmp_path, monkeypatch):
++    monkeypatch.setattr("hermes_cli.worker_catalogue.load_worker_catalogue", lambda: None)
++    connection = kb.connect(tmp_path / "kanban.db")
++    try:
++        yield connection
++    finally:
++        connection.close()
++
++
++def _done_with_capture(conn, task_id, *, run_id=1, handoff="h1", finalization="f1", artifacts=None):
++    conn.execute("UPDATE tasks SET status = 'done', completed_at = 10 WHERE id = ?", (task_id,))
++    conn.commit()
++    kb.append_workspace_capture(
++        conn,
++        task_id,
++        run_id=run_id,
++        handoff_id=handoff,
++        finalization_id=finalization,
++        artifacts=list(artifacts or []),
++    )
++
++
++def test_creation_normalizes_duplicate_edges(conn):
++    producer = kb.create_task(conn, title="producer")
++    destination = kb.create_task(
++        conn,
++        title="destination",
++        parents=[producer, producer],
++        inputs_from=[producer, producer],
++    )
++    assert kb.parent_ids(conn, destination) == []
++    assert kb.input_ids(conn, destination) == [producer]
++    assert kb.get_task(conn, destination).status == "todo"
++
++
++def test_input_readiness_fails_closed_until_ready_handoff(conn):
++    producer = kb.create_task(conn, title="producer")
++    destination = kb.create_task(conn, title="destination", inputs_from=[producer])
++    assert kb.task_input_readiness(conn, destination) == [
++        {"producer_id": producer, "reason": "incomplete"}
++    ]
++    assert kb.get_task(conn, destination).status == "todo"
++    _done_with_capture(conn, producer)
++    assert kb.recompute_ready(conn) == 1
++    assert kb.get_task(conn, destination).status == "ready"
++
++
++def test_generation_binds_exact_handoff_and_reuses_on_retry(conn):
++    producer = kb.create_task(conn, title="producer", assignee="research")
++    _done_with_capture(conn, producer, run_id=3, handoff="h-old", finalization="f-old", artifacts=["a"])
++    destination = kb.create_task(conn, title="destination", inputs_from=[producer])
++    generation = kb.resolve_task_input_generation(conn, destination)
++    assert generation["generation"] == 1
++    assert generation["bindings"][0]["producerRunId"] == 3
++    assert generation["bindings"][0]["handoffId"] == "h-old"
++    digest = hashlib.sha256(generation["bindings_json"].encode()).hexdigest()
++    assert generation["digest"] == digest
++    _done_with_capture(conn, producer, run_id=4, handoff="h-new", finalization="f-new")
++    assert kb.resolve_task_input_generation(conn, destination)["bindings"][0]["handoffId"] == "h-old"
++
++
++def test_cross_board_producer_is_rejected(tmp_path, monkeypatch):
++    monkeypatch.setattr("hermes_cli.worker_catalogue.load_worker_catalogue", lambda: None)
++    first = kb.connect(tmp_path / "one.db")
++    second = kb.connect(tmp_path / "two.db")
++    try:
++        producer = kb.create_task(first, title="producer")
++        with pytest.raises(ValueError, match="unknown task"):
++            kb.create_task(second, title="destination", inputs_from=[producer])
++    finally:
++        first.close()
++        second.close()
++
++
++@pytest.mark.parametrize("state,expected", [("failed", "failed"), ("expired", "expired"), ("quarantined", "quarantined"), ("publication_failed", "publication_failed")])
++def test_stable_capture_failure_reasons(conn, state, expected):
++    producer = kb.create_task(conn, title="producer")
++    conn.execute("UPDATE tasks SET status = 'done', completed_at = 10 WHERE id = ?", (producer,))
++    conn.commit()
++    with kb.write_txn(conn):
++        kb._append_event(conn, producer, "workspace_capture", {"run_id": 1, "state": state})
++    destination = kb.create_task(conn, title="destination", inputs_from=[producer])
++    assert kb.task_input_readiness(conn, destination)[0]["reason"] == expected
++
++
++def test_worker_context_lists_namespaced_inputs(conn):
++    producer = kb.create_task(conn, title="report", assignee="research")
++    _done_with_capture(conn, producer, run_id=2, handoff="h", finalization="f")
++    destination = kb.create_task(conn, title="synthesis", assignee="writer", workspace_kind="broker", inputs_from=[producer])
++    kb.resolve_task_input_generation(conn, destination)
++    context = kb.build_worker_context(conn, destination)
++    assert "Inputs (read-only):" in context
++    assert f"/workspace/inputs/{producer}" in context
++    assert '"report"' in context
++
++
++def test_precreated_research_graph_fans_out_then_fans_in(conn):
++    seed = kb.create_task(conn, title="collect sources", assignee="research")
++    analyst_a = kb.create_task(
++        conn, title="analyze alpha", assignee="research", inputs_from=[seed]
++    )
++    analyst_b = kb.create_task(
++        conn, title="analyze beta", assignee="research", inputs_from=[seed]
++    )
++    synthesis = kb.create_task(
++        conn,
++        title="synthesize",
++        assignee="writer",
++        inputs_from=[analyst_a, analyst_b],
++    )
++
++    assert kb.get_task(conn, analyst_a).status == "todo"
++    assert kb.get_task(conn, analyst_b).status == "todo"
++    assert kb.get_task(conn, synthesis).status == "todo"
++
++    _done_with_capture(conn, seed, handoff="seed")
++    assert kb.recompute_ready(conn) == 2
++    assert kb.get_task(conn, analyst_a).status == "ready"
++    assert kb.get_task(conn, analyst_b).status == "ready"
++
++    _done_with_capture(conn, analyst_a, handoff="alpha")
++    assert kb.recompute_ready(conn) == 0
++    _done_with_capture(conn, analyst_b, handoff="beta")
++    assert kb.recompute_ready(conn) == 1
++    assert kb.get_task(conn, synthesis).status == "ready"
++    generation = kb.resolve_task_input_generation(conn, synthesis)
++    assert {item["handoffId"] for item in generation["bindings"]} == {
++        "alpha",
++        "beta",
++    }
++
++
++def test_tool_schema_distinguishes_parents_and_inputs():
++    from tools.kanban_tools import KANBAN_CREATE_SCHEMA
++
++    properties = KANBAN_CREATE_SCHEMA["parameters"]["properties"]
++    assert "inputs_from" in properties
++    assert "handoff_id" not in properties
++    assert "mount_path" not in properties
++    assert "files" in properties["inputs_from"]["description"]
+diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
+index 84b1ab7..8bb6c69 100644
+--- a/tools/kanban_tools.py
++++ b/tools/kanban_tools.py
+@@ -377,6 +377,7 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
+     """Compact task shape for board-listing tools."""
+     parents = kb.parent_ids(conn, task.id)
+     children = kb.child_ids(conn, task.id)
++    inputs_from = kb.input_ids(conn, task.id)
+     return {
+         "id": task.id,
+         "title": task.title,
+@@ -394,8 +395,10 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
+         "current_run_id": task.current_run_id,
+         "model_override": task.model_override,
+         "parents": parents,
++        "inputs_from": inputs_from,
+         "children": children,
+         "parent_count": len(parents),
++        "input_count": len(inputs_from),
+         "child_count": len(children),
+     }
+ 
+@@ -420,6 +423,7 @@ def _handle_show(args: dict, **kw) -> str:
+             if task is None:
+                 return tool_error(f"task {tid} not found")
+             comments = kb.list_comments(conn, tid)
++            inputs_from = kb.input_ids(conn, tid)
+             events = kb.list_events(conn, tid)
+             runs = kb.list_runs(conn, tid)
+             parents = kb.parent_ids(conn, tid)
+@@ -448,10 +452,10 @@ def _handle_show(args: dict, **kw) -> str:
+                     "metadata": r.metadata,
+                     "started_at": r.started_at, "ended_at": r.ended_at,
+                 }
+-
+             return json.dumps({
+                 "task": _task_dict(task),
+                 "parents": parents,
++                "inputs_from": inputs_from,
+                 "children": children,
+                 "comments": [
+                     {"author": c.author, "body": c.body,
+@@ -1205,23 +1209,27 @@ def _handle_attachments(args: dict, **kw) -> str:
+     except Exception as e:
+         logger.exception("kanban_attachments failed")
+         return tool_error(f"kanban_attachments: {e}")
+-
+-
+-
+-
+ def _handle_create(args: dict, **kw) -> str:
+-    """Create a child task. Orchestrator workers use this to fan out.
+-
+-    ``parents`` can be a list of task ids; dependency-gated promotion
+-    works as usual.
+-    """
++    """Create a task with ordering-only parents or immutable file inputs."""
+     title = args.get("title")
+     if not title or not str(title).strip():
+         return tool_error("title is required")
+     from hermes_cli.worker_catalogue import load_worker_catalogue
+     managed_catalogue = load_worker_catalogue()
++    forbidden_input_fields = {
++        "producer_run_id", "producer_run", "handoff_id", "handoff",
++        "manifest", "workspace_id", "lease_id", "source_generation",
++        "provider", "mount_path", "permission", "writable_inputs",
++        "input_mount", "input_preparation_id",
++    }
++    supplied_input_fields = sorted(forbidden_input_fields.intersection(args))
++    if supplied_input_fields:
++        return tool_error(
++            "inputs_from accepts only board-local producer task ids; "
++            "infrastructure fields are not accepted: " + ", ".join(supplied_input_fields)
++        )
+     if managed_catalogue is not None:
+-        intent_fields = {"title", "body", "parents", "assignee", "project"}
++        intent_fields = {"title", "body", "parents", "inputs_from", "assignee", "project"}
+         supplied = sorted(set(args) - intent_fields)
+         if supplied:
+             return tool_error(
+@@ -1236,24 +1244,26 @@ def _handle_create(args: dict, **kw) -> str:
+         )
+     body = args.get("body")
+     parents = args.get("parents") or []
++    inputs_from = args.get("inputs_from") or []
++    if isinstance(parents, str):
++        parents = [parents]
++    if isinstance(inputs_from, str):
++        inputs_from = [inputs_from]
++    if not isinstance(parents, (list, tuple)):
++        return tool_error(f"parents must be a list of task ids, got {type(parents).__name__}")
++    if not isinstance(inputs_from, (list, tuple)):
++        return tool_error(
++            f"inputs_from must be a list of board-local task ids, got {type(inputs_from).__name__}"
++        )
++    if any(not isinstance(value, str) or not value.strip() for value in inputs_from):
++        return tool_error("inputs_from must contain non-empty task id strings")
+     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
+-    # Stamp the originating session id when the agent loop runs under
+-    # ACP (which sets HERMES_SESSION_ID before invoking tools). NULL on
+-    # CLI / dashboard paths and on legacy hosts that don't set the env.
+     session_id = args.get("session_id") or os.environ.get("HERMES_SESSION_ID")
+     priority = args.get("priority")
+-    # Resolve workspace. If the caller passed one explicitly, honor it.
+-    # Otherwise, a dispatcher-spawned worker (HERMES_KANBAN_TASK set)
+-    # inherits its own running task's workspace, so a worker editing a
+-    # dir:/worktree project that spawns a follow-up child keeps the child
+-    # in that project instead of a throwaway scratch dir. Orchestrators
+-    # (kanban toolset, no HERMES_KANBAN_TASK) and CLI/dashboard callers
+-    # fall back to scratch as before. Explicit None path stays None.
+     workspace_kind = args.get("workspace_kind")
+     workspace_path = args.get("workspace_path")
+     project_id = args.get("project") or args.get("project_id")
+     from hermes_cli.worker_lanes import get_worker_lane
+-
+     target_lane = get_worker_lane(str(assignee))
+     if (
+         target_lane is not None
+@@ -1262,9 +1272,8 @@ def _handle_create(args: dict, **kw) -> str:
+         and target_lane.default_workspace_kind is not None
+     ):
+         workspace_kind = target_lane.default_workspace_kind
+-    _inherit_workspace = workspace_kind is None and workspace_path is None
+-    if workspace_kind is None:
+-        workspace_kind = "scratch"
++    inherit_workspace = workspace_kind is None and workspace_path is None
++    workspace_kind = workspace_kind or "scratch"
+     if (
+         target_lane is not None
+         and target_lane.allowed_workspace_kinds is not None
+@@ -1283,49 +1292,32 @@ def _handle_create(args: dict, **kw) -> str:
+     initial_status = args.get("initial_status") or "running"
+     skills = args.get("skills")
+     if isinstance(skills, str):
+-        # Accept a single skill name as a string for convenience.
+         skills = [skills]
+     if skills is not None and not isinstance(skills, (list, tuple)):
+-        return tool_error(
+-            f"skills must be a list of skill names, got {type(skills).__name__}"
+-        )
++        return tool_error(f"skills must be a list of skill names, got {type(skills).__name__}")
+     goal_mode, goal_bool_error = _parse_bool_arg(args, "goal_mode")
+     if goal_bool_error:
+         return tool_error(goal_bool_error)
+     goal_max_turns = args.get("goal_max_turns")
+-    if isinstance(parents, str):
+-        parents = [parents]
+-    if not isinstance(parents, (list, tuple)):
+-        return tool_error(
+-            f"parents must be a list of task ids, got {type(parents).__name__}"
+-        )
+     board = args.get("board")
+     try:
+         kb, conn = _connect(board=board)
+         try:
+-            # Inherit the spawning worker's own task workspace when the
+-            # caller didn't specify one (see resolution note above).
+-            if _inherit_workspace:
+-                _self_tid = os.environ.get("HERMES_KANBAN_TASK")
+-                if _self_tid:
+-                    _self_task = kb.get_task(conn, _self_tid)
+-                    if _self_task is not None and _self_task.workspace_kind:
+-                        if _self_task.workspace_kind == "broker":
+-                            workspace_kind = "broker"
+-                            workspace_path = None
+-                        else:
+-                            workspace_kind = _self_task.workspace_kind
+-                            workspace_path = _self_task.workspace_path
+-                            # Keep follow-up children inside the same project so the
+-                            # whole subtree shares one repo + branch convention.
+-                            if project_id is None and _self_task.project_id:
+-                                project_id = _self_task.project_id
++            if inherit_workspace:
++                self_tid = os.environ.get("HERMES_KANBAN_TASK")
++                self_task = kb.get_task(conn, self_tid) if self_tid else None
++                if self_task is not None:
++                    workspace_kind = self_task.workspace_kind or workspace_kind
++                    workspace_path = self_task.workspace_path
++                    if project_id is None:
++                        project_id = self_task.project_id
+             new_tid = kb.create_task(
+                 conn,
+                 title=str(title).strip(),
+                 body=body,
+                 assignee=str(assignee),
+                 parents=tuple(parents),
++                inputs_from=tuple(inputs_from),
+                 tenant=tenant,
+                 priority=int(priority) if priority is not None else 0,
+                 workspace_kind=str(workspace_kind),
+@@ -1334,8 +1326,7 @@ def _handle_create(args: dict, **kw) -> str:
+                 triage=triage,
+                 idempotency_key=idempotency_key,
+                 max_runtime_seconds=(
+-                    int(max_runtime_seconds)
+-                    if max_runtime_seconds is not None else None
++                    int(max_runtime_seconds) if max_runtime_seconds is not None else None
+                 ),
+                 skills=skills,
+                 goal_mode=goal_mode,
+@@ -1961,12 +1952,12 @@ KANBAN_ATTACHMENTS_SCHEMA = {
+ KANBAN_CREATE_SCHEMA = {
+     "name": "kanban_create",
+     "description": (
+-        "Create a new kanban task, optionally as a child of the current "
+-        "one (pass the current task id in ``parents``). Used by "
+-        "orchestrator workers to fan out — decompose work into child "
+-        "tasks with specific assignees, link them into a pipeline, "
+-        "then complete your own task. The dispatcher picks up the new "
+-        "tasks on its next tick and spawns the assigned workers."
++        "Create a new kanban task. ``parents`` are ordering/summary-only "
++        "dependencies; ``inputs_from`` selects board-local producer task "
++        "ids whose complete frozen outputs are also exposed read-only under "
++        "``/workspace/inputs/<producer-task-id>``. Infrastructure facts such "
++        "as runs, handoffs, manifests, mounts, leases, and providers are "
++        "trusted control-plane data and cannot be selected by the model."
+     ),
+     "parameters": {
+         "type": "object",
+@@ -2005,6 +1996,17 @@ KANBAN_CREATE_SCHEMA = {
+                     "synthesizer task."
+                 ),
+             },
++            "inputs_from": {
++                "type": "array",
++                "items": {"type": "string"},
++                "uniqueItems": True,
++                "description": (
++                    "Board-local producer task ids whose frozen output is "
++                    "mounted read-only. This also gates readiness. Use this "
++                    "for files; use parents when only ordering and summaries "
++                    "are needed."
++                ),
++            },
+             "tenant": {
+                 "type": "string",
+                 "description": (
+@@ -2144,7 +2146,7 @@ def _kanban_create_schema_overrides() -> dict:
+         assignee_schema["description"] += (
+             "\n\nAvailable lanes on this board:\n" + "\n".join(descriptions)
+         )
+-        intent_fields = ("title", "body", "parents", "assignee", "project")
++        intent_fields = ("title", "body", "parents", "inputs_from", "assignee", "project")
+         parameters["properties"] = {
+             field: parameters["properties"][field] for field in intent_fields
+         }

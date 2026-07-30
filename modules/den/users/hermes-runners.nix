@@ -51,6 +51,12 @@ let
             workspace = {
               projectMode = "none";
               scratchProvider = "broker-scratch";
+              inputs = {
+                maxInputs = 8;
+                maxBytes = 104857600;
+                maxEntries = 20000;
+                maxPathBytes = 4096;
+              };
             };
             policy.worklane = "default";
             execution = {
@@ -74,6 +80,12 @@ let
                   projectProvider = "broker-project";
                   maximumPermission = "read-only";
                   supportedSourceKinds = [ "git" ];
+                  inputs = {
+                    maxInputs = 8;
+                    maxBytes = 104857600;
+                    maxEntries = 20000;
+                    maxPathBytes = 4096;
+                  };
                 };
                 policy = {
                   worklane = "codex";
@@ -91,6 +103,12 @@ let
                   projectProvider = "broker-project";
                   maximumPermission = "workspace-write";
                   supportedSourceKinds = [ "git" ];
+                  inputs = {
+                    maxInputs = 8;
+                    maxBytes = 104857600;
+                    maxEntries = 20000;
+                    maxPathBytes = 4096;
+                  };
                 };
                 policy = {
                   worklane = "codex";

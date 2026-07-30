@@ -12,6 +12,8 @@ import { makeAccessGrantsLayer } from "../dist/grants.js"
 import { HandoffOperationsLive } from "../dist/workspace-handoff/service.js"
 import { HandoffStoreLive } from "../dist/workspace-handoff/repository.js"
 import { HandoffStorageLive } from "../dist/workspace-handoff/frozen-tree.js"
+import { InputPreparationRepositoryLive } from "../dist/task-run-inputs/repository.js"
+import { InputPreparationsLive } from "../dist/task-run-inputs/service.js"
 import { Registry, RegistryLive } from "../dist/registry.js"
 import { VmRuntime } from "../dist/runtime.js"
 import { Workspaces, WorkspacesLive } from "../dist/workspaces.js"
@@ -276,7 +278,9 @@ export const makeTestLayer = (stateDir, options = {}) => {
   const projectStore = ProjectWorkspaceStoreLive.pipe(Layer.provideMerge(workspaces))
   const projectWorkspaces = ProjectWorkspacesLive.pipe(Layer.provideMerge(projectStore))
   const registry = RegistryLive.pipe(Layer.provideMerge(projectWorkspaces))
-  const runActivations = TaskRunActivationsLive.pipe(Layer.provideMerge(registry))
+  const inputRepository = InputPreparationRepositoryLive.pipe(Layer.provideMerge(database))
+  const inputPreparations = InputPreparationsLive.pipe(Layer.provideMerge(inputRepository))
+  const runActivations = TaskRunActivationsLive.pipe(Layer.provideMerge(Layer.mergeAll(registry, inputPreparations)))
   const handoffs = HandoffStoreLive.pipe(Layer.provideMerge(runActivations))
   const handoffStorage = HandoffStorageLive.pipe(Layer.provideMerge(handoffs))
   const grants = makeAccessGrantsLayer({

@@ -86,6 +86,41 @@ let
         default = [ ];
         description = "Project source kinds supported by the selected provider contract.";
       };
+      inputs = mkOption {
+        type = types.nullOr (
+          types.submodule {
+            options = {
+              enabled = mkOption {
+                type = types.bool;
+                default = true;
+                description = "Whether this lane may consume immutable inputs_from mounts.";
+              };
+              maxInputs = mkOption {
+                type = positiveInteger;
+                default = 8;
+                description = "Maximum number of producer inputs bound to one destination run.";
+              };
+              maxBytes = mkOption {
+                type = positiveInteger;
+                default = 104857600;
+                description = "Maximum total bytes across all bound input handoffs.";
+              };
+              maxEntries = mkOption {
+                type = positiveInteger;
+                default = 20000;
+                description = "Maximum total manifest entries across all bound input handoffs.";
+              };
+              maxPathBytes = mkOption {
+                type = positiveInteger;
+                default = 4096;
+                description = "Maximum byte length of one input manifest path.";
+              };
+            };
+          }
+        );
+        default = null;
+        description = "Immutable input ceilings for this lane; null disables inputs entirely.";
+      };
     };
   };
 

@@ -71,6 +71,10 @@ let
       # Bind task runs to durable three-plane broker project workspaces and
       # expose typed resolve/authority calls for trusted external workers.
       ./broker-project-workspaces.patch
+      # Explicit immutable producer edges and exact destination input pins.
+      ./multi-task-inputs.patch
+      # Trusted preparation, activation, release, and archive-gated reclaim.
+      ./multi-task-input-lifecycle.patch
     ];
     postPatch = ''
       rm -f \

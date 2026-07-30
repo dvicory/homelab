@@ -1,3 +1,5 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { Context, Effect, Layer, Schema } from "effect";
 import { BrokerConfig } from "../config.js";
@@ -41,6 +43,7 @@ export interface HandoffRecord {
   readonly entryCount: number;
   readonly totalBytes: number;
   readonly failureReason: string | null;
+  readonly reclaimable: boolean;
 }
 
 export interface HandoffStoreService {
@@ -64,6 +67,7 @@ export interface HandoffStoreService {
     state: "quarantined" | "failed",
     reason: string,
   ) => HandoffRecord;
+  readonly deleteHandoff: (handoffId: string) => void;
 }
 
 export class HandoffStore extends Context.Tag("@agent-x/gondolin-broker-effect/HandoffStore")<
@@ -89,6 +93,7 @@ type HandoffRow = {
   entry_count: number;
   total_bytes: number;
   failure_reason: string | null;
+  reclaimable: number;
 };
 
 type ActivationSource = {
@@ -131,6 +136,7 @@ const fromHandoff = (row: HandoffRow): HandoffRecord => ({
   entryCount: row.entry_count,
   totalBytes: row.total_bytes,
   failureReason: row.failure_reason,
+  reclaimable: row.reclaimable === 1,
 });
 
 const storeFailure = (operation: string, error: unknown): BrokerError =>
@@ -161,6 +167,7 @@ const make = Effect.gen(function* () {
       phases: unavailable,
       markHandoffReady: unavailable,
       failHandoff: unavailable,
+      deleteHandoff: unavailable,
     } satisfies HandoffStoreService;
   }
 
@@ -250,8 +257,8 @@ const make = Effect.gen(function* () {
             source_environment_key, source_workspace_id, source_workspace_lease_id,
             source_lease_fencing_token, authority_facts_json, policy_digest,
             policy_decision_digest, selected_artifacts_json, state, entry_count, total_bytes,
-            failure_reason, created_at, updated_at, ready_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staging', 0, 0, NULL, ?, ?, NULL)
+            failure_reason, created_at, updated_at, ready_at, reclaimable
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'staging', 0, 0, NULL, ?, ?, NULL, 0)
         `).run(
           handoffId,
           request.finalizationId,
@@ -401,6 +408,24 @@ const make = Effect.gen(function* () {
       throw storeFailure(`mark handoff ${state}`, error);
     }
   };
+  const deleteHandoff = (handoffId: string): void => {
+    try {
+      database.transaction(() => {
+        const reference = db.prepare(
+          "SELECT 1 AS present FROM handoff_references WHERE handoff_id = ? AND state='acquired' LIMIT 1",
+        ).get(handoffId) as { present: number } | undefined;
+        if (reference !== undefined) {
+          throw brokerError("handoff.conflict", "workspace handoff is retained by an input preparation", { handoffId });
+        }
+        fs.rmSync(path.join(config.workspaceHandoffRoot, "ready", handoffId), { recursive: true, force: true });
+        db.prepare("DELETE FROM workspace_handoff_finalization_journal WHERE handoff_id = ?").run(handoffId);
+        db.prepare("DELETE FROM handoff_references WHERE handoff_id = ?").run(handoffId);
+        db.prepare("DELETE FROM workspace_handoffs WHERE handoff_id = ?").run(handoffId);
+      });
+    } catch (error) {
+      throw storeFailure("delete handoff", error);
+    }
+  };
 
   return {
     stageCapture,
@@ -411,6 +436,7 @@ const make = Effect.gen(function* () {
     phases,
     markHandoffReady,
     failHandoff,
+    deleteHandoff,
   } satisfies HandoffStoreService;
 });
 

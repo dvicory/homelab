@@ -39,6 +39,8 @@ runCommand "hermes-agent-patched-check" { } ''
     ${patchedHermes.patchedSource}/tests/hermes_cli/test_worker_lanes.py \
     ${patchedHermes.patchedSource}/tests/hermes_cli/test_worker_lane_discovery.py \
     ${patchedHermes.patchedSource}/tests/hermes_cli/test_explicit_worker_lanes.py \
+    ${patchedHermes.patchedSource}/tests/hermes_cli/test_multi_task_inputs.py \
+    ${patchedHermes.patchedSource}/tests/hermes_cli/test_input_reclaim_guards.py \
     ${patchedHermes.patchedSource}/tests/hermes_cli/test_kanban_decompose.py \
     ${patchedHermes.patchedSource}/tests/hermes_cli/test_kanban_swarm.py \
     ${patchedHermes.patchedSource}/tests/hermes_cli/test_kanban_cli_dispatch_passthrough.py \
@@ -72,6 +74,8 @@ runCommand "hermes-agent-patched-check" { } ''
     ${patchedHermes.patchedSource}/plugins/workspace-service/__init__.py \
     ${patchedHermes.patchedSource}/hermes_cli/worker_catalogue.py \
     ${patchedHermes.patchedSource}/tests/hermes_cli/test_explicit_worker_lanes.py \
+    ${patchedHermes.patchedSource}/tests/hermes_cli/test_multi_task_inputs.py \
+    ${patchedHermes.patchedSource}/tests/hermes_cli/test_input_reclaim_guards.py \
     ${patchedHermes.patchedSource}/tests/plugins/test_workspace_zero_schema.py
   touch $out
 ''

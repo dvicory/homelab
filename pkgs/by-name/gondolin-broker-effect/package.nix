@@ -1,6 +1,7 @@
 {
   lib,
   buildNpmPackage,
+  git,
   nodejs_24,
   python3,
 }:
@@ -12,6 +13,7 @@ buildNpmPackage {
   nodejs = nodejs_24;
   nativeBuildInputs = [
     python3
+    git
   ];
 
   # Gondolin's optional cpu-features extension is not needed. Keep install

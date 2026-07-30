@@ -36,7 +36,7 @@ export const initializeHandoffSchema = (database: BrokerDatabaseService): void =
           ({ name }) => name,
         ),
       );
-      if (columns.size !== HANDOFF_COLUMNS.size || [...HANDOFF_COLUMNS].some((name) => !columns.has(name))) {
+      if ([...HANDOFF_COLUMNS].some((name) => !columns.has(name))) {
         // The earlier publication/import prototype has no compatible authority
         // or recovery contract. Clean cutover deliberately discards it.
         db.exec(`
@@ -71,7 +71,8 @@ export const initializeHandoffSchema = (database: BrokerDatabaseService): void =
         failure_reason TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
-        ready_at INTEGER
+        ready_at INTEGER,
+        reclaimable INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS workspace_handoffs_source
         ON workspace_handoffs(source_task_id, source_run_id, created_at DESC);
@@ -92,4 +93,12 @@ export const initializeHandoffSchema = (database: BrokerDatabaseService): void =
       CREATE INDEX IF NOT EXISTS workspace_handoff_journal_operation
         ON workspace_handoff_finalization_journal(finalization_id, journal_id);
     `);
+    const columns = new Set(
+      (db.prepare("PRAGMA table_info(workspace_handoffs)").all() as Array<{ name: string }>).map(
+        ({ name }) => name,
+      ),
+    );
+    if (!columns.has("reclaimable")) {
+      db.exec("ALTER TABLE workspace_handoffs ADD COLUMN reclaimable INTEGER NOT NULL DEFAULT 0");
+    }
   });

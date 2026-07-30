@@ -100,6 +100,12 @@
                   projectProvider = "broker-project";
                   maximumPermission = "workspace-write";
                   supportedSourceKinds = [ "git" ];
+                  inputs = {
+                    maxInputs = 4;
+                    maxBytes = 16777216;
+                    maxEntries = 5000;
+                    maxPathBytes = 2048;
+                  };
                 };
                 policy.worklane = "project";
                 execution = {
@@ -198,6 +204,13 @@
             }).config.settings
             ) true
           );
+          invalidInputCeilings = builtins.tryEval (
+            builtins.deepSeq (catalogueLib.resolve (
+              lib.recursiveUpdate validWorkerLane {
+                workerLanes.project.workspace.inputs.maxInputs = 0;
+              }
+            )) true
+          );
         in
         (
           {
@@ -220,6 +233,9 @@
               assert !invalidStoreUpstream.success;
               assert !invalidUnknownRepository.success;
               assert !invalidCredentialRef.success;
+              assert !invalidInputCeilings.success;
+              assert validCatalogue.workerLanes.project.workspace.inputs.maxInputs == 4;
+              assert validCatalogue.workerLanes.project.workspace.inputs.maxBytes == 16777216;
               assert lib.all (lane: lane.networkAccess) qaCodexLanes;
               assert lib.all (lane: lane.approvalPolicy == "never") qaCodexLanes;
               pkgs.runCommand "hermes-worker-lane-options" { } "touch $out";

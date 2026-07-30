@@ -2,6 +2,11 @@ import { Data, Schema } from "effect";
 
 export const Reason = Schema.Literal(
   "request.invalid",
+  "inputs.conflict",
+  "inputs.producer_not_ready",
+  "inputs.limit",
+  "inputs.cross_board",
+  "inputs.not_found",
   "policy.denied",
   "policy.indeterminate",
   "policy.approval_required",
@@ -21,6 +26,7 @@ export const Reason = Schema.Literal(
   "handoff.conflict",
   "handoff.invalid_state",
   "handoff.failed",
+  "handoff.reclaim_failed",
   "project_source.not_found",
   "project_source.stale",
   "project_source.conflict",
@@ -121,7 +127,13 @@ export const statusFor = (error: BrokerError): number => {
     case "project_source.conflict":
     case "project_materialization.conflict":
     case "project_materialization.invalid_state":
+    case "inputs.conflict":
+    case "inputs.producer_not_ready":
+    case "inputs.cross_board":
+    case "inputs.not_found":
       return 409;
+    case "inputs.limit":
+      return 429;
     case "environment.capacity":
     case "exec.output_limit":
     case "fs.size_limit":
@@ -141,6 +153,7 @@ export const statusFor = (error: BrokerError): number => {
     case "handoff.failed":
     case "project_source.failed":
     case "project_materialization.failed":
+    case "handoff.reclaim_failed":
       return 500;
   }
 };
