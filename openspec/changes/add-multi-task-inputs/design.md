@@ -112,11 +112,19 @@ Destination execution begins only when its work/output workspace lease and all r
 
 No input mount is exposed through the execution listener before authority registration completes.
 
-### 9. Retain shared immutable outputs while referenced
+### 9. Gate handoff reclaim on explicit archive
 
-Each destination input binding holds a durable reference to the producer handoff. Producer workspace cleanup is independent, but the frozen handoff cannot be deleted while an active or retained destination binding references it.
+Each destination input binding holds a durable reference to the producer handoff. Producer workspace cleanup is independent, but frozen output remains available to live and future declared consumers until the producer is explicitly archived.
 
-Release occurs when the destination input generation is replaced, the task is deleted under policy, or retention expires after all active runs close. Crash recovery reconciles references and mounted sessions from durable bindings rather than inferring them from filesystem directories.
+Kanban lifecycle makes `done` and `archived` terminal. Retry occurs only through `blocked → unblock → ready` before completion, so a destination retry can reuse its exact input pin while a completed producer cannot silently create a newer completion. Any future trusted re-completion capability must preserve existing pins and require an explicit trusted act to select newer output.
+
+Time-based retention is unsuitable for declared inputs. TTL or sliding-window deletion would make a destination's validity clock-dependent and could create an unrecoverable dangling edge after its terminal producer can no longer rerun. Graph-wide completion is also insufficient because new consumers may be added later.
+
+The broker therefore deletes ready handoff bytes only after the producer is explicitly archived and no acquired input references remain. Archiving refuses non-terminal consumers, and task creation rejects `inputs_from` edges to archived producers; both guards are Kanban-local and require no broker query.
+
+Destination finalization releases the completed run's references. Archiving a destination idempotently releases every retained preparation for that task. Failed or blocked destinations keep references so retry receives bit-identical inputs. Mark-reclaimable, release, and finalization each attempt eligible deletion synchronously; there are no timers or sweeps.
+
+The archive path pushes release and mark-reclaimable operations using durable handoff identities. Workspace-service initialization reconciles missed pushes from archived Kanban records, so broker downtime does not make archive authority depend on transient delivery. `expired` remains a stable defense-in-depth reason for genuine data loss or manual corruption, not a routine retention outcome.
 
 Fan-out shares one immutable producer handoff across references; it does not create writable clones per child.
 
@@ -138,8 +146,8 @@ Code-result fan-in does not silently merge repository changes. Producers must pl
 
 - **[Risk] `parents` and `inputs_from` are still two concepts.** → Make `inputs_from` imply dependency gating and explain the single distinction: parent is ordering; input also supplies files.
 - **[Risk] Same-board lanes can transfer Project-derived information.** → State that lanes are least-privilege execution roles, not noninterference tenants; use separate instances for mutually distrustful workloads.
-- **[Risk] A producer rerun changes which output a consumer sees.** → Freeze exact producer task/run/handoff in the destination input generation before its first run.
-- **[Risk] Fan-out pins storage indefinitely.** → Use durable reference accounting, explicit task/input-generation retention, quotas, and reconciled cleanup.
+- **[Risk] A future trusted re-completion feature changes producer output.** → Preserve every existing destination's exact producer task/run/handoff pin and require an explicit trusted act to select a newer completion.
+- **[Risk] Fan-out pins storage until explicit producer retirement.** → Use archive-gated reclaim, durable reference accounting, Kanban-local archive guards, quotas, and startup reconciliation.
 - **[Risk] Many mounts increase VFS and startup cost.** → Enforce lane count/byte/entry ceilings and measure activation before raising defaults.
 - **[Risk] Task IDs are unfriendly paths.** → Surface title/path mappings in worker context; defer mutable aliases rather than compromise collision-free identity.
 - **[Risk] Worker guidance conflates human artifact selection with filesystem inputs.** → State that `artifacts` selects files for humans while `inputs_from` selects complete frozen producer outputs for workers.
@@ -152,10 +160,11 @@ Code-result fan-in does not silently merge repository changes. Producers must pl
 4. Implement broker input preparation, replay/conflict detection, limit validation, read-only VFS mounts, and crash reconciliation.
 5. Bind prepared inputs atomically with the destination task-run workspace and sandbox authority.
 6. Update Hermes worker context and guidance to list canonical input paths and provenance.
-7. Verify zero, one, and multiple inputs; fan-out; fan-in; cross-lane use; empty output; producer retry; destination retry; edge mutation; limits; stale runs; outage replay; retention; and cleanup.
+7. Verify zero, one, and multiple inputs; fan-out; fan-in; cross-lane use; empty output; destination retry; edge mutation; limits; stale runs; outage replay; archive-gated reclaim; and cleanup.
 8. Smoke-test a pre-created research fan-out/fan-in workflow and a Project implementation/review/revision workflow.
 
 
 ## Open Questions
 
 Cross-board imports, optional human input aliases, selected sub-output contracts, and content-addressed deduplication are deferred. They are not required for same-board fan-in/fan-out.
+

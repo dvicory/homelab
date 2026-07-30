@@ -51,29 +51,31 @@ Specialized behavior receives a globally unique lane name such as `security-revi
 
 **Alternative considered:** define lanes inside boards. Rejected because the same name could acquire different runtime and security meanings, complicating dispatch, audit, Nix validation, and cross-board operations.
 
-### 3. Make Projects Nix-authoritative and provider-agnostic
+### 3. Make Projects Nix-authoritative and source-provider-neutral
 
-A managed Project declares a logical source and exactly one `laneAccess` map. An absent lane entry denies direct source access. A value such as `read-only` or `workspace-write` attenuates the lane's maximum filesystem permission.
+A managed Project declares a typed logical `SourceSpec` and exactly one `laneAccess` map. An absent lane entry denies direct source access. A value such as `read-only` or `workspace-write` attenuates the lane's maximum filesystem permission.
 
 ```nix
 projects.homelab = {
   source = {
-    type = "git";
-    repositoryId = "homelab";
-    defaultRef = "main";
+    kind = "git";
+    sourceId = "homelab";
+    revisionPolicy = "pinned-default";
   };
   laneAccess = {
-    project = "workspace-write";
+    code = "workspace-write";
     review = "read-only";
-    codex = "workspace-write";
-    codex-plan = "read-only";
   };
 };
 ```
 
-Projects do not declare `allowedProviders`. The lane selects a deterministic provider for project work, and that provider declares the source kinds it supports. A Project that must not reach a host-worktree runtime simply omits that lane from `laneAccess`.
+Project identity, task binding, workspace lifecycle, immutable result identity, and publication boundary do not depend on Git. Source adapters own kind-specific generation resolution, acquisition provenance, materialization, and optional result metadata. The initial broker provider implements Git; archive, generated, service-produced, and operator-imported sources may be added behind the same contract. Live host-path mounts and model-selected source locations remain forbidden.
+
+Projects do not declare `allowedProviders`. The lane selects a deterministic provider for Project work, and that provider declares the source kinds it supports. A Project that must not reach a particular runtime omits that lane from `laneAccess`.
 
 Runtime state owns tasks, claims, events, run bindings, and handoffs. It does not create new managed source identities or broaden `laneAccess` beyond Nix.
+
+**Alternative considered:** encode `repositoryId` and Git semantics in the general Project contract. Rejected because Projects may later originate from archives, generated datasets, service snapshots, or operator imports; Git-specific history and changed paths belong to one adapter.
 
 **Alternative considered:** a mutable runtime Project catalogue bounded by Nix provider policy. Deferred because it adds source registration, authorization, reconciliation, and recovery machinery before dynamic Projects are needed.
 
@@ -97,19 +99,22 @@ Initially, the interactive orchestrator and ordinary Hermes worker lanes may sha
 
 A lane declaration includes:
 
+- capability-based selection description, supported goal shape, and prohibited effects;
 - runtime kind and optional profile or plugin;
-- fixed model/provider and reasoning effort, or an explicitly bounded set of task overrides;
+- fixed model policy and reasoning effort, or an explicitly bounded set of task overrides;
 - role/SOUL overlay beneath immutable operator and security instructions;
 - model-visible tools, toolsets, and skills;
 - durable-memory mode;
-- project mode (`none`, `optional`, or `required`);
-- deterministic scratch/project workspace providers and maximum permission;
-- supported source kinds and input capability;
+- Project mode (`none`, `optional`, or `required`);
+- deterministic scratch/Project workspace providers and maximum permission;
+- supported source kinds and immutable-input capability;
 - broker policy worklane and approval policy;
 - execution timeout, turn limits, resource ceiling, and concurrency;
-- completion/output contract.
+- completion and output contract.
 
-Model-visible tool filtering and backend authorization are separate requirements. Hiding a tool schema does not grant or revoke broker authority.
+Lane names represent materially different capabilities, not simulated job titles. Two lanes that differ only in role prose should be consolidated. Model-visible tool filtering and backend authorization remain separate requirements: hiding a tool schema does not grant or revoke broker authority.
+
+
 
 Durable memory defaults to `disabled` for task workers. A lane may opt into `lane` or `shared-profile` memory. Task/run transcript state remains isolated regardless of durable-memory mode. A lane namespace controls contamination and organization; it is not a confidentiality boundary from the gateway account.
 
@@ -139,7 +144,13 @@ The persisted binding includes the board-qualified task and run, lane revision, 
 
 The worker process receives only the opaque board/task/run/lease identity needed to retrieve this specification from the durable run record or trusted broker control plane. The dispatcher, terminal, execute-code, file, search, patch, process, and completion surfaces all resolve that same record. `HERMES_WORKER_SPEC` is a temporary implementation transport for the pre-broker slice, not a source of authority; the sandbox-authority integration must remove it and must not replace it with derived policy, tool, workspace, or permission environment variables. A worker process CWD and its secure tools must not resolve different logical workspaces.
 
-### 8. Cross-lane collaboration is intentional, not noninterference
+### 8. Keep coordination topology separate from lanes
+
+The live interactive orchestrator is the coordinator. Registered task lanes are leaf executors by default and do not inherit task creation, graph mutation, or approval authority merely because they use the same profile baseline. A separate orchestration contract may let the live orchestrator materialize an approved graph; that contract is not a property a task can select through `assignee`.
+
+This keeps every lane useful for solo work and prevents lane proliferation into decorative planner, manager, or synthesizer personas. A synthesis task is ordinary `general` work over explicit immutable inputs unless its execution capabilities genuinely require another lane.
+
+### 9. Cross-lane collaboration is intentional, not noninterference
 
 Lanes control direct capabilities: source materialization, writable workspace access, tools, broker policy, resource limits, and trusted credential adapters. Workers on one board are cooperating participants. Task bodies, comments, summaries, and later explicit artifact handoffs can carry information across lanes.
 
@@ -147,13 +158,13 @@ Project `laneAccess` governs direct source access, not all derived information. 
 
 Handoffs must preserve producer task/run, lane, Project/source-generation provenance, but receiving an output never grants direct Project authority.
 
-### 9. Boards are shared coordination, not profile ownership
+### 10. Boards are shared coordination, not profile ownership
 
 Boards remain shared under the instance root so an orchestrator and explicitly dispatched workers see one task graph. A worker run is pinned to exactly one board. Profiles do not own boards, lane definitions, or Project identities.
 
 Initially, filesystem inputs remain same-board. Cross-board transfer requires a future explicit import/promotion operation instead of arbitrary task-ID references.
 
-### 10. Keep data edges out of this routing change
+### 11. Keep data edges out of this routing change
 
 This change defines lane input capability and the task-run fields needed by later handoffs but does not implement general input mounting. The dependent input design uses:
 
@@ -162,7 +173,7 @@ This change defines lane input capability and the task-run fields needed by late
 
 A task does not name the same predecessor twice: `inputs_from` implies readiness gating, and dispatch gates on the union of both sets. This avoids automatically mounting every parent's files while keeping the model contract concise.
 
-### 11. Detached Codex lanes use capability profiles, not interactive elevation
+### 12. Detached Codex lanes use capability profiles, not interactive elevation
 
 The Codex adapter maps the frozen filesystem and network fields to a Codex
 permission profile. It does not use the legacy `--sandbox` projection, which

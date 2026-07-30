@@ -29,20 +29,20 @@ Ordinary task creation MAY select board-local producer task IDs through `inputs_
 - **THEN** the model-facing tool MUST reject or omit those fields
 
 ### Requirement: Exact frozen producer binding
-Before a destination first runs, trusted resolution MUST bind every input edge to one exact ready producer task/run and frozen handoff. Once persisted, later producer retries or catalogue changes MUST NOT silently replace that destination input generation.
+Before a destination first runs, trusted resolution MUST bind every input edge to one exact ready producer task/run and frozen handoff. Destination retries MUST retain that binding. A completed producer is terminal under the supported lifecycle; if a future trusted re-completion capability permits newer output, existing destinations MUST retain their original pins unless an explicit trusted operation replaces them.
 
 #### Scenario: Producer output becomes ready
 - **GIVEN** an input producer is `done` with one ready frozen handoff
 - **WHEN** the destination input generation is resolved
 - **THEN** it SHALL bind the exact producer task/run, lane, optional Project/source generation, handoff, and output manifest
 
-#### Scenario: Producer reruns after destination binding
-- **WHEN** a producer creates a newer completion after a destination input generation was frozen
+#### Scenario: Future newer completion exists
+- **WHEN** a trusted re-completion capability creates a newer producer completion after a destination input generation was frozen
 - **THEN** the destination SHALL retain its original producer handoff
-- **AND** using the newer output MUST require a trusted destination input-generation reset before another run
+- **AND** using the newer output MUST require an explicit trusted act; it MUST NOT happen silently
 
 #### Scenario: Destination retry
-- **WHEN** a destination retries without an authorized input-edge change
+- **WHEN** a destination retries
 - **THEN** it SHALL reuse the same immutable input binding set under a fresh destination run
 
 ### Requirement: Same-board fan-in and fan-out
@@ -61,6 +61,29 @@ The system MUST permit a destination to bind zero or more completed producers on
 - **WHEN** a destination selects a producer from another board or instance
 - **THEN** task creation or input resolution MUST reject the edge
 - **AND** it MUST NOT perform an implicit export or import
+
+### Requirement: Declared inputs survive until explicit retirement
+Kanban MUST guarantee that a producer's frozen output remains available to every live or future `inputs_from` consumer until a human explicitly retires the producer. Archiving a producer that still has live input-consumers MUST be refused, and creating an `inputs_from` edge naming an archived producer MUST be rejected. Both checks SHALL be kanban-local and MUST NOT require broker queries.
+
+#### Scenario: Archive refused with live consumers
+- **GIVEN** a producer has a ready handoff and a destination with an `inputs_from` edge to it is not `done` or `archived`
+- **WHEN** an operator attempts to archive the producer
+- **THEN** the archive SHALL be refused with the blocking destination identifiers
+- **AND** the producer, its handoff, and the edge SHALL remain unchanged
+
+#### Scenario: Archive allowed once consumers are terminal
+- **GIVEN** every input-consumer of a producer is `done` or `archived`
+- **WHEN** the operator archives the producer
+- **THEN** the archive SHALL succeed and the broker SHALL be notified so the producer's handoff becomes reclaimable
+
+#### Scenario: Edge naming archived producer
+- **WHEN** task creation names an archived task in `inputs_from`
+- **THEN** creation SHALL be rejected with a stable reason identifying the archived producer
+
+#### Scenario: Broker unreachable during archive
+- **GIVEN** the broker cannot be reached when a producer or destination is archived
+- **WHEN** the archive succeeds kanban-side
+- **THEN** the missed release and mark-reclaimable pushes SHALL be retried from durable kanban records at the next trusted workspace-service initialization
 
 ### Requirement: Namespaced read-only input mounts
 Each bound producer output MUST appear as a distinct read-only subtree at `/workspace/inputs/<producer-task-id>`. The system MUST NOT overlay, merge, rename, or copy producer files into another input, the destination work plane, or the destination output plane automatically.
@@ -126,20 +149,24 @@ The broker MUST durably prepare the exact ordered input-binding set, validate re
 - **THEN** the broker MUST reject the request as an idempotency conflict
 - **AND** it MUST preserve the original prepared binding
 
-### Requirement: Durable input retention and cleanup
-Every destination input binding MUST hold a durable reference to its producer handoff. The broker MUST retain that handoff while referenced and MUST release the reference only when the destination input generation is replaced or deleted according to policy and no active run uses it.
+### Requirement: Durable input retention and archive-gated cleanup
+Every destination preparation MUST hold durable references to its producer handoffs while its run may need them. Successful finalization MUST release that run's references; blocked or failed runs MUST retain them for bit-identical retry. A ready producer handoff MUST remain available for future declared consumers until the producer is explicitly archived. The broker MUST delete its bytes only after an idempotent mark-reclaimable operation records producer archive and no acquired references remain. It MUST NOT use timer-, TTL-, idleness-, or sweep-based deletion.
 
 #### Scenario: Producer workspace cleanup
-- **WHEN** the producer mutable workspace is deleted while destinations reference its ready handoff
-- **THEN** the handoff SHALL remain available to those destination bindings
+- **WHEN** the producer mutable workspace is deleted while its ready handoff remains unarchived or referenced
+- **THEN** the handoff SHALL remain available to declared destination bindings
 
-#### Scenario: Last reference released
-- **WHEN** the last destination reference and all active export/run references are released and retention permits deletion
-- **THEN** cleanup MAY delete the frozen handoff through the durable lifecycle
+#### Scenario: Last reference released before producer archive
+- **WHEN** the last destination reference is released but the producer is not archived
+- **THEN** the ready handoff SHALL remain available for a future same-board input edge
+
+#### Scenario: Last reference released after producer archive
+- **WHEN** a reclaimable producer handoff loses its last acquired reference
+- **THEN** the broker SHALL delete its bytes synchronously and idempotently
 
 #### Scenario: Broker restart
-- **WHEN** the broker restarts with active or retained input bindings
-- **THEN** it SHALL reconstruct retention and mount eligibility from durable records
+- **WHEN** the broker restarts with active, retained, or reclaimable input bindings
+- **THEN** it SHALL reconstruct retention and deletion eligibility from durable records
 - **AND** it MUST NOT infer authority solely from directories found on disk
 
 ### Requirement: Project work and inputs remain separate

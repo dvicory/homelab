@@ -21,3 +21,39 @@ A ready frozen task output MUST be reusable by zero or more explicit same-board 
 - **THEN** the destination MAY receive the producer handoff read-only
 - **AND** it MUST NOT receive the producer's workspace, credentials, or direct Project authority
 
+### Requirement: Archive-gated handoff reclaim
+A ready frozen task output's bytes SHALL be deleted only when the producer task has been archived and the archive has been pushed to the broker through an idempotent mark-reclaimable operation, and no acquired input references exist for that handoff. The system MUST NOT delete ready handoff bytes on any timer, TTL, consumption-idleness window, or background sweep.
+
+#### Scenario: Unreferenced archived producer
+- **GIVEN** a producer task is archived and its handoff has no acquired references
+- **WHEN** mark-reclaimable is pushed for that handoff
+- **THEN** the broker SHALL mark it reclaimable and delete its bytes synchronously
+
+#### Scenario: Referenced archived producer
+- **GIVEN** a producer task is archived and its handoff still has acquired references
+- **WHEN** mark-reclaimable is pushed
+- **THEN** the broker SHALL mark it reclaimable and retain the bytes
+- **AND** it SHALL delete the bytes synchronously when the last reference is released
+
+#### Scenario: Mark replay
+- **WHEN** mark-reclaimable is replayed for an already-reclaimable, unknown, or non-ready handoff
+- **THEN** the operation SHALL succeed idempotently and report each handoff as deleted, retained, or skipped
+
+### Requirement: Input reference release on terminal acts
+The broker SHALL release a destination run's acquired input references when that run's finalization succeeds, and SHALL release every preparation of a destination task on an idempotent release operation. Reference release MUST attempt synchronous deletion of any reclaimable handoff that becomes unreferenced.
+
+#### Scenario: Destination completes
+- **WHEN** a destination task-run's handoff finalization succeeds
+- **THEN** the broker SHALL release that run's input references
+- **AND** producer handoffs that are reclaimable and now unreferenced SHALL be deleted
+
+#### Scenario: Destination archived
+- **WHEN** the release operation is invoked for an archived destination task
+- **THEN** all of its preparations' references SHALL be released idempotently
+- **AND** retry of the release SHALL report success without changing state
+
+#### Scenario: Failed destination keeps inputs
+- **WHEN** a destination run fails and the task is blocked
+- **THEN** its input references SHALL remain acquired
+- **AND** a later retry SHALL observe bit-identical inputs
+

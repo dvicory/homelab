@@ -44,3 +44,10 @@
 - [x] 6.4 Verify lane-selected model/SOUL/tools/memory behavior and backend denial of stale or hidden operations.
 - [x] 6.5 Smoke-test one orchestrator-created Hermes task and one external task, proving each process and every exposed filesystem surface sees its single resolved workspace.
 - [x] 6.6 Run the focused Hermes, broker, Nix module, and end-to-end checks before completing the dependent handoff, Project-workspace, or multi-input changes.
+
+## 7. Capability and topology contracts
+
+- [ ] 7.1 Extend lane declarations and catalogue rendering with capability-based selection descriptions, immutable-input and output contracts, prohibited effects, and provider-neutral model-policy semantics; reject persona-only lane duplication.
+- [ ] 7.2 Define provider-neutral `SourceSpec` validation, preserve unsupported-source fail-closed behavior, and bind source-adapter lifecycle implementation through the broker Project provider contract.
+- [ ] 7.3 Keep task lanes leaf-only by default and keep proposal, approval, task creation, and graph mutation in a separate trusted orchestration authority.
+- [ ] 7.4 Verify capability-based lane selection, provider-neutral Project rejection/dispatch, and backend denial of leaf graph authority before enabling the starter catalogue.

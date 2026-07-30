@@ -50,26 +50,25 @@ Existing workspaces and queued tasks using `/workspace` as their work root may b
 
 **Alternative considered:** keep the repository at `/workspace` and add orchestration directories below it. Rejected because `inputs/` and `output/` would contaminate repository status and tools would need special path exclusions.
 
-### 2. Materialize a self-contained private repository
+### 2. Materialize provider-neutral source generations
 
-The provider resolves a Nix-authoritative Project source and immutable source generation, then creates a standalone repository in the task's private work plane. Its `.git` metadata must be self-contained within that work plane and must not reference the gateway checkout, another task workspace, or an external shared Git directory.
+The Project catalogue names a logical `SourceSpec`; it does not define Project as synonymous with a Git repository. A trusted source adapter resolves the spec into an immutable source generation, records adapter-specific provenance, and materializes a complete task-private tree in the work plane. The first implemented adapter is Git and MUST create self-contained `.git` metadata that does not reference the gateway checkout, another task workspace, or an external shared Git directory.
 
-The source adapter may use a broker-owned immutable baseline, a sanitized bundle/archive, or a broker-local mirror as an internal optimization. The activated task always receives a private view with one writer lease. Copy-on-write, reflinks, or later content-addressed storage may reduce duplication without changing this contract.
+The provider-neutral contract also admits future archive, generated, service-produced, or operator-imported source kinds without changing task, workspace, result, or publication identity. Host paths remain deferred. A future host-path adapter must capture an immutable generation before execution; it must not mount a live operator directory into a task or let the model name arbitrary paths.
+
+The source adapter may use a broker-owned immutable baseline, sanitized bundle/archive, or broker-local mirror internally. The activated task always receives a private view with one writer lease. Copy-on-write, reflinks, or later content-addressed storage may reduce duplication without changing this contract.
+
+**Alternative considered:** define Project as Git and add unrelated workspace types later. Rejected because task identity, lifecycle, output, review, and publication apply to more than repositories; Git history and changed paths are provider-specific provenance.
 
 **Alternative considered:** mount a linked host worktree. Rejected because its `.git` file points to shared gateway-owned metadata and reintroduces host paths, shared mutable state, and credential coupling.
 
-### 3. Keep source credentials inside trusted adapters
+### 3. Exclude acquisition credentials by construction
 
-Project source configuration contains a logical `repositoryId`, not a model-supplied URL or credential. Trusted Nix/provider configuration maps it to an acquisition adapter. For private sources, that adapter may exercise an operator credential while fetching into broker-owned staging, but it must sanitize the resulting repository configuration and prove the credential is absent from:
+Project source configuration contains a logical source identifier, not a model-supplied URL or credential. Trusted Nix/provider configuration maps it to an acquisition adapter. For private sources, that adapter may exercise an operator credential while fetching into detached broker-owned staging, but credential-bearing environment, arguments, helpers, remotes, and logs must be confined to that adapter and destroyed before the source generation becomes executable.
 
-- guest environment variables;
-- files and Git configuration in the work plane;
-- VM disk and snapshots;
-- command arguments and process environment;
-- logs, task summaries, and frozen output;
-- remote definitions that embed userinfo or tokens.
+The executable source tree, provider configuration, guest environment, VM disk/snapshots, task metadata, logs, and frozen outputs must not receive adapter-owned credential material or host-only acquisition paths. Materialized Git remotes and helper configuration are removed or rewritten before activation. Ordinary commands inside the guest have no ambient push or fetch credential. Any later authenticated publication is a separate trusted operation with its own approval and target binding.
 
-Source acquisition occurs before guest execution. Ordinary Git commands inside the guest have no ambient push or fetch credential. Any later authenticated publication is a separate trusted operation with its own approval and target binding.
+This is a construction and bounded-verification claim, not a universal byte-absence proof: an arbitrary repository may independently contain bytes equal to a secret, encoded copies, or encrypted data. Exact-value scanning of representative surfaces is useful defense in depth and regression detection, but `assertSanitized` must not claim to prove that arbitrary source content contains no credential material.
 
 ### 4. Treat source and workspace generations as immutable provenance
 
@@ -132,11 +131,19 @@ The workspace service must reconcile:
 
 Nix policy supplies workspace count, source size, file/entry limits, materialization deadline, retention, and storage quota. Disk ceilings must be enforced by storage/filesystem mechanisms where available rather than claimed from byte accounting alone.
 
-### 10. Expose Project results as provenance, not automatic mutation
+### 10. Freeze provider-neutral Project results before deleting mutable work
 
-Completion records whether the work plane differs from its source generation and may prepare a bounded Project-result descriptor. The descriptor binds the task/run, lane, Project, baseline generation, workspace result generation, and selected human artifacts.
+Successful completion of a writable Project computes a provider-neutral result from the immutable baseline and the final private work tree. The result records task/run, lane, Project, source generation, result identity, provider revision, selected human artifacts, and optional adapter-specific metadata. For Git this may include commits, a bundle, patch/delta, changed paths, and history provenance; those fields are not required of non-Git providers.
 
-It does not imply that the canonical Project changed. A later task may consume a reviewed patch/result, or an operator-authorized publication adapter may promote it. Human artifacts under `/workspace/output` remain separate from the complete Project result even when a patch is selected for delivery.
+Completion must durably freeze the selected source-relative delta or equivalent immutable result before releasing the writer lease. The mutable task workspace is never the long-term result. Once result capture and ordinary output capture succeed, the workspace transitions through release and physical deletion according to explicit retention and reference policy. Completion fails or remains recoverable if result freezing cannot finish; it must not report success and leave an unowned mutable workspace as the only copy.
+
+Recording or delivering a result does not imply that the canonical Project changed. Publication is a separate trusted adapter operation bound to the immutable result and an expected destination generation. A later task may also consume a reviewed immutable result or selected output without receiving the producer's mutable workspace.
+
+### 11. Enforce projected physical storage at materialization
+
+Source-generation logical limits and workspace physical allocation are separate invariants. Reusing one ready source generation for concurrent tasks must still reserve or verify enough physical capacity for every task-private workspace before staging or installation begins. The provider records the reservation with the materialization operation, consumes it atomically on install, and releases it on abort or deletion.
+
+Counting existing source-generation bytes once is insufficient when each materialization copies those bytes. Reflinks, snapshots, or deduplicated baselines may reduce actual allocation, but policy must use a conservative filesystem/storage reservation unless the backing mechanism supplies enforceable accounting.
 
 ## Risks / Trade-offs
 

@@ -6,18 +6,19 @@ Kanban currently treats every discoverable Hermes profile as an implicit worker 
 
 - **BREAKING** Replace implicit profile-as-assignee fallback with an explicit instance-wide worker-lane registry. A Hermes profile is spawnable only when an operator-declared lane references it.
 - Keep the interactive Hermes profile as the live orchestrator rather than an automatically assignable worker lane.
-- Let each lane declare its runtime, optional Hermes profile, model, reasoning effort, role/SOUL, tool and skill surface, memory scope, workspace contract, policy worklane, approvals, resource/runtime limits, and concurrency.
+- Let each lane declare its capability-based selection description, runtime, optional Hermes profile, model policy, reasoning effort, role/SOUL, tool and skill surface, memory scope, workspace contract, policy worklane, approvals, resource/runtime limits, concurrency, input/output contract, and prohibited effects.
 - Treat boards as shared cross-profile coordination namespaces that permit subsets of globally defined lanes and logical projects; boards and profiles are not tenancy boundaries.
-- Move logical project identity and security-relevant project policy into an instance-wide trusted catalogue. A project declares source identity and one `laneAccess` map; it does not select or allowlist workspace providers.
+- Move logical Project identity and security-relevant Project policy into an instance-wide trusted catalogue. A Project declares a typed provider-neutral `SourceSpec` and one `laneAccess` map; Git is one source kind, and the Project does not select or allowlist workspace providers.
 - Narrow ordinary model-facing task creation to a lane, optional logical project, dependency relationships, and bounded task intent. Remove model control over profiles, workspace kinds or paths, providers, permissions, policy worklanes, leases, and host paths.
 - Resolve and persist one immutable task-run worker specification before spawn. Every filesystem-bearing surface must consume that same board, task/run, lane, project, provider, permission, source-generation, workspace, and policy binding.
 - State the security boundary explicitly: lanes attenuate direct execution capabilities but are cooperating roles within one Hermes instance, not mandatory information-flow compartments or tenants.
+- Keep coordination topology outside the lane identity: the interactive orchestrator coordinates, while task lanes are leaf executors unless a separate trusted orchestration contract grants graph authority.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `explicit-worker-lane-routing`: Instance-wide lane declaration, board and project authorization, trusted task resolution, profile/runtime selection, agent configuration, and fail-closed dispatch.
+- `explicit-worker-lane-routing`: Instance-wide capability-based lane declaration, board and provider-neutral Project authorization, trusted task resolution, profile/runtime selection, agent configuration, and fail-closed dispatch.
 
 ### Modified Capabilities
 
