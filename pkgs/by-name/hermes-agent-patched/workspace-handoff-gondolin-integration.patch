@@ -1,0 +1,1389 @@
+diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
+index 3226b44..ee4a5cd 100644
+--- a/agent/prompt_builder.py
++++ b/agent/prompt_builder.py
+@@ -238,10 +238,7 @@ KANBAN_GUIDANCE_BROKER = _KANBAN_WORKER_COMMON + (
+     "6. Select deliverables with relative POSIX paths under `output/...` in "
+     "your assigned workspace. Never use absolute host paths, prose discovery, "
+     "or paths copied from another task. The trusted completion manifest, not "
+-    "summary or result text, determines attachments.\n"
+-    "7. Create one direct child with `inherit_parent_output=true` only when it "
+-    "must import this task's sole selected output. The broker freezes that "
+-    "output before the child starts; the child completes with its own manifest.\n\n"
++    "summary or result text, determines attachments.\n\n"
+     "Do not shell out to `hermes kanban`, call `clarify` from a headless worker, "
+     "or use `delegate_task` as a substitute for a durable board task."
+ )
+@@ -260,13 +257,15 @@ KANBAN_ORCHESTRATOR_GUIDANCE = (
+     "dispatcher-assigned task worker.\n"
+     "1. Use the `kanban_*` tools to create, inspect, link, comment on, and "
+     "observe tasks. Do not execute a task body yourself or substitute "
+-    "`delegate_task` for board work the user requested.\n"
++    "`delegate_task` for board work the user requested. A request for a "
++    "downloadable artifact or durable task is board work even when the user "
++    "says only “delegate a task.”\n"
+     "2. Create each intended task once. A `ready` or `running` task is queued "
+     "or executing, not evidence that the dispatcher is unavailable or the "
+-    "worker is stalled. Short tasks need not emit heartbeats. Do not create a "
+-    "replacement merely because status or heartbeat is unchanged within the "
+-    "claim lease. Judge progress from authoritative task events, not a terminal "
+-    "process view.\n"
++    "worker is stalled. Completion notifications are push-driven: after "
++    "creating a task, end the turn instead of polling `kanban_show`, checking "
++    "heartbeats, sleeping, or scheduling a speculative follow-up. Do not create "
++    "a replacement merely because status is unchanged within the claim lease.\n"
+     "3. Worker lifecycle belongs to the assigned worker. Do not complete, "
+     "block, or heartbeat on its behalf. Unblock only when the task contract "
+     "or a human authorizes a retry and the recorded blocker is resolved.\n"
+@@ -282,12 +281,13 @@ KANBAN_ORCHESTRATOR_GUIDANCE = (
+     "6. Use `kanban_comment` for relevant routing context. Never put secrets, "
+     "tokens, raw PII, host paths, or broker authority in board data; task history "
+     "is durable.\n"
+-    "7. When a downstream task must import a producer's selected broker output, "
+-    "create only that producer and include the downstream contract in its body. "
+-    "The producer creates the one direct child with `inherit_parent_output=true` "
+-    "before completion. Broker preparation freezes the producer manifest and the "
+-    "child imports it before spawn; inheritance alone does not publish child "
+-    "changes."
++    "7. Broker completion automatically materializes and sends the worker's "
++    "selected artifacts. Never recreate, base64-encode, execute code for, "
++    "`kanban_attach`, or emit `MEDIA:` copies of those files. The completion "
++    "notification and `kanban_attachments` are authoritative.\n"
++    "8. Only when a human explicitly asks to receive attachments from an "
++    "already completed task, call `kanban_attachments` with `action=\"deliver\"`; "
++    "do not recreate their bytes or rerun the worker."
+ )
+ 
+ 
+diff --git a/gateway/kanban_watchers.py b/gateway/kanban_watchers.py
+index d6e324e..a264791 100644
+--- a/gateway/kanban_watchers.py
++++ b/gateway/kanban_watchers.py
+@@ -654,14 +654,11 @@ class GatewayKanbanWatchersMixin:
+         board: Optional[str] = None,
+         run_id: Optional[int] = None,
+     ) -> None:
+-        """Upload the explicit, durable completion artifact manifest.
+-
+-        Native completions already copied selected files into
+-        ``task_attachments``. Broker completions retain only a relative
+-        ``output/...`` manifest and an opaque capture id; this method prepares,
+-        reads, releases, and stores each export exactly once before sending it
+-        to the chat. No path discovery from summaries or result prose is
+-        permitted.
++        """Upload artifacts already materialized in native task attachments.
++
++        Broker capture completes only after its selected frozen files have
++        entered the same attachment store. Recipient delivery never reads a
++        live worker workspace or calls the broker.
+         """
+         if not isinstance(event_payload, dict):
+             return
+@@ -675,94 +672,19 @@ class GatewayKanbanWatchersMixin:
+         if not artifact_names or task is None:
+             return
+ 
+-        async def _native_paths() -> list[str]:
+-            def _read_native() -> list[str]:
+-                from hermes_cli import kanban_db as _kb
+-                with contextlib.closing(_kb.connect(board=board)) as conn:
+-                    attachments = {
+-                        str(attachment.filename): str(attachment.stored_path)
+-                        for attachment in _kb.list_attachments(conn, task.id)
+-                        if attachment.uploaded_by != "workspace_export"
+-                    }
+-                return [
+-                    attachments[name] for name in artifact_names
+-                    if name in attachments and os.path.isfile(attachments[name])
+-                ]
+-            return await asyncio.to_thread(_read_native)
+-
+-        async def _broker_paths() -> list[str]:
+-            def _copy_broker() -> list[str]:
+-                from hermes_cli import kanban_db as _kb
+-                from tools.environments.gondolin import BrokerClient
+-                import hashlib
+-
+-                with contextlib.closing(_kb.connect(board=board)) as conn:
+-                    capture = _kb.get_workspace_capture(
+-                        conn, task.id, run_id
+-                    )
+-                    if not isinstance(capture, dict):
+-                        return []
+-                    handoff_id = capture.get("handoff_id")
+-                    finalization_id = capture.get("finalization_id")
+-                    if not isinstance(handoff_id, str) or not isinstance(finalization_id, str):
+-                        return []
+-                    existing = {
+-                        name: _kb.find_workspace_export_attachment(conn, task.id, name)
+-                        for name in artifact_names
+-                    }
+-                    pending = [name for name in artifact_names if existing[name] is None]
+-                    if pending:
+-                        endpoint = os.environ.get(
+-                            "GONDOLIN_EFFECT_CONTROL_SOCKET", ""
+-                        ).strip()
+-                        if not endpoint:
+-                            return [
+-                                str(existing[name].stored_path)
+-                                for name in artifact_names
+-                                if existing[name] is not None
+-                            ]
+-                        client = BrokerClient(endpoint, timeout=30.0)
+-                        try:
+-                            for name in pending:
+-                                delivery_id = "d_" + hashlib.sha256(
+-                                    f"{finalization_id}:{task.id}:{run_id}\x00{name}".encode()
+-                                ).hexdigest()[:32]
+-                                prepared = client.prepare_export(
+-                                    delivery_id=delivery_id,
+-                                    handoff_id=handoff_id,
+-                                    relative_path=name.removeprefix("output/"),
+-                                )
+-                                try:
+-                                    data = client.read_export_bytes(
+-                                        prepared["exportToken"],
+-                                        expected_size=int(prepared["size"]),
+-                                    )
+-                                finally:
+-                                    try:
+-                                        client.release_export(prepared["exportToken"])
+-                                    except Exception as release_exc:
+-                                        logger.warning(
+-                                            "kanban notifier: export release failed for %s: %s",
+-                                            name, release_exc,
+-                                        )
+-                                existing[name] = _kb.store_workspace_export_attachment(
+-                                    conn, task.id, filename=name, data=data,
+-                                    delivery_id=delivery_id, run_id=run_id, board=board,
+-                                )
+-                        finally:
+-                            client.close()
+-                    return [
+-                        str(existing[name].stored_path)
+-                        for name in artifact_names
+-                        if existing[name] is not None
+-                        and os.path.isfile(existing[name].stored_path)
+-                    ]
+-            return await asyncio.to_thread(_copy_broker)
+-
+-        if getattr(task, "workspace_kind", None) == "broker":
+-            paths = await _broker_paths()
+-        else:
+-            paths = await _native_paths()
++        def _read_paths() -> list[str]:
++            from hermes_cli import kanban_db as _kb
++            with contextlib.closing(_kb.connect(board=board)) as conn:
++                attachments = {
++                    str(attachment.filename): str(attachment.stored_path)
++                    for attachment in _kb.list_attachments(conn, task.id)
++                }
++            return [
++                attachments[name] for name in artifact_names
++                if name in attachments and os.path.isfile(attachments[name])
++            ]
++
++        paths = await asyncio.to_thread(_read_paths)
+         if not paths:
+             return
+ 
+diff --git a/gateway/run.py b/gateway/run.py
+index 83341e1..1d86988 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -1110,6 +1110,7 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {
+     "text_to_speech",
+     "text_to_speech_tool",
+     "image_generate",
++    "kanban_attachments",
+ }
+ 
+ # ---- helpers: detect interrupted tool tails & auto-continue noise ----------
+@@ -1181,6 +1182,49 @@ _TOOL_MEDIA_RE = re.compile(
+ )
+ 
+ 
++def _resolve_kanban_attachment_delivery(payload: Any) -> List[str]:
++    """Resolve an opaque delivery request inside the trusted gateway process."""
++    if not isinstance(payload, dict) or not payload.get("ok"):
++        return []
++    request = payload.get("attachment_delivery")
++    if not isinstance(request, dict):
++        return []
++    board = request.get("board")
++    task_id = request.get("task_id")
++    filenames = request.get("filenames")
++    if (
++        not isinstance(board, str)
++        or not isinstance(task_id, str)
++        or not isinstance(filenames, list)
++        or not filenames
++        or any(not isinstance(name, str) for name in filenames)
++    ):
++        return []
++    try:
++        from hermes_cli import kanban_db as kb
++
++        with kb.connect(board=board) as conn:
++            task = kb.get_task(conn, task_id)
++            if task is None or task.status != "done":
++                return []
++            by_name = {
++                attachment.filename: attachment
++                for attachment in kb.list_attachments(conn, task_id)
++            }
++            selected = [by_name.get(name) for name in filenames]
++            if any(attachment is None for attachment in selected):
++                return []
++            paths = [str(Path(attachment.stored_path)) for attachment in selected]
++            if not all(Path(path).is_file() for path in paths):
++                return []
++            return paths
++    except Exception:
++        logger.exception(
++            "Failed to resolve Kanban attachment delivery for task %s", task_id
++        )
++        return []
++
++
+ def _collect_auto_append_media_tags(
+     messages: List[Dict[str, Any]],
+     history_offset: int = 0,
+@@ -1233,6 +1277,19 @@ def _collect_auto_append_media_tags(
+             continue
+         content = str(msg.get("content") or "")
+         tool_name = tool_name_by_call_id.get(call_id)
++        if tool_name == "kanban_attachments":
++            try:
++                payload = json.loads(content)
++            except Exception:
++                payload = None
++            # An explicit re-delivery request intentionally bypasses history
++            # dedup. The tool result contains only task metadata; host paths are
++            # resolved here and never exposed to the model.
++            media_tags.extend(
++                f"MEDIA:{path}"
++                for path in _resolve_kanban_attachment_delivery(payload)
++            )
++            continue
+         # JSON-payload tools (image_generate) return a local-file path in a
+         # known field rather than a MEDIA: tag. Extract it so delivery is
+         # deterministic even when the model omits the path from its reply.
+diff --git a/plugins/workspace-service/__init__.py b/plugins/workspace-service/__init__.py
+index 451855e..0d407ae 100644
+--- a/plugins/workspace-service/__init__.py
++++ b/plugins/workspace-service/__init__.py
+@@ -1,7 +1,8 @@
+-"""Broker-backed workspace capture/import/export lifecycle hooks.
++"""Broker-backed immutable workspace capture lifecycle hooks.
+ 
+-Hermes owns only intent rows in the existing task_events table.  The broker
+-owns every activation, handoff, import, export, lease, and replay journal.
++Hermes owns completion intent and native task attachments. The broker owns each
++activation, frozen handoff, and replay journal. Broker output never becomes a
++writable child workspace.
+ """
+ from __future__ import annotations
+ 
+@@ -40,16 +41,13 @@ def _opaque_id(prefix: str) -> str:
+     return f"{prefix}_{secrets.token_hex(16)}"
+ 
+ 
+-def _stable_delivery_id(intent_id: str, relative_path: str) -> str:
+-    digest = hashlib.sha256(f"{intent_id}\x00{relative_path}".encode()).hexdigest()
++def _stable_delivery_id(finalization_id: str, relative_path: str) -> str:
++    digest = hashlib.sha256(
++        f"{finalization_id}\x00{relative_path}".encode()
++    ).hexdigest()
+     return f"d_{digest[:32]}"
+ 
+ 
+-def _stable_preparation_id(task_id: str, run_id: int, source_run_id: int) -> str:
+-    digest = hashlib.sha256(f"{task_id}\x00{run_id}\x00{source_run_id}".encode()).hexdigest()
+-    return f"p_{digest[:32]}"
+-
+-
+ def _capture_replay(
+     client: BrokerClient,
+     board: str,
+@@ -68,30 +66,11 @@ def _capture_replay(
+     )
+ 
+ 
+-def _prepare_and_release_selected(
+-    client: BrokerClient, handoff_id: str, intent_id: str, artifacts: list[str]
+-) -> None:
+-    # Completion must prove every selected file exists in the frozen broker
+-    # tree before Hermes closes the run. Tokens are intentionally released;
+-    # notifier delivery prepares fresh, subscriber-specific exports later.
+-    for relative_path in artifacts:
+-        delivery_id = _stable_delivery_id(intent_id, relative_path)
+-        prepared = client.prepare_export(
+-            delivery_id=delivery_id,
+-            handoff_id=handoff_id,
+-            relative_path=relative_path.removeprefix("output/"),
+-        )
+-        try:
+-            if prepared["size"] < 0:
+-                raise RuntimeError("broker returned a negative export size")
+-        finally:
+-            client.release_export(prepared["exportToken"])
+-
+-
+ def _on_completion_intent(
+     *, task_id: str, board: str, run_id: int, finalization_id: str,
+     artifacts: list[str], **_: Any,
+ ) -> dict[str, bool]:
++    """Fence the producer, freeze output, and install selected native attachments."""
+     if not _enabled():
+         raise RuntimeError("workspace handoff is disabled")
+     board = _board_name(board)
+@@ -101,58 +80,52 @@ def _on_completion_intent(
+             raise RuntimeError("workspace completion task is stale")
+         if task.current_run_id != int(run_id):
+             raise RuntimeError("workspace completion run is stale")
++
+     client = _client()
+     try:
+         captured = _capture_replay(
+             client, board, task_id, int(run_id), finalization_id, list(artifacts)
+         )
+-        intent = f"{finalization_id}:{task_id}:{run_id}"
+-        _prepare_and_release_selected(client, captured["handoffId"], intent, list(artifacts))
++        handoff_id = str(captured["handoffId"])
++        selected = captured.get("selectedArtifacts")
++        if selected != list(artifacts):
++            raise RuntimeError("broker selected-artifact manifest changed")
++        materialized = [
++            (
++                relative_path,
++                client.read_handoff_artifact_bytes(
++                    handoff_id=handoff_id,
++                    relative_path=relative_path,
++                ),
++            )
++            for relative_path in artifacts
++        ]
+     finally:
+         client.close()
++
+     with contextlib.closing(kb.connect(board=board)) as conn:
+         kb.append_workspace_capture(
+             conn, task_id, run_id=int(run_id),
+-            handoff_id=str(captured["handoffId"]),
++            handoff_id=handoff_id,
+             finalization_id=str(finalization_id),
+             artifacts=list(artifacts),
+             board=board,
+         )
++        for relative_path, data in materialized:
++            kb.store_workspace_handoff_attachment(
++                conn,
++                task_id,
++                filename=relative_path,
++                data=data,
++                delivery_id=_stable_delivery_id(finalization_id, relative_path),
++                run_id=int(run_id),
++                board=board,
++            )
+     return {"ready": True}
+ 
+ 
+-def _source_facts(conn: Any, task_id: str, board: str, run_id: int) -> tuple[Any, Any, dict]:
+-    task = kb.get_task(conn, task_id)
+-    if task is None or task.workspace_kind != "broker" or task.status != "running":
+-        raise RuntimeError("workspace destination is stale")
+-    if task.current_run_id != int(run_id):
+-        raise RuntimeError("workspace destination run is stale")
+-    inheritance = kb.get_inheritance_intent(conn, task_id)
+-    if not isinstance(inheritance, dict):
+-        return task, None, {}
+-    source_id = inheritance.get("source_task_id")
+-    source_run_id = inheritance.get("source_run_id")
+-    if not isinstance(source_id, str) or not source_id or not isinstance(source_run_id, int):
+-        raise RuntimeError("workspace inheritance intent is malformed")
+-    if kb.parent_ids(conn, task_id) != [source_id]:
+-        raise RuntimeError("workspace inheritance requires one direct parent")
+-    source = kb.get_task(conn, source_id)
+-    if source is None or source.status != "done" or source.workspace_kind != "broker":
+-        raise RuntimeError("workspace source is not complete")
+-    if source.tenant != task.tenant or inheritance.get("tenant") != task.tenant:
+-        raise RuntimeError("workspace source and destination tenants differ")
+-    if inheritance.get("creator") is not None and inheritance.get("creator") != task.created_by:
+-        raise RuntimeError("workspace inheritance creator changed")
+-    source_intent = kb.get_completion_intent(conn, source_id, source_run_id)
+-    if not isinstance(source_intent, dict) or not source_intent.get("finalization_id"):
+-        raise RuntimeError("workspace source completion intent is unavailable")
+-    return task, source, {"inheritance": inheritance, "source_intent": source_intent, "source_run_id": source_run_id}
+-
+-
+ def _authority_for_run(conn: Any, task_id: str, run_id: int) -> dict[str, Any]:
+-    specification = kb.get_task_worker_specification(
+-        conn, task_id, run_id=int(run_id)
+-    )
++    specification = kb.get_task_worker_specification(conn, task_id, run_id=int(run_id))
+     if specification is None:
+         raise RuntimeError("durable worker specification is missing")
+     worklane = specification.policy.get("worklane")
+@@ -168,10 +141,7 @@ def _authority_for_run(conn: Any, task_id: str, run_id: int) -> dict[str, Any]:
+         "policyRevision": specification.policy_revision,
+     }
+     if specification.project is not None:
+-        if (
+-            specification.project_revision is None
+-            or specification.source_generation is None
+-        ):
++        if specification.project_revision is None or specification.source_generation is None:
+             raise RuntimeError("worker specification Project source is incomplete")
+         authority.update(
+             project=specification.project,
+@@ -188,45 +158,25 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
+     client = _client()
+     try:
+         with contextlib.closing(kb.connect(board=board)) as conn:
+-            task, source, facts = _source_facts(conn, task_id, board, int(run_id))
++            task = kb.get_task(conn, task_id)
++            if task is None or task.workspace_kind != "broker" or task.status != "running":
++                raise RuntimeError("workspace destination is stale")
++            if task.current_run_id != int(run_id):
++                raise RuntimeError("workspace destination run is stale")
++            if kb.get_inheritance_intent(conn, task_id) is not None:
++                raise RuntimeError("writable inherited workspaces are no longer supported")
+             authority = _authority_for_run(conn, task_id, int(run_id))
+-            destination_key = broker_environment_key(task_id)
+-            if source is not None:
+-                source_run_id = int(facts["source_run_id"])
+-                source_capture = _capture_replay(
+-                    client, board, source.id, source_run_id,
+-                    str(facts["source_intent"]["finalization_id"]),
+-                )
+-                import_intent = kb.get_workspace_import_intent(conn, task_id, int(run_id))
+-                if not isinstance(import_intent, dict) or not import_intent.get("preparation_id"):
+-                    preparation_id = _stable_preparation_id(task_id, int(run_id), source_run_id)
+-                    import_intent = kb.append_workspace_import_intent(
+-                        conn, task_id, run_id=int(run_id),
+-                        preparation_id=preparation_id, board=board,
+-                    )
+-                imported = client.import_handoff(
+-                    preparation_id=str(import_intent["preparation_id"]),
+-                    board=board,
+-                    source_handoff_id=source_capture["handoffId"],
+-                    source_task_id=source.id,
+-                    destination_task_id=task_id,
+-                    destination_run_id=int(run_id),
+-                    destination_environment_key=destination_key,
+-                )
+-                if imported["ownerEnvironmentKey"] != destination_key:
+-                    raise RuntimeError("broker import owner does not match destination")
+-                binding = client.acquire_workspace(
+-                    destination_key, workspace_id=imported["workspaceId"]
+-                )
+-            else:
+-                binding = client.acquire_workspace(destination_key)
+-            client.activate_task_run(
+-                board=board,
+-                environment_key=destination_key, task_id=task_id, run_id=int(run_id),
+-                workspace_id=binding["workspaceId"],
+-                workspace_lease_id=binding["workspaceLeaseId"],
+-                authority=authority,
+-            )
++        destination_key = broker_environment_key(task_id)
++        binding = client.acquire_workspace(destination_key)
++        client.activate_task_run(
++            board=board,
++            environment_key=destination_key,
++            task_id=task_id,
++            run_id=int(run_id),
++            workspace_id=binding["workspaceId"],
++            workspace_lease_id=binding["workspaceLeaseId"],
++            authority=authority,
++        )
+     except BrokerError:
+         raise
+     finally:
+@@ -234,7 +184,9 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
+     return {"ready": True}
+ 
+ 
+-def _on_spawn_failed(*, task_id: str, board: str, run_id: int | None = None, **_: Any) -> None:
++def _on_spawn_failed(
++    *, task_id: str, board: str, run_id: int | None = None, **_: Any
++) -> None:
+     if not _enabled() or run_id is None:
+         return
+     try:
+@@ -243,13 +195,12 @@ def _on_spawn_failed(*, task_id: str, board: str, run_id: int | None = None, **_
+             client.consume_task_run(
+                 board=board,
+                 environment_key=broker_environment_key(task_id),
+-                task_id=task_id, run_id=int(run_id),
++                task_id=task_id,
++                run_id=int(run_id),
+             )
+         finally:
+             client.close()
+     except Exception:
+-        # The broker activation remains durable and its reclaim/TTL path is the
+-        # authority if a local failure prevents immediate consumption.
+         return
+ 
+ 
+@@ -257,36 +208,21 @@ def _on_terminal_workspace(
+     *, task_id: str, board: str, run_id: int | None = None, **_: Any
+ ) -> None:
+     """Consume a broker activation after a terminal worker transition."""
+-    if not _enabled() or run_id is None:
+-        return
+-    try:
+-        client = _client()
+-        try:
+-            client.consume_task_run(
+-                board=board,
+-                environment_key=broker_environment_key(task_id),
+-                task_id=task_id,
+-                run_id=int(run_id),
+-            )
+-        finally:
+-            client.close()
+-    except Exception:
+-        # The broker's durable lease/reclaim path remains authoritative if
+-        # notification or process teardown cannot reach it immediately.
+-        return
++    _on_spawn_failed(task_id=task_id, board=board, run_id=run_id)
+ 
+ 
+-def _on_recovery(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[str, bool]:
++def _on_recovery(
++    *, task_id: str, board: str, run_id: int, **_: Any
++) -> dict[str, bool]:
+     board = _board_name(board)
+     with contextlib.closing(kb.connect(board=board)) as conn:
+         completion_intent = kb.get_completion_intent(conn, task_id, int(run_id))
+-        import_intent = kb.get_workspace_import_intent(conn, task_id, int(run_id))
+-    if isinstance(import_intent, dict) and import_intent.get("preparation_id"):
+-        return _on_pre_spawn(task_id=task_id, board=board, run_id=int(run_id))
+     if not isinstance(completion_intent, dict) or not completion_intent.get("finalization_id"):
+         raise RuntimeError("workspace recovery intent is unavailable")
+     return _on_completion_intent(
+-        task_id=task_id, board=board, run_id=int(run_id),
++        task_id=task_id,
++        board=board,
++        run_id=int(run_id),
+         finalization_id=str(completion_intent["finalization_id"]),
+         artifacts=list(completion_intent.get("artifacts", [])),
+     )
+diff --git a/tests/gateway/test_media_extraction.py b/tests/gateway/test_media_extraction.py
+index 65d4a72..5a2fde2 100644
+--- a/tests/gateway/test_media_extraction.py
++++ b/tests/gateway/test_media_extraction.py
+@@ -185,6 +185,74 @@ caption
+         assert tags == ["MEDIA:/tmp/gen/cat.png"]
+         assert voice is False
+ 
++    def test_gateway_resolves_opaque_completed_attachment_delivery(
++        self, tmp_path, monkeypatch
++    ):
++        """Task tool results keep host paths hidden while the gateway delivers."""
++        import json
++        import time
++
++        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
++        from hermes_cli import kanban_db as kb
++        from gateway.run import _collect_auto_append_media_tags
++
++        kb.init_db()
++        conn = kb.connect(board="delivery-board")
++        try:
++            task_id = kb.create_task(
++                conn,
++                title="deliver",
++                assignee="worker",
++                board="delivery-board",
++            )
++            kb.store_attachment_bytes(
++                conn,
++                task_id,
++                "output/result.json",
++                b'{"result":"ok"}',
++                content_type="application/json",
++                uploaded_by="workspace_handoff",
++                board="delivery-board",
++            )
++            attachment = kb.list_attachments(conn, task_id)[0]
++            conn.execute(
++                "UPDATE tasks SET status = 'done', completed_at = ? WHERE id = ?",
++                (int(time.time()), task_id),
++            )
++        finally:
++            conn.close()
++
++        payload = {
++            "ok": True,
++            "attachment_delivery": {
++                "board": "delivery-board",
++                "task_id": task_id,
++                "filenames": [attachment.filename],
++            },
++        }
++        content = json.dumps(payload)
++        assert attachment.stored_path not in content
++        messages = [
++            {
++                "role": "assistant",
++                "tool_calls": [{
++                    "id": "call_delivery",
++                    "function": {"name": "kanban_attachments"},
++                }],
++            },
++            {
++                "role": "tool",
++                "tool_call_id": "call_delivery",
++                "content": content,
++            },
++            {"role": "assistant", "content": "Attached."},
++        ]
++
++        tags, voice = _collect_auto_append_media_tags(messages)
++
++        assert tags == [f"MEDIA:{attachment.stored_path}"]
++        assert voice is False
++
+     def test_gateway_auto_append_image_generate_prefers_host_path(self):
+         """When host and sandbox paths differ, the host-deliverable path wins."""
+         from gateway.run import _collect_auto_append_media_tags
+diff --git a/tests/hermes_cli/test_kanban_swarm.py b/tests/hermes_cli/test_kanban_swarm.py
+index af8dd19..02cec34 100644
+--- a/tests/hermes_cli/test_kanban_swarm.py
++++ b/tests/hermes_cli/test_kanban_swarm.py
+@@ -148,7 +148,6 @@ def test_trusted_workspace_handoff_uses_broker_descendants_and_honors_explicit_k
+                 "completion_intent",
+                 "workspace_completion_intent",
+                 "workspace_capture",
+-                "workspace_import_intent",
+                 "workspace_artifact_delivered",
+             }
+             for event in root_events
+@@ -190,24 +189,3 @@ def test_trusted_workspace_handoff_uses_broker_descendants_and_honors_explicit_k
+         explicit_conn.close()
+ 
+ 
+-def test_broker_multi_parent_inheritance_rejects_implicit_file_merge(tmp_path):
+-    conn = kb.connect(tmp_path / "multi-parent.db")
+-    try:
+-        parent_a = kb.create_task(
+-            conn, title="A", assignee="a", workspace_kind="broker", tenant="t"
+-        )
+-        parent_b = kb.create_task(
+-            conn, title="B", assignee="b", workspace_kind="broker", tenant="t"
+-        )
+-        with pytest.raises(ValueError, match="exactly one parent"):
+-            kb.create_task(
+-                conn,
+-                title="merged child",
+-                assignee="reviewer",
+-                workspace_kind="broker",
+-                tenant="t",
+-                parents=[parent_a, parent_b],
+-                inherit_parent_output=True,
+-            )
+-    finally:
+-        conn.close()
+diff --git a/tests/hermes_cli/test_worker_lane_discovery.py b/tests/hermes_cli/test_worker_lane_discovery.py
+index e2e7085..576aba3 100644
+--- a/tests/hermes_cli/test_worker_lane_discovery.py
++++ b/tests/hermes_cli/test_worker_lane_discovery.py
+@@ -141,8 +141,6 @@ def test_kanban_guidance_is_scoped_to_workspace_mode(monkeypatch):
+     assert "relative POSIX paths" in broker
+     assert "output/..." in broker
+     assert "trusted completion manifest" in broker
+-    assert "inherit_parent_output=true" in broker
+-    assert "broker freezes" in broker
+     assert "absolute host paths" in broker
+     assert "revision" not in broker.lower()
+     assert "hash" not in broker.lower()
+diff --git a/tests/plugins/test_workspace_zero_schema.py b/tests/plugins/test_workspace_zero_schema.py
+index 72120e2..9cad7bd 100644
+--- a/tests/plugins/test_workspace_zero_schema.py
++++ b/tests/plugins/test_workspace_zero_schema.py
+@@ -91,32 +91,52 @@ def test_completion_intent_replay_excludes_reclaim_and_dry_run(tmp_path, monkeyp
+         assert kb.get_task(conn, task_id).status == "done"
+ 
+ 
+-def test_import_response_loss_replays_without_new_intent(tmp_path, monkeypatch):
++def test_broker_completion_materializes_selected_attachment_before_done(tmp_path, monkeypatch):
+     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
++    monkeypatch.setenv("HERMES_WORKSPACE_HANDOFF", "1")
++    monkeypatch.setenv("HERMES_SANDBOX_AUTHORITY_BINDING", "capture-binding")
+     kb.init_db()
+-    with kb.connect(board="import-board") as conn:
++    plugin_path = Path(__file__).parents[2] / "plugins" / "workspace-service" / "__init__.py"
++    spec = importlib.util.spec_from_file_location("workspace_service_capture_test", plugin_path)
++    assert spec and spec.loader
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++
++    class CaptureClient:
++        def capture_handoff(self, **kwargs):
++            return {
++                "handoffId": "00000000-0000-4000-8000-000000000001",
++                "selectedArtifacts": list(kwargs["selected_artifacts"]),
++            }
++
++        def read_handoff_artifact_bytes(self, **kwargs):
++            assert kwargs["relative_path"] == "output/report.txt"
++            return b"frozen bytes"
++
++        def close(self):
++            return None
++
++    monkeypatch.setattr(module, "_client", CaptureClient)
++    with kb.connect(board="capture-board") as conn:
+         task_id = kb.create_task(
+-            conn, title="import", assignee="worker", workspace_kind="broker"
++            conn, title="capture", assignee="worker", workspace_kind="broker"
+         )
+         kb.claim_task(conn, task_id)
+         run_id = int(kb.get_task(conn, task_id).current_run_id)
+-        intent = kb.append_workspace_import_intent(
+-            conn, task_id, run_id=run_id, preparation_id="p_fixed",
+-            board="import-board",
+-        )
+-        monkeypatch.setattr(
+-            kb, "_run_required_workspace_hook",
+-            lambda *args, **kwargs: {"ready": True},
+-        )
+-        assert kb.recover_workspace_import_intents(
+-            conn, board="import-board"
+-        ) == [task_id]
+-        recovered = kb._internal_events_for(
+-            conn, task_id, "workspace_import_recovered"
+-        )
+-        assert len(recovered) == 1
+-        assert recovered[0].payload["preparation_id"] == intent["preparation_id"]
+-        assert recovered[0].payload["run_id"] == run_id
++    assert module._on_completion_intent(
++        task_id=task_id,
++        board="capture-board",
++        run_id=run_id,
++        finalization_id="f_capture",
++        artifacts=["output/report.txt"],
++    ) == {"ready": True}
++    with kb.connect(board="capture-board") as conn:
++        task = kb.get_task(conn, task_id)
++        attachments = kb.list_attachments(conn, task_id)
++        assert task.status == "running"
++        assert len(attachments) == 1
++        assert attachments[0].filename == "output/report.txt"
++        assert Path(attachments[0].stored_path).read_bytes() == b"frozen bytes"
+ 
+ 
+ def test_terminal_hook_failure_is_best_effort(tmp_path, monkeypatch):
+diff --git a/tests/tools/test_kanban_role_boundaries.py b/tests/tools/test_kanban_role_boundaries.py
+index 5a5ff8b..9667d20 100644
+--- a/tests/tools/test_kanban_role_boundaries.py
++++ b/tests/tools/test_kanban_role_boundaries.py
+@@ -59,8 +59,17 @@ def test_kanban_orchestrator_guidance_forbids_worker_substitution():
+     assert "Do not execute a task body yourself" in KANBAN_ORCHESTRATOR_GUIDANCE
+     assert "substitute `delegate_task`" in KANBAN_ORCHESTRATOR_GUIDANCE
+     assert "A `ready` or `running` task is queued" in KANBAN_ORCHESTRATOR_GUIDANCE
+-    assert "Short tasks need not emit heartbeats" in KANBAN_ORCHESTRATOR_GUIDANCE
++    assert "Completion notifications are push-driven" in KANBAN_ORCHESTRATOR_GUIDANCE
+     assert "Do not create a replacement" in KANBAN_ORCHESTRATOR_GUIDANCE
++    assert "downloadable artifact or durable task is board work" in (
++        KANBAN_ORCHESTRATOR_GUIDANCE
++    )
++    assert "Never recreate, base64-encode, execute code for" in (
++        KANBAN_ORCHESTRATOR_GUIDANCE
++    )
++    assert '`kanban_attachments` with `action="deliver"`' in (
++        KANBAN_ORCHESTRATOR_GUIDANCE
++    )
+     assert "Worker lifecycle belongs to the assigned worker" in (
+         KANBAN_ORCHESTRATOR_GUIDANCE
+     )
+diff --git a/tests/tools/test_kanban_tools.py b/tests/tools/test_kanban_tools.py
+index 91292f3..8d02e58 100644
+--- a/tests/tools/test_kanban_tools.py
++++ b/tests/tools/test_kanban_tools.py
+@@ -9,6 +9,7 @@ from __future__ import annotations
+ 
+ import json
+ import os
++import time
+ 
+ import pytest
+ 
+@@ -2484,6 +2485,84 @@ def test_attachments_unknown_task_errors(worker_env):
+     assert "error" in json.loads(out)
+ 
+ 
++def test_completed_broker_attachment_is_delivered_without_exposing_host_path(
++    worker_env, tmp_path,
++):
++    from hermes_cli import kanban_db as kb
++    from tools import kanban_tools as kt
++
++    conn = kb.connect()
++    try:
++        kb.store_attachment_bytes(
++            conn,
++            worker_env,
++            "output/report.json",
++            b'{"ready":true}',
++            content_type="application/json",
++            uploaded_by="workspace_handoff",
++        )
++        kb.store_attachment_bytes(
++            conn,
++            worker_env,
++            "manual-note.txt",
++            b"manual",
++            content_type="text/plain",
++            uploaded_by="agent",
++        )
++        conn.execute(
++            "UPDATE tasks SET status = 'done', completed_at = ? WHERE id = ?",
++            (int(time.time()), worker_env),
++        )
++    finally:
++        conn.close()
++
++    result = json.loads(kt._handle_attachments({"action": "deliver"}))
++
++    assert result["ok"] is True
++    assert result["attachment_delivery"]["task_id"] == worker_env
++    assert result["attachment_delivery"]["filenames"] == ["report.json"]
++    assert "stored_path" not in json.dumps(result)
++    assert str(tmp_path) not in json.dumps(result)
++
++
++def test_completed_broker_attachment_cannot_be_reuploaded(worker_env):
++    import base64
++
++    from hermes_cli import kanban_db as kb
++    from tools import kanban_tools as kt
++
++    payload = b"immutable handoff bytes"
++    conn = kb.connect()
++    try:
++        kb.store_attachment_bytes(
++            conn,
++            worker_env,
++            "output/report.txt",
++            payload,
++            content_type="text/plain",
++            uploaded_by="workspace_handoff",
++        )
++        conn.execute(
++            "UPDATE tasks SET status = 'done', completed_at = ? WHERE id = ?",
++            (int(time.time()), worker_env),
++        )
++    finally:
++        conn.close()
++
++    result = json.loads(kt._handle_attach({
++        "filename": "renamed-copy.txt",
++        "content_base64": base64.b64encode(payload).decode(),
++    }))
++
++    assert "error" in result
++    assert "already present from broker completion" in result["error"]
++    conn = kb.connect()
++    try:
++        assert len(kb.list_attachments(conn, worker_env)) == 1
++    finally:
++        conn.close()
++
++
+ def test_attach_url_fetches_local_fixture(worker_env, allow_private_urls):
+     """kanban_attach_url downloads from an http(s) URL and stores the bytes.
+ 
+diff --git a/tools/environments/gondolin.py b/tools/environments/gondolin.py
+index cdb16ce..343b8d5 100644
+--- a/tools/environments/gondolin.py
++++ b/tools/environments/gondolin.py
+@@ -207,54 +207,9 @@ class BrokerClient:
+             "handoffId": self._required_text(body, "handoffId"),
+             "entryCount": int(body.get("entryCount", 0)),
+             "totalBytes": int(body.get("totalBytes", 0)),
++            "selectedArtifacts": list(body.get("selectedArtifacts", [])),
+         }
+ 
+-    def import_handoff(
+-        self,
+-        *,
+-        preparation_id: str,
+-        board: str,
+-        source_handoff_id: str,
+-        source_task_id: str,
+-        destination_task_id: str,
+-        destination_run_id: int,
+-        destination_environment_key: str,
+-    ) -> dict:
+-        destination_run = broker_task_run(
+-            board, destination_task_id, destination_run_id
+-        )
+-        body = self._json_post(
+-            "/v1/control/workspace-handoffs/import",
+-            {
+-                "preparationId": str(preparation_id),
+-                "sourceHandoffId": str(source_handoff_id),
+-                "sourceTaskId": broker_task_identity(board, source_task_id),
+-                "destinationTaskId": destination_run["taskId"],
+-                "destinationRunId": destination_run["runId"],
+-                "destinationEnvironmentKey": str(destination_environment_key),
+-            },
+-            timeout=max(self._timeout, 180.0),
+-        )
+-        workspace = body.get("workspace")
+-        lease = body.get("lease")
+-        if (
+-            not isinstance(workspace, dict)
+-            or not isinstance(lease, dict)
+-            or workspace.get("guestPath") != "/workspace"
+-        ):
+-            raise BrokerError(
+-                "protocol.invalid_response", "broker import binding is invalid"
+-            )
+-        return {
+-            "preparationId": self._required_text(body, "preparationId"),
+-            "sourceHandoffId": self._required_text(body, "sourceHandoffId"),
+-            "workspaceId": self._required_text(workspace, "workspaceId"),
+-            "ownerEnvironmentKey": self._required_text(
+-                workspace, "ownerEnvironmentKey"
+-            ),
+-            "workspaceLeaseId": self._required_text(lease, "leaseId"),
+-            "guestPath": "/workspace",
+-        }
+ 
+     def acquire_workspace(
+         self, environment_key: str, *, workspace_id: str | None = None
+@@ -329,49 +284,19 @@ class BrokerClient:
+                 "protocol.invalid_response", "broker activation was not consumed"
+             )
+ 
+-    def prepare_export(
+-        self, *, delivery_id: str, handoff_id: str, relative_path: str
+-    ) -> dict:
+-        body = self._json_post(
+-            "/v1/control/workspace-handoffs/exports/prepare",
+-            {
+-                "deliveryId": str(delivery_id),
+-                "handoffId": str(handoff_id),
+-                "relativePath": str(relative_path),
+-            },
+-        )
+-        token = self._required_text(body, "exportToken")
+-        name = self._required_text(body, "fileName")
+-        size = body.get("size")
+-        expires = body.get("expiresAt")
+-        if (
+-            not isinstance(size, int)
+-            or size < 0
+-            or not isinstance(expires, int)
+-            or expires <= 0
+-        ):
+-            raise BrokerError(
+-                "protocol.invalid_response", "broker export metadata is invalid"
+-            )
+-        return {
+-            "exportToken": token,
+-            "fileName": name,
+-            "size": size,
+-            "expiresAt": expires,
+-        }
+-
+-    def read_export_bytes(
++    def read_handoff_artifact_bytes(
+         self,
+-        export_token: str,
+         *,
+-        expected_size: int,
++        handoff_id: str,
++        relative_path: str,
+         max_bytes: int = 25 * 1024 * 1024,
+     ) -> bytes:
+-        if expected_size < 0 or expected_size > max_bytes:
+-            raise BrokerError("policy.exceeded", "export exceeds attachment limit")
+         response = self._client.post(
+-            "/v1/control/workspace-handoffs/exports/read",
+-            json={"exportToken": str(export_token)},
++            "/v1/control/workspace-handoffs/artifacts/read",
++            json={
++                "handoffId": str(handoff_id),
++                "relativePath": str(relative_path),
++            },
+             timeout=self._timeout,
+             headers={
+                 "accept": "application/octet-stream",
+@@ -380,27 +305,17 @@ class BrokerClient:
+         )
+         self._raise_for_status(response)
+         content_length = response.headers.get("content-length")
+-        if content_length is not None and int(content_length) != expected_size:
+-            raise BrokerError(
+-                "protocol.invalid_response", "export content length mismatch"
+-            )
++        if content_length is not None and int(content_length) > max_bytes:
++            raise BrokerError("policy.exceeded", "artifact exceeds attachment limit")
+         data = response.content
+-        if len(data) != expected_size:
++        if len(data) > max_bytes:
++            raise BrokerError("policy.exceeded", "artifact exceeds attachment limit")
++        if content_length is not None and len(data) != int(content_length):
+             raise BrokerError(
+-                "protocol.invalid_response", "export byte count mismatch"
++                "protocol.invalid_response", "artifact content length mismatch"
+             )
+         return bytes(data)
+ 
+-    def release_export(self, export_token: str) -> None:
+-        body = self._json_post(
+-            "/v1/control/workspace-handoffs/exports/release",
+-            {"exportToken": str(export_token)},
+-        )
+-        if body.get("released") is not True:
+-            raise BrokerError(
+-                "protocol.invalid_response", "broker export was not released"
+-            )
+-
+ 
+     def health(self) -> bool:
+         response = self._client.get("/v1/health", timeout=self._timeout)
+diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
+index a09d6aa..84b1ab7 100644
+--- a/tools/kanban_tools.py
++++ b/tools/kanban_tools.py
+@@ -30,8 +30,10 @@ from __future__ import annotations
+ 
+ import copy
+ import json
++import hashlib
+ import logging
+ import os
++from pathlib import Path
+ from typing import Any, Optional
+ 
+ from agent.redact import redact_sensitive_text
+@@ -882,6 +884,45 @@ def _handle_comment(args: dict, **kw) -> str:
+         return tool_error(f"kanban_comment: {e}")
+ 
+ 
++def _matching_completed_attachment(kb, conn, task_id: str, filename: str, data: bytes):
++    """Return a broker-produced attachment this upload would duplicate."""
++    task = kb.get_task(conn, task_id)
++    if task is None:
++        return None
++    candidates = [
++        attachment
++        for attachment in kb.list_attachments(conn, task_id)
++        if (attachment.uploaded_by or "") == "workspace_handoff"
++    ]
++    if not candidates:
++        return None
++    leaf = Path(filename).name
++    digest = None
++    for attachment in candidates:
++        if Path(attachment.filename).name == leaf:
++            return attachment
++        if attachment.size != len(data):
++            continue
++        if digest is None:
++            digest = hashlib.sha256(data).digest()
++        try:
++            with Path(attachment.stored_path).open("rb") as stored:
++                stored_digest = hashlib.file_digest(stored, "sha256").digest()
++        except OSError:
++            continue
++        if stored_digest == digest:
++            return attachment
++    return None
++
++
++def _duplicate_completion_error(filename: str) -> str:
++    return tool_error(
++        f"attachment {filename!r} is already present from broker completion; "
++        "do not upload a second copy. Use kanban_attachments with "
++        "action='deliver' only when the human explicitly asks to receive it again."
++    )
++
++
+ def _handle_attach(args: dict, **kw) -> str:
+     """Attach an inline (base64) file to a task.
+ 
+@@ -919,6 +960,11 @@ def _handle_attach(args: dict, **kw) -> str:
+     try:
+         _, conn = _connect(board=board)
+         try:
++            duplicate = _matching_completed_attachment(
++                kb, conn, tid, str(filename), data
++            )
++            if duplicate is not None:
++                return _duplicate_completion_error(duplicate.filename)
+             att_id = kb.store_attachment_bytes(
+                 conn,
+                 tid,
+@@ -1045,6 +1091,11 @@ def _handle_attach_url(args: dict, **kw) -> str:
+     try:
+         _, conn = _connect(board=board)
+         try:
++            duplicate = _matching_completed_attachment(
++                kb, conn, tid, str(filename), data
++            )
++            if duplicate is not None:
++                return _duplicate_completion_error(duplicate.filename)
+             att_id = kb.store_attachment_bytes(
+                 conn,
+                 tid,
+@@ -1067,36 +1118,86 @@ def _handle_attach_url(args: dict, **kw) -> str:
+ 
+ 
+ def _handle_attachments(args: dict, **kw) -> str:
+-    """List a task's attachments (read-only; no ownership restriction)."""
++    """List task attachments or request native delivery of existing files."""
+     tid = _default_task_id(args.get("task_id"))
+     if not tid:
+         return tool_error(
+             "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+         )
+     board = args.get("board")
++    action = args.get("action") or "list"
+     try:
+         kb, conn = _connect(board=board)
+         try:
+-            if kb.get_task(conn, tid) is None:
++            task = kb.get_task(conn, tid)
++            if task is None:
+                 return tool_error(f"task {tid} not found")
+-            atts = kb.list_attachments(conn, tid)
+-            return json.dumps({
+-                "ok": True,
+-                "task_id": tid,
+-                "attachments": [
+-                    {
+-                        "filename": a.filename,
+-                        "content_type": a.content_type,
+-                        "size": a.size,
+-                        "uploaded_by": (
+-                            "hermes-system" if (a.uploaded_by or "").startswith("kanban_")
+-                            else a.uploaded_by
+-                        ),
+-                        "created_at": a.created_at,
+-                    }
+-                    for a in atts
+-                ],
+-            })
++            attachments = kb.list_attachments(conn, tid)
++            if action == "list":
++                return json.dumps({
++                    "ok": True,
++                    "task_id": tid,
++                    "attachments": [
++                        {
++                            "filename": attachment.filename,
++                            "content_type": attachment.content_type,
++                            "size": attachment.size,
++                            "uploaded_by": (
++                                "hermes-system"
++                                if (attachment.uploaded_by or "").startswith("kanban_")
++                                else attachment.uploaded_by
++                            ),
++                            "created_at": attachment.created_at,
++                        }
++                        for attachment in attachments
++                    ],
++                })
++            if action != "deliver":
++                return tool_error(f"unsupported attachment action {action!r}")
++            if task.status != "done":
++                return tool_error(
++                    f"task {tid} is {task.status}; attachments can be delivered "
++                    "only after authoritative completion"
++                )
++            requested = args.get("filenames")
++            if requested is not None:
++                if not requested:
++                    return tool_error(
++                        "filenames must contain at least one exact attachment name"
++                    )
++                by_name = {
++                    attachment.filename: attachment
++                    for attachment in attachments
++                }
++                missing = [
++                    str(name) for name in requested if str(name) not in by_name
++                ]
++                if missing:
++                    return tool_error(
++                        "attachments not found: " + ", ".join(sorted(set(missing)))
++                    )
++                selected = [by_name[str(name)] for name in requested]
++            else:
++                completed = [
++                    attachment
++                    for attachment in attachments
++                    if (attachment.uploaded_by or "") == "workspace_handoff"
++                ]
++                selected = completed or attachments
++            if not selected:
++                return tool_error(f"task {tid} has no attachments")
++            resolved_board = (
++                board
++                or os.environ.get("HERMES_KANBAN_BOARD")
++                or kb.get_current_board()
++            )
++            return _ok(
++                attachment_delivery={
++                    "board": resolved_board,
++                    "task_id": tid,
++                    "filenames": [attachment.filename for attachment in selected],
++                }
++            )
+         finally:
+             conn.close()
+     except ValueError as e:
+@@ -1106,6 +1207,8 @@ def _handle_attachments(args: dict, **kw) -> str:
+         return tool_error(f"kanban_attachments: {e}")
+ 
+ 
++
++
+ def _handle_create(args: dict, **kw) -> str:
+     """Create a child task. Orchestrator workers use this to fan out.
+ 
+@@ -1159,9 +1262,6 @@ def _handle_create(args: dict, **kw) -> str:
+         and target_lane.default_workspace_kind is not None
+     ):
+         workspace_kind = target_lane.default_workspace_kind
+-    inherit_parent_output = bool(args.get("inherit_parent_output", False))
+-    if inherit_parent_output and str(assignee).startswith("sa-"):
+-        return tool_error("external worker lanes cannot inherit broker workspaces")
+     _inherit_workspace = workspace_kind is None and workspace_path is None
+     if workspace_kind is None:
+         workspace_kind = "scratch"
+@@ -1245,7 +1345,6 @@ def _handle_create(args: dict, **kw) -> str:
+                 initial_status=str(initial_status),
+                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
+                 session_id=session_id,
+-                inherit_parent_output=inherit_parent_output,
+                 board=board,
+             )
+             new_task = kb.get_task(conn, new_tid)
+@@ -1743,12 +1842,12 @@ KANBAN_COMMENT_SCHEMA = {
+ KANBAN_ATTACH_SCHEMA = {
+     "name": "kanban_attach",
+     "description": (
+-        "Attach a file to a task by passing its bytes inline (base64). "
+-        "Use for genuine file artifacts the next worker or a human should "
+-        "be able to download — generated reports, images, exports. The "
+-        "file is stored as a real attachment (not a comment link) under "
+-        "the task's attachments dir, capped at 25 MB. Prefer "
+-        "kanban_attach_url when you only have a URL."
++        "Attach a new file to an active task by passing its bytes inline "
++        "(base64). Use for genuine artifacts the next worker or a human should "
++        "be able to download. Never recreate or re-upload an artifact already "
++        "materialized by broker completion; use kanban_attachments with "
++        "action='deliver' only on an explicit human request. Stored as "
++        "a real attachment, capped at 25 MB. Prefer kanban_attach_url for a URL."
+     ),
+     "parameters": {
+         "type": "object",
+@@ -1781,10 +1880,10 @@ KANBAN_ATTACH_SCHEMA = {
+ KANBAN_ATTACH_URL_SCHEMA = {
+     "name": "kanban_attach_url",
+     "description": (
+-        "Attach a file to a task by URL — Hermes downloads it server-side "
+-        "and stores it as a real attachment (capped at 25 MB). Use when "
+-        "you have a link rather than the bytes. Only http/https URLs are "
+-        "accepted."
++        "Attach a new file to an active task by URL; Hermes downloads it "
++        "server-side and stores it as a real attachment (capped at 25 MB). "
++        "Never use this to duplicate a broker-completion artifact. Only "
++        "http/https URLs are accepted."
+     ),
+     "parameters": {
+         "type": "object",
+@@ -1820,8 +1919,11 @@ KANBAN_ATTACH_URL_SCHEMA = {
+ KANBAN_ATTACHMENTS_SCHEMA = {
+     "name": "kanban_attachments",
+     "description": (
+-        "List metadata for files attached to a task: filename, content_type, "
+-        "size, and uploader. Internal row ids and host storage paths are hidden."
++        "List metadata for files attached to a task, or explicitly deliver "
++        "existing attachments from an already completed task through the "
++        "current native chat transport. Internal row ids and host storage paths "
++        "are always hidden. Use action='deliver' only when the human explicitly "
++        "asks to receive or download existing files again."
+     ),
+     "parameters": {
+         "type": "object",
+@@ -1830,12 +1932,32 @@ KANBAN_ATTACHMENTS_SCHEMA = {
+                 "type": "string",
+                 "description": _DESC_TASK_ID_DEFAULT,
+             },
++            "action": {
++                "type": "string",
++                "enum": ["list", "deliver"],
++                "description": (
++                    "Defaults to 'list'. 'deliver' sends existing completed-task "
++                    "attachments without recreating their bytes."
++                ),
++            },
++            "filenames": {
++                "type": "array",
++                "items": {"type": "string"},
++                "minItems": 1,
++                "uniqueItems": True,
++                "description": (
++                    "With action='deliver', optional exact filenames. Omit to "
++                    "deliver broker-completion artifacts, or all attachments "
++                    "when none came from broker completion."
++                ),
++            },
+             "board": _board_schema_prop(),
+         },
+         "required": [],
+     },
+ }
+ 
++
+ KANBAN_CREATE_SCHEMA = {
+     "name": "kanban_create",
+     "description": (
+@@ -2067,28 +2189,6 @@ def _kanban_create_schema_overrides() -> dict:
+         name: dict(schema)
+         for name, schema in KANBAN_CREATE_SCHEMA["parameters"]["properties"].items()
+     }
+-    # Broker workspace inheritance is worker-only and appears only when this
+-    # process is scoped to a broker task. Orchestrators cannot request it by
+-    # guessing a hidden field.
+-    scoped_task_id = os.environ.get("HERMES_KANBAN_TASK")
+-    if scoped_task_id:
+-        try:
+-            from hermes_cli import kanban_db as _kb
+-            with _kb.connect(board=os.environ.get("HERMES_KANBAN_BOARD") or None) as _conn:
+-                _scoped = _kb.get_task(_conn, scoped_task_id)
+-            if _scoped is not None and _scoped.workspace_kind == "broker":
+-                parameters["properties"]["inherit_parent_output"] = {
+-                    "type": "boolean",
+-                    "description": (
+-                        "Worker-only: import the sole direct broker parent output "
+-                        "after the parent is done. The broker freezes the parent's "
+-                        "selected relative manifest before spawn; external lanes "
+-                        "cannot use this. Child changes require a new completion "
+-                        "manifest."
+-                    ),
+-                }
+-        except Exception:
+-            pass
+     assignee = parameters["properties"]["assignee"]
+     assignee["description"] = (
+         assignee["description"]
+@@ -2229,6 +2329,7 @@ registry.register(
+     emoji="📎",
+ )
+ 
++
+ registry.register(
+     name="kanban_create",
+     toolset="kanban",

@@ -66,6 +66,10 @@ let
       # Tell live orchestrators that identically named worker paths remain
       # unreachable across isolated conversation and task environments.
       ./orchestrator-workspace-boundary.patch
+      # Generic fail-closed completion and native attachment materialization.
+      ./workspace-handoff-finalization.patch
+      # Downstream Hermes/Gondolin bridge cutover; no writable inheritance.
+      ./workspace-handoff-gondolin-integration.patch
     ];
     postPatch = ''
       rm -f \

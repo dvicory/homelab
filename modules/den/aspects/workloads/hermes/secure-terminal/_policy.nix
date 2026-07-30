@@ -407,16 +407,13 @@ in
             [
               {
                 effect = "allow";
-                actions = [
-                  "workspace.capture"
-                  "workspace.import"
-                ];
+                actions = [ "workspace.capture" ];
                 resources = [ "task-run:*" ];
                 limits = effectiveHandoffLimits;
               }
               {
                 effect = "allow";
-                actions = [ "workspace.export" ];
+                actions = [ "workspace.artifact.read" ];
                 resources = [ "handoff:*" ];
                 limits = effectiveHandoffLimits;
               }

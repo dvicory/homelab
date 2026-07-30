@@ -13,6 +13,7 @@ The Gondolin workspace service gives each Hermes Kanban task a private mutable w
 - Completion, block, timeout, and reclaim consume or supersede the active run before VM closure. A stale run or retained lease cannot recreate a generation or mutate retained output.
 - Remove the existing `inherit_parent_output` and writable child-import implementation, schemas, persistence, prompts, and tests in this workstream so later multi-task inputs start from a clean immutable-handoff boundary.
 - Human delivery uses one authenticated local-UDS read operation containing exactly hidden `handoffId` and normalized `relativePath`. The broker serves only regular files recorded in that handoff's selected-artifact manifest. Hermes materializes every selected file exactly once through upstream native task attachment storage before `done`, independent of whether a recipient subscription exists, so ordinary task attachment inspection can retrieve it. Platform delivery then references those durable attachments, retries only outstanding recipient deliveries, and does not advance a completion-event cursor on failed upload.
+- Live orchestration treats downloadable artifacts as durable Kanban work, stops polling after task creation, and never recreates or manually re-uploads broker-selected files. Ordinary `kanban_attachments` inspection remains metadata-only; an explicit later human request may use its `deliver` action to resend completed-task native attachments without exposing host paths, creating rows, copying bytes, reading the broker workspace, or rerunning the task.
 
 ## Capabilities
 
@@ -27,7 +28,7 @@ The Gondolin workspace service gives each Hermes Kanban task a private mutable w
 ## Impact
 
 - `pkgs/by-name/gondolin-broker-effect`: task-run activation fencing, handoff records, operation journal, structural validation, frozen storage, and gated local `capture` and `artifacts/read` routes.
-- `pkgs/by-name/hermes-agent-patched`: completion/finalization, syntax validation, selected-artifact persistence, native attachment materialization, recipient retry, cursor correctness, and the repository workspace-service bridge.
+- `pkgs/by-name/hermes-agent-patched`: completion/finalization, syntax validation, selected-artifact persistence, native attachment materialization, explicit completed-task re-delivery, push-driven orchestration guidance, duplicate-upload rejection, recipient retry, cursor correctness, and the repository workspace-service bridge.
 - `modules/den/aspects/workloads/hermes/secure-terminal/default.nix`: handoff gate, four structural limits, local control-UDS policy actions, storage, and service wiring.
 
 ## Deferred Follow-ups

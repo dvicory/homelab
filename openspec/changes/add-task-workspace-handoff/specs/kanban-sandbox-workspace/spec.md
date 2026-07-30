@@ -87,6 +87,8 @@ For broker-backed tasks, Hermes MUST read only paths in the ready handoff's sele
 
 Task/file materialization and recipient/attachment upload MUST be distinct durable stages. Materialization failure MUST keep the task in its existing `running` state and MUST remain retryable from the ready handoff without redispatching producer work. Upload failure MUST leave that recipient/attachment outstanding and MUST NOT advance its completion-event subscriber cursor. Retry MUST target only outstanding deliveries. A successful or ambiguously timed-out platform call MAY be delivered more than once when the platform has no idempotency key; the system MUST NOT claim exactly-once delivery.
 
+Ordinary attachment inspection MUST remain side-effect-free by default. Only an explicit human request MAY select its `deliver` action for an already completed task. Hermes MUST resolve the selected native attachment paths inside the trusted gateway and MUST NOT expose those paths to the model, create another attachment row, recreate bytes, read the broker or live worker workspace, or rerun the task. When broker-completion attachments exist and no filenames are specified, re-delivery MUST prefer that authoritative set over later manual attachments.
+
 #### Scenario: Selected artifact delivery
 
 - **GIVEN** a running task has a ready handoff with a selected regular file
@@ -116,6 +118,14 @@ Task/file materialization and recipient/attachment upload MUST be distinct durab
 - **WHEN** Hermes retries the outstanding delivery
 - **THEN** a duplicate MAY occur if the platform lacks an idempotency key
 - **AND** the system MUST document at-least-once rather than claim exactly-once behavior
+
+#### Scenario: Human requests an existing attachment again
+
+- **GIVEN** a completed task exposes broker-selected files through native attachment storage
+- **WHEN** the human explicitly asks Hermes to send those existing attachments again
+- **THEN** the existing attachment inspection tool SHALL request native delivery from durable storage without exposing a host path
+- **AND** it MUST NOT create attachment rows, recreate bytes, access a worker workspace, or rerun the task
+- **AND** ordinary attachment listing without the explicit delivery action SHALL remain side-effect-free
 
 ### Requirement: Gated local transport and outage behavior
 

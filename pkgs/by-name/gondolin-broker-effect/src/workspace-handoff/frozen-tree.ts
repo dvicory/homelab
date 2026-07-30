@@ -17,11 +17,11 @@ import {
   type OutputSnapshot,
 } from "./capture.js";
 import { BrokerError, brokerError } from "../errors.js";
-import { HandoffStore, type ExportRecord, type HandoffRecord } from "./repository.js";
+import { HandoffStore, type HandoffRecord } from "./repository.js";
 
 export type { HandoffLimits } from "./capture.js";
 
-export interface ExportFileStream {
+export interface ArtifactFileStream {
   readonly fileName: string;
   readonly byteSize: number;
   readonly body: AsyncIterable<Uint8Array>;
@@ -43,18 +43,11 @@ export interface HandoffStorageService {
     handoff: HandoffRecord,
     limits: HandoffLimits,
   ) => Effect.Effect<OutputSnapshot, BrokerError>;
-  readonly materializeHandoff: (
+  readonly readArtifact: (
     handoff: HandoffRecord,
-    destinationWorkspacePath: string,
-    limits: HandoffLimits,
-  ) => Effect.Effect<OutputSnapshot, BrokerError>;
-  readonly inspectExportFile: (
-    handoffId: string,
     relativePath: string,
-  ) => Effect.Effect<{ readonly fileName: string; readonly byteSize: number }, BrokerError>;
-  readonly openExport: (
-    exportRecord: ExportRecord,
-  ) => Effect.Effect<ExportFileStream, BrokerError>;
+    limits: HandoffLimits,
+  ) => Effect.Effect<ArtifactFileStream, BrokerError>;
   readonly reconcile: () => Effect.Effect<void, BrokerError>;
 }
 
@@ -105,8 +98,8 @@ const summaryLimits = (handoff: HandoffRecord): HandoffLimits => ({
   maxPathBytes: 4096,
 });
 
-const exportPathFor = (readyRoot: string, handoffId: string, relativePath: string): string =>
-  path.join(readyRoot, handoffId, "output", ...relativePath.split("/"));
+const artifactPathFor = (readyRoot: string, handoffId: string, selectedPath: string): string =>
+  path.join(readyRoot, handoffId, ...selectedPath.split("/"));
 
 const make = Effect.gen(function* () {
   const config = yield* BrokerConfig;
@@ -116,9 +109,7 @@ const make = Effect.gen(function* () {
       preflightOutput: unavailable,
       captureHandoff: unavailable,
       validateHandoff: unavailable,
-      materializeHandoff: unavailable,
-      inspectExportFile: unavailable,
-      openExport: unavailable,
+      readArtifact: unavailable,
       reconcile: unavailable,
     } satisfies HandoffStorageService;
   }
@@ -182,11 +173,13 @@ const make = Effect.gen(function* () {
       const detached = await preflightOutput(sourceWorkspacePath, limits, handoff.selectedArtifacts);
       assertSnapshotUnchanged(firstPreflight, detached);
       await copyOutputToTemp(sourceWorkspacePath, stagingPath, detached);
+      store.recordPhase(handoff.handoffId, "copied");
       const stagedOutput = outputPathForWorkspace(stagingPath);
       const validated = await validateFrozenOutput(stagedOutput, limits);
       if (validated.entryCount !== detached.entryCount || validated.totalBytes !== detached.totalBytes) {
         throw brokerError("handoff.failed", "copied workspace output summary changed before publication");
       }
+      store.recordPhase(handoff.handoffId, "validated");
       await syncDirectory(stagingPath);
       if (await exists(readyPath)) {
         const existing = await validateFrozenOutput(readyOutput(handoff.handoffId), limits);
@@ -194,16 +187,18 @@ const make = Effect.gen(function* () {
           throw brokerError("handoff.conflict", "ready handoff conflicts with capture summary");
         }
         await quarantine(stagingPath, handoff.handoffId, "duplicate-capture");
+        store.recordPhase(handoff.handoffId, "installed");
         return existing;
       }
       await fs.rename(stagingPath, readyPath);
       await syncDirectory(stagingRoot);
       await syncDirectory(readyRoot);
+      store.recordPhase(handoff.handoffId, "installed");
       return validated;
     } catch (error) {
       if (isTerminalCaptureFailure(error)) {
         try {
-          store.failHandoff(handoff.handoffId, "publication_failed", storageFailure("capture", error).message);
+          store.failHandoff(handoff.handoffId, "failed", storageFailure("capture", error).message);
         } catch {
           // Reconciliation will journal a durable failure if the database was unavailable.
         }
@@ -212,52 +207,42 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const materialize = async (
+
+  const readArtifact = async (
     handoff: HandoffRecord,
-    destinationWorkspacePath: string,
+    selectedPath: string,
     limits: HandoffLimits,
-  ): Promise<OutputSnapshot> => {
-    const source = await validateReady(handoff, limits);
-    const destination = await fs.lstat(destinationWorkspacePath, { bigint: true });
-    if (!destination.isDirectory() || destination.isSymbolicLink()) throw brokerError("handoff.failed", "destination workspace is not a real directory");
-    await copyFrozenOutput(readyOutput(handoff.handoffId), destinationWorkspacePath, limits);
-    return source;
-  };
-
-  const inspectExport = async (handoffId: string, relativePath: string): Promise<{ fileName: string; byteSize: number }> => {
-    const normalizedPath = decodeRelativePath(relativePath);
-    const handoff = store.getHandoff(handoffId);
-    await validateReady(handoff, summaryLimits(handoff));
-    const candidate = exportPathFor(readyRoot, handoffId, normalizedPath);
-    const stat = await fs.lstat(candidate, { bigint: true });
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || (stat.mode & 0o444n) === 0n) {
-      throw brokerError("handoff.failed", "workspace export path is not a readable regular file");
+  ): Promise<ArtifactFileStream> => {
+    const normalizedPath = decodeRelativePath(selectedPath);
+    if (!handoff.selectedArtifacts.includes(normalizedPath)) {
+      throw brokerError("policy.denied", "artifact is not selected in the frozen handoff manifest");
     }
-    const byteSize = Number(stat.size);
-    return { fileName: path.basename(normalizedPath), byteSize };
-  };
-
-  const openExport = async (exportRecord: ExportRecord): Promise<ExportFileStream> => {
-    const normalizedPath = decodeRelativePath(exportRecord.relativePath);
-    const handoff = store.getHandoff(exportRecord.handoffId);
-    await validateReady(handoff, summaryLimits(handoff));
-    const candidate = exportPathFor(readyRoot, exportRecord.handoffId, normalizedPath);
+    await validateReady(handoff, limits);
+    const candidate = artifactPathFor(readyRoot, handoff.handoffId, normalizedPath);
     const initial = await fs.lstat(candidate, { bigint: true });
-    if (!initial.isFile() || initial.isSymbolicLink() || initial.nlink !== 1n || Number(initial.size) !== exportRecord.byteSize) {
-      throw brokerError("handoff.failed", "workspace export file changed after preparation");
+    if (!initial.isFile() || initial.isSymbolicLink() || initial.nlink !== 1n || (initial.mode & 0o444n) === 0n) {
+      throw brokerError("handoff.failed", "selected artifact is not a readable regular file");
     }
+    const byteSize = Number(initial.size);
     const body = async function* (): AsyncGenerator<Uint8Array> {
       const handle = await fs.open(candidate, constants.O_RDONLY | NO_FOLLOW);
       try {
         const stat = await handle.stat({ bigint: true });
-        if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || Number(stat.size) !== exportRecord.byteSize) {
-          throw brokerError("handoff.failed", "workspace export file changed before streaming");
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n || Number(stat.size) !== byteSize) {
+          throw brokerError("handoff.failed", "selected artifact changed before streaming");
         }
         const buffer = Buffer.allocUnsafe(64 * 1024);
         let offset = 0;
-        while (offset < exportRecord.byteSize) {
-          const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.byteLength, exportRecord.byteSize - offset), offset);
-          if (bytesRead === 0) throw brokerError("handoff.failed", "workspace export ended before its expected size");
+        while (offset < byteSize) {
+          const { bytesRead } = await handle.read(
+            buffer,
+            0,
+            Math.min(buffer.byteLength, byteSize - offset),
+            offset,
+          );
+          if (bytesRead === 0) {
+            throw brokerError("handoff.failed", "selected artifact ended before its expected size");
+          }
           offset += bytesRead;
           yield Buffer.from(buffer.subarray(0, bytesRead));
         }
@@ -265,7 +250,7 @@ const make = Effect.gen(function* () {
         await handle.close();
       }
     };
-    return { fileName: exportRecord.fileName, byteSize: exportRecord.byteSize, body: body() };
+    return { fileName: path.basename(normalizedPath), byteSize, body: body() };
   };
 
   const reconcilePromise = async (): Promise<void> => {
@@ -312,7 +297,7 @@ const make = Effect.gen(function* () {
         await directory.close();
       }
     }
-    store.expireExports();
+    // Selected-artifact reads are stateless; reconciliation has no export tokens.
   };
 
   yield* Effect.tryPromise({ try: reconcilePromise, catch: (error) => storageFailure("reconciliation", error) });
@@ -327,17 +312,9 @@ const make = Effect.gen(function* () {
       try: () => validateReady(handoff, limits),
       catch: (error) => storageFailure("validate", error),
     }),
-    materializeHandoff: (handoff, destinationWorkspacePath, limits) => Effect.tryPromise({
-      try: () => materialize(handoff, destinationWorkspacePath, limits),
-      catch: (error) => storageFailure("materialize", error),
-    }),
-    inspectExportFile: (handoffId, relativePath) => Effect.tryPromise({
-      try: () => inspectExport(handoffId, relativePath),
-      catch: (error) => storageFailure("inspect export", error),
-    }),
-    openExport: (exportRecord) => Effect.tryPromise({
-      try: () => openExport(exportRecord),
-      catch: (error) => storageFailure("open export", error),
+    readArtifact: (handoff, relativePath, limits) => Effect.tryPromise({
+      try: () => readArtifact(handoff, relativePath, limits),
+      catch: (error) => storageFailure("read artifact", error),
     }),
     reconcile: () => Effect.tryPromise({ try: reconcilePromise, catch: (error) => storageFailure("reconcile", error) }),
   } satisfies HandoffStorageService;

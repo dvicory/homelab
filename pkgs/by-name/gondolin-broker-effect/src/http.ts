@@ -27,10 +27,7 @@ import {
 } from "./domain.js";
 import {
   CaptureWorkspaceHandoffRequest,
-  ImportWorkspaceHandoffRequest,
-  PrepareWorkspaceExportRequest,
-  ReadWorkspaceExportRequest,
-  ReleaseWorkspaceExportRequest,
+  ReadWorkspaceArtifactRequest,
 } from "./workspace-handoff/model.js";
 import { TaskRunActivations } from "./task-run-activations.js";
 import { BrokerConfig } from "./config.js";
@@ -278,19 +275,19 @@ export const makeControlHttpApp = Effect.gen(function* () {
     operation: (request: A) => Effect.Effect<unknown, BrokerError>,
   ) => respond(operationName, Effect.flatMap(parseBody(schema), operation));
 
-  const readExport = parseBody(ReadWorkspaceExportRequest).pipe(
-    Effect.flatMap(handoffOperations.readExport),
+  const readArtifact = parseBody(ReadWorkspaceArtifactRequest).pipe(
+    Effect.flatMap(handoffOperations.readArtifact),
     Effect.match({
       onFailure: errorResponse,
-      onSuccess: (exportFile) => HttpServerResponse.stream(
-        Stream.fromAsyncIterable(exportFile.body, (error) => asBrokerError(error)),
+      onSuccess: (artifact) => HttpServerResponse.stream(
+        Stream.fromAsyncIterable(artifact.body, (error) => asBrokerError(error)),
         {
           status: 200,
           contentType: "application/octet-stream",
           headers: {
             "cache-control": "no-store",
-            "content-length": String(exportFile.byteSize),
-            "content-disposition": contentDispositionFor(exportFile.fileName),
+            "content-length": String(artifact.byteSize),
+            "content-disposition": contentDispositionFor(artifact.fileName),
             "x-content-type-options": "nosniff",
           },
         },
@@ -401,20 +398,8 @@ export const makeControlHttpApp = Effect.gen(function* () {
           unary("workspace.capture", CaptureWorkspaceHandoffRequest, handoffOperations.capture),
         ),
         HttpRouter.post(
-          "/v1/control/workspace-handoffs/import",
-          unary("workspace.import", ImportWorkspaceHandoffRequest, handoffOperations.importHandoff),
-        ),
-        HttpRouter.post(
-          "/v1/control/workspace-handoffs/exports/prepare",
-          unary("workspace.export.prepare", PrepareWorkspaceExportRequest, handoffOperations.prepareExport),
-        ),
-        HttpRouter.post(
-          "/v1/control/workspace-handoffs/exports/read",
-          readExport,
-        ),
-        HttpRouter.post(
-          "/v1/control/workspace-handoffs/exports/release",
-          unary("workspace.export.release", ReleaseWorkspaceExportRequest, handoffOperations.releaseExport),
+          "/v1/control/workspace-handoffs/artifacts/read",
+          readArtifact,
         ),
       )
     : routes;

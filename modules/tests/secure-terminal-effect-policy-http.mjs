@@ -8,23 +8,22 @@ if (JSON.stringify(policyDoc.grantPolicy.allowedScopes) !== JSON.stringify(["onc
 if (!/^[0-9a-f]{64}$/.test(policyDoc.policyDigest)) {
   throw new Error("rendered policy digest is not a full SHA-256 value")
 }
-const captureImport = policyDoc.policy.statements.find(
+const capturePolicy = policyDoc.policy.statements.find(
   (candidate) =>
     candidate.resources.includes("task-run:*") &&
-    candidate.actions.includes("workspace.capture") &&
-    candidate.actions.includes("workspace.import"),
+    candidate.actions.includes("workspace.capture"),
 )
-const exportPolicy = policyDoc.policy.statements.find(
+const artifactPolicy = policyDoc.policy.statements.find(
   (candidate) =>
     candidate.resources.includes("handoff:*") &&
-    candidate.actions.includes("workspace.export"),
+    candidate.actions.includes("workspace.artifact.read"),
 )
-if (!captureImport || !exportPolicy) throw new Error("QA policy omitted workspace handoff actions")
-if (JSON.stringify(captureImport.actions) !== JSON.stringify(["workspace.capture", "workspace.import"])) {
-  throw new Error(`unexpected capture/import actions: ${JSON.stringify(captureImport.actions)}`)
+if (!capturePolicy || !artifactPolicy) throw new Error("QA policy omitted workspace handoff actions")
+if (JSON.stringify(capturePolicy.actions) !== JSON.stringify(["workspace.capture"])) {
+  throw new Error(`unexpected capture actions: ${JSON.stringify(capturePolicy.actions)}`)
 }
-if (JSON.stringify(exportPolicy.actions) !== JSON.stringify(["workspace.export"])) {
-  throw new Error(`unexpected export actions: ${JSON.stringify(exportPolicy.actions)}`)
+if (JSON.stringify(artifactPolicy.actions) !== JSON.stringify(["workspace.artifact.read"])) {
+  throw new Error(`unexpected artifact-read actions: ${JSON.stringify(artifactPolicy.actions)}`)
 }
 const expectedHandoffLimits = {
   maxLogicalBytes: 67108864,
@@ -33,7 +32,7 @@ const expectedHandoffLimits = {
   maxPathBytes: 1024,
 }
 for (const [name, value] of Object.entries(expectedHandoffLimits)) {
-  for (const [label, statement] of [["capture/import", captureImport], ["export", exportPolicy]]) {
+  for (const [label, statement] of [["capture", capturePolicy], ["artifact read", artifactPolicy]]) {
     if (statement.limits?.[name] !== value) {
       throw new Error(`unexpected ${label} handoff limit ${name}: ${statement.limits?.[name]}`)
     }
@@ -48,7 +47,7 @@ for (const field of [
   "spool",
 ]) {
   if (Object.hasOwn(policyDoc, field) ||
-      [captureImport, exportPolicy].some((statement) =>
+      [capturePolicy, artifactPolicy].some((statement) =>
         Object.hasOwn(statement, field) || Object.hasOwn(statement.limits ?? {}, field))) {
     throw new Error(`legacy or unsupported handoff policy field is present: ${field}`)
   }
@@ -156,10 +155,7 @@ if (
 }
 const handoffRoutes = [
   "/v1/control/workspace-handoffs/capture",
-  "/v1/control/workspace-handoffs/import",
-  "/v1/control/workspace-handoffs/exports/prepare",
-  "/v1/control/workspace-handoffs/exports/read",
-  "/v1/control/workspace-handoffs/exports/release",
+  "/v1/control/workspace-handoffs/artifacts/read",
 ]
 for (const route of handoffRoutes) {
   const response = await request(process.env.GONDOLIN_EFFECT_CONTROL_SOCKET, route, "POST", {})

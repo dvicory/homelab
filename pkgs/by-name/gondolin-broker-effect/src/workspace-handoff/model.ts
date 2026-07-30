@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { EnvironmentKey, WorkspaceId, WorkspaceLeaseId } from "../domain.js";
+import { EnvironmentKey, WorkspaceId } from "../domain.js";
 
 const Identifier = Schema.String.pipe(
   Schema.minLength(1),
@@ -48,57 +48,18 @@ export const CaptureWorkspaceHandoffRequest = Schema.Struct({
   selectedArtifacts: SelectedArtifacts,
 });
 export type CaptureWorkspaceHandoffRequest = typeof CaptureWorkspaceHandoffRequest.Type;
-
-export const ImportWorkspaceHandoffRequest = Schema.Struct({
-  preparationId: Identifier,
-  sourceHandoffId: HandoffId,
-  sourceTaskId: Identifier,
-  destinationTaskId: Identifier,
-  destinationRunId: Identifier,
-  destinationEnvironmentKey: EnvironmentKey,
-});
-export type ImportWorkspaceHandoffRequest = typeof ImportWorkspaceHandoffRequest.Type;
-
 export const StageWorkspaceCapture = Schema.Struct({
   finalizationId: Identifier,
+  sourceActivationId: Identifier,
   policyDecisionDigest: Digest,
-  sourceActivationId: WorkspaceId,
   selectedArtifacts: SelectedArtifacts,
 });
 export type StageWorkspaceCapture = typeof StageWorkspaceCapture.Type;
 
-export const StageWorkspaceImport = Schema.Struct({
-  preparationId: Identifier,
-  policyDecisionDigest: Digest,
-  sourceHandoffId: HandoffId,
-  destinationTaskId: Identifier,
-  destinationRunId: Identifier,
-  destinationEnvironmentKey: EnvironmentKey,
-  sourcePolicyDigest: Digest,
-  destinationPolicyDigest: Digest,
-});
-export type StageWorkspaceImport = typeof StageWorkspaceImport.Type;
 
-export const CompleteWorkspaceImport = Schema.Struct({
-  preparationId: Identifier,
-  destinationWorkspaceId: WorkspaceId,
-  destinationWorkspaceLeaseId: WorkspaceLeaseId,
-});
-export type CompleteWorkspaceImport = typeof CompleteWorkspaceImport.Type;
 
-export const PrepareWorkspaceExportRequest = Schema.Struct({
-  deliveryId: Identifier,
+export const ReadWorkspaceArtifactRequest = Schema.Struct({
   handoffId: HandoffId,
   relativePath: HandoffRelativePath,
 });
-export type PrepareWorkspaceExportRequest = typeof PrepareWorkspaceExportRequest.Type;
-
-export const ReadWorkspaceExportRequest = Schema.Struct({
-  exportToken: Identifier,
-});
-export type ReadWorkspaceExportRequest = typeof ReadWorkspaceExportRequest.Type;
-
-export const ReleaseWorkspaceExportRequest = Schema.Struct({
-  exportToken: Identifier,
-});
-export type ReleaseWorkspaceExportRequest = typeof ReleaseWorkspaceExportRequest.Type;
+export type ReadWorkspaceArtifactRequest = typeof ReadWorkspaceArtifactRequest.Type;
