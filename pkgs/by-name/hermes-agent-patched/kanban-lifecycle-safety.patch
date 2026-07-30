@@ -13,7 +13,7 @@ recorded blocker is confirmed resolved. Internal recovery retains unscoped
 handlers without exposing those lifecycle transitions to the model.
 ---
 diff --git a/agent/agent_init.py b/agent/agent_init.py
-index a8773dd..28729fb 100644
+index a8773ddb04e880568abe61798584d817ae67720b..28729fbf2dc0f97bcbd8339b7ffa08de5872aac9 100644
 --- a/agent/agent_init.py
 +++ b/agent/agent_init.py
 @@ -1232,15 +1232,13 @@ def init_agent(
@@ -40,7 +40,7 @@ index a8773dd..28729fb 100644
  
      # Check tool requirements
 diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
-index 892fe77..0ca1727 100644
+index 892fe77901a60561fee2c2ffaa1cb0ae7cf286ce..0ca1727b7daf3438d80160f34c6f5afab9b30ea3 100644
 --- a/agent/prompt_builder.py
 +++ b/agent/prompt_builder.py
 @@ -240,6 +240,9 @@ KANBAN_GUIDANCE = (
@@ -96,7 +96,7 @@ index 892fe77..0ca1727 100644
      "# Tool-use enforcement\n"
      "You MUST use your tools to take action — do not describe what you would do "
 diff --git a/agent/system_prompt.py b/agent/system_prompt.py
-index aab34cb..a6628d3 100644
+index aab34cb799e162c4df6be5da77a04a628469ed71..a6628d3d2e1f0702e1c9f59d8b32ede732a22529 100644
 --- a/agent/system_prompt.py
 +++ b/agent/system_prompt.py
 @@ -226,10 +226,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None)
@@ -128,9 +128,9 @@ index aab34cb..a6628d3 100644
              stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
              _model_lower = (agent.model or "").lower()
              # Google model operational guidance (conciseness, absolute
-diff --git a/tmp/hermes-guidance-desired/tests/tools/test_kanban_role_boundaries.py b/tests/tools/test_kanban_role_boundaries.py
+diff --git a/tests/tools/test_kanban_role_boundaries.py b/tests/tools/test_kanban_role_boundaries.py
 new file mode 100644
-index 0000000..edae1a2
+index 0000000000000000000000000000000000000000..edae1a2c913379ee08384c43335326b995d3c6a4
 --- /dev/null
 +++ b/tests/tools/test_kanban_role_boundaries.py
 @@ -0,0 +1,81 @@
@@ -216,7 +216,7 @@ index 0000000..edae1a2
 +    assert kanban._check_kanban_worker_mode()
 +    assert not kanban._check_kanban_orchestrator_mode()
 diff --git a/tests/tools/test_kanban_tools.py b/tests/tools/test_kanban_tools.py
-index 1cabc82..2b3ca13 100644
+index 1cabc82b545466ecca62928b9a9e86185d06b81e..2b3ca13eb0171bf8f2da0240f05d07fd6c6b0649 100644
 --- a/tests/tools/test_kanban_tools.py
 +++ b/tests/tools/test_kanban_tools.py
 @@ -1,8 +1,7 @@
@@ -318,7 +318,7 @@ index 1cabc82..2b3ca13 100644
      home = tmp_path / ".hermes"
      home.mkdir()
 diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
-index aeccddf..acc6750 100644
+index 6dbf7608122766139093d2f4f193597b1381f7d2..111b0e5b31942cd55e75cfc3616654de20cf301d 100644
 --- a/tools/kanban_tools.py
 +++ b/tools/kanban_tools.py
 @@ -96,6 +96,11 @@ def _check_kanban_attachment_mode() -> bool:
@@ -333,7 +333,7 @@ index aeccddf..acc6750 100644
  def _check_kanban_orchestrator_mode() -> bool:
      """Board-routing tools (kanban_list, kanban_unblock) are intentionally
      hidden from task workers.
-@@ -1857,9 +1862,9 @@ KANBAN_CREATE_SCHEMA = {
+@@ -1853,9 +1858,9 @@ KANBAN_CREATE_SCHEMA = {
              "max_runtime_seconds": {
                  "type": "integer",
                  "description": (
@@ -346,7 +346,7 @@ index aeccddf..acc6750 100644
                  ),
              },
              "initial_status": {
-@@ -1991,17 +1996,18 @@ def _kanban_create_schema_overrides() -> dict:
+@@ -1968,17 +1973,18 @@ def _kanban_create_schema_overrides() -> dict:
  KANBAN_UNBLOCK_SCHEMA = {
      "name": "kanban_unblock",
      "description": (
@@ -370,7 +370,7 @@ index aeccddf..acc6750 100644
              },
              "board": _board_schema_prop(),
          },
-@@ -2055,7 +2061,7 @@ registry.register(
+@@ -2032,7 +2038,7 @@ registry.register(
      toolset="kanban",
      schema=KANBAN_COMPLETE_SCHEMA,
      handler=_handle_complete,
@@ -379,7 +379,7 @@ index aeccddf..acc6750 100644
      emoji="✔",
  )
  
-@@ -2064,7 +2070,7 @@ registry.register(
+@@ -2041,7 +2047,7 @@ registry.register(
      toolset="kanban",
      schema=KANBAN_BLOCK_SCHEMA,
      handler=_handle_block,
@@ -388,7 +388,7 @@ index aeccddf..acc6750 100644
      emoji="⏸",
  )
  
-@@ -2073,7 +2079,7 @@ registry.register(
+@@ -2050,7 +2056,7 @@ registry.register(
      toolset="kanban",
      schema=KANBAN_HEARTBEAT_SCHEMA,
      handler=_handle_heartbeat,

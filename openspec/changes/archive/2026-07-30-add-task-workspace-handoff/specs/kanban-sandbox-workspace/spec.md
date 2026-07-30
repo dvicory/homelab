@@ -1,45 +1,4 @@
-# kanban-sandbox-workspace Specification
-
-## Purpose
-
-Define trusted Kanban workspace acquisition, the durable `/workspace/output` handoff boundary, task-run fencing, parent dependency isolation, selected-artifact materialization and human delivery, and broker outage and rollback behavior for QA Gondolin Kanban tasks.
-## Requirements
-### Requirement: Trusted Kanban workspace acquisition
-
-When the QA Gondolin backend is selected, trusted Kanban claim/dispatch code MUST acquire or reuse a broker workspace derived from trusted task identity and pass only opaque workspace and lease references to the matching worker. The worker MUST expose `/workspace/output` as the sole durable cross-task output subtree; paths outside it are scratch and MUST NOT be captured. Model-facing Kanban arguments MUST NOT select a workspace ID, lease ID, handoff ID, host path, provider, or output root.
-
-#### Scenario: First task claim
-
-- **GIVEN** a claimed QA Kanban task
-- **WHEN** a registered Gondolin worker lane prepares the task
-- **THEN** trusted infrastructure SHALL acquire or reuse a private workspace under task-scoped broker authority
-- **AND** SHALL pass returned opaque workspace and lease IDs only to the matching worker process
-- **AND** SHALL provide guest `/workspace` with its durable output subtree at `/workspace/output`
-
-#### Scenario: Model supplies workspace or output selection
-
-- **WHEN** model-generated Kanban arguments contain a workspace ID, lease ID, handoff ID, provider, host path, or output-root selector
-- **THEN** Hermes MUST ignore or reject those fields
-- **AND** MUST NOT forward them to the broker control plane
-
-### Requirement: Consistent worker filesystem binding
-
-A Gondolin Kanban worker's terminal and environment-backed file surfaces MUST use its task workspace binding and guest path `/workspace`. Hermes MAY bridge an upstream per-session CWD through `session_context`/`runtime_cwd`, but per-session CWD is a logical runtime-directory facility, not workspace authority or host-path disclosure. For a Gondolin Kanban worker, trusted dispatch MUST strip upstream host scratch and host process CWD and expose only guest `/workspace`. Hermes MUST NOT present a gateway host worktree as the sandbox workspace.
-
-#### Scenario: Worker environment
-
-- **GIVEN** a claimed task with a broker workspace binding
-- **WHEN** Hermes launches its worker
-- **THEN** the worker SHALL receive `HERMES_WORKSPACE_ID`, `HERMES_WORKSPACE_LEASE_ID`, and `HERMES_WORKSPACE_GUEST_PATH=/workspace`
-- **AND** SHALL receive a durable `/workspace/output` subtree for handoff
-- **AND** SHALL NOT receive the broker host path or upstream Kanban scratch path through its environment or process CWD
-
-#### Scenario: Terminal reuse
-
-- **GIVEN** a worker that has written a file through Gondolin
-- **WHEN** a later terminal or file tool call resolves the same task
-- **THEN** it SHALL resolve the same workspace and active lease
-- **AND** files outside `/workspace/output` SHALL remain task scratch rather than handoff data
+## MODIFIED Requirements
 
 ### Requirement: Automatic frozen output capture
 
@@ -221,24 +180,21 @@ Task-run activation, capture, and `artifacts/read` MUST exist only on the authen
 - **THEN** handoff routes and storage SHALL remain absent
 - **AND** production Hermes services, production state, rootless Podman storage, and gateway credentials MUST remain untouched
 
-### Requirement: Backend compatibility
+## REMOVED Requirements
 
-The workspace integration MUST be gated to the Gondolin secure-terminal backend. Existing local, Podman, production, and non-sandbox worker workspace behavior MUST remain unchanged.
+### Requirement: Direct-child source authority and private copy
 
-#### Scenario: Non-Gondolin worker
+**Reason**: Writable one-parent imports coupled dependency topology to filesystem authority, prevented pre-created fan-in and fan-out, and expanded the mutable workspace boundary.
 
-- **GIVEN** a task dispatched by a profile or lane not using Gondolin
-- **WHEN** worker environment variables are prepared
-- **THEN** Hermes SHALL retain its existing workspace behavior
-- **AND** SHALL NOT call Gondolin workspace, handoff, import, export, or private-copy control routes
+**Migration**: A `parents` edge now carries only status, summary, metadata, and comments. File-consuming workflows must use a separate explicit immutable artifact-input contract, planned in `add-multi-task-inputs`, rather than copying a parent workspace.
 
-#### Scenario: Registered external Codex lane
+### Requirement: Human delivery uses explicit export tokens
 
-- **GIVEN** QA Gondolin handoff is enabled and a task selects a registered external Codex lane
-- **WHEN** the dispatcher prepares and spawns that task
-- **THEN** the lane SHALL receive its existing host-visible task worktree, not guest-only `/workspace`
-- **AND** no broker activation, capture, import, export, or workspace-preparation hook SHALL run
-- **AND** deployment MUST NOT claim Gondolin isolation for that process
+**Reason**: Per-delivery prepare/read/release tokens duplicated native task attachment lifecycle and coupled broker retention to recipient delivery.
+
+**Migration**: Hermes materializes selected frozen files idempotently into native task attachment storage before `done`. Normal listing is side-effect-free, and explicit completed-task re-delivery reads only those durable native attachments inside the trusted gateway.
+
+## ADDED Requirements
 
 ### Requirement: Parent dependencies do not imply artifact inputs
 
@@ -297,4 +253,3 @@ Ordinary attachment inspection MUST remain side-effect-free by default. Only an 
 - **THEN** the existing attachment inspection tool SHALL request native delivery from durable storage without exposing a host path
 - **AND** it MUST NOT create attachment rows, recreate bytes, access a worker workspace, or rerun the task
 - **AND** ordinary attachment listing without the explicit delivery action SHALL remain side-effect-free
-

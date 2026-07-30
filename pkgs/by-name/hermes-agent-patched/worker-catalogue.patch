@@ -1,6 +1,6 @@
-diff --git a/b/hermes_cli/worker_catalogue.py b/hermes_cli/worker_catalogue.py
+diff --git a/hermes_cli/worker_catalogue.py b/hermes_cli/worker_catalogue.py
 new file mode 100644
-index 0000000..02741db
+index 0000000000000000000000000000000000000000..02741db10140d46af41c887b25fe33eb3966e8ae
 --- /dev/null
 +++ b/hermes_cli/worker_catalogue.py
 @@ -0,0 +1,334 @@

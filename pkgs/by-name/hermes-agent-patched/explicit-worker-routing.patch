@@ -1,8 +1,8 @@
 diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
-index be82b27..fac3b3b 100644
+index 51389b0da0fb46bdf152325a19a646363c4b561d..aefc0297caa6cb6bc64e028c85d1838f6f1d50dc 100644
 --- a/hermes_cli/kanban_db.py
 +++ b/hermes_cli/kanban_db.py
-@@ -7977,39 +7977,49 @@ def _get_worker_lane(assignee: Optional[str]):
+@@ -7868,39 +7868,49 @@ def _get_worker_lane(assignee: Optional[str]):
  
  
  def _assignee_is_spawnable(assignee: Optional[str]) -> bool:
@@ -77,7 +77,7 @@ index be82b27..fac3b3b 100644
  
  
  def dispatch_once(
-@@ -8211,7 +8221,9 @@ def _dispatch_once_locked(
+@@ -8098,7 +8108,9 @@ def _dispatch_once_locked(
      # Normalize default_assignee once: empty/whitespace string → None so the
      # rest of the loop can use ``if default_assignee:`` as a single check.
      # We also resolve profile_exists once here for the same reason.
@@ -88,7 +88,7 @@ index be82b27..fac3b3b 100644
      _default_assignee_resolved = False
      if _default_assignee:
          try:
-@@ -8319,10 +8331,15 @@ def _dispatch_once_locked(
+@@ -8206,10 +8218,15 @@ def _dispatch_once_locked(
              continue
          # A worker lane may declare its own max_concurrency (e.g. one external-CLI run
          # at a time); otherwise the global per-profile cap applies.
@@ -107,7 +107,7 @@ index be82b27..fac3b3b 100644
          )
          if _eff_cap is not None:
              current = _per_profile_running.get(row_assignee, 0)
-@@ -8366,6 +8383,7 @@ def _dispatch_once_locked(
+@@ -8253,6 +8270,7 @@ def _dispatch_once_locked(
          claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
          if claimed is None:
              continue
@@ -115,7 +115,7 @@ index be82b27..fac3b3b 100644
          if claimed.workspace_kind == "broker":
              try:
                  _run_required_workspace_hook(
-@@ -8410,7 +8428,7 @@ def _dispatch_once_locked(
+@@ -8297,7 +8315,7 @@ def _dispatch_once_locked(
          _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
          # Route to the assignee's worker lane when no explicit spawn_fn override
          # is supplied; profile assignees fall back to _default_spawn (hermes -p).
@@ -124,7 +124,7 @@ index be82b27..fac3b3b 100644
          try:
              # Back-compat: older spawn_fn signatures accept only
              # (task, workspace). Test stubs in the suite rely on that.
-@@ -8486,6 +8504,34 @@ def _dispatch_once_locked(
+@@ -8373,6 +8391,34 @@ def _dispatch_once_locked(
          claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
          if claimed is None:
              continue
@@ -159,7 +159,7 @@ index be82b27..fac3b3b 100644
          try:
              resolved_branch_name = None
              if claimed.workspace_kind == "worktree":
-@@ -8508,13 +8554,12 @@ def _dispatch_once_locked(
+@@ -8395,13 +8441,12 @@ def _dispatch_once_locked(
          if claimed.workspace_kind == "worktree":
              set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
          _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
@@ -180,7 +180,7 @@ index be82b27..fac3b3b 100644
              import inspect
              try:
 diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
-index 701c6c2..9a29214 100644
+index 9ce9dcf2d1cc8b893766076c1f5936a48a075e52..43562e7014d50540ad068d0b1344695ed292055f 100644
 --- a/tools/kanban_tools.py
 +++ b/tools/kanban_tools.py
 @@ -28,6 +28,7 @@ through the board.
@@ -221,7 +221,7 @@ index 701c6c2..9a29214 100644
          )
      body = args.get("body")
      parents = args.get("parents") or []
-@@ -1980,7 +1995,34 @@ KANBAN_CREATE_SCHEMA = {
+@@ -1976,7 +1991,34 @@ KANBAN_CREATE_SCHEMA = {
  
  
  def _kanban_create_schema_overrides() -> dict:

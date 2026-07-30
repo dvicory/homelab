@@ -1,9 +1,9 @@
 diff --git a/plugins/workspace-service/__init__.py b/plugins/workspace-service/__init__.py
-index aa40bc0..451855e 100644
+index 4aa9a89aab367585ae34f011e3913161a8827515..b46ecaa7a2fe373302e61f22c044776d1fe17e6a 100644
 --- a/plugins/workspace-service/__init__.py
 +++ b/plugins/workspace-service/__init__.py
-@@ -149,7 +149,7 @@ def _source_facts(conn: Any, task_id: str, board: str, run_id: int) -> tuple[Any
-     return task, source, {"inheritance": inheritance, "source_intent": source_intent, "source_run_id": source_run_id}
+@@ -123,7 +123,7 @@ def _on_completion_intent(
+ 
  
  
 -def _worklane_for_run(conn: Any, task_id: str, run_id: int) -> str:
@@ -11,7 +11,7 @@ index aa40bc0..451855e 100644
      specification = kb.get_task_worker_specification(
          conn, task_id, run_id=int(run_id)
      )
-@@ -158,7 +158,27 @@ def _worklane_for_run(conn: Any, task_id: str, run_id: int) -> str:
+@@ -132,7 +132,27 @@ def _worklane_for_run(conn: Any, task_id: str, run_id: int) -> str:
      worklane = specification.policy.get("worklane")
      if not isinstance(worklane, str) or not worklane:
          raise RuntimeError("worker specification has no broker worklane")
@@ -40,26 +40,26 @@ index aa40bc0..451855e 100644
  
  
  def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[str, bool]:
-@@ -169,7 +189,7 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
-     try:
-         with contextlib.closing(kb.connect(board=board)) as conn:
-             task, source, facts = _source_facts(conn, task_id, board, int(run_id))
+@@ -147,7 +167,7 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
+                 raise RuntimeError("workspace destination is stale")
+             if task.current_run_id != int(run_id):
+                 raise RuntimeError("workspace destination run is stale")
 -            worklane = _worklane_for_run(conn, task_id, int(run_id))
 +            authority = _authority_for_run(conn, task_id, int(run_id))
-             destination_key = broker_environment_key(task_id)
-             if source is not None:
-                 source_run_id = int(facts["source_run_id"])
-@@ -205,7 +225,7 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
-                 environment_key=destination_key, task_id=task_id, run_id=int(run_id),
-                 workspace_id=binding["workspaceId"],
-                 workspace_lease_id=binding["workspaceLeaseId"],
--                authority_class=worklane,
-+                authority=authority,
-             )
+         destination_key = broker_environment_key(task_id)
+         binding = client.acquire_workspace(destination_key)
+         client.activate_task_run(
+@@ -157,7 +177,7 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
+             run_id=int(run_id),
+             workspace_id=binding["workspaceId"],
+             workspace_lease_id=binding["workspaceLeaseId"],
+-            authority_class=worklane,
++            authority=authority,
+         )
      except BrokerError:
          raise
 diff --git a/tests/tools/test_gondolin_backend.py b/tests/tools/test_gondolin_backend.py
-index 625c4bd..5051a43 100644
+index 625c4bd42ab90f2cb82d22745f4373045e93af00..5051a438023ee3da12a88f15102f31e4d8ce35d4 100644
 --- a/tests/tools/test_gondolin_backend.py
 +++ b/tests/tools/test_gondolin_backend.py
 @@ -303,7 +303,15 @@ def test_control_activation_matches_worker_execution_identity(monkeypatch):
@@ -89,7 +89,7 @@ index 625c4bd..5051a43 100644
      assert activation_payload["workspaceId"] == "workspace-test"
      assert activation_payload["workspaceLeaseId"] == "lease-test"
 diff --git a/tools/environments/gondolin.py b/tools/environments/gondolin.py
-index f805314..88c938b 100644
+index f805314d3a0b9115de794e9253be97505f9c7b4a..88c938b1f4b391f7ca9f45448c7bedaae92364c2 100644
 --- a/tools/environments/gondolin.py
 +++ b/tools/environments/gondolin.py
 @@ -283,7 +283,7 @@ class BrokerClient:

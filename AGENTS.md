@@ -4,6 +4,10 @@ The role of this file is to describe common mistakes and confusion points that a
 
 - **Do not start tracking Markdown planning artifacts by default.** Newly created `.md` files used for plans, reviews, handoffs, status tracking, acceptance prompts, or working notes must remain local and untracked unless the developer explicitly asks to start tracking or commit them. Write them under `scratch/` — a tracked symlink to a shared, ignored directory outside the repo — instead of the repo root. Markdown files already tracked by Git may be edited and committed normally. Do not infer permission to `git add` a new tracking document merely because the task requested that it be written.
 
+## OpenSpec gotchas
+
+- **A `MODIFIED` requirement is a complete replacement, not a textual patch.** Before archiving, copy the canonical requirement's full block and preserve every existing scenario that remains valid; `openspec archive` rejects a modified block that would silently drop canonical scenarios. Requirement replacements need explicit `REMOVED` and `ADDED` operations (or a supported rename), and newly archived capability specs receive a `TBD` purpose that must be replaced with the real capability boundary.
+
 ## Nix gotchas
 
 - **macOS `patch` (BSD) and `git apply` behave differently from nixpkgs' GNU `patch`.** `applyPatches` uses GNU patch with fuzz and offset search, so hunks that `git apply` rejects (zero-fuzz, exact context) or BSD patch rejects (weaker offset handling) can still apply in the Nix build. Never hand-author unified-diff hunk headers: materialize the exact source after all earlier patches, edit that scratch tree, and generate the patch with `git diff --no-index` or `diff -u`; hand-counted ranges easily produce a syntactically malformed patch before context matching begins. Always verify with a real `applyPatches` build; a `.rej` locally does not mean the build fails, and a clean local apply does not prove the hunk matches upstream context.

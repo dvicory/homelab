@@ -31,7 +31,7 @@ binding so control and execution routes address the same workspace.
  create mode 100644 tools/environments/gondolin.py
 
 diff --git a/model_tools.py b/model_tools.py
-index c59c189..57bba57 100644
+index c59c189e36d9de9101b6bf54b78687e5e786df38..57bba571da49483636ffd4e89ef3ab0044d53b96 100644
 --- a/model_tools.py
 +++ b/model_tools.py
 @@ -316,11 +316,18 @@ def get_tool_definitions(
@@ -55,7 +55,7 @@ index c59c189..57bba57 100644
          )
 diff --git a/tests/tools/test_gondolin_backend.py b/tests/tools/test_gondolin_backend.py
 new file mode 100644
-index 0000000..488c3bb
+index 0000000000000000000000000000000000000000..488c3bbac7c2588b8956e1a9cc294afa97122d14
 --- /dev/null
 +++ b/tests/tools/test_gondolin_backend.py
 @@ -0,0 +1,511 @@
@@ -571,7 +571,7 @@ index 0000000..488c3bb
 +    assert result.returncode == 0, result.stderr
 +    assert target.read_text() == "hello Daniel\n"
 diff --git a/tools/environments/base.py b/tools/environments/base.py
-index 1b20cfa..736416a 100644
+index 1b20cfa90ee0cd0367829436f942f2f40cae8b2b..736416a3331e14282a87626b9d0ec7d747fc360b 100644
 --- a/tools/environments/base.py
 +++ b/tools/environments/base.py
 @@ -322,34 +322,71 @@ class _ThreadedProcessHandle:
@@ -676,7 +676,7 @@ index 1b20cfa..736416a 100644
          self._done.wait(timeout=timeout)
 diff --git a/tools/environments/gondolin.py b/tools/environments/gondolin.py
 new file mode 100644
-index 0000000..b7bf44f
+index 0000000000000000000000000000000000000000..b7bf44f698beab0693abbe07275070d3c5f6ee7b
 --- /dev/null
 +++ b/tools/environments/gondolin.py
 @@ -0,0 +1,545 @@
@@ -1226,7 +1226,7 @@ index 0000000..b7bf44f
 +        if client is not None:
 +            client.close()
 diff --git a/tools/file_operations.py b/tools/file_operations.py
-index 994723c..86b8ef5 100644
+index 994723cf583bc7fa3b0c634ddb75c0ebe157b871..86b8ef5e44e862d8efd0db2f2ea2151a428c5db9 100644
 --- a/tools/file_operations.py
 +++ b/tools/file_operations.py
 @@ -1445,15 +1445,22 @@ class ShellFileOperations(FileOperations):
@@ -1353,7 +1353,7 @@ index 994723c..86b8ef5 100644
          _new_content_normalized = new_content.replace("\r\n", "\n").replace("\r", "\n")
          if _verify_stdout_normalized != _new_content_normalized:
 diff --git a/tools/process_registry.py b/tools/process_registry.py
-index 912847e..c5d0289 100644
+index 912847e4422716d7bd34af038311a756ee1f181c..c5d028947649bd63c43c6538b94e2f054071c7a7 100644
 --- a/tools/process_registry.py
 +++ b/tools/process_registry.py
 @@ -29,6 +29,7 @@ Usage:
@@ -1449,7 +1449,7 @@ index 912847e..c5d0289 100644
 +    dynamic_schema_overrides=_process_schema_overrides,
  )
 diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
-index f8268fe..00b7675 100644
+index 8fb8794bc3202564fddc9b67d6952f2c47e6cde3..fbd195d734302d3154669582ad8a5e81911c295a 100644
 --- a/tools/terminal_tool.py
 +++ b/tools/terminal_tool.py
 @@ -950,6 +950,7 @@ from tools.environments.singularity import SingularityEnvironment as _Singularit
@@ -1460,7 +1460,7 @@ index f8268fe..00b7675 100644
  from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
  from tools.managed_tool_gateway import is_managed_tool_gateway_ready
  import sys
-@@ -1353,7 +1354,7 @@ def _safe_getcwd() -> str:
+@@ -1373,7 +1374,7 @@ def _safe_getcwd() -> str:
  # cwd looks when it leaks toward a Linux container's ``-w`` flag.
  _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
  
@@ -1469,7 +1469,7 @@ index f8268fe..00b7675 100644
  
  
  def _is_ssh_remote_tilde_cwd(backend: str, cwd: str) -> bool:
-@@ -1628,6 +1629,14 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
+@@ -1648,6 +1649,14 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
              persist_across_processes=cc.get("docker_persist_across_processes", True),
          )
      
@@ -1484,7 +1484,7 @@ index f8268fe..00b7675 100644
      elif env_type == "singularity":
          return _SingularityEnvironment(
              image=image, cwd=cwd, timeout=timeout,
-@@ -3043,6 +3052,14 @@ def check_terminal_requirements() -> bool:
+@@ -3063,6 +3072,14 @@ def check_terminal_requirements() -> bool:
              result = subprocess.run([docker, "version"], capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
              return result.returncode == 0
  
@@ -1499,7 +1499,7 @@ index f8268fe..00b7675 100644
          elif env_type == "singularity":
              executable = shutil.which("apptainer") or shutil.which("singularity")
              if executable:
-@@ -3126,7 +3143,7 @@ def check_terminal_requirements() -> bool:
+@@ -3146,7 +3163,7 @@ def check_terminal_requirements() -> bool:
          else:
              logger.error(
                  "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
@@ -1508,6 +1508,3 @@ index f8268fe..00b7675 100644
                  env_type,
              )
              return False
--- 
-2.49.0
-

@@ -1,16 +1,8 @@
-diff --git a/hermes-spec-work/__pycache__/model_tools.cpython-310.pyc b/__pycache__/model_tools.cpython-310.pyc
-new file mode 100644
-index 0000000..420345a
-Binary files /dev/null and b/__pycache__/model_tools.cpython-310.pyc differ
-diff --git a/hermes-spec-work/agent/__pycache__/prompt_builder.cpython-310.pyc b/agent/__pycache__/prompt_builder.cpython-310.pyc
-new file mode 100644
-index 0000000..fab69c1
-Binary files /dev/null and b/agent/__pycache__/prompt_builder.cpython-310.pyc differ
 diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
-index 7d383a8..c6dba55 100644
+index 651074e18fc4d94a0762e090c2724b07d886a6ff..ece442c7bc0fcb21fecf8fd1b3e8538fea7e805b 100644
 --- a/agent/prompt_builder.py
 +++ b/agent/prompt_builder.py
-@@ -1880,11 +1880,10 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
+@@ -1871,11 +1871,10 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
          logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
  
      soul_path = get_hermes_home() / "SOUL.md"
@@ -25,20 +17,8 @@ index 7d383a8..c6dba55 100644
          if worker_spec.agent.get("soul"):
              soul_path = Path(str(worker_spec.agent["soul"]))
              if not soul_path.is_absolute():
-diff --git a/hermes-spec-work/hermes_cli/__pycache__/config.cpython-310.pyc b/hermes_cli/__pycache__/config.cpython-310.pyc
-new file mode 100644
-index 0000000..745757f
-Binary files /dev/null and b/hermes_cli/__pycache__/config.cpython-310.pyc differ
-diff --git a/hermes-spec-work/hermes_cli/__pycache__/worker_catalogue.cpython-310.pyc b/hermes_cli/__pycache__/worker_catalogue.cpython-310.pyc
-new file mode 100644
-index 0000000..8016277
-Binary files /dev/null and b/hermes_cli/__pycache__/worker_catalogue.cpython-310.pyc differ
-diff --git a/hermes-spec-work/hermes_cli/__pycache__/worker_lanes.cpython-310.pyc b/hermes_cli/__pycache__/worker_lanes.cpython-310.pyc
-new file mode 100644
-index 0000000..8e8c3c5
-Binary files /dev/null and b/hermes_cli/__pycache__/worker_lanes.cpython-310.pyc differ
 diff --git a/hermes_cli/config.py b/hermes_cli/config.py
-index dc85038..206e2f6 100644
+index dc85038ab29cf1eb2e49b477b37d97b3fce48fb4..206e2f6899edaf416010f2992189a74ac00f75da 100644
 --- a/hermes_cli/config.py
 +++ b/hermes_cli/config.py
 @@ -7134,15 +7134,12 @@ def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
@@ -63,7 +43,7 @@ index dc85038..206e2f6 100644
      resolved = copy.deepcopy(config)
      agent_spec = spec.get("agent") if isinstance(spec.get("agent"), dict) else {}
 diff --git a/hermes_cli/worker_catalogue.py b/hermes_cli/worker_catalogue.py
-index 02741db..4e48fcb 100644
+index 02741db10140d46af41c887b25fe33eb3966e8ae..4e48fcbb2ac5cb186c30289d984c55a104961780 100644
 --- a/hermes_cli/worker_catalogue.py
 +++ b/hermes_cli/worker_catalogue.py
 @@ -3,6 +3,7 @@ from __future__ import annotations
@@ -158,7 +138,7 @@ index 02741db..4e48fcb 100644
  def _catalogue_config() -> Optional[dict[str, Any]]:
      from hermes_cli.config import load_config_readonly
 diff --git a/hermes_cli/worker_lanes.py b/hermes_cli/worker_lanes.py
-index 93cd669..c054e4b 100644
+index 93cd669c16c0aa678f914d909afddb17007ee6eb..c054e4beb42d52ccfdc4c5b2761ab53dd961f463 100644
 --- a/hermes_cli/worker_lanes.py
 +++ b/hermes_cli/worker_lanes.py
 @@ -163,8 +163,8 @@ def kanban_worker_env(task, workspace, *, board=None, base=None) -> "dict[str, A
@@ -197,7 +177,7 @@ index 93cd669..c054e4b 100644
      # context-file loader anchor on the workspace, not whatever cwd the
      # dispatching gateway happened to export. TERMINAL_CWD takes precedence
 diff --git a/model_tools.py b/model_tools.py
-index adc0092..ebf7116 100644
+index adc009275361e3144a7cb80a253294e5175cd0af..ebf7116b1a23f3cee69b4c9b8d72db69312e89a6 100644
 --- a/model_tools.py
 +++ b/model_tools.py
 @@ -39,12 +39,11 @@ logger = logging.getLogger(__name__)
@@ -217,16 +197,8 @@ index adc0092..ebf7116 100644
      explicit = spec.agent.get("tools", [])
      toolsets = spec.agent.get("toolsets", [])
      if not isinstance(explicit, list) or not all(isinstance(name, str) for name in explicit):
-diff --git a/hermes-spec-work/tests/hermes_cli/__pycache__/test_explicit_worker_lanes.cpython-310.pyc b/tests/hermes_cli/__pycache__/test_explicit_worker_lanes.cpython-310.pyc
-new file mode 100644
-index 0000000..94f7d78
-Binary files /dev/null and b/tests/hermes_cli/__pycache__/test_explicit_worker_lanes.cpython-310.pyc differ
-diff --git a/hermes-spec-work/tests/hermes_cli/__pycache__/test_worker_lanes.cpython-310.pyc b/tests/hermes_cli/__pycache__/test_worker_lanes.cpython-310.pyc
-new file mode 100644
-index 0000000..2fa5665
-Binary files /dev/null and b/tests/hermes_cli/__pycache__/test_worker_lanes.cpython-310.pyc differ
 diff --git a/tests/hermes_cli/test_explicit_worker_lanes.py b/tests/hermes_cli/test_explicit_worker_lanes.py
-index d92590a..150bbb1 100644
+index d92590a794bea943c4449c7413f9e524a73c90b5..150bbb1160eb2d0264471192576a339ca9bf6687 100644
 --- a/tests/hermes_cli/test_explicit_worker_lanes.py
 +++ b/tests/hermes_cli/test_explicit_worker_lanes.py
 @@ -8,6 +8,8 @@ import pytest
@@ -306,12 +278,8 @@ index d92590a..150bbb1 100644
      monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
  
      allowed = model_tools._worker_allowed_tools()
-diff --git a/hermes-spec-work/tools/__pycache__/memory_tool.cpython-310.pyc b/tools/__pycache__/memory_tool.cpython-310.pyc
-new file mode 100644
-index 0000000..ca3d050
-Binary files /dev/null and b/tools/__pycache__/memory_tool.cpython-310.pyc differ
 diff --git a/tools/memory_tool.py b/tools/memory_tool.py
-index bf4ae5b..3df2a41 100644
+index bf4ae5b2791a3d74d8285c0d67bfd15261d5e309..3df2a41ca73979c13b2c9634545482242c882aa7 100644
 --- a/tools/memory_tool.py
 +++ b/tools/memory_tool.py
 @@ -52,12 +52,18 @@ logger = logging.getLogger(__name__)

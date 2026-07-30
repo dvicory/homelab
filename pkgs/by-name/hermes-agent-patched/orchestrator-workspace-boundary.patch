@@ -1,8 +1,8 @@
 diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
-index f3974f4..3226b44 100644
+index 7597b9ab3b99ec652ac902ba7526316971bac5e7..b6573d1a3dcd884e05b06c125065d7a752fdac32 100644
 --- a/agent/prompt_builder.py
 +++ b/agent/prompt_builder.py
-@@ -273,10 +273,16 @@ KANBAN_ORCHESTRATOR_GUIDANCE = (
+@@ -270,9 +270,16 @@ KANBAN_ORCHESTRATOR_GUIDANCE = (
      "4. Report outcomes from authoritative task state. Claim success only when "
      "the required tasks are `done`; report a blocker instead of working around "
      "it in the live session.\n"
@@ -16,13 +16,12 @@ index f3974f4..3226b44 100644
 +    "6. Use `kanban_comment` for relevant routing context. Never put secrets, "
      "tokens, raw PII, host paths, or broker authority in board data; task history "
      "is durable.\n"
--    "6. When a downstream task must import a producer's selected broker output, "
-+    "7. When a downstream task must import a producer's selected broker output, "
-     "create only that producer and include the downstream contract in its body. "
-     "The producer creates the one direct child with `inherit_parent_output=true` "
-     "before completion. Broker preparation freezes the producer manifest and the "
++
+ )
+ 
+ 
 diff --git a/tests/tools/test_kanban_role_boundaries.py b/tests/tools/test_kanban_role_boundaries.py
-index edae1a2..5a5ff8b 100644
+index edae1a2c913379ee08384c43335326b995d3c6a4..5a5ff8bbed825d7488ab5f30edee796fc5bc7f82 100644
 --- a/tests/tools/test_kanban_role_boundaries.py
 +++ b/tests/tools/test_kanban_role_boundaries.py
 @@ -65,6 +65,15 @@ def test_kanban_orchestrator_guidance_forbids_worker_substitution():

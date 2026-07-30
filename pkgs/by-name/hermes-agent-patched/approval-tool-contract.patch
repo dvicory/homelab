@@ -25,8 +25,313 @@ protects callers with narrower authority.
  tests/tools/test_approval_choice_result.py | 220 +++++++++++++++++++++++++++++
  tests/tools/test_approval.py               |  6 ++++--
  4 files changed, 347 insertions(+), 28 deletions(-)
+diff --git a/tests/tools/test_approval.py b/tests/tools/test_approval.py
+index 1ebb3efe6d98d4629af03cae36c2a3978a9fcaae..81d1165b53dcc6ddb6dd6778549919c14675e2e0 100644
+--- a/tests/tools/test_approval.py
++++ b/tests/tools/test_approval.py
+@@ -120,9 +120,11 @@ class TestDetectDangerousRm:
+         assert "delete" in desc.lower()
+ 
+     def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
+-        with mock_patch("tempfile.gettempdir", return_value="/tmp"):
++        temp_root = os.path.realpath(tempfile.gettempdir())
++        with mock_patch("tempfile.gettempdir", return_value=temp_root):
+             for prefix in ("hermes-verify-", "hermes-ad-hoc-"):
+-                assert detect_dangerous_command(f"rm -f /tmp/{prefix}example.py") == (
++                operand = Path(temp_root) / f"{prefix}example.py"
++                assert detect_dangerous_command(f"rm -f {operand}") == (
+                     False,
+                     None,
+                     None,
+diff --git a/tests/tools/test_approval_choice_result.py b/tests/tools/test_approval_choice_result.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f70bf7d96fec64e78c83a4c4c0a269e0f8d9bdc3
+--- /dev/null
++++ b/tests/tools/test_approval_choice_result.py
+@@ -0,0 +1,220 @@
++"""Canonical effective choices for the shared Hermes approval gate."""
++
++from __future__ import annotations
++
++import importlib.util
++import json
++import os
++from pathlib import Path
++import sys
++
++import pytest
++
++from tools import approval
++
++
++@pytest.fixture(autouse=True)
++def _clean_approval_state(monkeypatch):
++    monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False)
++    monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
++    monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
++    monkeypatch.setattr(approval, "get_current_session_key", lambda default=None: "scope-test")
++    approval.clear_session("scope-test")
++    approval._permanent_approved.clear()
++    approval._gateway_notify_cbs.pop("scope-test", None)
++    yield
++    approval.clear_session("scope-test")
++    approval._permanent_approved.clear()
++    approval._gateway_notify_cbs.pop("scope-test", None)
++
++
++def _request(monkeypatch, choice, **kwargs):
++    monkeypatch.setattr(
++        approval,
++        "prompt_dangerous_approval",
++        lambda *args, **prompt_kwargs: choice,
++    )
++    return approval.request_tool_approval(
++        "sandbox_request_access",
++        "canonical capability request",
++        rule_key="scope-test-rule",
++        **kwargs,
++    )
++
++
++@pytest.mark.parametrize("choice", ["once", "session", "always"])
++def test_fresh_approval_reports_canonical_choice(monkeypatch, choice):
++    result = _request(monkeypatch, choice)
++
++    assert result["approved"] is True
++    assert result["choice"] == choice
++
++
++def test_cached_scopes_and_simultaneous_fallback(monkeypatch):
++    pattern = "plugin_rule:scope-test-rule"
++    approval.approve_session("scope-test", pattern)
++    assert _request(monkeypatch, "once")["choice"] == "session"
++
++    approval.clear_session("scope-test")
++    approval.approve_permanent(pattern)
++    assert _request(monkeypatch, "once")["choice"] == "always"
++
++    approval.approve_session("scope-test", pattern)
++    assert _request(monkeypatch, "once", allow_permanent=False)["choice"] == "session"
++    assert _request(monkeypatch, "once")["choice"] == "always"
++
++
++def test_permanent_suppression_prompts_and_never_grants_always(monkeypatch):
++    pattern = "plugin_rule:scope-test-rule"
++    approval.approve_permanent(pattern)
++    seen = {}
++
++    def choose_once(*args, **kwargs):
++        seen.update(kwargs)
++        return "once"
++
++    monkeypatch.setattr(approval, "prompt_dangerous_approval", choose_once)
++    result = approval.request_tool_approval(
++        "sandbox_request_access",
++        "canonical capability request",
++        rule_key="scope-test-rule",
++        allow_permanent=False,
++    )
++
++    assert seen["allow_permanent"] is False
++    assert result == {"approved": True, "message": None, "choice": "once"}
++    assert approval._approved_scope("scope-test", pattern, allow_permanent=False) is None
++    assert approval._approved_scope("scope-test", pattern) == "always"
++
++
++def test_yolo_and_cron_success_report_once(monkeypatch):
++    monkeypatch.setattr(approval, "is_current_session_yolo_enabled", lambda: True)
++    assert _request(monkeypatch, "deny") == {
++        "approved": True,
++        "message": None,
++        "choice": "once",
++    }
++
++    monkeypatch.setattr(approval, "is_current_session_yolo_enabled", lambda: False)
++    monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
++    monkeypatch.setattr(approval, "env_var_enabled", lambda name: name == "HERMES_CRON_SESSION")
++    monkeypatch.setattr(approval, "_get_cron_approval_mode", lambda: "approve")
++    result = _request(monkeypatch, "deny")
++    assert result["approved"] is True
++    assert result["choice"] == "once"
++
++
++def test_cli_legacy_always_is_attenuated_when_disabled(monkeypatch):
++    result = _request(monkeypatch, "always", allow_permanent=False)
++    pattern = "plugin_rule:scope-test-rule"
++
++    assert result["approved"] is True
++    assert result["choice"] == "session"
++    assert approval._approved_scope("scope-test", pattern) == "session"
++    assert pattern not in approval._permanent_approved
++
++
++def _gateway_request(monkeypatch, raw_choice, **kwargs):
++    monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: True)
++    approval.register_gateway_notify("scope-test", lambda _data: None)
++    monkeypatch.setattr(
++        approval,
++        "_await_gateway_decision",
++        lambda *args, **decision_kwargs: {"resolved": True, "choice": raw_choice},
++    )
++    return approval.request_tool_approval(
++        "sandbox_request_access",
++        "canonical capability request",
++        rule_key="gateway-scope-test-rule",
++        **kwargs,
++    )
++
++
++def test_gateway_approve_alias_normalizes_to_once(monkeypatch):
++    result = _gateway_request(monkeypatch, "approve")
++
++    assert result == {"approved": True, "message": None, "choice": "once"}
++    assert not approval._session_approved
++    assert not approval._permanent_approved
++
++
++@pytest.mark.parametrize("raw_choice", ["always", "unknown", None, {"choice": "always"}])
++def test_gateway_stale_or_unknown_choice_fails_closed(monkeypatch, raw_choice):
++    result = _gateway_request(monkeypatch, raw_choice, allow_permanent=False)
++
++    assert result["approved"] is False
++    assert result["choice"] == "deny"
++    assert result["user_consent"] is False
++    assert not approval._session_approved
++    assert not approval._permanent_approved
++
++
++def test_sandbox_access_uses_real_approval_contract_when_harness_provides_it(monkeypatch):
++    source = os.environ.get("HERMES_SANDBOX_ACCESS_SOURCE")
++    if not source:
++        pytest.skip("sandbox-access package harness is unavailable")
++
++    plugin_path = Path(source) / "__init__.py"
++    spec = importlib.util.spec_from_file_location("hermes_sandbox_access_contract", plugin_path)
++    assert spec is not None and spec.loader is not None
++    plugin = importlib.util.module_from_spec(spec)
++    sys.modules[spec.name] = plugin
++    try:
++        spec.loader.exec_module(plugin)
++    except ImportError as exc:
++        if "environment_key" in str(exc):
++            pytest.skip("sandbox-access consumer requires workspace integration")
++        raise
++
++    class FakeClient:
++        def __init__(self):
++            self.calls = []
++
++        def post(self, path, payload):
++            self.calls.append((path, payload))
++            if path.endswith("/prepare"):
++                return {
++                    "state": "pending",
++                    "requestId": "request-1",
++                    "fingerprint": "fingerprint-1",
++                    "requestedScope": "task",
++                    "durationSeconds": None,
++                    "capabilities": [{
++                        "version": 1,
++                        "kind": "network-origin",
++                        "scheme": "https",
++                        "host": "api.example.com",
++                        "ports": [443],
++                        "addressMode": "public",
++                        "pinnedAddresses": [],
++                    }],
++                    "grantIds": [],
++                }
++            return {
++                "state": "approved",
++                "requestId": "request-1",
++                "grantIds": ["grant-1"],
++            }
++
++    client = FakeClient()
++    monkeypatch.setenv("HERMES_SANDBOX_AUTHORITY_BINDING", "qa-authority")
++    monkeypatch.setenv("GONDOLIN_EFFECT_CONTROL_SOCKET", "/run/test/control.sock")
++    monkeypatch.setattr(plugin, "BrokerClient", lambda: client)
++    monkeypatch.setattr(plugin, "register_task_authority_binding", lambda *_args: None)
++    monkeypatch.setattr(plugin, "environment_key", lambda *_args: "authority-test")
++    monkeypatch.setattr(approval, "prompt_dangerous_approval", lambda *args, **kwargs: "session")
++
++    result = json.loads(plugin.handle_request_access({
++        "capabilities": [{
++            "kind": "network-origin",
++            "scheme": "https",
++            "host": "api.example.com",
++            "address_mode": "public",
++        }],
++        "requested_scope": "task",
++        "rationale": "Needed for the vendor API",
++    }, task_id="turn-1", session_id="session-1"))
++
++    assert result["ok"] is True
++    assert result["scope"] == "task"
++    assert client.calls[1][1]["decision"] == "approve"
+diff --git a/tests/tools/test_request_tool_approval.py b/tests/tools/test_request_tool_approval.py
+index 16414fc054c55cd24a2836a15f3ac963a9e513e7..704bde814ee5cb83594200065395cc6a03d491f2 100644
+--- a/tests/tools/test_request_tool_approval.py
++++ b/tests/tools/test_request_tool_approval.py
+@@ -20,7 +20,11 @@ def _isolate_approval_state(monkeypatch):
+         lambda default="default": "test-session",
+     )
+     # Empty session + permanent approval stores so nothing pre-approves.
+-    monkeypatch.setattr(approval, "is_approved", lambda sk, pk: False)
++    monkeypatch.setattr(
++        approval,
++        "_approved_scope",
++        lambda sk, pk, *, allow_permanent=True: None,
++    )
+     # Not a yolo session (the shared gate checks this first).
+     monkeypatch.setattr(approval, "is_current_session_yolo_enabled", lambda: False)
+     monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False, raising=False)
+@@ -39,8 +43,12 @@ class TestRequestToolApproval:
+             approval, "prompt_dangerous_approval",
+             lambda *a, **k: pytest.fail("should not prompt when already approved"),
+         )
++        monkeypatch.setattr(
++            approval, "_approved_scope",
++            lambda sk, pk, *, allow_permanent=True: "session",
++        )
+         res = request_tool_approval("write_file", "sensitive path", rule_key="ssh")
+-        assert res == {"approved": True, "message": None}
++        assert res == {"approved": True, "message": None, "choice": "session"}
+ 
+     def test_cli_approve_once(self, monkeypatch):
+         monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+@@ -70,6 +78,7 @@ class TestRequestToolApproval:
+         monkeypatch.setattr(approval, "save_permanent_allowlist", lambda x: None)
+         res = request_tool_approval("write_file", "reason", rule_key="ssh-writes")
+         assert res["approved"] is True
++        assert res["choice"] == "session"
+         assert calls["session"] == ["plugin_rule:ssh-writes"]
+         assert calls["permanent"] == []  # session != always
+ 
+@@ -85,6 +94,7 @@ class TestRequestToolApproval:
+                             lambda x: persisted.setdefault("saved", True))
+         res = request_tool_approval("write_file", "reason", rule_key="ssh-writes")
+         assert res["approved"] is True
++        assert res["choice"] == "always"
+         assert persisted["key"] == "plugin_rule:ssh-writes"
+         assert persisted["saved"] is True
+ 
+@@ -118,6 +128,7 @@ class TestRequestToolApproval:
+         monkeypatch.setattr(approval, "_get_cron_approval_mode", lambda: "approve")
+         res = request_tool_approval("terminal", "smtp send")
+         assert res["approved"] is True
++        assert res["choice"] == "once"
+ 
+     def test_rule_key_derived_from_tool_and_reason(self, monkeypatch):
+         """With no explicit rule_key, the pattern key is derived from
+@@ -164,4 +175,4 @@ class TestRequestToolApproval:
+             lambda *a, **k: pytest.fail("yolo must not prompt"),
+         )
+         res = request_tool_approval("terminal", "curl PUT", rule_key="ext")
+-        assert res == {"approved": True, "message": None}
++        assert res == {"approved": True, "message": None, "choice": "once"}
 diff --git a/tools/approval.py b/tools/approval.py
-index ea3bb82..988dce8 100644
+index ea3bb82690697cc8afa4ce07cecda4471e871987..988dce8961edda3e4b335023ff99058609993523 100644
 --- a/tools/approval.py
 +++ b/tools/approval.py
 @@ -2175,12 +2175,28 @@ def is_approved(session_key: str, pattern_key: str) -> bool:
@@ -282,308 +587,3 @@ index ea3bb82..988dce8 100644
          cron_deny_message=(
              f"BLOCKED: Tool '{tool_name}' requires approval ({description}) "
              "but cron jobs run without a user present to approve it. Find an "
-diff --git a/tests/tools/test_request_tool_approval.py b/tests/tools/test_request_tool_approval.py
-index 16414fc..704bde8 100644
---- a/tests/tools/test_request_tool_approval.py
-+++ b/tests/tools/test_request_tool_approval.py
-@@ -20,7 +20,11 @@ def _isolate_approval_state(monkeypatch):
-         lambda default="default": "test-session",
-     )
-     # Empty session + permanent approval stores so nothing pre-approves.
--    monkeypatch.setattr(approval, "is_approved", lambda sk, pk: False)
-+    monkeypatch.setattr(
-+        approval,
-+        "_approved_scope",
-+        lambda sk, pk, *, allow_permanent=True: None,
-+    )
-     # Not a yolo session (the shared gate checks this first).
-     monkeypatch.setattr(approval, "is_current_session_yolo_enabled", lambda: False)
-     monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False, raising=False)
-@@ -39,8 +43,12 @@ class TestRequestToolApproval:
-             approval, "prompt_dangerous_approval",
-             lambda *a, **k: pytest.fail("should not prompt when already approved"),
-         )
-+        monkeypatch.setattr(
-+            approval, "_approved_scope",
-+            lambda sk, pk, *, allow_permanent=True: "session",
-+        )
-         res = request_tool_approval("write_file", "sensitive path", rule_key="ssh")
--        assert res == {"approved": True, "message": None}
-+        assert res == {"approved": True, "message": None, "choice": "session"}
- 
-     def test_cli_approve_once(self, monkeypatch):
-         monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
-@@ -70,6 +78,7 @@ class TestRequestToolApproval:
-         monkeypatch.setattr(approval, "save_permanent_allowlist", lambda x: None)
-         res = request_tool_approval("write_file", "reason", rule_key="ssh-writes")
-         assert res["approved"] is True
-+        assert res["choice"] == "session"
-         assert calls["session"] == ["plugin_rule:ssh-writes"]
-         assert calls["permanent"] == []  # session != always
- 
-@@ -85,6 +94,7 @@ class TestRequestToolApproval:
-                             lambda x: persisted.setdefault("saved", True))
-         res = request_tool_approval("write_file", "reason", rule_key="ssh-writes")
-         assert res["approved"] is True
-+        assert res["choice"] == "always"
-         assert persisted["key"] == "plugin_rule:ssh-writes"
-         assert persisted["saved"] is True
- 
-@@ -118,6 +128,7 @@ class TestRequestToolApproval:
-         monkeypatch.setattr(approval, "_get_cron_approval_mode", lambda: "approve")
-         res = request_tool_approval("terminal", "smtp send")
-         assert res["approved"] is True
-+        assert res["choice"] == "once"
- 
-     def test_rule_key_derived_from_tool_and_reason(self, monkeypatch):
-         """With no explicit rule_key, the pattern key is derived from
-@@ -164,4 +175,4 @@ class TestRequestToolApproval:
-             lambda *a, **k: pytest.fail("yolo must not prompt"),
-         )
-         res = request_tool_approval("terminal", "curl PUT", rule_key="ext")
--        assert res == {"approved": True, "message": None}
-+        assert res == {"approved": True, "message": None, "choice": "once"}
-diff --git a/tests/tools/test_approval_choice_result.py b/tests/tools/test_approval_choice_result.py
-new file mode 100644
-index 0000000..f70bf7d
---- /dev/null
-+++ b/tests/tools/test_approval_choice_result.py
-@@ -0,0 +1,220 @@
-+"""Canonical effective choices for the shared Hermes approval gate."""
-+
-+from __future__ import annotations
-+
-+import importlib.util
-+import json
-+import os
-+from pathlib import Path
-+import sys
-+
-+import pytest
-+
-+from tools import approval
-+
-+
-+@pytest.fixture(autouse=True)
-+def _clean_approval_state(monkeypatch):
-+    monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", False)
-+    monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
-+    monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
-+    monkeypatch.setattr(approval, "get_current_session_key", lambda default=None: "scope-test")
-+    approval.clear_session("scope-test")
-+    approval._permanent_approved.clear()
-+    approval._gateway_notify_cbs.pop("scope-test", None)
-+    yield
-+    approval.clear_session("scope-test")
-+    approval._permanent_approved.clear()
-+    approval._gateway_notify_cbs.pop("scope-test", None)
-+
-+
-+def _request(monkeypatch, choice, **kwargs):
-+    monkeypatch.setattr(
-+        approval,
-+        "prompt_dangerous_approval",
-+        lambda *args, **prompt_kwargs: choice,
-+    )
-+    return approval.request_tool_approval(
-+        "sandbox_request_access",
-+        "canonical capability request",
-+        rule_key="scope-test-rule",
-+        **kwargs,
-+    )
-+
-+
-+@pytest.mark.parametrize("choice", ["once", "session", "always"])
-+def test_fresh_approval_reports_canonical_choice(monkeypatch, choice):
-+    result = _request(monkeypatch, choice)
-+
-+    assert result["approved"] is True
-+    assert result["choice"] == choice
-+
-+
-+def test_cached_scopes_and_simultaneous_fallback(monkeypatch):
-+    pattern = "plugin_rule:scope-test-rule"
-+    approval.approve_session("scope-test", pattern)
-+    assert _request(monkeypatch, "once")["choice"] == "session"
-+
-+    approval.clear_session("scope-test")
-+    approval.approve_permanent(pattern)
-+    assert _request(monkeypatch, "once")["choice"] == "always"
-+
-+    approval.approve_session("scope-test", pattern)
-+    assert _request(monkeypatch, "once", allow_permanent=False)["choice"] == "session"
-+    assert _request(monkeypatch, "once")["choice"] == "always"
-+
-+
-+def test_permanent_suppression_prompts_and_never_grants_always(monkeypatch):
-+    pattern = "plugin_rule:scope-test-rule"
-+    approval.approve_permanent(pattern)
-+    seen = {}
-+
-+    def choose_once(*args, **kwargs):
-+        seen.update(kwargs)
-+        return "once"
-+
-+    monkeypatch.setattr(approval, "prompt_dangerous_approval", choose_once)
-+    result = approval.request_tool_approval(
-+        "sandbox_request_access",
-+        "canonical capability request",
-+        rule_key="scope-test-rule",
-+        allow_permanent=False,
-+    )
-+
-+    assert seen["allow_permanent"] is False
-+    assert result == {"approved": True, "message": None, "choice": "once"}
-+    assert approval._approved_scope("scope-test", pattern, allow_permanent=False) is None
-+    assert approval._approved_scope("scope-test", pattern) == "always"
-+
-+
-+def test_yolo_and_cron_success_report_once(monkeypatch):
-+    monkeypatch.setattr(approval, "is_current_session_yolo_enabled", lambda: True)
-+    assert _request(monkeypatch, "deny") == {
-+        "approved": True,
-+        "message": None,
-+        "choice": "once",
-+    }
-+
-+    monkeypatch.setattr(approval, "is_current_session_yolo_enabled", lambda: False)
-+    monkeypatch.setattr(approval, "_is_interactive_cli", lambda: False)
-+    monkeypatch.setattr(approval, "env_var_enabled", lambda name: name == "HERMES_CRON_SESSION")
-+    monkeypatch.setattr(approval, "_get_cron_approval_mode", lambda: "approve")
-+    result = _request(monkeypatch, "deny")
-+    assert result["approved"] is True
-+    assert result["choice"] == "once"
-+
-+
-+def test_cli_legacy_always_is_attenuated_when_disabled(monkeypatch):
-+    result = _request(monkeypatch, "always", allow_permanent=False)
-+    pattern = "plugin_rule:scope-test-rule"
-+
-+    assert result["approved"] is True
-+    assert result["choice"] == "session"
-+    assert approval._approved_scope("scope-test", pattern) == "session"
-+    assert pattern not in approval._permanent_approved
-+
-+
-+def _gateway_request(monkeypatch, raw_choice, **kwargs):
-+    monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: True)
-+    approval.register_gateway_notify("scope-test", lambda _data: None)
-+    monkeypatch.setattr(
-+        approval,
-+        "_await_gateway_decision",
-+        lambda *args, **decision_kwargs: {"resolved": True, "choice": raw_choice},
-+    )
-+    return approval.request_tool_approval(
-+        "sandbox_request_access",
-+        "canonical capability request",
-+        rule_key="gateway-scope-test-rule",
-+        **kwargs,
-+    )
-+
-+
-+def test_gateway_approve_alias_normalizes_to_once(monkeypatch):
-+    result = _gateway_request(monkeypatch, "approve")
-+
-+    assert result == {"approved": True, "message": None, "choice": "once"}
-+    assert not approval._session_approved
-+    assert not approval._permanent_approved
-+
-+
-+@pytest.mark.parametrize("raw_choice", ["always", "unknown", None, {"choice": "always"}])
-+def test_gateway_stale_or_unknown_choice_fails_closed(monkeypatch, raw_choice):
-+    result = _gateway_request(monkeypatch, raw_choice, allow_permanent=False)
-+
-+    assert result["approved"] is False
-+    assert result["choice"] == "deny"
-+    assert result["user_consent"] is False
-+    assert not approval._session_approved
-+    assert not approval._permanent_approved
-+
-+
-+def test_sandbox_access_uses_real_approval_contract_when_harness_provides_it(monkeypatch):
-+    source = os.environ.get("HERMES_SANDBOX_ACCESS_SOURCE")
-+    if not source:
-+        pytest.skip("sandbox-access package harness is unavailable")
-+
-+    plugin_path = Path(source) / "__init__.py"
-+    spec = importlib.util.spec_from_file_location("hermes_sandbox_access_contract", plugin_path)
-+    assert spec is not None and spec.loader is not None
-+    plugin = importlib.util.module_from_spec(spec)
-+    sys.modules[spec.name] = plugin
-+    try:
-+        spec.loader.exec_module(plugin)
-+    except ImportError as exc:
-+        if "environment_key" in str(exc):
-+            pytest.skip("sandbox-access consumer requires workspace integration")
-+        raise
-+
-+    class FakeClient:
-+        def __init__(self):
-+            self.calls = []
-+
-+        def post(self, path, payload):
-+            self.calls.append((path, payload))
-+            if path.endswith("/prepare"):
-+                return {
-+                    "state": "pending",
-+                    "requestId": "request-1",
-+                    "fingerprint": "fingerprint-1",
-+                    "requestedScope": "task",
-+                    "durationSeconds": None,
-+                    "capabilities": [{
-+                        "version": 1,
-+                        "kind": "network-origin",
-+                        "scheme": "https",
-+                        "host": "api.example.com",
-+                        "ports": [443],
-+                        "addressMode": "public",
-+                        "pinnedAddresses": [],
-+                    }],
-+                    "grantIds": [],
-+                }
-+            return {
-+                "state": "approved",
-+                "requestId": "request-1",
-+                "grantIds": ["grant-1"],
-+            }
-+
-+    client = FakeClient()
-+    monkeypatch.setenv("HERMES_SANDBOX_AUTHORITY_BINDING", "qa-authority")
-+    monkeypatch.setenv("GONDOLIN_EFFECT_CONTROL_SOCKET", "/run/test/control.sock")
-+    monkeypatch.setattr(plugin, "BrokerClient", lambda: client)
-+    monkeypatch.setattr(plugin, "register_task_authority_binding", lambda *_args: None)
-+    monkeypatch.setattr(plugin, "environment_key", lambda *_args: "authority-test")
-+    monkeypatch.setattr(approval, "prompt_dangerous_approval", lambda *args, **kwargs: "session")
-+
-+    result = json.loads(plugin.handle_request_access({
-+        "capabilities": [{
-+            "kind": "network-origin",
-+            "scheme": "https",
-+            "host": "api.example.com",
-+            "address_mode": "public",
-+        }],
-+        "requested_scope": "task",
-+        "rationale": "Needed for the vendor API",
-+    }, task_id="turn-1", session_id="session-1"))
-+
-+    assert result["ok"] is True
-+    assert result["scope"] == "task"
-+    assert client.calls[1][1]["decision"] == "approve"
-diff --git a/tests/tools/test_approval.py b/tests/tools/test_approval.py
-index 1ebb3efe6d98d4629af03cae36c2a3978a9fcaae..81d1165b53dcc6ddb6dd6778549919c14675e2e0 100644
---- a/tests/tools/test_approval.py
-+++ b/tests/tools/test_approval.py
-@@ -120,9 +120,11 @@ class TestDetectDangerousRm:
-         assert "delete" in desc.lower()
- 
-     def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
--        with mock_patch("tempfile.gettempdir", return_value="/tmp"):
-+        temp_root = os.path.realpath(tempfile.gettempdir())
-+        with mock_patch("tempfile.gettempdir", return_value=temp_root):
-             for prefix in ("hermes-verify-", "hermes-ad-hoc-"):
--                assert detect_dangerous_command(f"rm -f /tmp/{prefix}example.py") == (
-+                operand = Path(temp_root) / f"{prefix}example.py"
-+                assert detect_dangerous_command(f"rm -f {operand}") == (
-                     False,
-                     None,
-                     None,

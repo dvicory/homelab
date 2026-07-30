@@ -1,5 +1,5 @@
 diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
-index c6dba55..f3974f4 100644
+index ece442c7bc0fcb21fecf8fd1b3e8538fea7e805b..7597b9ab3b99ec652ac902ba7526316971bac5e7 100644
 --- a/agent/prompt_builder.py
 +++ b/agent/prompt_builder.py
 @@ -196,19 +196,25 @@ SKILLS_GUIDANCE = (
@@ -36,10 +36,10 @@ index c6dba55..f3974f4 100644
      "4. Keep scope bounded. Use `kanban_create` for separate follow-up work and "
      "choose assignees by declared capability, not by your own profile identity.\n"
 diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
-index 4378b66..e72ceec 100644
+index 9a2f2e77fc1e67b7cda9c672f873361d04db15e5..572acb6ecff628af3d51bdba09232f9cb79d104b 100644
 --- a/hermes_cli/kanban_db.py
 +++ b/hermes_cli/kanban_db.py
-@@ -6368,7 +6368,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
+@@ -6271,7 +6271,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
      if kind == "broker":
          # Broker workers see the fixed guest mount; never persist or expose a
          # host path for this workspace kind.
@@ -49,7 +49,7 @@ index 4378b66..e72ceec 100644
          if task.workspace_path:
              # Legacy scratch tasks that were set to an explicit path get the
 diff --git a/hermes_cli/worker_lanes.py b/hermes_cli/worker_lanes.py
-index 48eab0b..d587350 100644
+index 48eab0bc7dc8b038233f93818863b0279efaa3b8..d587350d862262076cae10e81697b2683a792acd 100644
 --- a/hermes_cli/worker_lanes.py
 +++ b/hermes_cli/worker_lanes.py
 @@ -198,19 +198,6 @@ def kanban_worker_identity_env(task, *, board=None, base=None) -> "dict[str, Any
@@ -76,7 +76,7 @@ index 48eab0b..d587350 100644
 +    del workspace
 +    return kanban_worker_identity_env(task, board=board, base=base)
 diff --git a/tests/hermes_cli/test_explicit_worker_lanes.py b/tests/hermes_cli/test_explicit_worker_lanes.py
-index 6aee4f7..98b368d 100644
+index 96f1de2ec3aeba573b3187e0c323e070252689e3..6bb9c0fa17419484d5aa6ac29e3c42f24b1070fa 100644
 --- a/tests/hermes_cli/test_explicit_worker_lanes.py
 +++ b/tests/hermes_cli/test_explicit_worker_lanes.py
 @@ -138,6 +138,12 @@ def test_task_persists_spec_event_and_run_metadata(tmp_path, managed_catalogue):
@@ -93,7 +93,7 @@ index 6aee4f7..98b368d 100644
          assert name not in env
  
 diff --git a/tests/hermes_cli/test_worker_lane_discovery.py b/tests/hermes_cli/test_worker_lane_discovery.py
-index bef82d0..e2e7085 100644
+index 41172c11ab37ab2e1cca6b05e0c2e8960cee464e..2c9f32bea29bc50691fb45f697ba0ae7a0b4a543 100644
 --- a/tests/hermes_cli/test_worker_lane_discovery.py
 +++ b/tests/hermes_cli/test_worker_lane_discovery.py
 @@ -6,6 +6,7 @@ from types import SimpleNamespace
@@ -117,7 +117,7 @@ index bef82d0..e2e7085 100644
      broker = select_kanban_guidance(
          task_id="t_worker", tool_names={"kanban_show", "kanban_list"}
      )
-@@ -142,7 +147,11 @@ def test_kanban_guidance_is_scoped_to_workspace_mode(monkeypatch):
+@@ -140,7 +145,11 @@ def test_kanban_guidance_is_scoped_to_workspace_mode(monkeypatch):
      assert "revision" not in broker.lower()
      assert "hash" not in broker.lower()
  
@@ -131,7 +131,7 @@ index bef82d0..e2e7085 100644
          task_id="t_worker", tool_names={"kanban_show", "kanban_list"}
      )
 diff --git a/tests/hermes_cli/test_worker_lanes.py b/tests/hermes_cli/test_worker_lanes.py
-index 759a30f..3bf0d2a 100644
+index 759a30f8baf6840fb6e560731f4e8fee65681131..3bf0d2a33c615b7b55dc8fb1394834948b64b8a5 100644
 --- a/tests/hermes_cli/test_worker_lanes.py
 +++ b/tests/hermes_cli/test_worker_lanes.py
 @@ -115,23 +115,22 @@ def test_kanban_worker_env_sets_contract(kanban_home, tmp_path):
@@ -176,7 +176,7 @@ index 759a30f..3bf0d2a 100644
  
  def test_assignee_is_spawnable(kanban_home):
 diff --git a/tests/tools/test_gondolin_backend.py b/tests/tools/test_gondolin_backend.py
-index 5051a43..1c8a69c 100644
+index 5051a438023ee3da12a88f15102f31e4d8ce35d4..1c8a69cd2660d9942390d79166148905c80eaec3 100644
 --- a/tests/tools/test_gondolin_backend.py
 +++ b/tests/tools/test_gondolin_backend.py
 @@ -8,14 +8,18 @@ import subprocess
@@ -248,7 +248,7 @@ index 5051a43..1c8a69c 100644
  
  def test_gondolin_process_schema_hides_stdin_actions(monkeypatch):
 diff --git a/tests/tools/test_kanban_tools.py b/tests/tools/test_kanban_tools.py
-index 51084a6..91292f3 100644
+index 51084a61cf638a1218bbb327e34a5ec843ee7637..91292f372910b3ec601118e827784bdb8bf5dbe6 100644
 --- a/tests/tools/test_kanban_tools.py
 +++ b/tests/tools/test_kanban_tools.py
 @@ -2830,7 +2830,7 @@ def test_artifact_schema_is_scoped_to_workspace_mode(monkeypatch):
@@ -274,7 +274,7 @@ index 51084a6..91292f3 100644
      broker_description = broker["parameters"]["properties"]["artifacts"]["description"]
      assert "relative POSIX" in broker_description
 diff --git a/tests/tools/test_secure_terminal_identity_integration.py b/tests/tools/test_secure_terminal_identity_integration.py
-index 326ee12..48ce242 100644
+index 326ee1255531a3437fe3ccd77cfde74bbaeebfbc..48ce242affc174d543537cdc9535bdbff5af46e5 100644
 --- a/tests/tools/test_secure_terminal_identity_integration.py
 +++ b/tests/tools/test_secure_terminal_identity_integration.py
 @@ -13,11 +13,12 @@ deploy time; here we pin the identity contract every surface depends on.
@@ -331,7 +331,7 @@ index 326ee12..48ce242 100644
  
  def test_conversations_cannot_observe_each_other(two_sessions):
 diff --git a/tools/environments/gondolin.py b/tools/environments/gondolin.py
-index 88c938b..cdb16ce 100644
+index 88c938b1f4b391f7ca9f45448c7bedaae92364c2..cdb16ceb43921c72a7e9d1e2193a1bb389080812 100644
 --- a/tools/environments/gondolin.py
 +++ b/tools/environments/gondolin.py
 @@ -6,6 +6,7 @@ policy, lifecycle, filesystem mediation, and resource ceilings.
@@ -394,7 +394,7 @@ index 88c938b..cdb16ce 100644
          self.generation: Optional[int] = None
          self._closed = False
 diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
-index 81236e2..455152b 100644
+index d85829132242f287b941a3e8350d17ba24661721..1f66aabbab03f907f4bf3b933c512f20dda3a871 100644
 --- a/tools/kanban_tools.py
 +++ b/tools/kanban_tools.py
 @@ -90,16 +90,27 @@ def _check_kanban_mode() -> bool:
@@ -450,7 +450,7 @@ index 81236e2..455152b 100644
      url = args.get("url")
      if not url or not str(url).strip():
 diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
-index 852c012..ee064f2 100644
+index 852c01267b1802b12f4930cf459bab7aa2315800..ee064f2f43540ba616a6eaf0d6b79cd84769c73a 100644
 --- a/tools/terminal_tool.py
 +++ b/tools/terminal_tool.py
 @@ -1289,6 +1289,13 @@ def trusted_session_key(

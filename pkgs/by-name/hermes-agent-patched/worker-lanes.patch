@@ -30,23 +30,23 @@ describes.
  create mode 100644 tests/hermes_cli/test_worker_lanes.py
 
 diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
-index 4b031287f12f..af159ed6a55e 100644
+index de332f36ee44e26b26701ccd450c24caa48dacfe..d32cfd03618f3d695c12671bc95651febc0e791d 100644
 --- a/hermes_cli/kanban_db.py
 +++ b/hermes_cli/kanban_db.py
-@@ -6795,7 +6795,8 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
-
+@@ -7381,7 +7381,8 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
+ 
  def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
      """Return True iff there is at least one ready+assigned+unclaimed task
 -    whose assignee maps to a real Hermes profile.
 +    whose assignee is spawnable — a real Hermes profile (default lane) or a
 +    registered external worker lane (plugin lane).
-
+ 
      Used by the gateway- and CLI-embedded dispatchers' health telemetry to
      decide whether ``0 spawned`` is a "stuck" condition (real spawnable
-@@ -6803,51 +6804,89 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
+@@ -7389,51 +7390,89 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
      lanes like ``orion-cc`` / ``orion-research`` waiting on terminals
      that pull tasks via ``claim_task`` directly).
-
+ 
 -    Falls back to "any ready+assigned" if ``profile_exists`` is not
 -    importable (e.g. partial install) — preserves the old behavior so
 -    the warning still fires in degraded environments.
@@ -74,14 +74,14 @@ index 4b031287f12f..af159ed6a55e 100644
 -            return True
 -    return False
 +    return any(_assignee_is_spawnable(row["assignee"]) for row in rows)
-
-
+ 
+ 
  def has_spawnable_review(conn: sqlite3.Connection) -> bool:
      """Return True iff there is at least one review+assigned+unclaimed task
 -    whose assignee maps to a real Hermes profile.
 +    whose assignee is spawnable — a real Hermes profile or a registered
 +    external worker lane.
-
+ 
      Mirror of :func:`has_spawnable_ready` for the review column —
      used by the health telemetry to decide whether the dispatcher
 -    should have spawned a review agent.
@@ -151,10 +151,10 @@ index 4b031287f12f..af159ed6a55e 100644
 +    if lane is not None:
 +        return lane.spawn_fn
 +    return _default_spawn
-
-
+ 
+ 
  def dispatch_once(
-@@ -7035,13 +7074,12 @@ def _dispatch_once_locked(
+@@ -7621,13 +7660,12 @@ def _dispatch_once_locked(
          and max_in_progress_per_profile > 0
      ) else None
      _per_profile_running: dict[str, int] = {}
@@ -174,7 +174,7 @@ index 4b031287f12f..af159ed6a55e 100644
      # Normalize default_assignee once: empty/whitespace string → None so the
      # rest of the loop can use ``if default_assignee:`` as a single check.
      # We also resolve profile_exists once here for the same reason.
-@@ -7105,27 +7143,11 @@ def _dispatch_once_locked(
+@@ -7691,27 +7729,11 @@ def _dispatch_once_locked(
              else:
                  result.skipped_unassigned.append(row["id"])
                  continue
@@ -207,7 +207,7 @@ index 4b031287f12f..af159ed6a55e 100644
              result.skipped_nonspawnable.append(row["id"])
              continue
          # Per-profile concurrency cap (#21582): even if there's global
-@@ -7134,9 +7156,17 @@ def _dispatch_once_locked(
+@@ -7720,9 +7742,17 @@ def _dispatch_once_locked(
          # quota / browser pool from being overwhelmed by a fan-out
          # while the global max_in_progress / max_spawn caps still allow
          # work on OTHER profiles.
@@ -227,7 +227,7 @@ index 4b031287f12f..af159ed6a55e 100644
                  result.skipped_per_profile_capped.append(
                      (row["id"], row_assignee, current)
                  )
-@@ -7164,11 +7194,11 @@ def _dispatch_once_locked(
+@@ -7750,11 +7780,11 @@ def _dispatch_once_locked(
              continue
          if dry_run:
              result.spawned.append((row["id"], row_assignee, ""))
@@ -241,7 +241,7 @@ index 4b031287f12f..af159ed6a55e 100644
                  _per_profile_running[row_assignee] = (
                      _per_profile_running.get(row_assignee, 0) + 1
                  )
-@@ -7195,7 +7225,9 @@ def _dispatch_once_locked(
+@@ -7781,7 +7811,9 @@ def _dispatch_once_locked(
          if claimed.workspace_kind == "worktree":
              set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
          _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
@@ -252,7 +252,7 @@ index 4b031287f12f..af159ed6a55e 100644
          try:
              # Back-compat: older spawn_fn signatures accept only
              # (task, workspace). Test stubs in the suite rely on that.
-@@ -7220,10 +7252,11 @@ def _dispatch_once_locked(
+@@ -7806,10 +7838,11 @@ def _dispatch_once_locked(
              # complete_task).
              result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
              spawned += 1
@@ -268,7 +268,7 @@ index 4b031287f12f..af159ed6a55e 100644
                  _per_profile_running[claimed.assignee] = (
                      _per_profile_running.get(claimed.assignee, 0) + 1
                  )
-@@ -7255,11 +7288,7 @@ def _dispatch_once_locked(
+@@ -7841,11 +7874,7 @@ def _dispatch_once_locked(
          if not row["assignee"]:
              result.skipped_unassigned.append(row["id"])
              continue
@@ -281,7 +281,7 @@ index 4b031287f12f..af159ed6a55e 100644
              result.skipped_nonspawnable.append(row["id"])
              continue
          if dry_run:
-@@ -7293,7 +7322,7 @@ def _dispatch_once_locked(
+@@ -7879,7 +7908,7 @@ def _dispatch_once_locked(
          # prompt via KANBAN_GUIDANCE, so this is the only extra skill the
          # review agent needs.
          claimed.skills = ["sdlc-review"]
@@ -290,9 +290,9 @@ index 4b031287f12f..af159ed6a55e 100644
          try:
              import inspect
              try:
-@@ -7607,11 +7636,21 @@ def _default_spawn(
+@@ -8193,11 +8222,21 @@ def _default_spawn(
      profile_arg = normalize_profile_name(task.assignee)
-
+ 
      prompt = f"work kanban task {task.id}"
 -    env = dict(os.environ)
 +    # Build the shared HERMES_KANBAN_* worker contract once.
@@ -306,7 +306,7 @@ index 4b031287f12f..af159ed6a55e 100644
 +    # import cycle (worker_lanes imports kanban_db lazily in turn).
 +    from hermes_cli.worker_lanes import kanban_worker_env
 +    env = kanban_worker_env(task, workspace, board=board)
-
+ 
      # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
      # (fallback_providers, toolsets, agent settings, etc.) instead of the root
 -    # config.  Without this, `env = dict(os.environ)` copies only the parent's
@@ -314,7 +314,7 @@ index 4b031287f12f..af159ed6a55e 100644
      # env, and when the child process starts `hermes -p <name>` the
      # _apply_profile_override() runs *before* hermes_constants is imported.
      # If HERMES_HOME is absent from the child's env, get_hermes_home() falls
-@@ -7627,30 +7666,8 @@ def _default_spawn(
+@@ -8213,30 +8252,8 @@ def _default_spawn(
          # This only happens in test fixtures where the isolated
          # HERMES_HOME never had profiles created.
          pass
@@ -345,7 +345,7 @@ index 4b031287f12f..af159ed6a55e 100644
      # Goal-loop mode: the worker reads these and wraps its run in the
      # Ralph-style /goal judge loop (see cli.py quiet-mode path). Only set
      # when enabled so non-goal tasks keep a clean env.
-@@ -7670,19 +7687,6 @@ def _default_spawn(
+@@ -8256,19 +8273,6 @@ def _default_spawn(
      )
      if foreground_timeout is not None:
          env["TERMINAL_MAX_FOREGROUND_TIMEOUT"] = foreground_timeout
@@ -366,13 +366,13 @@ index 4b031287f12f..af159ed6a55e 100644
      # `hermes -p <assignee>` activates the profile, but the env var is
      # what the tool reads — set it explicitly here so comments are
 diff --git a/hermes_cli/plugins.py b/hermes_cli/plugins.py
-index e4d0afd7c8b5..9741fdc382d5 100644
+index 6ca393fca53c1fd2b3479bed72180fedcc848c88..75b4ccb9d2559e90b6d1785970f31a18d297224a 100644
 --- a/hermes_cli/plugins.py
 +++ b/hermes_cli/plugins.py
-@@ -576,6 +576,44 @@ def register_context_engine(self, engine) -> None:
+@@ -643,6 +643,44 @@ class PluginContext:
              self.manifest.name, engine.name,
          )
-
+ 
 +    # -- kanban worker lane registration ------------------------------------
 +
 +    def register_worker_lane(self, lane, *, replace: bool = False):
@@ -412,11 +412,11 @@ index e4d0afd7c8b5..9741fdc382d5 100644
 +        return registered
 +
      # -- image gen provider registration ------------------------------------
-
+ 
      def register_image_gen_provider(self, provider) -> None:
 diff --git a/hermes_cli/worker_lanes.py b/hermes_cli/worker_lanes.py
 new file mode 100644
-index 000000000000..ad49d609488f
+index 0000000000000000000000000000000000000000..ad49d609488f6001718637bbc35f59816204bbe2
 --- /dev/null
 +++ b/hermes_cli/worker_lanes.py
 @@ -0,0 +1,182 @@
@@ -604,7 +604,7 @@ index 000000000000..ad49d609488f
 +    return env
 diff --git a/tests/hermes_cli/test_worker_lanes.py b/tests/hermes_cli/test_worker_lanes.py
 new file mode 100644
-index 000000000000..5f8f30534693
+index 0000000000000000000000000000000000000000..5f8f30534693bc22a44f8b7822e4a23b1cb8e717
 --- /dev/null
 +++ b/tests/hermes_cli/test_worker_lanes.py
 @@ -0,0 +1,285 @@

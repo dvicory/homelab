@@ -38,7 +38,7 @@ this cross-surface identity and ownership contract stays backend-independent.
  create mode 100644 tests/tools/test_secure_terminal_scope.py
 
 diff --git a/agent/agent_init.py b/agent/agent_init.py
-index 1eae555..a8773dd 100644
+index 1eae555c5995d0400b28878ba6d6c229797ad0b8..a8773ddb04e880568abe61798584d817ae67720b 100644
 --- a/agent/agent_init.py
 +++ b/agent/agent_init.py
 @@ -1279,6 +1279,15 @@ def init_agent(
@@ -58,7 +58,7 @@ index 1eae555..a8773dd 100644
      # Expose session ID to tools (terminal, execute_code) so agents can
      # reference their own session for --resume commands, cross-session
 diff --git a/agent/turn_context.py b/agent/turn_context.py
-index 8807407..9b25a57 100644
+index 8807407278c9c411c02c6a11ce5ceb36f31c4257..9b25a5723a43f19e33a826456c35a194009a61da 100644
 --- a/agent/turn_context.py
 +++ b/agent/turn_context.py
 @@ -367,6 +367,22 @@ def build_turn_context(
@@ -85,7 +85,7 @@ index 8807407..9b25a57 100644
      agent._current_turn_id = turn_id
      agent._current_api_request_id = ""
 diff --git a/run_agent.py b/run_agent.py
-index 6c13f73..6dbfae8 100644
+index 6c13f737c8619bd518e4ad65d1ffb556e7315025..6dbfae86168fc38e721a701323fc41c89ab8e376 100644
 --- a/run_agent.py
 +++ b/run_agent.py
 @@ -3622,24 +3622,56 @@ class AIAgent:
@@ -152,7 +152,7 @@ index 6c13f73..6dbfae8 100644
              pass
  
 diff --git a/tests/integration/test_vision_docker_resolve.py b/tests/integration/test_vision_docker_resolve.py
-index 4ff3e46..adc3578 100644
+index 4ff3e46edea1eab24f8bf7a1b0450f9e3346ce8d..adc3578aec3d5a3bf26974160edd0b387e6985a6 100644
 --- a/tests/integration/test_vision_docker_resolve.py
 +++ b/tests/integration/test_vision_docker_resolve.py
 @@ -75,7 +75,7 @@ def docker_backend(request, monkeypatch):
@@ -165,7 +165,7 @@ index 4ff3e46..adc3578 100644
          terminal_tool._active_environments[task_id] = env
      try:
 diff --git a/tests/tools/test_file_tools_cwd_resolution.py b/tests/tools/test_file_tools_cwd_resolution.py
-index c333cc7..edf244f 100644
+index c333cc7d802641290710186dc7a5a9eafed2785b..edf244f33fa4e8675e3681716b52eb432b66c74a 100644
 --- a/tests/tools/test_file_tools_cwd_resolution.py
 +++ b/tests/tools/test_file_tools_cwd_resolution.py
 @@ -303,7 +303,7 @@ def test_registered_task_cwd_override_anchors_before_terminal_env_exists(_isolat
@@ -200,7 +200,7 @@ index c333cc7..edf244f 100644
  # the single "default" terminal environment and could inherit each other's cwd.
 diff --git a/tests/tools/test_secure_terminal_identity_integration.py b/tests/tools/test_secure_terminal_identity_integration.py
 new file mode 100644
-index 0000000..326ee12
+index 0000000000000000000000000000000000000000..326ee1255531a3437fe3ccd77cfde74bbaeebfbc
 --- /dev/null
 +++ b/tests/tools/test_secure_terminal_identity_integration.py
 @@ -0,0 +1,244 @@
@@ -450,7 +450,7 @@ index 0000000..326ee12
 +
 diff --git a/tests/tools/test_secure_terminal_scope.py b/tests/tools/test_secure_terminal_scope.py
 new file mode 100644
-index 0000000..9cdb422
+index 0000000000000000000000000000000000000000..9cdb4224bd2c3bdc594d64856113ff44f104d72b
 --- /dev/null
 +++ b/tests/tools/test_secure_terminal_scope.py
 @@ -0,0 +1,150 @@
@@ -605,7 +605,7 @@ index 0000000..9cdb422
 +        terminal_tool._last_activity.clear()
 +        terminal_tool._environment_owners.clear()
 diff --git a/tests/tools/test_shared_container_task_id.py b/tests/tools/test_shared_container_task_id.py
-index 3a66cde..5471916 100644
+index 3a66cde441eaf50a0da655c28863526ffde75bdb..54719164292225ff70ca6ebf187fd8a2010835aa 100644
 --- a/tests/tools/test_shared_container_task_id.py
 +++ b/tests/tools/test_shared_container_task_id.py
 @@ -2,7 +2,7 @@
@@ -705,7 +705,7 @@ index 3a66cde..5471916 100644
          )
      finally:
 diff --git a/tests/tools/test_terminal_task_cwd.py b/tests/tools/test_terminal_task_cwd.py
-index fc02aa6..e49ddc6 100644
+index fc02aa6c7d4b6a449bad43a06063c5d8587613b0..e49ddc6882b769256b01e39c9c39097cc7157abc 100644
 --- a/tests/tools/test_terminal_task_cwd.py
 +++ b/tests/tools/test_terminal_task_cwd.py
 @@ -95,7 +95,7 @@ def test_foreground_command_prefers_recorded_session_cwd_over_init_time_cwd(monk
@@ -743,7 +743,7 @@ index fc02aa6..e49ddc6 100644
          terminal_tool,
          "_check_all_guards",
 diff --git a/tools/code_execution_tool.py b/tools/code_execution_tool.py
-index 650ee5b..7082966 100644
+index 650ee5b31d341240864e30f87b8048a678290084..7082966189c12de8616d91139eba6ef86bcdfa78 100644
 --- a/tools/code_execution_tool.py
 +++ b/tools/code_execution_tool.py
 @@ -550,6 +550,7 @@ def _rpc_server_loop(
@@ -948,7 +948,7 @@ index 650ee5b..7082966 100644
      emoji="🐍",
      max_result_size_chars=100_000,
 diff --git a/tools/environments/docker.py b/tools/environments/docker.py
-index ea4a6ec..78e6dae 100644
+index ea4a6ec77e6812dae4912160847c910149e4bae1..78e6dae259cf05f4021f2e2392fa6b1ad7820cfc 100644
 --- a/tools/environments/docker.py
 +++ b/tools/environments/docker.py
 @@ -596,6 +596,8 @@ class DockerEnvironment(BaseEnvironment):
@@ -1041,7 +1041,7 @@ index ea4a6ec..78e6dae 100644
              "--label", "hermes-agent=1",
              "--label", f"hermes-task-id={task_label}",
 diff --git a/tools/file_tools.py b/tools/file_tools.py
-index 15ddd0e..99f43c1 100644
+index 15ddd0e36553808383cb730dee02234b8485d552..99f43c1931f7440ceecd3e835ecdd05e2f3bb12f 100644
 --- a/tools/file_tools.py
 +++ b/tools/file_tools.py
 @@ -23,6 +23,16 @@ from agent.redact import redact_sensitive_text
@@ -1593,7 +1593,7 @@ index 15ddd0e..99f43c1 100644
  
  registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=100_000)
 diff --git a/tools/process_registry.py b/tools/process_registry.py
-index 97cf89b..912847e 100644
+index 97cf89b3bda878a157c258f88d39518ae878bfa7..912847e4422716d7bd34af038311a756ee1f181c 100644
 --- a/tools/process_registry.py
 +++ b/tools/process_registry.py
 @@ -1821,12 +1821,14 @@ class ProcessRegistry:
@@ -1640,7 +1640,7 @@ index 97cf89b..912847e 100644
          )
      elif action in {"poll", "log", "wait", "kill", "write", "submit", "close"}:
 diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
-index 5742229..8fb8794 100644
+index 57422299d0de658897d92127ecf8de10b59d267e..8fb8794bc3202564fddc9b67d6952f2c47e6cde3 100644
 --- a/tools/terminal_tool.py
 +++ b/tools/terminal_tool.py
 @@ -31,6 +31,7 @@ Usage:
@@ -2016,6 +2016,3 @@ index 5742229..8fb8794 100644
  
          if background:
              # Spawn a tracked background process via the process registry.
--- 
-2.49.0
-

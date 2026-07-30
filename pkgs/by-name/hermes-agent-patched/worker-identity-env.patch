@@ -1,5 +1,5 @@
 diff --git a/hermes_cli/worker_lanes.py b/hermes_cli/worker_lanes.py
-index c054e4b..48eab0b 100644
+index c054e4beb42d52ccfdc4c5b2761ab53dd961f463..48eab0bc7dc8b038233f93818863b0279efaa3b8 100644
 --- a/hermes_cli/worker_lanes.py
 +++ b/hermes_cli/worker_lanes.py
 @@ -153,47 +153,17 @@ def clear_worker_lanes() -> None:

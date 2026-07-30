@@ -19,27 +19,12 @@ actually dispatch and the capability descriptions needed to select among them.
  4 files changed, 220 insertions(+), 16 deletions(-)
  create mode 100644 tests/hermes_cli/test_worker_lane_discovery.py
 
-diff --git a/hermes_cli/worker_lanes.py b/hermes_cli/worker_lanes.py
-index ee2a1b1..706bf5e 100644
---- a/hermes_cli/worker_lanes.py
-+++ b/hermes_cli/worker_lanes.py
-@@ -66 +66,2 @@ class WorkerLane:
--    ``kind`` is an optional label for logs/telemetry; ``max_concurrency`` is an
-+    ``kind`` is an optional label for logs/telemetry; ``description`` explains to
-+    orchestrators when this lane should be selected; ``max_concurrency`` is an
-@@ -73,2 +74,3 @@ class WorkerLane:
-     kind: str = ""
-+    description: str = ""
-     max_concurrency: Optional[int] = None
-@@ -80,2 +82,3 @@ class WorkerLane:
-         self.kind = str(self.kind or "").strip()
-+        self.description = str(self.description or "").strip()
-         if self.max_concurrency is not None:
 diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
-index 90f9c26..72dca32 100644
+index 4ae71cbb3a37205db03a1d87f50503725aa4fee6..892fe77901a60561fee2c2ffaa1cb0ae7cf286ce 100644
 --- a/agent/prompt_builder.py
 +++ b/agent/prompt_builder.py
-@@ -230,7 +230,7 @@ KANBAN_GUIDANCE = (
+@@ -241,8 +241,8 @@ KANBAN_GUIDANCE = (
+     "completing is more honest than auto-completing work that still needs "
      "eyes on it.\n"
      "6. **If follow-up work appears, create it; don't do it.** Use "
 -    "`kanban_create(title=..., assignee=<right-profile>, parents=[your-task-id])` "
@@ -49,17 +34,17 @@ index 90f9c26..72dca32 100644
      "scope-creeping into the next thing.\n"
      "\n"
      "## Orchestrator mode\n"
-@@ -256,10 +256,13 @@ KANBAN_GUIDANCE = (
+@@ -273,10 +273,13 @@ KANBAN_GUIDANCE = (
      "- **Created cards.** List ids in `kanban_complete(created_cards=[...])` "
      "ONLY when captured from a successful `kanban_create` return — never invent "
      "or paste ids; the kernel rejects the completion on any phantom id.\n"
-+    "- **Parent links.** `parents` gate dependencies and preserve lineage. Link "
-+    "derived reviews and follow-ups even when the source is done; completed parent "
-+    "handoffs enter worker context without delay. Do not link unrelated tasks.\n"
 -    "- **Orchestrating: discover profiles first.** The dispatcher SILENTLY "
 -    "drops a card with an unknown assignee (it sits in `ready` forever). Ground "
 -    "every assignee in a real profile (`hermes profile list`, or ask the user), "
 -    "and express dependencies via `parents=[...]` on `kanban_create`, not prose.\n"
++    "- **Parent links.** `parents` gate dependencies and preserve lineage. Link "
++    "derived reviews and follow-ups even when the source is done; completed parent "
++    "handoffs enter worker context without delay. Do not link unrelated tasks.\n"
 +    "- **Orchestrating.** Choose dispatchable assignees from `kanban_create`'s "
 +    "dynamic schema by described capability. 'You' does not select the "
 +    "current/default profile; an explicitly named executor wins. Unknown "
@@ -67,7 +52,7 @@ index 90f9c26..72dca32 100644
      "\n"
      "## Do NOT\n"
      "\n"
-@@ -271,8 +280,9 @@ KANBAN_GUIDANCE = (
+@@ -288,8 +291,9 @@ KANBAN_GUIDANCE = (
      "will sit silently in `running` with no signal to the operator. Instead: "
      "`kanban_comment` the context, then `kanban_block(reason=...)` so the "
      "task surfaces on the board as needing input.\n"
@@ -79,98 +64,39 @@ index 90f9c26..72dca32 100644
      "- Do not call `delegate_task` as a board substitute. `delegate_task` is "
      "for short reasoning subtasks inside your own run; board tasks are for "
      "cross-agent handoffs that outlive one API loop."
-diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
-index 6a1dc1f..1dc888a 100644
---- a/tools/kanban_tools.py
-+++ b/tools/kanban_tools.py
-@@ -846 +846,2 @@ def _handle_create(args: dict) -> str:
--            "assignee is required — name the profile that should execute this "
-+            "assignee is required — name the Hermes profile or registered "
-+            "worker lane that should execute this "
-@@ -1398 +1399 @@ KANBAN_CREATE_SCHEMA = {
--        "tasks on its next tick and spawns the assigned profiles."
-+        "tasks on its next tick and spawns the assigned workers."
-@@ -1410,2 +1411,2 @@ KANBAN_CREATE_SCHEMA = {
--                    "Profile name that should execute this task "
--                    "(e.g. 'researcher-a', 'reviewer', 'writer'). "
-+                    "Hermes profile or registered external worker lane that "
-+                    "should execute this task. "
-@@ -1428,5 +1429,7 @@ KANBAN_CREATE_SCHEMA = {
--                    "Parent task ids. The new task stays in 'todo' "
--                    "until every parent reaches 'done'; then it "
-+                    "Parent task ids encode both dependency gating and durable "
-+                    "lineage. The assigned worker receives completed parents' "
-+                    "summary and metadata in its context. The new task stays "
-+                    "in 'todo' until every parent reaches 'done'; then it "
-                     "auto-promotes to 'ready'. Typical fan-in: list "
-                     "all the researcher task ids when creating a "
-                     "synthesizer task."
-@@ -1548,3 +1551,58 @@ KANBAN_CREATE_SCHEMA = {
- }
-
-+
-+def _kanban_create_schema_overrides() -> dict:
-+    """Advertise every assignee dispatchable by this gateway process."""
-+    try:
-+        from hermes_cli.worker_lanes import list_worker_lanes
-+
-+        lanes = list_worker_lanes()
-+    except (ImportError, AttributeError):
-+        # Worker lanes are an optional extension.
-+        lanes = []
-+
-+    try:
-+        from hermes_cli.profiles import list_profiles
-+
-+        profiles = list_profiles()
-+    except Exception:
-+        # Schema construction must survive a missing or damaged profile home.
-+        profiles = []
-+
-+    lane_names = {lane.name for lane in lanes}
-+    lines = []
-+    for profile in sorted(profiles, key=lambda item: item.name):
-+        # A registered lane wins dispatcher resolution when names collide, so
-+        # do not advertise an unreachable profile with the same routing key.
-+        if profile.name in lane_names:
-+            continue
-+        description = " ".join(str(getattr(profile, "description", "") or "").split())
-+        suffix = description or "no capability description"
-+        lines.append(f"- {profile.name} [Hermes profile]: {suffix}")
-+    for lane in sorted(lanes, key=lambda item: item.name):
-+        description = " ".join(str(getattr(lane, "description", "") or "").split())
-+        suffix = description or "no capability description"
-+        lines.append(f"- {lane.name} [external worker lane]: {suffix}")
-+
-+    if not lines:
-+        return {}
-+
-+    parameters = {**KANBAN_CREATE_SCHEMA["parameters"]}
-+    parameters["properties"] = {
-+        name: dict(schema)
-+        for name, schema in KANBAN_CREATE_SCHEMA["parameters"]["properties"].items()
-+    }
-+    assignee = parameters["properties"]["assignee"]
-+    assignee["description"] = (
-+        assignee["description"]
-+        + "\n\nDispatchable assignees in this gateway:\n"
-+        + "\n".join(lines)
-+        + "\nChoose an assignee by matching the task to its described capability. "
-+        + "Addressing the current orchestrator as 'you' does not by itself select "
-+        + "the current/default profile; an explicit executor instruction takes "
-+        + "precedence. Hermes profiles remain valid."
-+    )
-+    return {"parameters": parameters}
-+
-+
- KANBAN_UNBLOCK_SCHEMA = {
-@@ -1653,2 +1711,3 @@ registry.register(
-     emoji="➕",
-+    dynamic_schema_overrides=_kanban_create_schema_overrides,
- )
+diff --git a/hermes_cli/worker_lanes.py b/hermes_cli/worker_lanes.py
+index ad49d609488f6001718637bbc35f59816204bbe2..5dcea132c04235119ee0f8f923ea49bfcf98e087 100644
+--- a/hermes_cli/worker_lanes.py
++++ b/hermes_cli/worker_lanes.py
+@@ -63,7 +63,8 @@ class WorkerLane:
+     * ``spawn_fn`` — called as ``spawn_fn(task, workspace, board=...)`` to launch
+       the worker (typically detached) and return its pid for crash detection.
+ 
+-    ``kind`` is an optional label for logs/telemetry; ``max_concurrency`` is an
++    ``kind`` is an optional label for logs/telemetry; ``description`` explains to
++    orchestrators when this lane should be selected; ``max_concurrency`` is an
+     optional per-lane in-flight cap (``None`` falls back to the global
+     per-profile cap).
+     """
+@@ -71,6 +72,7 @@ class WorkerLane:
+     name: str
+     spawn_fn: SpawnFn
+     kind: str = ""
++    description: str = ""
+     max_concurrency: Optional[int] = None
+ 
+     def __post_init__(self) -> None:
+@@ -78,6 +80,7 @@ class WorkerLane:
+         if not callable(self.spawn_fn):
+             raise ValueError("worker lane spawn_fn must be callable")
+         self.kind = str(self.kind or "").strip()
++        self.description = str(self.description or "").strip()
+         if self.max_concurrency is not None:
+             mc = int(self.max_concurrency)
+             if mc < 1:
 diff --git a/tests/hermes_cli/test_worker_lane_discovery.py b/tests/hermes_cli/test_worker_lane_discovery.py
 new file mode 100644
-index 0000000..3e87caf
+index 0000000000000000000000000000000000000000..90aa8b97bcd752e8bc112021b218b0a135d193d0
 --- /dev/null
 +++ b/tests/hermes_cli/test_worker_lane_discovery.py
 @@ -0,0 +1,140 @@
@@ -314,3 +240,120 @@ index 0000000..3e87caf
 +
 +    assert "Hermes profile or registered external worker lane" in description
 +    assert "Dispatchable assignees in this gateway" not in description
+diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
+index 5535c01e2e68492c48b15d8ad0298fad45bce6cd..6c95e502752ede42489916a9e86c0d68c1ac27e0 100644
+--- a/tools/kanban_tools.py
++++ b/tools/kanban_tools.py
+@@ -1074,7 +1074,8 @@ def _handle_create(args: dict, **kw) -> str:
+     assignee = args.get("assignee")
+     if not assignee:
+         return tool_error(
+-            "assignee is required — name the profile that should execute this "
++            "assignee is required — name the Hermes profile or registered "
++            "worker lane that should execute this "
+             "task (the dispatcher will only spawn tasks with an assignee)"
+         )
+     body = args.get("body")
+@@ -1725,7 +1726,7 @@ KANBAN_CREATE_SCHEMA = {
+         "orchestrator workers to fan out — decompose work into child "
+         "tasks with specific assignees, link them into a pipeline, "
+         "then complete your own task. The dispatcher picks up the new "
+-        "tasks on its next tick and spawns the assigned profiles."
++        "tasks on its next tick and spawns the assigned workers."
+     ),
+     "parameters": {
+         "type": "object",
+@@ -1737,8 +1738,8 @@ KANBAN_CREATE_SCHEMA = {
+             "assignee": {
+                 "type": "string",
+                 "description": (
+-                    "Profile name that should execute this task "
+-                    "(e.g. 'researcher-a', 'reviewer', 'writer'). "
++                    "Hermes profile or registered external worker lane that "
++                    "should execute this task. "
+                     "Required — tasks without an assignee are never "
+                     "dispatched."
+                 ),
+@@ -1755,8 +1756,10 @@ KANBAN_CREATE_SCHEMA = {
+                 "type": "array",
+                 "items": {"type": "string"},
+                 "description": (
+-                    "Parent task ids. The new task stays in 'todo' "
+-                    "until every parent reaches 'done'; then it "
++                    "Parent task ids encode both dependency gating and durable "
++                    "lineage. The assigned worker receives completed parents' "
++                    "summary and metadata in its context. The new task stays "
++                    "in 'todo' until every parent reaches 'done'; then it "
+                     "auto-promotes to 'ready'. Typical fan-in: list "
+                     "all the researcher task ids when creating a "
+                     "synthesizer task."
+@@ -1877,6 +1880,61 @@ KANBAN_CREATE_SCHEMA = {
+     },
+ }
+ 
++
++def _kanban_create_schema_overrides() -> dict:
++    """Advertise every assignee dispatchable by this gateway process."""
++    try:
++        from hermes_cli.worker_lanes import list_worker_lanes
++
++        lanes = list_worker_lanes()
++    except (ImportError, AttributeError):
++        # Worker lanes are an optional extension.
++        lanes = []
++
++    try:
++        from hermes_cli.profiles import list_profiles
++
++        profiles = list_profiles()
++    except Exception:
++        # Schema construction must survive a missing or damaged profile home.
++        profiles = []
++
++    lane_names = {lane.name for lane in lanes}
++    lines = []
++    for profile in sorted(profiles, key=lambda item: item.name):
++        # A registered lane wins dispatcher resolution when names collide, so
++        # do not advertise an unreachable profile with the same routing key.
++        if profile.name in lane_names:
++            continue
++        description = " ".join(str(getattr(profile, "description", "") or "").split())
++        suffix = description or "no capability description"
++        lines.append(f"- {profile.name} [Hermes profile]: {suffix}")
++    for lane in sorted(lanes, key=lambda item: item.name):
++        description = " ".join(str(getattr(lane, "description", "") or "").split())
++        suffix = description or "no capability description"
++        lines.append(f"- {lane.name} [external worker lane]: {suffix}")
++
++    if not lines:
++        return {}
++
++    parameters = {**KANBAN_CREATE_SCHEMA["parameters"]}
++    parameters["properties"] = {
++        name: dict(schema)
++        for name, schema in KANBAN_CREATE_SCHEMA["parameters"]["properties"].items()
++    }
++    assignee = parameters["properties"]["assignee"]
++    assignee["description"] = (
++        assignee["description"]
++        + "\n\nDispatchable assignees in this gateway:\n"
++        + "\n".join(lines)
++        + "\nChoose an assignee by matching the task to its described capability. "
++        + "Addressing the current orchestrator as 'you' does not by itself select "
++        + "the current/default profile; an explicit executor instruction takes "
++        + "precedence. Hermes profiles remain valid."
++    )
++    return {"parameters": parameters}
++
++
+ KANBAN_UNBLOCK_SCHEMA = {
+     "name": "kanban_unblock",
+     "description": (
+@@ -2009,6 +2067,7 @@ registry.register(
+     handler=_handle_create,
+     check_fn=_check_kanban_mode,
+     emoji="➕",
++    dynamic_schema_overrides=_kanban_create_schema_overrides,
+ )
+ 
+ registry.register(
