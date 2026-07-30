@@ -13,10 +13,10 @@
 
 ## 2. Hermes completion and delivery slice
 
-- [ ] 2.1 Send syntax-validated broker-worker artifact paths in the single capture request, keep summary/result prose non-authoritative, accept an empty handoff, and keep Kanban `running` until a ready handoff and verified selected-artifact manifest exist.
-- [ ] 2.2 Keep capture/finalization failure-propagating under existing Kanban states while native scratch/dir/worktree completion continues to materialize selected files before `done`.
-- [ ] 2.3 Read each frozen selected artifact over the local control UDS into upstream native attachment storage before platform upload; persist recipient/file delivery stages, retry only outstanding deliveries, and never advance the completion-event cursor on failed materialization or upload.
-- [ ] 2.4 Extend the repository workspace-service bridge and Gondolin backend to attach frozen worker/run identity, activate/fence runs, invoke capture and selected-artifact read, recover in process, and fail closed without host/local/Docker/Podman fallback.
+- [ ] 2.1 Send syntax-validated broker-worker artifact paths in the single capture request, keep summary/result prose non-authoritative, accept an empty handoff, and keep Kanban `running` until a ready handoff, verified selected-artifact manifest, and durable native task attachments for every selected file exist.
+- [ ] 2.2 Keep capture/finalization and native attachment materialization failure-propagating under existing Kanban states while native scratch/dir/worktree completion continues to materialize selected files before `done`.
+- [ ] 2.3 Read each frozen selected artifact over the local control UDS into upstream native task attachment storage exactly once before `done`, independent of recipient subscriptions; make ordinary task attachment inspection expose it; persist recipient/attachment delivery stages, retry only outstanding deliveries, and never advance the completion-event cursor on failed upload.
+- [ ] 2.4 Extend the repository workspace-service bridge and Gondolin backend to attach frozen worker/run identity, activate/fence runs, invoke capture and selected-artifact read, recover capture and materialization in process, and fail closed without host/local/Docker/Podman fallback.
 - [ ] 2.5 Delete `inherit_parent_output`, writable child-import routes and persistence, direct-child preparation, related prompts/tests, and compatibility behavior before declaring this workstream complete.
 
 ## 3. Integration and verification

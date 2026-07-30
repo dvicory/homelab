@@ -26,7 +26,8 @@
 - [ ] 4.2 Make `/workspace/work` the trusted worker CWD and keep `/workspace/inputs` read-only and initially empty.
 - [ ] 4.3 Enforce lane/Project effective permission on the work plane while retaining bounded writable output for read-only review tasks.
 - [ ] 4.4 Route terminal, execute-code, file, search, patch, process, and completion paths through the same three-plane task-run binding.
-- [ ] 4.5 Remove direct-`/workspace` work-root assumptions in prompts, configuration, checks, and acceptance tooling without compatibility aliases.
+- [ ] 4.5 Run external Codex with CWD `/workspace/work`; extend its strict structured result with normalized workspace-root `output/...` artifact selections; have the trusted wrapper alone validate and pass them to Kanban completion; keep Git changed paths and prose non-authoritative.
+- [ ] 4.6 Remove direct-`/workspace` work-root assumptions in prompts, configuration, checks, and acceptance tooling without compatibility aliases.
 
 ## 5. Project results and lifecycle integration
 
@@ -42,5 +43,5 @@
 - [ ] 6.3 Verify worker CWD and cross-surface observation under `/workspace/work`, empty read-only `/workspace/inputs`, and output-only completion capture.
 - [ ] 6.4 Verify crash/restart at each materialization and release boundary, response-loss replay, quota failures, retry fencing, retention, and cleanup.
 - [ ] 6.5 Discard incompatible broker workspaces and queued tasks; retain no legacy root alias or host-worktree fallback.
-- [ ] 6.6 Smoke-test one orchestrator-created Project task from source acquisition through changed private work, explicit human artifact delivery, and unchanged canonical source.
+- [ ] 6.6 Smoke-test one orchestrator-created Codex Project task from source acquisition through changed private work and an explicit `output/...` structured-result selection, proving native task attachment availability, unchanged canonical source, and denial of direct child completion authority.
 - [ ] 6.7 Run focused broker, Hermes, Nix module, and end-to-end checks after the narrowed handoff passes and before starting `add-multi-task-inputs`.

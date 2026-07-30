@@ -14,7 +14,7 @@ Guest output is untrusted. Names, links, special files, unreadable entries, and 
 - Validate explicit human artifact selections against the frozen tree in the same finalization operation.
 - Make response loss and post-fence failure recoverable without redispatching producer work or reopening an old activation.
 - Serve only selected frozen regular files to the trusted gateway over the protected local control UDS.
-- Materialize broker-frozen bytes through native Hermes attachment storage before recipient upload and preserve retry/cursor correctness.
+- Materialize every broker-selected file through native Hermes task attachment storage before `done`, independent of recipient subscriptions, then preserve recipient retry/cursor correctness.
 - Preserve task/run/lane and optional Project/source-generation provenance without granting downstream authority.
 - Delete the existing writable child-import path before completing this workstream.
 
@@ -87,7 +87,7 @@ Copying follows no links, crosses no source filesystem boundary, preserves no ha
 
 The control listener exposes `POST /v1/control/workspace-handoffs/artifacts/read` on the protected local UDS. It accepts exactly hidden `handoffId` and normalized `relativePath`; schemas reject extras. The broker reauthorizes the caller, requires a ready handoff, requires the exact path to appear in its selected-artifact manifest, verifies the frozen node is still one regular file with the recorded size, and streams only that file. It never reads the live workspace, widens selection to a directory, infers paths, or creates a shared spool.
 
-Hermes reads the file into upstream native attachment storage before calling a platform adapter. Native attachment materialization and recipient upload are distinct durable delivery stages. A materialization or upload failure leaves that recipient/file outstanding and must not advance the completion-event subscriber cursor. Retry uses the same handoff and path and retries only missing recipient/file deliveries. A platform timeout may still produce a duplicate when the platform provides no idempotency key; this is documented at-least-once behavior rather than hidden token machinery.
+Hermes reads every selected file into upstream native task attachment storage before transitioning Kanban to `done`. This task/file materialization is idempotent, durable, independent of recipient subscriptions, and makes the artifact available through ordinary task attachment inspection even when no platform recipient exists. Platform delivery begins from the durable native attachment, not the broker workspace. Recipient upload is a separate durable stage: an upload failure leaves that recipient/attachment outstanding and must not advance its completion-event subscriber cursor. Retry reuses the native attachment and targets only missing recipient deliveries. A platform timeout may still produce a duplicate when the platform provides no idempotency key; this is documented at-least-once behavior rather than hidden token machinery.
 
 ### 7. Local gate and listener boundary
 
@@ -111,7 +111,7 @@ The gateway and broker communicate only over the protected local UDS. A broker o
 3. Replace partial publication code with journaled immutable handoff capture and selected-artifact manifests.
 4. Delete existing writable child-import code, persistence, schemas, prompts, and tests without a compatibility path.
 5. Add direct selected-file reads on the local control UDS.
-6. Wire completion finalization, native attachment materialization, recipient retry, and cursor correctness.
+6. Wire completion finalization and idempotent native task attachment materialization before `done`, then add recipient retry and cursor correctness.
 7. Wire the local gate, policy, limits, storage, and recovery through Nix.
 8. Verify capture, replay, hostile-tree handling, stale-run fencing, delivery retry, and broker outage behavior before `add-broker-project-workspaces` changes the workspace layout.
 

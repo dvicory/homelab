@@ -27,6 +27,28 @@ Every newly activated broker task workspace MUST expose mutable work at `/worksp
 - **WHEN** a worker assumes its mutable work root is `/workspace` rather than `/workspace/work`
 - **THEN** the system MUST NOT supply a compatibility symlink, duplicate mutable mount, or dual-layout resolver
 
+### Requirement: External worker completion is mediated
+An external Codex worker MUST run with CWD `/workspace/work` and MUST NOT receive Kanban lifecycle or direct broker-finalization authority. Its structured result MUST support an explicit `artifacts` array containing only normalized workspace-root paths below `output/`. The trusted wrapper MUST validate that array and invoke Kanban completion with it. CWD-relative traversal forms such as `../output/report.md`, changed Git paths, summaries, result prose, and directory discovery MUST NOT select artifacts.
+
+The broker MUST freeze the complete `/workspace/output` tree for downstream task inputs independently of the selected human-artifact subset. The wrapper and Kanban completion path MUST use the same frozen task-run binding as terminal, file, patch, process, and other worker surfaces.
+
+#### Scenario: Codex selects a report
+- **GIVEN** Codex runs in `/workspace/work` and writes `/workspace/output/review.md`
+- **WHEN** its structured result selects `output/review.md`
+- **THEN** the trusted wrapper SHALL pass that selection to Kanban completion
+- **AND** handoff capture and native task attachment materialization SHALL follow the ordinary broker-backed completion contract
+
+#### Scenario: Codex reports changed repository files
+- **GIVEN** Codex changes files below `/workspace/work`
+- **WHEN** the wrapper records Git changed paths or Codex mentions paths in prose
+- **THEN** those paths SHALL remain Project-result metadata
+- **AND** they MUST NOT become human artifacts unless Codex separately selects normalized paths below `output/`
+
+#### Scenario: Codex attempts its own terminal transition
+- **WHEN** external Codex attempts to call Kanban completion or broker finalization directly
+- **THEN** the operation MUST be unavailable or denied
+- **AND** the trusted wrapper SHALL remain the sole owner of the task's terminal transition
+
 ### Requirement: Self-contained repository metadata
 A Git Project workspace MUST contain self-contained task-private Git metadata and MUST NOT reference the gateway checkout, another task workspace, or a shared external Git directory. Internal baseline, reflink, snapshot, or content-addressed optimizations MUST preserve this visible contract.
 

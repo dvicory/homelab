@@ -83,28 +83,29 @@ A retry MUST activate a fresh globally unique run against the retained workspace
 
 ### Requirement: Human delivery uses frozen selected artifacts
 
-For broker-backed tasks, Hermes MUST read only paths in the ready handoff's selected-artifact manifest through the protected local control UDS. The read request MUST contain exactly hidden `handoffId` and normalized `relativePath`. Hermes MUST materialize the returned bytes through upstream native attachment storage before invoking a platform adapter. Subscriptions MAY identify recipients and channels but MUST NOT identify or infer files.
+For broker-backed tasks, Hermes MUST read only paths in the ready handoff's selected-artifact manifest through the protected local control UDS. The read request MUST contain exactly hidden `handoffId` and normalized `relativePath`. Before transitioning the task to `done`, Hermes MUST idempotently materialize every selected file through upstream native task attachment storage, independent of recipient subscriptions. A completed task's selected files MUST therefore be available through ordinary task attachment inspection even when no platform recipient exists. Subscriptions MAY identify recipients and channels but MUST NOT identify or infer files.
 
-Materialization and platform upload MUST be durable recipient/file delivery stages. Failure MUST leave that recipient/file outstanding and MUST NOT advance the completion-event subscriber cursor. Retry MUST target only outstanding deliveries. A successful or ambiguously timed-out platform call MAY be delivered more than once when the platform has no idempotency key; the system MUST NOT claim exactly-once delivery.
+Task/file materialization and recipient/attachment upload MUST be distinct durable stages. Materialization failure MUST keep the task in its existing `running` state and MUST remain retryable from the ready handoff without redispatching producer work. Upload failure MUST leave that recipient/attachment outstanding and MUST NOT advance its completion-event subscriber cursor. Retry MUST target only outstanding deliveries. A successful or ambiguously timed-out platform call MAY be delivered more than once when the platform has no idempotency key; the system MUST NOT claim exactly-once delivery.
 
 #### Scenario: Selected artifact delivery
 
-- **GIVEN** a completed task has a ready handoff with a selected regular file
-- **WHEN** Hermes materializes and uploads that file
+- **GIVEN** a running task has a ready handoff with a selected regular file
+- **WHEN** Hermes finalizes completion
 - **THEN** it SHALL read the exact frozen file over the local UDS
-- **AND** SHALL store it through native attachment storage before platform upload
-- **AND** MUST NOT read the live workspace or infer additional files
+- **AND** SHALL store it idempotently through native task attachment storage before `done`
+- **AND** ordinary task attachment inspection SHALL expose the selected attachment without requiring a recipient subscription
+- **AND** Hermes MUST NOT read the live workspace or infer additional files
 
 #### Scenario: Local materialization fails
 
-- **GIVEN** a selected artifact has not reached native attachment storage
+- **GIVEN** a selected artifact has not reached native task attachment storage
 - **WHEN** broker read or local storage fails
-- **THEN** that recipient/file delivery MUST remain outstanding
-- **AND** the subscriber cursor MUST NOT advance past the completion event
+- **THEN** the task MUST remain `running`
+- **AND** retry MUST resume from the ready handoff without redispatching producer work
 
 #### Scenario: One of several uploads fails
 
-- **GIVEN** one completion event has multiple recipient/file deliveries
+- **GIVEN** one completed task has multiple recipient/attachment deliveries
 - **WHEN** some succeed and one fails
 - **THEN** retry SHALL preserve successful acknowledgements and retry only outstanding deliveries
 - **AND** the failed delivery MUST NOT be reported as delivered

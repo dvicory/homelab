@@ -40,6 +40,12 @@ Every newly activated broker task workspace has:
 
 The worker CWD is `/workspace/work`. Completion continues to freeze and validate only `/workspace/output`. `/workspace/inputs` is broker-managed and cannot be written by the worker. A read-only Project lane receives a read-only work plane while retaining a bounded writable output plane for its report.
 
+External Codex follows the same layout but does not receive Kanban lifecycle authority. Codex runs with CWD `/workspace/work` and returns an explicit `artifacts` array in its structured result. Every entry is a normalized workspace-root path below `output/`, even though ordinary relative filesystem operations begin in `/workspace/work`; CWD-relative `../output/...` forms are rejected rather than normalized across planes. The trusted Codex wrapper validates the schema and passes the selected paths to Kanban completion. Git changed-path discovery remains Project-result metadata and never selects human artifacts. Kanban captures the complete output tree for later task inputs while native human delivery exposes only the selected subset.
+
+**Alternative considered:** let Codex call `kanban_complete` directly. Rejected because the wrapper owns heartbeats and the single terminal transition; giving the child lifecycle authority creates competing completion, retry, and fencing paths.
+
+**Alternative considered:** automatically select every file in `/workspace/output` for human delivery. Rejected because frozen worker-to-worker output and intentionally selected human attachments have different disclosure and resource semantics.
+
 Existing workspaces and queued tasks using `/workspace` as their work root may be discarded; no symlink, path alias, or dual-layout resolver is added.
 
 **Alternative considered:** keep the repository at `/workspace` and add orchestration directories below it. Rejected because `inputs/` and `output/` would contaminate repository status and tools would need special path exclusions.

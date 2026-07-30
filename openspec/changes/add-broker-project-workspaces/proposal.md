@@ -7,6 +7,7 @@ Project-linked Kanban tasks currently create gateway-owned host worktrees while 
 - Add a broker Project provider that resolves a Nix-authoritative logical Project and immutable source generation into a task-private workspace with one writer lease.
 - Introduce the canonical three-plane layout: mutable `/workspace/work`, read-only `/workspace/inputs`, and task-owned `/workspace/output`; discard incompatible legacy workspaces and queued tasks.
 - Make `/workspace/work` the worker CWD and materialize a self-contained Git repository there rather than mounting the gateway's linked worktree or canonical checkout.
+- Mediate external Codex completion through its trusted wrapper: Codex runs with CWD `/workspace/work`, returns only normalized workspace-root `output/...` selections in its structured result, and the wrapper alone invokes Kanban completion and immutable handoff capture. Changed Git paths are metadata, not artifact authority.
 - Support lane-selected `read-only` and `workspace-write` Project permissions while keeping publication, push, merge, and credentials separate.
 - Keep source acquisition and private-repository credentials in trusted provider/adaptor code; credentials never enter the guest workspace, VM environment, disk, command line, or task output.
 - Persist Project/source generation, workspace, lease, provider revision, and lifecycle facts in the frozen task-run binding and enforce cleanup, retention, crash recovery, and stale-run fencing.
