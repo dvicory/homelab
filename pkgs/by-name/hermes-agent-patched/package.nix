@@ -19,7 +19,7 @@ let
       ./secure-terminal-isolation.patch
       ./gondolin-backend.patch
       # Hashless Gondolin workspace broker lifecycle, operation journal, and
-      # trusted direct-child handoff.
+      # immutable selected-output handoff.
       ./workspace-handoff.patch
       # Hermes task hooks, broker-worker validation, and native attachment
       # delivery. Generic worker lanes remain in the patches above.
@@ -66,9 +66,7 @@ let
       # Tell live orchestrators that identically named worker paths remain
       # unreachable across isolated conversation and task environments.
       ./orchestrator-workspace-boundary.patch
-      # Generic fail-closed completion and native attachment materialization.
-      ./workspace-handoff-finalization.patch
-      # Downstream Hermes/Gondolin bridge cutover; no writable inheritance.
+      # Downstream Hermes/Gondolin bridge cutover and immutable handoff wiring.
       ./workspace-handoff-gondolin-integration.patch
     ];
     postPatch = ''

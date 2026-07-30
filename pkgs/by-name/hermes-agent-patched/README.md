@@ -18,7 +18,7 @@ The stack has four broad layers:
 2. **Secure execution** — conversation-scoped terminal identity, Gondolin
    transport and cancellation, and task authority binding.
 3. **Workspace broker** — private workspaces, hashless frozen output,
-   publication, parent-to-child import, finalization, and outage recovery.
+   native selected-attachment delivery, finalization, and outage recovery.
 4. **Deployment guidance** — compact role-specific instructions that describe
    this deployment's relative-artifact protocol without moving it into the
    generic patches.
@@ -83,35 +83,18 @@ lifecycle events.
   orchestrator may add context and unblock only after the blocker is confirmed
   resolved or the task contract explicitly authorizes the retry.
 
-Hashless frozen-output inheritance is the exception to normal pre-created graphs.
-When a downstream task must receive a producer's selected relative artifacts,
-the live orchestrator creates only the producer and puts the downstream
-contract in its body. The producer then creates one direct child with
-`inherit_parent_output=true` before completing and publishing. This ordering
-binds the import to the trusted producer identity and frozen output manifest.
-Ordinary parent-summary and metadata handoffs do not require this special
-topology.
+Parent links carry task status, summaries, metadata, and comments. They do not
+mount, copy, or otherwise expose a parent's workspace files to a child. Use
+native task attachments for human delivery; do not assume a `parents` edge
+satisfies a downstream file-access contract.
 
-## Planned: multi-parent artifact inputs
+## Planned: explicit artifact inputs
 
-**Not implemented; outside current acceptance.** Writable broker inheritance is
-one-parent only; the current Swarm verifier uses summaries, metadata, and
-comments rather than opening files from multiple workers. A file-consuming
-child cannot be pre-created: its producer must create it during the run, so
-the full file pipeline is not visible or editable up front. Users must rely on
-summaries/metadata/comments or explicit external publication; retries need
-idempotent child creation, and each writable import copies storage.
-
-The desired future UX is explicit pre-created `inputs_from` edges: inspect the
-full DAG, receive read-only namespaced parent inputs at
-`/workspace/inputs/<parent-task>/`, and never perform an implicit merge. Until
-then, only one-parent writable `inherit_parent_output` and metadata-only Swarm
-fan-in are supported.
-
-The implementation sequence is explicit worker lanes, immutable-output handoffs,
-broker Project workspaces, then multi-task inputs. The handoff workstream removes
-the current writable `inherit_parent_output` path rather than completing or
-extending it; the later input workstream starts from reusable immutable handoffs.
+File-consuming task graphs belong to the later multi-task-input workstream. The
+intended design is explicit pre-created input edges with read-only, namespaced
+parent artifacts under `/workspace/inputs/<parent-task>/`, without an implicit
+merge. Until that work lands, dependencies coordinate through summaries and
+metadata rather than filesystem inputs.
 
 `kanban_block` is not cancellation: it changes task state but does not terminate
 a running worker. Use `max_runtime_seconds` when work needs a runtime bound; the
@@ -144,7 +127,6 @@ The workspace broker, not the prompt, enforces:
 - private task workspaces;
 - activation-bound execution authority;
 - hashless frozen selected-output manifests;
-- direct-child-only trusted import (current implementation, removed by the immutable-output handoff workstream);
 - finalization replay after broker outages; and
 - revocation and cleanup.
 
@@ -201,8 +183,8 @@ upgrades:
 
 - Metadata-only, nonexecuting Swarm roots remain `done` with broker descendants:
   `tests/hermes_cli/test_kanban_swarm.py`.
-- No implicit multi-parent filesystem merge; only one-parent writable imports are
-  accepted: `tests/hermes_cli/test_kanban_swarm.py`.
+- Parent dependency links do not alias broker workspaces or imply filesystem
+  inputs: `tests/plugins/test_workspace_zero_schema.py`.
 - Hermes adds no custom authority schema: `tests/plugins/test_workspace_zero_schema.py`.
 - Board-qualified `taskRun` identities and the exact environment key remain
   aligned: `tests/tools/test_gondolin_backend.py` and

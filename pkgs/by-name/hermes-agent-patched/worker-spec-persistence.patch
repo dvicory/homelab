@@ -1,8 +1,8 @@
 diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
-index e3097db..be82b27 100644
+index 1072c3688c40b0402349f2851fda44deeb227d9e..51389b0da0fb46bdf152325a19a646363c4b561d 100644
 --- a/hermes_cli/kanban_db.py
 +++ b/hermes_cli/kanban_db.py
-@@ -2401,6 +2401,64 @@ def _claimer_id() -> str:
+@@ -2398,6 +2398,64 @@ def _claimer_id() -> str:
  # Task creation / mutation
  # ---------------------------------------------------------------------------
  
@@ -67,7 +67,7 @@ index e3097db..be82b27 100644
  def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
      """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity)."""
      if assignee is None:
-@@ -2462,6 +2520,40 @@ def create_task(
+@@ -2458,6 +2516,40 @@ def create_task(
      assignee = _canonical_assignee(assignee)
      if not title or not title.strip():
          raise ValueError("title is required")
@@ -108,9 +108,9 @@ index e3097db..be82b27 100644
      if initial_status not in VALID_INITIAL_STATUSES:
          raise ValueError(
              f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
-@@ -2478,8 +2570,8 @@ def create_task(
-     if inherit_parent_output and workspace_kind != "broker":
-         raise ValueError("workspace inheritance is only valid for broker workspaces")
+@@ -2472,8 +2564,8 @@ def create_task(
+     if branch_name and workspace_kind != "worktree":
+         raise ValueError("branch_name is only valid for worktree workspaces")
      if workspace_kind == "broker":
 -        if workspace_path or branch_name or project_id:
 -            raise ValueError("broker workspaces do not accept host paths, branches, or projects")
@@ -119,7 +119,7 @@ index e3097db..be82b27 100644
          workspace_path = None
  
      # Resolve an optional first-class Project link. A project-linked task is
-@@ -2495,7 +2587,7 @@ def create_task(
+@@ -2489,7 +2581,7 @@ def create_task(
      project_repo: Optional[str] = None
      if project_id is not None:
          project_id = str(project_id).strip() or None
@@ -128,7 +128,7 @@ index e3097db..be82b27 100644
          try:
              from hermes_cli import projects_db as _pdb
  
-@@ -2697,6 +2789,10 @@ def create_task(
+@@ -2689,6 +2781,10 @@ def create_task(
                          session_id,
                      ),
                  )
@@ -139,7 +139,7 @@ index e3097db..be82b27 100644
                  for pid in parents:
                      conn.execute(
                          "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
-@@ -3846,6 +3942,34 @@ def claim_task(
+@@ -3756,6 +3852,34 @@ def claim_task(
      lock = claimer or _claimer_id()
      expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
      with write_txn(conn):
@@ -174,7 +174,7 @@ index e3097db..be82b27 100644
          # Structural invariant: never transition ready -> running while any
          # parent is not yet 'done'. This is the single enforcement point
          # regardless of which writer (create_task, link_tasks, unblock_task,
-@@ -3906,20 +4030,13 @@ def claim_task(
+@@ -3816,20 +3940,13 @@ def claim_task(
          )
          if cur.rowcount != 1:
              return None
@@ -197,7 +197,7 @@ index e3097db..be82b27 100644
              """,
              (
                  task_id,
-@@ -3929,9 +4046,34 @@ def claim_task(
+@@ -3839,9 +3956,34 @@ def claim_task(
                  expires,
                  trow["max_runtime_seconds"] if trow else None,
                  now,
@@ -232,7 +232,7 @@ index e3097db..be82b27 100644
          conn.execute(
              "UPDATE tasks SET current_run_id = ? WHERE id = ?",
              (run_id, task_id),
-@@ -3975,6 +4117,34 @@ def claim_review_task(
+@@ -3885,6 +4027,34 @@ def claim_review_task(
      lock = claimer or _claimer_id()
      expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
      with write_txn(conn):
@@ -267,7 +267,7 @@ index e3097db..be82b27 100644
          cur = conn.execute(
              """
              UPDATE tasks
-@@ -3990,18 +4160,13 @@ def claim_review_task(
+@@ -3900,18 +4070,13 @@ def claim_review_task(
          )
          if cur.rowcount != 1:
              return None
@@ -288,7 +288,7 @@ index e3097db..be82b27 100644
              """,
              (
                  task_id,
-@@ -4011,9 +4176,34 @@ def claim_review_task(
+@@ -3921,9 +4086,34 @@ def claim_review_task(
                  expires,
                  trow["max_runtime_seconds"] if trow else None,
                  now,

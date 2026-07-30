@@ -1,20 +1,18 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Wed, 29 Jul 2026 00:00:00 +0000
+Subject: [PATCH] feat(hermes): complete immutable task workspace handoffs
+
+Cut Hermes and the Gondolin broker over to fail-closed task-run activation,
+immutable completion capture, native selected-attachment delivery, and
+broker-owned workspace lifecycle control. Parent task dependencies remain
+metadata-only and each child acquires its own task-scoped workspace.
+---
 diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
-index 3226b44..ee4a5cd 100644
+index b6573d1a3dcd884e05b06c125065d7a752fdac32..ee4a5cd4d73c34151ab73144a9fd006f5c5723a2 100644
 --- a/agent/prompt_builder.py
 +++ b/agent/prompt_builder.py
-@@ -238,10 +238,7 @@ KANBAN_GUIDANCE_BROKER = _KANBAN_WORKER_COMMON + (
-     "6. Select deliverables with relative POSIX paths under `output/...` in "
-     "your assigned workspace. Never use absolute host paths, prose discovery, "
-     "or paths copied from another task. The trusted completion manifest, not "
--    "summary or result text, determines attachments.\n"
--    "7. Create one direct child with `inherit_parent_output=true` only when it "
--    "must import this task's sole selected output. The broker freezes that "
--    "output before the child starts; the child completes with its own manifest.\n\n"
-+    "summary or result text, determines attachments.\n\n"
-     "Do not shell out to `hermes kanban`, call `clarify` from a headless worker, "
-     "or use `delegate_task` as a substitute for a durable board task."
- )
-@@ -260,13 +257,15 @@ KANBAN_ORCHESTRATOR_GUIDANCE = (
+@@ -257,13 +257,15 @@ KANBAN_ORCHESTRATOR_GUIDANCE = (
      "dispatcher-assigned task worker.\n"
      "1. Use the `kanban_*` tools to create, inspect, link, comment on, and "
      "observe tasks. Do not execute a task body yourself or substitute "
@@ -35,16 +33,11 @@ index 3226b44..ee4a5cd 100644
      "3. Worker lifecycle belongs to the assigned worker. Do not complete, "
      "block, or heartbeat on its behalf. Unblock only when the task contract "
      "or a human authorizes a retry and the recorded blocker is resolved.\n"
-@@ -282,12 +281,13 @@ KANBAN_ORCHESTRATOR_GUIDANCE = (
+@@ -279,7 +281,13 @@ KANBAN_ORCHESTRATOR_GUIDANCE = (
      "6. Use `kanban_comment` for relevant routing context. Never put secrets, "
      "tokens, raw PII, host paths, or broker authority in board data; task history "
      "is durable.\n"
--    "7. When a downstream task must import a producer's selected broker output, "
--    "create only that producer and include the downstream contract in its body. "
--    "The producer creates the one direct child with `inherit_parent_output=true` "
--    "before completion. Broker preparation freezes the producer manifest and the "
--    "child imports it before spawn; inheritance alone does not publish child "
--    "changes."
+-
 +    "7. Broker completion automatically materializes and sends the worker's "
 +    "selected artifacts. Never recreate, base64-encode, execute code for, "
 +    "`kanban_attach`, or emit `MEDIA:` copies of those files. The completion "
@@ -56,7 +49,7 @@ index 3226b44..ee4a5cd 100644
  
  
 diff --git a/gateway/kanban_watchers.py b/gateway/kanban_watchers.py
-index d6e324e..a264791 100644
+index d6e324e446083a3662f9658a9010e7b7768b0e1e..a2647912fc1ce3e8133f537fc18c4374a0b7665a 100644
 --- a/gateway/kanban_watchers.py
 +++ b/gateway/kanban_watchers.py
 @@ -654,14 +654,11 @@ class GatewayKanbanWatchersMixin:
@@ -188,7 +181,7 @@ index d6e324e..a264791 100644
              return
  
 diff --git a/gateway/run.py b/gateway/run.py
-index 83341e1..1d86988 100644
+index 83341e11703fa621850354fae1dd218f385d2fe8..1d869883a439d8693eaa371ce179cbc55d0293ec 100644
 --- a/gateway/run.py
 +++ b/gateway/run.py
 @@ -1110,6 +1110,7 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {
@@ -270,7 +263,7 @@ index 83341e1..1d86988 100644
          # known field rather than a MEDIA: tag. Extract it so delivery is
          # deterministic even when the model omits the path from its reply.
 diff --git a/plugins/workspace-service/__init__.py b/plugins/workspace-service/__init__.py
-index 451855e..0d407ae 100644
+index b46ecaa7a2fe373302e61f22c044776d1fe17e6a..6cacc1ce4370ecf43612b73fec506a16727da0de 100644
 --- a/plugins/workspace-service/__init__.py
 +++ b/plugins/workspace-service/__init__.py
 @@ -1,7 +1,8 @@
@@ -338,7 +331,7 @@ index 451855e..0d407ae 100644
      if not _enabled():
          raise RuntimeError("workspace handoff is disabled")
      board = _board_name(board)
-@@ -101,58 +80,52 @@ def _on_completion_intent(
+@@ -101,32 +80,52 @@ def _on_completion_intent(
              raise RuntimeError("workspace completion task is stale")
          if task.current_run_id != int(run_id):
              raise RuntimeError("workspace completion run is stale")
@@ -389,32 +382,6 @@ index 451855e..0d407ae 100644
      return {"ready": True}
  
  
--def _source_facts(conn: Any, task_id: str, board: str, run_id: int) -> tuple[Any, Any, dict]:
--    task = kb.get_task(conn, task_id)
--    if task is None or task.workspace_kind != "broker" or task.status != "running":
--        raise RuntimeError("workspace destination is stale")
--    if task.current_run_id != int(run_id):
--        raise RuntimeError("workspace destination run is stale")
--    inheritance = kb.get_inheritance_intent(conn, task_id)
--    if not isinstance(inheritance, dict):
--        return task, None, {}
--    source_id = inheritance.get("source_task_id")
--    source_run_id = inheritance.get("source_run_id")
--    if not isinstance(source_id, str) or not source_id or not isinstance(source_run_id, int):
--        raise RuntimeError("workspace inheritance intent is malformed")
--    if kb.parent_ids(conn, task_id) != [source_id]:
--        raise RuntimeError("workspace inheritance requires one direct parent")
--    source = kb.get_task(conn, source_id)
--    if source is None or source.status != "done" or source.workspace_kind != "broker":
--        raise RuntimeError("workspace source is not complete")
--    if source.tenant != task.tenant or inheritance.get("tenant") != task.tenant:
--        raise RuntimeError("workspace source and destination tenants differ")
--    if inheritance.get("creator") is not None and inheritance.get("creator") != task.created_by:
--        raise RuntimeError("workspace inheritance creator changed")
--    source_intent = kb.get_completion_intent(conn, source_id, source_run_id)
--    if not isinstance(source_intent, dict) or not source_intent.get("finalization_id"):
--        raise RuntimeError("workspace source completion intent is unavailable")
--    return task, source, {"inheritance": inheritance, "source_intent": source_intent, "source_run_id": source_run_id}
 -
 -
  def _authority_for_run(conn: Any, task_id: str, run_id: int) -> dict[str, Any]:
@@ -425,7 +392,7 @@ index 451855e..0d407ae 100644
      if specification is None:
          raise RuntimeError("durable worker specification is missing")
      worklane = specification.policy.get("worklane")
-@@ -168,10 +141,7 @@ def _authority_for_run(conn: Any, task_id: str, run_id: int) -> dict[str, Any]:
+@@ -142,10 +141,7 @@ def _authority_for_run(conn: Any, task_id: str, run_id: int) -> dict[str, Any]:
          "policyRevision": specification.policy_revision,
      }
      if specification.project is not None:
@@ -437,71 +404,7 @@ index 451855e..0d407ae 100644
              raise RuntimeError("worker specification Project source is incomplete")
          authority.update(
              project=specification.project,
-@@ -188,45 +158,25 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
-     client = _client()
-     try:
-         with contextlib.closing(kb.connect(board=board)) as conn:
--            task, source, facts = _source_facts(conn, task_id, board, int(run_id))
-+            task = kb.get_task(conn, task_id)
-+            if task is None or task.workspace_kind != "broker" or task.status != "running":
-+                raise RuntimeError("workspace destination is stale")
-+            if task.current_run_id != int(run_id):
-+                raise RuntimeError("workspace destination run is stale")
-+            if kb.get_inheritance_intent(conn, task_id) is not None:
-+                raise RuntimeError("writable inherited workspaces are no longer supported")
-             authority = _authority_for_run(conn, task_id, int(run_id))
--            destination_key = broker_environment_key(task_id)
--            if source is not None:
--                source_run_id = int(facts["source_run_id"])
--                source_capture = _capture_replay(
--                    client, board, source.id, source_run_id,
--                    str(facts["source_intent"]["finalization_id"]),
--                )
--                import_intent = kb.get_workspace_import_intent(conn, task_id, int(run_id))
--                if not isinstance(import_intent, dict) or not import_intent.get("preparation_id"):
--                    preparation_id = _stable_preparation_id(task_id, int(run_id), source_run_id)
--                    import_intent = kb.append_workspace_import_intent(
--                        conn, task_id, run_id=int(run_id),
--                        preparation_id=preparation_id, board=board,
--                    )
--                imported = client.import_handoff(
--                    preparation_id=str(import_intent["preparation_id"]),
--                    board=board,
--                    source_handoff_id=source_capture["handoffId"],
--                    source_task_id=source.id,
--                    destination_task_id=task_id,
--                    destination_run_id=int(run_id),
--                    destination_environment_key=destination_key,
--                )
--                if imported["ownerEnvironmentKey"] != destination_key:
--                    raise RuntimeError("broker import owner does not match destination")
--                binding = client.acquire_workspace(
--                    destination_key, workspace_id=imported["workspaceId"]
--                )
--            else:
--                binding = client.acquire_workspace(destination_key)
--            client.activate_task_run(
--                board=board,
--                environment_key=destination_key, task_id=task_id, run_id=int(run_id),
--                workspace_id=binding["workspaceId"],
--                workspace_lease_id=binding["workspaceLeaseId"],
--                authority=authority,
--            )
-+        destination_key = broker_environment_key(task_id)
-+        binding = client.acquire_workspace(destination_key)
-+        client.activate_task_run(
-+            board=board,
-+            environment_key=destination_key,
-+            task_id=task_id,
-+            run_id=int(run_id),
-+            workspace_id=binding["workspaceId"],
-+            workspace_lease_id=binding["workspaceLeaseId"],
-+            authority=authority,
-+        )
-     except BrokerError:
-         raise
-     finally:
-@@ -234,7 +184,9 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
+@@ -186,7 +182,9 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
      return {"ready": True}
  
  
@@ -512,7 +415,7 @@ index 451855e..0d407ae 100644
      if not _enabled() or run_id is None:
          return
      try:
-@@ -243,13 +195,12 @@ def _on_spawn_failed(*, task_id: str, board: str, run_id: int | None = None, **_
+@@ -195,13 +193,12 @@ def _on_spawn_failed(*, task_id: str, board: str, run_id: int | None = None, **_
              client.consume_task_run(
                  board=board,
                  environment_key=broker_environment_key(task_id),
@@ -528,7 +431,7 @@ index 451855e..0d407ae 100644
          return
  
  
-@@ -257,36 +208,21 @@ def _on_terminal_workspace(
+@@ -209,33 +206,21 @@ def _on_terminal_workspace(
      *, task_id: str, board: str, run_id: int | None = None, **_: Any
  ) -> None:
      """Consume a broker activation after a terminal worker transition."""
@@ -559,9 +462,6 @@ index 451855e..0d407ae 100644
      board = _board_name(board)
      with contextlib.closing(kb.connect(board=board)) as conn:
          completion_intent = kb.get_completion_intent(conn, task_id, int(run_id))
--        import_intent = kb.get_workspace_import_intent(conn, task_id, int(run_id))
--    if isinstance(import_intent, dict) and import_intent.get("preparation_id"):
--        return _on_pre_spawn(task_id=task_id, board=board, run_id=int(run_id))
      if not isinstance(completion_intent, dict) or not completion_intent.get("finalization_id"):
          raise RuntimeError("workspace recovery intent is unavailable")
      return _on_completion_intent(
@@ -573,7 +473,7 @@ index 451855e..0d407ae 100644
          artifacts=list(completion_intent.get("artifacts", [])),
      )
 diff --git a/tests/gateway/test_media_extraction.py b/tests/gateway/test_media_extraction.py
-index 65d4a72..5a2fde2 100644
+index 65d4a72a2f0ef0b54a577acbc58001d9c951b25a..5a2fde299c56f6788efce8a45184af2e7d5ebbea 100644
 --- a/tests/gateway/test_media_extraction.py
 +++ b/tests/gateway/test_media_extraction.py
 @@ -185,6 +185,74 @@ caption
@@ -651,71 +551,96 @@ index 65d4a72..5a2fde2 100644
      def test_gateway_auto_append_image_generate_prefers_host_path(self):
          """When host and sandbox paths differ, the host-deliverable path wins."""
          from gateway.run import _collect_auto_append_media_tags
-diff --git a/tests/hermes_cli/test_kanban_swarm.py b/tests/hermes_cli/test_kanban_swarm.py
-index af8dd19..02cec34 100644
---- a/tests/hermes_cli/test_kanban_swarm.py
-+++ b/tests/hermes_cli/test_kanban_swarm.py
-@@ -148,7 +148,6 @@ def test_trusted_workspace_handoff_uses_broker_descendants_and_honors_explicit_k
-                 "completion_intent",
-                 "workspace_completion_intent",
-                 "workspace_capture",
--                "workspace_import_intent",
-                 "workspace_artifact_delivered",
-             }
-             for event in root_events
-@@ -190,24 +189,3 @@ def test_trusted_workspace_handoff_uses_broker_descendants_and_honors_explicit_k
-         explicit_conn.close()
- 
- 
--def test_broker_multi_parent_inheritance_rejects_implicit_file_merge(tmp_path):
--    conn = kb.connect(tmp_path / "multi-parent.db")
--    try:
--        parent_a = kb.create_task(
--            conn, title="A", assignee="a", workspace_kind="broker", tenant="t"
--        )
--        parent_b = kb.create_task(
--            conn, title="B", assignee="b", workspace_kind="broker", tenant="t"
--        )
--        with pytest.raises(ValueError, match="exactly one parent"):
--            kb.create_task(
--                conn,
--                title="merged child",
--                assignee="reviewer",
--                workspace_kind="broker",
--                tenant="t",
--                parents=[parent_a, parent_b],
--                inherit_parent_output=True,
--            )
--    finally:
--        conn.close()
-diff --git a/tests/hermes_cli/test_worker_lane_discovery.py b/tests/hermes_cli/test_worker_lane_discovery.py
-index e2e7085..576aba3 100644
---- a/tests/hermes_cli/test_worker_lane_discovery.py
-+++ b/tests/hermes_cli/test_worker_lane_discovery.py
-@@ -141,8 +141,6 @@ def test_kanban_guidance_is_scoped_to_workspace_mode(monkeypatch):
-     assert "relative POSIX paths" in broker
-     assert "output/..." in broker
-     assert "trusted completion manifest" in broker
--    assert "inherit_parent_output=true" in broker
--    assert "broker freezes" in broker
-     assert "absolute host paths" in broker
-     assert "revision" not in broker.lower()
-     assert "hash" not in broker.lower()
 diff --git a/tests/plugins/test_workspace_zero_schema.py b/tests/plugins/test_workspace_zero_schema.py
-index 72120e2..9cad7bd 100644
+index 6df64c787c99821a124c5d3436306eb3d1787661..5b5eec777c6fcab3afb33f7a235b703564be06ca 100644
 --- a/tests/plugins/test_workspace_zero_schema.py
 +++ b/tests/plugins/test_workspace_zero_schema.py
-@@ -91,32 +91,52 @@ def test_completion_intent_replay_excludes_reclaim_and_dry_run(tmp_path, monkeyp
+@@ -41,6 +41,76 @@ def test_broker_workspace_uses_existing_schema_and_hides_intent(tmp_path, monkey
+         assert not forbidden & tables
+ 
+ 
++def test_parent_dependency_gets_distinct_broker_workspace(tmp_path, monkeypatch):
++    home = tmp_path / ".hermes"
++    monkeypatch.setenv("HERMES_HOME", str(home))
++    monkeypatch.setenv("HERMES_WORKSPACE_HANDOFF", "1")
++    monkeypatch.setenv("HERMES_SANDBOX_AUTHORITY_BINDING", "parent-isolation")
++    kb.init_db()
++    with kb.connect(board="default") as conn:
++        parent_id = kb.create_task(
++            conn,
++            title="parent",
++            assignee="worker",
++            workspace_kind="scratch",
++        )
++        kb.claim_task(conn, parent_id)
++        assert kb.complete_task(
++            conn, parent_id, summary="parent complete", artifacts=[]
++        )
++        child_id = kb.create_task(
++            conn,
++            title="dependent child",
++            assignee="worker",
++            parents=[parent_id],
++            workspace_kind="broker",
++        )
++        child = kb.get_task(conn, child_id)
++        assert child is not None and child.workspace_path is None
++        kb.claim_task(conn, child_id)
++        run_id = int(kb.get_task(conn, child_id).current_run_id)
++
++    plugin_path = (
++        Path(__file__).parents[2] / "plugins" / "workspace-service" / "__init__.py"
++    )
++    spec = importlib.util.spec_from_file_location(
++        "workspace_service_parent_isolation_test", plugin_path
++    )
++    assert spec and spec.loader
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++
++    class Client:
++        acquired = []
++        activated = []
++        closed = False
++
++        def acquire_workspace(self, environment_key):
++            self.acquired.append(environment_key)
++            return {"workspaceId": "ws-child", "workspaceLeaseId": "lease-child"}
++
++        def activate_task_run(self, **kwargs):
++            self.activated.append(kwargs)
++
++        def close(self):
++            self.closed = True
++
++    client = Client()
++    monkeypatch.setattr(module, "_client", lambda: client)
++    monkeypatch.setattr(module, "_authority_for_run", lambda *_args: {"lane": "worker"})
++
++    assert module._on_pre_spawn(
++        task_id=child_id,
++        board="default",
++        run_id=run_id,
++    ) == {"ready": True}
++    child_key = module.broker_environment_key(child_id)
++    assert client.acquired == [child_key]
++    assert client.activated[0]["environment_key"] == child_key
++    assert child_key != module.broker_environment_key(parent_id)
++    assert client.closed is True
++
++
+ def test_native_artifacts_are_relative_and_attachment_backed(tmp_path, monkeypatch):
+     home = tmp_path / ".hermes"
+     workspace = tmp_path / "work"
+@@ -91,6 +161,52 @@ def test_completion_intent_replay_excludes_reclaim_and_dry_run(tmp_path, monkeyp
          assert kb.get_task(conn, task_id).status == "done"
  
  
--def test_import_response_loss_replays_without_new_intent(tmp_path, monkeypatch):
 +def test_broker_completion_materializes_selected_attachment_before_done(tmp_path, monkeypatch):
-     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
++    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
 +    monkeypatch.setenv("HERMES_WORKSPACE_HANDOFF", "1")
 +    monkeypatch.setenv("HERMES_SANDBOX_AUTHORITY_BINDING", "capture-binding")
-     kb.init_db()
--    with kb.connect(board="import-board") as conn:
++    kb.init_db()
 +    plugin_path = Path(__file__).parents[2] / "plugins" / "workspace-service" / "__init__.py"
 +    spec = importlib.util.spec_from_file_location("workspace_service_capture_test", plugin_path)
 +    assert spec and spec.loader
@@ -738,29 +663,11 @@ index 72120e2..9cad7bd 100644
 +
 +    monkeypatch.setattr(module, "_client", CaptureClient)
 +    with kb.connect(board="capture-board") as conn:
-         task_id = kb.create_task(
--            conn, title="import", assignee="worker", workspace_kind="broker"
++        task_id = kb.create_task(
 +            conn, title="capture", assignee="worker", workspace_kind="broker"
-         )
-         kb.claim_task(conn, task_id)
-         run_id = int(kb.get_task(conn, task_id).current_run_id)
--        intent = kb.append_workspace_import_intent(
--            conn, task_id, run_id=run_id, preparation_id="p_fixed",
--            board="import-board",
--        )
--        monkeypatch.setattr(
--            kb, "_run_required_workspace_hook",
--            lambda *args, **kwargs: {"ready": True},
--        )
--        assert kb.recover_workspace_import_intents(
--            conn, board="import-board"
--        ) == [task_id]
--        recovered = kb._internal_events_for(
--            conn, task_id, "workspace_import_recovered"
--        )
--        assert len(recovered) == 1
--        assert recovered[0].payload["preparation_id"] == intent["preparation_id"]
--        assert recovered[0].payload["run_id"] == run_id
++        )
++        kb.claim_task(conn, task_id)
++        run_id = int(kb.get_task(conn, task_id).current_run_id)
 +    assert module._on_completion_intent(
 +        task_id=task_id,
 +        board="capture-board",
@@ -779,7 +686,7 @@ index 72120e2..9cad7bd 100644
  
  def test_terminal_hook_failure_is_best_effort(tmp_path, monkeypatch):
 diff --git a/tests/tools/test_kanban_role_boundaries.py b/tests/tools/test_kanban_role_boundaries.py
-index 5a5ff8b..9667d20 100644
+index 5a5ff8bbed825d7488ab5f30edee796fc5bc7f82..9667d204c1aef16434f53c0f718a15f4f846d864 100644
 --- a/tests/tools/test_kanban_role_boundaries.py
 +++ b/tests/tools/test_kanban_role_boundaries.py
 @@ -59,8 +59,17 @@ def test_kanban_orchestrator_guidance_forbids_worker_substitution():
@@ -802,7 +709,7 @@ index 5a5ff8b..9667d20 100644
          KANBAN_ORCHESTRATOR_GUIDANCE
      )
 diff --git a/tests/tools/test_kanban_tools.py b/tests/tools/test_kanban_tools.py
-index 91292f3..8d02e58 100644
+index 91292f372910b3ec601118e827784bdb8bf5dbe6..f67842fa4eec94ca254ce88837d019378d481197 100644
 --- a/tests/tools/test_kanban_tools.py
 +++ b/tests/tools/test_kanban_tools.py
 @@ -9,6 +9,7 @@ from __future__ import annotations
@@ -813,7 +720,16 @@ index 91292f3..8d02e58 100644
  
  import pytest
  
-@@ -2484,6 +2485,84 @@ def test_attachments_unknown_task_errors(worker_env):
+@@ -2146,6 +2147,8 @@ def test_board_param_in_all_schemas():
+         )
+ 
+ 
++
++
+ # ---------------------------------------------------------------------------
+ # kanban_create auto-subscribe behaviour
+ #
+@@ -2484,6 +2487,84 @@ def test_attachments_unknown_task_errors(worker_env):
      assert "error" in json.loads(out)
  
  
@@ -899,7 +815,7 @@ index 91292f3..8d02e58 100644
      """kanban_attach_url downloads from an http(s) URL and stores the bytes.
  
 diff --git a/tools/environments/gondolin.py b/tools/environments/gondolin.py
-index cdb16ce..343b8d5 100644
+index cdb16ceb43921c72a7e9d1e2193a1bb389080812..343b8d5efc41d877f9359902f2ed9f102cd452c1 100644
 --- a/tools/environments/gondolin.py
 +++ b/tools/environments/gondolin.py
 @@ -207,54 +207,9 @@ class BrokerClient:
@@ -1051,7 +967,7 @@ index cdb16ce..343b8d5 100644
      def health(self) -> bool:
          response = self._client.get("/v1/health", timeout=self._timeout)
 diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
-index a09d6aa..84b1ab7 100644
+index 1f66aabbab03f907f4bf3b933c512f20dda3a871..84b1ab7b138e0dbcf88fbab90d55d4fb176c8eef 100644
 --- a/tools/kanban_tools.py
 +++ b/tools/kanban_tools.py
 @@ -30,8 +30,10 @@ from __future__ import annotations
@@ -1251,25 +1167,7 @@ index a09d6aa..84b1ab7 100644
  def _handle_create(args: dict, **kw) -> str:
      """Create a child task. Orchestrator workers use this to fan out.
  
-@@ -1159,9 +1262,6 @@ def _handle_create(args: dict, **kw) -> str:
-         and target_lane.default_workspace_kind is not None
-     ):
-         workspace_kind = target_lane.default_workspace_kind
--    inherit_parent_output = bool(args.get("inherit_parent_output", False))
--    if inherit_parent_output and str(assignee).startswith("sa-"):
--        return tool_error("external worker lanes cannot inherit broker workspaces")
-     _inherit_workspace = workspace_kind is None and workspace_path is None
-     if workspace_kind is None:
-         workspace_kind = "scratch"
-@@ -1245,7 +1345,6 @@ def _handle_create(args: dict, **kw) -> str:
-                 initial_status=str(initial_status),
-                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
-                 session_id=session_id,
--                inherit_parent_output=inherit_parent_output,
-                 board=board,
-             )
-             new_task = kb.get_task(conn, new_tid)
-@@ -1743,12 +1842,12 @@ KANBAN_COMMENT_SCHEMA = {
+@@ -1739,12 +1842,12 @@ KANBAN_COMMENT_SCHEMA = {
  KANBAN_ATTACH_SCHEMA = {
      "name": "kanban_attach",
      "description": (
@@ -1288,7 +1186,7 @@ index a09d6aa..84b1ab7 100644
      ),
      "parameters": {
          "type": "object",
-@@ -1781,10 +1880,10 @@ KANBAN_ATTACH_SCHEMA = {
+@@ -1777,10 +1880,10 @@ KANBAN_ATTACH_SCHEMA = {
  KANBAN_ATTACH_URL_SCHEMA = {
      "name": "kanban_attach_url",
      "description": (
@@ -1303,7 +1201,7 @@ index a09d6aa..84b1ab7 100644
      ),
      "parameters": {
          "type": "object",
-@@ -1820,8 +1919,11 @@ KANBAN_ATTACH_URL_SCHEMA = {
+@@ -1816,8 +1919,11 @@ KANBAN_ATTACH_URL_SCHEMA = {
  KANBAN_ATTACHMENTS_SCHEMA = {
      "name": "kanban_attachments",
      "description": (
@@ -1317,7 +1215,7 @@ index a09d6aa..84b1ab7 100644
      ),
      "parameters": {
          "type": "object",
-@@ -1830,12 +1932,32 @@ KANBAN_ATTACHMENTS_SCHEMA = {
+@@ -1826,12 +1932,32 @@ KANBAN_ATTACHMENTS_SCHEMA = {
                  "type": "string",
                  "description": _DESC_TASK_ID_DEFAULT,
              },
@@ -1350,36 +1248,15 @@ index a09d6aa..84b1ab7 100644
  KANBAN_CREATE_SCHEMA = {
      "name": "kanban_create",
      "description": (
-@@ -2067,28 +2189,6 @@ def _kanban_create_schema_overrides() -> dict:
+@@ -2063,7 +2189,6 @@ def _kanban_create_schema_overrides() -> dict:
          name: dict(schema)
          for name, schema in KANBAN_CREATE_SCHEMA["parameters"]["properties"].items()
      }
--    # Broker workspace inheritance is worker-only and appears only when this
--    # process is scoped to a broker task. Orchestrators cannot request it by
--    # guessing a hidden field.
--    scoped_task_id = os.environ.get("HERMES_KANBAN_TASK")
--    if scoped_task_id:
--        try:
--            from hermes_cli import kanban_db as _kb
--            with _kb.connect(board=os.environ.get("HERMES_KANBAN_BOARD") or None) as _conn:
--                _scoped = _kb.get_task(_conn, scoped_task_id)
--            if _scoped is not None and _scoped.workspace_kind == "broker":
--                parameters["properties"]["inherit_parent_output"] = {
--                    "type": "boolean",
--                    "description": (
--                        "Worker-only: import the sole direct broker parent output "
--                        "after the parent is done. The broker freezes the parent's "
--                        "selected relative manifest before spawn; external lanes "
--                        "cannot use this. Child changes require a new completion "
--                        "manifest."
--                    ),
--                }
--        except Exception:
--            pass
+-
      assignee = parameters["properties"]["assignee"]
      assignee["description"] = (
          assignee["description"]
-@@ -2229,6 +2329,7 @@ registry.register(
+@@ -2204,6 +2329,7 @@ registry.register(
      emoji="📎",
  )
  

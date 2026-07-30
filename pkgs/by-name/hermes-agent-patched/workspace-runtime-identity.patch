@@ -16,39 +16,11 @@ subscriber and originating session when repeated blocks route work to triage.
 Add regressions for runtime identity propagation, required-hook failures, and
 block-loop triage delivery.
 ---
---- a/hermes_cli/worker_lanes.py
-+++ b/hermes_cli/worker_lanes.py
-@@ -173,6 +173,12 @@
-     if getattr(task, "workspace_kind", "") == "broker":
-         env["HERMES_WORKSPACE_MODE"] = "broker"
-         env["HERMES_BROKER_WORKSPACE"] = "/workspace"
-+        from tools.environments.gondolin import broker_environment_key
-+
-+        # The workspace pre-spawn hook activates this exact broker key. Pass
-+        # it into the worker so terminal and file surfaces use that task-run
-+        # workspace rather than deriving a separate conversation environment.
-+        env["HERMES_BROKER_ENVIRONMENT_KEY"] = broker_environment_key(task.id)
-     if workspace:
-         env["HERMES_KANBAN_WORKSPACE"] = workspace
-     # Pin the shared umbrella root + DB + workspaces root the dispatcher
---- a/hermes_cli/kanban_db.py
-+++ b/hermes_cli/kanban_db.py
-@@ -4469,10 +4469,10 @@
- ) -> dict[str, Any]:
-     """Run a broker finalization hook and fail closed on missing/failed work."""
-     try:
--        from hermes_cli.plugins import has_hook, invoke_hook
-+        from hermes_cli.plugins import has_hook, invoke_required_hook
-         if not has_hook(hook_name):
-             raise RuntimeError(f"{hook_name} is not registered")
--        results = invoke_hook(
-+        results = invoke_required_hook(
-             hook_name, task_id=task_id, board=board, run_id=int(run_id), **fields
-         )
-     except Exception as exc:
+diff --git a/gateway/kanban_watchers.py b/gateway/kanban_watchers.py
+index 6bf668d0853d13b2f789c7990d8b23f5034e3e97..d6e324e446083a3662f9658a9010e7b7768b0e1e 100644
 --- a/gateway/kanban_watchers.py
 +++ b/gateway/kanban_watchers.py
-@@ -165,7 +165,7 @@
+@@ -165,7 +165,7 @@ class GatewayKanbanWatchersMixin:
  
          # "status" covers dashboard drag-drop and `_set_status_direct()`
          # writes — surface those transitions to subscribers too.
@@ -57,7 +29,7 @@ block-loop triage delivery.
          # Subscriptions are removed only when the task reaches a truly final
          # status (done / archived). We used to also unsub on any terminal
          # event kind (gave_up / crashed / timed_out / blocked), but that
-@@ -371,6 +371,18 @@
+@@ -371,6 +371,18 @@ class GatewayKanbanWatchersMixin:
                              if ev.payload and ev.payload.get("reason"):
                                  reason = f": {str(ev.payload['reason'])[:160]}"
                              msg = f"⏸ {board_tag}{tag}Kanban {sub['task_id']} blocked{reason}"
@@ -76,7 +48,7 @@ block-loop triage delivery.
                          elif kind == "gave_up":
                              err = ""
                              if ev.payload and ev.payload.get("error"):
-@@ -488,7 +500,7 @@
+@@ -488,7 +500,7 @@ class GatewayKanbanWatchersMixin:
                          # same state. See the longer comment on TERMINAL_KINDS
                          # above for the failure mode this prevents.
                          task_terminal = task and task.status in {"done", "archived"}
@@ -85,7 +57,7 @@ block-loop triage delivery.
                          _wake_kinds = {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
                          if _wake_kinds:
                              try:
-@@ -501,7 +513,7 @@
+@@ -501,7 +513,7 @@ class GatewayKanbanWatchersMixin:
                                      if "gave_up" in _wake_kinds: _parts.append(t("gateway.kanban.wake.gave_up"))
                                      if "crashed" in _wake_kinds: _parts.append(t("gateway.kanban.wake.crashed"))
                                      if "timed_out" in _wake_kinds: _parts.append(t("gateway.kanban.wake.timed_out"))
@@ -94,9 +66,88 @@ block-loop triage delivery.
                                      _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
                                      _synth = t(
                                          "gateway.kanban.wake.message",
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+index 9c319e321c87a161d23c1ea2ca39a76b6dcabe81..1072c3688c40b0402349f2851fda44deeb227d9e 100644
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -4372,10 +4372,10 @@ def _run_required_workspace_hook(
+ ) -> dict[str, Any]:
+     """Run a broker finalization hook and fail closed on missing/failed work."""
+     try:
+-        from hermes_cli.plugins import has_hook, invoke_hook
++        from hermes_cli.plugins import has_hook, invoke_required_hook
+         if not has_hook(hook_name):
+             raise RuntimeError(f"{hook_name} is not registered")
+-        results = invoke_hook(
++        results = invoke_required_hook(
+             hook_name, task_id=task_id, board=board, run_id=int(run_id), **fields
+         )
+     except Exception as exc:
+diff --git a/hermes_cli/worker_lanes.py b/hermes_cli/worker_lanes.py
+index 3e3ff7af01f7b93be7db955507af526ec84bb329..bb01d34e49fb117591e5a378a51cf9830e30282b 100644
+--- a/hermes_cli/worker_lanes.py
++++ b/hermes_cli/worker_lanes.py
+@@ -173,6 +173,12 @@ def kanban_worker_env(task, workspace, *, board=None, base=None) -> "dict[str, A
+     if getattr(task, "workspace_kind", "") == "broker":
+         env["HERMES_WORKSPACE_MODE"] = "broker"
+         env["HERMES_BROKER_WORKSPACE"] = "/workspace"
++        from tools.environments.gondolin import broker_environment_key
++
++        # The workspace pre-spawn hook activates this exact broker key. Pass
++        # it into the worker so terminal and file surfaces use that task-run
++        # workspace rather than deriving a separate conversation environment.
++        env["HERMES_BROKER_ENVIRONMENT_KEY"] = broker_environment_key(task.id)
+     if workspace:
+         env["HERMES_KANBAN_WORKSPACE"] = workspace
+     # Pin the shared umbrella root + DB + workspaces root the dispatcher
+diff --git a/tests/gateway/test_kanban_notifier.py b/tests/gateway/test_kanban_notifier.py
+index 203c675a3a5e99a0f9b765c62ef78c782e859dac..638181992fc6914fb59a135a8dfe5a9da5af574d 100644
+--- a/tests/gateway/test_kanban_notifier.py
++++ b/tests/gateway/test_kanban_notifier.py
+@@ -88,6 +88,38 @@ def test_kanban_notifier_dedupes_board_slugs_pointing_to_same_db(tmp_path, monke
+     assert tid in adapter.sent[0]["text"]
+ 
+ 
++def test_notifier_reports_block_loop_triage(tmp_path, monkeypatch):
++    db_path = tmp_path / "triage-notify.db"
++    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
++    kb.init_db()
++
++    conn = kb.connect()
++    try:
++        tid = kb.create_task(conn, title="triage loop", assignee="worker")
++        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
++        kb._append_event(
++            conn,
++            tid,
++            kind="block_loop_detected",
++            payload={
++                "reason": "workspace capture failed",
++                "kind": "transient",
++                "recurrences": 2,
++                "limit": 2,
++            },
++        )
++    finally:
++        conn.close()
++
++    adapter = RecordingAdapter()
++    runner = _make_runner(adapter)
++    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
++
++    assert len(adapter.sent) == 1
++    assert "moved to triage after 2 repeated blocks" in adapter.sent[0]["text"]
++    assert "workspace capture failed" in adapter.sent[0]["text"]
++
++
+ def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatch):
+     db_path = tmp_path / "single-owner.db"
+     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+diff --git a/tests/hermes_cli/test_worker_lanes.py b/tests/hermes_cli/test_worker_lanes.py
+index b9b8c3ea4783062d70f34717db4e27c94deca11c..759a30f8baf6840fb6e560731f4e8fee65681131 100644
 --- a/tests/hermes_cli/test_worker_lanes.py
 +++ b/tests/hermes_cli/test_worker_lanes.py
-@@ -126,6 +126,27 @@
+@@ -126,6 +126,27 @@ def test_kanban_worker_env_sets_contract(kanban_home, tmp_path):
      assert "HERMES_WORKER_LANE" not in env
  
  
@@ -124,9 +175,11 @@ block-loop triage delivery.
  def test_assignee_is_spawnable(kanban_home):
      assert kb._assignee_is_spawnable("alpha")       # profile dir exists
      assert not kb._assignee_is_spawnable("ghost")   # neither profile nor lane
+diff --git a/tests/plugins/test_workspace_zero_schema.py b/tests/plugins/test_workspace_zero_schema.py
+index 7f2ac303eaff5fe05c3a7297c8ecb3b7b2fcb1f1..6df64c787c99821a124c5d3436306eb3d1787661 100644
 --- a/tests/plugins/test_workspace_zero_schema.py
 +++ b/tests/plugins/test_workspace_zero_schema.py
-@@ -5,6 +5,8 @@
+@@ -5,6 +5,8 @@ import importlib.util
  import time
  from pathlib import Path
  
@@ -135,7 +188,7 @@ block-loop triage delivery.
  from hermes_cli import kanban_db as kb
  
  
-@@ -136,3 +138,25 @@
+@@ -110,3 +112,25 @@ def test_terminal_hook_failure_is_best_effort(tmp_path, monkeypatch):
      module._on_terminal_workspace(
          task_id="t_board_safe", board="terminal-board", run_id=7
      )
@@ -161,46 +214,3 @@ block-loop triage delivery.
 +            board="default",
 +            run_id=7,
 +        )
---- a/tests/gateway/test_kanban_notifier.py
-+++ b/tests/gateway/test_kanban_notifier.py
-@@ -86,8 +86,40 @@
-     assert len(adapter.sent) == 1
-     assert "Kanban" in adapter.sent[0]["text"]
-     assert tid in adapter.sent[0]["text"]
-+
-+
-+def test_notifier_reports_block_loop_triage(tmp_path, monkeypatch):
-+    db_path = tmp_path / "triage-notify.db"
-+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
-+    kb.init_db()
-+
-+    conn = kb.connect()
-+    try:
-+        tid = kb.create_task(conn, title="triage loop", assignee="worker")
-+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
-+        kb._append_event(
-+            conn,
-+            tid,
-+            kind="block_loop_detected",
-+            payload={
-+                "reason": "workspace capture failed",
-+                "kind": "transient",
-+                "recurrences": 2,
-+                "limit": 2,
-+            },
-+        )
-+    finally:
-+        conn.close()
- 
-+    adapter = RecordingAdapter()
-+    runner = _make_runner(adapter)
-+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
- 
-+    assert len(adapter.sent) == 1
-+    assert "moved to triage after 2 repeated blocks" in adapter.sent[0]["text"]
-+    assert "workspace capture failed" in adapter.sent[0]["text"]
-+
-+
- def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatch):
-     db_path = tmp_path / "single-owner.db"
-     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))

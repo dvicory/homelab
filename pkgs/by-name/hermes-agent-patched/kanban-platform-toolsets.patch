@@ -18,10 +18,10 @@ enables board-routing tools, while the later lifecycle-safety patch keeps
 worker-owned complete, block, and heartbeat operations out of that session.
 ---
 diff --git a/tests/tools/test_kanban_tools.py b/tests/tools/test_kanban_tools.py
-index cdf8c4c..3e81005 100644
+index c535aa59a634e433f2de3810e0a976c4682d665f..1cabc82b545466ecca62928b9a9e86185d06b81e 100644
 --- a/tests/tools/test_kanban_tools.py
 +++ b/tests/tools/test_kanban_tools.py
-@@ -142,6 +142,43 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
+@@ -144,6 +144,43 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
      assert kanban == expected, f"expected {expected}, got {kanban}"
  
  
@@ -66,7 +66,7 @@ index cdf8c4c..3e81005 100644
  # Handler happy paths
  # ---------------------------------------------------------------------------
 diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
-index 2e81f94..b92d6b4 100644
+index 6c95e502752ede42489916a9e86c0d68c1ac27e0..0505ad13a3c8fdd1b8aab738abd19f6e120c3713 100644
 --- a/tools/kanban_tools.py
 +++ b/tools/kanban_tools.py
 @@ -56,8 +56,18 @@ def _profile_has_kanban_toolset() -> bool:
@@ -90,6 +90,3 @@ index 2e81f94..b92d6b4 100644
      except Exception:
          return False
  
-
--- 
-2.50.1

@@ -1,5 +1,5 @@
 diff --git a/gateway/platforms/api_server.py b/gateway/platforms/api_server.py
-index 65d5b32..d889b13 100644
+index 65d5b324cc459af35816273396ec9ec71fe7be8e..d889b13a6818e998c35f18a98081c9541a268ecc 100644
 --- a/gateway/platforms/api_server.py
 +++ b/gateway/platforms/api_server.py
 @@ -2448,6 +2448,7 @@ class APIServerAdapter(BasePlatformAdapter):
@@ -38,7 +38,7 @@ index 65d5b32..d889b13 100644
          return web.json_response({"object": "hermes.session", "session": self._session_response(fork)}, status=201)
  
 diff --git a/gateway/run.py b/gateway/run.py
-index f59e006..83341e1 100644
+index f59e006f6249ada5770a096b52747d72b4be9995..83341e11703fa621850354fae1dd218f385d2fe8 100644
 --- a/gateway/run.py
 +++ b/gateway/run.py
 @@ -16361,7 +16361,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
@@ -74,7 +74,7 @@ index f59e006..83341e1 100644
              profile=getattr(context.source, "profile", "") or "",
              async_delivery=_async_delivery,
 diff --git a/gateway/session_context.py b/gateway/session_context.py
-index a8e7c02..e71773e 100644
+index a8e7c027fecb13497ca033528671662237f570fe..e71773e2ea736fc5c907cd5f04d5b6aea0ec179c 100644
 --- a/gateway/session_context.py
 +++ b/gateway/session_context.py
 @@ -79,6 +79,11 @@ _SESSION_USER_ID: ContextVar = ContextVar("HERMES_SESSION_USER_ID", default=_UNS
@@ -163,7 +163,7 @@ index a8e7c02..e71773e 100644
      """Read a session context variable by its legacy ``HERMES_SESSION_*`` name.
  
 diff --git a/gateway/slash_commands.py b/gateway/slash_commands.py
-index 4aa75fa..94af22f 100644
+index 4aa75fa7985aac2348178265ebe59e7bdb301ed2..94af22fae0f7233828087db56169ca4274d0c7f1 100644
 --- a/gateway/slash_commands.py
 +++ b/gateway/slash_commands.py
 @@ -4126,6 +4126,29 @@ class GatewaySlashCommandsMixin:
@@ -198,7 +198,7 @@ index 4aa75fa..94af22f 100644
          if not new_entry:
 diff --git a/gateway/workspace_branch.py b/gateway/workspace_branch.py
 new file mode 100644
-index 0000000..19736a2
+index 0000000000000000000000000000000000000000..19736a2d83f50ab20127f3fb7d751578cbfbf4d0
 --- /dev/null
 +++ b/gateway/workspace_branch.py
 @@ -0,0 +1,37 @@
@@ -240,7 +240,7 @@ index 0000000..19736a2
 +            detail = result.get("detail") if isinstance(result, dict) else None
 +            raise RuntimeError(str(detail or "branch workspace preparation failed"))
 diff --git a/hermes_cli/cli_commands_mixin.py b/hermes_cli/cli_commands_mixin.py
-index e108243..aef4061 100644
+index e10824384001172b3730a4229d99e503be0caf54..aef40615c020891cdfa9940904a1d00e0ce0730f 100644
 --- a/hermes_cli/cli_commands_mixin.py
 +++ b/hermes_cli/cli_commands_mixin.py
 @@ -976,6 +976,26 @@ class CLICommandsMixin:
@@ -271,7 +271,7 @@ index e108243..aef4061 100644
          self._transfer_session_yolo(self.session_id, new_session_id)
          self.session_id = new_session_id
 diff --git a/hermes_cli/plugins.py b/hermes_cli/plugins.py
-index 258dcd6..043eca8 100644
+index 258dcd623d1acac53ebe3d1f58a0455db656d5fd..043eca8ad49c3ccc03582acaeb90e98e584cd114 100644
 --- a/hermes_cli/plugins.py
 +++ b/hermes_cli/plugins.py
 @@ -161,6 +161,7 @@ VALID_HOOKS: Set[str] = {
@@ -313,7 +313,7 @@ index 258dcd6..043eca8 100644
  def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:
      """Invoke registered middleware callbacks.
 diff --git a/hermes_state.py b/hermes_state.py
-index 8d8ff6b..a3cda1f 100644
+index 8d8ff6bc02135df5a99d547b9d3c6840685e5531..a3cda1f42eb9a4f9f665bd462c4eecfdfde0a175 100644
 --- a/hermes_state.py
 +++ b/hermes_state.py
 @@ -5953,6 +5953,17 @@ class SessionDB:
@@ -344,7 +344,7 @@ index 8d8ff6b..a3cda1f 100644
                      break
              if not next_child or next_child["id"] in seen:
 diff --git a/tests/gateway/test_session_boundary_security_state.py b/tests/gateway/test_session_boundary_security_state.py
-index b00ae1d..50b8683 100644
+index b00ae1d96c99f5ac189205b8b4e9036ff4a35df1..50b8683f609e4036cca7adade900a237f586fb25 100644
 --- a/tests/gateway/test_session_boundary_security_state.py
 +++ b/tests/gateway/test_session_boundary_security_state.py
 @@ -193,6 +193,26 @@ async def test_branch_clears_session_scoped_approval_and_yolo_state():
@@ -375,7 +375,7 @@ index b00ae1d..50b8683 100644
  async def test_branch_preserves_persisted_assistant_metadata():
      runner, _session_key = _make_branch_runner()
 diff --git a/tests/hermes_state/test_session_md_export.py b/tests/hermes_state/test_session_md_export.py
-index 8efbd2f..29772b7 100644
+index 8efbd2f50c769b8fe84b080a9e813b3793d1d2fd..29772b7043be844b0ceb9d475a442fbfe42d21e1 100644
 --- a/tests/hermes_state/test_session_md_export.py
 +++ b/tests/hermes_state/test_session_md_export.py
 @@ -54,6 +54,13 @@ def test_get_compression_lineage_returns_only_compression_chain(tmp_path):
@@ -402,7 +402,7 @@ index 8efbd2f..29772b7 100644
          db.close()
  
 diff --git a/tests/tools/test_secure_terminal_scope.py b/tests/tools/test_secure_terminal_scope.py
-index 9cdb422..9ecfe8b 100644
+index 9cdb4224bd2c3bdc594d64856113ff44f104d72b..9ecfe8b4837f075ad88699994e1f14856587095c 100644
 --- a/tests/tools/test_secure_terminal_scope.py
 +++ b/tests/tools/test_secure_terminal_scope.py
 @@ -8,7 +8,7 @@ pin its scope semantics; the cross-surface integration lives in
@@ -611,10 +611,10 @@ index 9cdb422..9ecfe8b 100644
      terminal_tool.register_task_env_overrides(
          "tb2-task", {"docker_image": "tb2:image", "cwd": "/app"}
 diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
-index 7a3ccbc..852c012 100644
+index fbd195d734302d3154669582ad8a5e81911c295a..a58b8f672ee02c83e3217954bccdb82040a5f3a2 100644
 --- a/tools/terminal_tool.py
 +++ b/tools/terminal_tool.py
-@@ -1258,13 +1258,23 @@ def trusted_session_key(
+@@ -1238,13 +1238,23 @@ def trusted_session_key(
      *,
      default: str = "default",
  ) -> str:

@@ -1,6 +1,6 @@
-diff --git a/authority-reg-work/tests/tools/test_task_authority_binding.py b/tests/tools/test_task_authority_binding.py
+diff --git a/tests/tools/test_task_authority_binding.py b/tests/tools/test_task_authority_binding.py
 new file mode 100644
-index 0000000..88d375b
+index 0000000000000000000000000000000000000000..88d375b286311bdc211e04c71f2faf3d6beb1232
 --- /dev/null
 +++ b/tests/tools/test_task_authority_binding.py
 @@ -0,0 +1,116 @@
@@ -121,7 +121,7 @@ index 0000000..88d375b
 +    with pytest.raises(ValueError):
 +        terminal_tool.register_task_authority_binding("task", "")
 diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
-index a58b8f6..852c012 100644
+index a58b8f672ee02c83e3217954bccdb82040a5f3a2..852c01267b1802b12f4930cf459bab7aa2315800 100644
 --- a/tools/terminal_tool.py
 +++ b/tools/terminal_tool.py
 @@ -1070,6 +1070,7 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:

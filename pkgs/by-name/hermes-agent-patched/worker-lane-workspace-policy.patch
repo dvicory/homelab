@@ -12,9 +12,11 @@ Registered lanes are external process lanes and cannot request or inherit
 broker workspaces. Keep this dispatcher policy separate from broker handoff
 mechanics so capability routing remains reusable across workspace backends.
 ---
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+index c20a0a3f60d25a402585a3acd82901303d682929..9c319e321c87a161d23c1ea2ca39a76b6dcabe81 100644
 --- a/hermes_cli/kanban_db.py
 +++ b/hermes_cli/kanban_db.py
-@@ -7715,7 +7715,7 @@
+@@ -7867,7 +7867,7 @@ def _dispatch_once_locked(
          )
  
      ready_rows = conn.execute(
@@ -23,7 +25,7 @@ mechanics so capability routing remains reusable across workspace backends.
          "WHERE status = 'ready' AND claim_lock IS NULL "
          "ORDER BY priority DESC, created_at ASC"
      ).fetchall()
-@@ -7841,9 +7841,29 @@
+@@ -7993,9 +7993,29 @@ def _dispatch_once_locked(
          # quota / browser pool from being overwhelmed by a fan-out
          # while the global max_in_progress / max_spawn caps still allow
          # work on OTHER profiles.
@@ -54,9 +56,11 @@ mechanics so capability routing remains reusable across workspace backends.
          _eff_cap = (
              _lane.max_concurrency
              if _lane is not None and _lane.max_concurrency is not None
+diff --git a/hermes_cli/worker_lanes.py b/hermes_cli/worker_lanes.py
+index 17f707dfd03a308176894f9393a7ab01e8d7d187..3e3ff7af01f7b93be7db955507af526ec84bb329 100644
 --- a/hermes_cli/worker_lanes.py
 +++ b/hermes_cli/worker_lanes.py
-@@ -66,7 +66,10 @@
+@@ -66,7 +66,10 @@ class WorkerLane:
      ``kind`` is an optional label for logs/telemetry; ``description`` explains to
      orchestrators when this lane should be selected; ``max_concurrency`` is an
      optional per-lane in-flight cap (``None`` falls back to the global
@@ -68,7 +72,7 @@ mechanics so capability routing remains reusable across workspace backends.
      """
  
      name: str
-@@ -74,6 +77,8 @@
+@@ -74,6 +77,8 @@ class WorkerLane:
      kind: str = ""
      description: str = ""
      max_concurrency: Optional[int] = None
@@ -77,7 +81,7 @@ mechanics so capability routing remains reusable across workspace backends.
  
      def __post_init__(self) -> None:
          self.name = normalize_lane_name(self.name)
-@@ -86,6 +91,22 @@
+@@ -86,6 +91,22 @@ class WorkerLane:
              if mc < 1:
                  raise ValueError("worker lane max_concurrency must be >= 1")
              self.max_concurrency = mc
@@ -100,44 +104,11 @@ mechanics so capability routing remains reusable across workspace backends.
  
  
  def register_worker_lane(lane: WorkerLane, *, replace: bool = False) -> WorkerLane:
---- a/tools/kanban_tools.py
-+++ b/tools/kanban_tools.py
-@@ -1125,12 +1125,32 @@
-     workspace_kind = args.get("workspace_kind")
-     workspace_path = args.get("workspace_path")
-     project_id = args.get("project") or args.get("project_id")
-+    from hermes_cli.worker_lanes import get_worker_lane
-+
-+    target_lane = get_worker_lane(str(assignee))
-+    if (
-+        target_lane is not None
-+        and workspace_kind is None
-+        and workspace_path is None
-+        and target_lane.default_workspace_kind is not None
-+    ):
-+        workspace_kind = target_lane.default_workspace_kind
-     inherit_parent_output = bool(args.get("inherit_parent_output", False))
-     if inherit_parent_output and str(assignee).startswith("sa-"):
-         return tool_error("external worker lanes cannot inherit broker workspaces")
-     _inherit_workspace = workspace_kind is None and workspace_path is None
-     if workspace_kind is None:
-         workspace_kind = "scratch"
-+    if (
-+        target_lane is not None
-+        and target_lane.allowed_workspace_kinds is not None
-+        and str(workspace_kind) not in target_lane.allowed_workspace_kinds
-+    ):
-+        allowed = ", ".join(sorted(target_lane.allowed_workspace_kinds))
-+        return tool_error(
-+            f"worker lane {target_lane.name!r} does not accept "
-+            f"workspace_kind={workspace_kind!r}; allowed: {allowed}"
-+        )
-     triage, bool_error = _parse_bool_arg(args, "triage")
-     if bool_error:
-         return tool_error(bool_error)
+diff --git a/tests/hermes_cli/test_worker_lanes.py b/tests/hermes_cli/test_worker_lanes.py
+index 5f8f30534693bc22a44f8b7822e4a23b1cb8e717..b9b8c3ea4783062d70f34717db4e27c94deca11c 100644
 --- a/tests/hermes_cli/test_worker_lanes.py
 +++ b/tests/hermes_cli/test_worker_lanes.py
-@@ -283,3 +283,50 @@
+@@ -283,3 +283,50 @@ def test_unregistered_lane_assignee_is_skipped(kanban_home):
          res = kb.dispatch_once(conn, dry_run=True)
      assert t in res.skipped_nonspawnable
      assert t not in [s[0] for s in res.spawned]
@@ -188,9 +159,11 @@ mechanics so capability routing remains reusable across workspace backends.
 +        kinds = [event.kind for event in kb.list_events(connection, task_id)]
 +        assert "claimed" not in kinds
 +        assert "spawned" not in kinds
+diff --git a/tests/tools/test_kanban_tools.py b/tests/tools/test_kanban_tools.py
+index 2b3ca13eb0171bf8f2da0240f05d07fd6c6b0649..1ac88011e148e4c381810793b1341e4170344fe8 100644
 --- a/tests/tools/test_kanban_tools.py
 +++ b/tests/tools/test_kanban_tools.py
-@@ -2756,3 +2756,59 @@
+@@ -2756,3 +2756,59 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
          assert Path(atts[0].stored_path).read_bytes() == payload
      finally:
          conn.close()
@@ -250,3 +223,37 @@ mechanics so capability routing remains reusable across workspace backends.
 +    finally:
 +        wl.clear_worker_lanes()
 +
+diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
+index 111b0e5b31942cd55e75cfc3616654de20cf301d..feb5745835bafdcaaf614ebb35233dc7a9aebc4b 100644
+--- a/tools/kanban_tools.py
++++ b/tools/kanban_tools.py
+@@ -1125,9 +1125,29 @@ def _handle_create(args: dict, **kw) -> str:
+     workspace_kind = args.get("workspace_kind")
+     workspace_path = args.get("workspace_path")
+     project_id = args.get("project") or args.get("project_id")
++    from hermes_cli.worker_lanes import get_worker_lane
++
++    target_lane = get_worker_lane(str(assignee))
++    if (
++        target_lane is not None
++        and workspace_kind is None
++        and workspace_path is None
++        and target_lane.default_workspace_kind is not None
++    ):
++        workspace_kind = target_lane.default_workspace_kind
+     _inherit_workspace = workspace_kind is None and workspace_path is None
+     if workspace_kind is None:
+         workspace_kind = "scratch"
++    if (
++        target_lane is not None
++        and target_lane.allowed_workspace_kinds is not None
++        and str(workspace_kind) not in target_lane.allowed_workspace_kinds
++    ):
++        allowed = ", ".join(sorted(target_lane.allowed_workspace_kinds))
++        return tool_error(
++            f"worker lane {target_lane.name!r} does not accept "
++            f"workspace_kind={workspace_kind!r}; allowed: {allowed}"
++        )
+     triage, bool_error = _parse_bool_arg(args, "triage")
+     if bool_error:
+         return tool_error(bool_error)

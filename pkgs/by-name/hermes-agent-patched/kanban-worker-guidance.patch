@@ -10,9 +10,11 @@ artifact wording through the same signal while preserving relative manifests,
 trusted attachment selection, and no prose path discovery. Keep focused tests
 for both runtime modes and the zero-schema boundary.
 ---
+diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
+index 0ca1727b7daf3438d80160f34c6f5afab9b30ea3..1f5b326761838af0f05c3fb68e2bda047ee31967 100644
 --- a/agent/prompt_builder.py
 +++ b/agent/prompt_builder.py
-@@ -195,113 +195,58 @@
+@@ -195,113 +195,55 @@ SKILLS_GUIDANCE = (
      "Skills that aren't maintained become liabilities."
  )
  
@@ -156,10 +158,7 @@ for both runtime modes and the zero-schema boundary.
 +    "6. Select deliverables with relative POSIX paths under `output/...` in "
 +    "your assigned workspace. Never use absolute host paths, prose discovery, "
 +    "or paths copied from another task. The trusted completion manifest, not "
-+    "summary or result text, determines attachments.\n"
-+    "7. Create one direct child with `inherit_parent_output=true` only when it "
-+    "must import this task's sole selected output. The broker freezes that "
-+    "output before the child starts; the child completes with its own manifest.\n\n"
++    "summary or result text, determines attachments.\n\n"
 +    "Do not shell out to `hermes kanban`, call `clarify` from a headless worker, "
 +    "or use `delegate_task` as a substitute for a durable board task."
 +)
@@ -174,23 +173,17 @@ for both runtime modes and the zero-schema boundary.
  
  KANBAN_ORCHESTRATOR_GUIDANCE = (
      "# Kanban orchestration protocol\n"
-@@ -320,7 +265,14 @@
+@@ -323,7 +265,8 @@ KANBAN_ORCHESTRATOR_GUIDANCE = (
      "the required tasks are `done`; report a blocker instead of working around "
      "it in the live session.\n"
      "5. Use `kanban_comment` for relevant routing context. Never put secrets, "
 -    "tokens, or raw PII in board data; task history is durable.\n"
 +    "tokens, raw PII, host paths, or broker authority in board data; task history "
 +    "is durable.\n"
-+    "6. When a downstream task must import a producer's selected broker output, "
-+    "create only that producer and include the downstream contract in its body. "
-+    "The producer creates the one direct child with `inherit_parent_output=true` "
-+    "before completion. Broker preparation freezes the producer manifest and the "
-+    "child imports it before spawn; inheritance alone does not publish child "
-+    "changes."
  )
  
  
-@@ -329,7 +281,7 @@
+@@ -332,7 +275,7 @@ def select_kanban_guidance(
  ) -> str:
      """Select the session-static Kanban contract from trusted role signals."""
      if task_id:
@@ -199,20 +192,276 @@ for both runtime modes and the zero-schema boundary.
      if "kanban_list" in tool_names:
          return KANBAN_ORCHESTRATOR_GUIDANCE
      return ""
---- a/tools/kanban_tools.py
-+++ b/tools/kanban_tools.py
-@@ -95,6 +95,10 @@
-         return False
-     return _check_kanban_mode()
+diff --git a/tests/hermes_cli/test_worker_lane_discovery.py b/tests/hermes_cli/test_worker_lane_discovery.py
+index 90aa8b97bcd752e8bc112021b218b0a135d193d0..41172c11ab37ab2e1cca6b05e0c2e8960cee464e 100644
+--- a/tests/hermes_cli/test_worker_lane_discovery.py
++++ b/tests/hermes_cli/test_worker_lane_discovery.py
+@@ -122,15 +122,34 @@ def test_kanban_create_routes_by_capability_not_current_identity():
+     assert "completed parents' summary and metadata" in parents_description
+ 
+ 
+-def test_kanban_guidance_recognizes_profiles_and_external_lanes():
+-    from agent.prompt_builder import KANBAN_GUIDANCE
+-
+-    assert "Choose dispatchable assignees" in KANBAN_GUIDANCE
+-    assert "does not select the current/default profile" in KANBAN_GUIDANCE
+-    assert "handoffs enter worker context without delay" in KANBAN_GUIDANCE
+-    assert "assignee=<right-profile>" not in KANBAN_GUIDANCE
+-    assert "Ground every assignee in a real profile" not in KANBAN_GUIDANCE
++def test_kanban_guidance_is_scoped_to_workspace_mode(monkeypatch):
++    from agent.prompt_builder import (
++        KANBAN_ORCHESTRATOR_GUIDANCE,
++        select_kanban_guidance,
++    )
+ 
++    monkeypatch.setenv("HERMES_WORKSPACE_MODE", "broker")
++    broker = select_kanban_guidance(
++        task_id="t_worker", tool_names={"kanban_show", "kanban_list"}
++    )
++    assert len(broker.split()) < 300
++    assert "relative POSIX paths" in broker
++    assert "output/..." in broker
++    assert "trusted completion manifest" in broker
++    assert "absolute host paths" in broker
++    assert "revision" not in broker.lower()
++    assert "hash" not in broker.lower()
++
++    monkeypatch.delenv("HERMES_WORKSPACE_MODE", raising=False)
++    native = select_kanban_guidance(
++        task_id="t_worker", tool_names={"kanban_show", "kanban_list"}
++    )
++    assert "relative POSIX paths" in native
++    assert "output/..." not in native
++    assert "absolute host paths" in native
++    assert select_kanban_guidance(
++        task_id=None, tool_names={"kanban_show", "kanban_list"}
++    ) == KANBAN_ORCHESTRATOR_GUIDANCE
+ 
+ def test_kanban_create_without_registered_lanes_keeps_generic_schema():
+     definition = _kanban_create_definition()
+diff --git a/tests/tools/test_kanban_tools.py b/tests/tools/test_kanban_tools.py
+index 1ac88011e148e4c381810793b1341e4170344fe8..51084a61cf638a1218bbb327e34a5ec843ee7637 100644
+--- a/tests/tools/test_kanban_tools.py
++++ b/tests/tools/test_kanban_tools.py
+@@ -174,6 +174,7 @@ def test_kanban_tools_visible_with_platform_toolset_config(monkeypatch, tmp_path
+     expected = {
+         "kanban_list", "kanban_show", "kanban_comment", "kanban_create",
+         "kanban_link", "kanban_unblock",
++        "kanban_attach", "kanban_attach_url", "kanban_attachments",
+     }
+     assert kanban == expected, f"expected {expected}, got {kanban}"
+ 
+@@ -434,76 +435,86 @@ def test_complete_with_result_only(worker_env):
+ 
+ 
+ def test_complete_with_artifacts_lands_in_event_payload(worker_env):
+-    """``artifacts=[...]`` rides into the completed event payload so the
+-    gateway notifier can upload them as native attachments. See the
+-    kanban notifier in gateway/run.py for the consumer side."""
++    """Relative selections are copied into native task attachments and events."""
+     from hermes_cli import kanban_db as kb
+     from tools import kanban_tools as kt
+ 
++    with kb.connect() as conn:
++        task = kb.get_task(conn, worker_env)
++        assert task is not None
++        workspace = kb.resolve_workspace(task)
++        kb.set_workspace_path(conn, worker_env, workspace)
++    (workspace / "output").mkdir(parents=True, exist_ok=True)
++    (workspace / "output" / "q3-revenue.png").write_bytes(b"png")
++    (workspace / "output" / "q3-report.pdf").write_bytes(b"pdf")
++
+     out = kt._handle_complete({
+         "summary": "rendered the chart",
+-        "artifacts": ["/tmp/q3-revenue.png", "/tmp/q3-report.pdf"],
++        "artifacts": ["output/q3-revenue.png", "output/q3-report.pdf"],
+     })
+     assert json.loads(out)["ok"] is True
+ 
+     conn = kb.connect()
+     try:
+         events = kb.list_events(conn, worker_env)
+-        # Find the completion event
+         completed = [e for e in events if e.kind == "completed"]
+         assert len(completed) == 1
+         payload = completed[0].payload or {}
+         assert payload.get("artifacts") == [
+-            "/tmp/q3-revenue.png",
+-            "/tmp/q3-report.pdf",
++            "output/q3-report.pdf",
++            "output/q3-revenue.png",
+         ]
+-        # And the artifacts also live on metadata for downstream workers
+         run = kb.latest_run(conn, worker_env)
+         assert run.metadata.get("artifacts") == [
+-            "/tmp/q3-revenue.png",
+-            "/tmp/q3-report.pdf",
++            "output/q3-report.pdf",
++            "output/q3-revenue.png",
++        ]
++        attachments = kb.list_attachments(conn, worker_env)
++        assert [a.filename for a in attachments] == [
++            "output/q3-report.pdf",
++            "output/q3-revenue.png",
+         ]
+     finally:
+         conn.close()
+ 
+ 
+-def test_complete_artifacts_accepts_single_string(worker_env):
+-    """A bare string is auto-promoted to a single-element list for convenience."""
+-    from hermes_cli import kanban_db as kb
++def test_complete_artifacts_rejects_single_string(worker_env):
++    """The model-facing manifest is an explicit relative-path list."""
+     from tools import kanban_tools as kt
+ 
+     out = kt._handle_complete({
+         "summary": "one chart",
+-        "artifacts": "/tmp/chart.png",
++        "artifacts": "output/chart.png",
+     })
+-    assert json.loads(out)["ok"] is True
+-
+-    conn = kb.connect()
+-    try:
+-        run = kb.latest_run(conn, worker_env)
+-        assert run.metadata.get("artifacts") == ["/tmp/chart.png"]
+-    finally:
+-        conn.close()
++    error = json.loads(out).get("error", "")
++    assert "artifacts must be a list of relative paths" in error
+ 
+ 
+ def test_complete_artifacts_merges_with_explicit_metadata_field(worker_env):
+-    """If the worker passes metadata.artifacts AND the top-level artifacts
+-    param, merge the two without duplicates."""
++    """Manifest values remain relative and deduplicate with metadata facts."""
+     from hermes_cli import kanban_db as kb
+     from tools import kanban_tools as kt
+ 
++    with kb.connect() as conn:
++        task = kb.get_task(conn, worker_env)
++        assert task is not None
++        workspace = kb.resolve_workspace(task)
++        kb.set_workspace_path(conn, worker_env, workspace)
++    (workspace / "output").mkdir(parents=True, exist_ok=True)
++    (workspace / "output" / "a.png").write_bytes(b"a")
++    (workspace / "output" / "b.pdf").write_bytes(b"b")
++
+     out = kt._handle_complete({
+         "summary": "merged",
+-        "metadata": {"artifacts": ["/tmp/a.png"], "other": "fact"},
+-        "artifacts": ["/tmp/b.pdf", "/tmp/a.png"],
++        "metadata": {"artifacts": ["output/a.png"], "other": "fact"},
++        "artifacts": ["output/b.pdf", "output/a.png"],
+     })
+     assert json.loads(out)["ok"] is True
+ 
+     conn = kb.connect()
+     try:
+         run = kb.latest_run(conn, worker_env)
+-        # Order: existing entries first, then new ones, deduplicated.
+-        assert run.metadata.get("artifacts") == ["/tmp/a.png", "/tmp/b.pdf"]
++        assert run.metadata.get("artifacts") == ["output/a.png", "output/b.pdf"]
+         assert run.metadata.get("other") == "fact"
+     finally:
+         conn.close()
+@@ -533,7 +544,7 @@ def test_complete_missing_scratch_artifact_stays_in_flight(worker_env):
+ 
+     output = kt._handle_complete({
+         "summary": "report complete",
+-        "artifacts": [str(workspace / "missing-report.md")],
++        "artifacts": ["missing-report.md"],
+     })
+     error = json.loads(output).get("error", "")
+ 
+@@ -1521,7 +1532,7 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
+     )
+     prompt = a._build_system_prompt()
+     # Header phrase (identity-free — SOUL.md owns identity, layer 3 is protocol)
+-    assert "Kanban task execution protocol" in prompt
++    assert "Kanban worker contract" in prompt
+     # Lifecycle signals
+     assert "kanban_show()" in prompt
+     assert "kanban_complete" in prompt
+@@ -1545,11 +1556,8 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
+     cached prompt.
+ 
+     The ceiling guards against unbounded growth, not against any growth.
+-    The block absorbed the load-bearing worker/orchestrator reference
+-    details (workspace kinds, deliverable artifacts, created-card claims,
+-    profile discovery) when the standalone kanban-worker / kanban-orchestrator
+-    skills were removed and folded into this always-injected guidance, so the
+-    ceiling is sized to fit that content with a little headroom.
++    Tool schemas own argument details. This always-injected block carries only
++    worker invariants, so a tight ceiling catches accidental instruction accretion.
+     """
+     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+     home = tmp_path / ".hermes"
+@@ -1559,7 +1567,7 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
+     monkeypatch.setattr(_P, "home", lambda: tmp_path)
+ 
+     from agent.prompt_builder import KANBAN_GUIDANCE
+-    assert 1_500 < len(KANBAN_GUIDANCE) < 5_800, (
++    assert 900 < len(KANBAN_GUIDANCE) < 2_500, (
+         f"KANBAN_GUIDANCE is {len(KANBAN_GUIDANCE)} chars — too short (missing?) or too long"
+     )
+ 
+@@ -2758,6 +2766,7 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
+         conn.close()
+ 
  
 +
+ def test_create_uses_registered_lane_default_workspace(worker_env, monkeypatch):
+     from hermes_cli import kanban_db as kb
+     from hermes_cli import worker_lanes as wl
+@@ -2812,3 +2821,30 @@ def test_create_rejects_workspace_disallowed_by_registered_lane(worker_env, monk
+     finally:
+         wl.clear_worker_lanes()
+ 
++
++
++def test_artifact_schema_is_scoped_to_workspace_mode(monkeypatch):
++    from tools import kanban_tools as kt
++    from tools.registry import invalidate_check_fn_cache, registry
++
++    monkeypatch.setenv("HERMES_KANBAN_TASK", "t-schema")
++    invalidate_check_fn_cache()
++
++    monkeypatch.delenv("HERMES_WORKSPACE_MODE", raising=False)
++    native = registry.get_definitions({"kanban_complete"}, quiet=True)[0]["function"]
++    native_description = native["parameters"]["properties"]["artifacts"]["description"]
++    assert "relative POSIX" in native_description
++    assert "output/..." not in native_description
++    assert "host prefix" in native_description
++    assert "summary, result" in native_description
++    assert "never scanned" in native_description
++
++    monkeypatch.setenv("HERMES_WORKSPACE_MODE", "broker")
++    broker = registry.get_definitions({"kanban_complete"}, quiet=True)[0]["function"]
++    broker_description = broker["parameters"]["properties"]["artifacts"]["description"]
++    assert "relative POSIX" in broker_description
++    assert "output/..." in broker_description
++    assert "host prefix" in broker_description
++    assert "summary, result" in broker_description
++    assert "never scanned" in broker_description
++    assert "native" not in broker["description"].lower()
+diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
+index feb5745835bafdcaaf614ebb35233dc7a9aebc4b..9ce9dcf2d1cc8b893766076c1f5936a48a075e52 100644
+--- a/tools/kanban_tools.py
++++ b/tools/kanban_tools.py
+@@ -96,6 +96,10 @@ def _check_kanban_attachment_mode() -> bool:
+     return _check_kanban_mode()
+ 
+ 
 +def _workspace_mode() -> str:
 +    """Read the trusted workspace mode injected by the dispatcher."""
 +    return os.environ.get("HERMES_WORKSPACE_MODE", "").strip().lower()
- 
++
  def _check_kanban_worker_mode() -> bool:
      """Worker lifecycle tools require a dispatcher-assigned task identity."""
-@@ -564,8 +568,7 @@
+     return bool(os.environ.get("HERMES_KANBAN_TASK"))
+@@ -564,8 +568,7 @@ def _handle_complete(args: dict, **kw) -> str:
          ]
      if artifacts is not None:
          if isinstance(artifacts, str):
@@ -222,7 +471,7 @@ for both runtime modes and the zero-schema boundary.
          if not isinstance(artifacts, (list, tuple)):
              return tool_error(
                  f"artifacts must be a list of file paths, got "
-@@ -1497,12 +1500,11 @@
+@@ -1493,12 +1496,11 @@ KANBAN_COMPLETE_SCHEMA = {
          "tasks via ``kanban_create`` during this run, list their ids "
          "in ``created_cards`` — the kernel verifies them so phantom "
          "references are caught before they leak into downstream "
@@ -240,7 +489,7 @@ for both runtime modes and the zero-schema boundary.
      ),
      "parameters": {
          "type": "object",
-@@ -1557,21 +1559,15 @@
+@@ -1553,21 +1555,15 @@ KANBAN_COMPLETE_SCHEMA = {
                  "type": "array",
                  "items": {"type": "string"},
                  "description": (
@@ -271,11 +520,10 @@ for both runtime modes and the zero-schema boundary.
                  ),
              },
              "board": _board_schema_prop(),
-@@ -1623,6 +1619,49 @@
-         "required": ["reason"],
+@@ -1620,6 +1616,49 @@ KANBAN_BLOCK_SCHEMA = {
      },
  }
-+
+ 
 +
 +def _kanban_complete_schema_overrides() -> dict[str, Any]:
 +    """Scope completion artifact guidance to the trusted workspace mode."""
@@ -318,22 +566,19 @@ for both runtime modes and the zero-schema boundary.
 +    properties["artifacts"] = artifacts
 +    parameters["properties"] = properties
 +    return {"description": description, "parameters": parameters}
- 
++
  KANBAN_HEARTBEAT_SCHEMA = {
      "name": "kanban_heartbeat",
-@@ -1995,7 +2034,10 @@
-                     "type": "boolean",
-                     "description": (
-                         "Worker-only: import the sole direct broker parent output "
--                        "after the parent is done. External lanes cannot use this."
-+                        "after the parent is done. The broker freezes the parent's "
-+                        "selected relative manifest before spawn; external lanes "
-+                        "cannot use this. Child changes require a new completion "
-+                        "manifest."
-                     ),
-                 }
-         except Exception:
-@@ -2082,6 +2124,7 @@
+     "description": (
+@@ -1977,6 +2016,7 @@ def _kanban_create_schema_overrides() -> dict:
+         name: dict(schema)
+         for name, schema in KANBAN_CREATE_SCHEMA["parameters"]["properties"].items()
+     }
++
+     assignee = parameters["properties"]["assignee"]
+     assignee["description"] = (
+         assignee["description"]
+@@ -2059,6 +2099,7 @@ registry.register(
      schema=KANBAN_COMPLETE_SCHEMA,
      handler=_handle_complete,
      check_fn=_check_kanban_worker_mode,
@@ -341,336 +586,3 @@ for both runtime modes and the zero-schema boundary.
      emoji="✔",
  )
  
---- a/tests/hermes_cli/test_worker_lane_discovery.py
-+++ b/tests/hermes_cli/test_worker_lane_discovery.py
-@@ -122,15 +122,37 @@
-     assert "completed parents' summary and metadata" in parents_description
- 
- 
--def test_kanban_guidance_recognizes_profiles_and_external_lanes():
--    from agent.prompt_builder import KANBAN_GUIDANCE
-+def test_kanban_guidance_is_scoped_to_workspace_mode(monkeypatch):
-+    from agent.prompt_builder import (
-+        KANBAN_ORCHESTRATOR_GUIDANCE,
-+        select_kanban_guidance,
-+    )
- 
--    assert "Choose dispatchable assignees" in KANBAN_GUIDANCE
--    assert "does not select the current/default profile" in KANBAN_GUIDANCE
--    assert "handoffs enter worker context without delay" in KANBAN_GUIDANCE
--    assert "assignee=<right-profile>" not in KANBAN_GUIDANCE
--    assert "Ground every assignee in a real profile" not in KANBAN_GUIDANCE
-+    monkeypatch.setenv("HERMES_WORKSPACE_MODE", "broker")
-+    broker = select_kanban_guidance(
-+        task_id="t_worker", tool_names={"kanban_show", "kanban_list"}
-+    )
-+    assert len(broker.split()) < 300
-+    assert "relative POSIX paths" in broker
-+    assert "output/..." in broker
-+    assert "trusted completion manifest" in broker
-+    assert "inherit_parent_output=true" in broker
-+    assert "broker freezes" in broker
-+    assert "absolute host paths" in broker
-+    assert "revision" not in broker.lower()
-+    assert "hash" not in broker.lower()
- 
-+    monkeypatch.delenv("HERMES_WORKSPACE_MODE", raising=False)
-+    native = select_kanban_guidance(
-+        task_id="t_worker", tool_names={"kanban_show", "kanban_list"}
-+    )
-+    assert "relative POSIX paths" in native
-+    assert "output/..." not in native
-+    assert "inherit_parent_output=true" not in native
-+    assert "absolute host paths" in native
-+    assert select_kanban_guidance(
-+        task_id=None, tool_names={"kanban_show", "kanban_list"}
-+    ) == KANBAN_ORCHESTRATOR_GUIDANCE
- 
- def test_kanban_create_without_registered_lanes_keeps_generic_schema():
-     definition = _kanban_create_definition()
---- a/tests/tools/test_kanban_tools.py
-+++ b/tests/tools/test_kanban_tools.py
-@@ -174,6 +174,7 @@
-     expected = {
-         "kanban_list", "kanban_show", "kanban_comment", "kanban_create",
-         "kanban_link", "kanban_unblock",
-+        "kanban_attach", "kanban_attach_url", "kanban_attachments",
-     }
-     assert kanban == expected, f"expected {expected}, got {kanban}"
- 
-@@ -434,94 +435,7 @@
- 
- 
- def test_complete_with_artifacts_lands_in_event_payload(worker_env):
--    """``artifacts=[...]`` rides into the completed event payload so the
--    gateway notifier can upload them as native attachments. See the
--    kanban notifier in gateway/run.py for the consumer side."""
--    from hermes_cli import kanban_db as kb
--    from tools import kanban_tools as kt
--
--    out = kt._handle_complete({
--        "summary": "rendered the chart",
--        "artifacts": ["/tmp/q3-revenue.png", "/tmp/q3-report.pdf"],
--    })
--    assert json.loads(out)["ok"] is True
--
--    conn = kb.connect()
--    try:
--        events = kb.list_events(conn, worker_env)
--        # Find the completion event
--        completed = [e for e in events if e.kind == "completed"]
--        assert len(completed) == 1
--        payload = completed[0].payload or {}
--        assert payload.get("artifacts") == [
--            "/tmp/q3-revenue.png",
--            "/tmp/q3-report.pdf",
--        ]
--        # And the artifacts also live on metadata for downstream workers
--        run = kb.latest_run(conn, worker_env)
--        assert run.metadata.get("artifacts") == [
--            "/tmp/q3-revenue.png",
--            "/tmp/q3-report.pdf",
--        ]
--    finally:
--        conn.close()
--
--
--def test_complete_artifacts_accepts_single_string(worker_env):
--    """A bare string is auto-promoted to a single-element list for convenience."""
--    from hermes_cli import kanban_db as kb
--    from tools import kanban_tools as kt
--
--    out = kt._handle_complete({
--        "summary": "one chart",
--        "artifacts": "/tmp/chart.png",
--    })
--    assert json.loads(out)["ok"] is True
--
--    conn = kb.connect()
--    try:
--        run = kb.latest_run(conn, worker_env)
--        assert run.metadata.get("artifacts") == ["/tmp/chart.png"]
--    finally:
--        conn.close()
--
--
--def test_complete_artifacts_merges_with_explicit_metadata_field(worker_env):
--    """If the worker passes metadata.artifacts AND the top-level artifacts
--    param, merge the two without duplicates."""
--    from hermes_cli import kanban_db as kb
--    from tools import kanban_tools as kt
--
--    out = kt._handle_complete({
--        "summary": "merged",
--        "metadata": {"artifacts": ["/tmp/a.png"], "other": "fact"},
--        "artifacts": ["/tmp/b.pdf", "/tmp/a.png"],
--    })
--    assert json.loads(out)["ok"] is True
--
--    conn = kb.connect()
--    try:
--        run = kb.latest_run(conn, worker_env)
--        # Order: existing entries first, then new ones, deduplicated.
--        assert run.metadata.get("artifacts") == ["/tmp/a.png", "/tmp/b.pdf"]
--        assert run.metadata.get("other") == "fact"
--    finally:
--        conn.close()
--
--
--def test_complete_rejects_non_list_artifacts(worker_env):
--    """Non-list, non-string artifacts should be rejected with a clear error."""
--    from tools import kanban_tools as kt
--    out = kt._handle_complete({
--        "summary": "bad shape",
--        "artifacts": {"not": "a list"},
--    })
--    err = json.loads(out).get("error", "")
--    assert "artifacts must be a list" in err
--
--
--def test_complete_missing_scratch_artifact_stays_in_flight(worker_env):
--    """A false deliverable claim must return retry guidance, not mark Done."""
-+    """Relative selections are copied into native task attachments and events."""
-     from hermes_cli import kanban_db as kb
-     from tools import kanban_tools as kt
- 
-@@ -530,10 +444,107 @@
-         assert task is not None
-         workspace = kb.resolve_workspace(task)
-         kb.set_workspace_path(conn, worker_env, workspace)
-+    (workspace / "output").mkdir(parents=True, exist_ok=True)
-+    (workspace / "output" / "q3-revenue.png").write_bytes(b"png")
-+    (workspace / "output" / "q3-report.pdf").write_bytes(b"pdf")
-+
-+    out = kt._handle_complete({
-+        "summary": "rendered the chart",
-+        "artifacts": ["output/q3-revenue.png", "output/q3-report.pdf"],
-+    })
-+    assert json.loads(out)["ok"] is True
-+
-+    conn = kb.connect()
-+    try:
-+        events = kb.list_events(conn, worker_env)
-+        completed = [e for e in events if e.kind == "completed"]
-+        assert len(completed) == 1
-+        payload = completed[0].payload or {}
-+        assert payload.get("artifacts") == [
-+            "output/q3-report.pdf",
-+            "output/q3-revenue.png",
-+        ]
-+        run = kb.latest_run(conn, worker_env)
-+        assert run.metadata.get("artifacts") == [
-+            "output/q3-report.pdf",
-+            "output/q3-revenue.png",
-+        ]
-+        attachments = kb.list_attachments(conn, worker_env)
-+        assert [a.filename for a in attachments] == [
-+            "output/q3-report.pdf",
-+            "output/q3-revenue.png",
-+        ]
-+    finally:
-+        conn.close()
-+
-+
-+def test_complete_artifacts_rejects_single_string(worker_env):
-+    """The model-facing manifest is an explicit relative-path list."""
-+    from tools import kanban_tools as kt
-+
-+    out = kt._handle_complete({
-+        "summary": "one chart",
-+        "artifacts": "output/chart.png",
-+    })
-+    error = json.loads(out).get("error", "")
-+    assert "artifacts must be a list of relative paths" in error
-+
-+
-+def test_complete_artifacts_merges_with_explicit_metadata_field(worker_env):
-+    """Manifest values remain relative and deduplicate with metadata facts."""
-+    from hermes_cli import kanban_db as kb
-+    from tools import kanban_tools as kt
-+
-+    with kb.connect() as conn:
-+        task = kb.get_task(conn, worker_env)
-+        assert task is not None
-+        workspace = kb.resolve_workspace(task)
-+        kb.set_workspace_path(conn, worker_env, workspace)
-+    (workspace / "output").mkdir(parents=True, exist_ok=True)
-+    (workspace / "output" / "a.png").write_bytes(b"a")
-+    (workspace / "output" / "b.pdf").write_bytes(b"b")
-+
-+    out = kt._handle_complete({
-+        "summary": "merged",
-+        "metadata": {"artifacts": ["output/a.png"], "other": "fact"},
-+        "artifacts": ["output/b.pdf", "output/a.png"],
-+    })
-+    assert json.loads(out)["ok"] is True
-+
-+    conn = kb.connect()
-+    try:
-+        run = kb.latest_run(conn, worker_env)
-+        assert run.metadata.get("artifacts") == ["output/a.png", "output/b.pdf"]
-+        assert run.metadata.get("other") == "fact"
-+    finally:
-+        conn.close()
-+
-+
-+def test_complete_rejects_non_list_artifacts(worker_env):
-+    """Non-list, non-string artifacts should be rejected with a clear error."""
-+    from tools import kanban_tools as kt
-+    out = kt._handle_complete({
-+        "summary": "bad shape",
-+        "artifacts": {"not": "a list"},
-+    })
-+    err = json.loads(out).get("error", "")
-+    assert "artifacts must be a list" in err
-+
-+
-+def test_complete_missing_scratch_artifact_stays_in_flight(worker_env):
-+    """A false deliverable claim must return retry guidance, not mark Done."""
-+    from hermes_cli import kanban_db as kb
-+    from tools import kanban_tools as kt
-+
-+    with kb.connect() as conn:
-+        task = kb.get_task(conn, worker_env)
-+        assert task is not None
-+        workspace = kb.resolve_workspace(task)
-+        kb.set_workspace_path(conn, worker_env, workspace)
- 
-     output = kt._handle_complete({
-         "summary": "report complete",
--        "artifacts": [str(workspace / "missing-report.md")],
-+        "artifacts": ["missing-report.md"],
-     })
-     error = json.loads(output).get("error", "")
- 
-@@ -1521,7 +1532,7 @@
-     )
-     prompt = a._build_system_prompt()
-     # Header phrase (identity-free — SOUL.md owns identity, layer 3 is protocol)
--    assert "Kanban task execution protocol" in prompt
-+    assert "Kanban worker contract" in prompt
-     # Lifecycle signals
-     assert "kanban_show()" in prompt
-     assert "kanban_complete" in prompt
-@@ -1545,11 +1556,8 @@
-     cached prompt.
- 
-     The ceiling guards against unbounded growth, not against any growth.
--    The block absorbed the load-bearing worker/orchestrator reference
--    details (workspace kinds, deliverable artifacts, created-card claims,
--    profile discovery) when the standalone kanban-worker / kanban-orchestrator
--    skills were removed and folded into this always-injected guidance, so the
--    ceiling is sized to fit that content with a little headroom.
-+    Tool schemas own argument details. This always-injected block carries only
-+    worker invariants, so a tight ceiling catches accidental instruction accretion.
-     """
-     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
-     home = tmp_path / ".hermes"
-@@ -1559,7 +1567,7 @@
-     monkeypatch.setattr(_P, "home", lambda: tmp_path)
- 
-     from agent.prompt_builder import KANBAN_GUIDANCE
--    assert 1_500 < len(KANBAN_GUIDANCE) < 5_800, (
-+    assert 900 < len(KANBAN_GUIDANCE) < 2_500, (
-         f"KANBAN_GUIDANCE is {len(KANBAN_GUIDANCE)} chars — too short (missing?) or too long"
-     )
- 
-@@ -2758,6 +2766,7 @@
-         conn.close()
- 
- 
-+
- def test_create_uses_registered_lane_default_workspace(worker_env, monkeypatch):
-     from hermes_cli import kanban_db as kb
-     from hermes_cli import worker_lanes as wl
-@@ -2812,3 +2821,30 @@
-     finally:
-         wl.clear_worker_lanes()
- 
-+
-+
-+def test_artifact_schema_is_scoped_to_workspace_mode(monkeypatch):
-+    from tools import kanban_tools as kt
-+    from tools.registry import invalidate_check_fn_cache, registry
-+
-+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t-schema")
-+    invalidate_check_fn_cache()
-+
-+    monkeypatch.delenv("HERMES_WORKSPACE_MODE", raising=False)
-+    native = registry.get_definitions({"kanban_complete"}, quiet=True)[0]["function"]
-+    native_description = native["parameters"]["properties"]["artifacts"]["description"]
-+    assert "relative POSIX" in native_description
-+    assert "output/..." not in native_description
-+    assert "host prefix" in native_description
-+    assert "summary, result" in native_description
-+    assert "never scanned" in native_description
-+
-+    monkeypatch.setenv("HERMES_WORKSPACE_MODE", "broker")
-+    broker = registry.get_definitions({"kanban_complete"}, quiet=True)[0]["function"]
-+    broker_description = broker["parameters"]["properties"]["artifacts"]["description"]
-+    assert "relative POSIX" in broker_description
-+    assert "output/..." in broker_description
-+    assert "host prefix" in broker_description
-+    assert "summary, result" in broker_description
-+    assert "never scanned" in broker_description
-+    assert "native" not in broker["description"].lower()

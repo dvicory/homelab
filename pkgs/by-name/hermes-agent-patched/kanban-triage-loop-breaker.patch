@@ -5,9 +5,11 @@ Subject: [PATCH] fix(kanban): keep blocker escalations out of auto-decompose
 
 Automatic decomposition now opts into auto-only triage listing so capability-block loop escalations remain parked for explicit operator triage.
 
+diff --git a/gateway/kanban_watchers.py b/gateway/kanban_watchers.py
+index 60c22604a3759e56dbef94d01c92c727ca89f544..6bf668d0853d13b2f789c7990d8b23f5034e3e97 100644
 --- a/gateway/kanban_watchers.py
 +++ b/gateway/kanban_watchers.py
-@@ -1196,7 +1196,7 @@
+@@ -1196,7 +1196,7 @@ class GatewayKanbanWatchersMixin:
                  try:
                      os.environ["HERMES_KANBAN_BOARD"] = slug
                      try:
@@ -16,9 +18,11 @@ Automatic decomposition now opts into auto-only triage listing so capability-blo
                      except Exception as exc:
                          logger.debug(
                              "kanban auto-decompose: list_triage_ids failed on board %s (%s)",
+diff --git a/hermes_cli/kanban_decompose.py b/hermes_cli/kanban_decompose.py
+index d6c248c658a6dbb4d8b95843c95c138f47e15c07..5b86b68301a5ccfefc438ec00d41f039618af8fb 100644
 --- a/hermes_cli/kanban_decompose.py
 +++ b/hermes_cli/kanban_decompose.py
-@@ -456,8 +456,15 @@
+@@ -456,8 +456,15 @@ def decompose_task(
      )
  
  
@@ -36,7 +40,7 @@ Automatic decomposition now opts into auto-only triage listing so capability-blo
      with kb.connect_closing() as conn:
          rows = kb.list_tasks(
              conn,
-@@ -465,4 +472,9 @@
+@@ -465,4 +472,9 @@ def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
              tenant=tenant,
              limit=1000,
          )
@@ -46,9 +50,11 @@ Automatic decomposition now opts into auto-only triage listing so capability-blo
 +            if row.block_kind is None and row.block_recurrences == 0
 +        ]
      return [row.id for row in rows]
+diff --git a/tests/hermes_cli/test_kanban_decompose.py b/tests/hermes_cli/test_kanban_decompose.py
+index 7a872a4dac85a118393f0969a3f4c09c855f2241..455690ea7d7005553bfaf30944a1587384a1fef3 100644
 --- a/tests/hermes_cli/test_kanban_decompose.py
 +++ b/tests/hermes_cli/test_kanban_decompose.py
-@@ -349,3 +349,38 @@
+@@ -349,3 +349,38 @@ def test_decompose_no_aux_client_configured(kanban_home):
      assert outcome.ok is False
      # call_llm's no-provider RuntimeError surfaces via the LLM-error branch.
      assert "LLM error" in outcome.reason
@@ -87,5 +93,3 @@ Automatic decomposition now opts into auto-only triage listing so capability-blo
 +    assert recovered.status == "ready"
 +    assert recovered.block_kind == "capability"
 +    assert recovered.block_recurrences == kb.BLOCK_RECURRENCE_LIMIT
--- 
-2.49.0

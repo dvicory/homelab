@@ -81,6 +81,18 @@ A retry MUST activate a fresh globally unique run against the retained workspace
 - **THEN** activation consumption or supersession SHALL precede VM close
 - **AND** a later attempt MUST obtain a fresh run activation
 
+### Requirement: Parent dependencies do not imply artifact inputs
+
+A `parents` edge MAY carry ordinary task status, summary, metadata, and comments, but MUST NOT mount, copy, or expose parent workspace files to the child. Each broker-backed child MUST acquire its own task-scoped workspace identity. File inputs require a separate explicit artifact-input contract.
+
+#### Scenario: A dependent child starts after its parent
+
+- **GIVEN** a parent completes with a selected artifact and a child depends on that parent
+- **WHEN** the child broker workspace is acquired
+- **THEN** the child SHALL receive its own task-scoped workspace
+- **AND** the parent artifact SHALL NOT appear in that workspace merely because of the dependency edge
+- **AND** Hermes MUST NOT copy, retrieve, publish, or summarize the file as a substitute for an explicit artifact-input contract
+
 ### Requirement: Human delivery uses frozen selected artifacts
 
 For broker-backed tasks, Hermes MUST read only paths in the ready handoff's selected-artifact manifest through the protected local control UDS. The read request MUST contain exactly hidden `handoffId` and normalized `relativePath`. Before transitioning the task to `done`, Hermes MUST idempotently materialize every selected file through upstream native task attachment storage, independent of recipient subscriptions. A completed task's selected files MUST therefore be available through ordinary task attachment inspection even when no platform recipient exists. Subscriptions MAY identify recipients and channels but MUST NOT identify or infer files.
