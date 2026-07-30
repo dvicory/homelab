@@ -1,0 +1,279 @@
+From 9f1a2c4d8e7b4a3c9d5e6f7a8b9c0d1e2f3a4b5c Mon Sep 17 00:00:00 2001
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Thu, 30 Jul 2026 14:30:00 -0700
+Subject: [PATCH] feat(broker): bind task runs to durable three-plane project workspaces
+
+Broker tasks now render the three-plane contract in the worker context
+(`/workspace/work`, read-only `/workspace/inputs`, writable `/workspace/output`)
+alongside the frozen Project, revision, source-generation binding, and
+effective permission. The trusted catalogue pins the broker-project provider
+revision, refuses untrusted Project providers, and leaves the source
+generation unset until trusted dispatch binds it through the broker resolve
+RPC instead of inventing one from the template.
+
+The pre-spawn workspace service activates the exact task run with the broker
+(resolve, acquire, activate) and reports the guest planes; the Gondolin
+client gains typed resolve_project_source and authority_status calls so
+trusted external workers map a durable workspace binding to its host work
+plane without ever seeing the guest path. Guest workers receive the plane
+layout and Project authority facts through the isolated environment contract.
+---
+
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+index 572acb6..7263a7c 100644
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -9059,7 +9059,22 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
+     if task.tenant:
+         lines.append(f"Tenant:   {task.tenant}")
+     if task.workspace_kind == "broker":
+-        lines.append("Workspace: broker @ /workspace")
++        lines.append("Workspace: broker @ /workspace (three planes)")
++        lines.append("- `/workspace/work` — task-private Project checkout; your working directory and the only ordinary write target")
++        lines.append("- `/workspace/inputs` — broker-managed, read-only")
++        lines.append("- `/workspace/output` — completion manifest destination; always writable")
++        _run_spec = (
++            get_task_worker_specification(conn, task_id, run_id=int(task.current_run_id))
++            if task.current_run_id is not None
++            else None
++        )
++        if _run_spec is not None and _run_spec.project is not None:
++            lines.append(
++                f"Project: {_run_spec.project} "
++                f"(revision {str(_run_spec.project_revision or '')[:12]}, "
++                f"source generation {str(_run_spec.source_generation or 'unresolved')[:12]})"
++            )
++            lines.append(f"Project permission: {_run_spec.permission}")
+     else:
+         lines.append(f"Workspace: {task.workspace_kind} (managed workspace; path intentionally omitted)")
+     if task.max_runtime_seconds is not None:
+diff --git a/hermes_cli/worker_catalogue.py b/hermes_cli/worker_catalogue.py
+index 274593e..c4b9e16 100644
+--- a/hermes_cli/worker_catalogue.py
++++ b/hermes_cli/worker_catalogue.py
+@@ -371,6 +371,12 @@ def resolve_worker_specification(
+             raise WorkerResolutionError("source_kind_unsupported", f"lane {lane_name!r} cannot use Project source kind {source.get('type')!r}")
+         provider = workspace.get("projectProvider")
+         project_revision = catalogue["projectRevisions"][project]
++        # The broker-project provider is the only Project provider; it must
++        # be revision-pinned by the trusted catalogue.
++        if provider != "broker-project":
++            raise WorkerResolutionError("provider_unknown", f"lane {lane_name!r} declares an untrusted Project provider")
++        if provider not in catalogue["providerRevisions"]:
++            raise WorkerResolutionError("provider_unknown", f"Project provider {provider!r} is not revision-pinned by the catalogue")
+     if not isinstance(provider, str) or not provider:
+         raise WorkerResolutionError("provider_missing", f"lane {lane_name!r} has no workspace provider")
+ 
+@@ -408,7 +414,9 @@ def resolve_worker_specification(
+         board=board,
+         project=project,
+         project_revision=project_revision,
+-        source_generation=project_revision,
++        # The source generation is bound later by trusted dispatch through
++        # the broker resolve RPC; a template never invents one.
++        source_generation=None,
+         runtime=runtime,
+         profile=str(profile) if profile else None,
+         plugin=str(plugin) if plugin else None,
+diff --git a/hermes_cli/worker_lanes.py b/hermes_cli/worker_lanes.py
+index d587350..07e496d 100644
+--- a/hermes_cli/worker_lanes.py
++++ b/hermes_cli/worker_lanes.py
+@@ -194,6 +194,15 @@ def kanban_worker_identity_env(task, *, board=None, base=None) -> "dict[str, Any
+                 "workspace_generation_stale",
+                 "worker workspace generation is stale",
+             )
++        # Three-plane broker workspace contract. Guest-visible plane paths
++        # only: never credential values, store paths, or host paths.
++        env["HERMES_WORKSPACE_ROOT"] = "/workspace"
++        env["HERMES_WORKSPACE_WORK_DIR"] = "/workspace/work"
++        env["HERMES_WORKSPACE_INPUTS_DIR"] = "/workspace/inputs"
++        env["HERMES_WORKSPACE_OUTPUT_DIR"] = "/workspace/output"
++        if worker_spec.project is not None:
++            env["HERMES_KANBAN_PROJECT"] = worker_spec.project
++            env["HERMES_KANBAN_PROJECT_PERMISSION"] = worker_spec.permission
+     return env
+ 
+ 
+diff --git a/plugins/workspace-service/__init__.py b/plugins/workspace-service/__init__.py
+index 6cacc1c..1d47213 100644
+--- a/plugins/workspace-service/__init__.py
++++ b/plugins/workspace-service/__init__.py
+@@ -124,10 +124,7 @@ def _on_completion_intent(
+     return {"ready": True}
+ 
+ 
+-def _authority_for_run(conn: Any, task_id: str, run_id: int) -> dict[str, Any]:
+-    specification = kb.get_task_worker_specification(conn, task_id, run_id=int(run_id))
+-    if specification is None:
+-        raise RuntimeError("durable worker specification is missing")
++def _authority_for_specification(specification: Any) -> dict[str, Any]:
+     worklane = specification.policy.get("worklane")
+     if not isinstance(worklane, str) or not worklane:
+         raise RuntimeError("worker specification has no broker worklane")
+@@ -151,6 +148,56 @@ def _authority_for_run(conn: Any, task_id: str, run_id: int) -> dict[str, Any]:
+     return authority
+ 
+ 
++def _bind_source_generation(conn: Any, client: BrokerClient, task_id: str, run_id: int, specification: Any) -> Any:
++    """Resolve and durably record the Project source generation for this run.
++
++    Trusted dispatch binds the generation once; a retried pre-spawn reuses
++    the recorded generation and the broker revalidates it at activation.
++    """
++    import json as _json
++    from dataclasses import replace as _replace
++
++    from hermes_cli.worker_catalogue import load_worker_catalogue
++
++    if specification.project is None:
++        return specification
++    if specification.source_generation is not None:
++        return specification
++    catalogue = load_worker_catalogue(required=True)
++    assert catalogue is not None
++    project_spec = catalogue["projects"].get(specification.project)
++    if not isinstance(project_spec, dict):
++        raise RuntimeError("worker specification Project is not in the trusted catalogue")
++    source = project_spec.get("source")
++    repository_id = source.get("repositoryId") if isinstance(source, dict) else None
++    source_revision = catalogue["sourceRevisions"].get(repository_id)
++    if not isinstance(repository_id, str) or not isinstance(source_revision, str):
++        raise RuntimeError("worker specification Project source revision is unavailable")
++    resolution = client.resolve_project_source(
++        repository_id=repository_id,
++        project=specification.project,
++        project_revision=str(specification.project_revision),
++        source_revision=source_revision,
++    )
++    rebound = _replace(
++        specification, source_generation=str(resolution["sourceGeneration"])
++    )
++    conn.execute(
++        "UPDATE task_runs SET metadata = ? WHERE id = ? AND task_id = ?",
++        (
++            _json.dumps(
++                {"worker_spec": rebound.as_dict()},
++                sort_keys=True,
++                separators=(",", ":"),
++            ),
++            int(run_id),
++            task_id,
++        ),
++    )
++    kb._append_worker_specification(conn, task_id, rebound, run_id=int(run_id))
++    return rebound
++
++
+ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[str, bool]:
+     if not _enabled():
+         raise RuntimeError("workspace handoff is disabled")
+@@ -163,7 +210,13 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
+                 raise RuntimeError("workspace destination is stale")
+             if task.current_run_id != int(run_id):
+                 raise RuntimeError("workspace destination run is stale")
+-            authority = _authority_for_run(conn, task_id, int(run_id))
++            specification = kb.get_task_worker_specification(conn, task_id, run_id=int(run_id))
++            if specification is None:
++                raise RuntimeError("durable worker specification is missing")
++            specification = _bind_source_generation(
++                conn, client, task_id, int(run_id), specification
++            )
++            authority = _authority_for_specification(specification)
+         destination_key = broker_environment_key(task_id)
+         binding = client.acquire_workspace(destination_key)
+         client.activate_task_run(
+diff --git a/tests/plugins/test_workspace_zero_schema.py b/tests/plugins/test_workspace_zero_schema.py
+index 5b5eec7..6c81559 100644
+--- a/tests/plugins/test_workspace_zero_schema.py
++++ b/tests/plugins/test_workspace_zero_schema.py
+@@ -4,6 +4,7 @@ from __future__ import annotations
+ import importlib.util
+ import time
+ from pathlib import Path
++from types import SimpleNamespace
+ 
+ import pytest
+ 
+@@ -97,7 +98,21 @@ def test_parent_dependency_gets_distinct_broker_workspace(tmp_path, monkeypatch)
+ 
+     client = Client()
+     monkeypatch.setattr(module, "_client", lambda: client)
+-    monkeypatch.setattr(module, "_authority_for_run", lambda *_args: {"lane": "worker"})
++    fake_spec = SimpleNamespace(
++        catalogue_revision="cat-1",
++        lane="worker",
++        lane_revision="lane-1",
++        permission="workspace-write",
++        provider="broker-project",
++        policy={"worklane": "default"},
++        policy_revision="pol-1",
++        project=None,
++    )
++    monkeypatch.setattr(
++        module.kb,
++        "get_task_worker_specification",
++        lambda *_args, **_kwargs: fake_spec,
++    )
+ 
+     assert module._on_pre_spawn(
+         task_id=child_id,
+diff --git a/tools/environments/gondolin.py b/tools/environments/gondolin.py
+index 343b8d5..ebbe770 100644
+--- a/tools/environments/gondolin.py
++++ b/tools/environments/gondolin.py
+@@ -181,6 +181,36 @@ class BrokerClient:
+             )
+         return value
+ 
++    def resolve_project_source(
++        self,
++        *,
++        repository_id: str,
++        project: str,
++        project_revision: str,
++        source_revision: str,
++    ) -> dict:
++        """Bind a source generation for one Project through the trusted control plane.
++
++        Idempotent: the broker returns the same generation for unchanged
++        upstream content and records provenance for audit. Only the broker
++        ever sees acquisition credentials.
++        """
++        body = self._json_post(
++            "/v1/control/project-sources/resolve",
++            {
++                "repositoryId": str(repository_id),
++                "project": str(project),
++                "projectRevision": str(project_revision),
++                "sourceRevision": str(source_revision),
++            },
++            timeout=max(self._timeout, 600.0),
++        )
++        return {
++            "sourceGeneration": self._required_text(body, "sourceGeneration"),
++            "resolvedRevision": self._required_text(body, "resolvedRevision"),
++            "adapterRevision": self._required_text(body, "adapterRevision"),
++        }
++
+     def capture_handoff(
+         self,
+         *,
+@@ -237,6 +267,17 @@ class BrokerClient:
+             "guestPath": "/workspace",
+         }
+ 
++    def authority_status(self, environment_key: str) -> dict:
++        body = self._json_post(
++            "/v1/control/authority/status",
++            {"environmentKey": str(environment_key)},
++        )
++        return {
++            "authorityClass": self._required_text(body, "authorityClass"),
++            "workspaceId": self._required_text(body, "workspaceId"),
++            "workspaceLeaseId": self._required_text(body, "workspaceLeaseId"),
++        }
++
+     def activate_task_run(
+         self,
+         *,

@@ -233,3 +233,171 @@ def test_successful_worker_completes_with_changed_file_metadata(worker, monkeypa
         "remaining_issues": [],
         "codex_exit_code": 0,
     }
+
+
+def _lane_config(**overrides):
+    lane = {
+        "name": "codex",
+        "description": "implementation that may modify files",
+        "approvalPolicy": "never",
+        "approvalsReviewer": "user",
+        "sandboxMode": "workspace-write",
+        "networkAccess": True,
+    }
+    lane.update(overrides)
+    return lane
+
+
+def test_declared_lanes_accepts_broker_workspace_kinds(plugin, monkeypatch):
+    monkeypatch.setenv(
+        "CODEX_WORKER_LANES",
+        json.dumps([_lane_config(workspaceKinds=["broker"])]),
+    )
+    registered = []
+    ctx = SimpleNamespace(register_worker_lane=registered.append)
+
+    plugin.register(ctx)
+
+    assert registered[0].allowed_workspace_kinds == frozenset({"broker"})
+    assert registered[0].default_workspace_kind == "broker"
+
+
+def test_declared_lanes_rejects_unknown_workspace_kinds(plugin, monkeypatch):
+    monkeypatch.setenv(
+        "CODEX_WORKER_LANES",
+        json.dumps([_lane_config(workspaceKinds=["broker", "nfs"])]),
+    )
+
+    with pytest.raises(ValueError, match="unsupported workspaceKinds"):
+        plugin._declared_lanes()
+
+
+def test_codex_command_grants_bounded_output_plane(worker, monkeypatch, tmp_path):
+    monkeypatch.setenv("CODEX_EXECUTABLE", "/nix/store/codex/bin/codex")
+    worker_spec = SimpleNamespace(
+        permission="workspace-write",
+        policy={
+            "approvalPolicy": "never",
+            "approvalReviewer": "user",
+            "networkAccess": False,
+        },
+        agent={},
+    )
+    output_plane = tmp_path / "output"
+    output_plane.mkdir()
+
+    command = worker._codex_command(
+        tmp_path,
+        tmp_path / "result.json",
+        worker_spec,
+        output_plane=output_plane,
+    )
+
+    assert f'sandbox_workspace_write.writable_roots=["{output_plane}"]' in command
+    assert 'permissions.hermes-worker.extends=":workspace"' in command
+
+
+def test_codex_command_read_only_broker_lane_keeps_writable_output(
+    worker, monkeypatch, tmp_path
+):
+    # The broker enforces the read-only work plane at the filesystem; Codex
+    # must keep the workspace profile so the output plane stays writable.
+    monkeypatch.setenv("CODEX_EXECUTABLE", "/nix/store/codex/bin/codex")
+    worker_spec = SimpleNamespace(
+        permission="read-only",
+        policy={
+            "approvalPolicy": "never",
+            "approvalReviewer": "user",
+            "networkAccess": False,
+        },
+        agent={},
+    )
+    output_plane = tmp_path / "output"
+    output_plane.mkdir()
+
+    command = worker._codex_command(
+        tmp_path,
+        tmp_path / "result.json",
+        worker_spec,
+        output_plane=output_plane,
+    )
+
+    assert 'permissions.hermes-worker.extends=":workspace"' in command
+    assert f'sandbox_workspace_write.writable_roots=["{output_plane}"]' in command
+
+
+def test_validated_artifacts_selects_only_normalized_output_paths(worker):
+    selected, rejected = worker._validated_artifacts(
+        {
+            "artifacts": [
+                "output/review.md",
+                "output/reports",
+                "output/review.md",
+                "../output/review.md",
+                "/workspace/output/review.md",
+                "output/../work/secret.txt",
+                "work/change.py",
+                "output//double.md",
+                "output/",
+                "",
+            ]
+        }
+    )
+
+    assert selected == ["output/review.md", "output/reports"]
+    assert rejected == [
+        "../output/review.md",
+        "/workspace/output/review.md",
+        "output/../work/secret.txt",
+        "work/change.py",
+        "output//double.md",
+        "output/",
+        "",
+    ]
+
+
+def test_finish_task_passes_artifacts_and_records_rejections(worker, monkeypatch):
+    connection = object()
+    completed = {}
+    monkeypatch.setattr(worker.kanban_db, "connect", lambda: nullcontext(connection))
+    monkeypatch.setattr(
+        worker.kanban_db,
+        "get_task",
+        lambda conn, task_id: SimpleNamespace(status="running"),
+    )
+
+    def complete(conn, task_id, **kwargs):
+        completed.update(task_id=task_id, **kwargs)
+        return True
+
+    monkeypatch.setattr(worker.kanban_db, "complete_task", complete)
+
+    assert worker._finish_task(
+        "task-1",
+        42,
+        0,
+        {"summary": "Done.", "tests": [], "remaining_issues": []},
+        [],
+        "codex",
+        artifacts=["output/review.md"],
+        rejected_artifacts=["../output/review.md"],
+    )
+    assert completed["artifacts"] == ["output/review.md"]
+    assert completed["metadata"]["rejected_artifacts"] == ["../output/review.md"]
+
+
+def test_broker_work_plane_maps_binding_to_host_planes(plugin, monkeypatch, tmp_path):
+    data_root = tmp_path / "data"
+    work_plane = data_root / "ws-1" / "work"
+    work_plane.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_BROKER_WORKSPACE_DATA", str(data_root))
+    monkeypatch.setattr(plugin, "_broker_workspace_id", lambda task: "ws-1")
+
+    assert plugin._broker_work_plane(SimpleNamespace(id="task-1")) == work_plane
+
+
+def test_broker_work_plane_requires_data_root(plugin, monkeypatch):
+    monkeypatch.delenv("HERMES_BROKER_WORKSPACE_DATA", raising=False)
+
+    with pytest.raises(plugin.WorkerResolutionError, match="HERMES_BROKER_WORKSPACE_DATA"):
+        plugin._broker_work_plane(SimpleNamespace(id="task-1"))

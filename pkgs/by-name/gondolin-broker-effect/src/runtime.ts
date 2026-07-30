@@ -6,6 +6,7 @@ import {
   type DebugConfig,
   type DebugFlag,
 } from "@earendil-works/gondolin";
+import * as path from "node:path";
 import { Context, Effect, Layer } from "effect";
 import { brokerError, type BrokerError } from "./errors.js";
 import type { NetworkPolicy } from "./domain.js";
@@ -17,7 +18,8 @@ export interface VmCreateSpec {
   readonly cpus: number;
   readonly workspaceHostPath: string;
   readonly workspaceGuestPath: string;
-  readonly workspaceReadOnly: boolean;
+  /** Effective Project permission: the work plane is read-only, output stays writable. */
+  readonly workPlaneReadOnly: boolean;
   readonly sessionLabel: string;
   readonly network: NetworkPolicy;
   readonly dynamicNetwork?: DynamicNetworkAuthority;
@@ -133,9 +135,19 @@ export const makeCreateVm = (createGondolinVm: typeof GondolinVM.create) =>
           vfs: {
             fuseMount: spec.workspaceGuestPath,
             mounts: {
-              "/": spec.workspaceReadOnly
-                ? new ReadonlyProvider(new RealFSProvider(spec.workspaceHostPath))
-                : new RealFSProvider(spec.workspaceHostPath),
+              "/": new RealFSProvider(spec.workspaceHostPath),
+              // Broker-managed inputs are structurally read-only for every
+              // worker, independent of Project permission.
+              "/inputs": new ReadonlyProvider(
+                new RealFSProvider(path.join(spec.workspaceHostPath, "inputs")),
+              ),
+              ...(spec.workPlaneReadOnly
+                ? {
+                    "/work": new ReadonlyProvider(
+                      new RealFSProvider(path.join(spec.workspaceHostPath, "work")),
+                    ),
+                  }
+                : {}),
             },
           },
         });

@@ -16,6 +16,7 @@ import {
   type HandoffLimits,
 } from "./frozen-tree.js";
 import { HandoffStore, type HandoffRecord } from "./repository.js";
+import { ProjectWorkspaces } from "../project-workspace/service.js";
 
 export interface CapturedHandoff {
   readonly handoffId: string;
@@ -83,6 +84,7 @@ const make = Effect.gen(function* () {
   const store = yield* HandoffStore;
   const activations = yield* TaskRunActivations;
   const workspaces = yield* Workspaces;
+  const projectWorkspaces = yield* ProjectWorkspaces;
   const mutation = yield* STM.commit(TSemaphore.make(1));
 
   const fenceAndCapture = (
@@ -175,6 +177,16 @@ const make = Effect.gen(function* () {
       limits,
       preflight,
     );
+    // A broker-project run additionally records its bounded result descriptor
+    // before the handoff commits; a retry replays both steps idempotently.
+    if (consumed.activation.authority.project !== undefined) {
+      yield* projectWorkspaces.recordResult(
+        staged.sourceEnvironmentKey,
+        staged.sourceTaskId,
+        staged.sourceRunId,
+        source.workspacePath,
+      );
+    }
     const committed = yield* Effect.try({
       try: () => store.markHandoffReady(staged.handoffId, finalized.entryCount, finalized.totalBytes),
       catch: (error) => error instanceof BrokerError

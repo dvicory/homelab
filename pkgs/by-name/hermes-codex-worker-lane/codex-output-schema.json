@@ -15,6 +15,14 @@
       "type": "array",
       "items": { "type": "string" },
       "description": "Known failures, risks, or work that remains."
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^output/[^/].*"
+      },
+      "description": "Workspace-root paths below output/ selected for human delivery. Only normalized output/... entries are honored."
     }
   },
   "required": ["summary", "tests", "remaining_issues"],

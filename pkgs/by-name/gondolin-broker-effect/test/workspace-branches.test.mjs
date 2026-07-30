@@ -109,7 +109,18 @@ test("branching an unused source creates an independent empty workspace", async 
       destinationAuthority.workspaceId,
       destinationAuthority.workspaceLeaseId,
     )
-    assert.deepEqual(yield* Effect.promise(() => readdir(destination.workspacePath)), [])
+    // An unused workspace carries the pristine three-plane layout; the
+    // branch preserves it without introducing guest data.
+    assert.deepEqual(
+      (yield* Effect.promise(() => readdir(destination.workspacePath))).sort(),
+      [".broker-workspace-layout", "inputs", "output", "work"],
+    )
+    for (const plane of ["work", "inputs", "output"]) {
+      assert.deepEqual(
+        yield* Effect.promise(() => readdir(path.join(destination.workspacePath, plane))),
+        [],
+      )
+    }
     assert.notEqual(prepared.sourceWorkspaceId, prepared.destinationWorkspaceId)
   }))
 })

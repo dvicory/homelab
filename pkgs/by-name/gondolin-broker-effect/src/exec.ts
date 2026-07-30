@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import {
   Context,
   Duration,
@@ -76,6 +77,30 @@ export class Executor extends Context.Tag("@agent-x/gondolin-broker-effect/Execu
   ExecutorService
 >() {}
 
+// Worker CWD defaults to the mutable work plane; an explicit cwd must stay
+// inside the logical workspace, with relative paths resolved under work.
+const normalizeExecCwd = (
+  workspaceGuestPath: string,
+  requested: string | undefined,
+): Effect.Effect<string, BrokerError> =>
+  Effect.gen(function* () {
+    const root = path.posix.normalize(workspaceGuestPath);
+    if (requested === undefined) return path.posix.join(root, "work");
+    if (requested.includes("\0")) {
+      return yield* brokerError("exec.invalid", "exec cwd contains a NUL byte");
+    }
+    const resolved = requested.startsWith("/")
+      ? path.posix.normalize(requested)
+      : path.posix.resolve(path.posix.join(root, "work"), requested);
+    if (resolved !== root && !resolved.startsWith(`${root}/`)) {
+      return yield* brokerError("exec.invalid", "exec cwd escapes the workspace", {
+        cwd: requested,
+        workspace: root,
+      });
+    }
+    return resolved;
+  });
+
 const make = Effect.gen(function* () {
   const authorization = yield* Authorization;
   const environments = yield* Environments;
@@ -120,10 +145,11 @@ const make = Effect.gen(function* () {
                   receivedBytes: stdin.byteLength,
                 });
               }
+              const cwd = yield* normalizeExecCwd(environment.workspaceGuestPath, request.cwd);
               const processHandle = yield* Effect.tryPromise({
                 try: () => environment.vm.exec({
                   argv: request.argv,
-                  ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+                  cwd,
                   ...(request.env === undefined ? {} : { env: request.env }),
                 }),
                 catch: (error) =>

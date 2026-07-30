@@ -41,6 +41,20 @@ let
     maxPathBytes = 1024;
   };
 
+  # Hard ceilings for broker Project source materialization. Configured
+  # limits may only tighten these; the broker enforces them during
+  # acquisition and staging independently of any caller.
+  projectMaterializationLimitCeilings = {
+    maxSourceBytes = 2147483648; # 2 GiB logical source tree
+    maxEntries = 65536;
+    maxFileBytes = 268435456; # 256 MiB per regular file
+    maxPathBytes = 1024;
+    deadlineMs = 600000; # 10 minutes per materialization
+    maxProjectWorkspaces = 16;
+    maxStorageBytes = 8589934592; # 8 GiB total detached staging + workspaces
+    retentionMs = 604800000; # 7 days for completed Project results
+  };
+
   # Credential capabilities reference a network bundle, a logical secret id,
   # a reviewed adapter, bounded targets/actions, and an activation mode.
   # Secret VALUES never appear here — logical IDs only (§12.5).
@@ -227,7 +241,7 @@ let
 
 in
 {
-  inherit floor templates credentialCapabilities workspaceHandoffLimitCeilings environmentIdleTimeoutMs;
+  inherit floor templates credentialCapabilities workspaceHandoffLimitCeilings projectMaterializationLimitCeilings environmentIdleTimeoutMs;
 
   # Render policy.json with a content-derived policyId (§11: inert,
   # versioned JSON; the policy hash feeds VM generation identity).
@@ -259,9 +273,14 @@ in
       laneAuthorities ? { },
       workspaceHandoffEnabled ? false,
       workspaceHandoffLimits ? workspaceHandoffLimitCeilings,
+      projectSources ? { },
+      sourceRevisions ? { },
+      providerRevisions ? { },
+      projectMaterializationLimits ? projectMaterializationLimitCeilings,
       ...
     }:
     let
+      inherit (pkgs) lib;
       supportedGrantScopes = [
         "once"
         "task"
@@ -381,6 +400,59 @@ in
         if configuredLimit < hardLimit then configuredLimit else hardLimit;
       effectiveHandoffLimits =
         builtins.mapAttrs (name: _: handoffLimit name) workspaceHandoffLimitCeilings;
+      materializationLimit =
+        name:
+        let
+          hardLimit = projectMaterializationLimitCeilings.${name};
+          configuredLimit = projectMaterializationLimits.${name} or hardLimit;
+        in
+        if configuredLimit < hardLimit then configuredLimit else hardLimit;
+      effectiveMaterializationLimits =
+        builtins.mapAttrs (name: _: materializationLimit name) projectMaterializationLimitCeilings;
+      sourceHasUserinfo =
+        upstream:
+        let
+          authority = builtins.head (lib.splitString "/" (lib.removePrefix "https://" upstream));
+        in
+        lib.hasInfix "@" authority;
+      sanitizeSource =
+        repositoryId: source:
+        let
+          upstream = source.upstream or (throw "Project source '${repositoryId}' declares no trusted upstream");
+          credential = source.credential or null;
+        in
+        if
+          !lib.hasPrefix "https://" upstream
+          || lib.hasPrefix "/nix/store" upstream
+          || sourceHasUserinfo upstream
+        then
+          throw "Project source '${repositoryId}' upstream must be a credential-free https URL outside the Nix store"
+        else if
+          credential != null && builtins.match "[a-z0-9][a-z0-9-]*" credential.secretRef == null
+        then
+          throw "Project source '${repositoryId}' credential must be a logical secret reference, never a value or path"
+        else
+          {
+            type = source.type or "git";
+            inherit upstream;
+            defaultRef = source.defaultRef or "main";
+          }
+          // lib.optionalAttrs (source.pin or null != null) { inherit (source) pin; }
+          // lib.optionalAttrs (credential != null) {
+            credential = {
+              inherit (credential) adapter secretRef;
+            };
+          };
+      # The broker receives full trusted source descriptors; every other
+      # consumer sees only repositoryIds and revision digests. Secret VALUES
+      # never appear here — the broker resolves secretRef through systemd
+      # credentials at acquisition time.
+      projectWorkspace = {
+        provider = "broker-project";
+        inherit sourceRevisions providerRevisions;
+        limits = effectiveMaterializationLimits;
+        sources = builtins.mapAttrs sanitizeSource projectSources;
+      };
       policy = {
         version = 1;
         statements = [
@@ -420,6 +492,28 @@ in
             ]
           else
             [ ]
+        )
+        # Trusted Project source resolution is a control-plane action: only
+        # statements rendered from Nix-declared projectSources can mint a
+        # source generation, and every resolution is authorization-audited.
+        ++ (
+          if projectSources != { } then
+            [
+              {
+                effect = "allow";
+                actions = [ "project.source.resolve" ];
+                resources = [ "project-source:*" ];
+                limits = effectiveMaterializationLimits;
+              }
+              {
+                effect = "allow";
+                actions = [ "project.result.read" ];
+                resources = [ "task-run:*" ];
+                limits = { };
+              }
+            ]
+          else
+            [ ]
         );
       };
       grantPolicy = {
@@ -433,7 +527,7 @@ in
       };
       policyMaterial = {
         version = 1;
-        inherit policy networkPolicies grantPolicy assets;
+        inherit policy networkPolicies grantPolicy assets projectWorkspace;
         laneAuthorities = validatedLaneAuthorities;
         defaultExecutor = "hermes-gateway";
         defaultAuthorityClass = "default";

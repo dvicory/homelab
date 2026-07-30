@@ -13,8 +13,10 @@ export const BrokerActions = [
   "fs.write",
   "fs.mkdir",
   "fs.remove",
-  "workspace.capture",
-  "workspace.artifact.read",
+ "workspace.capture",
+ "workspace.artifact.read",
+ "project.source.resolve",
+ "project.result.read",
 ] as const;
 
 export type BrokerAction = (typeof BrokerActions)[number];

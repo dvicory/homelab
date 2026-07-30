@@ -306,7 +306,7 @@ const make = Effect.gen(function* () {
         memoryMiB: Math.min(worklane.memoryMiB, decision.limits.memoryMiB ?? worklane.memoryMiB),
         cpus: Math.min(worklane.cpus, decision.limits.cpus ?? worklane.cpus),
         workspaceHostPath: workspace.workspacePath,
-        workspaceReadOnly: activation?.authority.permission === "read-only",
+        workPlaneReadOnly: activation?.authority.permission === "read-only",
         workspaceGuestPath: worklane.workspaceGuestPath,
         sessionLabel: `${config.profile}:${request.environmentKey}:${record.generation}`,
         network,

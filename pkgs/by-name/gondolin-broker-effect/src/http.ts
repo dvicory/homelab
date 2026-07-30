@@ -30,6 +30,12 @@ import {
   ReadWorkspaceArtifactRequest,
 } from "./workspace-handoff/model.js";
 import { TaskRunActivations } from "./task-run-activations.js";
+import { ProjectWorkspaces } from "./project-workspace/service.js";
+import {
+  ReadProjectResultRequest,
+  ResolveProjectSourceRequest,
+} from "./project-workspace/model.js";
+import { Authorization } from "./auth.js";
 import { BrokerConfig } from "./config.js";
 import { Environments } from "./environments.js";
 import { asBrokerError, brokerError, publicErrorEvent, publicProblem, statusFor, type BrokerError } from "./errors.js";
@@ -176,6 +182,8 @@ export const makeControlHttpApp = Effect.gen(function* () {
   const environments = yield* Environments;
   const handoffOperations = yield* HandoffOperations;
   const workspaceBranches = yield* WorkspaceBranches;
+  const projectWorkspaces = yield* ProjectWorkspaces;
+  const authorization = yield* Authorization;
 
 
 
@@ -253,15 +261,31 @@ export const makeControlHttpApp = Effect.gen(function* () {
     workspaces.delete(request.environmentKey, request.workspaceId).pipe(Effect.as({ deleted: true }));
 
   const activateTaskRun = (request: typeof ActivateTaskRunRequest.Type) =>
-    runActivations.activate(request).pipe(
-      Effect.tap(({ generationsToClose }) =>
-        Effect.forEach(generationsToClose, environments.closeForFence, {
-          concurrency: 1,
-          discard: true,
-        }),
-      ),
-      Effect.map(({ activation }) => ({ activation })),
-    );
+    Effect.gen(function* () {
+      // Project materialization is staged, journaled, and committed to the
+      // task workspace before activation publishes the sandbox authority.
+      if (request.workspaceProvider === "broker-project") {
+        const binding = yield* workspaces.resolve(
+          request.environmentKey,
+          request.workspaceId,
+          request.workspaceLeaseId,
+        );
+        yield* projectWorkspaces.ensureMaterialized(
+          request,
+          binding.workspacePath,
+          binding.lease.fencingToken,
+        );
+      }
+      return yield* runActivations.activate(request).pipe(
+        Effect.tap(({ generationsToClose }) =>
+          Effect.forEach(generationsToClose, environments.closeForFence, {
+            concurrency: 1,
+            discard: true,
+          }),
+        ),
+        Effect.map(({ activation }) => ({ activation })),
+      );
+    });
   const consumeTaskRun = (request: typeof ConsumeTaskRunRequest.Type) =>
     runActivations.consume(request).pipe(
       Effect.tap(({ generationToClose }) =>
@@ -269,6 +293,22 @@ export const makeControlHttpApp = Effect.gen(function* () {
       ),
       Effect.map(({ activation }) => ({ activation })),
     );
+  const readProjectResult = (request: typeof ReadProjectResultRequest.Type) =>
+    Effect.gen(function* () {
+      yield* authorization.authorize({
+        action: "project.result.read",
+        resource: `task-run:${request.taskId}/${request.runId}`,
+      });
+      return yield* projectWorkspaces.readResult(request.taskId, request.runId);
+    });
+  const resolveProjectSource = (request: typeof ResolveProjectSourceRequest.Type) =>
+    Effect.gen(function* () {
+      yield* authorization.authorize({
+        action: "project.source.resolve",
+        resource: `project-source:${request.repositoryId}`,
+      });
+      return yield* projectWorkspaces.resolveSource(request);
+    });
   const unary = <A, I>(
     operationName: string,
     schema: Schema.Schema<A, I>,
@@ -345,6 +385,14 @@ export const makeControlHttpApp = Effect.gen(function* () {
         PrepareWorkspaceBranchRequest,
         workspaceBranches.prepare,
       ),
+    ),
+    HttpRouter.post(
+      "/v1/control/project-sources/resolve",
+      unary("project.source.resolve", ResolveProjectSourceRequest, resolveProjectSource),
+    ),
+    HttpRouter.post(
+      "/v1/control/project-workspaces/results/read",
+      unary("project.result.read", ReadProjectResultRequest, readProjectResult),
     ),
     HttpRouter.post(
       "/v1/control/authority/bind",

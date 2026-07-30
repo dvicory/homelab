@@ -1,9 +1,9 @@
 diff --git a/hermes_cli/worker_catalogue.py b/hermes_cli/worker_catalogue.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..02741db10140d46af41c887b25fe33eb3966e8ae
+index 0000000..07eab66
 --- /dev/null
 +++ b/hermes_cli/worker_catalogue.py
-@@ -0,0 +1,334 @@
+@@ -0,0 +1,350 @@
 +"""Trusted worker-lane catalogue and immutable task-run worker specifications."""
 +from __future__ import annotations
 +
@@ -24,6 +24,10 @@ index 0000000000000000000000000000000000000000..02741db10140d46af41c887b25fe33eb
 +def _digest(value: Any) -> str:
 +    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
 +    return hashlib.sha256(canonical.encode()).hexdigest()
++
++
++def _is_revision(value: Any) -> bool:
++    return isinstance(value, str) and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 +
 +
 +def _mapping(value: Any, code: str, field: str) -> Mapping[str, Any]:
@@ -191,6 +195,8 @@ index 0000000000000000000000000000000000000000..02741db10140d46af41c887b25fe33eb
 +    boards = value.get("boards")
 +    projects = value.get("projects")
 +    project_revisions = value.get("projectRevisions")
++    source_revisions = value.get("sourceRevisions")
++    provider_revisions = value.get("providerRevisions")
 +    if version != 1 or not isinstance(instance, str) or not instance:
 +        raise WorkerResolutionError("catalogue_invalid", "worker catalogue header is invalid")
 +    for name, item in (
@@ -199,6 +205,8 @@ index 0000000000000000000000000000000000000000..02741db10140d46af41c887b25fe33eb
 +        ("boards", boards),
 +        ("projects", projects),
 +        ("projectRevisions", project_revisions),
++        ("sourceRevisions", source_revisions),
++        ("providerRevisions", provider_revisions),
 +    ):
 +        if not isinstance(item, dict):
 +            raise WorkerResolutionError("catalogue_invalid", f"worker catalogue {name} must be an object")
@@ -206,6 +214,12 @@ index 0000000000000000000000000000000000000000..02741db10140d46af41c887b25fe33eb
 +        raise WorkerResolutionError("lane_revision_invalid", "worker lane revisions do not match their declarations")
 +    if set(project_revisions) != set(projects) or any(project_revisions[name] != _digest(project) for name, project in projects.items()):
 +        raise WorkerResolutionError("project_revision_invalid", "Project revisions do not match their declarations")
++    for name, revisions in (
++        ("sourceRevisions", source_revisions),
++        ("providerRevisions", provider_revisions),
++    ):
++        if any(not isinstance(key, str) or not _is_revision(digest) for key, digest in revisions.items()):
++            raise WorkerResolutionError("catalogue_invalid", f"worker catalogue {name} must map names to revision digests")
 +    canonical = {
 +        "version": version,
 +        "instance": instance,
@@ -214,6 +228,8 @@ index 0000000000000000000000000000000000000000..02741db10140d46af41c887b25fe33eb
 +        "boards": boards,
 +        "projects": projects,
 +        "projectRevisions": project_revisions,
++        "sourceRevisions": source_revisions,
++        "providerRevisions": provider_revisions,
 +    }
 +    if not isinstance(revision, str) or revision != _digest(canonical):
 +        raise WorkerResolutionError("catalogue_revision_invalid", "worker catalogue digest does not match its contents")

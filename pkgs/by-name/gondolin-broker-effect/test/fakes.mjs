@@ -16,6 +16,8 @@ import { Registry, RegistryLive } from "../dist/registry.js"
 import { VmRuntime } from "../dist/runtime.js"
 import { Workspaces, WorkspacesLive } from "../dist/workspaces.js"
 import { WorkspaceBranchesLive } from "../dist/workspace-branches.js"
+import { ProjectWorkspaceStoreLive } from "../dist/project-workspace/store.js"
+import { ProjectWorkspacesLive } from "../dist/project-workspace/service.js"
 
 const errno = (code, message) => Object.assign(new Error(message), { code })
 
@@ -271,7 +273,9 @@ export const makeTestLayer = (stateDir, options = {}) => {
   const authorization = AuthorizationLive.pipe(Layer.provideMerge(policy))
   const database = BrokerDatabaseLive.pipe(Layer.provideMerge(authorization))
   const workspaces = WorkspacesLive.pipe(Layer.provideMerge(database))
-  const registry = RegistryLive.pipe(Layer.provideMerge(workspaces))
+  const projectStore = ProjectWorkspaceStoreLive.pipe(Layer.provideMerge(workspaces))
+  const projectWorkspaces = ProjectWorkspacesLive.pipe(Layer.provideMerge(projectStore))
+  const registry = RegistryLive.pipe(Layer.provideMerge(projectWorkspaces))
   const runActivations = TaskRunActivationsLive.pipe(Layer.provideMerge(registry))
   const handoffs = HandoffStoreLive.pipe(Layer.provideMerge(runActivations))
   const handoffStorage = HandoffStorageLive.pipe(Layer.provideMerge(handoffs))

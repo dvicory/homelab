@@ -117,6 +117,10 @@ const workspaceFailure = (operation: string, error: unknown) =>
     cause: error instanceof Error ? error.message : String(error),
   });
 
+const WORKSPACE_LAYOUT_MARKER = ".broker-workspace-layout";
+const WORKSPACE_LAYOUT_VERSION = "three-plane:v1";
+const WORKSPACE_PLANES = ["work", "inputs", "output"] as const;
+
 const initializeSchema = (db: DatabaseSync, workspaceRoot: string) => {
 
   db.exec(`
@@ -186,7 +190,57 @@ const initializeSchema = (db: DatabaseSync, workspaceRoot: string) => {
       CHECK (run_activation_id IS NULL OR length(run_activation_id) = 36);
     `);
   }
-  fs.mkdirSync(path.join(workspaceRoot, "data"), { recursive: true, mode: 0o700 });
+  // Workspace data is shared with trusted external workers (Codex) running
+  // as the gateway user: group-traverse at the root, setgid group-writable
+  // per workspace so worker-created files inherit the broker group and
+  // remain readable for capture and guest mounts. The service umask strips
+  // group bits from mkdir, so modes are applied with explicit chmod.
+  const dataRoot = path.join(workspaceRoot, "data");
+  fs.mkdirSync(dataRoot, { recursive: true, mode: 0o750 });
+  fs.chmodSync(dataRoot, 0o750);
+  fs.chmodSync(workspaceRoot, 0o750);
+
+  // Clean layout cutover: every workspace created before the three-plane
+  // contract is discarded — no compatibility alias, no dual-layout resolver.
+  const legacyRows = db.prepare(
+    "SELECT workspace_id FROM workspaces WHERE state = 'active'",
+  ).all() as ReadonlyArray<{ readonly workspace_id: string }>;
+  for (const row of legacyRows) {
+    const marker = path.join(workspaceRoot, "data", row.workspace_id, WORKSPACE_LAYOUT_MARKER);
+    let layout: string | null = null;
+    try {
+      layout = fs.readFileSync(marker, "utf8");
+    } catch {
+      layout = null;
+    }
+    if (layout === WORKSPACE_LAYOUT_VERSION) continue;
+    const now = Date.now();
+    db.prepare(
+      "UPDATE workspace_leases SET state='released', released_at=COALESCE(released_at, ?) WHERE workspace_id = ? AND state = 'active'",
+    ).run(now, row.workspace_id);
+    db.prepare("UPDATE workspaces SET state='deleted', updated_at=? WHERE workspace_id = ?").run(
+      now,
+      row.workspace_id,
+    );
+    fs.rmSync(path.join(workspaceRoot, "data", row.workspace_id), { recursive: true, force: true });
+  }
+};
+
+const PLANE_MODES: Readonly<Record<string, number>> = {
+  work: 0o2770,
+  inputs: 0o2750,
+  output: 0o2770,
+};
+
+const initializePlanes = (workspacePath: string): void => {
+  for (const plane of WORKSPACE_PLANES) {
+    const planePath = path.join(workspacePath, plane);
+    fs.mkdirSync(planePath, { recursive: false });
+    fs.chmodSync(planePath, PLANE_MODES[plane] ?? 0o2770);
+  }
+  fs.writeFileSync(path.join(workspacePath, WORKSPACE_LAYOUT_MARKER), WORKSPACE_LAYOUT_VERSION, {
+    mode: 0o400,
+  });
 };
 
 const make = Effect.gen(function* () {
@@ -249,7 +303,9 @@ const make = Effect.gen(function* () {
                 throw brokerError("workspace.not_found", "workspace does not exist", { workspaceId });
               }
               createdPath = workspacePath(workspaceId);
-              fs.mkdirSync(createdPath, { recursive: false, mode: 0o700 });
+              fs.mkdirSync(createdPath, { recursive: false });
+              fs.chmodSync(createdPath, 0o2770);
+              initializePlanes(createdPath);
               db.prepare(`
                 INSERT INTO workspaces (
                   workspace_id, owner_environment_key, kind, state,

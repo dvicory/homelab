@@ -1,5 +1,5 @@
 diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
-index 1f5b326761838af0f05c3fb68e2bda047ee31967..651074e18fc4d94a0762e090c2724b07d886a6ff 100644
+index 1f5b326..651074e 100644
 --- a/agent/prompt_builder.py
 +++ b/agent/prompt_builder.py
 @@ -1871,6 +1871,17 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
@@ -21,7 +21,7 @@ index 1f5b326761838af0f05c3fb68e2bda047ee31967..651074e18fc4d94a0762e090c2724b07
          return None
      try:
 diff --git a/hermes_cli/config.py b/hermes_cli/config.py
-index 947fddabf41570f3f4f6456cdb55c6166da53066..dc85038ab29cf1eb2e49b477b37d97b3fce48fb4 100644
+index 947fdda..dc85038 100644
 --- a/hermes_cli/config.py
 +++ b/hermes_cli/config.py
 @@ -7133,6 +7133,38 @@ def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
@@ -82,7 +82,7 @@ index 947fddabf41570f3f4f6456cdb55c6166da53066..dc85038ab29cf1eb2e49b477b37d97b3
  
  def write_platform_config_field(
 diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
-index aefc0297caa6cb6bc64e028c85d1838f6f1d50dc..9a2f2e77fc1e67b7cda9c672f873361d04db15e5 100644
+index aefc029..9a2f2e7 100644
 --- a/hermes_cli/kanban_db.py
 +++ b/hermes_cli/kanban_db.py
 @@ -8794,9 +8794,13 @@ def _default_spawn(
@@ -131,7 +131,7 @@ index aefc0297caa6cb6bc64e028c85d1838f6f1d50dc..9a2f2e77fc1e67b7cda9c672f873361d
          cmd.extend(["--toolsets", ",".join(worker_toolsets)])
      cmd.extend([
 diff --git a/hermes_cli/worker_lanes.py b/hermes_cli/worker_lanes.py
-index bb01d34e49fb117591e5a378a51cf9830e30282b..93cd669c16c0aa678f914d909afddb17007ee6eb 100644
+index bb01d34..93cd669 100644
 --- a/hermes_cli/worker_lanes.py
 +++ b/hermes_cli/worker_lanes.py
 @@ -200,6 +200,43 @@ def kanban_worker_env(task, workspace, *, board=None, base=None) -> "dict[str, A
@@ -179,7 +179,7 @@ index bb01d34e49fb117591e5a378a51cf9830e30282b..93cd669c16c0aa678f914d909afddb17
      # context-file loader anchor on the workspace, not whatever cwd the
      # dispatching gateway happened to export. TERMINAL_CWD takes precedence
 diff --git a/model_tools.py b/model_tools.py
-index 57bba571da49483636ffd4e89ef3ab0044d53b96..adc009275361e3144a7cb80a253294e5175cd0af 100644
+index 57bba57..adc0092 100644
 --- a/model_tools.py
 +++ b/model_tools.py
 @@ -37,6 +37,33 @@ logger = logging.getLogger(__name__)
@@ -247,10 +247,10 @@ index 57bba571da49483636ffd4e89ef3ab0044d53b96..adc009275361e3144a7cb80a253294e5
      if not isinstance(function_args, dict):
 diff --git a/tests/hermes_cli/test_explicit_worker_lanes.py b/tests/hermes_cli/test_explicit_worker_lanes.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..d92590a794bea943c4449c7413f9e524a73c90b5
+index 0000000..093bb73
 --- /dev/null
 +++ b/tests/hermes_cli/test_explicit_worker_lanes.py
-@@ -0,0 +1,213 @@
+@@ -0,0 +1,234 @@
 +from __future__ import annotations
 +
 +import hashlib
@@ -306,6 +306,8 @@ index 0000000000000000000000000000000000000000..d92590a794bea943c4449c7413f9e524
 +        "boards": boards,
 +        "projects": projects,
 +        "projectRevisions": project_revisions,
++        "sourceRevisions": {},
++        "providerRevisions": {},
 +    }
 +    revision = _hash(payload)
 +    return {
@@ -317,6 +319,8 @@ index 0000000000000000000000000000000000000000..d92590a794bea943c4449c7413f9e524
 +        "boards": boards,
 +        "projects": projects,
 +        "projectRevisions": project_revisions,
++        "sourceRevisions": {},
++        "providerRevisions": {},
 +    }
 +
 +
@@ -346,6 +350,21 @@ index 0000000000000000000000000000000000000000..d92590a794bea943c4449c7413f9e524
 +
 +    managed_catalogue["value"]["revision"] = "0" * 64
 +    with pytest.raises(WorkerResolutionError, match="catalogue_revision_invalid"):
++        load_worker_catalogue(required=True)
++
++
++def test_source_and_provider_revisions_are_digest_validated(managed_catalogue):
++    catalogue = load_worker_catalogue(required=True)
++    assert catalogue["sourceRevisions"] == {}
++    assert catalogue["providerRevisions"] == {}
++
++    managed_catalogue["value"]["sourceRevisions"]["homelab"] = "1" * 64
++    with pytest.raises(WorkerResolutionError, match="catalogue_revision_invalid"):
++        load_worker_catalogue(required=True)
++
++    managed_catalogue["value"] = _catalogue()
++    managed_catalogue["value"]["sourceRevisions"]["homelab"] = "not-a-digest"
++    with pytest.raises(WorkerResolutionError, match="catalogue_invalid"):
 +        load_worker_catalogue(required=True)
 +
 +
@@ -393,6 +412,8 @@ index 0000000000000000000000000000000000000000..d92590a794bea943c4449c7413f9e524
 +        "boards": changed["boards"],
 +        "projects": changed["projects"],
 +        "projectRevisions": changed["projectRevisions"],
++        "sourceRevisions": changed["sourceRevisions"],
++        "providerRevisions": changed["providerRevisions"],
 +    }
 +    changed["revision"] = _hash(payload)
 +    managed_catalogue["value"] = changed
@@ -465,7 +486,7 @@ index 0000000000000000000000000000000000000000..d92590a794bea943c4449c7413f9e524
 +    result = kanban_tools._handle_create({"title": "work", "lane": "worker"})
 +    assert "do not accept infrastructure fields: lane" in result
 diff --git a/tools/memory_tool.py b/tools/memory_tool.py
-index f5b866b80ac741b1d20fe58e724ddc008ce722f5..bf4ae5b2791a3d74d8285c0d67bfd15261d5e309 100644
+index f5b866b..bf4ae5b 100644
 --- a/tools/memory_tool.py
 +++ b/tools/memory_tool.py
 @@ -48,12 +48,16 @@ except ImportError:

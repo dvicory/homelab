@@ -2,7 +2,7 @@ import { Config, Context, Effect, Layer, Schema } from "effect";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { Asset, decodeExact, GrantScope, LaneAuthority, NetworkPolicy, Worklane } from "./domain.js";
+import { Asset, decodeExact, GrantScope, LaneAuthority, NetworkPolicy, ProjectWorkspacePolicy, Worklane } from "./domain.js";
 import { brokerError, type BrokerError } from "./errors.js";
 import { validateNetworkPolicy } from "./network.js";
 const canonicalize = (value: unknown): unknown => {
@@ -41,6 +41,7 @@ const BrokerPolicyFileSchema = Schema.Struct({
   worklanes: Schema.Record({ key: Schema.String, value: Worklane }),
   laneAuthorities: Schema.Record({ key: Schema.String, value: LaneAuthority }),
   grantPolicy: GrantPolicy,
+  projectWorkspace: Schema.optional(ProjectWorkspacePolicy),
 });
 
 type BrokerPolicyFileInput = typeof BrokerPolicyFileSchema.Type;
@@ -176,6 +177,48 @@ const load = Effect.gen(function* () {
         worklane: name,
         asset: worklane.asset,
       });
+    }
+  }
+  if (policyFile.projectWorkspace !== undefined) {
+    for (const [repositoryId, source] of Object.entries(policyFile.projectWorkspace.sources)) {
+      const authority = source.upstream.slice("https://".length).split("/")[0] ?? "";
+      if (
+        !source.upstream.startsWith("https://") ||
+        source.upstream.startsWith("/nix/store") ||
+        authority.includes("@")
+      ) {
+        return yield* brokerError("request.invalid", "Project source upstream must be a credential-free https URL", {
+          repositoryId,
+        });
+      }
+      if (
+        policyFile.projectWorkspace.sourceRevisions[repositoryId] === undefined
+      ) {
+        return yield* brokerError("request.invalid", "Project source is missing its immutable source revision digest", {
+          repositoryId,
+        });
+      }
+    }
+    if (policyFile.projectWorkspace.providerRevisions[policyFile.projectWorkspace.provider] === undefined) {
+      return yield* brokerError("request.invalid", "broker-project provider is missing its revision digest");
+    }
+    for (const [lane, authority] of Object.entries(policyFile.laneAuthorities)) {
+      if (
+        authority.workspaceProvider === "broker-project" &&
+        Object.keys(policyFile.projectWorkspace.sources).length === 0
+      ) {
+        return yield* brokerError("request.invalid", "broker-project lane has no configured Project sources", {
+          lane,
+        });
+      }
+    }
+  } else {
+    for (const [lane, authority] of Object.entries(policyFile.laneAuthorities)) {
+      if (authority.workspaceProvider === "broker-project") {
+        return yield* brokerError("request.invalid", "broker-project lane requires the projectWorkspace policy", {
+          lane,
+        });
+      }
     }
   }
 

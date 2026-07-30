@@ -48,7 +48,7 @@ const producer = (
     workspaceLeaseId: acquired.lease.leaseId,
   })
   if (createOutput) {
-    yield* Effect.promise(() => mkdir(path.join(resolved.workspacePath, "output")))
+    yield* Effect.promise(() => mkdir(path.join(resolved.workspacePath, "output"), { recursive: true }))
   }
   return { acquired, resolved, environmentKey, taskId, runId }
 })
@@ -68,7 +68,7 @@ test("freezes output and reads only selected immutable artifacts", async () => {
   await run(stateDir, Effect.gen(function* () {
     const ops = yield* HandoffOperations
     const source = yield* producer()
-    yield* Effect.promise(() => mkdir(path.join(source.resolved.workspacePath, "output", "nested")))
+    yield* Effect.promise(() => mkdir(path.join(source.resolved.workspacePath, "output", "nested"), { recursive: true }))
     yield* Effect.promise(() => writeFile(
       path.join(source.resolved.workspacePath, "output", "nested", "answer.txt"),
       "exact handoff bytes",

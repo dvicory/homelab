@@ -13,6 +13,9 @@
         inherit net;
       };
       policyLib = import (self + "/modules/den/aspects/workloads/hermes/secure-terminal/_policy.nix") { };
+      catalogueLib = import (self + "/modules/den/aspects/workloads/hermes/_catalogue.nix") {
+        inherit lib;
+      };
       effectBroker = pkgs.callPackage (self + "/pkgs/by-name/gondolin-broker-effect/package.nix") { };
 
       # Mirror of the QA selections in modules/den/users/hermes-runners.nix.
@@ -85,13 +88,24 @@
           };
           codex-plan = {
             authorityClass = "codex";
-            workspaceProvider = "host-worktree";
+            workspaceProvider = "broker-project";
             maximumPermission = "read-only";
           };
           codex = {
             authorityClass = "codex";
-            workspaceProvider = "host-worktree";
+            workspaceProvider = "broker-project";
             maximumPermission = "workspace-write";
+          };
+        };
+        projectSources = {
+          homelab = {
+            type = "git";
+            upstream = "https://github.com/dvicory/homelab.git";
+            defaultRef = "main";
+            credential = {
+              adapter = "github-token";
+              secretRef = "hermes-terminal-github";
+            };
           };
         };
         workspaceHandoffEnabled = true;
@@ -122,7 +136,9 @@
         defaultTemplate = qaSelections.defaultTemplate;
         allowedPairs = qaSelections.allowedPairs;
         maximum = qaSelections.maximum;
-        inherit (qaSelections) worklanes laneAuthorities;
+        inherit (qaSelections) worklanes laneAuthorities projectSources;
+        sourceRevisions = catalogueLib.sourceRevisionsFor qaSelections.projectSources;
+        providerRevisions = catalogueLib.providerRevisionsFor catalogueLib.providerContracts;
         workspaceHandoffEnabled = qaSelections.workspaceHandoffEnabled;
         workspaceHandoffLimits = qaSelections.workspaceHandoffLimits;
       };
@@ -138,7 +154,9 @@
       prodGatewayEnvironment =
         prodHome.virtualisation.quadlet.containers.hermes-prod.containerConfig.environments;
       qaVolumes = qaHome.virtualisation.quadlet.containers.hermes-qa.containerConfig.volumes;
+      prodVolumes = prodHome.virtualisation.quadlet.containers.hermes-prod.containerConfig.volumes;
       brokerDirectoryMount = "/run/hermes-qa-broker:/run/hermes-sandbox:ro";
+      brokerWorkspaceMount = "/var/lib/hermes-qa-sandbox/workspaces/data:/home/hermes/broker-workspaces";
       hasLegacySocketMount =
         lib.any (
           volume:
@@ -150,6 +168,16 @@
       checks.secure-terminal-socket-directory-mount =
         assert lib.elem brokerDirectoryMount qaVolumes;
         assert !hasLegacySocketMount;
+        # Trusted external Codex workers consume broker workspaces through a
+        # group-shared host bind-mount, never through the guest VFS.
+        assert lib.elem brokerWorkspaceMount qaVolumes;
+        assert lib.elem "keep-groups" qaHome.virtualisation.quadlet.containers.hermes-qa.containerConfig.addGroups;
+        assert qaGatewayEnvironment.HERMES_BROKER_WORKSPACE_DATA == "/home/hermes/broker-workspaces";
+        assert lib.elem "hermes-qa-runner" qaHost.users.groups."hermes-qa-sandbox".members;
+        assert qaBrokerHardening.StateDirectoryMode == "0750";
+        # The prod gateway has no Codex lanes and gets no broker data access.
+        assert !(prodGatewayEnvironment ? HERMES_BROKER_WORKSPACE_DATA);
+        assert !(lib.any (lib.hasPrefix "/var/lib/hermes-prod-sandbox/") prodVolumes);
         assert lib.elem "d /run/hermes-qa-broker 0711 root root -" qaHost.systemd.tmpfiles.rules;
         assert qaExecutionSocket.DirectoryMode == "0711";
         assert qaExecutionSocket.ListenStream == "/run/hermes-qa-broker/broker.sock";
@@ -171,6 +199,9 @@
         assert lib.elem "/dev/kvm rw" qaBrokerHardening.DeviceAllow;
         assert qaBrokerHardening.CapabilityBoundingSet == "";
         assert qaBrokerHardening.RestrictSUIDSGID;
+        assert lib.any (
+          lib.hasPrefix "source-hermes-terminal-github:/run/agenix/hermes-qa-broker-github-pat"
+        ) qaBrokerHardening.LoadCredential;
         assert !(prodGatewayEnvironment ? HERMES_WORKSPACE_HANDOFF);
         assert !(qaHost.systemd.services ? hermes-prod-broker);
         pkgs.runCommand "secure-terminal-socket-directory-mount" { } ''

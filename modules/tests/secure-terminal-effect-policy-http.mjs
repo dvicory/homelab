@@ -38,6 +38,68 @@ for (const [name, value] of Object.entries(expectedHandoffLimits)) {
     }
   }
 }
+const projectWorkspace = policyDoc.projectWorkspace
+if (!projectWorkspace) throw new Error("QA policy omitted the broker-project workspace catalogue")
+if (projectWorkspace.provider !== "broker-project") {
+  throw new Error(`unexpected Project provider: ${projectWorkspace.provider}`)
+}
+if (!/^[0-9a-f]{64}$/.test(projectWorkspace.providerRevisions?.["broker-project"] ?? "")) {
+  throw new Error("broker-project provider revision is not a full SHA-256 value")
+}
+if (!/^[0-9a-f]{64}$/.test(projectWorkspace.sourceRevisions?.homelab ?? "")) {
+  throw new Error("homelab source revision is not a full SHA-256 value")
+}
+const homelabSource = projectWorkspace.sources?.homelab
+if (!homelabSource) throw new Error("QA policy omitted the homelab Project source")
+if (homelabSource.upstream !== "https://github.com/dvicory/homelab.git") {
+  throw new Error(`unexpected homelab upstream: ${homelabSource.upstream}`)
+}
+if (homelabSource.credential?.adapter !== "github-token" ||
+    homelabSource.credential?.secretRef !== "hermes-terminal-github") {
+  throw new Error("homelab credential must be a logical github-token reference")
+}
+const projectText = JSON.stringify(projectWorkspace)
+for (const forbidden of ["github_pat_", "ghp_", "gho_", "/run/agenix", "/nix/store"]) {
+  if (projectText.includes(forbidden)) {
+    throw new Error(`Project catalogue leaks credential material or host paths: ${forbidden}`)
+  }
+}
+const expectedMaterializationLimits = {
+  maxSourceBytes: 2147483648,
+  maxEntries: 65536,
+  maxFileBytes: 268435456,
+  maxPathBytes: 1024,
+  deadlineMs: 600000,
+  maxProjectWorkspaces: 16,
+  maxStorageBytes: 8589934592,
+  retentionMs: 604800000,
+}
+for (const [name, value] of Object.entries(expectedMaterializationLimits)) {
+  if (projectWorkspace.limits?.[name] !== value) {
+    throw new Error(`unexpected materialization limit ${name}: ${projectWorkspace.limits?.[name]}`)
+  }
+}
+const resolvePolicy = policyDoc.policy.statements.find(
+  (candidate) =>
+    candidate.resources.includes("project-source:*") &&
+    candidate.actions.includes("project.source.resolve"),
+)
+const resultPolicy = policyDoc.policy.statements.find(
+  (candidate) =>
+    candidate.resources.includes("task-run:*") &&
+    candidate.actions.includes("project.result.read"),
+)
+if (!resolvePolicy || !resultPolicy) {
+  throw new Error("QA policy omitted Project source/result control actions")
+}
+if (JSON.stringify(resolvePolicy.actions) !== JSON.stringify(["project.source.resolve"])) {
+  throw new Error(`unexpected resolve actions: ${JSON.stringify(resolvePolicy.actions)}`)
+}
+for (const [name, value] of Object.entries(expectedMaterializationLimits)) {
+  if (resolvePolicy.limits?.[name] !== value) {
+    throw new Error(`unexpected resolve statement limit ${name}: ${resolvePolicy.limits?.[name]}`)
+  }
+}
 for (const field of [
   "manifest",
   "contentDigest",
@@ -156,10 +218,117 @@ if (
 const handoffRoutes = [
   "/v1/control/workspace-handoffs/capture",
   "/v1/control/workspace-handoffs/artifacts/read",
+  "/v1/control/project-sources/resolve",
+  "/v1/control/project-workspaces/results/read",
 ]
 for (const route of handoffRoutes) {
   const response = await request(process.env.GONDOLIN_EFFECT_CONTROL_SOCKET, route, "POST", {})
   if (response.status !== 400) throw new Error(`handoff route is missing or accepted an invalid request: ${route}`)
+}
+
+// Every newly activated broker workspace exposes the three-plane layout.
+import path from "node:path"
+const workspaceDataRoot = path.join(
+  process.env.GONDOLIN_EFFECT_STATE_DIR,
+  "workspaces",
+  "data",
+  acquiredBody.workspace.workspaceId,
+)
+for (const plane of ["work", "inputs", "output"]) {
+  if (!fs.statSync(path.join(workspaceDataRoot, plane)).isDirectory()) {
+    throw new Error(`workspace is missing the ${plane} plane`)
+  }
+}
+if (
+  fs.readFileSync(path.join(workspaceDataRoot, ".broker-workspace-layout"), "utf8") !==
+  "three-plane:v1"
+) {
+  throw new Error("workspace layout marker is missing or stale")
+}
+
+// A broker-project activation without a ready materialization is rejected
+// before any sandbox authority is published.
+const projectKey = "nix-project-check"
+const projectAcquire = await request(
+  process.env.GONDOLIN_EFFECT_CONTROL_SOCKET,
+  "/v1/control/workspaces/acquire",
+  "POST",
+  { environmentKey: projectKey },
+)
+if (projectAcquire.status !== 200) {
+  throw new Error(`project workspace acquisition failed: ${projectAcquire.status} ${projectAcquire.body}`)
+}
+const projectAcquireBody = JSON.parse(projectAcquire.body)
+const zeroRevision = "0".repeat(64)
+const activateWithoutMaterialization = await request(
+  process.env.GONDOLIN_EFFECT_CONTROL_SOCKET,
+  "/v1/control/task-runs/activate",
+  "POST",
+  {
+    environmentKey: projectKey,
+    taskId: "b4:task:t1:1",
+    runId: "b4:task:t1:1:r1",
+    workspaceId: projectAcquireBody.workspace.workspaceId,
+    workspaceLeaseId: projectAcquireBody.lease.leaseId,
+    catalogueRevision: zeroRevision,
+    lane: "codex",
+    laneRevision: zeroRevision,
+    permission: "workspace-write",
+    workspaceProvider: "broker-project",
+    authorityClass: "codex",
+    policyRevision: zeroRevision,
+    project: "homelab",
+    projectRevision: zeroRevision,
+    sourceGeneration: zeroRevision,
+  },
+)
+if (activateWithoutMaterialization.status !== 409) {
+  throw new Error(
+    `broker-project activation without a ready materialization was not rejected: ${activateWithoutMaterialization.status} ${activateWithoutMaterialization.body}`,
+  )
+}
+const scratchWithProject = await request(
+  process.env.GONDOLIN_EFFECT_CONTROL_SOCKET,
+  "/v1/control/task-runs/activate",
+  "POST",
+  {
+    environmentKey: conversationKey,
+    taskId: "b4:task:t1:2",
+    runId: "b4:task:t1:2:r1",
+    workspaceId: acquiredBody.workspace.workspaceId,
+    workspaceLeaseId: acquiredBody.lease.leaseId,
+    catalogueRevision: zeroRevision,
+    lane: "research",
+    laneRevision: zeroRevision,
+    permission: "workspace-write",
+    workspaceProvider: "broker-scratch",
+    authorityClass: "default",
+    policyRevision: zeroRevision,
+    project: "homelab",
+    projectRevision: zeroRevision,
+    sourceGeneration: zeroRevision,
+  },
+)
+if (scratchWithProject.status !== 409) {
+  throw new Error(
+    `scratch activation carrying Project authority was not rejected: ${scratchWithProject.status} ${scratchWithProject.body}`,
+  )
+}
+const unknownSource = await request(
+  process.env.GONDOLIN_EFFECT_CONTROL_SOCKET,
+  "/v1/control/project-sources/resolve",
+  "POST",
+  {
+    repositoryId: "missing",
+    project: "homelab",
+    projectRevision: zeroRevision,
+    sourceRevision: zeroRevision,
+  },
+)
+if (unknownSource.status !== 404) {
+  throw new Error(
+    `unknown Project source was not rejected: ${unknownSource.status} ${unknownSource.body}`,
+  )
 }
 
 

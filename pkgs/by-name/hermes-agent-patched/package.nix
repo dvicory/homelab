@@ -68,6 +68,9 @@ let
       ./orchestrator-workspace-boundary.patch
       # Downstream Hermes/Gondolin bridge cutover and immutable handoff wiring.
       ./workspace-handoff-gondolin-integration.patch
+      # Bind task runs to durable three-plane broker project workspaces and
+      # expose typed resolve/authority calls for trusted external workers.
+      ./broker-project-workspaces.patch
     ];
     postPatch = ''
       rm -f \

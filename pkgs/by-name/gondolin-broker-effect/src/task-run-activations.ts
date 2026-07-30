@@ -269,6 +269,53 @@ const make = Effect.gen(function* () {
             "task-run Project source identity is incomplete",
           );
         }
+        if (request.workspaceProvider === "broker-project") {
+          if (!hasProject) {
+            throw brokerError(
+              "run_activation.conflict",
+              "broker-project task run is missing Project source identity",
+            );
+          }
+          if (config.policyFile.projectWorkspace === undefined) {
+            throw brokerError(
+              "policy.indeterminate",
+              "broker-project provider is not configured",
+            );
+          }
+          // Execution begins only after the Project materialization for this
+          // run is durably ready and bound to the same workspace lease.
+          const materialization = db.prepare(
+            "SELECT workspace_id, workspace_lease_id, source_generation_id, project, project_revision, permission, state FROM project_materializations WHERE run_id = ? ORDER BY created_at DESC LIMIT 1",
+          ).get(request.runId) as {
+            workspace_id: string;
+            workspace_lease_id: string;
+            source_generation_id: string;
+            project: string;
+            project_revision: string;
+            permission: string;
+            state: string;
+          } | undefined;
+          if (
+            materialization === undefined ||
+            materialization.state !== "ready" ||
+            materialization.workspace_id !== request.workspaceId ||
+            materialization.workspace_lease_id !== request.workspaceLeaseId ||
+            materialization.source_generation_id !== request.sourceGeneration ||
+            materialization.project !== request.project ||
+            materialization.project_revision !== request.projectRevision ||
+            materialization.permission !== request.permission
+          ) {
+            throw brokerError(
+              "run_activation.conflict",
+              "task run has no ready Project materialization bound to this workspace lease",
+            );
+          }
+        } else if (hasProject) {
+          throw brokerError(
+            "run_activation.conflict",
+            "Project authority requires the broker-project provider",
+          );
+        }
         const workspace = db.prepare(`
           SELECT
             wl.workspace_id,

@@ -244,7 +244,8 @@ test("file operations enforce workspace paths and byte ceilings", async () => {
     const reference = { environmentKey: environment.environmentKey, generation: environment.generation }
 
     yield* files.write({ ...reference, path: "note.txt", dataBase64: Buffer.from("hello").toString("base64") })
-    const read = yield* files.read({ ...reference, path: "/workspace/note.txt" })
+    // Relative paths resolve inside the mutable work plane.
+    const read = yield* files.read({ ...reference, path: "/workspace/work/note.txt" })
     assert.equal(Buffer.from(read.dataBase64, "base64").toString(), "hello")
 
     const escaped = yield* Effect.exit(files.read({ ...reference, path: "/etc/passwd" }))
@@ -277,7 +278,7 @@ test("read-only task authority denies every workspace mutation path", async () =
       workspaceLeaseId: acquired.lease.leaseId,
     })
     const environment = yield* environments.ensure({ environmentKey, taskRun })
-    assert.equal(harness.fake.state.created[0].spec.workspaceReadOnly, true)
+    assert.equal(harness.fake.state.created[0].spec.workPlaneReadOnly, true)
 
     const denied = yield* Effect.flip(files.write({
       environmentKey,

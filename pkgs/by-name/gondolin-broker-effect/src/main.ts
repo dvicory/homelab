@@ -24,6 +24,8 @@ import { RegistryLive } from "./registry.js";
 import { VmRuntimeLive } from "./runtime.js";
 import { WorkspacesLive } from "./workspaces.js";
 import { WorkspaceBranchesLive } from "./workspace-branches.js";
+import { ProjectWorkspaceStoreLive } from "./project-workspace/store.js";
+import { ProjectWorkspacesLive } from "./project-workspace/service.js";
 
 export const BrokerLive = (() => {
   const infrastructure = Layer.mergeAll(BrokerConfigLive, VmRuntimeLive);
@@ -31,7 +33,9 @@ export const BrokerLive = (() => {
   const authorization = AuthorizationLive.pipe(Layer.provideMerge(policy));
   const database = BrokerDatabaseLive.pipe(Layer.provideMerge(authorization));
   const workspaces = WorkspacesLive.pipe(Layer.provideMerge(database));
-  const registry = RegistryLive.pipe(Layer.provideMerge(workspaces));
+  const projectStore = ProjectWorkspaceStoreLive.pipe(Layer.provideMerge(workspaces));
+  const projectWorkspaces = ProjectWorkspacesLive.pipe(Layer.provideMerge(projectStore));
+  const registry = RegistryLive.pipe(Layer.provideMerge(projectWorkspaces));
   const runActivations = TaskRunActivationsLive.pipe(Layer.provideMerge(registry));
   const handoffs = HandoffStoreLive.pipe(Layer.provideMerge(runActivations));
   const handoffStorage = HandoffStorageLive.pipe(Layer.provideMerge(handoffs));

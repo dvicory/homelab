@@ -124,6 +124,15 @@
                 };
                 laneAccess.project = "workspace-write";
               };
+              projectSources.repository = {
+                type = "git";
+                upstream = "https://github.com/example/repository.git";
+                defaultRef = "main";
+                credential = {
+                  adapter = "github-token";
+                  secretRef = "test-github";
+                };
+              };
             }).config.settings;
           validCatalogue = catalogueLib.resolve validWorkerLane;
           invalidBoardReference = builtins.tryEval (
@@ -143,6 +152,34 @@
                 workerLanes.project.workspace.maximumPermission = "read-only";
               }
             )) true
+          );
+          invalidSourceUpstream = builtins.tryEval (
+            builtins.deepSeq (catalogueLib.resolve (
+              lib.recursiveUpdate validWorkerLane {
+                projectSources.repository.upstream = "https://token@github.com/example/repository.git";
+              }
+            )) true
+          );
+          invalidStoreUpstream = builtins.tryEval (
+            builtins.deepSeq (catalogueLib.resolve (
+              lib.recursiveUpdate validWorkerLane {
+                projectSources.repository.upstream = "/nix/store/abcd-source";
+              }
+            )) true
+          );
+          invalidUnknownRepository = builtins.tryEval (
+            builtins.deepSeq (catalogueLib.resolve (
+              lib.recursiveUpdate validWorkerLane {
+                projects.repository.source.repositoryId = "missing";
+              }
+            )) true
+          );
+          invalidCredentialRef = builtins.tryEval (
+            builtins.deepSeq ((evalWorkerLaneSettings (
+              lib.recursiveUpdate validWorkerLane {
+                projectSources.repository.credential.secretRef = "/run/secrets/token";
+              }
+            )).config.settings) true
           );
           invalidMemoryMode = builtins.tryEval (
             builtins.deepSeq ((evalWorkerLaneSettings {
@@ -175,8 +212,14 @@
               assert !invalidUnknownSetting.success;
               assert builtins.stringLength validCatalogue.revision == 64;
               assert validCatalogue.revision == (catalogueLib.resolve validWorkerLane).revision;
+              assert builtins.stringLength validCatalogue.sourceRevisions.repository == 64;
+              assert builtins.stringLength validCatalogue.providerRevisions.broker-project == 64;
               assert !invalidBoardReference.success;
               assert !invalidPermissionEscalation.success;
+              assert !invalidSourceUpstream.success;
+              assert !invalidStoreUpstream.success;
+              assert !invalidUnknownRepository.success;
+              assert !invalidCredentialRef.success;
               assert lib.all (lane: lane.networkAccess) qaCodexLanes;
               assert lib.all (lane: lane.approvalPolicy == "never") qaCodexLanes;
               pkgs.runCommand "hermes-worker-lane-options" { } "touch $out";

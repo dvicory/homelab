@@ -63,12 +63,12 @@ let
         description = "Whether tasks may or must select a managed Project.";
       };
       scratchProvider = mkOption {
-        type = types.str;
+        type = types.enum [ "broker-scratch" ];
         default = "broker-scratch";
         description = "Trusted workspace provider used for non-Project tasks.";
       };
       projectProvider = mkOption {
-        type = nullableString;
+        type = types.nullOr (types.enum [ "broker-project" ]);
         default = null;
         description = "Trusted workspace provider used for Project tasks.";
       };
@@ -267,6 +267,55 @@ let
     };
   };
 
+  # Trusted source credentials are exercised only by broker source
+  # acquisition. The declaration carries a logical secret reference and an
+  # adapter identity; values, store paths, environment names, argv, and
+  # guest-visible paths are structurally inexpressible here.
+  sourceCredentialType = types.submodule {
+    options = {
+      adapter = mkOption {
+        type = types.enum [ "github-token" ];
+        description = "Trusted credential adapter used for private source acquisition.";
+      };
+      secretRef = mkOption {
+        type = types.strMatching "[a-z0-9][a-z0-9-]*";
+        description = "Logical secret reference resolved by trusted infrastructure.";
+      };
+    };
+  };
+
+  # Nix-authoritative source acquisition declarations keyed by the logical
+  # repositoryId that Projects reference. Model-facing catalogues never see
+  # upstream URLs or credential references; the broker provider receives the
+  # full descriptor through its trusted policy.
+  sourceAdapterType = types.submodule {
+    options = {
+      type = mkOption {
+        type = types.enum [ "git" ];
+        description = "Trusted source acquisition adapter kind.";
+      };
+      upstream = mkOption {
+        type = types.str;
+        description = "Trusted acquisition URL used only by the broker source provider.";
+      };
+      defaultRef = mkOption {
+        type = types.str;
+        default = "main";
+        description = "Trusted source reference resolved when no pin applies.";
+      };
+      pin = mkOption {
+        type = types.nullOr (types.strMatching "[0-9a-f]{40}");
+        default = null;
+        description = "Optional immutable commit pin selected for every acquisition.";
+      };
+      credential = mkOption {
+        type = types.nullOr sourceCredentialType;
+        default = null;
+        description = "Trusted credential adapter for private acquisition; logical reference only.";
+      };
+    };
+  };
+
   legacyPayload =
     description:
     mkOption {
@@ -321,5 +370,10 @@ in
     type = types.attrsOf projectType;
     default = { };
     description = "Instance-wide Nix-authoritative managed Project catalogue.";
+  };
+  projectSources = mkOption {
+    type = types.attrsOf sourceAdapterType;
+    default = { };
+    description = "Instance-wide trusted Project source adapters keyed by logical repositoryId.";
   };
 }

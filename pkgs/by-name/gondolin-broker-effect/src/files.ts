@@ -38,9 +38,12 @@ const normalizeGuestPath = (environment: LiveEnvironment, requested: string): Ef
       return yield* brokerError("fs.path_forbidden", "file path contains a NUL byte");
     }
     const root = path.posix.normalize(environment.workspaceGuestPath);
+    // Ordinary relative paths begin in the mutable work plane; absolute
+    // paths remain confined to the logical workspace root.
+    const base = path.posix.join(root, "work");
     const resolved = requested.startsWith("/")
       ? path.posix.normalize(requested)
-      : path.posix.resolve(root, requested);
+      : path.posix.resolve(base, requested);
     if (resolved !== root && !resolved.startsWith(`${root}/`)) {
       return yield* brokerError("fs.path_forbidden", "file path escapes the workspace", {
         requested,
@@ -87,21 +90,31 @@ const make = Effect.gen(function* () {
           request.environmentKey,
           request.taskRun,
         );
-        if (
-          activation?.authority.permission === "read-only" &&
-          (action === "fs.write" || action === "fs.mkdir" || action === "fs.remove")
-        ) {
-          return yield* brokerError(
-            "policy.denied",
-            "task-run workspace permission is read-only",
-          );
-        }
         const environment = yield* environments.lease({
           environmentKey: request.environmentKey,
           generation: request.generation,
           ...(request.taskRun === undefined ? {} : { taskRun: request.taskRun }),
         });
         const guestPath = yield* normalizeGuestPath(environment, request.path);
+        if (action === "fs.write" || action === "fs.mkdir" || action === "fs.remove") {
+          const root = path.posix.normalize(environment.workspaceGuestPath);
+          const plane = guestPath.slice(root.length).replace(/^\//, "").split("/")[0] ?? "";
+          if (plane === "inputs") {
+            return yield* brokerError(
+              "policy.denied",
+              "workspace inputs are broker-managed and read-only",
+            );
+          }
+          if (
+            activation?.authority.permission === "read-only" &&
+            plane !== "output"
+          ) {
+            return yield* brokerError(
+              "policy.denied",
+              "task-run work plane permission is read-only; output remains writable",
+            );
+          }
+        }
         const decision = yield* authorization.authorize({
           action,
           resource: `environment:${request.environmentKey}/file:${guestPath}`,
@@ -232,8 +245,14 @@ const make = Effect.gen(function* () {
 
   const remove = (request: RemoveFileRequest) =>
     withFile(request, "fs.remove", (environment, guestPath) => {
-      if (guestPath === path.posix.normalize(environment.workspaceGuestPath)) {
-        return brokerError("fs.path_forbidden", "cannot remove the workspace root", { path: guestPath });
+      const root = path.posix.normalize(environment.workspaceGuestPath);
+      if (
+        guestPath === root ||
+        guestPath === path.posix.join(root, "work") ||
+        guestPath === path.posix.join(root, "inputs") ||
+        guestPath === path.posix.join(root, "output")
+      ) {
+        return brokerError("fs.path_forbidden", "cannot remove a workspace plane root", { path: guestPath });
       }
       return Effect.tryPromise({
         try: () => environment.vm.fs.remove(guestPath, request.recursive ?? false),

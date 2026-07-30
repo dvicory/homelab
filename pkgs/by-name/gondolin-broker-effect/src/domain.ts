@@ -33,6 +33,42 @@ export const LaneAuthority = Schema.Struct({
 });
 export type LaneAuthority = typeof LaneAuthority.Type;
 
+export const ProjectSourceCredential = Schema.Struct({
+  adapter: Schema.Literal("github-token"),
+  secretRef: Schema.String.pipe(Schema.pattern(/^[a-z0-9][a-z0-9-]*$/)),
+});
+export type ProjectSourceCredential = typeof ProjectSourceCredential.Type;
+
+export const ProjectSource = Schema.Struct({
+  type: Schema.Literal("git"),
+  upstream: Schema.String.pipe(Schema.minLength(1), Schema.maxLength(512)),
+  defaultRef: Schema.String.pipe(Schema.minLength(1), Schema.maxLength(256)),
+  pin: Schema.optional(Schema.String.pipe(Schema.pattern(/^[0-9a-f]{40}$/))),
+  credential: Schema.optional(ProjectSourceCredential),
+});
+export type ProjectSource = typeof ProjectSource.Type;
+
+export const ProjectMaterializationLimits = Schema.Struct({
+  maxSourceBytes: PositiveInt,
+  maxEntries: PositiveInt,
+  maxFileBytes: PositiveInt,
+  maxPathBytes: PositiveInt,
+  deadlineMs: PositiveInt,
+  maxProjectWorkspaces: PositiveInt,
+  maxStorageBytes: PositiveInt,
+  retentionMs: PositiveInt,
+});
+export type ProjectMaterializationLimits = typeof ProjectMaterializationLimits.Type;
+
+export const ProjectWorkspacePolicy = Schema.Struct({
+  provider: Schema.Literal("broker-project"),
+  sourceRevisions: Schema.Record({ key: Schema.String, value: Revision }),
+  providerRevisions: Schema.Record({ key: Schema.String, value: Revision }),
+  limits: ProjectMaterializationLimits,
+  sources: Schema.Record({ key: Schema.String, value: ProjectSource }),
+});
+export type ProjectWorkspacePolicy = typeof ProjectWorkspacePolicy.Type;
+
 export const TaskRunAuthorityFacts = Schema.Struct({
   catalogueRevision: Revision,
   lane: Identifier,

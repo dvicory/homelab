@@ -16,8 +16,10 @@ from hermes_cli.worker_catalogue import WorkerResolutionError, WorkerSpecificati
 _WORKER_ENV_KEYS = {
     "CODEX_EXECUTABLE",
     "CODEX_HOME",
-    "HOME",
+    "GONDOLIN_EFFECT_CONTROL_SOCKET",
     "HERMES_HOME",
+    "HERMES_WORKSPACE_HANDOFF",
+    "HOME",
     "LANG",
     "LC_ALL",
     "PATH",
@@ -26,6 +28,8 @@ _WORKER_ENV_KEYS = {
     "TERM",
     "TMPDIR",
 }
+
+_WORKSPACE_DATA_ENV = "HERMES_BROKER_WORKSPACE_DATA"
 
 
 def _isolated_worker_env(task, *, board: str | None) -> dict[str, str]:
@@ -50,6 +54,51 @@ def _validated_workspace(workspace: str) -> Path:
     return path
 
 
+def _broker_workspace_id(task) -> str:
+    """Resolve the durable workspace binding for a broker task run."""
+    from tools.environments.gondolin import BrokerClient, broker_environment_key
+
+    endpoint = os.environ.get("GONDOLIN_EFFECT_CONTROL_SOCKET", "").strip()
+    if not endpoint:
+        raise WorkerResolutionError(
+            "workspace_binding_missing", "broker control socket is not configured"
+        )
+    client = BrokerClient(endpoint, timeout=30.0)
+    try:
+        status = client.authority_status(broker_environment_key(task.id))
+    finally:
+        client.close()
+    workspace_id = status.get("workspaceId")
+    if not isinstance(workspace_id, str) or not workspace_id:
+        raise WorkerResolutionError(
+            "workspace_binding_missing",
+            "broker task run has no activated workspace binding",
+        )
+    return workspace_id
+
+
+def _broker_work_plane(task) -> Path:
+    """Map a broker task to its host-side three-plane work directory."""
+    data_root = os.environ.get(_WORKSPACE_DATA_ENV, "").strip()
+    if not data_root:
+        raise WorkerResolutionError(
+            "workspace_binding_missing",
+            f"{_WORKSPACE_DATA_ENV} is not configured for broker workspaces",
+        )
+    root = Path(data_root).resolve(strict=True)
+    work_plane = (root / _broker_workspace_id(task) / "work").resolve(strict=True)
+    if root not in work_plane.parents:
+        raise WorkerResolutionError(
+            "workspace_binding_missing", "broker work plane escapes the data root"
+        )
+    if not work_plane.is_dir():
+        raise WorkerResolutionError(
+            "workspace_binding_missing",
+            f"broker work plane is not a directory: {work_plane}",
+        )
+    return work_plane
+
+
 def _resolved_worker_spec(task, lane: dict) -> WorkerSpecification:
     spec = getattr(task, "_worker_specification", None)
     if not isinstance(spec, WorkerSpecification):
@@ -63,6 +112,11 @@ def _resolved_worker_spec(task, lane: dict) -> WorkerSpecification:
     if spec.lane != lane["name"]:
         raise WorkerResolutionError(
             "external_lane_mismatch", "registered Codex lane conflicts with worker specification"
+        )
+    if getattr(task, "workspace_kind", None) == "broker" and spec.provider != "broker-project":
+        raise WorkerResolutionError(
+            "external_provider_unsupported",
+            "broker Codex workers require the broker-project provider",
         )
     sandbox = {
         "read-only": "read-only",
@@ -110,9 +164,14 @@ def _spawn_codex_worker(
     lane: dict,
 ) -> int:
     """Start one detached worker and return its PID to the dispatcher."""
-    path = _validated_workspace(workspace)
+    is_broker = getattr(task, "workspace_kind", None) == "broker"
+    path = _broker_work_plane(task) if is_broker else _validated_workspace(workspace)
     _resolved_worker_spec(task, lane)
     env = _isolated_worker_env(task, board=board)
+    if is_broker:
+        # The worker subprocess maps the durable broker binding to its
+        # host-side planes; it never sees the guest mount path.
+        env["HERMES_WORKSPACE_HOST_PATH"] = str(path)
     if task.branch_name:
         env["HERMES_KANBAN_BRANCH"] = task.branch_name
 
@@ -174,6 +233,16 @@ def _declared_lanes() -> list[dict]:
             raise ValueError(
                 f"detached Codex lane {lane['name']!r} must disable approvals"
             )
+        workspace_kinds = lane.get("workspaceKinds", ["dir", "worktree"])
+        if (
+            not isinstance(workspace_kinds, list)
+            or not workspace_kinds
+            or any(kind not in {"dir", "worktree", "broker", "scratch"} for kind in workspace_kinds)
+        ):
+            raise ValueError(
+                f"unsupported workspaceKinds for lane {lane['name']!r}"
+            )
+        lane["workspaceKinds"] = workspace_kinds
         normalized.append(lane)
     return normalized
 
@@ -197,7 +266,9 @@ def register(ctx) -> None:
                 description=lane["description"],
                 spawn_fn=spawn,
                 max_concurrency=int(lane.get("maxConcurrency", 1)),
-                allowed_workspace_kinds=frozenset({"dir", "worktree"}),
-                default_workspace_kind="worktree",
+                allowed_workspace_kinds=frozenset(lane["workspaceKinds"]),
+                default_workspace_kind=(
+                    "broker" if "broker" in lane["workspaceKinds"] else "worktree"
+                ),
             )
         )

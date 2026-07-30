@@ -21,6 +21,15 @@ export const Reason = Schema.Literal(
   "handoff.conflict",
   "handoff.invalid_state",
   "handoff.failed",
+  "project_source.not_found",
+  "project_source.stale",
+  "project_source.conflict",
+  "project_source.failed",
+  "project_materialization.not_found",
+  "project_materialization.conflict",
+  "project_materialization.invalid_state",
+  "project_materialization.failed",
+  "project_materialization.limit",
   "capability.invalid",
   "capability.unsupported",
   "network.resolution_failed",
@@ -94,6 +103,8 @@ export const statusFor = (error: BrokerError): number => {
     case "workspace.not_found":
     case "run_activation.not_found":
     case "handoff.not_found":
+    case "project_source.not_found":
+    case "project_materialization.not_found":
       return 404;
     case "environment.tombstoned":
     case "environment.stale_generation":
@@ -106,11 +117,16 @@ export const statusFor = (error: BrokerError): number => {
     case "run_activation.conflict":
     case "handoff.conflict":
     case "handoff.invalid_state":
+    case "project_source.stale":
+    case "project_source.conflict":
+    case "project_materialization.conflict":
+    case "project_materialization.invalid_state":
       return 409;
     case "environment.capacity":
     case "exec.output_limit":
     case "fs.size_limit":
     case "approval.request_suppressed":
+    case "project_materialization.limit":
       return 429;
     case "network.resolution_failed":
       return 502;
@@ -123,6 +139,8 @@ export const statusFor = (error: BrokerError): number => {
     case "internal.error":
     case "workspace.failed":
     case "handoff.failed":
+    case "project_source.failed":
+    case "project_materialization.failed":
       return 500;
   }
 };

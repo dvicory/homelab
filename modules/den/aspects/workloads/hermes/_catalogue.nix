@@ -11,19 +11,56 @@ let
   validateChecks = checks: lib.foldl' (
     valid: item: if item.assertion then valid else throw item.message
   ) true checks;
+
+  hash = value: builtins.hashString "sha256" (builtins.toJSON value);
+
+  # Trusted workspace-provider contracts. `broker-project` is the only
+  # Project provider: it materializes task-private three-plane broker
+  # workspaces and never falls back to a gateway host worktree.
+  providerContracts = {
+    broker-project = {
+      supportedSourceKinds = [ "git" ];
+      permissions = [
+        "read-only"
+        "workspace-write"
+      ];
+    };
+  };
+
+  sourceRevisionsFor = sources: lib.mapAttrs (_: source: hash source) sources;
+  providerRevisionsFor = providers: lib.mapAttrs (_: provider: hash provider) providers;
+
+  # A trusted acquisition URL is an https endpoint without embedded
+  # userinfo. Credentials never ride the URL, a store path, an environment
+  # name, argv, or a guest-visible path.
+  hasUserinfo =
+    upstream:
+    let
+      authority = builtins.head (lib.splitString "/" (lib.removePrefix "https://" upstream));
+    in
+    lib.hasInfix "@" authority;
+  trustedUpstream =
+    upstream:
+    lib.hasPrefix "https://" upstream
+    && !lib.hasPrefix "/nix/store" upstream
+    && !hasUserinfo upstream;
 in
 {
+  inherit providerContracts sourceRevisionsFor providerRevisionsFor;
+
   resolve =
     {
       instance,
       workerLanes ? { },
       boards ? { },
       projects ? { },
+      projectSources ? { },
       ...
     }:
     let
       laneNames = builtins.attrNames workerLanes;
       projectNames = builtins.attrNames projects;
+      providerSourceKinds = providerContracts.broker-project.supportedSourceKinds;
 
       laneChecks = lib.concatLists (
         lib.mapAttrsToList (
@@ -59,6 +96,9 @@ in
             (check (
               (!projectCapable) -> workspace.maximumPermission == "none"
             ) "Scratch-only worker lane '${name}' must retain a none Project permission ceiling")
+            (check (
+              projectCapable -> lib.all (kind: lib.elem kind providerSourceKinds) workspace.supportedSourceKinds
+            ) "Project-capable worker lane '${name}' declares a source kind unsupported by the broker-project provider")
           ]
         ) workerLanes
       );
@@ -82,10 +122,34 @@ in
         ) boards
       );
 
+      sourceChecks = lib.concatLists (
+        lib.mapAttrsToList (
+          repositoryId: source:
+          [
+            (check (trustedUpstream source.upstream) "Project source '${repositoryId}' upstream must be a credential-free https URL outside the Nix store")
+            (check (
+              !lib.hasPrefix "/" source.defaultRef && !lib.hasInfix ".." source.defaultRef
+            ) "Project source '${repositoryId}' default ref must be an ordinary ref name, not a path")
+          ]
+        ) projectSources
+      );
+
       projectChecks = lib.concatLists (
         lib.mapAttrsToList (
           projectName: project:
-          lib.concatLists (
+          let
+            adapter = projectSources.${project.source.repositoryId} or null;
+          in
+          [
+            (check (adapter != null) "Project '${projectName}' references an unknown repositoryId '${project.source.repositoryId}'")
+            (check (
+              adapter == null || adapter.type == project.source.type
+            ) "Project '${projectName}' source kind disagrees with its trusted source adapter")
+            (check (
+              adapter == null || adapter.defaultRef == project.source.defaultRef
+            ) "Project '${projectName}' default ref disagrees with its trusted source adapter")
+          ]
+          ++ lib.concatLists (
             lib.mapAttrsToList (
               laneName: permission:
               let
@@ -109,10 +173,10 @@ in
         ) projects
       );
 
-      laneRevisions = lib.mapAttrs (_: lane: builtins.hashString "sha256" (builtins.toJSON lane)) workerLanes;
-      projectRevisions = lib.mapAttrs (
-        _: project: builtins.hashString "sha256" (builtins.toJSON project)
-      ) projects;
+      laneRevisions = lib.mapAttrs (_: lane: hash lane) workerLanes;
+      projectRevisions = lib.mapAttrs (_: project: hash project) projects;
+      sourceRevisions = sourceRevisionsFor projectSources;
+      providerRevisions = providerRevisionsFor providerContracts;
 
       catalogues = {
         version = 1;
@@ -122,11 +186,13 @@ in
           laneRevisions
           projectRevisions
           projects
+          providerRevisions
+          sourceRevisions
           workerLanes
           ;
       };
-      revision = builtins.hashString "sha256" (builtins.toJSON catalogues);
-      valid = validateChecks (laneChecks ++ boardChecks ++ projectChecks);
+      revision = hash catalogues;
+      valid = validateChecks (laneChecks ++ boardChecks ++ projectChecks ++ sourceChecks);
     in
     assert valid;
     {
@@ -138,7 +204,9 @@ in
         projectNames
         projects
         projectRevisions
+        providerRevisions
         revision
+        sourceRevisions
         workerLanes
         ;
     };

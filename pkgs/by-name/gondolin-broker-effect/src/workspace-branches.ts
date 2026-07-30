@@ -76,6 +76,19 @@ const directoryIsEmpty = async (directory: string): Promise<boolean> => {
   }
 };
 
+// A freshly acquired workspace carries the three-plane layout and no guest
+// data; that is the only non-empty state a branch destination may be in.
+const directoryIsPristine = async (directory: string): Promise<boolean> => {
+  if (await directoryIsEmpty(directory)) return true;
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.name === ".broker-workspace-layout") continue;
+    if (!entry.isDirectory() || !["work", "inputs", "output"].includes(entry.name)) return false;
+    if (!(await directoryIsEmpty(path.join(directory, entry.name)))) return false;
+  }
+  return true;
+};
+
 const make = Effect.gen(function* () {
   const config = yield* BrokerConfig;
   const database = yield* BrokerDatabase;
@@ -289,8 +302,8 @@ const make = Effect.gen(function* () {
             try: async () => {
               const stagedExists = await fs.lstat(stagedData).then(() => true, () => false);
               if (stagedExists) {
-                if (!(await directoryIsEmpty(destination.workspacePath))) {
-                  throw brokerError("workspace.conflict", "branch destination is not empty");
+                if (!(await directoryIsPristine(destination.workspacePath))) {
+                  throw brokerError("workspace.conflict", "branch destination is not pristine");
                 }
                 await fs.rm(destination.workspacePath, { recursive: true, force: false });
                 await fs.rename(stagedData, destination.workspacePath);
