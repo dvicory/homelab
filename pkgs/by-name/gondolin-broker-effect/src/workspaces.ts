@@ -6,6 +6,10 @@ import { Context, Effect, Layer } from "effect";
 import { BrokerConfig } from "./config.js";
 import { BrokerDatabase } from "./database.js";
 import { BrokerError, brokerError } from "./errors.js";
+import {
+  chmodSharedDirectorySync,
+  type SharedDirectoryModeOptions,
+} from "./filesystem-modes.js";
 
 export type WorkspaceState = "active" | "closed" | "deleted";
 export type WorkspaceLeaseState = "active" | "released";
@@ -232,18 +236,21 @@ const PLANE_MODES: Readonly<Record<string, number>> = {
   output: 0o2770,
 };
 
-const initializePlanes = (workspacePath: string): void => {
+const initializePlanes = (
+  workspacePath: string,
+  modeOptions: SharedDirectoryModeOptions,
+): void => {
   for (const plane of WORKSPACE_PLANES) {
     const planePath = path.join(workspacePath, plane);
     fs.mkdirSync(planePath, { recursive: false });
-    fs.chmodSync(planePath, PLANE_MODES[plane] ?? 0o2770);
+    chmodSharedDirectorySync(planePath, PLANE_MODES[plane] ?? 0o2770, modeOptions);
   }
   fs.writeFileSync(path.join(workspacePath, WORKSPACE_LAYOUT_MARKER), WORKSPACE_LAYOUT_VERSION, {
     mode: 0o400,
   });
 };
 
-const make = Effect.gen(function* () {
+const make = (modeOptions: SharedDirectoryModeOptions) => Effect.gen(function* () {
   const config = yield* BrokerConfig;
   const database = yield* BrokerDatabase;
   const db = database.connection;
@@ -304,8 +311,8 @@ const make = Effect.gen(function* () {
               }
               createdPath = workspacePath(workspaceId);
               fs.mkdirSync(createdPath, { recursive: false });
-              fs.chmodSync(createdPath, 0o2770);
-              initializePlanes(createdPath);
+              chmodSharedDirectorySync(createdPath, 0o2770, modeOptions);
+              initializePlanes(createdPath, modeOptions);
               db.prepare(`
                 INSERT INTO workspaces (
                   workspace_id, owner_environment_key, kind, state,
@@ -514,4 +521,8 @@ const make = Effect.gen(function* () {
   } satisfies WorkspaceService;
 });
 
-export const WorkspacesLive = Layer.scoped(Workspaces, make);
+export const WorkspacesLive = Layer.scoped(Workspaces, make({}));
+
+/** @internal Restricted-filesystem adapter for the broker test harness. */
+export const makeTestWorkspacesLayer = () =>
+  Layer.scoped(Workspaces, make({ allowMissingSetgid: true }));

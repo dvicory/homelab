@@ -13,9 +13,15 @@ import { makeTestLayer } from "./fakes.mjs"
 // assert the full mode only where the filesystem preserves it.
 const probeSetgid = async () => {
   const probe = await mkdtemp(path.join(os.tmpdir(), "gondolin-setgid-probe-"))
-  await chmod(probe, 0o2770)
+  try {
+    await chmod(probe, 0o2770)
+  } catch (error) {
+    if (error?.code === "EPERM") return false
+    throw error
+  }
   return ((await stat(probe)).mode & 0o2000) !== 0
 }
+const portableModeOptions = { allowMissingSetgid: true }
 const hasSetgid = await probeSetgid()
 const expectMode = (actual, wanted) => {
   const masked = hasSetgid ? 0o7777 : 0o777
@@ -54,13 +60,13 @@ test("work plane permission applies uniformly to installed trees", async () => {
 
   const modes = async (target) => (await stat(target)).mode & 0o7777
 
-  await applyWorkPlanePermission(workPlane, "workspace-write")
+  await applyWorkPlanePermission(workPlane, "workspace-write", portableModeOptions)
   expectMode(await modes(workPlane), 0o2770)
   expectMode(await modes(path.join(workPlane, "src")), 0o2770)
   expectMode(await modes(path.join(workPlane, "README.md")), 0o660)
   expectMode(await modes(path.join(workPlane, "src", "run.sh")), 0o770)
 
-  await applyWorkPlanePermission(workPlane, "read-only")
+  await applyWorkPlanePermission(workPlane, "read-only", portableModeOptions)
   expectMode(await modes(workPlane), 0o2750)
   expectMode(await modes(path.join(workPlane, "src")), 0o2750)
   expectMode(await modes(path.join(workPlane, "README.md")), 0o640)

@@ -16,10 +16,10 @@ import { InputPreparationRepositoryLive } from "../dist/task-run-inputs/reposito
 import { InputPreparationsLive } from "../dist/task-run-inputs/service.js"
 import { Registry, RegistryLive } from "../dist/registry.js"
 import { VmRuntime } from "../dist/runtime.js"
-import { Workspaces, WorkspacesLive } from "../dist/workspaces.js"
+import { Workspaces, makeTestWorkspacesLayer } from "../dist/workspaces.js"
 import { WorkspaceBranchesLive } from "../dist/workspace-branches.js"
 import { ProjectWorkspaceStoreLive } from "../dist/project-workspace/store.js"
-import { ProjectWorkspacesLive } from "../dist/project-workspace/service.js"
+import { makeTestProjectWorkspacesLayer } from "../dist/project-workspace/service.js"
 
 const errno = (code, message) => Object.assign(new Error(message), { code })
 
@@ -274,9 +274,9 @@ export const makeTestLayer = (stateDir, options = {}) => {
   const policy = BrokerPolicyKernelLive.pipe(Layer.provideMerge(infrastructure))
   const authorization = AuthorizationLive.pipe(Layer.provideMerge(policy))
   const database = BrokerDatabaseLive.pipe(Layer.provideMerge(authorization))
-  const workspaces = WorkspacesLive.pipe(Layer.provideMerge(database))
+  const workspaces = makeTestWorkspacesLayer().pipe(Layer.provideMerge(database))
   const projectStore = ProjectWorkspaceStoreLive.pipe(Layer.provideMerge(workspaces))
-  const projectWorkspaces = ProjectWorkspacesLive.pipe(Layer.provideMerge(projectStore))
+  const projectWorkspaces = makeTestProjectWorkspacesLayer().pipe(Layer.provideMerge(projectStore))
   const registry = RegistryLive.pipe(Layer.provideMerge(projectWorkspaces))
   const inputRepository = InputPreparationRepositoryLive.pipe(Layer.provideMerge(database))
   const inputPreparations = InputPreparationsLive.pipe(Layer.provideMerge(inputRepository))

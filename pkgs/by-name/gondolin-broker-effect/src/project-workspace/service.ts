@@ -5,6 +5,7 @@ import { Context, Effect, Layer, STM, TSemaphore } from "effect";
 import { BrokerConfig } from "../config.js";
 import type { ActivateTaskRunRequest } from "../domain.js";
 import { BrokerError, brokerError } from "../errors.js";
+import type { SharedDirectoryModeOptions } from "../filesystem-modes.js";
 import {
   acquireGitSource,
   applyWorkPlanePermission,
@@ -61,7 +62,7 @@ const serviceFailure = (operation: string, error: unknown): BrokerError =>
         cause: error instanceof Error ? error.message : String(error),
       });
 
-const make = Effect.gen(function* () {
+const make = (modeOptions: SharedDirectoryModeOptions) => Effect.gen(function* () {
   const config = yield* BrokerConfig;
   const store = yield* ProjectWorkspaceStore;
   const mutation = yield* STM.commit(TSemaphore.make(1));
@@ -384,7 +385,7 @@ const make = Effect.gen(function* () {
             // workers share the tree through the broker group, so a read-only
             // run must face EACCES on work-plane writes while the output
             // plane stays group-writable.
-            await applyWorkPlanePermission(workPlane, request.permission);
+            await applyWorkPlanePermission(workPlane, request.permission, modeOptions);
             return summary;
           },
           catch: (error) => serviceFailure("workspace installation", error),
@@ -485,4 +486,8 @@ const make = Effect.gen(function* () {
   return { resolveSource, ensureMaterialized, recordResult, readResult } satisfies ProjectWorkspacesService;
 });
 
-export const ProjectWorkspacesLive = Layer.effect(ProjectWorkspaces, make);
+export const ProjectWorkspacesLive = Layer.effect(ProjectWorkspaces, make({}));
+
+/** @internal Restricted-filesystem adapter for the broker test harness. */
+export const makeTestProjectWorkspacesLayer = () =>
+  Layer.effect(ProjectWorkspaces, make({ allowMissingSetgid: true }));

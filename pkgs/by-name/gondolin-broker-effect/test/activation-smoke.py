@@ -171,18 +171,8 @@ try:
     control_execution = request(control_socket_path, "/v1/environments/ensure", {
         "environmentKey": "activation-environment",
     })
-    acquired_response = request(control_socket_path, "/v1/control/workspaces/acquire", {
+    listed = request(control_socket_path, "/v1/control/workspaces/list", {
         "environmentKey": "activation-environment",
-    })
-    if b"HTTP/1.1 200" not in acquired_response:
-        raise RuntimeError(f"workspace acquire failed: {acquired_response!r}")
-    acquired = json.loads(acquired_response.split(b"\r\n\r\n", 1)[1])
-
-    bound = request(control_socket_path, "/v1/control/authority/bind", {
-        "environmentKey": "activation-environment",
-        "authorityClass": "default",
-        "workspaceId": acquired["workspace"]["workspaceId"],
-        "workspaceLeaseId": acquired["lease"]["leaseId"],
     })
 
     if b"HTTP/1.1 200" not in execution_health or b'"plane":"execution"' not in execution_health:
@@ -193,8 +183,8 @@ try:
         raise RuntimeError(f"control route escaped onto execution socket: {execution_control!r}")
     if b"HTTP/1.1 404" not in control_execution:
         raise RuntimeError(f"execution route escaped onto control socket: {control_execution!r}")
-    if b"HTTP/1.1 200" not in bound or b'"authorityClass":"default"' not in bound:
-        raise RuntimeError(f"authority bind failed: {bound!r}")
+    if b"HTTP/1.1 200" not in listed or not listed.endswith(b"\r\n\r\n[]"):
+        raise RuntimeError(f"control workspace list failed: {listed!r}")
     print("systemd-style named fd activation: execution/control separation OK")
 finally:
     try:

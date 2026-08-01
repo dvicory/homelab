@@ -3,6 +3,10 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { brokerError, BrokerError } from "../errors.js";
 import type { ProjectMaterializationLimits, ProjectSource } from "../domain.js";
+import {
+  chmodSharedDirectory,
+  type SharedDirectoryModeOptions,
+} from "../filesystem-modes.js";
 
 export interface GitAcquisitionRequest {
   readonly source: ProjectSource;
@@ -238,11 +242,14 @@ const measureTree = async (
 };
 
 /** Grant the broker group read/write traversal across an installed tree. */
-const grantGroupAccess = async (root: string): Promise<void> => {
+const grantGroupAccess = async (
+  root: string,
+  modeOptions: SharedDirectoryModeOptions,
+): Promise<void> => {
   const pending: string[] = [root];
   while (pending.length > 0) {
     const directory = pending.pop()!;
-    await fs.chmod(directory, 0o2770);
+    await chmodSharedDirectory(directory, 0o2770, modeOptions);
     const entries = await fs.readdir(directory, { withFileTypes: true });
     for (const entry of entries) {
       const absolute = path.join(directory, entry.name);
@@ -262,11 +269,14 @@ const grantGroupAccess = async (root: string): Promise<void> => {
  * Strip group write across an installed tree: the broker (owner) retains full
  * control while gateway-side consumers face a read-only work plane.
  */
-const restrictGroupToRead = async (root: string): Promise<void> => {
+const restrictGroupToRead = async (
+  root: string,
+  modeOptions: SharedDirectoryModeOptions,
+): Promise<void> => {
   const pending: string[] = [root];
   while (pending.length > 0) {
     const directory = pending.pop()!;
-    await fs.chmod(directory, 0o2750);
+    await chmodSharedDirectory(directory, 0o2750, modeOptions);
     const entries = await fs.readdir(directory, { withFileTypes: true });
     for (const entry of entries) {
       const absolute = path.join(directory, entry.name);
@@ -288,11 +298,12 @@ const restrictGroupToRead = async (root: string): Promise<void> => {
 export const applyWorkPlanePermission = async (
   workPlane: string,
   permission: "read-only" | "workspace-write",
+  modeOptions: SharedDirectoryModeOptions = {},
 ): Promise<void> => {
   if (permission === "read-only") {
-    await restrictGroupToRead(workPlane);
+    await restrictGroupToRead(workPlane, modeOptions);
   } else {
-    await grantGroupAccess(workPlane);
+    await grantGroupAccess(workPlane, modeOptions);
   }
 };
 
