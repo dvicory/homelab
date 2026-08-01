@@ -233,7 +233,10 @@
             done
             [ -S "$GONDOLIN_EFFECT_SOCKET" ]
             [ -S "$GONDOLIN_EFFECT_CONTROL_SOCKET" ]
-            node ${self + "/modules/tests/secure-terminal-effect-policy-http.mjs"}
+            if ! node ${self + "/modules/tests/secure-terminal-effect-policy-http.mjs"}; then
+              cat "$TMPDIR/broker.log"
+              exit 1
+            fi
             kill "$broker_pid"
             wait "$broker_pid" || true
             trap - EXIT
