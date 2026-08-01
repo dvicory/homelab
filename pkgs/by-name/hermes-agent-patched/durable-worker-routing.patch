@@ -1,0 +1,1098 @@
+From afb41dbbab717a8182b88351fdc717d6b8122e11 Mon Sep 17 00:00:00 2001
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Sat, 1 Aug 2026 02:00:00 -0700
+Subject: [PATCH] feat(kanban): route workers from durable lane specifications
+
+Persist resolved worker specifications in task/run metadata, route dispatch and the model-facing API through registered catalogue lanes, and apply the frozen lane behavior to spawned workers.
+
+This is one built-in Hermes routing feature rather than three correction layers over kanban_db.py and worker_lanes.py.
+---
+diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
+index 1f5b326..651074e 100644
+--- a/agent/prompt_builder.py
++++ b/agent/prompt_builder.py
+@@ -1871,6 +1871,17 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
+         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
+ 
+     soul_path = get_hermes_home() / "SOUL.md"
++    raw_worker_spec = os.environ.get("HERMES_WORKER_SPEC")
++    if raw_worker_spec:
++        from hermes_cli.worker_catalogue import WorkerSpecification
++
++        worker_spec = WorkerSpecification.from_json(raw_worker_spec)
++        if worker_spec.agent.get("soul"):
++            soul_path = Path(str(worker_spec.agent["soul"]))
++            if not soul_path.is_absolute():
++                raise RuntimeError(
++                    "worker_spec_invalid: agent.soul must be an absolute path"
++                )
+     if not soul_path.exists():
+         return None
+     try:
+diff --git a/hermes_cli/config.py b/hermes_cli/config.py
+index 947fdda..dc85038 100644
+--- a/hermes_cli/config.py
++++ b/hermes_cli/config.py
+@@ -7133,6 +7133,38 @@ def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
+     atomic_yaml_write(config_path, data, **kwargs)
+ 
+ 
++def _apply_worker_spec_config(config: Dict[str, Any]) -> Dict[str, Any]:
++    """Apply behavior-only overrides from a dispatcher-frozen worker spec."""
++    raw = os.environ.get("HERMES_WORKER_SPEC")
++    if not raw:
++        return config
++    from hermes_cli.worker_catalogue import WorkerSpecification
++    try:
++        worker_spec = WorkerSpecification.from_json(raw)
++    except Exception as exc:
++        raise RuntimeError("HERMES_WORKER_SPEC is invalid") from exc
++    spec = worker_spec.as_dict()
++    resolved = copy.deepcopy(config)
++    agent_spec = spec.get("agent") if isinstance(spec.get("agent"), dict) else {}
++    if agent_spec.get("model"):
++        resolved.setdefault("model", {})["default"] = str(agent_spec["model"])
++    if agent_spec.get("reasoningEffort"):
++        resolved.setdefault("agent", {})["reasoning_effort"] = str(agent_spec["reasoningEffort"])
++    execution = spec.get("execution") if isinstance(spec.get("execution"), dict) else {}
++    if execution.get("maxTurns"):
++        resolved.setdefault("agent", {})["max_turns"] = int(execution["maxTurns"])
++    memory_mode = worker_spec.memory
++    memory = resolved.setdefault("memory", {})
++    if memory_mode == "disabled":
++        memory["memory_enabled"] = False
++        memory["user_profile_enabled"] = False
++        memory["nudge_interval"] = 0
++    else:
++        memory["memory_enabled"] = True
++        memory["user_profile_enabled"] = True
++    return resolved
++
++
+ def load_config() -> Dict[str, Any]:
+     """Load configuration from ~/.hermes/config.yaml.
+ 
+@@ -7147,7 +7179,7 @@ def load_config() -> Dict[str, Any]:
+     defensive deepcopy — that path matters in agent-loop hot spots like
+     ``get_provider_request_timeout`` which is called once per API turn.
+     """
+-    return _load_config_impl(want_deepcopy=True)
++    return _apply_worker_spec_config(_load_config_impl(want_deepcopy=True))
+ 
+ 
+ def load_config_readonly() -> Dict[str, Any]:
+@@ -7170,7 +7202,7 @@ def load_config_readonly() -> Dict[str, Any]:
+     existing ``isinstance(x, dict)`` guards downstream keep working. The
+     safety guarantee is purely documented, not enforced — be careful.
+     """
+-    return _load_config_impl(want_deepcopy=False)
++    return _apply_worker_spec_config(_load_config_impl(want_deepcopy=False))
+ 
+ 
+ def write_platform_config_field(
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+index 1072c36..9a2f2e7 100644
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -2398,6 +2398,64 @@ def _claimer_id() -> str:
+ # Task creation / mutation
+ # ---------------------------------------------------------------------------
+ 
++WORKER_SPEC_VALIDATED_EVENT = "worker_spec_validated"
++WORKER_SPEC_EVENT = "worker_spec_resolved"
++
++
++def get_task_worker_specification(
++    conn: sqlite3.Connection, task_id: str, *, run_id: Optional[int] = None
++):
++    """Return the current run specification, or the latest validated template."""
++    if run_id is None:
++        task_row = conn.execute(
++            "SELECT current_run_id FROM tasks WHERE id = ?", (task_id,)
++        ).fetchone()
++        run_id = task_row["current_run_id"] if task_row else None
++    if run_id is not None:
++        row = conn.execute(
++            "SELECT metadata FROM task_runs WHERE id = ? AND task_id = ?",
++            (int(run_id), task_id),
++        ).fetchone()
++        raw = row["metadata"] if row else None
++    else:
++        row = conn.execute(
++            "SELECT payload FROM task_events WHERE task_id = ? "
++            "AND kind IN (?, ?) ORDER BY id DESC LIMIT 1",
++            (task_id, WORKER_SPEC_EVENT, WORKER_SPEC_VALIDATED_EVENT),
++        ).fetchone()
++        raw = row["payload"] if row else None
++    if not raw:
++        return None
++    from hermes_cli.worker_catalogue import WorkerSpecification
++    try:
++        payload = json.loads(raw)
++        value = payload.get("worker_spec") if isinstance(payload, dict) else None
++        return WorkerSpecification.from_json(
++            json.dumps(value, sort_keys=True, separators=(",", ":"))
++        )
++    except Exception:
++        return None
++
++
++def _append_worker_specification(
++    conn: sqlite3.Connection,
++    task_id: str,
++    worker_spec,
++    *,
++    run_id: Optional[int] = None,
++) -> None:
++    _append_event(
++        conn,
++        task_id,
++        WORKER_SPEC_EVENT if run_id is not None else WORKER_SPEC_VALIDATED_EVENT,
++        {
++            "worker_spec": worker_spec.as_dict(),
++            "workspace_generation": worker_spec.workspace_generation,
++        },
++        run_id=run_id,
++    )
++
++
+ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
+     """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity)."""
+     if assignee is None:
+@@ -2458,6 +2516,40 @@ def create_task(
+     assignee = _canonical_assignee(assignee)
+     if not title or not title.strip():
+         raise ValueError("title is required")
++    from hermes_cli.worker_catalogue import (
++        WorkerResolutionError,
++        load_worker_catalogue,
++        resolve_worker_specification,
++    )
++    worker_spec = None
++    if load_worker_catalogue() is not None:
++        if not assignee:
++            raise WorkerResolutionError("lane_required", "a declared worker lane is required")
++        resolved_board = _normalize_board_slug(board) or get_current_board()
++        worker_spec = resolve_worker_specification(
++            assignee, board=resolved_board, project=project_id
++        )
++        assignee = worker_spec.lane
++        project_id = worker_spec.project
++        workspace_contract = worker_spec.workspace
++        if workspace_contract.get("projectMode") == "none":
++            workspace_kind = (
++                "broker"
++                if workspace_contract.get("scratchProvider") == "broker-scratch"
++                else "scratch"
++            )
++            workspace_path = None
++        elif workspace_contract.get("projectProvider") == "broker-project":
++            workspace_kind = "broker"
++            workspace_path = None
++        elif workspace_contract.get("projectProvider") == "host-worktree":
++            workspace_kind = "worktree"
++            workspace_path = None
++        execution = worker_spec.execution
++        max_runtime_seconds = int(execution.get("timeoutSeconds") or 0) or None
++        goal_max_turns = int(execution.get("maxTurns") or 0) or None
++        lane_skills = worker_spec.agent.get("skills")
++        skills = lane_skills if isinstance(lane_skills, list) else None
+     if initial_status not in VALID_INITIAL_STATUSES:
+         raise ValueError(
+             f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
+@@ -2472,8 +2564,8 @@ def create_task(
+     if branch_name and workspace_kind != "worktree":
+         raise ValueError("branch_name is only valid for worktree workspaces")
+     if workspace_kind == "broker":
+-        if workspace_path or branch_name or project_id:
+-            raise ValueError("broker workspaces do not accept host paths, branches, or projects")
++        if workspace_path or branch_name or (project_id and worker_spec is None):
++            raise ValueError("broker workspaces do not accept host paths, branches, or unmanaged projects")
+         workspace_path = None
+ 
+     # Resolve an optional first-class Project link. A project-linked task is
+@@ -2489,7 +2581,7 @@ def create_task(
+     project_repo: Optional[str] = None
+     if project_id is not None:
+         project_id = str(project_id).strip() or None
+-    if project_id:
++    if project_id and worker_spec is None:
+         try:
+             from hermes_cli import projects_db as _pdb
+ 
+@@ -2689,6 +2781,10 @@ def create_task(
+                         session_id,
+                     ),
+                 )
++                if worker_spec is not None:
++                    _append_worker_specification(
++                        conn, task_id, worker_spec.bind_task(task_id)
++                    )
+                 for pid in parents:
+                     conn.execute(
+                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
+@@ -3756,6 +3852,34 @@ def claim_task(
+     lock = claimer or _claimer_id()
+     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
+     with write_txn(conn):
++        from hermes_cli.worker_catalogue import (
++            WorkerResolutionError,
++            load_worker_catalogue,
++            resolve_worker_specification,
++        )
++        catalogue = load_worker_catalogue()
++        trow = conn.execute(
++            "SELECT assignee, project_id, max_runtime_seconds, current_step_key "
++            "FROM tasks WHERE id = ?",
++            (task_id,),
++        ).fetchone()
++        active_spec = None
++        if catalogue is not None:
++            try:
++                if trow is None or not trow["assignee"]:
++                    raise WorkerResolutionError(
++                        "worker_spec_incomplete", "task has no registered lane"
++                    )
++                active_spec = resolve_worker_specification(
++                    trow["assignee"],
++                    board=_board_for_connection(conn),
++                    project=trow["project_id"],
++                ).bind_task(task_id)
++            except WorkerResolutionError as exc:
++                _append_event(
++                    conn, task_id, "claim_rejected", {"reason": exc.code}
++                )
++                return None
+         # Structural invariant: never transition ready -> running while any
+         # parent is not yet 'done'. This is the single enforcement point
+         # regardless of which writer (create_task, link_tasks, unblock_task,
+@@ -3816,20 +3940,13 @@ def claim_task(
+         )
+         if cur.rowcount != 1:
+             return None
+-        # Look up the current task row so we can populate the run with
+-        # its assignee / step / runtime cap.
+-        trow = conn.execute(
+-            "SELECT assignee, max_runtime_seconds, current_step_key "
+-            "FROM tasks WHERE id = ?",
+-            (task_id,),
+-        ).fetchone()
+         run_cur = conn.execute(
+             """
+             INSERT INTO task_runs (
+                 task_id, profile, step_key, status,
+                 claim_lock, claim_expires, max_runtime_seconds,
+-                started_at
+-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
++                started_at, metadata
++            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
+             """,
+             (
+                 task_id,
+@@ -3839,9 +3956,34 @@ def claim_task(
+                 expires,
+                 trow["max_runtime_seconds"] if trow else None,
+                 now,
++                None,
+             ),
+         )
+         run_id = run_cur.lastrowid
++        if active_spec is not None:
++            run_spec = active_spec.bind_run(
++                task_id=task_id,
++                run_id=int(run_id),
++                workspace_id=(
++                    f"{active_spec.board}:{active_spec.provider}:{task_id}:{run_id}"
++                ),
++                workspace_generation=int(run_id),
++                lease_id=lock,
++            )
++            conn.execute(
++                "UPDATE task_runs SET metadata = ? WHERE id = ?",
++                (
++                    json.dumps(
++                        {"worker_spec": run_spec.as_dict()},
++                        sort_keys=True,
++                        separators=(",", ":"),
++                    ),
++                    int(run_id),
++                ),
++            )
++            _append_worker_specification(
++                conn, task_id, run_spec, run_id=int(run_id)
++            )
+         conn.execute(
+             "UPDATE tasks SET current_run_id = ? WHERE id = ?",
+             (run_id, task_id),
+@@ -3885,6 +4027,34 @@ def claim_review_task(
+     lock = claimer or _claimer_id()
+     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
+     with write_txn(conn):
++        from hermes_cli.worker_catalogue import (
++            WorkerResolutionError,
++            load_worker_catalogue,
++            resolve_worker_specification,
++        )
++        catalogue = load_worker_catalogue()
++        trow = conn.execute(
++            "SELECT assignee, project_id, max_runtime_seconds, current_step_key "
++            "FROM tasks WHERE id = ?",
++            (task_id,),
++        ).fetchone()
++        active_spec = None
++        if catalogue is not None:
++            try:
++                if trow is None or not trow["assignee"]:
++                    raise WorkerResolutionError(
++                        "worker_spec_incomplete", "task has no registered lane"
++                    )
++                active_spec = resolve_worker_specification(
++                    trow["assignee"],
++                    board=_board_for_connection(conn),
++                    project=trow["project_id"],
++                ).bind_task(task_id)
++            except WorkerResolutionError as exc:
++                _append_event(
++                    conn, task_id, "claim_rejected", {"reason": exc.code}
++                )
++                return None
+         cur = conn.execute(
+             """
+             UPDATE tasks
+@@ -3900,18 +4070,13 @@ def claim_review_task(
+         )
+         if cur.rowcount != 1:
+             return None
+-        trow = conn.execute(
+-            "SELECT assignee, max_runtime_seconds, current_step_key "
+-            "FROM tasks WHERE id = ?",
+-            (task_id,),
+-        ).fetchone()
+         run_cur = conn.execute(
+             """
+             INSERT INTO task_runs (
+                 task_id, profile, step_key, status,
+                 claim_lock, claim_expires, max_runtime_seconds,
+-                started_at
+-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
++                started_at, metadata
++            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
+             """,
+             (
+                 task_id,
+@@ -3921,9 +4086,34 @@ def claim_review_task(
+                 expires,
+                 trow["max_runtime_seconds"] if trow else None,
+                 now,
++                None,
+             ),
+         )
+         run_id = run_cur.lastrowid
++        if active_spec is not None:
++            run_spec = active_spec.bind_run(
++                task_id=task_id,
++                run_id=int(run_id),
++                workspace_id=(
++                    f"{active_spec.board}:{active_spec.provider}:{task_id}:{run_id}"
++                ),
++                workspace_generation=int(run_id),
++                lease_id=lock,
++            )
++            conn.execute(
++                "UPDATE task_runs SET metadata = ? WHERE id = ?",
++                (
++                    json.dumps(
++                        {"worker_spec": run_spec.as_dict()},
++                        sort_keys=True,
++                        separators=(",", ":"),
++                    ),
++                    int(run_id),
++                ),
++            )
++            _append_worker_specification(
++                conn, task_id, run_spec, run_id=int(run_id)
++            )
+         conn.execute(
+             "UPDATE tasks SET current_run_id = ? WHERE id = ?",
+             (run_id, task_id),
+@@ -7678,39 +7868,49 @@ def _get_worker_lane(assignee: Optional[str]):
+ 
+ 
+ def _assignee_is_spawnable(assignee: Optional[str]) -> bool:
+-    """True if ``assignee`` names a Hermes profile (default lane) or a
+-    registered external worker lane (plugin lane).
+-
+-    Unresolvable assignees (e.g. interactive terminal lanes pulled via
+-    ``claim_task``) are NOT spawnable: auto-spawning ``hermes -p <assignee>``
+-    for them would crash on startup and loop the task back to ``ready`` forever
+-    (#kanban-dispatcher-crash-loop 2026-05-05).
+-    """
++    """Return whether a trusted catalogue lane has an executable runtime."""
+     if not assignee:
+         return False
+     try:
+-        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
++        from hermes_cli.worker_catalogue import load_worker_catalogue
++        catalogue = load_worker_catalogue()
+     except Exception:
+-        # profiles module unavailable — preserve legacy behavior (don't block).
+-        return True
+-    if profile_exists(assignee):
+-        return True
+-    return _get_worker_lane(assignee) is not None
+-
++        return False
++    if catalogue is not None:
++        lane = catalogue["lanes"].get(str(assignee))
++        if not isinstance(lane, dict):
++            return False
++        if lane.get("runtime") == "hermes":
++            return bool(lane.get("profile"))
++        return lane.get("runtime") == "external" and _get_worker_lane(assignee) is not None
++    try:
++        from hermes_cli.profiles import profile_exists
++        return bool(profile_exists(assignee) or _get_worker_lane(assignee))
++    except Exception:
++        return _get_worker_lane(assignee) is not None
+ 
+-def _resolve_spawn_fn(assignee: Optional[str], spawn_fn):
+-    """Pick the spawn callable: explicit override > registered lane > default.
+ 
+-    An explicit ``spawn_fn`` (passed by tests / callers) always wins. Otherwise
+-    a registered worker lane's ``spawn_fn`` is used when the assignee resolves
+-    to one; profile assignees fall back to ``_default_spawn`` (``hermes -p``).
+-    """
++def _resolve_spawn_fn(task: Task, spawn_fn):
++    """Resolve a frozen worker specification to its runtime adapter."""
+     if spawn_fn is not None:
+         return spawn_fn
+-    lane = _get_worker_lane(assignee)
+-    if lane is not None:
+-        return lane.spawn_fn
+-    return _default_spawn
++    if isinstance(task, str) or task is None:
++        lane = _get_worker_lane(task)
++        return lane.spawn_fn if lane is not None else _default_spawn
++    spec = getattr(task, "_worker_specification", None)
++    if spec is None:
++        lane = _get_worker_lane(task.assignee)
++        return lane.spawn_fn if lane is not None else _default_spawn
++    if spec.runtime == "hermes":
++        return _default_spawn
++    lane = _get_worker_lane(spec.lane)
++    if lane is None or lane.kind != spec.plugin:
++        from hermes_cli.worker_catalogue import WorkerResolutionError
++        raise WorkerResolutionError(
++            "external_adapter_missing",
++            f"worker lane {spec.lane!r} has no registered {spec.plugin!r} adapter",
++        )
++    return lane.spawn_fn
+ 
+ 
+ def dispatch_once(
+@@ -7908,7 +8108,9 @@ def _dispatch_once_locked(
+     # Normalize default_assignee once: empty/whitespace string → None so the
+     # rest of the loop can use ``if default_assignee:`` as a single check.
+     # We also resolve profile_exists once here for the same reason.
+-    _default_assignee = (default_assignee or "").strip() or None
++    from hermes_cli.worker_catalogue import load_worker_catalogue
++    _managed_catalogue = load_worker_catalogue()
++    _default_assignee = None if _managed_catalogue is not None else ((default_assignee or "").strip() or None)
+     _default_assignee_resolved = False
+     if _default_assignee:
+         try:
+@@ -8016,10 +8218,15 @@ def _dispatch_once_locked(
+             continue
+         # A worker lane may declare its own max_concurrency (e.g. one external-CLI run
+         # at a time); otherwise the global per-profile cap applies.
++        _resolved_spec = get_task_worker_specification(conn, row["id"])
+         _eff_cap = (
+-            _lane.max_concurrency
+-            if _lane is not None and _lane.max_concurrency is not None
+-            else _per_profile_cap
++            _resolved_spec.max_concurrency
++            if _resolved_spec is not None
++            else (
++                _lane.max_concurrency
++                if _lane is not None and _lane.max_concurrency is not None
++                else _per_profile_cap
++            )
+         )
+         if _eff_cap is not None:
+             current = _per_profile_running.get(row_assignee, 0)
+@@ -8063,6 +8270,7 @@ def _dispatch_once_locked(
+         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
+         if claimed is None:
+             continue
++        claimed._worker_specification = get_task_worker_specification(conn, claimed.id)
+         if claimed.workspace_kind == "broker":
+             try:
+                 _run_required_workspace_hook(
+@@ -8107,7 +8315,7 @@ def _dispatch_once_locked(
+         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+         # Route to the assignee's worker lane when no explicit spawn_fn override
+         # is supplied; profile assignees fall back to _default_spawn (hermes -p).
+-        _spawn = _resolve_spawn_fn(row_assignee, spawn_fn)
++        _spawn = _resolve_spawn_fn(claimed, spawn_fn)
+         try:
+             # Back-compat: older spawn_fn signatures accept only
+             # (task, workspace). Test stubs in the suite rely on that.
+@@ -8183,6 +8391,34 @@ def _dispatch_once_locked(
+         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
+         if claimed is None:
+             continue
++        claimed._worker_specification = get_task_worker_specification(
++            conn, claimed.id, run_id=claimed.current_run_id
++        )
++        if claimed.workspace_kind == "broker":
++            try:
++                _run_required_workspace_hook(
++                    "kanban_workspace_pre_spawn",
++                    task_id=claimed.id,
++                    board=board or _board_for_connection(conn),
++                    run_id=int(claimed.current_run_id or 0),
++                )
++            except Exception as exc:
++                _fire_kanban_lifecycle_hook(
++                    "kanban_workspace_spawn_failed",
++                    claimed.id,
++                    board=board or _board_for_connection(conn),
++                    run_id=claimed.current_run_id,
++                    reason=str(exc),
++                )
++                auto = _record_spawn_failure(
++                    conn,
++                    claimed.id,
++                    f"workspace: {exc}",
++                    failure_limit=failure_limit,
++                )
++                if auto:
++                    result.auto_blocked.append(claimed.id)
++                continue
+         try:
+             resolved_branch_name = None
+             if claimed.workspace_kind == "worktree":
+@@ -8205,13 +8441,12 @@ def _dispatch_once_locked(
+         if claimed.workspace_kind == "worktree":
+             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+-        # Force-load the sdlc-review skill for review agents — it carries
+-        # the review logic (AC verification, merge, etc.). The mandatory
+-        # kanban lifecycle is already injected into every worker's system
+-        # prompt via KANBAN_GUIDANCE, so this is the only extra skill the
+-        # review agent needs.
+-        claimed.skills = ["sdlc-review"]
+-        _spawn = _resolve_spawn_fn(row["assignee"], spawn_fn)
++        # Managed reviews consume the same frozen lane behavior as the original
++        # worker. Preserve upstream's implicit review skill only when no trusted
++        # catalogue specification exists.
++        if claimed._worker_specification is None:
++            claimed.skills = ["sdlc-review"]
++        _spawn = _resolve_spawn_fn(claimed, spawn_fn)
+         try:
+             import inspect
+             try:
+@@ -8559,9 +8794,13 @@ def _default_spawn(
+ 
+     from hermes_cli.profiles import normalize_profile_name
+ 
+-    profile_arg = normalize_profile_name(task.assignee)
++    worker_spec = getattr(task, "_worker_specification", None)
++    profile_name = worker_spec.profile if worker_spec is not None else task.assignee
++    profile_arg = normalize_profile_name(profile_name)
+ 
+     prompt = f"work kanban task {task.id}"
++    if worker_spec is not None and worker_spec.agent.get("role"):
++        prompt = f"Role: {worker_spec.agent['role']}\n\n{prompt}"
+     # Build the shared HERMES_KANBAN_* worker contract once.
+     # ``kanban_worker_env`` (in worker_lanes) is the single source of truth
+     # for the env a spawned worker needs to converge on the dispatcher's
+@@ -8642,13 +8881,22 @@ def _default_spawn(
+     # accepts both forms (action='append' + comma-split), but
+     # per-name pairs are easier to read in `ps` output and avoid any
+     # quoting ambiguity if a skill name ever contains unusual chars.
+-    if task.skills:
+-        for sk in task.skills:
+-            if sk:
+-                cmd.extend(["--skills", sk])
+-    if task.model_override:
+-        cmd.extend(["-m", task.model_override])
+-    worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
++    selected_skills = (
++        worker_spec.agent.get("skills", []) if worker_spec is not None else task.skills
++    ) or []
++    for skill in selected_skills:
++        if skill:
++            cmd.extend(["--skills", str(skill)])
++    selected_model = (
++        worker_spec.agent.get("model") if worker_spec is not None else None
++    ) or task.model_override
++    if selected_model:
++        cmd.extend(["-m", str(selected_model)])
++    worker_toolsets = (
++        worker_spec.agent.get("toolsets", [])
++        if worker_spec is not None
++        else _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
++    )
+     if worker_toolsets:
+         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
+     cmd.extend([
+diff --git a/hermes_cli/worker_lanes.py b/hermes_cli/worker_lanes.py
+index bb01d34..93cd669 100644
+--- a/hermes_cli/worker_lanes.py
++++ b/hermes_cli/worker_lanes.py
+@@ -200,6 +200,43 @@ def kanban_worker_env(task, workspace, *, board=None, base=None) -> "dict[str, A
+         env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
+     if getattr(task, "tenant", None):
+         env["HERMES_TENANT"] = task.tenant
++    worker_spec = getattr(task, "_worker_specification", None)
++    if worker_spec is not None:
++        from hermes_cli.worker_catalogue import WorkerResolutionError
++
++        if worker_spec.task_id != task.id:
++            raise WorkerResolutionError(
++                "worker_spec_task_mismatch", "worker specification targets another task"
++            )
++        if worker_spec.run_id != getattr(task, "current_run_id", None):
++            raise WorkerResolutionError(
++                "worker_spec_run_mismatch", "worker specification targets another run"
++            )
++        if worker_spec.lease_id != getattr(task, "claim_lock", None):
++            raise WorkerResolutionError(
++                "worker_spec_lease_mismatch", "worker specification carries a stale lease"
++            )
++        if worker_spec.workspace_generation < 1:
++            raise WorkerResolutionError(
++                "workspace_generation_stale", "worker workspace generation is stale"
++            )
++        env["HERMES_WORKER_SPEC"] = worker_spec.to_json()
++        env["HERMES_WORKER_LANE"] = worker_spec.lane
++        env["HERMES_WORKER_CATALOGUE_REVISION"] = worker_spec.catalogue_revision
++        env["HERMES_WORKSPACE_ID"] = worker_spec.workspace_id
++        env["HERMES_WORKSPACE_GENERATION"] = str(worker_spec.workspace_generation)
++        env["HERMES_WORKSPACE_LEASE_ID"] = worker_spec.lease_id
++        env.pop("HERMES_WORKER_MEMORY_DIR", None)
++        if worker_spec.memory == "lane":
++            env["HERMES_WORKER_MEMORY_DIR"] = str(
++                kb.kanban_home().parent
++                / "worker-memory"
++                / worker_spec.instance
++                / worker_spec.lane
++            )
++        if worker_spec.project:
++            env["HERMES_PROJECT_ID"] = worker_spec.project
++            env["HERMES_PROJECT_SOURCE_GENERATION"] = worker_spec.source_generation
+     # Pin TERMINAL_CWD to the task's workspace so the worker's file tools and
+     # context-file loader anchor on the workspace, not whatever cwd the
+     # dispatching gateway happened to export. TERMINAL_CWD takes precedence
+diff --git a/model_tools.py b/model_tools.py
+index 57bba57..adc0092 100644
+--- a/model_tools.py
++++ b/model_tools.py
+@@ -37,6 +37,33 @@ logger = logging.getLogger(__name__)
+ # Tracks platform-bundle names already flagged in disabled_toolsets so the
+ # advisory (#33924) is logged once per name, not on every tool recompute.
+ _WARNED_DISABLED_BUNDLES: set = set()
++def _worker_allowed_tools() -> Optional[set[str]]:
++    """Derive the model-visible ceiling from the single frozen worker spec."""
++    raw = os.environ.get("HERMES_WORKER_SPEC")
++    if not raw:
++        return None
++    from hermes_cli.worker_catalogue import WorkerSpecification
++
++    spec = WorkerSpecification.from_json(raw)
++    explicit = spec.agent.get("tools", [])
++    toolsets = spec.agent.get("toolsets", [])
++    if not isinstance(explicit, list) or not all(isinstance(name, str) for name in explicit):
++        raise RuntimeError("worker_spec_invalid: agent.tools must be a string list")
++    if not isinstance(toolsets, list) or not all(isinstance(name, str) for name in toolsets):
++        raise RuntimeError("worker_spec_invalid: agent.toolsets must be a string list")
++    allowed = set(explicit)
++    for toolset_name in toolsets:
++        if not validate_toolset(toolset_name):
++            raise RuntimeError(
++                f"worker_spec_invalid: unknown worker toolset {toolset_name!r}"
++            )
++        allowed.update(resolve_toolset(toolset_name))
++    if os.environ.get("HERMES_KANBAN_TASK"):
++        allowed.update(resolve_toolset("kanban"))
++    allowed.update({"tool_search", "tool_describe", "tool_call"})
++    return allowed
++
++
+ 
+ 
+ # =============================================================================
+@@ -442,6 +469,10 @@ def _compute_tool_definitions(
+             elif not quiet_mode:
+                 print(f"⚠️  Unknown toolset: {toolset_name}")
+ 
++    worker_allowed = _worker_allowed_tools()
++    if worker_allowed is not None:
++        tools_to_include.intersection_update(worker_allowed)
++
+     # Plugin-registered tools are now resolved through the normal toolset
+     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()
+     # all check the tool registry for plugin-provided toolsets.  No bypass
+@@ -1069,6 +1100,17 @@ def handle_function_call(
+     Returns:
+         Function result as a JSON string.
+     """
++    worker_allowed = _worker_allowed_tools()
++    if worker_allowed is not None and function_name not in worker_allowed:
++        return json.dumps(
++            {
++                "error": (
++                    f"worker_tool_denied: {function_name!r} is outside the "
++                    "frozen worker specification"
++                )
++            },
++            ensure_ascii=False,
++        )
+     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
+     function_args = coerce_tool_args(function_name, function_args)
+     if not isinstance(function_args, dict):
+diff --git a/var/folders/1l/zc5_6cyd57gbxrmvvq8_jv6h0000gn/T/tmp.o4OYq97Pfa/after-durable-worker-routing.patch/tests/hermes_cli/test_explicit_worker_lanes.py b/tests/hermes_cli/test_explicit_worker_lanes.py
+new file mode 100644
+index 0000000..093bb73
+--- /dev/null
++++ b/tests/hermes_cli/test_explicit_worker_lanes.py
+@@ -0,0 +1,234 @@
++from __future__ import annotations
++
++import hashlib
++import json
++
++import pytest
++
++from hermes_cli import config as config_mod
++from hermes_cli import kanban_db as kb
++import model_tools
++from tools import kanban_tools
++from hermes_cli.worker_catalogue import (
++    WorkerResolutionError,
++    load_worker_catalogue,
++    resolve_worker_specification,
++)
++
++
++def _hash(value):
++    return hashlib.sha256(
++        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
++    ).hexdigest()
++
++
++def _catalogue():
++    lanes = {
++        "worker": {
++            "description": "bounded worker",
++            "runtime": "hermes",
++            "profile": "default",
++            "agent": {"model": "test/model", "reasoningEffort": "high", "tools": ["terminal"]},
++            "memory": "disabled",
++            "workspace": {
++                "projectMode": "none",
++                "scratchProvider": "local-scratch",
++                "maximumPermission": "workspace-write",
++                "supportedSourceKinds": [],
++            },
++            "policy": {"worklane": "default"},
++            "execution": {"timeoutSeconds": 90, "maxTurns": 7},
++            "maxConcurrency": 2,
++        }
++    }
++    boards = {"default": {"allowedLanes": ["worker"], "allowedProjects": []}}
++    projects = {}
++    lane_revisions = {name: _hash(lane) for name, lane in lanes.items()}
++    project_revisions = {name: _hash(project) for name, project in projects.items()}
++    payload = {
++        "version": 1,
++        "instance": "test",
++        "workerLanes": lanes,
++        "laneRevisions": lane_revisions,
++        "boards": boards,
++        "projects": projects,
++        "projectRevisions": project_revisions,
++        "sourceRevisions": {},
++        "providerRevisions": {},
++    }
++    revision = _hash(payload)
++    return {
++        "version": 1,
++        "instance": "test",
++        "revision": revision,
++        "lanes": lanes,
++        "laneRevisions": lane_revisions,
++        "boards": boards,
++        "projects": projects,
++        "projectRevisions": project_revisions,
++        "sourceRevisions": {},
++        "providerRevisions": {},
++    }
++
++
++@pytest.fixture
++def managed_catalogue(monkeypatch):
++    holder = {"value": _catalogue()}
++    monkeypatch.setattr(
++        config_mod,
++        "load_config_readonly",
++        lambda: {"kanban": {"worker_catalogue": holder["value"]}},
++    )
++    return holder
++
++
++def test_catalogue_digest_and_resolution_are_fail_closed(managed_catalogue):
++    catalogue = load_worker_catalogue(required=True)
++    assert catalogue["instance"] == "test"
++    spec = resolve_worker_specification("worker", board="default")
++    assert spec.profile == "default"
++    assert spec.execution["timeoutSeconds"] == 90
++    assert spec.workspace_generation == 0
++
++    with pytest.raises(WorkerResolutionError, match="unknown_lane"):
++        resolve_worker_specification("default", board="default")
++    with pytest.raises(WorkerResolutionError, match="unknown_board"):
++        resolve_worker_specification("worker", board="other")
++
++    managed_catalogue["value"]["revision"] = "0" * 64
++    with pytest.raises(WorkerResolutionError, match="catalogue_revision_invalid"):
++        load_worker_catalogue(required=True)
++
++
++def test_source_and_provider_revisions_are_digest_validated(managed_catalogue):
++    catalogue = load_worker_catalogue(required=True)
++    assert catalogue["sourceRevisions"] == {}
++    assert catalogue["providerRevisions"] == {}
++
++    managed_catalogue["value"]["sourceRevisions"]["homelab"] = "1" * 64
++    with pytest.raises(WorkerResolutionError, match="catalogue_revision_invalid"):
++        load_worker_catalogue(required=True)
++
++    managed_catalogue["value"] = _catalogue()
++    managed_catalogue["value"]["sourceRevisions"]["homelab"] = "not-a-digest"
++    with pytest.raises(WorkerResolutionError, match="catalogue_invalid"):
++        load_worker_catalogue(required=True)
++
++
++def test_task_persists_spec_event_and_run_metadata(tmp_path, managed_catalogue):
++    conn = kb.connect(tmp_path / "kanban.db")
++    task_id = kb.create_task(conn, title="work", assignee="worker", board="default")
++
++    spec = kb.get_task_worker_specification(conn, task_id)
++    assert spec is not None
++    assert spec.lane == "worker"
++    assert spec.task_id == task_id
++    assert spec.run_id is None
++    task = kb.get_task(conn, task_id)
++    assert task.workspace_kind == "scratch"
++    assert task.max_runtime_seconds == 90
++    assert task.goal_max_turns == 7
++
++    claimed = kb.claim_task(conn, task_id)
++    assert claimed is not None
++    run = conn.execute(
++        "SELECT metadata FROM task_runs WHERE id = ?", (claimed.current_run_id,)
++    ).fetchone()
++    metadata = json.loads(run["metadata"])
++    run_spec = metadata["worker_spec"]
++    assert run_spec["catalogue_revision"] == managed_catalogue["value"]["revision"]
++    assert run_spec["lane_revision"] == managed_catalogue["value"]["laneRevisions"]["worker"]
++    assert run_spec["task_id"] == task_id
++    assert run_spec["run_id"] == claimed.current_run_id
++    assert run_spec["workspace_generation"] == claimed.current_run_id
++    assert run_spec["workspace_id"].endswith(f":{task_id}:{claimed.current_run_id}")
++    assert run_spec["lease_id"] == claimed.claim_lock
++
++
++def test_catalogue_change_creates_coherent_new_run_binding(tmp_path, managed_catalogue):
++    conn = kb.connect(tmp_path / "kanban.db")
++    task_id = kb.create_task(conn, title="work", assignee="worker", board="default")
++    changed = _catalogue()
++    changed["lanes"]["worker"]["description"] = "changed"
++    changed["laneRevisions"]["worker"] = _hash(changed["lanes"]["worker"])
++    payload = {
++        "version": 1,
++        "instance": changed["instance"],
++        "workerLanes": changed["lanes"],
++        "laneRevisions": changed["laneRevisions"],
++        "boards": changed["boards"],
++        "projects": changed["projects"],
++        "projectRevisions": changed["projectRevisions"],
++        "sourceRevisions": changed["sourceRevisions"],
++        "providerRevisions": changed["providerRevisions"],
++    }
++    changed["revision"] = _hash(payload)
++    managed_catalogue["value"] = changed
++
++    claimed = kb.claim_task(conn, task_id)
++    assert claimed is not None
++    run_spec = kb.get_task_worker_specification(
++        conn, task_id, run_id=claimed.current_run_id
++    )
++    assert run_spec.catalogue_revision == changed["revision"]
++    assert run_spec.lane_revision == changed["laneRevisions"]["worker"]
++
++
++def test_worker_spec_overrides_behavior_without_mutating_base(monkeypatch, managed_catalogue):
++    base_config = {
++        "model": {"default": "base/model"},
++        "agent": {"reasoning_effort": "low", "max_turns": 20},
++        "memory": {"memory_enabled": True, "user_profile_enabled": True},
++    }
++    spec = resolve_worker_specification("worker", board="default").bind_run(
++        task_id="t_worker",
++        run_id=1,
++        workspace_id="default:local-scratch:t_worker:1",
++        workspace_generation=1,
++        lease_id="test:1",
++    )
++    monkeypatch.setenv("HERMES_WORKER_SPEC", spec.to_json())
++    resolved = config_mod._apply_worker_spec_config(base_config)
++    assert resolved["model"]["default"] == "test/model"
++    assert resolved["agent"] == {"reasoning_effort": "high", "max_turns": 7}
++    assert resolved["memory"]["memory_enabled"] is False
++    assert base_config["model"]["default"] == "base/model"
++
++
++def test_worker_tool_ceiling_is_derived_only_from_frozen_spec(
++    monkeypatch, managed_catalogue
++):
++    spec = resolve_worker_specification("worker", board="default").bind_run(
++        task_id="t_worker",
++        run_id=1,
++        workspace_id="default:local-scratch:t_worker:1",
++        workspace_generation=1,
++        lease_id="test:1",
++    )
++    monkeypatch.setenv("HERMES_WORKER_SPEC", spec.to_json())
++    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
++
++    allowed = model_tools._worker_allowed_tools()
++    assert "terminal" in allowed
++    assert set(("kanban_complete", "kanban_block")) <= allowed
++    assert "web_search" not in allowed
++
++
++def test_managed_schema_retains_assignee_and_hides_infrastructure(monkeypatch, managed_catalogue):
++    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
++    overrides = kanban_tools._kanban_create_schema_overrides()
++    parameters = overrides["parameters"]
++    assert parameters["required"] == ["title", "assignee"]
++    assert parameters["properties"]["assignee"]["enum"] == ["worker"]
++    assert "lane" not in parameters["properties"]
++    for field in ("workspace_kind", "workspace_path", "skills", "max_runtime_seconds"):
++        assert field not in parameters["properties"]
++
++
++def test_managed_handler_rejects_lane_alias_and_infrastructure(managed_catalogue):
++    result = kanban_tools._handle_create(
++        {"title": "work", "assignee": "worker", "workspace_path": "/tmp/escape"}
++    )
++    assert "do not accept infrastructure fields" in result
++    result = kanban_tools._handle_create({"title": "work", "lane": "worker"})
++    assert "do not accept infrastructure fields: lane" in result
+diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
+index 9ce9dcf..43562e7 100644
+--- a/tools/kanban_tools.py
++++ b/tools/kanban_tools.py
+@@ -28,6 +28,7 @@ through the board.
+ """
+ from __future__ import annotations
+ 
++import copy
+ import json
+ import logging
+ import os
+@@ -1103,12 +1104,26 @@ def _handle_create(args: dict, **kw) -> str:
+     title = args.get("title")
+     if not title or not str(title).strip():
+         return tool_error("title is required")
++    from hermes_cli.worker_catalogue import load_worker_catalogue
++    managed_catalogue = load_worker_catalogue()
++    if managed_catalogue is not None:
++        forbidden_fields = (
++            "lane", "profile", "workspace_kind", "workspace_path", "provider",
++            "permission", "policy_worklane", "source_url", "host_path",
++            "workspace_id", "lease_id", "environment_key", "skills",
++            "max_runtime_seconds", "goal_mode", "goal_max_turns",
++        )
++        supplied = sorted(field for field in forbidden_fields if field in args)
++        if supplied:
++            return tool_error(
++                "managed worker tasks do not accept infrastructure fields: "
++                + ", ".join(supplied)
++            )
+     assignee = args.get("assignee")
+     if not assignee:
+         return tool_error(
+-            "assignee is required — name the Hermes profile or registered "
+-            "worker lane that should execute this "
+-            "task (the dispatcher will only spawn tasks with an assignee)"
++            "assignee is required — name a registered worker lane "
++            "(the dispatcher does not infer lanes from profiles)"
+         )
+     body = args.get("body")
+     parents = args.get("parents") or []
+@@ -1976,7 +1991,34 @@ KANBAN_CREATE_SCHEMA = {
+ 
+ 
+ def _kanban_create_schema_overrides() -> dict:
+-    """Advertise every assignee dispatchable by this gateway process."""
++    """Advertise trusted lanes, or preserve legacy discovery when unmanaged."""
++    try:
++        from hermes_cli.worker_catalogue import catalogue_lane_names, load_worker_catalogue
++        from hermes_cli.kanban_db import get_current_board
++        catalogue = load_worker_catalogue()
++    except Exception:
++        catalogue = None
++    if catalogue is not None:
++        board = os.environ.get("HERMES_KANBAN_BOARD") or get_current_board()
++        names = catalogue_lane_names(board=board)
++        parameters = copy.deepcopy(KANBAN_CREATE_SCHEMA["parameters"])
++        assignee_schema = parameters["properties"]["assignee"]
++        assignee_schema["description"] = "Declared worker lane capability."
++        assignee_schema["enum"] = names
++        descriptions = [
++            f"- {name}: {catalogue['lanes'][name].get('description') or 'no description'}"
++            for name in names
++        ]
++        assignee_schema["description"] += (
++            "\n\nAvailable lanes on this board:\n" + "\n".join(descriptions)
++        )
++        for managed_field in (
++            "workspace_kind", "workspace_path", "skills", "max_runtime_seconds",
++            "goal_mode", "goal_max_turns",
++        ):
++            parameters["properties"].pop(managed_field, None)
++        parameters["required"] = ["title", "assignee"]
++        return {"parameters": parameters}
+     try:
+         from hermes_cli.worker_lanes import list_worker_lanes
+ 
+diff --git a/tools/memory_tool.py b/tools/memory_tool.py
+index f5b866b..bf4ae5b 100644
+--- a/tools/memory_tool.py
++++ b/tools/memory_tool.py
+@@ -48,12 +48,16 @@ except ImportError:
+ 
+ logger = logging.getLogger(__name__)
+ 
+-# Where memory files live — resolved dynamically so profile overrides
+-# (HERMES_HOME env var changes) are always respected.  The old module-level
+-# constant was cached at import time and could go stale if a profile switch
+-# happened after the first import.
++# Where memory files live — resolved dynamically so profile overrides remain
++# the default while trusted worker lanes can select a separate durable namespace.
+ def get_memory_dir() -> Path:
+-    """Return the profile-scoped memories directory."""
++    """Return the trusted lane namespace or profile-scoped memories directory."""
++    worker_dir = os.environ.get("HERMES_WORKER_MEMORY_DIR")
++    if worker_dir:
++        path = Path(worker_dir)
++        if not path.is_absolute():
++            raise RuntimeError("HERMES_WORKER_MEMORY_DIR must be absolute")
++        return path
+     return get_hermes_home() / "memories"
+ 
+ # Stable header prefixes for the system-prompt memory blocks rendered by

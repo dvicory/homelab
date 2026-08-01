@@ -30,42 +30,14 @@ let
       ./kanban-lifecycle-safety.patch
       ./worker-lane-workspace-policy.patch
       ./kanban-worker-guidance.patch
-      # Stable conversation workspace ownership and private branch preparation.
-      ./workspace-resume-identity.patch
-      # Pin broker task workers to their pre-spawn environment, propagate
-      # required finalization failures, and surface loop-breaker triage.
+      # Stable conversation ownership, pre-spawn broker identity, and one
+      # board-qualified task/run identity across control and execution.
       ./workspace-runtime-identity.patch
-      # Use one board-qualified task/run identity across broker control and
-      # execution requests.
-      ./workspace-task-run-identity.patch
-      # Persist resolved specifications through existing task event/run metadata.
-      ./worker-spec-persistence.patch
-      # Cut dispatch and the model-facing API over to explicit catalogue lanes.
-      ./explicit-worker-routing.patch
-      # Apply frozen lane behavior in spawned Hermes and external workers.
-      ./worker-lane-agent-behavior.patch
-      # Process-local opaque environment identities remain separate from
-      # ordinary terminal overrides and are covered by concurrency tests.
-      ./task-authority-registry.patch
-      # Atomically bind the frozen lane worklane while activating a task run.
-      ./task-authority-binding.patch
-      # Resolve worker behavior from the lease-fenced durable run rather than
-      # copying specification and authority fields into the process environment.
-      ./durable-worker-specification.patch
-      # Restrict managed task creation to intent and declared lane selection.
-      ./managed-task-api.patch
-      # Bind the complete durable worker authority into each broker task-run.
-      ./task-authority-facts.patch
-      # Let external workers request only opaque task-run identity variables.
-      ./worker-identity-env.patch
-      # Resolve backend, workspace, and prompt surfaces from the durable run.
-      ./worker-authority-surfaces.patch
-      # Give broker-owned scratch workspaces writable task authority without
-      # granting any Project source authority.
-      ./scratch-workspace-authority.patch
-      # Tell live orchestrators that identically named worker paths remain
-      # unreachable across isolated conversation and task environments.
-      ./orchestrator-workspace-boundary.patch
+      # Persist and route workers from one frozen catalogue lane specification.
+      ./durable-worker-routing.patch
+      # Bind the complete durable task-run authority and derive every worker
+      # surface from it instead of process-environment capability data.
+      ./task-authority.patch
       # Downstream Hermes/Gondolin bridge cutover and immutable handoff wiring.
       ./workspace-handoff-gondolin-integration.patch
       # Bind task runs to durable three-plane broker project workspaces and

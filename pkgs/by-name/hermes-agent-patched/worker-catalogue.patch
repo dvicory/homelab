@@ -1,3 +1,13 @@
+From 36b0f3863525f98c0fd3c7d02d47dce73527dac5 Mon Sep 17 00:00:00 2001
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Thu, 16 Jul 2026 05:00:00 -0700
+Subject: [PATCH] feat(kanban): add a trusted worker catalogue
+
+Define trusted lane, board, and Project declarations with deterministic
+revisions and immutable task-run worker specifications. Resolution derives
+runtime, workspace, policy, and agent behavior from catalogue data rather than
+model-selected infrastructure fields.
+---
 diff --git a/hermes_cli/worker_catalogue.py b/hermes_cli/worker_catalogue.py
 new file mode 100644
 index 0000000..07eab66

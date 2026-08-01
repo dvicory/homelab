@@ -1,0 +1,1364 @@
+From 83149fcb15fa5f27ade1b7d7c3663be1cee7a25c Mon Sep 17 00:00:00 2001
+From: Daniel Vicory <dvicory@gmail.com>
+Date: Sat, 1 Aug 2026 02:00:00 -0700
+Subject: [PATCH] feat(workspaces): enforce durable task-run authority
+
+Register opaque task authority, bind it atomically to broker activation, resolve specifications and tool surfaces from the durable run, constrain managed task creation, and grant scratch workspaces only their declared authority.
+
+The former nine-patch sequence was one authority cutover expressed as successive corrections. Squashing it removes repeated edits to prompt_builder.py, worker_lanes.py, kanban_tools.py, gondolin.py, and their tests while retaining a reviewable boundary from the routing feature before it.
+---
+diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
+index 651074e..b6573d1 100644
+--- a/agent/prompt_builder.py
++++ b/agent/prompt_builder.py
+@@ -196,19 +196,25 @@ SKILLS_GUIDANCE = (
+ )
+ 
+ def _workspace_mode() -> str:
+-    """Read the trusted worker workspace mode injected by the dispatcher."""
+-    return os.environ.get("HERMES_WORKSPACE_MODE", "").strip().lower()
++    """Resolve workspace mode from the lease-fenced worker specification."""
++    from hermes_cli.worker_catalogue import load_current_worker_specification
++
++    worker_spec = load_current_worker_specification()
++    return (
++        "broker"
++        if worker_spec is not None and worker_spec.provider == "broker-scratch"
++        else ""
++    )
+ 
+ 
+ _KANBAN_WORKER_COMMON = (
+     "# Kanban worker contract\n"
+-    "You are assigned one task. Its trusted id is `$HERMES_KANBAN_TASK` and its "
+-    "private workspace is `$HERMES_KANBAN_WORKSPACE`. Use the `kanban_*` tools "
+-    "for board operations.\n\n"
++    "You are assigned one task through trusted task-run identity. Use the "
++    "`kanban_*` tools for board operations.\n\n"
+     "1. Call `kanban_show()` first and treat the task body, prior runs, parent "
+     "handoffs, comments, and worker context as authoritative.\n"
+-    "2. Do all task file work inside `$HERMES_KANBAN_WORKSPACE`; do not inspect "
+-    "or modify another task's workspace.\n"
++    "2. Do all task file work inside the workspace resolved for this run; do "
++    "not inspect or modify another task's workspace.\n"
+     "3. Send a heartbeat during genuinely long operations.\n"
+     "4. Keep scope bounded. Use `kanban_create` for separate follow-up work and "
+     "choose assignees by declared capability, not by your own profile identity.\n"
+@@ -264,9 +270,16 @@ KANBAN_ORCHESTRATOR_GUIDANCE = (
+     "4. Report outcomes from authoritative task state. Claim success only when "
+     "the required tasks are `done`; report a blocker instead of working around "
+     "it in the live session.\n"
+-    "5. Use `kanban_comment` for relevant routing context. Never put secrets, "
++    "5. Your terminal, file, process, and sandbox tools address only the live "
++    "conversation environment. They cannot inspect, repair, clean, approve, or "
++    "verify a worker workspace. A worker path is descriptive, not an address "
++    "available to your tools; the same path such as `/workspace` may name a "
++    "different isolated environment. Use authoritative task events, comments, "
++    "and results instead. Do not claim filesystem state you cannot observe.\n"
++    "6. Use `kanban_comment` for relevant routing context. Never put secrets, "
+     "tokens, raw PII, host paths, or broker authority in board data; task history "
+     "is durable.\n"
++
+ )
+ 
+ 
+@@ -1871,11 +1884,10 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
+         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
+ 
+     soul_path = get_hermes_home() / "SOUL.md"
+-    raw_worker_spec = os.environ.get("HERMES_WORKER_SPEC")
+-    if raw_worker_spec:
+-        from hermes_cli.worker_catalogue import WorkerSpecification
++    from hermes_cli.worker_catalogue import load_current_worker_specification
+ 
+-        worker_spec = WorkerSpecification.from_json(raw_worker_spec)
++    worker_spec = load_current_worker_specification()
++    if worker_spec is not None:
+         if worker_spec.agent.get("soul"):
+             soul_path = Path(str(worker_spec.agent["soul"]))
+             if not soul_path.is_absolute():
+diff --git a/hermes_cli/config.py b/hermes_cli/config.py
+index dc85038..206e2f6 100644
+--- a/hermes_cli/config.py
++++ b/hermes_cli/config.py
+@@ -7134,15 +7134,12 @@ def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
+ 
+ 
+ def _apply_worker_spec_config(config: Dict[str, Any]) -> Dict[str, Any]:
+-    """Apply behavior-only overrides from a dispatcher-frozen worker spec."""
+-    raw = os.environ.get("HERMES_WORKER_SPEC")
+-    if not raw:
++    """Apply behavior-only overrides from the durable frozen worker spec."""
++    from hermes_cli.worker_catalogue import load_current_worker_specification
++
++    worker_spec = load_current_worker_specification()
++    if worker_spec is None:
+         return config
+-    from hermes_cli.worker_catalogue import WorkerSpecification
+-    try:
+-        worker_spec = WorkerSpecification.from_json(raw)
+-    except Exception as exc:
+-        raise RuntimeError("HERMES_WORKER_SPEC is invalid") from exc
+     spec = worker_spec.as_dict()
+     resolved = copy.deepcopy(config)
+     agent_spec = spec.get("agent") if isinstance(spec.get("agent"), dict) else {}
+diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
+index 9a2f2e7..572acb6 100644
+--- a/hermes_cli/kanban_db.py
++++ b/hermes_cli/kanban_db.py
+@@ -6271,7 +6271,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
+     if kind == "broker":
+         # Broker workers see the fixed guest mount; never persist or expose a
+         # host path for this workspace kind.
+-        return Path(os.environ.get("HERMES_BROKER_WORKSPACE", "/workspace"))
++        return Path("/workspace")
+     if kind == "scratch":
+         if task.workspace_path:
+             # Legacy scratch tasks that were set to an explicit path get the
+diff --git a/hermes_cli/worker_catalogue.py b/hermes_cli/worker_catalogue.py
+index 07eab66..274593e 100644
+--- a/hermes_cli/worker_catalogue.py
++++ b/hermes_cli/worker_catalogue.py
+@@ -3,6 +3,7 @@ from __future__ import annotations
+ 
+ import hashlib
+ import json
++import os
+ from dataclasses import dataclass, replace
+ from typing import Any, Mapping, Optional
+ 
+@@ -163,6 +164,82 @@ class WorkerSpecification:
+         except (KeyError, TypeError, ValueError) as exc:
+             raise WorkerResolutionError("worker_spec_invalid", "worker specification is incomplete") from exc
+ 
++def load_current_worker_specification(
++    *, required: bool = False,
++) -> Optional[WorkerSpecification]:
++    """Load and fence the immutable worker specification for this task-run.
++
++    Spawned workers receive only the pre-existing board/task/run/lease
++    identity. Behavior and authorization data remain in the durable run
++    record and are revalidated against the active task lease on every process
++    lookup.
++    """
++    identity = {
++        "board": os.environ.get("HERMES_KANBAN_BOARD"),
++        "task_id": os.environ.get("HERMES_KANBAN_TASK"),
++        "run_id": os.environ.get("HERMES_KANBAN_RUN_ID"),
++        "lease_id": os.environ.get("HERMES_KANBAN_CLAIM_LOCK"),
++    }
++    present = {name for name, value in identity.items() if value}
++    has_run_identity = bool(identity["run_id"] or identity["lease_id"])
++    if not has_run_identity:
++        if required:
++            raise WorkerResolutionError(
++                "worker_identity_missing", "task-run identity is not configured"
++            )
++        return None
++    if present != set(identity):
++        raise WorkerResolutionError(
++            "worker_identity_incomplete",
++            "board, task, run, and lease identity must be supplied together",
++        )
++    try:
++        run_id = int(identity["run_id"])
++    except (TypeError, ValueError) as exc:
++        raise WorkerResolutionError(
++            "worker_identity_invalid", "task-run id must be a positive integer"
++        ) from exc
++    if run_id < 1:
++        raise WorkerResolutionError(
++            "worker_identity_invalid", "task-run id must be a positive integer"
++        )
++
++    from hermes_cli import kanban_db as kb
++
++    board = kb._normalize_board_slug(identity["board"])
++    if not board:
++        raise WorkerResolutionError(
++            "worker_identity_invalid", "board identity is invalid"
++        )
++    with kb.connect(board=board) as conn:
++        task = kb.get_task(conn, identity["task_id"])
++        worker_spec = kb.get_task_worker_specification(
++            conn, identity["task_id"], run_id=run_id
++        )
++    if task is None or worker_spec is None:
++        raise WorkerResolutionError(
++            "worker_spec_missing", "durable task-run worker specification is missing"
++        )
++    if task.current_run_id != run_id or task.claim_lock != identity["lease_id"]:
++        raise WorkerResolutionError(
++            "worker_identity_stale", "task-run lease is no longer active"
++        )
++    if (
++        worker_spec.board != board
++        or worker_spec.task_id != identity["task_id"]
++        or worker_spec.run_id != run_id
++        or worker_spec.lease_id != identity["lease_id"]
++    ):
++        raise WorkerResolutionError(
++            "worker_spec_identity_mismatch",
++            "durable worker specification does not match the active task-run",
++        )
++    if worker_spec.workspace_generation < 1:
++        raise WorkerResolutionError(
++            "workspace_generation_stale", "worker workspace generation is stale"
++        )
++    return worker_spec
++
+ 
+ def _catalogue_config() -> Optional[dict[str, Any]]:
+     from hermes_cli.config import load_config_readonly
+@@ -272,7 +349,9 @@ def resolve_worker_specification(
+ 
+     project_spec = None
+     project_revision = None
+-    permission = "none"
++    # A scratch workspace has no Project source authority, but its private
++    # broker-owned filesystem must remain writable by the task.
++    permission = "workspace-write"
+     provider = workspace.get("scratchProvider")
+     if project:
+         project_spec = catalogue["projects"].get(project)
+diff --git a/hermes_cli/worker_lanes.py b/hermes_cli/worker_lanes.py
+index 93cd669..d587350 100644
+--- a/hermes_cli/worker_lanes.py
++++ b/hermes_cli/worker_lanes.py
+@@ -153,47 +153,17 @@ def clear_worker_lanes() -> None:
+         _WORKER_LANES.clear()
+ 
+ 
+-def kanban_worker_env(task, workspace, *, board=None, base=None) -> "dict[str, Any]":
+-    """Build the standard kanban worker env contract for a spawned worker.
+-
+-    Returns a dict (copied from ``base``, default ``os.environ``) with the
+-    ``HERMES_KANBAN_*`` pins a worker process needs to converge on the exact
+-    board / DB / workspace / run / claim the dispatcher resolved — the same
+-    contract :func:`kanban_db._default_spawn` sets for Hermes profile workers,
+-    factored out so external lane ``spawn_fn`` implementations don't each
+-    re-derive it.
+-
+-    Lane-specific vars (``HERMES_PROFILE``, ``HERMES_WORKER_LANE``, runtime
+-    auth, ``PYTHONPATH``, …) are intentionally left to the caller.
+-    """
++def kanban_worker_identity_env(task, *, board=None, base=None) -> "dict[str, Any]":
++    """Build the opaque board/task/run/lease identity contract for a worker."""
+     from hermes_cli import kanban_db as kb  # local import: avoids import cycle
+ 
+     env = dict(os.environ if base is None else base)
+     env["HERMES_KANBAN_TASK"] = task.id
+-    if getattr(task, "workspace_kind", "") == "broker":
+-        env["HERMES_WORKSPACE_MODE"] = "broker"
+-        env["HERMES_BROKER_WORKSPACE"] = "/workspace"
+-        from tools.environments.gondolin import broker_environment_key
+-
+-        # The workspace pre-spawn hook activates this exact broker key. Pass
+-        # it into the worker so terminal and file surfaces use that task-run
+-        # workspace rather than deriving a separate conversation environment.
+-        env["HERMES_BROKER_ENVIRONMENT_KEY"] = broker_environment_key(task.id)
+-    if workspace:
+-        env["HERMES_KANBAN_WORKSPACE"] = workspace
+-    # Pin the shared umbrella root + DB + workspaces root the dispatcher
+-    # resolved, so that even when the worker activates a profile
+-    # (``hermes -p <name>`` rewrites HERMES_HOME), its kanban paths still
+-    # match the dispatcher's. Belt-and-braces with the
+-    # ``get_default_hermes_root()`` resolution in ``kanban_home()`` — symmetric
+-    # resolution is the norm, but unusual symlink / Docker layouts are caught
+-    # here too. The board slug is the final defense-in-depth pin: if the worker
+-    # ever resolves kanban paths without the DB / workspaces env vars, the slug
+-    # still forces it to the right directory.
+     env["HERMES_KANBAN_HOME"] = str(kb.kanban_home())
+     env["HERMES_KANBAN_DB"] = str(kb.kanban_db_path(board=board))
+-    env["HERMES_KANBAN_WORKSPACES_ROOT"] = str(kb.workspaces_root(board=board))
+-    env["HERMES_KANBAN_BOARD"] = kb._normalize_board_slug(board) or kb.get_current_board()
++    env["HERMES_KANBAN_BOARD"] = (
++        kb._normalize_board_slug(board) or kb.get_current_board()
++    )
+     if getattr(task, "current_run_id", None) is not None:
+         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
+     if getattr(task, "claim_lock", None):
+@@ -206,47 +176,28 @@ def kanban_worker_env(task, workspace, *, board=None, base=None) -> "dict[str, A
+ 
+         if worker_spec.task_id != task.id:
+             raise WorkerResolutionError(
+-                "worker_spec_task_mismatch", "worker specification targets another task"
++                "worker_spec_task_mismatch",
++                "worker specification targets another task",
+             )
+         if worker_spec.run_id != getattr(task, "current_run_id", None):
+             raise WorkerResolutionError(
+-                "worker_spec_run_mismatch", "worker specification targets another run"
++                "worker_spec_run_mismatch",
++                "worker specification targets another run",
+             )
+         if worker_spec.lease_id != getattr(task, "claim_lock", None):
+             raise WorkerResolutionError(
+-                "worker_spec_lease_mismatch", "worker specification carries a stale lease"
++                "worker_spec_lease_mismatch",
++                "worker specification carries a stale lease",
+             )
+         if worker_spec.workspace_generation < 1:
+             raise WorkerResolutionError(
+-                "workspace_generation_stale", "worker workspace generation is stale"
++                "workspace_generation_stale",
++                "worker workspace generation is stale",
+             )
+-        env["HERMES_WORKER_SPEC"] = worker_spec.to_json()
+-        env["HERMES_WORKER_LANE"] = worker_spec.lane
+-        env["HERMES_WORKER_CATALOGUE_REVISION"] = worker_spec.catalogue_revision
+-        env["HERMES_WORKSPACE_ID"] = worker_spec.workspace_id
+-        env["HERMES_WORKSPACE_GENERATION"] = str(worker_spec.workspace_generation)
+-        env["HERMES_WORKSPACE_LEASE_ID"] = worker_spec.lease_id
+-        env.pop("HERMES_WORKER_MEMORY_DIR", None)
+-        if worker_spec.memory == "lane":
+-            env["HERMES_WORKER_MEMORY_DIR"] = str(
+-                kb.kanban_home().parent
+-                / "worker-memory"
+-                / worker_spec.instance
+-                / worker_spec.lane
+-            )
+-        if worker_spec.project:
+-            env["HERMES_PROJECT_ID"] = worker_spec.project
+-            env["HERMES_PROJECT_SOURCE_GENERATION"] = worker_spec.source_generation
+-    # Pin TERMINAL_CWD to the task's workspace so the worker's file tools and
+-    # context-file loader anchor on the workspace, not whatever cwd the
+-    # dispatching gateway happened to export. TERMINAL_CWD takes precedence
+-    # over the process cwd in both file_tools._resolve_base_dir (#41312 —
+-    # relative write_file paths were landing in the gateway user's home) and
+-    # build_context_files_prompt (#34619 — workers loaded the dispatching
+-    # gateway's AGENTS.md instead of the task's). Only pin a real, absolute
+-    # directory — file_tools rejects relative / sentinel TERMINAL_CWD values,
+-    # so a non-dir workspace must NOT be set here (leave the inherited value
+-    # rather than write a meaningless one).
+-    if workspace and os.path.isabs(workspace) and os.path.isdir(workspace):
+-        env["TERMINAL_CWD"] = workspace
+     return env
++
++
++def kanban_worker_env(task, workspace, *, board=None, base=None) -> "dict[str, Any]":
++    """Build the opaque identity contract shared by all worker runtimes."""
++    del workspace
++    return kanban_worker_identity_env(task, board=board, base=base)
+diff --git a/model_tools.py b/model_tools.py
+index adc0092..ebf7116 100644
+--- a/model_tools.py
++++ b/model_tools.py
+@@ -39,12 +39,11 @@ logger = logging.getLogger(__name__)
+ _WARNED_DISABLED_BUNDLES: set = set()
+ def _worker_allowed_tools() -> Optional[set[str]]:
+     """Derive the model-visible ceiling from the single frozen worker spec."""
+-    raw = os.environ.get("HERMES_WORKER_SPEC")
+-    if not raw:
+-        return None
+-    from hermes_cli.worker_catalogue import WorkerSpecification
++    from hermes_cli.worker_catalogue import load_current_worker_specification
+ 
+-    spec = WorkerSpecification.from_json(raw)
++    spec = load_current_worker_specification()
++    if spec is None:
++        return None
+     explicit = spec.agent.get("tools", [])
+     toolsets = spec.agent.get("toolsets", [])
+     if not isinstance(explicit, list) or not all(isinstance(name, str) for name in explicit):
+diff --git a/plugins/workspace-service/__init__.py b/plugins/workspace-service/__init__.py
+index d88651d..b46ecaa 100644
+--- a/plugins/workspace-service/__init__.py
++++ b/plugins/workspace-service/__init__.py
+@@ -123,6 +123,38 @@ def _on_completion_intent(
+ 
+ 
+ 
++def _authority_for_run(conn: Any, task_id: str, run_id: int) -> dict[str, Any]:
++    specification = kb.get_task_worker_specification(
++        conn, task_id, run_id=int(run_id)
++    )
++    if specification is None:
++        raise RuntimeError("durable worker specification is missing")
++    worklane = specification.policy.get("worklane")
++    if not isinstance(worklane, str) or not worklane:
++        raise RuntimeError("worker specification has no broker worklane")
++    authority = {
++        "catalogueRevision": specification.catalogue_revision,
++        "lane": specification.lane,
++        "laneRevision": specification.lane_revision,
++        "permission": specification.permission,
++        "workspaceProvider": specification.provider,
++        "authorityClass": worklane,
++        "policyRevision": specification.policy_revision,
++    }
++    if specification.project is not None:
++        if (
++            specification.project_revision is None
++            or specification.source_generation is None
++        ):
++            raise RuntimeError("worker specification Project source is incomplete")
++        authority.update(
++            project=specification.project,
++            projectRevision=specification.project_revision,
++            sourceGeneration=specification.source_generation,
++        )
++    return authority
++
++
+ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[str, bool]:
+     if not _enabled():
+         raise RuntimeError("workspace handoff is disabled")
+@@ -135,6 +167,7 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
+                 raise RuntimeError("workspace destination is stale")
+             if task.current_run_id != int(run_id):
+                 raise RuntimeError("workspace destination run is stale")
++            authority = _authority_for_run(conn, task_id, int(run_id))
+         destination_key = broker_environment_key(task_id)
+         binding = client.acquire_workspace(destination_key)
+         client.activate_task_run(
+@@ -144,6 +177,7 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
+             run_id=int(run_id),
+             workspace_id=binding["workspaceId"],
+             workspace_lease_id=binding["workspaceLeaseId"],
++            authority=authority,
+         )
+     except BrokerError:
+         raise
+diff --git a/tests/hermes_cli/test_explicit_worker_lanes.py b/tests/hermes_cli/test_explicit_worker_lanes.py
+index 093bb73..5ce1f7a 100644
+--- a/tests/hermes_cli/test_explicit_worker_lanes.py
++++ b/tests/hermes_cli/test_explicit_worker_lanes.py
+@@ -8,6 +8,8 @@ import pytest
+ from hermes_cli import config as config_mod
+ from hermes_cli import kanban_db as kb
+ import model_tools
++from hermes_cli import worker_catalogue as catalogue_mod
++from hermes_cli import worker_lanes as wl
+ from tools import kanban_tools
+ from hermes_cli.worker_catalogue import (
+     WorkerResolutionError,
+@@ -89,6 +91,7 @@ def test_catalogue_digest_and_resolution_are_fail_closed(managed_catalogue):
+     assert spec.profile == "default"
+     assert spec.execution["timeoutSeconds"] == 90
+     assert spec.workspace_generation == 0
++    assert spec.permission == "workspace-write"
+ 
+     with pytest.raises(WorkerResolutionError, match="unknown_lane"):
+         resolve_worker_specification("default", board="default")
+@@ -144,6 +147,51 @@ def test_task_persists_spec_event_and_run_metadata(tmp_path, managed_catalogue):
+     assert run_spec["workspace_id"].endswith(f":{task_id}:{claimed.current_run_id}")
+     assert run_spec["lease_id"] == claimed.claim_lock
+ 
++    env = wl.kanban_worker_env(claimed, str(tmp_path), board="default", base={})
++    for name in (
++        "HERMES_WORKER_SPEC",
++        "HERMES_WORKER_LANE",
++        "HERMES_WORKER_CATALOGUE_REVISION",
++        "HERMES_WORKSPACE_ID",
++        "HERMES_WORKSPACE_GENERATION",
++        "HERMES_WORKSPACE_LEASE_ID",
++        "HERMES_WORKER_MEMORY_DIR",
++        "HERMES_PROJECT_ID",
++        "HERMES_PROJECT_SOURCE_GENERATION",
++        "HERMES_WORKSPACE_MODE",
++        "HERMES_BROKER_WORKSPACE",
++        "HERMES_BROKER_ENVIRONMENT_KEY",
++        "HERMES_KANBAN_WORKSPACE",
++        "HERMES_KANBAN_WORKSPACES_ROOT",
++        "TERMINAL_CWD",
++    ):
++        assert name not in env
++
++
++def test_current_worker_spec_is_loaded_and_fenced_by_durable_run(
++    tmp_path, monkeypatch, managed_catalogue
++):
++    db_path = tmp_path / "kanban.db"
++    with kb.connect(db_path) as conn:
++        task_id = kb.create_task(
++            conn, title="work", assignee="worker", board="default"
++        )
++        claimed = kb.claim_task(conn, task_id)
++    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
++    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
++    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
++    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
++    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", claimed.claim_lock)
++
++    loaded = catalogue_mod.load_current_worker_specification(required=True)
++    assert loaded.lane == "worker"
++    assert loaded.run_id == claimed.current_run_id
++    assert loaded.lease_id == claimed.claim_lock
++
++    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "stale")
++    with pytest.raises(WorkerResolutionError, match="worker_identity_stale"):
++        catalogue_mod.load_current_worker_specification(required=True)
++
+ 
+ def test_catalogue_change_creates_coherent_new_run_binding(tmp_path, managed_catalogue):
+     conn = kb.connect(tmp_path / "kanban.db")
+@@ -187,7 +235,9 @@ def test_worker_spec_overrides_behavior_without_mutating_base(monkeypatch, manag
+         workspace_generation=1,
+         lease_id="test:1",
+     )
+-    monkeypatch.setenv("HERMES_WORKER_SPEC", spec.to_json())
++    monkeypatch.setattr(
++        catalogue_mod, "load_current_worker_specification", lambda: spec
++    )
+     resolved = config_mod._apply_worker_spec_config(base_config)
+     assert resolved["model"]["default"] == "test/model"
+     assert resolved["agent"] == {"reasoning_effort": "high", "max_turns": 7}
+@@ -205,7 +255,9 @@ def test_worker_tool_ceiling_is_derived_only_from_frozen_spec(
+         workspace_generation=1,
+         lease_id="test:1",
+     )
+-    monkeypatch.setenv("HERMES_WORKER_SPEC", spec.to_json())
++    monkeypatch.setattr(
++        catalogue_mod, "load_current_worker_specification", lambda: spec
++    )
+     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
+ 
+     allowed = model_tools._worker_allowed_tools()
+@@ -214,21 +266,43 @@ def test_worker_tool_ceiling_is_derived_only_from_frozen_spec(
+     assert "web_search" not in allowed
+ 
+ 
+-def test_managed_schema_retains_assignee_and_hides_infrastructure(monkeypatch, managed_catalogue):
++def test_managed_schema_exposes_only_intent_and_allowed_lane(
++    monkeypatch, managed_catalogue
++):
+     monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+     overrides = kanban_tools._kanban_create_schema_overrides()
+     parameters = overrides["parameters"]
+     assert parameters["required"] == ["title", "assignee"]
++    assert set(parameters["properties"]) == {
++        "title", "body", "parents", "assignee", "project"
++    }
+     assert parameters["properties"]["assignee"]["enum"] == ["worker"]
+-    assert "lane" not in parameters["properties"]
+-    for field in ("workspace_kind", "workspace_path", "skills", "max_runtime_seconds"):
+-        assert field not in parameters["properties"]
+ 
+ 
+-def test_managed_handler_rejects_lane_alias_and_infrastructure(managed_catalogue):
++def test_managed_handler_rejects_every_undeclared_field(managed_catalogue):
++    for field, value in (
++        ("lane", "worker"),
++        ("workspace_path", "/tmp/escape"),
++        ("priority", 999),
++        ("triage", True),
++        ("board", "other"),
++    ):
++        result = kanban_tools._handle_create(
++            {"title": "work", "assignee": "worker", field: value}
++        )
++        assert f"do not accept undeclared fields: {field}" in result
++
++
++def test_managed_handler_rejects_default_profile_as_lane(managed_catalogue):
++    result = kanban_tools._handle_create(
++        {"title": "work", "assignee": "default"}
++    )
++    assert "unknown_lane" in result
++
++
++def test_managed_handler_accepts_logical_project_selection(managed_catalogue):
+     result = kanban_tools._handle_create(
+-        {"title": "work", "assignee": "worker", "workspace_path": "/tmp/escape"}
++        {"title": "work", "assignee": "worker", "project": "other"}
+     )
+-    assert "do not accept infrastructure fields" in result
+-    result = kanban_tools._handle_create({"title": "work", "lane": "worker"})
+-    assert "do not accept infrastructure fields: lane" in result
++    assert "do not accept undeclared fields" not in result
++    assert "project_forbidden" in result
+diff --git a/tests/hermes_cli/test_worker_lane_discovery.py b/tests/hermes_cli/test_worker_lane_discovery.py
+index 41172c1..2c9f32b 100644
+--- a/tests/hermes_cli/test_worker_lane_discovery.py
++++ b/tests/hermes_cli/test_worker_lane_discovery.py
+@@ -6,6 +6,7 @@ from types import SimpleNamespace
+ 
+ import pytest
+ 
++from hermes_cli import worker_catalogue as catalogue_mod
+ from hermes_cli import profiles as profiles_mod
+ from hermes_cli import worker_lanes as wl
+ 
+@@ -128,7 +129,11 @@ def test_kanban_guidance_is_scoped_to_workspace_mode(monkeypatch):
+         select_kanban_guidance,
+     )
+ 
+-    monkeypatch.setenv("HERMES_WORKSPACE_MODE", "broker")
++    monkeypatch.setattr(
++        catalogue_mod,
++        "load_current_worker_specification",
++        lambda: SimpleNamespace(provider="broker-scratch"),
++    )
+     broker = select_kanban_guidance(
+         task_id="t_worker", tool_names={"kanban_show", "kanban_list"}
+     )
+@@ -140,7 +145,11 @@ def test_kanban_guidance_is_scoped_to_workspace_mode(monkeypatch):
+     assert "revision" not in broker.lower()
+     assert "hash" not in broker.lower()
+ 
+-    monkeypatch.delenv("HERMES_WORKSPACE_MODE", raising=False)
++    monkeypatch.setattr(
++        catalogue_mod,
++        "load_current_worker_specification",
++        lambda: None,
++    )
+     native = select_kanban_guidance(
+         task_id="t_worker", tool_names={"kanban_show", "kanban_list"}
+     )
+diff --git a/tests/hermes_cli/test_worker_lanes.py b/tests/hermes_cli/test_worker_lanes.py
+index 759a30f..3bf0d2a 100644
+--- a/tests/hermes_cli/test_worker_lanes.py
++++ b/tests/hermes_cli/test_worker_lanes.py
+@@ -115,23 +115,22 @@ def test_kanban_worker_env_sets_contract(kanban_home, tmp_path):
+     )
+     env = wl.kanban_worker_env(task, str(tmp_path), base={})
+     assert env["HERMES_KANBAN_TASK"] == "t_1"
+-    assert env["HERMES_KANBAN_WORKSPACE"] == str(tmp_path)
++    assert "HERMES_KANBAN_WORKSPACE" not in env
+     assert env["HERMES_KANBAN_RUN_ID"] == "7"
+     assert env["HERMES_KANBAN_CLAIM_LOCK"] == "host:1:abc"
+     assert env["HERMES_KANBAN_DB"]  # resolved
+     assert env["HERMES_KANBAN_BOARD"]
+-    assert env["TERMINAL_CWD"] == str(tmp_path)  # real abs dir
++    assert "TERMINAL_CWD" not in env
+     # lane-specific vars are the caller's responsibility, not the helper's
+     assert "HERMES_PROFILE" not in env
+     assert "HERMES_WORKER_LANE" not in env
+ 
+ 
+-def test_kanban_worker_env_pins_broker_environment_key(
+-    kanban_home, monkeypatch,
++def test_kanban_worker_env_omits_derived_broker_authority(
++    kanban_home,
+ ):
+     import types
+ 
+-    monkeypatch.setenv("HERMES_SANDBOX_AUTHORITY_BINDING", "binding-test")
+     task = types.SimpleNamespace(
+         id="t_broker",
+         current_run_id=9,
+@@ -142,9 +141,9 @@ def test_kanban_worker_env_pins_broker_environment_key(
+ 
+     env = wl.kanban_worker_env(task, "/workspace", base={})
+ 
+-    assert env["HERMES_WORKSPACE_MODE"] == "broker"
+-    assert env["HERMES_BROKER_WORKSPACE"] == "/workspace"
+-    assert env["HERMES_BROKER_ENVIRONMENT_KEY"].startswith("authority-")
++    assert "HERMES_WORKSPACE_MODE" not in env
++    assert "HERMES_BROKER_WORKSPACE" not in env
++    assert "HERMES_BROKER_ENVIRONMENT_KEY" not in env
+ 
+ 
+ def test_assignee_is_spawnable(kanban_home):
+diff --git a/tests/tools/test_gondolin_backend.py b/tests/tools/test_gondolin_backend.py
+index 66eb3b0..1c8a69c 100644
+--- a/tests/tools/test_gondolin_backend.py
++++ b/tests/tools/test_gondolin_backend.py
+@@ -8,14 +8,18 @@ import subprocess
+ import tempfile
+ import threading
+ import time
++from types import SimpleNamespace
+ from http.server import BaseHTTPRequestHandler
+ 
+ import pytest
++from hermes_cli import worker_catalogue
++from tools import terminal_tool
+ from tools.environments.gondolin import (
+     BrokerError,
+     BrokerClient,
+     GondolinEnvironment,
+     check_gondolin_available,
++    broker_environment_key,
+ )
+ from tools.file_operations import ShellFileOperations
+ 
+@@ -285,18 +289,17 @@ def test_control_activation_matches_worker_execution_identity(monkeypatch):
+ 
+     def fake_post(route, payload, timeout=None):
+         calls.append((route, payload))
+-        if route == "/v1/control/authority/bind-default":
+-            return {"policyDigest": "a" * 64}
+         if route == "/v1/control/task-runs/activate":
+             return {"activation": {"activationId": "activation-test"}}
+         raise AssertionError(route)
+ 
+     client._json_post = fake_post
+-    environment_key = "authority-test"
+-    monkeypatch.setenv("HERMES_BROKER_ENVIRONMENT_KEY", environment_key)
++    monkeypatch.setenv("HERMES_SANDBOX_AUTHORITY_BINDING", "profile-binding")
+     monkeypatch.setenv("HERMES_KANBAN_BOARD", "homelab")
+     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_identity")
+     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "142")
++    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "claim-142")
++    environment_key = broker_environment_key("t_identity")
+ 
+     client.activate_task_run(
+         environment_key=environment_key,
+@@ -305,15 +308,57 @@ def test_control_activation_matches_worker_execution_identity(monkeypatch):
+         run_id=142,
+         workspace_id="workspace-test",
+         workspace_lease_id="lease-test",
++        authority={
++            "catalogueRevision": "a" * 64,
++            "lane": "research",
++            "laneRevision": "b" * 64,
++            "permission": "read-only",
++            "workspaceProvider": "broker-scratch",
++            "authorityClass": "research",
++            "policyRevision": "c" * 64,
++        },
+     )
+-    activation_payload = calls[-1][1]
++    activation_payload = calls[0][1]
+     execution_payload = client._execution_payload(
+         environment_key,
+         {"environmentKey": environment_key},
+     )
+ 
++    assert calls[0][0] == "/v1/control/task-runs/activate"
++    assert activation_payload["lane"] == "research"
++    assert activation_payload["permission"] == "read-only"
++    assert activation_payload["authorityClass"] == "research"
++    assert activation_payload["workspaceId"] == "workspace-test"
++    assert activation_payload["workspaceLeaseId"] == "lease-test"
+     assert activation_payload["taskId"] == execution_payload["taskRun"]["taskId"]
+     assert activation_payload["runId"] == execution_payload["taskRun"]["runId"]
++    assert BrokerClient._trusted_environment_key() == environment_key
++    assert "HERMES_BROKER_ENVIRONMENT_KEY" not in os.environ
++
++def test_broker_worker_surfaces_use_durable_backend_and_cwd(monkeypatch):
++    worker_spec = SimpleNamespace(
++        provider="broker-scratch",
++        task_id="task-surface",
++    )
++    monkeypatch.setattr(
++        terminal_tool,
++        "_current_worker_specification",
++        lambda: worker_spec,
++    )
++    monkeypatch.setenv("HERMES_SANDBOX_AUTHORITY_BINDING", "profile-binding")
++    monkeypatch.setenv("TERMINAL_ENV", "gondolin")
++    monkeypatch.setenv("TERMINAL_CWD", "/host/path")
++
++    config = terminal_tool._get_env_config()
++    assert config["cwd"] == "/workspace"
++    assert terminal_tool.environment_key("model-selected") == (
++        broker_environment_key("task-surface")
++    )
++
++    monkeypatch.setenv("TERMINAL_ENV", "local")
++    with pytest.raises(RuntimeError, match="worker_backend_mismatch"):
++        terminal_tool._get_env_config()
++
+ 
+ 
+ def test_gondolin_process_schema_hides_stdin_actions(monkeypatch):
+diff --git a/tests/tools/test_kanban_role_boundaries.py b/tests/tools/test_kanban_role_boundaries.py
+index edae1a2..5a5ff8b 100644
+--- a/tests/tools/test_kanban_role_boundaries.py
++++ b/tests/tools/test_kanban_role_boundaries.py
+@@ -65,6 +65,15 @@ def test_kanban_orchestrator_guidance_forbids_worker_substitution():
+         KANBAN_ORCHESTRATOR_GUIDANCE
+     )
+     assert "Claim success only when" in KANBAN_ORCHESTRATOR_GUIDANCE
++    assert "address only the live conversation environment" in (
++        KANBAN_ORCHESTRATOR_GUIDANCE
++    )
++    assert "A worker path is descriptive, not an address" in (
++        KANBAN_ORCHESTRATOR_GUIDANCE
++    )
++    assert "Do not claim filesystem state you cannot observe" in (
++        KANBAN_ORCHESTRATOR_GUIDANCE
++    )
+ 
+ 
+ def test_kanban_worker_lifecycle_gate_excludes_orchestrator(monkeypatch):
+diff --git a/tests/tools/test_kanban_tools.py b/tests/tools/test_kanban_tools.py
+index 51084a6..91292f3 100644
+--- a/tests/tools/test_kanban_tools.py
++++ b/tests/tools/test_kanban_tools.py
+@@ -2830,7 +2830,7 @@ def test_artifact_schema_is_scoped_to_workspace_mode(monkeypatch):
+     monkeypatch.setenv("HERMES_KANBAN_TASK", "t-schema")
+     invalidate_check_fn_cache()
+ 
+-    monkeypatch.delenv("HERMES_WORKSPACE_MODE", raising=False)
++    monkeypatch.setattr(kt, "_current_worker_specification", lambda: None)
+     native = registry.get_definitions({"kanban_complete"}, quiet=True)[0]["function"]
+     native_description = native["parameters"]["properties"]["artifacts"]["description"]
+     assert "relative POSIX" in native_description
+@@ -2839,7 +2839,11 @@ def test_artifact_schema_is_scoped_to_workspace_mode(monkeypatch):
+     assert "summary, result" in native_description
+     assert "never scanned" in native_description
+ 
+-    monkeypatch.setenv("HERMES_WORKSPACE_MODE", "broker")
++    monkeypatch.setattr(
++        kt,
++        "_current_worker_specification",
++        lambda: type("Spec", (), {"provider": "broker-scratch"})(),
++    )
+     broker = registry.get_definitions({"kanban_complete"}, quiet=True)[0]["function"]
+     broker_description = broker["parameters"]["properties"]["artifacts"]["description"]
+     assert "relative POSIX" in broker_description
+diff --git a/tests/tools/test_secure_terminal_identity_integration.py b/tests/tools/test_secure_terminal_identity_integration.py
+index 326ee12..48ce242 100644
+--- a/tests/tools/test_secure_terminal_identity_integration.py
++++ b/tests/tools/test_secure_terminal_identity_integration.py
+@@ -13,11 +13,12 @@ deploy time; here we pin the identity contract every surface depends on.
+ import json
+ import os
+ import subprocess
+-
++from types import SimpleNamespace
+ 
+ import pytest
+ 
+ from tools import code_execution_tool, file_tools, process_registry, terminal_tool
++from tools.environments.gondolin import broker_environment_key
+ from tools.terminal_tool import environment_key
+ 
+ 
+@@ -130,22 +131,31 @@ def test_every_surface_resolves_one_key_per_conversation(two_sessions):
+     assert set(created.keys()) == {key_a, key_b}
+ 
+ 
+-def test_worker_reuses_exact_pre_spawn_environment_key(two_sessions, monkeypatch):
+-    """A spawned worker cannot derive a different key from its delegate session."""
++def test_worker_derives_exact_environment_key_from_durable_identity(
++    two_sessions, monkeypatch
++):
++    """Delegate session input cannot alter the durable worker environment key."""
+     created, session = two_sessions
+-    pre_spawn_key = "authority-pre-spawn-key"
+-    monkeypatch.setenv("HERMES_BROKER_ENVIRONMENT_KEY", pre_spawn_key)
++    worker_spec = SimpleNamespace(provider="broker-scratch", task_id="task-a")
++    monkeypatch.setattr(
++        terminal_tool,
++        "_current_worker_specification",
++        lambda: worker_spec,
++    )
++    monkeypatch.setenv("HERMES_SANDBOX_AUTHORITY_BINDING", "profile-binding")
++    monkeypatch.setenv("TERMINAL_ENV", "gondolin")
++    expected_key = broker_environment_key("task-a")
+ 
+-    assert environment_key(**session["a"]) == pre_spawn_key
++    assert environment_key(**session["a"]) == expected_key
+     _run_terminal(**session["a"])
+-    assert created[pre_spawn_key] is terminal_tool.get_active_env("delegate-session")
++    assert created[expected_key] is terminal_tool.get_active_env("delegate-session")
+ 
+     file_ops = file_tools._get_file_ops(
+         session["a"]["task_id"], session["a"]["session_id"]
+     )
+     env, _ = code_execution_tool._get_or_create_env(**session["a"])
+     assert file_ops.env is env
+-    assert env is created[pre_spawn_key]
++    assert env is created[expected_key]
+ 
+ 
+ def test_conversations_cannot_observe_each_other(two_sessions):
+diff --git a/var/folders/1l/zc5_6cyd57gbxrmvvq8_jv6h0000gn/T/tmp.o4OYq97Pfa/after-task-authority.patch/tests/tools/test_task_authority_binding.py b/tests/tools/test_task_authority_binding.py
+new file mode 100644
+index 0000000..88d375b
+--- /dev/null
++++ b/tests/tools/test_task_authority_binding.py
+@@ -0,0 +1,116 @@
++"""Tests for the infrastructure-only task authority binding hook."""
++
++from concurrent.futures import ThreadPoolExecutor
++import threading
++
++import pytest
++
++from tools import terminal_tool
++from tools.terminal_tool import environment_key
++
++
++@pytest.fixture(autouse=True)
++def clean_authority_registry():
++    before = dict(terminal_tool._task_env_overrides)
++    terminal_tool._task_env_overrides.clear()
++    try:
++        yield
++    finally:
++        terminal_tool._task_env_overrides.clear()
++        terminal_tool._task_env_overrides.update(before)
++
++
++def test_authority_binding_derives_opaque_distinct_key(monkeypatch):
++    monkeypatch.delenv("TERMINAL_ISOLATION_SCOPE", raising=False)
++    terminal_tool.register_task_authority_binding("task-a", "binding-a")
++    terminal_tool.register_task_authority_binding("task-b", "binding-b")
++
++    key_a = environment_key("task-a", "session-a")
++    key_b = environment_key("task-b", "session-a")
++
++    assert key_a.startswith("authority-")
++    assert key_b.startswith("authority-")
++    assert key_a != key_b
++    assert key_a == environment_key("task-a")
++    assert "task-a" not in key_a
++    assert "binding-a" not in key_a
++
++
++def test_session_binding_resolves_without_task_id():
++    terminal_tool.register_task_authority_binding("session-a", "binding-a")
++
++    key = environment_key(None, "session-a")
++
++    assert key.startswith("authority-")
++    assert key != "default"
++
++
++def test_authority_registration_preserves_existing_environment_overrides():
++    terminal_tool.register_task_env_overrides("task-a", {"cwd": "/workspace/a"})
++    terminal_tool.register_task_authority_binding("task-a", "binding-a")
++    terminal_tool.register_task_env_overrides("task-a", {"cwd": "/workspace/b"})
++
++    assert terminal_tool.resolve_task_overrides("task-a")["cwd"] == "/workspace/b"
++    assert terminal_tool.resolve_task_overrides("task-a")["authority_binding_id"] == "binding-a"
++    assert environment_key("task-a") != "default"
++
++    terminal_tool.clear_task_env_overrides("task-a")
++    assert environment_key("task-a") == "default"
++
++
++def test_concurrent_task_session_bindings_do_not_bleed(monkeypatch):
++    monkeypatch.setenv("TERMINAL_ISOLATION_SCOPE", "conversation")
++    registrations = {
++        "task-a": ("session-shared", "binding-a"),
++        "task-b": ("session-shared", "binding-b"),
++    }
++
++    def resolve(item):
++        task_id, (session_id, binding_id) = item
++        terminal_tool.register_task_authority_binding(task_id, binding_id)
++        return {
++            environment_key(task_id, session_id)
++            for _ in range(100)
++        }
++
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        results = list(pool.map(resolve, registrations.items()))
++
++    assert len(results[0]) == 1
++    assert len(results[1]) == 1
++    assert results[0].isdisjoint(results[1])
++
++
++def test_authority_survives_concurrent_ordinary_override_updates(monkeypatch):
++    """Same-key updates serialize without dropping the trusted binding."""
++    monkeypatch.delenv("TERMINAL_ISOLATION_SCOPE", raising=False)
++    barrier = threading.Barrier(2)
++
++    def bind():
++        barrier.wait()
++        for _ in range(200):
++            terminal_tool.register_task_authority_binding("same-task", "trusted")
++
++    def override():
++        barrier.wait()
++        for index in range(200):
++            terminal_tool.register_task_env_overrides(
++                "same-task", {"cwd": f"/workspace/{index}"}
++            )
++
++
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        futures = [pool.submit(bind), pool.submit(override)]
++        for future in futures:
++            future.result()
++
++    overrides = terminal_tool.resolve_task_overrides("same-task")
++    assert overrides["authority_binding_id"] == "trusted"
++    assert environment_key("same-task").startswith("authority-")
++
++
++def test_authority_binding_requires_nonempty_trusted_values():
++    with pytest.raises(ValueError):
++        terminal_tool.register_task_authority_binding("", "binding")
++    with pytest.raises(ValueError):
++        terminal_tool.register_task_authority_binding("task", "")
+diff --git a/tools/environments/gondolin.py b/tools/environments/gondolin.py
+index e73edb8..cdb16ce 100644
+--- a/tools/environments/gondolin.py
++++ b/tools/environments/gondolin.py
+@@ -6,6 +6,7 @@ policy, lifecycle, filesystem mediation, and resource ceilings.
+ """
+ 
+ import base64
++import hashlib
+ import json
+ import logging
+ import os
+@@ -26,14 +27,18 @@ _BASE_URL = "http://localhost"
+ 
+ 
+ def broker_environment_key(task_id: str) -> str:
+-    """Derive the scoped environment key used by broker workspace routes."""
+-    from tools import terminal_tool
++    """Derive the broker key from opaque task identity and operator binding."""
++    task_text = str(task_id).strip()
+     binding = os.environ.get("HERMES_SANDBOX_AUTHORITY_BINDING", "").strip()
+-    if not binding:
+-        raise BrokerError("workspace.identity_missing", "sandbox authority binding is missing")
+-    scoped = "\x00".join((binding, str(task_id)))
+-    terminal_tool.register_task_authority_binding(str(task_id), scoped)
+-    return terminal_tool.environment_key(str(task_id), None)
++    if not binding or not task_text:
++        raise BrokerError(
++            "workspace.identity_missing",
++            "sandbox authority binding and task identity are required",
++        )
++    digest = hashlib.sha256(
++        "\x00".join((binding, task_text)).encode("utf-8")
++    ).hexdigest()[:24]
++    return f"authority-{digest}"
+ 
+ def broker_task_identity(board: str, task_id: str) -> str:
+     """Encode a board/task pair without collisions in the shared broker."""
+@@ -95,7 +100,10 @@ class BrokerClient:
+         raise BrokerError(str(reason), str(detail), response.status_code)
+     @staticmethod
+     def _trusted_environment_key() -> str:
+-        return os.environ.get("HERMES_BROKER_ENVIRONMENT_KEY", "").strip()
++        task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
++        if not task_id:
++            return ""
++        return broker_environment_key(task_id)
+ 
+     @classmethod
+     def _task_run_payload(cls) -> dict[str, str] | None:
+@@ -283,26 +291,18 @@ class BrokerClient:
+         run_id: int,
+         workspace_id: str,
+         workspace_lease_id: str,
++        authority: dict,
+     ) -> dict:
+         task_run = broker_task_run(board, task_id, run_id)
+-        authority = self._json_post(
+-            "/v1/control/authority/bind-default",
+-            {
+-                "environmentKey": environment_key,
+-                "workspaceId": workspace_id,
+-                "leaseId": workspace_lease_id,
+-            },
+-        )
+-        policy_digest = self._required_text(authority, "policyDigest")
+         body = self._json_post(
+             "/v1/control/task-runs/activate",
+             {
+                 "environmentKey": environment_key,
+                 "taskId": task_run["taskId"],
+                 "runId": task_run["runId"],
++                **authority,
+                 "workspaceId": workspace_id,
+                 "workspaceLeaseId": workspace_lease_id,
+-                "policyDigest": policy_digest,
+             },
+         )
+         activation = body.get("activation")
+@@ -577,11 +577,7 @@ class GondolinEnvironment(BaseEnvironment):
+         self._socket_path = socket_path or os.environ.get(
+             "HERMES_GONDOLIN_SOCKET", _DEFAULT_SOCKET
+         )
+-        self._env_key = (
+-            os.environ.get("HERMES_BROKER_ENVIRONMENT_KEY", "").strip()
+-            or task_id
+-            or "default"
+-        )
++        self._env_key = task_id or "default"
+         self._client = BrokerClient(self._socket_path, timeout=30.0)
+         self.generation: Optional[int] = None
+         self._closed = False
+diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
+index 43562e7..1f66aab 100644
+--- a/tools/kanban_tools.py
++++ b/tools/kanban_tools.py
+@@ -90,16 +90,27 @@ def _check_kanban_mode() -> bool:
+     return _profile_has_kanban_toolset()
+ 
+ 
++def _current_worker_specification():
++    """Load the lease-fenced specification for this worker process."""
++    from hermes_cli.worker_catalogue import load_current_worker_specification
++
++    return load_current_worker_specification()
++
++
+ def _check_kanban_attachment_mode() -> bool:
+-    """Expose attachment tools only to native workers/orchestrators."""
+-    if os.environ.get("HERMES_WORKSPACE_MODE", "").strip().lower() == "broker":
+-        return False
+-    return _check_kanban_mode()
++    """Expose attachment tools only outside broker workspaces."""
++    return _workspace_mode() != "broker" and _check_kanban_mode()
+ 
+ 
+ def _workspace_mode() -> str:
+-    """Read the trusted workspace mode injected by the dispatcher."""
+-    return os.environ.get("HERMES_WORKSPACE_MODE", "").strip().lower()
++    """Resolve workspace mode from durable worker authority."""
++    worker_spec = _current_worker_specification()
++    return (
++        "broker"
++        if worker_spec is not None and worker_spec.provider == "broker-scratch"
++        else ""
++    )
++
+ 
+ def _check_kanban_worker_mode() -> bool:
+     """Worker lifecycle tools require a dispatcher-assigned task identity."""
+@@ -889,7 +900,7 @@ def _handle_attach(args: dict, **kw) -> str:
+     ownership_err = _enforce_worker_task_ownership(tid)
+     if ownership_err:
+         return ownership_err
+-    if os.environ.get("HERMES_WORKSPACE_MODE", "").strip().lower() == "broker":
++    if _workspace_mode() == "broker":
+         return tool_error("attachment upload tools are unavailable in broker workspaces; write under /workspace/output and select it in kanban_complete")
+     filename = args.get("filename")
+     if not filename or not str(filename).strip():
+@@ -1010,7 +1021,7 @@ def _handle_attach_url(args: dict, **kw) -> str:
+     ownership_err = _enforce_worker_task_ownership(tid)
+     if ownership_err:
+         return ownership_err
+-    if os.environ.get("HERMES_WORKSPACE_MODE", "").strip().lower() == "broker":
++    if _workspace_mode() == "broker":
+         return tool_error("attachment upload tools are unavailable in broker workspaces; write under /workspace/output and select it in kanban_complete")
+     url = args.get("url")
+     if not url or not str(url).strip():
+@@ -1107,16 +1118,11 @@ def _handle_create(args: dict, **kw) -> str:
+     from hermes_cli.worker_catalogue import load_worker_catalogue
+     managed_catalogue = load_worker_catalogue()
+     if managed_catalogue is not None:
+-        forbidden_fields = (
+-            "lane", "profile", "workspace_kind", "workspace_path", "provider",
+-            "permission", "policy_worklane", "source_url", "host_path",
+-            "workspace_id", "lease_id", "environment_key", "skills",
+-            "max_runtime_seconds", "goal_mode", "goal_max_turns",
+-        )
+-        supplied = sorted(field for field in forbidden_fields if field in args)
++        intent_fields = {"title", "body", "parents", "assignee", "project"}
++        supplied = sorted(set(args) - intent_fields)
+         if supplied:
+             return tool_error(
+-                "managed worker tasks do not accept infrastructure fields: "
++                "managed worker tasks do not accept undeclared fields: "
+                 + ", ".join(supplied)
+             )
+     assignee = args.get("assignee")
+@@ -2012,11 +2018,10 @@ def _kanban_create_schema_overrides() -> dict:
+         assignee_schema["description"] += (
+             "\n\nAvailable lanes on this board:\n" + "\n".join(descriptions)
+         )
+-        for managed_field in (
+-            "workspace_kind", "workspace_path", "skills", "max_runtime_seconds",
+-            "goal_mode", "goal_max_turns",
+-        ):
+-            parameters["properties"].pop(managed_field, None)
++        intent_fields = ("title", "body", "parents", "assignee", "project")
++        parameters["properties"] = {
++            field: parameters["properties"][field] for field in intent_fields
++        }
+         parameters["required"] = ["title", "assignee"]
+         return {"parameters": parameters}
+     try:
+diff --git a/tools/memory_tool.py b/tools/memory_tool.py
+index bf4ae5b..3df2a41 100644
+--- a/tools/memory_tool.py
++++ b/tools/memory_tool.py
+@@ -52,12 +52,18 @@ logger = logging.getLogger(__name__)
+ # the default while trusted worker lanes can select a separate durable namespace.
+ def get_memory_dir() -> Path:
+     """Return the trusted lane namespace or profile-scoped memories directory."""
+-    worker_dir = os.environ.get("HERMES_WORKER_MEMORY_DIR")
+-    if worker_dir:
+-        path = Path(worker_dir)
+-        if not path.is_absolute():
+-            raise RuntimeError("HERMES_WORKER_MEMORY_DIR must be absolute")
+-        return path
++    from hermes_cli.worker_catalogue import load_current_worker_specification
++
++    worker_spec = load_current_worker_specification()
++    if worker_spec is not None and worker_spec.memory == "lane":
++        from hermes_cli import kanban_db as kb
++
++        return (
++            kb.kanban_home().parent
++            / "worker-memory"
++            / worker_spec.instance
++            / worker_spec.lane
++        )
+     return get_hermes_home() / "memories"
+ 
+ # Stable header prefixes for the system-prompt memory blocks rendered by
+diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
+index a58b8f6..ee064f2 100644
+--- a/tools/terminal_tool.py
++++ b/tools/terminal_tool.py
+@@ -1070,6 +1070,7 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
+ # This is never exposed to the model -- only infrastructure code calls it.
+ # Thread-safe because each task_id is unique per rollout.
+ _task_env_overrides: Dict[str, Dict[str, Any]] = {}
++_task_env_overrides_lock = threading.RLock()
+ # Raw session ownership is tracked separately from canonical environment
+ # identity. Shared environments can be used by multiple conversations; an
+ # agent may release only its own ownership token and must not tear down a
+@@ -1179,19 +1180,25 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
+         - modal_image: str -- Path to Dockerfile or Docker Hub image name
+         - docker_image: str -- Docker image name
+         - cwd: str -- Working directory inside the sandbox
++        - authority_binding_id: str -- Trusted broker authority identity
+ 
+     Args:
+         task_id: The rollout's unique task identifier
+         overrides: Dict of config keys to override
+     """
+-    _task_env_overrides[task_id] = overrides
++    with _task_env_overrides_lock:
++        existing = _task_env_overrides.get(task_id) or {}
++        merged = dict(overrides)
++        if "authority_binding_id" in existing and "authority_binding_id" not in merged:
++            merged["authority_binding_id"] = existing["authority_binding_id"]
++        _task_env_overrides[task_id] = merged
+ 
+     # If a live environment already exists for this task, a freshly registered
+     # ``cwd`` override (e.g. the ACP client switching the editor's project root
+     # mid-session via ``session/load`` / ``session/resume``) must take effect
+     # immediately. The session record is what commands resolve against;
+     # the live env's cwd is also updated so env-side seeding stays consistent.
+-    new_cwd = overrides.get("cwd")
++    new_cwd = merged.get("cwd")
+     if isinstance(new_cwd, str) and new_cwd.strip():
+         # A registered workspace cwd IS the session's working directory until
+         # a `cd` changes it.
+@@ -1214,14 +1221,27 @@ def clear_task_env_overrides(task_id: str):
+ 
+     Called during cleanup to avoid stale entries accumulating.
+     """
+-    _task_env_overrides.pop(task_id, None)
++    with _task_env_overrides_lock:
++        _task_env_overrides.pop(task_id, None)
+     clear_session_cwd(task_id)
+ 
+ 
++def register_task_authority_binding(task_id: str, authority_binding_id: str) -> None:
++    """Bind a trusted opaque broker authority identity to a task or session."""
++    if not isinstance(task_id, str) or not task_id.strip():
++        raise ValueError("task_id must be a non-empty string")
++    if not isinstance(authority_binding_id, str) or not authority_binding_id.strip():
++        raise ValueError("authority_binding_id must be a non-empty string")
++    with _task_env_overrides_lock:
++        overrides = dict(_task_env_overrides.get(task_id) or {})
++        overrides["authority_binding_id"] = authority_binding_id
++        _task_env_overrides[task_id] = overrides
++
++
+ # Derived environment keys are opaque: they never embed the platform
+ # session/conversation identifier, so engine metadata (container names,
+ # volume labels, process bookkeeping) cannot leak or be guessed from it.
+-_DERIVED_ENV_KEY_RE = re.compile(r"^conversation-[0-9a-f]{24}$")
++_DERIVED_ENV_KEY_RE = re.compile(r"^(?:conversation|authority)-[0-9a-f]{24}$")
+ 
+ # Overrides containing any of these keys request an isolated per-task
+ # sandbox (RL / benchmark rollouts); CWD-only overrides are *not*
+@@ -1269,6 +1289,13 @@ def trusted_session_key(
+     return default
+ 
+ 
++def _current_worker_specification():
++    """Load the lease-fenced specification for the current worker process."""
++    from hermes_cli.worker_catalogue import load_current_worker_specification
++
++    return load_current_worker_specification()
++
++
+ def environment_key(task_id: Optional[str] = None, session_id: Optional[str] = None) -> str:
+     """Derive the one canonical environment key for a tool surface.
+ 
+@@ -1301,20 +1328,42 @@ def environment_key(task_id: Optional[str] = None, session_id: Optional[str] = N
+     key is returned unchanged, so passing a resolved key back through any
+     surface cannot accidentally re-derive (and orphan) an environment.
+     """
+-    trusted_broker_key = os.environ.get("HERMES_BROKER_ENVIRONMENT_KEY", "").strip()
+-    if trusted_broker_key:
+-        # Dispatcher-spawned workers receive this exact pre-spawn key. It is
+-        # trusted lifecycle state, not model input; every surface must reuse it
+-        # instead of deriving a process-local key from a delegate session.
+-        return trusted_broker_key
++    worker_spec = _current_worker_specification()
++    if worker_spec is not None and worker_spec.provider == "broker-scratch":
++        from tools.environments.gondolin import broker_environment_key
++
++        return broker_environment_key(worker_spec.task_id or "")
+     scope = os.getenv("TERMINAL_ISOLATION_SCOPE", "shared").strip().lower()
+     identity = (session_id or task_id) if scope == "conversation" else task_id
++    with _task_env_overrides_lock:
++        overrides_by_raw = {
++            raw: dict(_task_env_overrides[raw])
++            for raw in (task_id, session_id)
++            if raw and raw in _task_env_overrides
++        }
++    authority_binding_id = None
++    authority_identity_source = None
++    for raw in (task_id, session_id):
++        overrides = overrides_by_raw.get(raw)
++        if overrides is None:
++            continue
++        candidate = overrides.get("authority_binding_id")
++        if isinstance(candidate, str) and candidate.strip():
++            authority_binding_id = candidate
++            authority_identity_source = raw
++            break
++    if authority_binding_id is not None:
++        authority_identity = "\x00".join(
++            (authority_identity_source, authority_binding_id)
++        )
++        digest = hashlib.sha256(authority_identity.encode("utf-8")).hexdigest()[:24]
++        return f"authority-{digest}"
+     # Backend-specific overrides are trusted infrastructure bindings and must
+     # win even when the caller has no task id but does have a session id.
+     for raw in (task_id, session_id):
+-        if raw and raw in _task_env_overrides:
+-            if set(_task_env_overrides[raw].keys()) & _ISOLATION_OVERRIDE_KEYS:
+-                return raw
++        overrides = overrides_by_raw.get(raw)
++        if overrides is not None and set(overrides.keys()) & _ISOLATION_OVERRIDE_KEYS:
++            return raw
+     if not identity:
+         return "default"
+     if _DERIVED_ENV_KEY_RE.match(identity):
+@@ -1338,12 +1387,12 @@ def resolve_task_overrides(task_id: Optional[str], session_id: Optional[str] = N
+     the single source of that lookup so the terminal and file layers can't
+     drift apart.
+     """
+-    return (
+-        _task_env_overrides.get(task_id or "")
+-        or _task_env_overrides.get(session_id or "")
+-        or _task_env_overrides.get(environment_key(task_id, session_id))
+-        or {}
+-    )
++    with _task_env_overrides_lock:
++        for key in (task_id or "", session_id or "", environment_key(task_id, session_id)):
++            overrides = _task_env_overrides.get(key)
++            if overrides is not None:
++                return dict(overrides)
++    return {}
+ 
+ 
+ # Configuration from environment variables
+@@ -1534,6 +1583,13 @@ def _get_env_config() -> Dict[str, Any]:
+                         "(host/relative path won't work in sandbox). Using %r instead.",
+                         cwd, env_type, default_cwd)
+             cwd = default_cwd
++    worker_spec = _current_worker_specification()
++    if worker_spec is not None and worker_spec.provider == "broker-scratch":
++        if env_type != "gondolin":
++            raise RuntimeError(
++                "worker_backend_mismatch: broker-scratch requires Gondolin"
++            )
++        cwd = "/workspace"
+ 
+     return {
+         "env_type": env_type,
