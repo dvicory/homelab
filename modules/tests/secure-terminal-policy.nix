@@ -200,7 +200,7 @@
         assert qaBrokerHardening.CapabilityBoundingSet == "";
         assert qaBrokerHardening.RestrictSUIDSGID;
         assert lib.any (
-          lib.hasPrefix "source-hermes-terminal-github:/run/agenix/hermes-qa-broker-github-pat"
+          lib.hasPrefix "source-hermes-terminal-github:/run/agenix/hermes-qa-github-pat"
         ) qaBrokerHardening.LoadCredential;
         assert !(prodGatewayEnvironment ? HERMES_WORKSPACE_HANDOFF);
         assert !(qaHost.systemd.services ? hermes-prod-broker);
