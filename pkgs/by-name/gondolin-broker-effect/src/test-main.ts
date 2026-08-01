@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { Effect } from "effect";
-import { BrokerLive } from "./broker-live.js";
+import { TestBrokerLive } from "./broker-live.js";
 import { serve } from "./server.js";
 
-NodeRuntime.runMain(serve.pipe(Effect.provide(BrokerLive)));
+NodeRuntime.runMain(serve.pipe(Effect.provide(TestBrokerLive)));

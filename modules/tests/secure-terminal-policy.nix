@@ -220,7 +220,7 @@
             export GONDOLIN_EFFECT_SOCKET="$TMPDIR/broker.sock"
             export GONDOLIN_EFFECT_CONTROL_SOCKET="$TMPDIR/control.sock"
             export GONDOLIN_EFFECT_WORKSPACE_HANDOFF=true
-            ${effectBroker}/bin/gondolin-broker-effect >"$TMPDIR/broker.log" 2>&1 &
+            node ${effectBroker}/lib/node_modules/gondolin-broker-effect/dist/test-main.js >"$TMPDIR/broker.log" 2>&1 &
             broker_pid=$!
             trap 'kill "$broker_pid" 2>/dev/null || true' EXIT
             for _ in $(seq 1 100); do
