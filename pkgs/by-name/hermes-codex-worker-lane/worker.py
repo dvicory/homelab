@@ -179,6 +179,57 @@ def _codex_command(
     return command
 
 
+def _broker_codex_command(command: list[str], workspace: Path) -> list[str]:
+    """Project one broker task root at the canonical model-facing path."""
+    if workspace.name != "work":
+        raise RuntimeError("broker workspace work plane must end in /work")
+    task_root = workspace.parent
+    workspace_storage_root = task_root.parent
+    bubblewrap = _required_env("BWRAP_EXECUTABLE")
+    return [
+        bubblewrap,
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-ipc",
+        "--bind",
+        "/",
+        "/",
+        "--dir",
+        "/workspace",
+        "--bind",
+        str(task_root),
+        "/workspace",
+        # Hide the gateway's physical broker storage path, including sibling
+        # task roots. The selected task remains available only at /workspace.
+        "--tmpfs",
+        str(workspace_storage_root),
+        "--tmpfs",
+        "/run/secrets",
+        "--proc",
+        "/proc",
+        "--chdir",
+        "/workspace/work",
+        *command,
+    ]
+
+
+def _codex_child_env(*, broker_workspace: bool) -> dict[str, str]:
+    child_env = dict(os.environ)
+    if not broker_workspace:
+        return child_env
+    child_env.pop("HERMES_WORKSPACE_HOST_PATH", None)
+    child_env["TERMINAL_CWD"] = "/workspace/work"
+    child_env["HERMES_WORKSPACE_ROOT"] = "/workspace"
+    child_env["HERMES_WORKSPACE_WORK_DIR"] = "/workspace/work"
+    child_env["HERMES_WORKSPACE_INPUTS_DIR"] = "/workspace/inputs"
+    child_env["HERMES_WORKSPACE_OUTPUT_DIR"] = "/workspace/output"
+    if child_env.get("GIT_CONFIG_KEY_0") == "safe.directory":
+        child_env["GIT_CONFIG_VALUE_0"] = "/workspace/work"
+    return child_env
+
+
 def _run_codex(
     workspace: Path,
     prompt: str,
@@ -196,17 +247,26 @@ def _run_codex(
         prefix=f"{task_id}-{run_id}-", dir=runs_dir
     ) as temp_dir:
         result_path = Path(temp_dir) / "last-message.json"
+        broker_workspace = output_plane is not None
+        command_workspace = Path("/workspace/work") if broker_workspace else workspace
+        command_output = Path("/workspace/output") if broker_workspace else output_plane
         command = _codex_command(
-            workspace, result_path, worker_spec, output_plane=output_plane
+            command_workspace,
+            result_path,
+            worker_spec,
+            output_plane=command_output,
         )
+        if broker_workspace:
+            command = _broker_codex_command(command, workspace)
         print(
             "[codex-worker] starting Codex "
-            f"task={task_id} run={run_id} workspace={workspace}",
+            f"task={task_id} run={run_id} workspace={command_workspace}",
             flush=True,
         )
         process = subprocess.Popen(
             command,
             cwd=workspace,
+            env=_codex_child_env(broker_workspace=broker_workspace),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { access, mkdir, mkdtemp, readFile } from "node:fs/promises"
+import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -32,6 +32,11 @@ const capture = (environmentKey, taskId, runId) => Effect.gen(function* () {
     workspaceLeaseId: acquired.lease.leaseId,
   })
   yield* Effect.promise(() => mkdir(path.join(resolved.workspacePath, "output"), { recursive: true }))
+  yield* Effect.promise(async () => {
+    const nested = path.join(resolved.workspacePath, "output", "nested")
+    await mkdir(nested)
+    await writeFile(path.join(nested, "result.txt"), "frozen output\n")
+  })
   const operations = yield* HandoffOperations
   return yield* operations.capture({
     finalizationId: `final-${taskId}-${runId}`,

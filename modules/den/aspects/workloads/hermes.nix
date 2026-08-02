@@ -222,6 +222,9 @@ let
         # The client talks only to the aspect-owned, rootless sandbox engine.
         # No container runtime daemon runs inside the gateway container.
         pkgs.docker-client
+        # External Codex workers use a per-process mount namespace so broker
+        # storage is visible only through the canonical /workspace planes.
+        pkgs.bubblewrap
         # This remains inert unless a runner enables the Nix-managed worker
         # plugin. Keeping it in the shared image lets QA and prod use one
         # artifact, and permits out-of-band subscription login with
@@ -557,7 +560,7 @@ in
               if secureTerminalEnabled && secureTerminalBackend == "gondolin" then
                 {
                   backend = "gondolin";
-                  cwd = "/workspace";
+                  cwd = "/workspace/work";
                   timeout = 180;
                   lifetime_seconds = secureTerminal.lifetimeSeconds or 900;
                 }
@@ -837,6 +840,7 @@ in
                   // lib.optionalAttrs codexEnabled (
                     {
                       CODEX_EXECUTABLE = lib.getExe (codexPackageFor host.system);
+                      BWRAP_EXECUTABLE = lib.getExe pkgs.bubblewrap;
                       CODEX_WORKER_LANES = builtins.toJSON codexLanes;
                     }
                     // lib.optionalAttrs (codexModel != null) {

@@ -282,6 +282,7 @@ const make = Effect.gen(function* () {
     }
   };
 
+
   const deleteHandoff = (handoffId: string): void => {
     try {
       database.transaction(() => {

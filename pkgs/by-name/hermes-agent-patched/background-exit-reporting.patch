@@ -1,8 +1,20 @@
 diff --git a/tests/tools/test_process_registry.py b/tests/tools/test_process_registry.py
-index beeb41f..4ac6bca 100644
+index beeb41f..425a781 100644
 --- a/tests/tools/test_process_registry.py
 +++ b/tests/tools/test_process_registry.py
-@@ -806,6 +806,43 @@ class TestSpawnEnvSanitization:
+@@ -772,6 +772,11 @@ class TestSpawnEnvSanitization:
+ 
+         args, kwargs = env.commands[0]
+         assert kwargs.get("rewrite_compound_background") is False
++        assert "nohup bash -lc" in args
++        assert "hermes_bg_" in args
++        assert ".exit.tmp" in args
++        assert "mv " in args
++        assert ") &" not in args
+ 
+     def test_env_poller_quotes_temp_paths_with_spaces(self, registry):
+         session = _make_session(sid="proc_space")
+@@ -806,6 +811,43 @@ class TestSpawnEnvSanitization:
          assert env.commands[1][0] == "kill -0 \"$(cat '/path with spaces/hermes_bg.pid' 2>/dev/null)\" 2>/dev/null; echo $?"
          assert env.commands[2][0] == "cat '/path with spaces/hermes_bg.exit' 2>/dev/null"
  
@@ -47,10 +59,36 @@ index beeb41f..4ac6bca 100644
  # =========================================================================
  # Popen leak prevention
 diff --git a/tools/process_registry.py b/tools/process_registry.py
-index c5d0289..665c667 100644
+index c5d0289..adc2eb9 100644
 --- a/tools/process_registry.py
 +++ b/tools/process_registry.py
-@@ -1003,6 +1003,7 @@ class ProcessRegistry:
+@@ -878,15 +878,23 @@ class ProcessRegistry:
+         log_path = f"{temp_dir}/hermes_bg_{session.id}.log"
+         pid_path = f"{temp_dir}/hermes_bg_{session.id}.pid"
+         exit_path = f"{temp_dir}/hermes_bg_{session.id}.exit"
++        exit_temp_path = f"{exit_path}.tmp"
+         quoted_command = shlex.quote(command)
+         quoted_temp_dir = shlex.quote(temp_dir)
+         quoted_log_path = shlex.quote(log_path)
+         quoted_pid_path = shlex.quote(pid_path)
+         quoted_exit_path = shlex.quote(exit_path)
++        quoted_exit_temp_path = shlex.quote(exit_temp_path)
++        runner_command = (
++            f"bash -lc {quoted_command}; "
++            f"rc=$?; printf '%s\\n' \"$rc\" > {quoted_exit_temp_path}; "
++            f"mv {quoted_exit_temp_path} {quoted_exit_path}; exit \"$rc\""
++        )
++        quoted_runner_command = shlex.quote(runner_command)
+         bg_command = (
+             f"mkdir -p {quoted_temp_dir} && "
+-            f"( nohup bash -lc {quoted_command} > {quoted_log_path} 2>&1; "
+-            f"rc=$?; printf '%s\\n' \"$rc\" > {quoted_exit_path} ) & "
++            f"nohup bash -lc {quoted_runner_command} "
++            f"> {quoted_log_path} 2>&1 </dev/null & "
+             f"echo $! > {quoted_pid_path} && cat {quoted_pid_path}"
+         )
+ 
+@@ -1003,6 +1011,7 @@ class ProcessRegistry:
          quoted_pid_path = shlex.quote(pid_path)
          quoted_exit_path = shlex.quote(exit_path)
          prev_output_len = 0  # track delta for watch pattern scanning
@@ -58,7 +96,7 @@ index c5d0289..665c667 100644
          while not session.exited:
              time.sleep(2)  # Poll every 2 seconds
              try:
-@@ -1035,9 +1036,22 @@ class ProcessRegistry:
+@@ -1035,9 +1044,22 @@ class ProcessRegistry:
                      )
                      exit_str = exit_result.get("output", "").strip()
                      try:

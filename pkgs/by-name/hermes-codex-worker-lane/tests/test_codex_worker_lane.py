@@ -101,6 +101,8 @@ def test_worker_environment_does_not_forward_gateway_secrets(plugin, monkeypatch
         plugin,
         "kanban_worker_identity_env",
         lambda *args, **kwargs: {
+            "BWRAP_EXECUTABLE": "/resolved/bwrap",
+            "CODEX_WORKER_LANES": '[{"name":"codex"}]',
             "PATH": "/bin",
             "PYTHONPATH": "/patched-hermes",
             "HERMES_KANBAN_TASK": "task-1",
@@ -114,6 +116,8 @@ def test_worker_environment_does_not_forward_gateway_secrets(plugin, monkeypatch
 
     assert env["HERMES_KANBAN_TASK"] == "task-1"
     assert env["PYTHONPATH"] == "/patched-hermes"
+    assert env["BWRAP_EXECUTABLE"] == "/resolved/bwrap"
+    assert env["CODEX_WORKER_LANES"] == '[{"name":"codex"}]'
     assert env["HERMES_BUNDLED_PLUGINS"] == "/nix/store/plugins"
     assert "TELEGRAM_BOT_TOKEN" not in env
     assert "OPENAI_API_KEY" not in env
@@ -267,6 +271,54 @@ def test_codex_command_rejects_missing_policy_facts(worker, monkeypatch, tmp_pat
 
     with pytest.raises(RuntimeError, match="must disable approvals"):
         worker._codex_command(tmp_path, tmp_path / "result.json", incomplete)
+
+
+def test_broker_codex_command_projects_only_canonical_workspace(worker, monkeypatch):
+    monkeypatch.setenv("BWRAP_EXECUTABLE", "/nix/store/bubblewrap/bin/bwrap")
+    workspace = Path("/home/hermes/broker-workspaces/task-1/work")
+    codex_command = [
+        "/nix/store/codex/bin/codex",
+        "exec",
+        "--cd",
+        "/workspace/work",
+    ]
+
+    command = worker._broker_codex_command(codex_command, workspace)
+
+    task_bind = command.index(str(workspace.parent))
+    assert command[task_bind - 1 : task_bind + 2] == [
+        "--bind",
+        str(workspace.parent),
+        "/workspace",
+    ]
+    storage_hide = command.index(str(workspace.parent.parent))
+    assert command[storage_hide - 1 : storage_hide + 1] == [
+        "--tmpfs",
+        str(workspace.parent.parent),
+    ]
+    assert command[-len(codex_command) :] == codex_command
+    assert "--unshare-user" in command
+    assert "--unshare-pid" in command
+    assert ["--chdir", "/workspace/work"] == command[-len(codex_command) - 2 : -len(codex_command)]
+
+
+def test_broker_codex_child_environment_hides_physical_workspace(worker, monkeypatch):
+    monkeypatch.setenv(
+        "HERMES_WORKSPACE_HOST_PATH",
+        "/home/hermes/broker-workspaces/task-1/work",
+    )
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "safe.directory")
+    monkeypatch.setenv(
+        "GIT_CONFIG_VALUE_0",
+        "/home/hermes/broker-workspaces/task-1/work",
+    )
+
+    child_env = worker._codex_child_env(broker_workspace=True)
+
+    assert "HERMES_WORKSPACE_HOST_PATH" not in child_env
+    assert child_env["TERMINAL_CWD"] == "/workspace/work"
+    assert child_env["HERMES_WORKSPACE_WORK_DIR"] == "/workspace/work"
+    assert child_env["GIT_CONFIG_VALUE_0"] == "/workspace/work"
 
 
 def test_broker_worker_requires_registered_completion_hook(worker, monkeypatch):

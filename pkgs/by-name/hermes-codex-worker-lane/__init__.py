@@ -14,8 +14,10 @@ from hermes_cli.worker_catalogue import WorkerResolutionError, WorkerSpecificati
 
 
 _WORKER_ENV_KEYS = {
+    "BWRAP_EXECUTABLE",
     "CODEX_EXECUTABLE",
     "CODEX_HOME",
+    "CODEX_WORKER_LANES",
     "GONDOLIN_EFFECT_CONTROL_SOCKET",
     "HERMES_HOME",
     "HERMES_BUNDLED_PLUGINS",

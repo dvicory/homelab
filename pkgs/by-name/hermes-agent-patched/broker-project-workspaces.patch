@@ -1,26 +1,5 @@
-From 9f1a2c4d8e7b4a3c9d5e6f7a8b9c0d1e2f3a4b5c Mon Sep 17 00:00:00 2001
-From: Daniel Vicory <dvicory@gmail.com>
-Date: Thu, 30 Jul 2026 14:30:00 -0700
-Subject: [PATCH] feat(broker): bind task runs to durable three-plane project workspaces
-
-Broker tasks now render the three-plane contract in the worker context
-(`/workspace/work`, read-only `/workspace/inputs`, writable `/workspace/output`)
-alongside the frozen Project, revision, source-generation binding, and
-effective permission. The trusted catalogue pins the broker-project provider
-revision, refuses untrusted Project providers, and leaves the source
-generation unset until trusted dispatch binds it through the broker resolve
-RPC instead of inventing one from the template.
-
-The pre-spawn workspace service activates the exact task run with the broker
-(resolve, acquire, activate) and reports the guest planes; the Gondolin
-client gains typed resolve_project_source and authority_status calls so
-trusted external workers map a durable workspace binding to its host work
-plane without ever seeing the guest path. Guest workers receive the plane
-layout and Project authority facts through the isolated environment contract.
----
-
 diff --git a/hermes_cli/kanban_db.py b/hermes_cli/kanban_db.py
-index 572acb6..7263a7c 100644
+index d846074..88c676f 100644
 --- a/hermes_cli/kanban_db.py
 +++ b/hermes_cli/kanban_db.py
 @@ -9059,7 +9059,22 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
@@ -218,8 +197,21 @@ index 5b5eec7..6c81559 100644
  
      assert module._on_pre_spawn(
          task_id=child_id,
+diff --git a/tests/tools/test_gondolin_backend.py b/tests/tools/test_gondolin_backend.py
+index 1c8a69c..0aaf23d 100644
+--- a/tests/tools/test_gondolin_backend.py
++++ b/tests/tools/test_gondolin_backend.py
+@@ -350,7 +350,7 @@ def test_broker_worker_surfaces_use_durable_backend_and_cwd(monkeypatch):
+     monkeypatch.setenv("TERMINAL_CWD", "/host/path")
+ 
+     config = terminal_tool._get_env_config()
+-    assert config["cwd"] == "/workspace"
++    assert config["cwd"] == "/workspace/work"
+     assert terminal_tool.environment_key("model-selected") == (
+         broker_environment_key("task-surface")
+     )
 diff --git a/tools/environments/gondolin.py b/tools/environments/gondolin.py
-index 343b8d5..ebbe770 100644
+index 343b8d5..312e696 100644
 --- a/tools/environments/gondolin.py
 +++ b/tools/environments/gondolin.py
 @@ -181,6 +181,36 @@ class BrokerClient:
@@ -277,3 +269,25 @@ index 343b8d5..ebbe770 100644
      def activate_task_run(
          self,
          *,
+@@ -481,7 +522,7 @@ class GondolinEnvironment(BaseEnvironment):
+ 
+     def __init__(
+         self,
+-        cwd: str = "/workspace",
++        cwd: str = "/workspace/work",
+         timeout: int = 180,
+         env: dict = None,
+         task_id: str = None,
+diff --git a/tools/terminal_tool.py b/tools/terminal_tool.py
+index ee064f2..f356f80 100644
+--- a/tools/terminal_tool.py
++++ b/tools/terminal_tool.py
+@@ -1589,7 +1589,7 @@ def _get_env_config() -> Dict[str, Any]:
+             raise RuntimeError(
+                 "worker_backend_mismatch: broker-scratch requires Gondolin"
+             )
+-        cwd = "/workspace"
++        cwd = "/workspace/work"
+ 
+     return {
+         "env_type": env_type,
