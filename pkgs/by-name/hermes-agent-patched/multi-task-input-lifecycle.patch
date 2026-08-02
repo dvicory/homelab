@@ -1,7 +1,8 @@
-diff -r hermes-lifecycle-before/hermes_cli/kanban.py hermes-lifecycle-after/hermes_cli/kanban.py
+diff --git hermes-lifecycle-before/hermes_cli/kanban.py hermes-lifecycle-after/hermes_cli/kanban.py
+index c6f9688..4258437 100644
 --- hermes-lifecycle-before/hermes_cli/kanban.py
 +++ hermes-lifecycle-after/hermes_cli/kanban.py
-@@ -17,6 +17,7 @@
+@@ -17,6 +17,7 @@ from __future__ import annotations
  import argparse
  import contextlib
  import json
@@ -9,7 +10,7 @@ diff -r hermes-lifecycle-before/hermes_cli/kanban.py hermes-lifecycle-after/herm
  import os
  import shlex
  import sys
-@@ -29,6 +30,10 @@
+@@ -29,6 +30,10 @@ from hermes_cli import kanban_swarm as ks
  from hermes_cli.profiles import get_active_profile_name
  
  
@@ -20,7 +21,7 @@ diff -r hermes-lifecycle-before/hermes_cli/kanban.py hermes-lifecycle-after/herm
  # ---------------------------------------------------------------------------
  # Small formatting helpers
  # ---------------------------------------------------------------------------
-@@ -2214,6 +2219,67 @@
+@@ -2214,6 +2219,67 @@ def _cmd_promote(args: argparse.Namespace) -> int:
      return 0 if not failed else 1
  
  
@@ -88,7 +89,7 @@ diff -r hermes-lifecycle-before/hermes_cli/kanban.py hermes-lifecycle-after/herm
  def _cmd_archive(args: argparse.Namespace) -> int:
      ids = list(args.task_ids or [])
      purge_ids = list(getattr(args, "purge_ids", None) or [])
-@@ -2239,6 +2305,7 @@
+@@ -2239,6 +2305,7 @@ def _cmd_archive(args: argparse.Namespace) -> int:
                  print(f"cannot archive {tid}", file=sys.stderr)
              else:
                  print(f"Archived {tid}")
@@ -96,22 +97,26 @@ diff -r hermes-lifecycle-before/hermes_cli/kanban.py hermes-lifecycle-after/herm
      return 0 if not failed else 1
  
  
-diff -r hermes-lifecycle-before/plugins/workspace-service/__init__.py hermes-lifecycle-after/plugins/workspace-service/__init__.py
+diff --git hermes-lifecycle-before/plugins/workspace-service/__init__.py hermes-lifecycle-after/plugins/workspace-service/__init__.py
+index 1d47213..e39b8e6 100644
 --- hermes-lifecycle-before/plugins/workspace-service/__init__.py
 +++ hermes-lifecycle-after/plugins/workspace-service/__init__.py
-@@ -198,6 +198,77 @@
+@@ -198,6 +198,83 @@ def _bind_source_generation(conn: Any, client: BrokerClient, task_id: str, run_i
      return rebound
  
  
 +_reconciled_boards: set[str] = set()
 +
 +
-+def _push_archive_reclaim(conn: Any, client: BrokerClient, board: str, task_id: str) -> None:
++def _push_archive_reclaim(
++    conn: Any, client: BrokerClient, board: str, task_id: str
++) -> bool:
 +    """Best-effort broker pushes for one archived task.
 +
-+    Releases any input preparations the task held as a destination and marks
-+    every handoff it produced reclaimable.  Idempotent on the broker side.
++    Returns whether every required idempotent broker operation was delivered,
++    so reconciliation retries transport failures from durable Kanban records.
 +    """
++    delivered = True
 +    try:
 +        client.release_task_run_inputs(
 +            environment_key=broker_environment_key(task_id),
@@ -119,7 +124,7 @@ diff -r hermes-lifecycle-before/plugins/workspace-service/__init__.py hermes-lif
 +            task_id=task_id,
 +        )
 +    except Exception:
-+        pass
++        delivered = False
 +    handoff_ids: list[str] = []
 +    for event in kb._internal_events_for(conn, task_id, "workspace_capture"):
 +        payload = event.payload if isinstance(event.payload, dict) else {}
@@ -130,7 +135,8 @@ diff -r hermes-lifecycle-before/plugins/workspace-service/__init__.py hermes-lif
 +        try:
 +            client.mark_handoffs_reclaimable(handoff_ids)
 +        except Exception:
-+            pass
++            delivered = False
++    return delivered
 +
 +
 +def _reconcile_archived_once(conn: Any, client: BrokerClient, board: str) -> None:
@@ -141,17 +147,19 @@ diff -r hermes-lifecycle-before/plugins/workspace-service/__init__.py hermes-lif
 +    """
 +    if board in _reconciled_boards:
 +        return
-+    _reconciled_boards.add(board)
 +    try:
 +        rows = conn.execute(
 +            "SELECT DISTINCT task_id FROM task_events "
 +            "WHERE kind = 'workspace_capture' AND task_id IN "
 +            "(SELECT id FROM tasks WHERE status = 'archived')"
 +        ).fetchall()
-+        for row in rows:
-+            _push_archive_reclaim(conn, client, board, row[0])
++        delivered = all(
++            _push_archive_reclaim(conn, client, board, row[0]) for row in rows
++        )
 +    except Exception:
-+        _reconciled_boards.discard(board)
++        return
++    if delivered:
++        _reconciled_boards.add(board)
 +
 +
 +def _input_generation_for(conn: Any, task_id: str, run_id: int) -> Any:
@@ -177,7 +185,7 @@ diff -r hermes-lifecycle-before/plugins/workspace-service/__init__.py hermes-lif
  def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[str, bool]:
      if not _enabled():
          raise RuntimeError("workspace handoff is disabled")
-@@ -205,6 +276,7 @@
+@@ -205,6 +282,7 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
      client = _client()
      try:
          with contextlib.closing(kb.connect(board=board)) as conn:
@@ -185,7 +193,7 @@ diff -r hermes-lifecycle-before/plugins/workspace-service/__init__.py hermes-lif
              task = kb.get_task(conn, task_id)
              if task is None or task.workspace_kind != "broker" or task.status != "running":
                  raise RuntimeError("workspace destination is stale")
-@@ -217,7 +289,37 @@
+@@ -217,7 +295,37 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
                  conn, client, task_id, int(run_id), specification
              )
              authority = _authority_for_specification(specification)
@@ -223,7 +231,7 @@ diff -r hermes-lifecycle-before/plugins/workspace-service/__init__.py hermes-lif
          binding = client.acquire_workspace(destination_key)
          client.activate_task_run(
              board=board,
-@@ -227,6 +329,9 @@
+@@ -227,6 +335,9 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
              workspace_id=binding["workspaceId"],
              workspace_lease_id=binding["workspaceLeaseId"],
              authority=authority,
@@ -233,13 +241,16 @@ diff -r hermes-lifecycle-before/plugins/workspace-service/__init__.py hermes-lif
          )
      except BrokerError:
          raise
-diff -r hermes-lifecycle-before/tests/hermes_cli/test_input_reclaim_guards.py hermes-lifecycle-after/tests/hermes_cli/test_input_reclaim_guards.py
+diff --git hermes-lifecycle-before/tests/hermes_cli/test_input_reclaim_guards.py hermes-lifecycle-after/tests/hermes_cli/test_input_reclaim_guards.py
+index e69de29..d5baa9a 100644
 --- hermes-lifecycle-before/tests/hermes_cli/test_input_reclaim_guards.py
 +++ hermes-lifecycle-after/tests/hermes_cli/test_input_reclaim_guards.py
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,154 @@
 +from __future__ import annotations
 +
 +import argparse
++import importlib.util
++from pathlib import Path
 +
 +import pytest
 +
@@ -314,10 +325,86 @@ diff -r hermes-lifecycle-before/tests/hermes_cli/test_input_reclaim_guards.py he
 +    assert result == 0
 +    with kb.connect_closing() as connection:
 +        assert kb.get_task(connection, task_id).status == "archived"
-diff -r hermes-lifecycle-before/tests/tools/test_gondolin_backend.py hermes-lifecycle-after/tests/tools/test_gondolin_backend.py
++
++
++@pytest.mark.parametrize(
++    ("release_fails", "mark_fails"),
++    [(True, False), (False, True), (True, True)],
++)
++def test_archive_reconciliation_retries_partial_broker_delivery(
++    conn, monkeypatch, release_fails, mark_fails
++):
++    monkeypatch.setenv("HERMES_SANDBOX_AUTHORITY_BINDING", "reclaim-test")
++    producer = kb.create_task(conn, title="producer", workspace_kind="broker")
++    conn.execute(
++        "UPDATE tasks SET status = 'done', completed_at = 10 WHERE id = ?",
++        (producer,),
++    )
++    conn.commit()
++    kb.append_workspace_capture(
++        conn,
++        producer,
++        run_id=1,
++        handoff_id="handoff-producer-1",
++        finalization_id="finalization-producer-1",
++        artifacts=[],
++    )
++    assert kb.archive_task(conn, producer) is True
++
++    plugin_path = (
++        Path(__file__).parents[2] / "plugins" / "workspace-service" / "__init__.py"
++    )
++    spec = importlib.util.spec_from_file_location(
++        f"workspace_service_reclaim_{release_fails}_{mark_fails}", plugin_path
++    )
++    assert spec and spec.loader
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++
++    class Client:
++        def __init__(self):
++            self.release_fails = release_fails
++            self.mark_fails = mark_fails
++            self.release_calls = []
++            self.mark_calls = []
++
++        def release_task_run_inputs(self, **kwargs):
++            self.release_calls.append(kwargs)
++            if self.release_fails:
++                raise ConnectionError("release unavailable")
++
++        def mark_handoffs_reclaimable(self, handoff_ids):
++            self.mark_calls.append(handoff_ids)
++            if self.mark_fails:
++                raise ConnectionError("mark unavailable")
++
++    client = Client()
++    module._reconcile_archived_once(conn, client, "default")
++    assert len(client.release_calls) == 1
++    assert client.mark_calls == [["handoff-producer-1"]]
++
++    client.release_fails = False
++    client.mark_fails = False
++    module._reconcile_archived_once(conn, client, "default")
++    assert len(client.release_calls) == 2
++    assert client.mark_calls == [
++        ["handoff-producer-1"],
++        ["handoff-producer-1"],
++    ]
++    assert client.release_calls[-1] == {
++        "environment_key": module.broker_environment_key(producer),
++        "board": "default",
++        "task_id": producer,
++    }
++
++    module._reconcile_archived_once(conn, client, "default")
++    assert len(client.release_calls) == 2
++    assert len(client.mark_calls) == 2
+diff --git hermes-lifecycle-before/tests/tools/test_gondolin_backend.py hermes-lifecycle-after/tests/tools/test_gondolin_backend.py
+index 1c8a69c..cb8fa0a 100644
 --- hermes-lifecycle-before/tests/tools/test_gondolin_backend.py
 +++ hermes-lifecycle-after/tests/tools/test_gondolin_backend.py
-@@ -282,7 +282,80 @@
+@@ -282,7 +282,80 @@ def test_immediate_broker_error_is_retained_before_handle_publication(monkeypatc
      assert "[broker error] policy.denied: command blocked" in handle.output
  
  
@@ -399,7 +486,7 @@ diff -r hermes-lifecycle-before/tests/tools/test_gondolin_backend.py hermes-life
      calls = []
      client = BrokerClient.__new__(BrokerClient)
      client._timeout = 1.0
-@@ -317,6 +390,9 @@
+@@ -317,6 +390,9 @@ def test_control_activation_matches_worker_execution_identity(monkeypatch):
              "authorityClass": "research",
              "policyRevision": "c" * 64,
          },
@@ -409,7 +496,7 @@ diff -r hermes-lifecycle-before/tests/tools/test_gondolin_backend.py hermes-life
      )
      activation_payload = calls[0][1]
      execution_payload = client._execution_payload(
-@@ -332,6 +408,14 @@
+@@ -332,6 +408,14 @@ def test_control_activation_matches_worker_execution_identity(monkeypatch):
      assert activation_payload["workspaceLeaseId"] == "lease-test"
      assert activation_payload["taskId"] == execution_payload["taskRun"]["taskId"]
      assert activation_payload["runId"] == execution_payload["taskRun"]["runId"]
@@ -424,10 +511,11 @@ diff -r hermes-lifecycle-before/tests/tools/test_gondolin_backend.py hermes-life
      assert BrokerClient._trusted_environment_key() == environment_key
      assert "HERMES_BROKER_ENVIRONMENT_KEY" not in os.environ
  
-diff -r hermes-lifecycle-before/tools/environments/gondolin.py hermes-lifecycle-after/tools/environments/gondolin.py
+diff --git hermes-lifecycle-before/tools/environments/gondolin.py hermes-lifecycle-after/tools/environments/gondolin.py
+index ebbe770..49f8a27 100644
 --- hermes-lifecycle-before/tools/environments/gondolin.py
 +++ hermes-lifecycle-after/tools/environments/gondolin.py
-@@ -278,6 +278,96 @@
+@@ -278,6 +278,96 @@ class BrokerClient:
              "workspaceLeaseId": self._required_text(body, "workspaceLeaseId"),
          }
  
@@ -524,7 +612,7 @@ diff -r hermes-lifecycle-before/tools/environments/gondolin.py hermes-lifecycle-
      def activate_task_run(
          self,
          *,
-@@ -288,6 +378,9 @@
+@@ -288,6 +378,9 @@ class BrokerClient:
          workspace_id: str,
          workspace_lease_id: str,
          authority: dict,
@@ -534,7 +622,7 @@ diff -r hermes-lifecycle-before/tools/environments/gondolin.py hermes-lifecycle-
      ) -> dict:
          task_run = broker_task_run(board, task_id, run_id)
          body = self._json_post(
-@@ -299,6 +392,21 @@
+@@ -299,6 +392,21 @@ class BrokerClient:
                  **authority,
                  "workspaceId": workspace_id,
                  "workspaceLeaseId": workspace_lease_id,
