@@ -185,7 +185,7 @@ diff -r hermes-lifecycle-before/plugins/workspace-service/__init__.py hermes-lif
              task = kb.get_task(conn, task_id)
              if task is None or task.workspace_kind != "broker" or task.status != "running":
                  raise RuntimeError("workspace destination is stale")
-@@ -217,7 +289,37 @@
+@@ -217,7 +289,33 @@
                  conn, client, task_id, int(run_id), specification
              )
              authority = _authority_for_specification(specification)
@@ -210,20 +210,16 @@ diff -r hermes-lifecycle-before/plugins/workspace-service/__init__.py hermes-lif
 +                lane_revision=specification.lane_revision,
 +                policy_revision=specification.policy_revision,
 +                limits=limits,
-+                inputs=[
-+                    {
-+                        "producerTaskId": str(binding["producerTaskId"]),
-+                        "producerRunId": int(binding["producerRunId"]),
-+                        "handoffId": str(binding["handoffId"]),
-+                    }
-+                    for binding in generation["bindings"]
-+                ],
++                # The frozen generation is already the canonical, digest-bound
++                # producer provenance record. Pass it intact to the wire
++                # adapter instead of maintaining a lossy second projection.
++                inputs=list(generation["bindings"]),
 +            )
 +            preparation_id = str(preparation["preparationId"])
          binding = client.acquire_workspace(destination_key)
          client.activate_task_run(
              board=board,
-@@ -227,6 +329,7 @@
+@@ -227,6 +325,7 @@
              workspace_id=binding["workspaceId"],
              workspace_lease_id=binding["workspaceLeaseId"],
              authority=authority,
@@ -315,11 +311,55 @@ diff -r hermes-lifecycle-before/tests/hermes_cli/test_input_reclaim_guards.py he
 diff -r hermes-lifecycle-before/tests/tools/test_gondolin_backend.py hermes-lifecycle-after/tests/tools/test_gondolin_backend.py
 --- hermes-lifecycle-before/tests/tools/test_gondolin_backend.py
 +++ hermes-lifecycle-after/tests/tools/test_gondolin_backend.py
-@@ -282,7 +282,13 @@
+@@ -282,13 +282,63 @@
      assert "[broker error] policy.denied: command blocked" in handle.output
  
  
 -def test_control_activation_matches_worker_execution_identity(monkeypatch):
++def test_input_preparation_preserves_frozen_producer_provenance():
+     calls = []
+     client = BrokerClient.__new__(BrokerClient)
+     client._timeout = 1.0
+ 
+     def fake_post(route, payload, timeout=None):
+         calls.append((route, payload))
++        return {"preparationId": "preparation-test", "inputs": []}
++
++    client._json_post = fake_post
++    client.prepare_task_run_inputs(
++        environment_key="destination-test",
++        board="homelab",
++        task_id="t_destination",
++        run_id=8,
++        generation=1,
++        digest="a" * 64,
++        lane="research",
++        lane_revision="b" * 64,
++        policy_revision="c" * 64,
++        limits={"maxInputs": 2},
++        inputs=[
++            {
++                "producerTaskId": "t_producer",
++                "producerRunId": 7,
++                "producerLane": "research",
++                "handoffId": "handoff-test",
++                "project": "homelab",
++                "sourceGeneration": "d" * 64,
++            }
++        ],
++    )
++
++    assert calls[0][0] == "/v1/control/task-run-inputs/prepare"
++    input_payload = calls[0][1]["inputs"][0]
++    assert input_payload["producerTaskId"].endswith(":t_producer")
++    assert input_payload["producerRunId"].endswith(":r7")
++    assert input_payload["producerLane"] == "research"
++    assert input_payload["producerProject"] == "homelab"
++    assert input_payload["producerSourceGeneration"] == "d" * 64
++    assert input_payload["mountName"] == "t_producer"
++    assert input_payload["handoffId"] == "handoff-test"
++
++
 +@pytest.mark.parametrize(
 +    ("input_preparation_id", "expected_input_preparation_id"),
 +    [(None, None), ("preparation-test", "preparation-test")],
@@ -327,10 +367,16 @@ diff -r hermes-lifecycle-before/tests/tools/test_gondolin_backend.py hermes-life
 +def test_control_activation_matches_worker_execution_identity(
 +    monkeypatch, input_preparation_id, expected_input_preparation_id
 +):
-     calls = []
-     client = BrokerClient.__new__(BrokerClient)
-     client._timeout = 1.0
-@@ -317,6 +323,7 @@
++    calls = []
++    client = BrokerClient.__new__(BrokerClient)
++    client._timeout = 1.0
++
++    def fake_post(route, payload, timeout=None):
++        calls.append((route, payload))
+         if route == "/v1/control/task-runs/activate":
+             return {"activation": {"activationId": "activation-test"}}
+         raise AssertionError(route)
+@@ -317,6 +367,7 @@
              "authorityClass": "research",
              "policyRevision": "c" * 64,
          },
@@ -338,7 +384,7 @@ diff -r hermes-lifecycle-before/tests/tools/test_gondolin_backend.py hermes-life
      )
      activation_payload = calls[0][1]
      execution_payload = client._execution_payload(
-@@ -332,6 +339,10 @@
+@@ -332,6 +383,10 @@
      assert activation_payload["workspaceLeaseId"] == "lease-test"
      assert activation_payload["taskId"] == execution_payload["taskRun"]["taskId"]
      assert activation_payload["runId"] == execution_payload["taskRun"]["runId"]
