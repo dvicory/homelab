@@ -1,17 +1,7 @@
-From bcf4d59fa52653d1fbb245cf2c202d7c2bbd87a1 Mon Sep 17 00:00:00 2001
-From: Daniel Vicory <dvicory@gmail.com>
-Date: Sat, 1 Aug 2026 02:00:00 -0700
-Subject: [PATCH] feat(workspaces): prepare and retire immutable task inputs
-
-Prepare exact input generations before broker activation, pass opaque handoff bindings through the trusted Gondolin control client, release destination references on finalization or archive, and mark producer handoffs reclaimable only after archive.
-
-Startup reconciliation replays missed archive pushes; no model-facing API receives handoff, mount, lease, or provider selectors.
----
-diff --git a/hermes_cli/kanban.py b/hermes_cli/kanban.py
-index c6f9688..4258437 100644
---- a/hermes_cli/kanban.py
-+++ b/hermes_cli/kanban.py
-@@ -17,6 +17,7 @@ from __future__ import annotations
+diff -r hermes-lifecycle-before/hermes_cli/kanban.py hermes-lifecycle-after/hermes_cli/kanban.py
+--- hermes-lifecycle-before/hermes_cli/kanban.py
++++ hermes-lifecycle-after/hermes_cli/kanban.py
+@@ -17,6 +17,7 @@
  import argparse
  import contextlib
  import json
@@ -19,7 +9,7 @@ index c6f9688..4258437 100644
  import os
  import shlex
  import sys
-@@ -29,6 +30,10 @@ from hermes_cli import kanban_swarm as ks
+@@ -29,6 +30,10 @@
  from hermes_cli.profiles import get_active_profile_name
  
  
@@ -30,7 +20,7 @@ index c6f9688..4258437 100644
  # ---------------------------------------------------------------------------
  # Small formatting helpers
  # ---------------------------------------------------------------------------
-@@ -2214,6 +2219,67 @@ def _cmd_promote(args: argparse.Namespace) -> int:
+@@ -2214,6 +2219,67 @@
      return 0 if not failed else 1
  
  
@@ -98,7 +88,7 @@ index c6f9688..4258437 100644
  def _cmd_archive(args: argparse.Namespace) -> int:
      ids = list(args.task_ids or [])
      purge_ids = list(getattr(args, "purge_ids", None) or [])
-@@ -2239,6 +2305,7 @@ def _cmd_archive(args: argparse.Namespace) -> int:
+@@ -2239,6 +2305,7 @@
                  print(f"cannot archive {tid}", file=sys.stderr)
              else:
                  print(f"Archived {tid}")
@@ -106,11 +96,10 @@ index c6f9688..4258437 100644
      return 0 if not failed else 1
  
  
-diff --git a/plugins/workspace-service/__init__.py b/plugins/workspace-service/__init__.py
-index 1d47213..235d252 100644
---- a/plugins/workspace-service/__init__.py
-+++ b/plugins/workspace-service/__init__.py
-@@ -198,6 +198,77 @@ def _bind_source_generation(conn: Any, client: BrokerClient, task_id: str, run_i
+diff -r hermes-lifecycle-before/plugins/workspace-service/__init__.py hermes-lifecycle-after/plugins/workspace-service/__init__.py
+--- hermes-lifecycle-before/plugins/workspace-service/__init__.py
++++ hermes-lifecycle-after/plugins/workspace-service/__init__.py
+@@ -198,6 +198,77 @@
      return rebound
  
  
@@ -188,7 +177,7 @@ index 1d47213..235d252 100644
  def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[str, bool]:
      if not _enabled():
          raise RuntimeError("workspace handoff is disabled")
-@@ -205,6 +276,7 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
+@@ -205,6 +276,7 @@
      client = _client()
      try:
          with contextlib.closing(kb.connect(board=board)) as conn:
@@ -196,7 +185,7 @@ index 1d47213..235d252 100644
              task = kb.get_task(conn, task_id)
              if task is None or task.workspace_kind != "broker" or task.status != "running":
                  raise RuntimeError("workspace destination is stale")
-@@ -217,7 +289,37 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
+@@ -217,7 +289,37 @@
                  conn, client, task_id, int(run_id), specification
              )
              authority = _authority_for_specification(specification)
@@ -234,7 +223,7 @@ index 1d47213..235d252 100644
          binding = client.acquire_workspace(destination_key)
          client.activate_task_run(
              board=board,
-@@ -227,6 +329,7 @@ def _on_pre_spawn(*, task_id: str, board: str, run_id: int, **_: Any) -> dict[st
+@@ -227,6 +329,7 @@
              workspace_id=binding["workspaceId"],
              workspace_lease_id=binding["workspaceLeaseId"],
              authority=authority,
@@ -242,11 +231,9 @@ index 1d47213..235d252 100644
          )
      except BrokerError:
          raise
-diff --git a/var/folders/1l/zc5_6cyd57gbxrmvvq8_jv6h0000gn/T/tmp.o4OYq97Pfa/after-multi-task-input-lifecycle.patch/tests/hermes_cli/test_input_reclaim_guards.py b/tests/hermes_cli/test_input_reclaim_guards.py
-new file mode 100644
-index 0000000..c509463
---- /dev/null
-+++ b/tests/hermes_cli/test_input_reclaim_guards.py
+diff -r hermes-lifecycle-before/tests/hermes_cli/test_input_reclaim_guards.py hermes-lifecycle-after/tests/hermes_cli/test_input_reclaim_guards.py
+--- hermes-lifecycle-before/tests/hermes_cli/test_input_reclaim_guards.py
++++ hermes-lifecycle-after/tests/hermes_cli/test_input_reclaim_guards.py
 @@ -0,0 +1,77 @@
 +from __future__ import annotations
 +
@@ -325,11 +312,47 @@ index 0000000..c509463
 +    assert result == 0
 +    with kb.connect_closing() as connection:
 +        assert kb.get_task(connection, task_id).status == "archived"
-diff --git a/tools/environments/gondolin.py b/tools/environments/gondolin.py
-index ebbe770..fedfd2d 100644
---- a/tools/environments/gondolin.py
-+++ b/tools/environments/gondolin.py
-@@ -278,6 +278,91 @@ class BrokerClient:
+diff -r hermes-lifecycle-before/tests/tools/test_gondolin_backend.py hermes-lifecycle-after/tests/tools/test_gondolin_backend.py
+--- hermes-lifecycle-before/tests/tools/test_gondolin_backend.py
++++ hermes-lifecycle-after/tests/tools/test_gondolin_backend.py
+@@ -282,7 +282,13 @@
+     assert "[broker error] policy.denied: command blocked" in handle.output
+ 
+ 
+-def test_control_activation_matches_worker_execution_identity(monkeypatch):
++@pytest.mark.parametrize(
++    ("input_preparation_id", "expected_input_preparation_id"),
++    [(None, None), ("preparation-test", "preparation-test")],
++)
++def test_control_activation_matches_worker_execution_identity(
++    monkeypatch, input_preparation_id, expected_input_preparation_id
++):
+     calls = []
+     client = BrokerClient.__new__(BrokerClient)
+     client._timeout = 1.0
+@@ -317,6 +323,7 @@
+             "authorityClass": "research",
+             "policyRevision": "c" * 64,
+         },
++        input_preparation_id=input_preparation_id,
+     )
+     activation_payload = calls[0][1]
+     execution_payload = client._execution_payload(
+@@ -332,6 +339,10 @@
+     assert activation_payload["workspaceLeaseId"] == "lease-test"
+     assert activation_payload["taskId"] == execution_payload["taskRun"]["taskId"]
+     assert activation_payload["runId"] == execution_payload["taskRun"]["runId"]
++    if expected_input_preparation_id is None:
++        assert "inputPreparationId" not in activation_payload
++    else:
++        assert activation_payload["inputPreparationId"] == expected_input_preparation_id
+     assert BrokerClient._trusted_environment_key() == environment_key
+     assert "HERMES_BROKER_ENVIRONMENT_KEY" not in os.environ
+ 
+diff -r hermes-lifecycle-before/tools/environments/gondolin.py hermes-lifecycle-after/tools/environments/gondolin.py
+--- hermes-lifecycle-before/tools/environments/gondolin.py
++++ hermes-lifecycle-after/tools/environments/gondolin.py
+@@ -278,6 +278,91 @@
              "workspaceLeaseId": self._required_text(body, "workspaceLeaseId"),
          }
  
@@ -421,7 +444,7 @@ index ebbe770..fedfd2d 100644
      def activate_task_run(
          self,
          *,
-@@ -288,6 +373,7 @@ class BrokerClient:
+@@ -288,6 +373,7 @@
          workspace_id: str,
          workspace_lease_id: str,
          authority: dict,
@@ -429,11 +452,15 @@ index ebbe770..fedfd2d 100644
      ) -> dict:
          task_run = broker_task_run(board, task_id, run_id)
          body = self._json_post(
-@@ -299,6 +385,7 @@ class BrokerClient:
+@@ -299,6 +385,11 @@
                  **authority,
                  "workspaceId": workspace_id,
                  "workspaceLeaseId": workspace_lease_id,
-+                "inputPreparationId": input_preparation_id,
++                **(
++                    {"inputPreparationId": input_preparation_id}
++                    if input_preparation_id is not None
++                    else {}
++                ),
              },
          )
          activation = body.get("activation")
