@@ -30,6 +30,14 @@ _WORKER_ENV_KEYS = {
     "TMPDIR",
 }
 
+
+def _allow_assigned_git_workspace(env: dict[str, str], path: Path) -> None:
+    """Trust only the resolved task-private repository for Git ownership checks."""
+    env["GIT_CONFIG_COUNT"] = "1"
+    env["GIT_CONFIG_KEY_0"] = "safe.directory"
+    env["GIT_CONFIG_VALUE_0"] = str(path)
+
+
 _WORKSPACE_DATA_ENV = "HERMES_BROKER_WORKSPACE_DATA"
 
 
@@ -169,6 +177,7 @@ def _spawn_codex_worker(
     path = _broker_work_plane(task) if is_broker else _validated_workspace(workspace)
     _resolved_worker_spec(task, lane)
     env = _isolated_worker_env(task, board=board)
+    _allow_assigned_git_workspace(env, path)
     if is_broker:
         # The worker subprocess maps the durable broker binding to its
         # host-side planes; it never sees the guest mount path.

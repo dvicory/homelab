@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import subprocess
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -115,6 +117,80 @@ def test_worker_environment_does_not_forward_gateway_secrets(plugin, monkeypatch
     assert env["HERMES_BUNDLED_PLUGINS"] == "/nix/store/plugins"
     assert "TELEGRAM_BOT_TOKEN" not in env
     assert "OPENAI_API_KEY" not in env
+
+
+def test_git_trust_is_limited_to_assigned_workspace(plugin, tmp_path):
+    workspace = tmp_path / "broker-workspace" / "work"
+    workspace.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    env = {**os.environ, "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"}
+
+    denied = subprocess.run(
+        ["git", "status", "--short"],
+        cwd=workspace,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert denied.returncode == 128
+    assert "dubious ownership" in denied.stderr
+
+    plugin._allow_assigned_git_workspace(env, workspace)
+    allowed = subprocess.run(
+        ["git", "status", "--short"],
+        cwd=workspace,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert allowed.returncode == 0
+    assert env["GIT_CONFIG_COUNT"] == "1"
+    assert env["GIT_CONFIG_KEY_0"] == "safe.directory"
+    assert env["GIT_CONFIG_VALUE_0"] == str(workspace)
+    assert "*" not in env.values()
+
+
+def test_spawn_scopes_git_trust_to_resolved_work_plane(
+    plugin, monkeypatch, tmp_path
+):
+    workspace = tmp_path / "broker-workspace" / "work"
+    workspace.mkdir(parents=True)
+    captured = {}
+    task = SimpleNamespace(
+        id="task-1",
+        workspace_kind="broker",
+        branch_name=None,
+    )
+    monkeypatch.setattr(plugin, "_broker_work_plane", lambda _task: workspace)
+    monkeypatch.setattr(plugin, "_resolved_worker_spec", lambda *_args: None)
+    monkeypatch.setattr(
+        plugin,
+        "_isolated_worker_env",
+        lambda *_args, **_kwargs: {"PATH": "/bin"},
+    )
+    monkeypatch.setattr(
+        plugin.kanban_db,
+        "worker_log_path",
+        lambda *_args, **_kwargs: tmp_path / "worker.log",
+    )
+
+    class Process:
+        pid = 1234
+
+    def popen(_command, **kwargs):
+        captured.update(kwargs)
+        return Process()
+
+    monkeypatch.setattr(plugin.subprocess, "Popen", popen)
+
+    assert plugin._spawn_codex_worker(task, "/unused", board="homelab", lane={}) == 1234
+    assert captured["cwd"] == workspace
+    assert captured["env"]["GIT_CONFIG_COUNT"] == "1"
+    assert captured["env"]["GIT_CONFIG_KEY_0"] == "safe.directory"
+    assert captured["env"]["GIT_CONFIG_VALUE_0"] == str(workspace)
 
 
 def test_workspace_must_be_below_declared_root(plugin, monkeypatch, tmp_path):
