@@ -198,7 +198,7 @@
         assert qaBrokerHardening.DevicePolicy == "closed";
         assert lib.elem "/dev/kvm rw" qaBrokerHardening.DeviceAllow;
         assert qaBrokerHardening.CapabilityBoundingSet == "";
-        assert qaBrokerHardening.RestrictSUIDSGID;
+        assert !qaBrokerHardening.RestrictSUIDSGID;
         assert lib.any (
           lib.hasPrefix "source-hermes-terminal-github:/run/agenix/hermes-qa-github-pat"
         ) qaBrokerHardening.LoadCredential;
