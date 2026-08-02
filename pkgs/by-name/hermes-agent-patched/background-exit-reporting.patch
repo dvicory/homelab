@@ -1,0 +1,84 @@
+diff --git a/tests/tools/test_process_registry.py b/tests/tools/test_process_registry.py
+index beeb41f..4ac6bca 100644
+--- a/tests/tools/test_process_registry.py
++++ b/tests/tools/test_process_registry.py
+@@ -806,6 +806,43 @@ class TestSpawnEnvSanitization:
+         assert env.commands[1][0] == "kill -0 \"$(cat '/path with spaces/hermes_bg.pid' 2>/dev/null)\" 2>/dev/null; echo $?"
+         assert env.commands[2][0] == "cat '/path with spaces/hermes_bg.exit' 2>/dev/null"
+ 
++    def test_env_poller_waits_for_exit_file_after_process_disappears(self, registry):
++        session = _make_session(sid="proc_exit_race")
++        session.exited = False
++
++        class FakeEnv:
++            def __init__(self):
++                self.commands = []
++                self._responses = iter([
++                    {"output": "done\n"},
++                    {"output": "1\n"},
++                    {"output": ""},
++                    {"output": "done\n"},
++                    {"output": "1\n"},
++                    {"output": "0\n"},
++                ])
++
++            def execute(self, command, **kwargs):
++                self.commands.append((command, kwargs))
++                return next(self._responses)
++
++        env = FakeEnv()
++
++        with patch("tools.process_registry.time.sleep", return_value=None), \
++            patch.object(registry, "_move_to_finished"):
++            registry._env_poller_loop(
++                session,
++                env,
++                "/tmp/hermes_bg.log",
++                "/tmp/hermes_bg.pid",
++                "/tmp/hermes_bg.exit",
++            )
++
++        assert session.exited is True
++        assert session.exit_code == 0
++        assert session.completion_reason == "exited"
++        assert sum(".exit" in command for command, _kwargs in env.commands) == 2
++
+ 
+ # =========================================================================
+ # Popen leak prevention
+diff --git a/tools/process_registry.py b/tools/process_registry.py
+index c5d0289..665c667 100644
+--- a/tools/process_registry.py
++++ b/tools/process_registry.py
+@@ -1003,6 +1003,7 @@ class ProcessRegistry:
+         quoted_pid_path = shlex.quote(pid_path)
+         quoted_exit_path = shlex.quote(exit_path)
+         prev_output_len = 0  # track delta for watch pattern scanning
++        missing_exit_observations = 0
+         while not session.exited:
+             time.sleep(2)  # Poll every 2 seconds
+             try:
+@@ -1035,9 +1036,22 @@ class ProcessRegistry:
+                     )
+                     exit_str = exit_result.get("output", "").strip()
+                     try:
+-                        session.exit_code = int(exit_str.splitlines()[-1].strip())
++                        exit_code = int(exit_str.splitlines()[-1].strip())
+                     except (ValueError, IndexError):
++                        missing_exit_observations += 1
++                        if missing_exit_observations < 5:
++                            # The wrapper writes the exit file immediately before it
++                            # terminates. The backend can observe the process disappear
++                            # before that write becomes visible, so retry rather than
++                            # publishing a false exit_code=-1 completion.
++                            continue
+                         session.exit_code = -1
++                        session.exited = True
++                        session.completion_reason = "lost"
++                        session.termination_source = "exit_status_missing"
++                        self._move_to_finished(session)
++                        return
++                    session.exit_code = exit_code
+                     session.exited = True
+                     if session.completion_reason != "killed":
+                         session.completion_reason = "exited"

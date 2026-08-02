@@ -47,6 +47,8 @@ let
       ./multi-task-inputs.patch
       # Trusted preparation, activation, release, and archive-gated reclaim.
       ./multi-task-input-lifecycle.patch
+      # Preserve real background exit status across backend visibility races.
+      ./background-exit-reporting.patch
     ];
     postPatch = ''
       rm -f \
