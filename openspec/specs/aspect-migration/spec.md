@@ -1,5 +1,8 @@
-## ADDED Requirements
+# aspect-migration Specification
 
+## Purpose
+TBD - created by archiving change migrate-homelab-to-den. Update Purpose after archive.
+## Requirements
 ### Requirement: module registry → aspects
 
 Every `self.modules.nixos.*` entry SHALL convert to a den aspect under the `dlab` namespace. Profiles needing per-host data SHALL use parametric aspects (`{ host, ... }`). Profiles with no per-host data SHALL use static aspects.
@@ -71,11 +74,18 @@ The schema options SHALL be:
 - **WHEN** the NixOS config is built
 - **THEN** `facter.reportPath` SHALL resolve to `modules/hosts/hvn-hyp1/facter.json`
 
-### Requirement: users inlined on host entity, no separate profile
+### Requirement: Registry users emitted for resolved hosts
 
-User definitions SHALL move to `den.hosts.<system>.<name>.users.<userName>.sshKeys = [ ... ]`. No separate users profile SHALL exist. The `den.batteries.primary-user` battery SHALL handle `isNormalUser` setup. SSH keys SHALL be set directly in host `users.users` via a den default or battery include.
+User definitions SHALL live in `den.users.registry.<userName>` entity data rather than a separate host profile. A scope-unique parametric user aspect SHALL emit each resolved user's SSH keys and account metadata into `users.users.<userName>` for the active host.
 
-(Note: users.nix is a metadata-heavy profile where the value was in centralizing SSH keys from the DSL. In den, SSH keys live per-host on `den.hosts.<name>.users.<name>.sshKeys`. A lightweight parametric aspect can read them and populate `users.users`, or this can be left to the host aspect.)
+#### Scenario: Resolved registry user becomes a NixOS account
+
+- **GIVEN** `den.users.registry.daniel.identity.sshKeys` contains an SSH public key
+- **GIVEN** the ACL graph resolves `daniel` for host `hvn-hyp1`
+- **WHEN** the user enrichment aspect evaluates for that host
+- **THEN** `users.users.daniel.openssh.authorizedKeys.keys` SHALL contain that key
+- **AND** `users.users.daniel.isNormalUser` SHALL be true
+- **AND** no separate static users profile SHALL be required
 
 ### Requirement: disks profile — parametric aspect
 
@@ -150,3 +160,4 @@ mergerfs.nix SHALL remain as a NixOS module importing via `den.default.nixos`. I
 - `modules/aspects/profiles/<name>.nix` — converted profiles as parametric or static aspects
 - Host data set on `den.hosts.<system>.<name>` for per-host values
 - Parametric aspects use `{ host, ... }` to read; static aspects use `{ ... }` with `config` in nixos block
+
