@@ -100,17 +100,17 @@ let
                 default = 8;
                 description = "Maximum number of producer inputs bound to one destination run.";
               };
-              maxBytes = mkOption {
+              maxInputBytes = mkOption {
                 type = positiveInteger;
                 default = 104857600;
                 description = "Maximum total bytes across all bound input handoffs.";
               };
-              maxEntries = mkOption {
+              maxInputEntries = mkOption {
                 type = positiveInteger;
                 default = 20000;
                 description = "Maximum total manifest entries across all bound input handoffs.";
               };
-              maxPathBytes = mkOption {
+              maxInputPathBytes = mkOption {
                 type = positiveInteger;
                 default = 4096;
                 description = "Maximum byte length of one input manifest path.";

@@ -53,9 +53,9 @@ let
               scratchProvider = "broker-scratch";
               inputs = {
                 maxInputs = 8;
-                maxBytes = 104857600;
-                maxEntries = 20000;
-                maxPathBytes = 4096;
+                maxInputBytes = 104857600;
+                maxInputEntries = 20000;
+                maxInputPathBytes = 4096;
               };
             };
             policy.worklane = "default";
@@ -82,9 +82,9 @@ let
                   supportedSourceKinds = [ "git" ];
                   inputs = {
                     maxInputs = 8;
-                    maxBytes = 104857600;
-                    maxEntries = 20000;
-                    maxPathBytes = 4096;
+                    maxInputBytes = 104857600;
+                    maxInputEntries = 20000;
+                    maxInputPathBytes = 4096;
                   };
                 };
                 policy = {
@@ -105,9 +105,9 @@ let
                   supportedSourceKinds = [ "git" ];
                   inputs = {
                     maxInputs = 8;
-                    maxBytes = 104857600;
-                    maxEntries = 20000;
-                    maxPathBytes = 4096;
+                    maxInputBytes = 104857600;
+                    maxInputEntries = 20000;
+                    maxInputPathBytes = 4096;
                   };
                 };
                 policy = {

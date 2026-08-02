@@ -185,14 +185,18 @@ diff -r hermes-lifecycle-before/plugins/workspace-service/__init__.py hermes-lif
              task = kb.get_task(conn, task_id)
              if task is None or task.workspace_kind != "broker" or task.status != "running":
                  raise RuntimeError("workspace destination is stale")
-@@ -217,7 +289,33 @@
+@@ -217,7 +289,37 @@
                  conn, client, task_id, int(run_id), specification
              )
              authority = _authority_for_specification(specification)
 +            generation = _input_generation_for(conn, task_id, int(run_id))
          destination_key = broker_environment_key(task_id)
 +        preparation_id = None
++        input_generation = None
++        input_digest = None
 +        if generation is not None:
++            input_generation = int(generation["generation"])
++            input_digest = str(generation["digest"])
 +            workspace_contract = specification.workspace
 +            limits = workspace_contract.get("inputs") if isinstance(workspace_contract, dict) else None
 +            if not isinstance(limits, dict):
@@ -204,8 +208,8 @@ diff -r hermes-lifecycle-before/plugins/workspace-service/__init__.py hermes-lif
 +                environment_key=destination_key,
 +                task_id=task_id,
 +                run_id=int(run_id),
-+                generation=int(generation["generation"]),
-+                digest=str(generation["digest"]),
++                generation=input_generation,
++                digest=input_digest,
 +                lane=specification.lane,
 +                lane_revision=specification.lane_revision,
 +                policy_revision=specification.policy_revision,
@@ -219,11 +223,13 @@ diff -r hermes-lifecycle-before/plugins/workspace-service/__init__.py hermes-lif
          binding = client.acquire_workspace(destination_key)
          client.activate_task_run(
              board=board,
-@@ -227,6 +325,7 @@
+@@ -227,6 +329,9 @@
              workspace_id=binding["workspaceId"],
              workspace_lease_id=binding["workspaceLeaseId"],
              authority=authority,
 +            input_preparation_id=preparation_id,
++            input_generation=input_generation,
++            input_digest=input_digest,
          )
      except BrokerError:
          raise
@@ -311,18 +317,18 @@ diff -r hermes-lifecycle-before/tests/hermes_cli/test_input_reclaim_guards.py he
 diff -r hermes-lifecycle-before/tests/tools/test_gondolin_backend.py hermes-lifecycle-after/tests/tools/test_gondolin_backend.py
 --- hermes-lifecycle-before/tests/tools/test_gondolin_backend.py
 +++ hermes-lifecycle-after/tests/tools/test_gondolin_backend.py
-@@ -282,13 +282,63 @@
+@@ -282,7 +282,80 @@
      assert "[broker error] policy.denied: command blocked" in handle.output
  
  
 -def test_control_activation_matches_worker_execution_identity(monkeypatch):
 +def test_input_preparation_preserves_frozen_producer_provenance():
-     calls = []
-     client = BrokerClient.__new__(BrokerClient)
-     client._timeout = 1.0
- 
-     def fake_post(route, payload, timeout=None):
-         calls.append((route, payload))
++    calls = []
++    client = BrokerClient.__new__(BrokerClient)
++    client._timeout = 1.0
++
++    def fake_post(route, payload, timeout=None):
++        calls.append((route, payload))
 +        return {"preparationId": "preparation-test", "inputs": []}
 +
 +    client._json_post = fake_post
@@ -336,7 +342,14 @@ diff -r hermes-lifecycle-before/tests/tools/test_gondolin_backend.py hermes-life
 +        lane="research",
 +        lane_revision="b" * 64,
 +        policy_revision="c" * 64,
-+        limits={"maxInputs": 2},
++        limits={
++            "enabled": True,
++            "maxInputs": 2,
++            "maxInputBytes": 1024,
++            "maxInputEntries": 32,
++            "maxInputPathBytes": 512,
++            "displayHint": "not part of the broker contract",
++        },
 +        inputs=[
 +            {
 +                "producerTaskId": "t_producer",
@@ -350,6 +363,12 @@ diff -r hermes-lifecycle-before/tests/tools/test_gondolin_backend.py hermes-life
 +    )
 +
 +    assert calls[0][0] == "/v1/control/task-run-inputs/prepare"
++    assert calls[0][1]["limits"] == {
++        "maxInputs": 2,
++        "maxInputBytes": 1024,
++        "maxInputEntries": 32,
++        "maxInputPathBytes": 512,
++    }
 +    input_payload = calls[0][1]["inputs"][0]
 +    assert input_payload["producerTaskId"].endswith(":t_producer")
 +    assert input_payload["producerRunId"].endswith(":r7")
@@ -361,44 +380,54 @@ diff -r hermes-lifecycle-before/tests/tools/test_gondolin_backend.py hermes-life
 +
 +
 +@pytest.mark.parametrize(
-+    ("input_preparation_id", "expected_input_preparation_id"),
-+    [(None, None), ("preparation-test", "preparation-test")],
++    (
++        "input_preparation_id",
++        "input_generation",
++        "input_digest",
++    ),
++    [
++        (None, None, None),
++        ("preparation-test", 3, "d" * 64),
++    ],
 +)
 +def test_control_activation_matches_worker_execution_identity(
-+    monkeypatch, input_preparation_id, expected_input_preparation_id
++    monkeypatch,
++    input_preparation_id,
++    input_generation,
++    input_digest,
 +):
-+    calls = []
-+    client = BrokerClient.__new__(BrokerClient)
-+    client._timeout = 1.0
-+
-+    def fake_post(route, payload, timeout=None):
-+        calls.append((route, payload))
-         if route == "/v1/control/task-runs/activate":
-             return {"activation": {"activationId": "activation-test"}}
-         raise AssertionError(route)
-@@ -317,6 +367,7 @@
+     calls = []
+     client = BrokerClient.__new__(BrokerClient)
+     client._timeout = 1.0
+@@ -317,6 +390,9 @@
              "authorityClass": "research",
              "policyRevision": "c" * 64,
          },
 +        input_preparation_id=input_preparation_id,
++        input_generation=input_generation,
++        input_digest=input_digest,
      )
      activation_payload = calls[0][1]
      execution_payload = client._execution_payload(
-@@ -332,6 +383,10 @@
+@@ -332,6 +408,14 @@
      assert activation_payload["workspaceLeaseId"] == "lease-test"
      assert activation_payload["taskId"] == execution_payload["taskRun"]["taskId"]
      assert activation_payload["runId"] == execution_payload["taskRun"]["runId"]
-+    if expected_input_preparation_id is None:
++    if input_preparation_id is None:
 +        assert "inputPreparationId" not in activation_payload
++        assert "inputGeneration" not in activation_payload
++        assert "inputDigest" not in activation_payload
 +    else:
-+        assert activation_payload["inputPreparationId"] == expected_input_preparation_id
++        assert activation_payload["inputPreparationId"] == input_preparation_id
++        assert activation_payload["inputGeneration"] == input_generation
++        assert activation_payload["inputDigest"] == input_digest
      assert BrokerClient._trusted_environment_key() == environment_key
      assert "HERMES_BROKER_ENVIRONMENT_KEY" not in os.environ
  
 diff -r hermes-lifecycle-before/tools/environments/gondolin.py hermes-lifecycle-after/tools/environments/gondolin.py
 --- hermes-lifecycle-before/tools/environments/gondolin.py
 +++ hermes-lifecycle-after/tools/environments/gondolin.py
-@@ -278,6 +278,91 @@
+@@ -278,6 +278,96 @@
              "workspaceLeaseId": self._required_text(body, "workspaceLeaseId"),
          }
  
@@ -477,7 +506,12 @@ diff -r hermes-lifecycle-before/tools/environments/gondolin.py hermes-lifecycle-
 +                "lane": str(lane),
 +                "laneRevision": str(lane_revision),
 +                "policyRevision": str(policy_revision),
-+                "limits": dict(limits),
++                "limits": {
++                    "maxInputs": int(limits["maxInputs"]),
++                    "maxInputBytes": int(limits["maxInputBytes"]),
++                    "maxInputEntries": int(limits["maxInputEntries"]),
++                    "maxInputPathBytes": int(limits["maxInputPathBytes"]),
++                },
 +                "inputs": prepared_inputs,
 +            },
 +        )
@@ -490,21 +524,33 @@ diff -r hermes-lifecycle-before/tools/environments/gondolin.py hermes-lifecycle-
      def activate_task_run(
          self,
          *,
-@@ -288,6 +373,7 @@
+@@ -288,6 +378,9 @@
          workspace_id: str,
          workspace_lease_id: str,
          authority: dict,
 +        input_preparation_id: str | None = None,
++        input_generation: int | None = None,
++        input_digest: str | None = None,
      ) -> dict:
          task_run = broker_task_run(board, task_id, run_id)
          body = self._json_post(
-@@ -299,6 +385,11 @@
+@@ -299,6 +392,21 @@
                  **authority,
                  "workspaceId": workspace_id,
                  "workspaceLeaseId": workspace_lease_id,
 +                **(
 +                    {"inputPreparationId": input_preparation_id}
 +                    if input_preparation_id is not None
++                    else {}
++                ),
++                **(
++                    {
++                        "inputGeneration": int(input_generation),
++                        "inputDigest": str(input_digest),
++                    }
++                    if input_preparation_id is not None
++                    and input_generation is not None
++                    and input_digest is not None
 +                    else {}
 +                ),
              },

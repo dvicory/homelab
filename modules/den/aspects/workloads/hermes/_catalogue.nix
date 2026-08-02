@@ -103,9 +103,9 @@ in
               (workspace.inputs or null) == null || (
                 (workspace.inputs.enabled or true)
                 && (workspace.inputs.maxInputs or 0) >= 1
-                && (workspace.inputs.maxBytes or 0) >= 1
-                && (workspace.inputs.maxEntries or 0) >= 1
-                && (workspace.inputs.maxPathBytes or 0) >= 256
+                && (workspace.inputs.maxInputBytes or 0) >= 1
+                && (workspace.inputs.maxInputEntries or 0) >= 1
+                && (workspace.inputs.maxInputPathBytes or 0) >= 256
               ) || (!(workspace.inputs.enabled or true))
             ) "Worker lane '${name}' declares enabled inputs without positive count/byte/entry/path ceilings")
           ]

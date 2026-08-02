@@ -102,9 +102,9 @@
                   supportedSourceKinds = [ "git" ];
                   inputs = {
                     maxInputs = 4;
-                    maxBytes = 16777216;
-                    maxEntries = 5000;
-                    maxPathBytes = 2048;
+                    maxInputBytes = 16777216;
+                    maxInputEntries = 5000;
+                    maxInputPathBytes = 2048;
                   };
                 };
                 policy.worklane = "project";
@@ -235,7 +235,7 @@
               assert !invalidCredentialRef.success;
               assert !invalidInputCeilings.success;
               assert validCatalogue.workerLanes.project.workspace.inputs.maxInputs == 4;
-              assert validCatalogue.workerLanes.project.workspace.inputs.maxBytes == 16777216;
+              assert validCatalogue.workerLanes.project.workspace.inputs.maxInputBytes == 16777216;
               assert lib.all (lane: lane.networkAccess) qaCodexLanes;
               assert lib.all (lane: lane.approvalPolicy == "never") qaCodexLanes;
               pkgs.runCommand "hermes-worker-lane-options" { } "touch $out";
