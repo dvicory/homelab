@@ -18,6 +18,9 @@ import {
   ReadFileRequest,
   ReleaseTaskRunInputsRequest,
   RemoveFileRequest,
+  ProcessPollRequest,
+  ProcessRef,
+  ProcessSpawnRequest,
   PrepareAccessRequest,
   RevokeGrantRequest,
   RevokeEnvironmentGrantsRequest,
@@ -45,6 +48,7 @@ import { Environments } from "./environments.js";
 import { asBrokerError, brokerError, publicErrorEvent, publicProblem, statusFor, type BrokerError } from "./errors.js";
 import { Executor } from "./exec.js";
 import { Files } from "./files.js";
+import { Processes } from "./processes.js";
 import { AccessGrants } from "./grants.js";
 import { Registry } from "./registry.js";
 import { HandoffOperations } from "./workspace-handoff/service.js";
@@ -112,6 +116,7 @@ export const makeHttpApp = Effect.gen(function* () {
   const environments = yield* Environments;
   const executor = yield* Executor;
   const files = yield* Files;
+  const processes = yield* Processes;
 
   const unary = <A, I>(
     operationName: string,
@@ -159,6 +164,9 @@ export const makeHttpApp = Effect.gen(function* () {
       unary("environment.close", EnvironmentRef, (request) => environments.close(request).pipe(Effect.as({ closed: true }))),
     ),
     HttpRouter.post("/v1/exec", exec),
+    HttpRouter.post("/v1/processes/spawn", unary("exec.background.spawn", ProcessSpawnRequest, processes.spawn)),
+    HttpRouter.post("/v1/processes/poll", unary("exec.background.poll", ProcessPollRequest, processes.poll)),
+    HttpRouter.post("/v1/processes/cancel", unary("exec.background.cancel", ProcessRef, processes.cancel)),
     HttpRouter.post("/v1/files/stat", unary("fs.stat", FileRef, files.stat)),
     HttpRouter.post("/v1/files/list", unary("fs.list", ListFileRequest, files.list)),
     HttpRouter.post("/v1/files/read", unary("fs.read", ReadFileRequest, files.read)),

@@ -197,6 +197,29 @@ export const ExecRequest = Schema.Struct({
 });
 export type ExecRequest = typeof ExecRequest.Type;
 
+export const ProcessId = WorkspaceId;
+export type ProcessId = typeof ProcessId.Type;
+
+export const ProcessSpawnRequest = ExecRequest;
+export type ProcessSpawnRequest = typeof ProcessSpawnRequest.Type;
+
+export const ProcessRef = Schema.Struct({
+  environmentKey: EnvironmentKey,
+  generation: Generation,
+  ...OptionalTaskRunIdentity,
+  processId: ProcessId,
+});
+export type ProcessRef = typeof ProcessRef.Type;
+
+export const ProcessPollRequest = Schema.Struct({
+  ...ProcessRef.fields,
+  cursor: NonNegativeInt,
+  maxBytes: Schema.optional(
+    Schema.Int.pipe(Schema.greaterThanOrEqualTo(1024), Schema.lessThanOrEqualTo(1024 * 1024)),
+  ),
+});
+export type ProcessPollRequest = typeof ProcessPollRequest.Type;
+
 export const FileRef = Schema.Struct({
   environmentKey: EnvironmentKey,
   generation: Generation,

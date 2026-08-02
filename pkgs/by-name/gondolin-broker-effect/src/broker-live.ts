@@ -5,6 +5,7 @@ import { BrokerConfigLive } from "./config.js";
 import { BrokerDatabaseLive } from "./database.js";
 import { EnvironmentsLive } from "./environments.js";
 import { ExecutorLive } from "./exec.js";
+import { ProcessesLive } from "./processes.js";
 import { FilesLive } from "./files.js";
 import { AccessGrantsLive } from "./grants.js";
 import { HandoffStoreLive } from "./workspace-handoff/repository.js";
@@ -46,7 +47,8 @@ const makeBrokerLive = (
   const workspaceBranches = WorkspaceBranchesLive.pipe(Layer.provideMerge(environments));
   const handoffOperations = HandoffOperationsLive.pipe(Layer.provideMerge(workspaceBranches));
   const executor = ExecutorLive.pipe(Layer.provideMerge(handoffOperations));
-  return FilesLive.pipe(Layer.provideMerge(executor));
+  const processes = ProcessesLive.pipe(Layer.provideMerge(executor));
+  return FilesLive.pipe(Layer.provideMerge(processes));
 };
 
 export const BrokerLive = makeBrokerLive(WorkspacesLive, ProjectWorkspacesLive);

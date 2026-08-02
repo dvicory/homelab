@@ -31,6 +31,12 @@ policy = {
     "defaultAuthorityClass": "default",
     "maxEnvironments": 1,
     "environmentIdleTimeoutMs": 900000,
+    "processRegistry": {
+        "maxConcurrent": 1,
+        "retainedOutputBytes": 4096,
+        "maxPollBytes": 4096,
+        "terminalTtlMs": 1800000,
+    },
     "grantPolicy": {
         "allowedScopes": ["once", "task", "conversation", "timed"],
         "maxDurationSeconds": 3600,

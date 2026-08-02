@@ -37,6 +37,28 @@ const jsonPost = async (socketPath, route, body, expected = 200) => {
   return response.text ? JSON.parse(response.text) : {}
 }
 
+const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+
+const awaitProcess = async (environmentKey, generation, processId) => {
+  let cursor = 0
+  let output = ""
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const result = await jsonPost(executionSocket, "/v1/processes/poll", {
+      environmentKey,
+      generation,
+      processId,
+      cursor
+    })
+    output += result.output
+      .map((event) => Buffer.from(event.dataBase64, "base64").toString("utf8"))
+      .join("")
+    cursor = result.nextCursor
+    if (result.state !== "running") return { ...result, outputText: output }
+    await sleep(100)
+  }
+  throw new Error(`process ${processId} did not reach a terminal state`)
+}
+
 const acquired = await jsonPost(controlSocket, "/v1/control/workspaces/acquire", {
   environmentKey
 })
@@ -75,6 +97,41 @@ const persisted = await jsonPost(executionSocket, "/v1/files/read", {
 })
 assert.equal(Buffer.from(persisted.dataBase64, "base64").toString("utf8"), "persistent\nvm-ok")
 
+const spawnStartedAt = Date.now()
+const spawned = await jsonPost(executionSocket, "/v1/processes/spawn", {
+  environmentKey,
+  generation: recreated.generation,
+  argv: ["sh", "-lc", "sleep 2; printf background-ok; exit 7"]
+})
+assert.equal(spawned.state, "running")
+assert.ok(Date.now() - spawnStartedAt < 1500, "background spawn waited for command exit")
+const completed = await awaitProcess(
+  environmentKey,
+  recreated.generation,
+  spawned.processId
+)
+assert.equal(completed.state, "exited")
+assert.equal(completed.exitCode, 7)
+assert.equal(completed.signal, null)
+assert.equal(completed.outputText, "background-ok")
+
+const cancellable = await jsonPost(executionSocket, "/v1/processes/spawn", {
+  environmentKey,
+  generation: recreated.generation,
+  argv: ["sh", "-lc", "sleep 30"]
+})
+const cancelled = await jsonPost(executionSocket, "/v1/processes/cancel", {
+  environmentKey,
+  generation: recreated.generation,
+  processId: cancellable.processId
+})
+assert.equal(cancelled.state, "cancelled")
+assert.equal(cancelled.exitCode, null)
+const afterCancel = await jsonPost(executionSocket, "/v1/environments/ensure", {
+  environmentKey
+})
+assert.ok(afterCancel.generation > recreated.generation)
+
 const foreign = `${environmentKey}-foreign`
 const denied = await jsonPost(controlSocket, "/v1/control/workspaces/acquire", {
   environmentKey: foreign,
@@ -84,7 +141,7 @@ assert.equal(denied.reason, "workspace.conflict")
 
 await jsonPost(executionSocket, "/v1/environments/close", {
   environmentKey,
-  generation: recreated.generation
+  generation: afterCancel.generation
 })
 await jsonPost(controlSocket, "/v1/control/workspaces/release", {
   environmentKey,
@@ -108,8 +165,8 @@ assert.equal(missing.reason, "workspace.not_found")
 console.log(JSON.stringify({
   status: "ok",
   environmentKey,
-  workspaceId: acquired.workspace.workspaceId,
-  generations: [first.generation, recreated.generation],
+  generations: [first.generation, recreated.generation, afterCancel.generation],
+  processLifecycle: "background-exit-7-and-cancelled",
   isolation: "foreign-owner-denied",
   deletion: "confirmed"
 }))

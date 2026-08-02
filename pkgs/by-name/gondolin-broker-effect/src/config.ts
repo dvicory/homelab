@@ -28,6 +28,16 @@ const GrantPolicy = Schema.Struct({
   }),
 });
 
+const ProcessRegistryPolicy = Schema.Struct({
+  maxConcurrent: Schema.Int.pipe(Schema.greaterThan(0)),
+  retainedOutputBytes: Schema.Int.pipe(Schema.greaterThan(0)),
+  maxPollBytes: Schema.Int.pipe(
+    Schema.greaterThanOrEqualTo(1024),
+    Schema.lessThanOrEqualTo(1024 * 1024),
+  ),
+  terminalTtlMs: Schema.Int.pipe(Schema.greaterThan(0)),
+});
+
 const BrokerPolicyFileSchema = Schema.Struct({
   version: Schema.Literal(1),
   policyDigest: Schema.String.pipe(Schema.pattern(/^[0-9a-f]{64}$/)),
@@ -36,6 +46,7 @@ const BrokerPolicyFileSchema = Schema.Struct({
   defaultAuthorityClass: Schema.String.pipe(Schema.minLength(1)),
   maxEnvironments: Schema.Int.pipe(Schema.greaterThan(0)),
   environmentIdleTimeoutMs: Schema.Int.pipe(Schema.greaterThan(0)),
+  processRegistry: ProcessRegistryPolicy,
   assets: Schema.Record({ key: Schema.String, value: Asset }),
   networkPolicies: Schema.Record({ key: Schema.String, value: NetworkPolicy }),
   worklanes: Schema.Record({ key: Schema.String, value: Worklane }),

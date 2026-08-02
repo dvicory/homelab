@@ -11,6 +11,7 @@ export const Reason = Schema.Literal(
   "policy.indeterminate",
   "policy.approval_required",
   "environment.not_found",
+  "process.not_found",
   "environment.tombstoned",
   "environment.stale_generation",
   "authority.conflict",
@@ -103,6 +104,7 @@ export const statusFor = (error: BrokerError): number => {
     case "network.rebinding_denied":
       return 403;
     case "environment.not_found":
+    case "process.not_found":
     case "fs.not_found":
     case "approval.request_not_found":
     case "grant.not_found":

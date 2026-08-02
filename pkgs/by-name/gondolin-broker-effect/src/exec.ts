@@ -7,12 +7,13 @@ import {
   Ref,
   Stream,
   TSemaphore,
+  type Scope,
 } from "effect";
-import { Authorization } from "./auth.js";
+import { Authorization, type BrokerAction } from "./auth.js";
 import type { ExecRequest } from "./domain.js";
 import { Environments } from "./environments.js";
 import { brokerError, type BrokerError } from "./errors.js";
-import type { VmOutput } from "./runtime.js";
+import type { VmOutput, VmProcess } from "./runtime.js";
 
 export type ExecEvent =
   | {
@@ -35,8 +36,18 @@ export type ExecEvent =
       readonly signal: number | null;
     };
 
+export interface AuthorizedExecution {
+  readonly processHandle: VmProcess;
+  readonly decisionDigest: string;
+  readonly timeoutMs: number;
+  readonly outputLimitBytes: number;
+}
+
 export interface ExecutorService {
-  readonly execute: (request: ExecRequest) => Stream.Stream<ExecEvent, BrokerError>;
+  readonly execute: (
+    request: ExecRequest,
+    ownership?: "foreground" | "background",
+  ) => Stream.Stream<ExecEvent, BrokerError>;
 }
 
 const streamProcessOutput = (
@@ -105,77 +116,95 @@ const make = Effect.gen(function* () {
   const authorization = yield* Authorization;
   const environments = yield* Environments;
 
-  const execute = (request: ExecRequest): Stream.Stream<ExecEvent, BrokerError> =>
+  const launch = (
+    request: ExecRequest,
+    action: BrokerAction,
+  ): Effect.Effect<AuthorizedExecution, BrokerError, Scope.Scope> =>
+    Effect.gen(function* () {
+      const environment = yield* environments.lease({
+        environmentKey: request.environmentKey,
+        generation: request.generation,
+        ...(request.taskRun === undefined ? {} : { taskRun: request.taskRun }),
+      });
+      yield* TSemaphore.withPermitScoped(environment.execPermits);
+      const decision = yield* authorization.authorize({
+        action,
+        resource: `environment:${request.environmentKey}/exec`,
+        requestedLimits: {
+          timeoutMs: request.timeoutMs ?? environment.limits.maxCommandMs,
+          outputBytes: request.outputLimitBytes ?? environment.limits.maxOutputBytes,
+          inputBytes: environment.limits.maxInputBytes,
+        },
+      });
+      const timeoutMs = Math.min(
+        request.timeoutMs ?? environment.limits.maxCommandMs,
+        environment.limits.maxCommandMs,
+        decision.limits.timeoutMs ?? Number.POSITIVE_INFINITY,
+      );
+      const outputLimitBytes = Math.min(
+        request.outputLimitBytes ?? environment.limits.maxOutputBytes,
+        environment.limits.maxOutputBytes,
+        decision.limits.outputBytes ?? Number.POSITIVE_INFINITY,
+      );
+      const stdin = request.stdinBase64 === undefined
+        ? Buffer.alloc(0)
+        : Buffer.from(request.stdinBase64, "base64");
+      if (stdin.byteLength > environment.limits.maxInputBytes) {
+        return yield* brokerError("exec.invalid", "command input exceeds its byte limit", {
+          maxInputBytes: environment.limits.maxInputBytes,
+          receivedBytes: stdin.byteLength,
+        });
+      }
+      const cwd = yield* normalizeExecCwd(environment.workspaceGuestPath, request.cwd);
+      const processHandle = yield* Effect.tryPromise({
+        try: () => environment.vm.exec({
+          argv: request.argv,
+          cwd,
+          ...(request.env === undefined ? {} : { env: request.env }),
+        }),
+        catch: (error) =>
+          brokerError("runtime.operation_failed", "failed to start guest process", {
+            cause: error instanceof Error ? error.message : String(error),
+          }),
+      });
+      yield* Effect.try({
+        try: () => {
+          if (stdin.byteLength > 0) processHandle.write(stdin);
+          processHandle.end();
+        },
+        catch: (error) =>
+          brokerError("runtime.operation_failed", "failed to initialize guest process input", {
+            cause: error instanceof Error ? error.message : String(error),
+          }),
+      });
+      return {
+        processHandle,
+        decisionDigest: decision.decisionDigest,
+        timeoutMs,
+        outputLimitBytes,
+      };
+    });
+
+  const executeWithAction = (
+    request: ExecRequest,
+    action: BrokerAction,
+    ownership: "foreground" | "background",
+  ): Stream.Stream<ExecEvent, BrokerError> =>
     Stream.unwrap(
       Ref.make(false).pipe(
         Effect.map((completed) =>
           Stream.unwrapScoped(
             Effect.gen(function* () {
-              const environment = yield* environments.lease({
-                environmentKey: request.environmentKey,
-                generation: request.generation,
-                ...(request.taskRun === undefined ? {} : { taskRun: request.taskRun }),
-              });
-              yield* TSemaphore.withPermitScoped(environment.execPermits);
-              const decision = yield* authorization.authorize({
-                action: "exec.foreground",
-                resource: `environment:${request.environmentKey}/exec`,
-                requestedLimits: {
-                  timeoutMs: request.timeoutMs ?? environment.limits.maxCommandMs,
-                  outputBytes: request.outputLimitBytes ?? environment.limits.maxOutputBytes,
-                  inputBytes: environment.limits.maxInputBytes,
-                },
-              });
-              const timeoutMs = Math.min(
-                request.timeoutMs ?? environment.limits.maxCommandMs,
-                environment.limits.maxCommandMs,
-                decision.limits.timeoutMs ?? Number.POSITIVE_INFINITY,
-              );
-              const outputLimitBytes = Math.min(
-                request.outputLimitBytes ?? environment.limits.maxOutputBytes,
-                environment.limits.maxOutputBytes,
-                decision.limits.outputBytes ?? Number.POSITIVE_INFINITY,
-              );
-              const stdin = request.stdinBase64 === undefined
-                ? Buffer.alloc(0)
-                : Buffer.from(request.stdinBase64, "base64");
-              if (stdin.byteLength > environment.limits.maxInputBytes) {
-                return yield* brokerError("exec.invalid", "command input exceeds its byte limit", {
-                  maxInputBytes: environment.limits.maxInputBytes,
-                  receivedBytes: stdin.byteLength,
-                });
-              }
-              const cwd = yield* normalizeExecCwd(environment.workspaceGuestPath, request.cwd);
-              const processHandle = yield* Effect.tryPromise({
-                try: () => environment.vm.exec({
-                  argv: request.argv,
-                  cwd,
-                  ...(request.env === undefined ? {} : { env: request.env }),
-                }),
-                catch: (error) =>
-                  brokerError("runtime.operation_failed", "failed to start guest process", {
-                    cause: error instanceof Error ? error.message : String(error),
-                  }),
-              });
-              yield* Effect.try({
-                try: () => {
-                  if (stdin.byteLength > 0) processHandle.write(stdin);
-                  processHandle.end();
-                },
-                catch: (error) =>
-                  brokerError("runtime.operation_failed", "failed to initialize guest process input", {
-                    cause: error instanceof Error ? error.message : String(error),
-                  }),
-              });
+              const execution = yield* launch(request, action);
               const bytes = yield* Ref.make(0);
               const sequence = yield* Ref.make(0);
-              const output = streamProcessOutput(processHandle.output).pipe(
+              const output = streamProcessOutput(execution.processHandle.output).pipe(
                 Stream.mapEffect((chunk) =>
                   Effect.gen(function* () {
                     const total = yield* Ref.updateAndGet(bytes, (value) => value + chunk.data.byteLength);
-                    if (total > outputLimitBytes) {
+                    if (action === "exec.foreground" && total > execution.outputLimitBytes) {
                       return yield* brokerError("exec.output_limit", "command output exceeded its byte limit", {
-                        outputLimitBytes,
+                        outputLimitBytes: execution.outputLimitBytes,
                         observedBytes: total,
                       });
                     }
@@ -191,7 +220,7 @@ const make = Effect.gen(function* () {
               );
               const exit = Stream.fromEffect(
                 Effect.tryPromise({
-                  try: () => processHandle.result,
+                  try: () => execution.processHandle.result,
                   catch: (error) =>
                     brokerError("runtime.operation_failed", "guest process result failed", {
                       cause: error instanceof Error ? error.message : String(error),
@@ -205,12 +234,14 @@ const make = Effect.gen(function* () {
                 type: "start",
                 environmentKey: request.environmentKey,
                 generation: request.generation,
-                decisionDigest: decision.decisionDigest,
-                timeoutMs,
-                outputLimitBytes,
+                decisionDigest: execution.decisionDigest,
+                timeoutMs: execution.timeoutMs,
+                outputLimitBytes: execution.outputLimitBytes,
               });
-              const deadline = Effect.sleep(Duration.millis(timeoutMs)).pipe(
-                Effect.andThen(Effect.fail(brokerError("exec.timeout", "command exceeded its deadline", { timeoutMs }))),
+              const deadline = Effect.sleep(Duration.millis(execution.timeoutMs)).pipe(
+                Effect.andThen(Effect.fail(brokerError("exec.timeout", "command exceeded its deadline", {
+                  timeoutMs: execution.timeoutMs,
+                }))),
               );
               return Stream.concat(start, Stream.concat(output, exit)).pipe(Stream.interruptWhen(deadline));
             }),
@@ -218,7 +249,7 @@ const make = Effect.gen(function* () {
             Stream.ensuring(
               Ref.get(completed).pipe(
                 Effect.flatMap((done) =>
-                  done
+                  done || ownership === "background"
                     ? Effect.void
                     : environments.hardTerminateLeased(
                         { environmentKey: request.environmentKey, generation: request.generation },
@@ -232,7 +263,14 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  return { execute } satisfies ExecutorService;
+  return {
+    execute: (request, ownership = "foreground") =>
+      executeWithAction(
+        request,
+        ownership === "foreground" ? "exec.foreground" : "exec.background",
+        ownership,
+      ),
+  } satisfies ExecutorService;
 });
 
 export const ExecutorLive = Layer.effect(Executor, make);

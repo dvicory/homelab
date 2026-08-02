@@ -7,6 +7,7 @@ import { BrokerConfig } from "../dist/config.js"
 import { BrokerDatabaseLive } from "../dist/database.js"
 import { EnvironmentsLive } from "../dist/environments.js"
 import { ExecutorLive } from "../dist/exec.js"
+import { ProcessesLive } from "../dist/processes.js"
 import { FilesLive } from "../dist/files.js"
 import { makeAccessGrantsLayer } from "../dist/grants.js"
 import { HandoffOperationsLive } from "../dist/workspace-handoff/service.js"
@@ -77,6 +78,9 @@ export const makeFakeRuntime = (options = {}) => {
           state.execs.push([...argv])
           let ended = false
           const hanging = argv[0] === "hang"
+          const delayed = argv[0] === "delayed-exit-7"
+          const exitCode = argv[0] === "exit-7" || delayed ? 7 : 0
+          const mixedOutput = argv[0] === "mixed-output"
           return {
             output: {
               async *[Symbol.asyncIterator]() {
@@ -91,6 +95,13 @@ export const makeFakeRuntime = (options = {}) => {
                   })
                   return
                 }
+                if (delayed) await new Promise((resolve) => setTimeout(resolve, 20))
+                if (mixedOutput) {
+                  yield { stream: "stdout", data: Buffer.from("out-1") }
+                  yield { stream: "stderr", data: Buffer.from("err-1") }
+                  yield { stream: "stdout", data: Buffer.from("out-2") }
+                  return
+                }
                 yield { stream: "stdout", data: Buffer.from(argv.join(" ")) }
               }
             },
@@ -103,7 +114,7 @@ export const makeFakeRuntime = (options = {}) => {
                     }
                   }, 2)
                 })
-              : Promise.resolve({ exitCode: 0, signal: null }),
+              : Promise.resolve({ exitCode, signal: null }),
             write: () => undefined,
             end: () => {
               if (argv[0] === "stdin-disabled") throw new Error("stdin was not enabled for this exec")
@@ -181,6 +192,12 @@ export const makePolicyFile = (overrides = {}) => ({
   defaultAuthorityClass: "default",
   maxEnvironments: 4,
   environmentIdleTimeoutMs: 15 * 60 * 1000,
+  processRegistry: {
+    maxConcurrent: 4,
+    retainedOutputBytes: 4096,
+    maxPollBytes: 4096,
+    terminalTtlMs: 30 * 60 * 1000
+  },
   grantPolicy: {
     allowedScopes: ["once", "task", "conversation", "timed", "profile", "executor"],
     maxDurationSeconds: 3600,
@@ -291,6 +308,7 @@ export const makeTestLayer = (stateDir, options = {}) => {
   const workspaceBranches = WorkspaceBranchesLive.pipe(Layer.provideMerge(environments))
   const handoffOperations = HandoffOperationsLive.pipe(Layer.provideMerge(workspaceBranches))
   const executor = ExecutorLive.pipe(Layer.provideMerge(handoffOperations))
-  const layer = FilesLive.pipe(Layer.provideMerge(executor))
+  const processes = ProcessesLive.pipe(Layer.provideMerge(executor))
+  const layer = FilesLive.pipe(Layer.provideMerge(processes))
   return { config, fake, layer }
 }

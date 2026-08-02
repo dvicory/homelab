@@ -66,6 +66,11 @@ export interface LiveEnvironmentStatus {
 }
 
 
+export type EnvironmentCloseHook = (
+  reference: EnvironmentRef,
+  reason: string,
+) => Effect.Effect<void, never>;
+
 export interface EnvironmentService {
   readonly ensure: (request: EnsureRequest) => Effect.Effect<EnsureResult, BrokerError>;
   readonly listLive: Effect.Effect<ReadonlyArray<LiveEnvironmentStatus>>;
@@ -89,6 +94,9 @@ export interface EnvironmentService {
     environmentKey: string,
     operation: Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, BrokerError | E, R>;
+  readonly registerCloseHook: (
+    hook: EnvironmentCloseHook,
+  ) => Effect.Effect<void, never, Scope.Scope>;
 }
 
 export class Environments extends Context.Tag("@agent-x/gondolin-broker-effect/Environments")<
@@ -124,6 +132,23 @@ const make = Effect.gen(function* () {
   const runActivations = yield* TaskRunActivations;
   const live = new Map<string, LiveEnvironment>();
   const mutation = yield* STM.commit(TSemaphore.make(1));
+  const closeHooks = new Set<EnvironmentCloseHook>();
+  const runCloseHooks = (environment: LiveEnvironment, reason: string) =>
+    Effect.forEach(
+      [...closeHooks],
+      (hook) => hook({
+        environmentKey: environment.environmentKey,
+        generation: environment.generation,
+      }, reason),
+      { concurrency: "unbounded", discard: true },
+    );
+  const registerCloseHook = (
+    hook: EnvironmentCloseHook,
+  ): Effect.Effect<void, never, Scope.Scope> =>
+    Effect.acquireRelease(
+      Effect.sync(() => closeHooks.add(hook)),
+      () => Effect.sync(() => closeHooks.delete(hook)),
+    ).pipe(Effect.asVoid);
 
   const closeLocked = (
     environment: LiveEnvironment,
@@ -164,12 +189,23 @@ const make = Effect.gen(function* () {
     terminalState: "closed" | "failed",
     failureReason = "lifecycle close",
   ) =>
-    Ref.update(environment.lifecycleState, (state) => ({ ...state, closing: true })).pipe(
-      Effect.andThen(TReentrantLock.withWriteLock(
+    Effect.gen(function* () {
+      yield* Ref.update(environment.lifecycleState, (state) => ({ ...state, closing: true }));
+      yield* Effect.all(
+        [
+          runCloseHooks(environment, failureReason),
+          Effect.tryPromise({
+            try: () => environment.vm.close(),
+            catch: () => undefined,
+          }).pipe(Effect.ignore),
+        ],
+        { concurrency: "unbounded", discard: true },
+      );
+      yield* TReentrantLock.withWriteLock(
         closeLocked(environment, terminalState, failureReason),
         environment.lifecycleLock,
-      )),
-    );
+      );
+    });
   const closeIfIdle = (environment: LiveEnvironment, now: number) =>
     Effect.gen(function* () {
       const observedLastActivityAt = yield* Ref.get(environment.lastActivityAt);
@@ -565,6 +601,7 @@ const make = Effect.gen(function* () {
     closeForFence,
     runWithEnvironmentStopped,
     hardTerminateLeased,
+    registerCloseHook,
   } satisfies EnvironmentService;
 });
 

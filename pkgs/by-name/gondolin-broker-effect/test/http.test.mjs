@@ -111,6 +111,24 @@ test("HTTP API serves unary and streamed operations over a Unix socket", async (
     assert.deepEqual(events.map((event) => event.type), ["start", "output", "exit"])
     assert.equal(Buffer.from(events[1].dataBase64, "base64").toString(), "printf hello")
 
+    const spawned = yield* Effect.promise(() => request(config.socketPath, "/v1/processes/spawn", {
+      environmentKey: environment.environmentKey,
+      generation: environment.generation,
+      argv: ["exit-7"]
+    }))
+    assert.equal(spawned.status, 200)
+    const process = JSON.parse(spawned.text)
+    assert.equal(process.state, "running")
+    yield* Effect.sleep("10 millis")
+    const polled = yield* Effect.promise(() => request(config.socketPath, "/v1/processes/poll", {
+      environmentKey: environment.environmentKey,
+      generation: environment.generation,
+      processId: process.processId,
+      cursor: 0
+    }))
+    assert.equal(polled.status, 200)
+    assert.equal(JSON.parse(polled.text).exitCode, 7)
+
     const executionRejectsControl = yield* Effect.promise(() =>
       request(config.socketPath, "/v1/control/authority/status", {
         environmentKey: "conversation-http"

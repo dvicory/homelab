@@ -7,6 +7,7 @@ export const BrokerActions = [
   "environment.status",
   "environment.close",
   "exec.foreground",
+  "exec.background",
   "fs.stat",
   "fs.list",
   "fs.read",
