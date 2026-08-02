@@ -238,6 +238,13 @@ test("materialized inputs remain immutable through broker and host mutation path
     const producerRoot = path.join(inputRoot, "producer")
     const nestedRoot = path.join(producerRoot, "nested")
     const report = path.join(nestedRoot, "report.txt")
+    const reportInode = (yield* Effect.promise(() => stat(report))).ino
+    yield* Effect.promise(() => chmod(producerRoot, 0o750))
+    yield* Effect.promise(() => chmod(nestedRoot, 0o750))
+    yield* Effect.promise(() => chmod(report, 0o640))
+    // An identical replay reuses the published tree and repairs its modes.
+    yield* inputs.materialize(activationRequest, resolved.workspacePath)
+    assert.equal((yield* Effect.promise(() => stat(report))).ino, reportInode)
     assert.equal(yield* Effect.promise(() => readFile(report, "utf8")), "immutable report")
     assert.equal((yield* Effect.promise(() => stat(inputRoot))).mode & 0o777, 0o550)
     assert.equal((yield* Effect.promise(() => stat(producerRoot))).mode & 0o777, 0o550)

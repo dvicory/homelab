@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import * as path from "node:path";
@@ -283,6 +284,11 @@ const make = Effect.gen(function* () {
         await fs.chmod(inputsRoot, 0o550);
         return;
       }
+      // Stage beside, never inside, the mounted workspace. A prior live
+      // generation can still read its workspace until activation fences it.
+      const stagingRoot = path.join(path.dirname(workspacePath), ".input-staging");
+      await fs.mkdir(stagingRoot, { recursive: true, mode: 0o700 });
+      await fs.chmod(stagingRoot, 0o700);
       const created: string[] = [];
       try {
         for (const input of record.inputs) {
@@ -290,9 +296,31 @@ const make = Effect.gen(function* () {
           const source = sourceOutput(config.workspaceHandoffRoot, input.handoffId);
           const sourceStat = await fs.lstat(source);
           if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) throw stableNotReady(input.producerTaskId, "publication_failed");
-          created.push(destination);
-          await fs.cp(source, destination, { recursive: true, force: false, errorOnExist: true });
-          await chmodReadOnly(destination);
+          if (fsSync.existsSync(destination)) {
+            // Published destinations are created only by the atomic rename
+            // below. A replay repairs permissions and reuses the complete tree.
+            await chmodReadOnly(destination);
+            continue;
+          }
+          const staging = path.join(stagingRoot, `${input.mountName}-${randomUUID()}.staging`);
+          try {
+            await fs.cp(source, staging, { recursive: true, force: false, errorOnExist: true });
+            await chmodReadOnly(staging);
+            // Darwin requires the renamed directory itself to remain owner-writable.
+            // Only the broker owner can write this root; descendants are already read-only.
+            await fs.chmod(staging, 0o750);
+            try {
+              await fs.rename(staging, destination);
+              await fs.chmod(destination, 0o550);
+              created.push(destination);
+            } catch (error) {
+              // A concurrent identical replay may have won the rename.
+              if (!fsSync.existsSync(destination)) throw error;
+              await chmodReadOnly(destination);
+            }
+          } finally {
+            await removeMaterializedTree(staging);
+          }
         }
         await fs.chmod(inputsRoot, 0o550);
       } catch (error) {

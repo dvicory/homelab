@@ -315,6 +315,11 @@ in
                 SystemCallFilter = [
                   "@system-service"
                   "~@privileged"
+                  # libuv's copyFile preserves source ownership with fchown(2).
+                  # The unprivileged broker lacks CAP_CHOWN, so normal DAC
+                  # restrictions still apply; permit only this syscall rather
+                  # than weakening the privileged-syscall group exclusion.
+                  "fchown"
                 ];
 
                 # Process-tree cleanup; KillMode=process would leak QEMU
