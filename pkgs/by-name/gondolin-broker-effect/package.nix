@@ -2,6 +2,7 @@
   lib,
   buildNpmPackage,
   git,
+  makeWrapper,
   nodejs_24,
   python3,
 }:
@@ -14,6 +15,7 @@ buildNpmPackage {
   nativeBuildInputs = [
     python3
     git
+    makeWrapper
   ];
 
   # Gondolin's optional cpu-features extension is not needed. Keep install
@@ -30,6 +32,13 @@ buildNpmPackage {
   postInstall = ''
     mkdir -p "$out/lib/node_modules/gondolin-broker-effect/policy-kernel/dist"
     cp -R policy-kernel/dist/. "$out/lib/node_modules/gondolin-broker-effect/policy-kernel/dist/"
+  '';
+
+  # The source adapter invokes Git as a subprocess. Keep Git in the package's
+  # runtime closure instead of relying on a particular systemd unit PATH.
+  postFixup = ''
+    wrapProgram "$out/bin/gondolin-broker-effect" \
+      --prefix PATH : "${lib.makeBinPath [ git ]}"
   '';
 
 
