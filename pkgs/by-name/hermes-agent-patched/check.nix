@@ -56,6 +56,7 @@ runCommand "hermes-agent-patched-check" { nativeBuildInputs = [ git ]; } ''
     ${patchedHermes.patchedSource}/tests/tools/test_terminal_task_cwd.py \
     ${patchedHermes.patchedSource}/tests/tools/test_task_authority_binding.py \
     ${patchedHermes.patchedSource}/tests/tools/test_gondolin_backend.py \
+    ${patchedHermes.patchedSource}/tests/tools/test_process_registry.py \
     ${patchedHermes.patchedSource}/tests/gateway/test_session_boundary_security_state.py \
     ${patchedHermes.patchedSource}/tests/gateway/test_kanban_notifier.py \
     ${patchedHermes.patchedSource}/tests/plugins/test_workspace_zero_schema.py \

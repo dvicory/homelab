@@ -1,0 +1,553 @@
+diff --git a/tests/tools/test_gondolin_backend.py b/tests/tools/test_gondolin_backend.py
+index 241e61f..c6de494 100644
+--- a/tests/tools/test_gondolin_backend.py
++++ b/tests/tools/test_gondolin_backend.py
+@@ -100,6 +100,39 @@ class _Handler(BaseHTTPRequestHandler):
+             )
+             self.broker.close_acknowledged.set()
+             self._json(self.broker.close_status, self.broker.close_body)
++        elif self.path == "/v1/processes/spawn":
++            self._json(200, {
++                "processId": self.broker.process_id,
++                "environmentKey": request["environmentKey"],
++                "generation": request["generation"],
++                "state": "running",
++            })
++        elif self.path == "/v1/processes/poll":
++            self._json(200, {
++                "processId": self.broker.process_id,
++                "state": self.broker.process_state,
++                "reason": self.broker.process_reason,
++                "exitCode": self.broker.process_exit_code,
++                "signal": self.broker.process_signal,
++                "output": self.broker.process_output,
++                "nextCursor": self.broker.process_next_cursor,
++                "firstAvailableCursor": 1 if self.broker.process_output else 0,
++                "truncatedBytes": self.broker.process_truncated_bytes,
++            })
++        elif self.path == "/v1/processes/cancel":
++            self.broker.process_state = "cancelled"
++            self.broker.process_reason = "client_cancel"
++            self._json(200, {
++                "processId": self.broker.process_id,
++                "state": "cancelled",
++                "reason": self.broker.process_reason,
++                "exitCode": None,
++                "signal": None,
++                "output": [],
++                "nextCursor": self.broker.process_next_cursor,
++                "firstAvailableCursor": self.broker.process_next_cursor,
++                "truncatedBytes": self.broker.process_truncated_bytes,
++            })
+         elif self.path == "/v1/exec":
+             self.send_response(200)
+             self.send_header("content-type", "application/x-ndjson")
+@@ -170,6 +203,14 @@ class FakeBroker:
+         self.file_data = b""
+         self.exec_started = threading.Event()
+         self.disconnected = threading.Event()
++        self.process_id = "process-test"
++        self.process_state = "running"
++        self.process_reason = None
++        self.process_exit_code = None
++        self.process_signal = None
++        self.process_output = []
++        self.process_next_cursor = 0
++        self.process_truncated_bytes = 0
+         self._server = _UnixHttpServer(socket_path, _Handler)
+         self._server.broker = self
+         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+@@ -205,6 +246,38 @@ def test_ensure_on_init_stores_numeric_generation():
+     )
+ 
+ 
++def test_background_process_uses_broker_lifecycle_and_exact_exit():
++    broker, env = make_env()
++    process_id = env.spawn_background("exit 7", "/workspace/work")
++    assert process_id == "process-test"
++    spawn_call = next(call for call in broker.calls if call[0] == "/v1/processes/spawn")
++    assert spawn_call[1]["argv"] == ["/bin/sh", "-c", "exit 7"]
++    assert spawn_call[1]["cwd"] == "/workspace/work"
++
++    broker.process_state = "exited"
++    broker.process_exit_code = 7
++    broker.process_output = [{
++        "cursor": 1,
++        "sequence": 0,
++        "stream": "stdout",
++        "dataBase64": base64.b64encode(b"done\n").decode(),
++    }]
++    broker.process_next_cursor = 1
++    result = env.poll_background(process_id, 0)
++    assert result["state"] == "exited"
++    assert result["exitCode"] == 7
++    assert result["output"] == ["done\n"]
++
++
++def test_background_cancel_uses_process_route_not_environment_close():
++    broker, env = make_env()
++    process_id = env.spawn_background("sleep 30", "/workspace/work")
++    result = env.cancel_background(process_id)
++    assert result["state"] == "cancelled"
++    assert any(path == "/v1/processes/cancel" for path, _request in broker.calls)
++    assert broker.closed_generations == []
++
++
+ def test_env_is_persistent_across_turns():
+     _broker, env = make_env()
+     assert env._persistent is True
+diff --git a/tests/tools/test_process_registry.py b/tests/tools/test_process_registry.py
+index 425a781..4fccd0b 100644
+--- a/tests/tools/test_process_registry.py
++++ b/tests/tools/test_process_registry.py
+@@ -699,6 +699,95 @@ class TestSpawnEnvSanitization:
+         assert f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}TELEGRAM_BOT_TOKEN" not in env
+         assert env["PYTHONUNBUFFERED"] == "1"
+ 
++    def test_managed_backend_uses_opaque_process_lifecycle(self, registry):
++        class ManagedEnv:
++            def __init__(self):
++                self.spawned = []
++                self.polls = []
++
++            def spawn_background(self, command, cwd):
++                self.spawned.append((command, cwd))
++                return "broker-process"
++
++            def poll_background(self, process_id, cursor):
++                self.polls.append((process_id, cursor))
++                return {
++                    "state": "exited",
++                    "reason": None,
++                    "exitCode": 7,
++                    "signal": None,
++                    "output": ["durable output\n"],
++                    "nextCursor": 1,
++                    "truncatedBytes": 0,
++                }
++
++            def cancel_background(self, *_args):
++                raise AssertionError("completed process must not be cancelled")
++
++            def execute(self, *_args, **_kwargs):
++                raise AssertionError("managed backend must not use guest shell polling")
++
++        env = ManagedEnv()
++        with patch.object(registry, "_write_checkpoint"):
++            session = registry.spawn_via_env(
++                env,
++                "exit 7",
++                cwd="/workspace/work",
++            )
++            session._reader_thread.join(timeout=1)
++
++        assert env.spawned == [("exit 7", "/workspace/work")]
++        assert env.polls == [("broker-process", 0)]
++        assert session.exited is True
++        assert session.exit_code == 7
++        assert session.output_buffer == "durable output\n"
++        assert session.backend_process_id == "broker-process"
++        assert session.id in registry._finished
++
++    def test_managed_backend_kill_uses_opaque_cancel(self, registry):
++        class ManagedEnv:
++            def __init__(self):
++                self.cancelled = []
++
++            def spawn_background(self, _command, _cwd):
++                return "broker-process"
++
++            def poll_background(self, _process_id, cursor):
++                return {
++                    "state": "running",
++                    "reason": None,
++                    "exitCode": None,
++                    "signal": None,
++                    "output": [],
++                    "nextCursor": cursor,
++                    "truncatedBytes": 0,
++                }
++
++            def cancel_background(self, process_id):
++                self.cancelled.append(process_id)
++                return {
++                    "state": "cancelled",
++                    "reason": "client_cancel",
++                    "exitCode": None,
++                    "signal": None,
++                    "output": [],
++                    "nextCursor": 0,
++                    "truncatedBytes": 0,
++                }
++
++            def execute(self, *_args, **_kwargs):
++                raise AssertionError("managed backend must not issue guest kill")
++
++        env = ManagedEnv()
++        with patch.object(registry, "_write_checkpoint"):
++            session = registry.spawn_via_env(env, "sleep 30")
++            result = registry.kill_process(session.id)
++            session._reader_thread.join(timeout=2)
++
++        assert result["status"] == "killed"
++        assert env.cancelled == ["broker-process"]
++        assert session.completion_reason == "killed"
++
+     def test_spawn_via_env_uses_backend_temp_dir_for_artifacts(self, registry):
+         class FakeEnv:
+             def __init__(self):
+diff --git a/tools/environments/gondolin.py b/tools/environments/gondolin.py
+index df6ab28..a1d177b 100644
+--- a/tools/environments/gondolin.py
++++ b/tools/environments/gondolin.py
+@@ -613,6 +613,31 @@ class BrokerClient:
+             raise BrokerError("protocol.incomplete_stream", "execution stream has no terminal exit event")
+         return events, exits[0]
+ 
++    def spawn_process(self, payload: dict) -> dict:
++        environment_key = str(payload.get("environmentKey", ""))
++        body = self._json_post(
++            "/v1/processes/spawn",
++            self._execution_payload(environment_key, payload),
++        )
++        return {
++            "processId": self._required_text(body, "processId"),
++            "state": self._required_text(body, "state"),
++        }
++
++    def poll_process(self, payload: dict) -> dict:
++        environment_key = str(payload.get("environmentKey", ""))
++        return self._json_post(
++            "/v1/processes/poll",
++            self._execution_payload(environment_key, payload),
++        )
++
++    def cancel_process(self, payload: dict) -> dict:
++        environment_key = str(payload.get("environmentKey", ""))
++        return self._json_post(
++            "/v1/processes/cancel",
++            self._execution_payload(environment_key, payload),
++        )
++
+ 
+ class GondolinEnvironment(BaseEnvironment):
+     """Hermes environment backed by the Gondolin Effect broker."""
+@@ -689,6 +714,93 @@ class GondolinEnvironment(BaseEnvironment):
+             raise BrokerError("protocol.invalid_response", "environment has no generation")
+         return self._client.write_file(self._env_key, self.generation, path, data)
+ 
++    def spawn_background(self, command: str, cwd: str = "") -> str:
++        self._ensure_environment()
++        if self.generation is None:
++            raise BrokerError("protocol.invalid_response", "environment has no generation")
++        result = self._client.spawn_process(
++            {
++                "environmentKey": self._env_key,
++                "generation": self.generation,
++                "argv": ["/bin/sh", "-c", command],
++                "cwd": cwd or self.cwd,
++            }
++        )
++        if result["state"] != "running":
++            raise BrokerError(
++                "protocol.invalid_response",
++                "broker process did not enter running state",
++            )
++        return result["processId"]
++
++    @staticmethod
++    def _decode_process_result(result: dict) -> dict:
++        state = BrokerClient._required_text(result, "state")
++        if state not in {"running", "exited", "cancelled", "lost"}:
++            raise BrokerError(
++                "protocol.invalid_response",
++                "broker process response has an invalid state",
++            )
++        events = result.get("output")
++        if not isinstance(events, list) or not all(
++            isinstance(event, dict) for event in events
++        ):
++            raise BrokerError(
++                "protocol.invalid_response",
++                "broker process response has invalid output",
++            )
++        output = []
++        for event in events:
++            try:
++                data = base64.b64decode(event.get("dataBase64", ""), validate=True)
++            except (ValueError, TypeError) as exc:
++                raise BrokerError(
++                    "protocol.invalid_output",
++                    "invalid broker process output base64",
++                ) from exc
++            output.append(data.decode("utf-8", errors="replace"))
++        for field in ("nextCursor", "truncatedBytes"):
++            value = result.get(field)
++            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
++                raise BrokerError(
++                    "protocol.invalid_response",
++                    f"broker process response has invalid {field}",
++                )
++        return {
++            "state": state,
++            "reason": result.get("reason"),
++            "exitCode": result.get("exitCode"),
++            "signal": result.get("signal"),
++            "output": output,
++            "nextCursor": result["nextCursor"],
++            "truncatedBytes": result["truncatedBytes"],
++        }
++
++    def poll_background(self, process_id: str, cursor: int) -> dict:
++        if self.generation is None:
++            raise BrokerError("protocol.invalid_response", "environment has no generation")
++        result = self._client.poll_process(
++            {
++                "environmentKey": self._env_key,
++                "generation": self.generation,
++                "processId": process_id,
++                "cursor": cursor,
++            }
++        )
++        return self._decode_process_result(result)
++
++    def cancel_background(self, process_id: str) -> dict:
++        if self.generation is None:
++            raise BrokerError("protocol.invalid_response", "environment has no generation")
++        result = self._client.cancel_process(
++            {
++                "environmentKey": self._env_key,
++                "generation": self.generation,
++                "processId": process_id,
++            }
++        )
++        return self._decode_process_result(result)
++
+     def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
+         result = super().execute(command, cwd, **kwargs)
+         if self._state_loss_notice:
+diff --git a/tools/process_registry.py b/tools/process_registry.py
+index adc2eb9..b79254b 100644
+--- a/tools/process_registry.py
++++ b/tools/process_registry.py
+@@ -125,6 +125,10 @@ class ProcessSession:
+     max_output_chars: int = MAX_OUTPUT_CHARS
+     detached: bool = False                      # True if recovered from crash (no pipe)
+     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
++    backend_process_id: str = ""                # Opaque broker-owned process identity
++    backend_cursor: int = 0                     # Last broker output cursor consumed
++    backend_truncated_bytes: int = 0             # Cumulative broker-side output loss
++    signal: Optional[int] = None                 # Broker-observed terminal signal
+     # Watcher/notification metadata (persisted for crash recovery)
+     watcher_platform: str = ""
+     watcher_chat_id: str = ""
+@@ -842,6 +846,58 @@ class ProcessRegistry:
+ 
+         return session
+ 
++    def _spawn_managed_via_env(
++        self,
++        env: Any,
++        command: str,
++        cwd: str,
++        task_id: str,
++        session_key: str,
++    ) -> ProcessSession:
++        """Spawn through a backend-owned process lifecycle API."""
++        session = ProcessSession(
++            id=f"proc_{uuid.uuid4().hex[:12]}",
++            command=command,
++            task_id=task_id,
++            session_key=session_key,
++            cwd=cwd,
++            started_at=time.time(),
++            env_ref=env,
++            pid_scope="backend",
++        )
++        try:
++            session.backend_process_id = env.spawn_background(command, cwd or "")
++        except Exception as exc:
++            session.exited = True
++            session.exit_code = -1
++            session.completion_reason = "failed_start"
++            session.termination_source = "failed_start"
++            session.output_buffer = f"Failed to start: {exc}"
++            return session
++
++        reader = threading.Thread(
++            target=self._managed_env_poller_loop,
++            args=(session, env),
++            daemon=True,
++            name=f"proc-managed-poller-{session.id}",
++        )
++        session._reader_thread = reader
++        with self._lock:
++            self._prune_if_needed()
++            self._running[session.id] = session
++        try:
++            reader.start()
++        except Exception:
++            with self._lock:
++                self._running.pop(session.id, None)
++            try:
++                env.cancel_background(session.backend_process_id)
++            except Exception:
++                logger.exception("Failed to cancel broker process after poller start failure")
++            raise
++        self._write_checkpoint()
++        return session
++
+     def spawn_via_env(
+         self,
+         env: Any,
+@@ -862,6 +918,14 @@ class ProcessRegistry:
+         This is less capable than local spawn (no live stdout pipe, no stdin),
+         but it ensures the command runs in the correct sandbox context.
+         """
++        if callable(getattr(env, "spawn_background", None)):
++            return self._spawn_managed_via_env(
++                env,
++                command,
++                cwd or "",
++                task_id,
++                session_key,
++            )
+         session = ProcessSession(
+             id=f"proc_{uuid.uuid4().hex[:12]}",
+             command=command,
+@@ -1003,6 +1067,89 @@ class ProcessRegistry:
+                 session.completion_reason = "exited"
+             self._move_to_finished(session)
+ 
++    def _managed_env_poller_loop(self, session: ProcessSession, env: Any):
++        """Drain output and terminal state from a backend-owned process."""
++        while not session.exited:
++            try:
++                result = env.poll_background(
++                    session.backend_process_id,
++                    session.backend_cursor,
++                )
++                next_cursor = result.get("nextCursor")
++                if (
++                    not isinstance(next_cursor, int)
++                    or isinstance(next_cursor, bool)
++                    or next_cursor < session.backend_cursor
++                ):
++                    raise ValueError("backend process returned an invalid output cursor")
++
++                chunks = result.get("output", [])
++                if not isinstance(chunks, list) or not all(
++                    isinstance(chunk, str) for chunk in chunks
++                ):
++                    raise ValueError("backend process returned invalid output")
++                delta = "".join(chunks)
++                truncated = result.get("truncatedBytes", 0)
++                if (
++                    not isinstance(truncated, int)
++                    or isinstance(truncated, bool)
++                    or truncated < session.backend_truncated_bytes
++                ):
++                    raise ValueError("backend process returned invalid truncation metadata")
++                if truncated > session.backend_truncated_bytes:
++                    delta = (
++                        f"\n[broker truncated {truncated - session.backend_truncated_bytes} "
++                        "bytes of older process output]\n"
++                        + delta
++                    )
++
++                with session._lock:
++                    session.backend_cursor = next_cursor
++                    session.backend_truncated_bytes = truncated
++                    if delta:
++                        session.output_buffer += delta
++                        if len(session.output_buffer) > session.max_output_chars:
++                            session.output_buffer = session.output_buffer[
++                                -session.max_output_chars:
++                            ]
++                if delta:
++                    self._check_watch_patterns(session, delta)
++                    self._emit_output(session, delta)
++
++                state = result.get("state")
++                if state == "running":
++                    time.sleep(1)
++                    continue
++                if state not in {"exited", "cancelled", "lost"}:
++                    raise ValueError("backend process returned an invalid state")
++
++                with session._lock:
++                    session.exited = True
++                    session.signal = result.get("signal")
++                    exit_code = result.get("exitCode")
++                    if state == "exited":
++                        session.exit_code = exit_code if isinstance(exit_code, int) else None
++                        session.completion_reason = "exited"
++                    elif state == "cancelled":
++                        session.exit_code = -15
++                        session.completion_reason = "killed"
++                    else:
++                        session.exit_code = None
++                        session.completion_reason = "lost"
++                    session.termination_source = str(result.get("reason") or "")
++                self._move_to_finished(session)
++                return
++            except Exception:
++                with session._lock:
++                    if session.exited:
++                        return
++                    session.exited = True
++                    session.exit_code = None
++                    session.completion_reason = "lost"
++                    session.termination_source = "backend_lost"
++                self._move_to_finished(session)
++                return
++
+     def _env_poller_loop(
+         self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str
+     ):
+@@ -1586,6 +1733,45 @@ class ProcessRegistry:
+                 # must be taskkill /T /F; Popen.terminate() only kills the
+                 # shell wrapper and leaves Git Bash descendants behind.
+                 self._terminate_host_pid(session.process.pid, session.host_start_time)
++            elif session.env_ref and session.backend_process_id:
++                terminal = session.env_ref.cancel_background(
++                    session.backend_process_id,
++                )
++                state = terminal.get("state")
++                if state not in {"cancelled", "exited"}:
++                    raise RuntimeError(
++                        f"backend process cancellation returned invalid state: {state}"
++                    )
++                delta = "".join(terminal.get("output", []))
++                with session._lock:
++                    session.backend_cursor = terminal.get(
++                        "nextCursor",
++                        session.backend_cursor,
++                    )
++                    if delta:
++                        session.output_buffer += delta
++                        if len(session.output_buffer) > session.max_output_chars:
++                            session.output_buffer = session.output_buffer[
++                                -session.max_output_chars:
++                            ]
++                    if state == "exited":
++                        session.exited = True
++                        session.exit_code = terminal.get("exitCode")
++                        session.signal = terminal.get("signal")
++                        session.completion_reason = "exited"
++                        session.termination_source = str(terminal.get("reason") or "")
++                if state == "exited":
++                    output = strip_ansi(session.output_buffer[-2000:])
++                    if consume_output:
++                        self._completion_consumed.add(session_id)
++                    self._move_to_finished(session)
++                    return {
++                        "status": "already_exited",
++                        "exit_code": session.exit_code,
++                        "completion_reason": session.completion_reason,
++                        "termination_source": session.termination_source,
++                        "output": output,
++                    }
+             elif session.env_ref and session.pid:
+                 # Non-local -- kill inside sandbox
+                 session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)

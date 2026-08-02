@@ -49,6 +49,8 @@ let
       ./multi-task-input-lifecycle.patch
       # Preserve real background exit status across backend visibility races.
       ./background-exit-reporting.patch
+      # Broker-owned Gondolin background execution; no guest PID/log sentinels.
+      ./broker-process-lifecycle.patch
     ];
     postPatch = ''
       rm -f \
