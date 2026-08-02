@@ -204,6 +204,12 @@
         ) qaBrokerHardening.LoadCredential;
         assert !(prodGatewayEnvironment ? HERMES_WORKSPACE_HANDOFF);
         assert !(qaHost.systemd.services ? hermes-prod-broker);
+        assert effectPolicy.policyMaterial.processRegistry == {
+          maxConcurrent = 8;
+          retainedOutputBytes = 262144;
+          maxPollBytes = 1048576;
+          terminalTtlMs = 1800000;
+        };
         pkgs.runCommand "secure-terminal-socket-directory-mount" { } ''
           touch $out
         '';

@@ -30,6 +30,13 @@ let
   # rather than a caller-controlled ensure parameter, so a compromised
   # gateway cannot extend abandoned VM lifetime.
   environmentIdleTimeoutMs = 15 * 60 * 1000;
+  processRegistry = {
+    maxConcurrent = floor.maxVms;
+    retainedOutputBytes = floor.maxResources.ringBufferBytes;
+    maxPollBytes = floor.maxFrameBytes;
+    terminalTtlMs = 30 * 60 * 1000;
+  };
+
 
   # The Effect broker consumes these ceilings through authorization limits.
   # Keep them outside `floor`: the rollback broker validates the closed
@@ -192,6 +199,7 @@ let
     "environment.status"
     "environment.close"
     "exec.foreground"
+    "exec.background"
     "fs.stat"
     "fs.list"
     "fs.read"
@@ -533,6 +541,7 @@ in
         defaultAuthorityClass = "default";
         maxEnvironments = floor.maxVms;
         inherit environmentIdleTimeoutMs;
+        inherit processRegistry;
         worklanes = lanes;
       };
       # The full immutable Nix policy digest fences persisted environments,
@@ -543,6 +552,6 @@ in
     in
     {
       json = pkgs.writeText "hermes-${profile}-effect-sandbox-policy.json" (builtins.toJSON doc);
-      inherit policyId;
+      inherit policyId policyMaterial;
     };
 }
