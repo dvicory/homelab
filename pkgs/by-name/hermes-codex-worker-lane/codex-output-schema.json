@@ -2,6 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
+    "outcome": {
+      "type": "string",
+      "enum": ["completed", "blocked"],
+      "description": "Whether the requested task completed successfully or could not be completed."
+    },
     "summary": {
       "type": "string",
       "description": "Concise description of the outcome and important decisions."
@@ -25,6 +30,6 @@
       "description": "Workspace-root paths below output/ selected for human delivery. Only normalized output/... entries are honored."
     }
   },
-  "required": ["summary", "tests", "remaining_issues"],
+  "required": ["outcome", "summary", "tests", "remaining_issues", "artifacts"],
   "additionalProperties": false
 }

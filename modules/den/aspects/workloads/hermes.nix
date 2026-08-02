@@ -251,7 +251,8 @@ let
         ];
       };
       fakeRootCommands = ''
-        mkdir -p ./usr/bin ./home/hermes/.hermes ./home/hermes/workspace
+        mkdir -p ./usr/bin ./home/hermes/.hermes ./home/hermes/workspace ./tmp
+        chmod 1777 ./tmp
         # Coreutils provides /bin/env. Some third-party scripts use the
         # conventional FHS location in their shebang instead.
         ln -s /bin/env ./usr/bin/env

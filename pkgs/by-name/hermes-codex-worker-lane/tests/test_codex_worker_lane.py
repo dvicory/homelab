@@ -102,6 +102,7 @@ def test_worker_environment_does_not_forward_gateway_secrets(plugin, monkeypatch
             "PATH": "/bin",
             "PYTHONPATH": "/patched-hermes",
             "HERMES_KANBAN_TASK": "task-1",
+            "HERMES_BUNDLED_PLUGINS": "/nix/store/plugins",
             "TELEGRAM_BOT_TOKEN": "must-not-escape",
             "OPENAI_API_KEY": "must-not-escape",
         },
@@ -111,6 +112,7 @@ def test_worker_environment_does_not_forward_gateway_secrets(plugin, monkeypatch
 
     assert env["HERMES_KANBAN_TASK"] == "task-1"
     assert env["PYTHONPATH"] == "/patched-hermes"
+    assert env["HERMES_BUNDLED_PLUGINS"] == "/nix/store/plugins"
     assert "TELEGRAM_BOT_TOKEN" not in env
     assert "OPENAI_API_KEY" not in env
 
@@ -191,6 +193,19 @@ def test_codex_command_rejects_missing_policy_facts(worker, monkeypatch, tmp_pat
         worker._codex_command(tmp_path, tmp_path / "result.json", incomplete)
 
 
+def test_broker_worker_requires_registered_completion_hook(worker, monkeypatch):
+    discovered = []
+    monkeypatch.setattr(worker, "discover_plugins", lambda: discovered.append(True))
+    monkeypatch.setattr(worker, "has_hook", lambda name: False)
+
+    with pytest.raises(
+        worker.WorkerResolutionError, match="broker completion hook is not registered"
+    ):
+        worker._require_broker_completion_hook()
+
+    assert discovered == [True]
+
+
 def test_successful_worker_completes_with_changed_file_metadata(worker, monkeypatch):
     connection = object()
     completed = {}
@@ -217,6 +232,7 @@ def test_successful_worker_completes_with_changed_file_metadata(worker, monkeypa
         42,
         0,
         {
+            "outcome": "completed",
             "summary": "Implemented the requested change.",
             "tests": ["unit test"],
             "remaining_issues": [],
@@ -233,6 +249,47 @@ def test_successful_worker_completes_with_changed_file_metadata(worker, monkeypa
         "remaining_issues": [],
         "codex_exit_code": 0,
     }
+
+
+def test_worker_reported_blocker_does_not_complete_task(worker, monkeypatch):
+    connection = object()
+    blocked = {}
+    monkeypatch.setattr(worker.kanban_db, "connect", lambda: nullcontext(connection))
+    monkeypatch.setattr(
+        worker.kanban_db,
+        "get_task",
+        lambda conn, task_id: SimpleNamespace(status="running"),
+    )
+    monkeypatch.setattr(
+        worker.kanban_db,
+        "complete_task",
+        lambda *args, **kwargs: pytest.fail("blocked Codex work must not complete"),
+    )
+
+    def block(conn, task_id, **kwargs):
+        blocked.update(task_id=task_id, **kwargs)
+        return True
+
+    monkeypatch.setattr(worker.kanban_db, "block_task", block)
+
+    assert worker._finish_task(
+        "task-1",
+        42,
+        0,
+        {
+            "outcome": "blocked",
+            "summary": "Sandbox initialization failed.",
+            "tests": [],
+            "remaining_issues": ["No command executed."],
+            "artifacts": [],
+        },
+        [],
+        "codex-plan",
+    )
+    assert blocked["task_id"] == "task-1"
+    assert blocked["expected_run_id"] == 42
+    assert blocked["kind"] == "transient"
+    assert blocked["reason"].startswith("Codex reported that the task is blocked:")
 
 
 def _lane_config(**overrides):
@@ -293,15 +350,15 @@ def test_codex_command_grants_bounded_output_plane(worker, monkeypatch, tmp_path
         output_plane=output_plane,
     )
 
-    assert f'sandbox_workspace_write.writable_roots=["{output_plane}"]' in command
+    assert f'permissions.hermes-worker.filesystem={{"{output_plane}"="write"}}' in command
     assert 'permissions.hermes-worker.extends=":workspace"' in command
 
 
 def test_codex_command_read_only_broker_lane_keeps_writable_output(
     worker, monkeypatch, tmp_path
 ):
-    # The broker enforces the read-only work plane at the filesystem; Codex
-    # must keep the workspace profile so the output plane stays writable.
+    # A fine-grained filesystem grant keeps the Project worktree native
+    # read-only while allowing publication to the sibling output plane.
     monkeypatch.setenv("CODEX_EXECUTABLE", "/nix/store/codex/bin/codex")
     worker_spec = SimpleNamespace(
         permission="read-only",
@@ -322,8 +379,8 @@ def test_codex_command_read_only_broker_lane_keeps_writable_output(
         output_plane=output_plane,
     )
 
-    assert 'permissions.hermes-worker.extends=":workspace"' in command
-    assert f'sandbox_workspace_write.writable_roots=["{output_plane}"]' in command
+    assert 'permissions.hermes-worker.extends=":read-only"' in command
+    assert f'permissions.hermes-worker.filesystem={{"{output_plane}"="write"}}' in command
 
 
 def test_validated_artifacts_selects_only_normalized_output_paths(worker):
@@ -376,7 +433,12 @@ def test_finish_task_passes_artifacts_and_records_rejections(worker, monkeypatch
         "task-1",
         42,
         0,
-        {"summary": "Done.", "tests": [], "remaining_issues": []},
+        {
+            "outcome": "completed",
+            "summary": "Done.",
+            "tests": [],
+            "remaining_issues": [],
+        },
         [],
         "codex",
         artifacts=["output/review.md"],

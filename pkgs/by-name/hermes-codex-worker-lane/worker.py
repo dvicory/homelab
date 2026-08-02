@@ -17,6 +17,7 @@ import threading
 from typing import Any
 
 from hermes_cli import kanban_db
+from hermes_cli.plugins import discover_plugins, has_hook
 from hermes_cli.worker_catalogue import (
     WorkerResolutionError,
     WorkerSpecification,
@@ -34,6 +35,16 @@ def _required_env(name: str) -> str:
     return value
 
 
+
+
+def _require_broker_completion_hook() -> None:
+    """Load the broker plugin before this process attempts finalization."""
+    discover_plugins()
+    if not has_hook("kanban_workspace_completion_intent"):
+        raise WorkerResolutionError(
+            "workspace_finalization_unavailable",
+            "broker completion hook is not registered",
+        )
 
 
 def _git_changed_paths(workspace: Path) -> list[str]:
@@ -104,13 +115,6 @@ def _codex_command(
         raise RuntimeError(f"unsupported Codex approvals reviewer: {reviewer}")
 
     permission_profile = "hermes-worker"
-    if output_plane is not None and sandbox == "read-only":
-        # Codex's :read-only base profile would deny the writable output
-        # plane. The broker already enforces the read-only work plane at the
-        # filesystem (group write stripped at activation), so the :workspace
-        # profile plus a bounded output root preserves the lane contract:
-        # work-plane writes fail with EACCES, output remains writable.
-        sandbox = "workspace-write"
     base_profile = ":read-only" if sandbox == "read-only" else ":workspace"
     command = [
         codex,
@@ -128,12 +132,15 @@ def _codex_command(
         f'permissions.{permission_profile}.extends="{base_profile}"',
     ]
     if output_plane is not None:
-        # The three-plane contract grants Codex a bounded writable output
-        # plane beside its work-plane CWD.
+        # Keep the lane's native base profile and grant only the sibling
+        # publication plane. Promoting a read-only lane to :workspace makes
+        # Codex treat the physically immutable worktree as writable and causes
+        # bubblewrap to create missing protected metadata mountpoints there.
+        output_key = json.dumps(str(output_plane))
         command.extend(
             [
                 "--config",
-                f'sandbox_workspace_write.writable_roots=["{output_plane}"]',
+                f'permissions.{permission_profile}.filesystem={{{output_key}="write"}}',
             ]
         )
     if worker_spec.policy.get("networkAccess") is True:
@@ -305,6 +312,7 @@ def _finish_task(
     rejected_artifacts: list[str] | None = None,
 ) -> bool:
     summary = str(result.get("summary") or "Codex returned no summary.").strip()
+    outcome = str(result.get("outcome") or "").strip()
     tests = [str(item) for item in result.get("tests") or []]
     remaining = [str(item) for item in result.get("remaining_issues") or []]
     metadata = {
@@ -329,8 +337,11 @@ def _finish_task(
             )
             return True
 
-        if return_code != 0:
-            reason = f"Codex worker failed with exit code {return_code}: {summary}"
+        if return_code != 0 or outcome != "completed":
+            if return_code != 0:
+                reason = f"Codex worker failed with exit code {return_code}: {summary}"
+            else:
+                reason = f"Codex reported that the task is blocked: {summary}"
             if remaining:
                 reason += f" Remaining issue: {remaining[0]}"
             return kanban_db.block_task(
@@ -375,6 +386,9 @@ def main() -> int:
             "external_provider_unsupported",
             f"Codex worker provider is not supported: {worker_spec.provider}",
         )
+
+    if broker:
+        _require_broker_completion_hook()
 
     with kanban_db.connect() as conn:
         task = kanban_db.get_task(conn, task_id)
