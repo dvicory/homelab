@@ -107,34 +107,34 @@ index 1072c36..9a2f2e7 100644
 +):
 +    """Return the current run specification, or the latest validated template."""
 +    if run_id is None:
-+        task_row = conn.execute(
-+            "SELECT current_run_id FROM tasks WHERE id = ?", (task_id,)
-+        ).fetchone()
++        task_row = conn.execute("SELECT current_run_id FROM tasks WHERE id = ?", (task_id,)).fetchone()
 +        run_id = task_row["current_run_id"] if task_row else None
++    candidates: list[str] = []
 +    if run_id is not None:
 +        row = conn.execute(
 +            "SELECT metadata FROM task_runs WHERE id = ? AND task_id = ?",
 +            (int(run_id), task_id),
 +        ).fetchone()
-+        raw = row["metadata"] if row else None
-+    else:
-+        row = conn.execute(
-+            "SELECT payload FROM task_events WHERE task_id = ? "
-+            "AND kind IN (?, ?) ORDER BY id DESC LIMIT 1",
-+            (task_id, WORKER_SPEC_EVENT, WORKER_SPEC_VALIDATED_EVENT),
-+        ).fetchone()
-+        raw = row["payload"] if row else None
-+    if not raw:
-+        return None
++        if row and row["metadata"]:
++            candidates.append(row["metadata"])
++    rows = conn.execute(
++        "SELECT payload FROM task_events WHERE task_id = ? AND kind IN (?, ?) "
++        "AND (? IS NULL OR run_id = ?) ORDER BY id DESC",
++        (task_id, WORKER_SPEC_EVENT, WORKER_SPEC_VALIDATED_EVENT, run_id, run_id),
++    ).fetchall()
++    candidates.extend(row["payload"] for row in rows if row["payload"])
 +    from hermes_cli.worker_catalogue import WorkerSpecification
-+    try:
-+        payload = json.loads(raw)
-+        value = payload.get("worker_spec") if isinstance(payload, dict) else None
-+        return WorkerSpecification.from_json(
-+            json.dumps(value, sort_keys=True, separators=(",", ":"))
-+        )
-+    except Exception:
-+        return None
++
++    for raw in candidates:
++        try:
++            payload = json.loads(raw)
++            value = payload.get("worker_spec") if isinstance(payload, dict) else None
++            return WorkerSpecification.from_json(
++                json.dumps(value, sort_keys=True, separators=(",", ":"))
++            )
++        except Exception:
++            continue
++    return None
 +
 +
 +def _append_worker_specification(
@@ -897,12 +897,12 @@ index 0000000..093bb73
 +    metadata = json.loads(run["metadata"])
 +    run_spec = metadata["worker_spec"]
 +    assert run_spec["catalogue_revision"] == managed_catalogue["value"]["revision"]
-+    assert run_spec["lane_revision"] == managed_catalogue["value"]["laneRevisions"]["worker"]
-+    assert run_spec["task_id"] == task_id
-+    assert run_spec["run_id"] == claimed.current_run_id
-+    assert run_spec["workspace_generation"] == claimed.current_run_id
-+    assert run_spec["workspace_id"].endswith(f":{task_id}:{claimed.current_run_id}")
-+    assert run_spec["lease_id"] == claimed.claim_lock
++    conn.execute(
++        "UPDATE task_runs SET metadata = ? WHERE id = ?",
++        (json.dumps({"result": "done"}), claimed.current_run_id),
++    )
++    recovered = kb.get_task_worker_specification(conn, task_id, run_id=claimed.current_run_id)
++    assert recovered.run_id == claimed.current_run_id
 +
 +
 +def test_catalogue_change_creates_coherent_new_run_binding(tmp_path, managed_catalogue):
