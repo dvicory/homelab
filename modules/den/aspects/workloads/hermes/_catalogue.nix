@@ -82,6 +82,9 @@ in
               (lane.memory == "shared-profile") -> lane.profile != null
             ) "Worker lane '${name}' uses shared-profile memory without a profile")
             (check (
+              lane.policy.approvalPolicy == "never"
+            ) "Detached worker lane '${name}' must use approvalPolicy 'never'; no worker-to-operator approval bridge is available")
+            (check (
               projectCapable -> workspace.projectProvider != null
             ) "Project-capable worker lane '${name}' must declare projectProvider")
             (check (

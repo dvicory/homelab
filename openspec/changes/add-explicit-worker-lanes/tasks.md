@@ -28,6 +28,7 @@
 - [x] 4.3 Default durable worker memory to disabled; implement explicit lane-scoped and shared-profile modes while keeping task transcripts run-scoped.
 - [x] 4.4 Spawn Hermes workers with trusted lane and task-run context, not model or process-global workspace variables.
 - [x] 4.5 Adapt external plugin lanes to consume the same resolved worker-specification contract and report unsupported fields explicitly.
+- [x] 4.6 Require detached worker lanes to use `approvalPolicy = "never"`, prevent spawned Hermes workers from inheriting process-local gateway approval flags, and verify upstream noninteractive command behavior.
 
 ## 5. Workspace and sandbox authority binding
 

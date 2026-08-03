@@ -1362,3 +1362,56 @@ index a58b8f6..ee064f2 100644
  
      return {
          "env_type": env_type,
+--- a/hermes_cli/worker_lanes.py
++++ b/hermes_cli/worker_lanes.py
+@@ -158,6 +158,16 @@
+     from hermes_cli import kanban_db as kb  # local import: avoids import cycle
+ 
+     env = dict(os.environ if base is None else base)
++    # Gateway approval callbacks are process-local. A detached worker cannot
++    # inherit them, so inheriting their environment markers would route
++    # recoverable command checks to an approval queue with no listener.
++    for name in (
++        "HERMES_EXEC_ASK",
++        "HERMES_GATEWAY_SESSION",
++        "HERMES_INTERACTIVE",
++        "HERMES_SESSION_PLATFORM",
++    ):
++        env.pop(name, None)
+     env["HERMES_KANBAN_TASK"] = task.id
+     env["HERMES_KANBAN_HOME"] = str(kb.kanban_home())
+     env["HERMES_KANBAN_DB"] = str(kb.kanban_db_path(board=board))
+--- a/tests/hermes_cli/test_worker_lanes.py
++++ b/tests/hermes_cli/test_worker_lanes.py
+@@ -126,6 +126,31 @@
+     assert "HERMES_WORKER_LANE" not in env
+ 
+ 
++def test_kanban_worker_env_drops_parent_approval_context(kanban_home, tmp_path):
++    import types
++
++    task = types.SimpleNamespace(
++        id="t_approval", current_run_id=8, claim_lock="host:1:approval", tenant=None
++    )
++    inherited = {
++        "HERMES_EXEC_ASK": "1",
++        "HERMES_GATEWAY_SESSION": "1",
++        "HERMES_INTERACTIVE": "1",
++        "HERMES_SESSION_PLATFORM": "telegram",
++        "UNRELATED": "preserved",
++    }
++
++    env = wl.kanban_worker_env(task, str(tmp_path), base=inherited)
++
++    assert env["UNRELATED"] == "preserved"
++    assert not {
++        "HERMES_EXEC_ASK",
++        "HERMES_GATEWAY_SESSION",
++        "HERMES_INTERACTIVE",
++        "HERMES_SESSION_PLATFORM",
++    } & env.keys()
++
++
+ def test_kanban_worker_env_omits_derived_broker_authority(
+     kanban_home,
+ ):

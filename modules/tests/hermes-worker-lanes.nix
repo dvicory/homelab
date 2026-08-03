@@ -107,7 +107,10 @@
                     maxInputPathBytes = 2048;
                   };
                 };
-                policy.worklane = "project";
+                policy = {
+                  worklane = "project";
+                  approvalPolicy = "never";
+                };
                 execution = {
                   timeoutSeconds = 1800;
                   maxTurns = 20;
@@ -211,6 +214,13 @@
               }
             )) true
           );
+          invalidDetachedApproval = builtins.tryEval (
+            builtins.deepSeq (catalogueLib.resolve (
+              lib.recursiveUpdate validWorkerLane {
+                workerLanes.project.policy.approvalPolicy = "on-request";
+              }
+            )) true
+          );
         in
         (
           {
@@ -234,6 +244,7 @@
               assert !invalidUnknownRepository.success;
               assert !invalidCredentialRef.success;
               assert !invalidInputCeilings.success;
+              assert !invalidDetachedApproval.success;
               assert validCatalogue.workerLanes.project.workspace.inputs.maxInputs == 4;
               assert validCatalogue.workerLanes.project.workspace.inputs.maxInputBytes == 16777216;
               assert lib.all (lane: lane.networkAccess) qaCodexLanes;

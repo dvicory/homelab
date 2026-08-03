@@ -50,10 +50,10 @@ A worker lane MUST be able to declare its capability-based selection description
 - **WHEN** two proposed lanes differ only by role prose while model, tools, credentials, data, workspace, evaluator, and policy are equal
 - **THEN** configuration SHOULD consolidate them rather than imply a distinct capability
 
-#### Scenario: Detached external runtime cannot surface operator approval
-- **GIVEN** an external worker runtime whose noninteractive execution mode cannot route approval requests to the Hermes operator
+#### Scenario: Detached runtime cannot surface operator approval
+- **GIVEN** a detached worker runtime whose noninteractive execution mode cannot route approval requests to the Hermes operator
 - **WHEN** trusted configuration declares that runtime as a worker lane
-- **THEN** configuration MUST reject approval behavior that can broaden the frozen permission profile
+- **THEN** configuration MUST require `approvalPolicy = "never"` and treat the frozen broker and runtime capability profile as the hard ceiling
 - **AND** filesystem and network policy MUST be projected independently without silently dropping either field
 
 ### Requirement: Worker durable memory is explicit and off by default

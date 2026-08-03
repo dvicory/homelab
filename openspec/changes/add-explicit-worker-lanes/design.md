@@ -173,16 +173,23 @@ This change defines lane input capability and the task-run fields needed by late
 
 A task does not name the same predecessor twice: `inputs_from` implies readiness gating, and dispatch gates on the union of both sets. This avoids automatically mounting every parent's files while keeping the model contract concise.
 
-### 12. Detached Codex lanes use capability profiles, not interactive elevation
+### 12. Detached workers use capability profiles, not interactive elevation
+
+Detached `codex exec` and noninteractive Hermes Kanban workers cannot surface
+command or file approval requests to Hermes or a human operator. Their lanes
+therefore require `approvalPolicy = "never"` and treat the frozen broker and
+runtime capability profile as a hard ceiling.
+
+Hermes preserves its upstream noninteractive command behavior by spawning the
+worker without the parent gateway's process-local interactive approval flags.
+Recoverable command checks then auto-approve while immutable hard command
+denials and broker enforcement remain active. The worker does not rewrite its
+profile's approval configuration.
 
 The Codex adapter maps the frozen filesystem and network fields to a Codex
 permission profile. It does not use the legacy `--sandbox` projection, which
-cannot represent filesystem mode and network access independently.
-
-`codex exec` cannot surface command or file approval requests to Hermes or a
-human operator. Detached Codex lanes therefore require `approvalPolicy =
-"never"` and treat the resolved permission profile as a hard ceiling. A future
-human-in-the-loop design requires an explicit Codex-to-Hermes approval bridge;
+cannot represent filesystem mode and network access independently. A future
+human-in-the-loop design requires an explicit worker-to-Hermes approval bridge.
 Codex `auto_review` is not a substitute because it can approve additional
 permissions beyond the frozen lane profile.
 
