@@ -15,13 +15,17 @@ from hermes_cli.worker_catalogue import WorkerResolutionError, WorkerSpecificati
 
 _WORKER_ENV_KEYS = {
     "BWRAP_EXECUTABLE",
+    "BASH_EXECUTABLE",
     "CODEX_EXECUTABLE",
     "CODEX_HOME",
     "CODEX_WORKER_LANES",
+    "CODEX_RUNTIME_PATH",
     "GONDOLIN_EFFECT_CONTROL_SOCKET",
+    "ENV_EXECUTABLE",
     "HERMES_HOME",
     "HERMES_BUNDLED_PLUGINS",
     "HERMES_WORKSPACE_HANDOFF",
+    "HERMES_SANDBOX_AUTHORITY_BINDING",
     "HOME",
     "LANG",
     "LC_ALL",

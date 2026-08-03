@@ -102,11 +102,15 @@ def test_worker_environment_does_not_forward_gateway_secrets(plugin, monkeypatch
         "kanban_worker_identity_env",
         lambda *args, **kwargs: {
             "BWRAP_EXECUTABLE": "/resolved/bwrap",
+            "BASH_EXECUTABLE": "/resolved/bash",
+            "CODEX_RUNTIME_PATH": "/resolved/runtime",
+            "ENV_EXECUTABLE": "/resolved/env",
             "CODEX_WORKER_LANES": '[{"name":"codex"}]',
             "PATH": "/bin",
             "PYTHONPATH": "/patched-hermes",
             "HERMES_KANBAN_TASK": "task-1",
             "HERMES_BUNDLED_PLUGINS": "/nix/store/plugins",
+            "HERMES_SANDBOX_AUTHORITY_BINDING": "opaque-finalization-binding",
             "TELEGRAM_BOT_TOKEN": "must-not-escape",
             "OPENAI_API_KEY": "must-not-escape",
         },
@@ -117,8 +121,12 @@ def test_worker_environment_does_not_forward_gateway_secrets(plugin, monkeypatch
     assert env["HERMES_KANBAN_TASK"] == "task-1"
     assert env["PYTHONPATH"] == "/patched-hermes"
     assert env["BWRAP_EXECUTABLE"] == "/resolved/bwrap"
+    assert env["BASH_EXECUTABLE"] == "/resolved/bash"
+    assert env["CODEX_RUNTIME_PATH"] == "/resolved/runtime"
+    assert env["ENV_EXECUTABLE"] == "/resolved/env"
     assert env["CODEX_WORKER_LANES"] == '[{"name":"codex"}]'
     assert env["HERMES_BUNDLED_PLUGINS"] == "/nix/store/plugins"
+    assert env["HERMES_SANDBOX_AUTHORITY_BINDING"] == "opaque-finalization-binding"
     assert "TELEGRAM_BOT_TOKEN" not in env
     assert "OPENAI_API_KEY" not in env
 
@@ -273,9 +281,21 @@ def test_codex_command_rejects_missing_policy_facts(worker, monkeypatch, tmp_pat
         worker._codex_command(tmp_path, tmp_path / "result.json", incomplete)
 
 
-def test_broker_codex_command_projects_only_canonical_workspace(worker, monkeypatch):
+def test_broker_codex_command_projects_only_canonical_workspace(
+    worker, monkeypatch, tmp_path
+):
     monkeypatch.setenv("BWRAP_EXECUTABLE", "/nix/store/bubblewrap/bin/bwrap")
-    workspace = Path("/home/hermes/broker-workspaces/task-1/work")
+    monkeypatch.setenv("BASH_EXECUTABLE", "/nix/store/bash/bin/bash")
+    monkeypatch.setenv("ENV_EXECUTABLE", "/nix/store/coreutils/bin/env")
+    monkeypatch.setenv("CODEX_RUNTIME_PATH", "/nix/store/runtime/bin")
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/certs/ca-bundle.crt")
+    workspace = tmp_path / "broker-workspaces" / "task-1" / "work"
+    inputs = workspace.parent / "inputs"
+    output = workspace.parent / "output"
+    worker_result = tmp_path / "worker-result"
+    for path in (workspace, inputs, output, tmp_path / "codex-home", worker_result):
+        path.mkdir(parents=True, exist_ok=True)
     codex_command = [
         "/nix/store/codex/bin/codex",
         "exec",
@@ -283,23 +303,63 @@ def test_broker_codex_command_projects_only_canonical_workspace(worker, monkeypa
         "/workspace/work",
     ]
 
-    command = worker._broker_codex_command(codex_command, workspace)
+    command = worker._broker_codex_command(
+        codex_command, workspace, worker_result, "workspace-write"
+    )
 
-    task_bind = command.index(str(workspace.parent))
-    assert command[task_bind - 1 : task_bind + 2] == [
+    work_bind = command.index(str(workspace))
+    assert command[work_bind - 1 : work_bind + 2] == [
         "--bind",
-        str(workspace.parent),
-        "/workspace",
+        str(workspace),
+        "/workspace/work",
     ]
-    storage_hide = command.index(str(workspace.parent.parent))
-    assert command[storage_hide - 1 : storage_hide + 1] == [
-        "--tmpfs",
-        str(workspace.parent.parent),
+    inputs_bind = command.index(str(inputs))
+    assert command[inputs_bind - 1 : inputs_bind + 2] == [
+        "--ro-bind",
+        str(inputs),
+        "/workspace/inputs",
     ]
-    assert command[-len(codex_command) :] == codex_command
+    assert ["--tmpfs", "/"] == command[command.index("/") - 1 : command.index("/") + 1]
+    assert ["--dev", "/dev"] == command[
+        command.index("--dev") : command.index("--dev") + 2
+    ]
+    assert str(workspace.parent.parent) not in command
+    assert "/run/secrets" not in command
+    assert "--clearenv" in command
     assert "--unshare-user" in command
     assert "--unshare-pid" in command
-    assert ["--chdir", "/workspace/work"] == command[-len(codex_command) - 2 : -len(codex_command)]
+    assert command[-len(codex_command) :] == codex_command
+    assert ["--chdir", "/workspace/work"] == command[
+        -len(codex_command) - 2 : -len(codex_command)
+    ]
+
+
+def test_broker_codex_command_enforces_read_only_worktree(
+    worker, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("BWRAP_EXECUTABLE", "/resolved/bwrap")
+    monkeypatch.setenv("BASH_EXECUTABLE", "/resolved/bash")
+    monkeypatch.setenv("ENV_EXECUTABLE", "/resolved/env")
+    monkeypatch.setenv("CODEX_RUNTIME_PATH", "/resolved/runtime")
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/certs/ca-bundle.crt")
+    workspace = tmp_path / "task" / "work"
+    worker_result = tmp_path / "worker-result"
+    for path in (
+        workspace,
+        workspace.parent / "inputs",
+        workspace.parent / "output",
+        tmp_path / "codex-home",
+        worker_result,
+    ):
+        path.mkdir(parents=True, exist_ok=True)
+
+    command = worker._broker_codex_command(
+        ["/resolved/codex"], workspace, worker_result, "read-only"
+    )
+
+    work_bind = command.index(str(workspace))
+    assert command[work_bind - 1] == "--ro-bind"
 
 
 def test_broker_codex_child_environment_hides_physical_workspace(worker, monkeypatch):
@@ -307,18 +367,10 @@ def test_broker_codex_child_environment_hides_physical_workspace(worker, monkeyp
         "HERMES_WORKSPACE_HOST_PATH",
         "/home/hermes/broker-workspaces/task-1/work",
     )
-    monkeypatch.setenv("GIT_CONFIG_KEY_0", "safe.directory")
-    monkeypatch.setenv(
-        "GIT_CONFIG_VALUE_0",
-        "/home/hermes/broker-workspaces/task-1/work",
-    )
 
     child_env = worker._codex_child_env(broker_workspace=True)
 
     assert "HERMES_WORKSPACE_HOST_PATH" not in child_env
-    assert child_env["TERMINAL_CWD"] == "/workspace/work"
-    assert child_env["HERMES_WORKSPACE_WORK_DIR"] == "/workspace/work"
-    assert child_env["GIT_CONFIG_VALUE_0"] == "/workspace/work"
 
 
 def test_broker_worker_requires_registered_completion_hook(worker, monkeypatch):

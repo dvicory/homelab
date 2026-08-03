@@ -85,6 +85,7 @@ let
         gnused
         gnutar
         gzip
+        python3
         ripgrep
       ];
 
@@ -798,6 +799,7 @@ in
                 containerConfig = {
                   inherit image;
                   networks = [ "container:${tailscaleName}" ];
+                  unmask = if codexBrokerSharing then "ALL" else null;
                   environments = {
                     HOME = containerHome;
                     HERMES_HOME = "${containerHome}/.hermes";
@@ -841,6 +843,25 @@ in
                     {
                       CODEX_EXECUTABLE = lib.getExe (codexPackageFor host.system);
                       BWRAP_EXECUTABLE = lib.getExe pkgs.bubblewrap;
+                      BASH_EXECUTABLE = lib.getExe pkgs.bash;
+                      ENV_EXECUTABLE = lib.getExe' pkgs.coreutils "env";
+                      CODEX_RUNTIME_PATH = lib.makeBinPath [
+                        pkgs.bash
+                        pkgs.coreutils
+                        pkgs.curl
+                        pkgs.file
+                        pkgs.findutils
+                        pkgs.gawk
+                        pkgs.gh
+                        pkgs.git
+                        pkgs.gnugrep
+                        pkgs.gnused
+                        pkgs.gnutar
+                        pkgs.gzip
+                        pkgs.jq
+                        pkgs.python3
+                        pkgs.ripgrep
+                      ];
                       CODEX_WORKER_LANES = builtins.toJSON codexLanes;
                     }
                     // lib.optionalAttrs (codexModel != null) {

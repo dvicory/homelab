@@ -222,7 +222,7 @@
             )) true
           );
         in
-        (
+        lib.recursiveUpdate
           {
             # Exercise non-default lane names and descriptions independently from
             # the generic patched-Hermes/worker runtime test below.
@@ -249,6 +249,12 @@
               assert validCatalogue.workerLanes.project.workspace.inputs.maxInputBytes == 16777216;
               assert lib.all (lane: lane.networkAccess) qaCodexLanes;
               assert lib.all (lane: lane.approvalPolicy == "never") qaCodexLanes;
+              assert qaContainer.unmask == "ALL";
+              assert !(qaContainer.privileged or false);
+              assert !(builtins.elem "CAP_SYS_ADMIN" (qaContainer.addCapabilities or [ ]));
+              assert lib.hasPrefix "/nix/store/" qaContainer.environments.BASH_EXECUTABLE;
+              assert lib.hasPrefix "/nix/store/" qaContainer.environments.ENV_EXECUTABLE;
+              assert lib.hasInfix "/nix/store/" qaContainer.environments.CODEX_RUNTIME_PATH;
               pkgs.runCommand "hermes-worker-lane-options" { } "touch $out";
             checks.hermes-worker-lane =
               pkgs.callPackage (self + "/pkgs/by-name/hermes-agent-patched/check.nix")
@@ -256,7 +262,14 @@
                   inherit codexWorkerLane patchedHermes sandboxAccess;
                 };
           }
-          // lib.optionalAttrs (system == "x86_64-linux") {
+          (lib.optionalAttrs (system == "x86_64-linux") {
+            checks.hermes-codex-minimal-sandbox = pkgs.callPackage (
+              self + "/pkgs/by-name/hermes-codex-worker-lane/minimal-sandbox-check.nix"
+            ) {
+              python = patchedHermes.hermesVenv;
+              pythonPath = patchedHermes.patchedSource;
+              workerSource = codexWorkerLane.testSource;
+            };
             checks.hermes-qa-runtime-catalogue = pkgs.runCommand "hermes-qa-runtime-catalogue" { } ''
               export HERMES_HOME="$TMPDIR/hermes-home"
               export HERMES_QA_CONFIG=${qaConfigPath}
@@ -265,8 +278,7 @@
                 ${self + "/modules/tests/hermes-qa-runtime-catalogue.py"}
               touch $out
             '';
-          }
-        )
+          })
       ))
       (
         # The CLI package is portable, but its macOS `sandbox-exec` backend

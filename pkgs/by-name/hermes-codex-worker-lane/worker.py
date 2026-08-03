@@ -99,6 +99,7 @@ def _codex_command(
     worker_spec: WorkerSpecification,
     *,
     output_plane: Path | None = None,
+    schema_path: Path | None = None,
 ) -> list[str]:
     codex = _required_env("CODEX_EXECUTABLE")
     approval_policy = str(worker_spec.policy.get("approvalPolicy") or "")
@@ -164,7 +165,7 @@ def _codex_command(
             "--cd",
             str(workspace),
             "--output-schema",
-            str(Path(__file__).with_name("codex-output-schema.json")),
+            str(schema_path or Path(__file__).with_name("codex-output-schema.json")),
             "--output-last-message",
             str(output_path),
         ]
@@ -179,54 +180,144 @@ def _codex_command(
     return command
 
 
-def _broker_codex_command(command: list[str], workspace: Path) -> list[str]:
-    """Project one broker task root at the canonical model-facing path."""
+def _broker_codex_command(
+    command: list[str],
+    workspace: Path,
+    worker_result_dir: Path,
+    permission: str,
+) -> list[str]:
+    """Run Codex in a minimal task-scoped mount and process namespace."""
     if workspace.name != "work":
         raise RuntimeError("broker workspace work plane must end in /work")
+    if permission not in {"read-only", "workspace-write"}:
+        raise RuntimeError(f"unsupported broker workspace permission: {permission}")
+
     task_root = workspace.parent
-    workspace_storage_root = task_root.parent
-    bubblewrap = _required_env("BWRAP_EXECUTABLE")
-    return [
-        bubblewrap,
+    inputs = (task_root / "inputs").resolve(strict=True)
+    output = (task_root / "output").resolve(strict=True)
+    codex_home = Path(_required_env("CODEX_HOME")).resolve(strict=True)
+    worker_result_dir = worker_result_dir.resolve(strict=True)
+    work_mount = "--ro-bind" if permission == "read-only" else "--bind"
+
+    args = [
+        _required_env("BWRAP_EXECUTABLE"),
         "--die-with-parent",
         "--new-session",
         "--unshare-user",
         "--unshare-pid",
         "--unshare-ipc",
-        "--bind",
-        "/",
-        "/",
-        "--dir",
-        "/workspace",
-        "--bind",
-        str(task_root),
-        "/workspace",
-        # Hide the gateway's physical broker storage path, including sibling
-        # task roots. The selected task remains available only at /workspace.
         "--tmpfs",
-        str(workspace_storage_root),
-        "--tmpfs",
-        "/run/secrets",
+        "/",
         "--proc",
         "/proc",
-        "--chdir",
-        "/workspace/work",
-        *command,
+        "--dev",
+        "/dev",
+        "--dir",
+        "/nix",
+        "--ro-bind",
+        "/nix/store",
+        "/nix/store",
+        "--dir",
+        "/bin",
+        "--symlink",
+        _required_env("BASH_EXECUTABLE"),
+        "/bin/bash",
+        "--symlink",
+        _required_env("BASH_EXECUTABLE"),
+        "/bin/sh",
+        "--dir",
+        "/usr",
+        "--dir",
+        "/usr/bin",
+        "--symlink",
+        _required_env("ENV_EXECUTABLE"),
+        "/usr/bin/env",
+        "--dir",
+        "/etc",
     ]
+    for path in (
+        "/etc/hosts",
+        "/etc/resolv.conf",
+        "/etc/nsswitch.conf",
+        "/etc/passwd",
+        "/etc/group",
+    ):
+        args.extend(["--ro-bind-try", path, path])
+    args.extend(
+        [
+            "--dir",
+            "/etc/ssl",
+            "--ro-bind-try",
+            "/etc/ssl/certs",
+            "/etc/ssl/certs",
+            "--dir",
+            "/home",
+            "--dir",
+            "/home/hermes",
+            "--bind",
+            str(codex_home),
+            "/home/hermes/.codex",
+            "--dir",
+            "/workspace",
+            work_mount,
+            str(workspace),
+            "/workspace/work",
+            "--ro-bind",
+            str(inputs),
+            "/workspace/inputs",
+            "--bind",
+            str(output),
+            "/workspace/output",
+            "--dir",
+            "/run",
+            "--bind",
+            str(worker_result_dir),
+            "/run/codex-worker",
+            "--tmpfs",
+            "/tmp",
+            "--clearenv",
+            "--setenv",
+            "HOME",
+            "/home/hermes",
+            "--setenv",
+            "CODEX_HOME",
+            "/home/hermes/.codex",
+            "--setenv",
+            "PATH",
+            _required_env("CODEX_RUNTIME_PATH"),
+            "--setenv",
+            "SSL_CERT_FILE",
+            _required_env("SSL_CERT_FILE"),
+            "--setenv",
+            "TMPDIR",
+            "/tmp",
+            "--setenv",
+            "LANG",
+            os.environ.get("LANG", "C.UTF-8"),
+            "--setenv",
+            "TERM",
+            os.environ.get("TERM", "dumb"),
+            "--setenv",
+            "GIT_CONFIG_COUNT",
+            "1",
+            "--setenv",
+            "GIT_CONFIG_KEY_0",
+            "safe.directory",
+            "--setenv",
+            "GIT_CONFIG_VALUE_0",
+            "/workspace/work",
+            "--chdir",
+            "/workspace/work",
+            *command,
+        ]
+    )
+    return args
 
 
 def _codex_child_env(*, broker_workspace: bool) -> dict[str, str]:
     child_env = dict(os.environ)
-    if not broker_workspace:
-        return child_env
-    child_env.pop("HERMES_WORKSPACE_HOST_PATH", None)
-    child_env["TERMINAL_CWD"] = "/workspace/work"
-    child_env["HERMES_WORKSPACE_ROOT"] = "/workspace"
-    child_env["HERMES_WORKSPACE_WORK_DIR"] = "/workspace/work"
-    child_env["HERMES_WORKSPACE_INPUTS_DIR"] = "/workspace/inputs"
-    child_env["HERMES_WORKSPACE_OUTPUT_DIR"] = "/workspace/output"
-    if child_env.get("GIT_CONFIG_KEY_0") == "safe.directory":
-        child_env["GIT_CONFIG_VALUE_0"] = "/workspace/work"
+    if broker_workspace:
+        child_env.pop("HERMES_WORKSPACE_HOST_PATH", None)
     return child_env
 
 
@@ -246,18 +337,32 @@ def _run_codex(
     with tempfile.TemporaryDirectory(
         prefix=f"{task_id}-{run_id}-", dir=runs_dir
     ) as temp_dir:
-        result_path = Path(temp_dir) / "last-message.json"
+        result_dir = Path(temp_dir)
+        result_path = result_dir / "last-message.json"
+        schema_source = Path(__file__).with_name("codex-output-schema.json")
         broker_workspace = output_plane is not None
         command_workspace = Path("/workspace/work") if broker_workspace else workspace
         command_output = Path("/workspace/output") if broker_workspace else output_plane
+        command_result = result_path
+        command_schema = schema_source
+        if broker_workspace:
+            (result_dir / schema_source.name).write_bytes(schema_source.read_bytes())
+            command_result = Path("/run/codex-worker/last-message.json")
+            command_schema = Path("/run/codex-worker") / schema_source.name
         command = _codex_command(
             command_workspace,
-            result_path,
+            command_result,
             worker_spec,
             output_plane=command_output,
+            schema_path=command_schema,
         )
         if broker_workspace:
-            command = _broker_codex_command(command, workspace)
+            command = _broker_codex_command(
+                command,
+                workspace,
+                result_dir,
+                worker_spec.permission,
+            )
         print(
             "[codex-worker] starting Codex "
             f"task={task_id} run={run_id} workspace={command_workspace}",
