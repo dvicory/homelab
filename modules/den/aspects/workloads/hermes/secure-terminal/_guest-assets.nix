@@ -21,6 +21,14 @@ let
       NIX_SSL_CERT_FILE = "/etc/ssl/certs/ca-bundle.crt";
       CURL_CA_BUNDLE = "/etc/ssl/certs/ca-bundle.crt";
     };
+
+    # Keep early PID 1 diagnostics on the QEMU console. Intermittent failures
+    # happen while systemd runs generators, before journald is available.
+    systemd.settings.Manager = {
+      LogLevel = "debug";
+      LogTarget = "console";
+      LogLocation = true;
+    };
   };
 
   # general: full development surface for project/research work.
