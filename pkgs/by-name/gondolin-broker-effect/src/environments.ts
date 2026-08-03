@@ -88,7 +88,11 @@ export interface EnvironmentService {
   }, BrokerError>;
   readonly lease: (reference: EnvironmentRef) => Effect.Effect<LiveEnvironment, BrokerError, Scope.Scope>;
   readonly close: (reference: EnvironmentRef) => Effect.Effect<void, BrokerError>;
-  readonly hardTerminateLeased: (reference: EnvironmentRef, reason: string) => Effect.Effect<void, never>;
+  readonly hardTerminateLeased: (
+    reference: EnvironmentRef,
+    reason: string,
+    terminalState: "closed" | "failed",
+  ) => Effect.Effect<void, never>;
   readonly closeForFence: (reference: EnvironmentRef) => Effect.Effect<void, BrokerError>;
   readonly runWithEnvironmentStopped: <A, E, R>(
     environmentKey: string,
@@ -570,7 +574,11 @@ const make = Effect.gen(function* () {
     );
 
 
-  const hardTerminateLeased = (reference: EnvironmentRef, reason: string): Effect.Effect<void, never> =>
+  const hardTerminateLeased = (
+    reference: EnvironmentRef,
+    reason: string,
+    terminalState: "closed" | "failed",
+  ): Effect.Effect<void, never> =>
     TSemaphore.withPermit(
       Effect.gen(function* () {
         const environment = live.get(reference.environmentKey);
@@ -578,7 +586,11 @@ const make = Effect.gen(function* () {
         yield* Ref.update(environment.lifecycleState, (state) => ({ ...state, closing: true }));
         yield* registry.markClosing(environment.environmentKey, environment.generation).pipe(Effect.ignore);
         yield* Effect.tryPromise({ try: () => environment.vm.close(), catch: () => undefined }).pipe(Effect.ignore);
-        yield* registry.markFailed(environment.environmentKey, environment.generation, reason).pipe(Effect.ignore);
+        yield* (
+          terminalState === "closed"
+            ? registry.markClosed(environment.environmentKey, environment.generation)
+            : registry.markFailed(environment.environmentKey, environment.generation, reason)
+        ).pipe(Effect.ignore);
         live.delete(reference.environmentKey);
       }),
       mutation,

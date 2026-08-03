@@ -146,14 +146,14 @@ Each live environment has a transactional read/write lock:
 
 - ordinary exec/file operations hold a scoped read lease;
 - graceful close takes the write lock and waits for active operations;
-- hard termination of a leased, uncooperative command intentionally bypasses the writer wait, marks the environment closing, closes the VM, records failure, and removes it from the live map.
+- hard termination of a leased command intentionally bypasses the writer wait, marks the environment closing, closes the VM, records `closed` for authoritative cancellation or `failed` for execution failure, and removes it from the live map.
 
 That bypass is explicit because waiting for the command's own read lease would deadlock cancellation.
 
 ### `TSemaphore`
 
 - one global mutation permit serializes ensure/close/generation transitions;
-- one per-environment semaphore enforces concurrent foreground execution limits.
+- one per-environment semaphore enforces concurrent guest execution limits; the process registry separately limits managed background processes.
 
 ### `Stream`
 
@@ -201,8 +201,8 @@ stateDiagram-v2
     creating --> failed: workspace/VM/registry failure
     active --> active: compatible ensure reuses generation
     active --> closing: graceful close or hard termination
-    closing --> closed: graceful VM close
-    closing --> failed: hard cancel / close failure / crash recovery
+    closing --> closed: graceful close or authoritative cancellation
+    closing --> failed: execution failure / crash recovery
     closed --> creating: later ensure reserves generation + 1
     failed --> creating: later ensure reserves generation + 1
 ```
@@ -536,7 +536,7 @@ timeout.
 |---|---|---|
 | Length-prefixed framed Unix protocol | Replaced by HTTP/JSON and NDJSON over Unix socket; Hermes HTTPX adapter is patched in | Keep the adapter thin; do not add legacy framing to core services |
 | Socket-local trust boundary | Preserved by the NixOS mode-`0600`, gateway-owned activation socket | Validate ownership and no TCP listener on the deployed host |
-| `ensure` with server generation | Preserved; Hermes sends the canonical conversation-derived environment key | Stop treating conversation strings as the final Agent X product identity model |
+| `ensure` with server generation | Preserved; Hermes sends one canonical key per surface: conversation-scoped for interactive sessions and authority/task-scoped for broker workers | Keep every environment-backed worker surface bound to the frozen task-run identity |
 | Compatible ensure reuse | Preserved for same worklane and policy digest | V3 also considers asset/template/policy/mount topology; add a complete immutable environment fingerprint |
 | Recreate on incompatible state | Partial | Current comparison omits template version, mount topology digest, runtime generation, and adapter generation |
 | Durable latest generation/state | Preserved in SQLite | Add migrations, tombstones/retention, crash injection, backup/restore, and multi-process exclusion |
@@ -546,7 +546,7 @@ timeout.
 | Persistent per-environment workspace | Preserved | Add workspace identity/topology digest, quotas, artifact export, and deletion policy |
 | Network mediation bundles | Finite DNS/HTTP policies, public/private classification, synthetic DNS, redirect/rebinding checks, and live runtime grants implemented; WebSocket/raw TCP/SSH remain denied | Run hostile-network and real package/Git workloads on Linux; credentials remain separate |
 | Foreground exec events | Preserved semantically; Hermes consumes the NDJSON envelope | Add event cursor/replay rules only if the product contract requires reconnect |
-| Background processes / notify-on-complete | Not implemented | Design Agent X task/process ownership instead of copying legacy flags blindly |
+| Background processes / notify-on-complete | Broker-owned spawn, poll, wait, cancellation, exact exits, and retained output are implemented; Hermes retains notification delivery | Keep managed-background admission separate from the guest exec semaphore |
 | PTY open/input/resize/close | Not implemented | Define typed PTY lifecycle and cancellation before exposing it |
 | Input/output/deadline ceilings | Preserved | Add per-action unit-bearing policy types and adversarial tests |
 | Hard cancellation via VM close | Preserved and tested with fake runtime, but intentionally coarse | Gondolin 0.12.0 abort only rejects the host session; it does not confirm guest-process termination. Add guest-side signal/kill-and-confirm before preserving a VM after request loss; until then disconnect cancellation sacrifices ephemeral VM state for containment |

@@ -254,6 +254,7 @@ const make = Effect.gen(function* () {
                     : environments.hardTerminateLeased(
                         { environmentKey: request.environmentKey, generation: request.generation },
                         "command did not complete; environment hard-closed",
+                        "failed",
                       ),
                 ),
               ),

@@ -3,8 +3,9 @@ import { mkdtemp } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
-import { Effect } from "effect"
+import { Effect, Stream } from "effect"
 import { Environments } from "../dist/environments.js"
+import { Executor } from "../dist/exec.js"
 import { Processes } from "../dist/processes.js"
 import { bindTestAuthority, makeTestLayer } from "./fakes.mjs"
 
@@ -49,6 +50,7 @@ test("background execution outlives spawn and retains exact nonzero exit", async
 test("cancellation hard-closes only the owning generation and remains observable", async () => {
   await withHarness((harness) => Effect.gen(function* () {
     const processes = yield* Processes
+    const environments = yield* Environments
     const environment = yield* startEnvironment("process-cancel")
     const spawned = yield* processes.spawn({
       environmentKey: environment.environmentKey,
@@ -64,6 +66,7 @@ test("cancellation hard-closes only the owning generation and remains observable
     assert.equal(cancelled.state, "cancelled")
     assert.equal(cancelled.exitCode, null)
     assert.deepEqual(harness.fake.state.closed, ["fake-1"])
+    assert.equal((yield* environments.status(environment.environmentKey)).state, "closed")
 
     const retained = yield* processes.poll({
       environmentKey: environment.environmentKey,
@@ -96,6 +99,33 @@ test("one running process per environment fails before a second launch", async (
       environmentKey: environment.environmentKey,
       generation: environment.generation,
       processId: first.processId,
+    })
+  }))
+})
+
+test("one background process leaves a foreground exec permit available", async () => {
+  await withHarness((harness) => Effect.gen(function* () {
+    const processes = yield* Processes
+    const executor = yield* Executor
+    const environment = yield* startEnvironment("process-foreground")
+    const background = yield* processes.spawn({
+      environmentKey: environment.environmentKey,
+      generation: environment.generation,
+      argv: ["hang"],
+    })
+
+    const events = Array.from(yield* Stream.runCollect(executor.execute({
+      environmentKey: environment.environmentKey,
+      generation: environment.generation,
+      argv: ["foreground"],
+    })))
+    assert.equal(events.at(-1)?.type, "exit")
+    assert.deepEqual(harness.fake.state.execs, [["hang"], ["foreground"]])
+
+    yield* processes.cancel({
+      environmentKey: environment.environmentKey,
+      generation: environment.generation,
+      processId: background.processId,
     })
   }))
 })

@@ -258,6 +258,7 @@ const make = Effect.gen(function* () {
           environments.hardTerminateLeased(
             { environmentKey: record.environmentKey, generation: record.generation },
             "background process failed",
+            "failed",
           ).pipe(
             Effect.andThen(Effect.sync(() => {
               if (record.state === "running") {
@@ -322,6 +323,7 @@ const make = Effect.gen(function* () {
             environments.hardTerminateLeased(
               { environmentKey: record.environmentKey, generation: record.generation },
               "background process cancelled",
+              "closed",
             ),
           ],
           { concurrency: "unbounded", discard: true },
