@@ -27,6 +27,7 @@ Orchestrator-created fan-out/fan-in MUST be validated and committed as part of o
 - **WHEN** a proposal contains independent research leaves and one synthesis destination
 - **THEN** graph creation SHALL atomically persist every task and dependency/input edge
 - **AND** the synthesis task SHALL be visible before any leaf is dispatched
+- **AND** producer completion SHALL make the pre-created synthesis task dispatchable without another orchestrator model turn or user prompt
 
 #### Scenario: Graph creation partially fails
 - **WHEN** any proposed lane, Project, edge, input capability, ceiling, or dependency is invalid

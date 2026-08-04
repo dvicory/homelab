@@ -37,7 +37,7 @@
 - [ ] 5.1 Verify no task exists before approval; exact approval creates the full graph; revision, expiry, cross-conversation use, catalogue drift, response loss, and partial failure remain fail-closed and replay-safe.
 - [ ] 5.2 Verify blocker escalations are not decomposed and leaf workers cannot create tasks, mutate graphs, approve proposals, publish results, or invoke operational effects through visible, hidden, stale, or indirect routes.
 - [ ] 5.3 Verify identical proposal and approval semantics through at least the configured Telegram and Discord gateways without lane-specific adapter behavior.
-- [ ] 5.4 Smoke-test one solo Project implementation, one research fan-out/fan-in with cited synthesis, and one implementation/review/revision graph end to end.
+- [ ] 5.4 Smoke-test one solo Project implementation, one research fan-out/fan-in with cited synthesis, and one implementation/review/revision graph end to end; prove every approved graph is created completely up front and dependent work dispatches after producer completion without another model turn or user prompt.
 - [ ] 5.5 Compare each graph workflow with the strongest-suitable solo baseline and record correctness, completeness, verification, source quality, wall time, model usage/cost, duplicated work, handoff loss, and integration conflicts.
 - [ ] 5.6 Keep graph patterns and any weaker-model leaf disabled by default unless the measured result provides material benefit after coordination cost.
 - [ ] 5.7 Run focused Hermes, Kanban, gateway, broker, Nix-module, policy, and end-to-end checks for the approved orchestration path.
