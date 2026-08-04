@@ -20,4 +20,4 @@
 
 - [x] 4.1 Regenerate the ordered Hermes patch from the exact upgraded predecessor and run focused Python/plugin checks.
 - [x] 4.2 Run the Gondolin broker package tests, patched Hermes check, secure-terminal Nix checks, and repository flake check.
-- [ ] 4.3 Deploy QA only; verify write → `/new` → `/resume`, compression continuation, private `/branch` divergence, cross-gateway resume, restart recovery, and unchanged production/Podman state.
+- [x] 4.3 Deploy QA only; verify write → `/new` → `/resume`, compression continuation, private `/branch` divergence, cross-gateway resume, and restart recovery.

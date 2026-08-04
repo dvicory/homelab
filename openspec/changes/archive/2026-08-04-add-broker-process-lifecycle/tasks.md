@@ -25,5 +25,5 @@
 - [x] 4.1 Wire trusted command-duration, one-process-per-environment, retained-output, poll-response, terminal-TTL, and global registry ceilings through broker config and the secure-terminal Nix module.
 - [x] 4.2 Cover zero and nonzero exits, stdout/stderr ordering, cursor resume, truncation, natural-exit/cancel races, terminal TTL, ceiling rejection, gateway disconnect, stale/foreign authority, environment hard-close, and broker-restart loss in focused broker tests.
 - [x] 4.3 Replace mocked guest-sentinel Hermes tests with broker-process contract tests covering exact exit results, output polling, cancellation, unknown process loss without numeric exit code, and unchanged non-Gondolin backends.
-- [ ] 4.4 Run focused broker, patched-Hermes, secure-terminal Nix, and repository checks, then deploy QA from clean state.
-- [ ] 4.5 Repeat the live runtime-contract acceptance: a delayed background command writes its durable side effect, exits 7, and later process wait reports exactly exit 7 rather than `lost` or `-1`; also exercise cancellation and broker-restart loss.
+- [x] 4.4 Run focused broker, patched-Hermes, secure-terminal Nix, and repository checks, then deploy QA from clean state.
+- [x] 4.5 Repeat the live runtime-contract acceptance: a delayed background command writes its durable side effect, exits 7, and later process wait reports exactly exit 7 rather than `lost` or `-1`; also exercise cancellation and broker-restart loss.

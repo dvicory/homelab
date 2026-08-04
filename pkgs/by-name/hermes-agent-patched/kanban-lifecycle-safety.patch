@@ -1,19 +1,5 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Daniel Vicory <dvicory@gmail.com>
-Date: Mon, 27 Jul 2026 12:00:00 +0000
-Subject: [PATCH] fix(kanban): separate worker lifecycle from orchestration authority
-
-Live board sessions route work; dispatcher-assigned workers own execution
-lifecycle. Sharing one prompt and tool gate let an unscoped orchestrator
-complete, block, or heartbeat tasks it did not own.
-
-Select role guidance from trusted process context, expose complete, block, and
-heartbeat only to workers, and allow orchestrators to unblock only after the
-recorded blocker is confirmed resolved. Internal recovery retains unscoped
-handlers without exposing those lifecycle transitions to the model.
----
 diff --git a/agent/agent_init.py b/agent/agent_init.py
-index a8773ddb04e880568abe61798584d817ae67720b..28729fbf2dc0f97bcbd8339b7ffa08de5872aac9 100644
+index a8773dd..28729fb 100644
 --- a/agent/agent_init.py
 +++ b/agent/agent_init.py
 @@ -1232,15 +1232,13 @@ def init_agent(
@@ -39,8 +25,37 @@ index a8773ddb04e880568abe61798584d817ae67720b..28729fbf2dc0f97bcbd8339b7ffa08de
      )
  
      # Check tool requirements
+diff --git a/agent/conversation_loop.py b/agent/conversation_loop.py
+index 501e49b..58bd5a3 100644
+--- a/agent/conversation_loop.py
++++ b/agent/conversation_loop.py
+@@ -5058,7 +5058,9 @@ def run_conversation(
+                     except Exception:
+                         pass
+ 
+-                agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
++                _kanban_terminal = agent._execute_tool_calls(
++                    assistant_message, messages, effective_task_id, api_call_count
++                )
+ 
+                 if agent._tool_guardrail_halt_decision is not None:
+                     decision = agent._tool_guardrail_halt_decision
+@@ -5083,6 +5085,13 @@ def run_conversation(
+                                 pass
+                     break
+ 
++                if _kanban_terminal:
++                    # The durable board transition succeeded. Do not make a
++                    # follow-up model request under the now-terminal run.
++                    _turn_exit_reason = "kanban_terminal"
++                    final_response = assistant_message.content or ""
++                    break
++
+                 # Reset per-turn retry counters after successful tool
+                 # execution so a single truncation doesn't poison the
+                 # entire conversation.
 diff --git a/agent/prompt_builder.py b/agent/prompt_builder.py
-index 892fe77901a60561fee2c2ffaa1cb0ae7cf286ce..0ca1727b7daf3438d80160f34c6f5afab9b30ea3 100644
+index 892fe77..0ca1727 100644
 --- a/agent/prompt_builder.py
 +++ b/agent/prompt_builder.py
 @@ -240,6 +240,9 @@ KANBAN_GUIDANCE = (
@@ -96,7 +111,7 @@ index 892fe77901a60561fee2c2ffaa1cb0ae7cf286ce..0ca1727b7daf3438d80160f34c6f5afa
      "# Tool-use enforcement\n"
      "You MUST use your tools to take action — do not describe what you would do "
 diff --git a/agent/system_prompt.py b/agent/system_prompt.py
-index aab34cb799e162c4df6be5da77a04a628469ed71..a6628d3d2e1f0702e1c9f59d8b32ede732a22529 100644
+index aab34cb..a6628d3 100644
 --- a/agent/system_prompt.py
 +++ b/agent/system_prompt.py
 @@ -226,10 +226,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None)
@@ -128,9 +143,278 @@ index aab34cb799e162c4df6be5da77a04a628469ed71..a6628d3d2e1f0702e1c9f59d8b32ede7
              stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
              _model_lower = (agent.model or "").lower()
              # Google model operational guidance (conciseness, absolute
-diff --git a/tests/tools/test_kanban_role_boundaries.py b/tests/tools/test_kanban_role_boundaries.py
+diff --git a/agent/tool_executor.py b/agent/tool_executor.py
+index f740fed..3dce9ce 100644
+--- a/agent/tool_executor.py
++++ b/agent/tool_executor.py
+@@ -324,7 +324,7 @@ def _run_agent_tool_execution_middleware(
+     return result, observed_args
+ 
+ 
+-def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
++def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> bool:
+     """Execute multiple tool calls concurrently using a thread pool.
+ 
+     Results are collected in the original tool-call order and appended to
+@@ -340,6 +340,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
+     # Resolve the context-scaled tool-output budget once per turn (cheap, but
+     # avoids rebuilding it per result inside the loop below).
+     _tool_budget = _budget_for_agent(agent)
++    execution_env = get_active_env(effective_task_id)
+ 
+     # ── Pre-flight: interrupt check ──────────────────────────────────
+     if agent._interrupt_requested:
+@@ -827,6 +828,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
+             spinner.stop(f"⚡ {completed}/{num_tools} tools completed in {total_dur:.1f}s total")
+ 
+     # ── Post-execution: display per-tool results ─────────────────────
++    kanban_terminal_succeeded = False
+     for i, (tc, name, args, middleware_trace, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
+         r = results[i]
+         blocked = False
+@@ -885,6 +887,14 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
+             tool_duration = 0.0
+         else:
+             function_name, function_args, function_result, tool_duration, is_error, blocked, middleware_trace = r
++            kanban_terminal_succeeded = (
++                kanban_terminal_succeeded
++                or (
++                    function_name in {"kanban_complete", "kanban_block"}
++                    and not is_error
++                    and not blocked
++                )
++            )
+             if blocked:
+                 effect_disposition = "none"
+ 
+@@ -953,7 +963,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
+             content=function_result,
+             tool_name=name,
+             tool_use_id=tc.id,
+-            env=get_active_env(effective_task_id),
++            env=execution_env,
+             config=_tool_budget,
+         ) if not _is_multimodal_tool_result(function_result) else function_result
+ 
+@@ -1014,7 +1024,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
+     num_tools = len(parsed_calls)
+     if finalize and num_tools > 0:
+         turn_tool_msgs = messages[-num_tools:]
+-        enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id), config=_tool_budget)
++        enforce_turn_budget(turn_tool_msgs, env=execution_env, config=_tool_budget)
+ 
+     # ── /steer injection ──────────────────────────────────────────────
+     # Append any pending user steer text to the last tool result so the
+@@ -1023,9 +1033,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
+     if finalize and num_tools > 0:
+         agent._apply_pending_steer_to_tool_results(messages, num_tools)
+ 
++    return kanban_terminal_succeeded
+ 
+ 
+-def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
++
++def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> bool:
+     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools.
+ 
+     ``finalize=False`` skips the end-of-batch aggregate budget enforcement
+@@ -1034,6 +1046,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
+     """
+     # Resolve the context-scaled tool-output budget once per turn.
+     _tool_budget = _budget_for_agent(agent)
++    execution_env = get_active_env(effective_task_id)
++    kanban_terminal_succeeded = False
+     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
+         # SAFETY: check interrupt BEFORE starting each tool.
+         # If the user sent "stop" during a previous tool's execution,
+@@ -1571,6 +1585,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
+         # Log tool errors to the persistent error log so [error] tags
+         # in the UI always have a corresponding detailed entry on disk.
+         _is_error_result, _ = _detect_tool_failure(function_name, function_result)
++        kanban_terminal_succeeded = (
++            kanban_terminal_succeeded
++            or (
++                function_name in {"kanban_complete", "kanban_block"}
++                and not _is_error_result
++                and not _execution_blocked
++            )
++        )
+         # The agent-runtime tools above (todo, session_search, memory,
+         # context-engine, memory-manager, clarify, delegate_task) are
+         # dispatched inline — they never reach handle_function_call, so the
+@@ -1649,7 +1671,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
+             content=function_result,
+             tool_name=function_name,
+             tool_use_id=tool_call.id,
+-            env=get_active_env(effective_task_id),
++            env=execution_env,
+             config=_tool_budget,
+         ) if not _is_multimodal_tool_result(function_result) else function_result
+ 
+@@ -1728,7 +1750,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
+     # ── Per-turn aggregate budget enforcement ─────────────────────────
+     num_tools_seq = len(assistant_message.tool_calls)
+     if finalize and num_tools_seq > 0:
+-        enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id), config=_tool_budget)
++        enforce_turn_budget(messages[-num_tools_seq:], env=execution_env, config=_tool_budget)
+ 
+     # ── /steer injection ──────────────────────────────────────────────
+     # See _execute_tool_calls_parallel for the rationale. Same hook,
+@@ -1736,10 +1758,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
+     if finalize and num_tools_seq > 0:
+         agent._apply_pending_steer_to_tool_results(messages, num_tools_seq)
+ 
++    return kanban_terminal_succeeded
++
+ 
+ 
+ 
+-def execute_tool_calls_segmented(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, segments=None) -> None:
++def execute_tool_calls_segmented(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, segments=None) -> bool:
+     """Execute a mixed tool-call batch as ordered parallel/sequential segments.
+ 
+     ``segments`` is the ``(kind, calls)`` plan from
+@@ -1763,24 +1787,28 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
+     tool_call_id.
+     """
+     from types import SimpleNamespace
++    execution_env = get_active_env(effective_task_id)
+ 
+     if segments is None:
+-        _active_env = get_active_env(effective_task_id)
+-        _exec_cwd = Path(_active_env.cwd) if _active_env is not None and _active_env.cwd else None
++        _exec_cwd = Path(execution_env.cwd) if execution_env is not None and execution_env.cwd else None
+         segments = _plan_tool_batch_segments(assistant_message.tool_calls, execution_cwd=_exec_cwd)
+ 
++    kanban_terminal_succeeded = False
+     for kind, calls in segments:
+         segment_message = SimpleNamespace(tool_calls=list(calls))
+         if kind == "parallel":
+-            execute_tool_calls_concurrent(
++            segment_succeeded = execute_tool_calls_concurrent(
+                 agent, segment_message, messages, effective_task_id, api_call_count,
+                 finalize=False,
+             )
+         else:
+-            execute_tool_calls_sequential(
++            segment_succeeded = execute_tool_calls_sequential(
+                 agent, segment_message, messages, effective_task_id, api_call_count,
+                 finalize=False,
+             )
++        kanban_terminal_succeeded = (
++            kanban_terminal_succeeded or segment_succeeded
++        )
+ 
+     # ── Whole-turn finalize (budget + /steer) ─────────────────────────
+     total_tools = len(assistant_message.tool_calls)
+@@ -1788,11 +1816,13 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
+         _tool_budget = _budget_for_agent(agent)
+         enforce_turn_budget(
+             messages[-total_tools:],
+-            env=get_active_env(effective_task_id),
++            env=execution_env,
+             config=_tool_budget,
+         )
+         agent._apply_pending_steer_to_tool_results(messages, total_tools)
+ 
++    return kanban_terminal_succeeded
++
+ 
+ __all__ = [
+     "execute_tool_calls_concurrent",
+diff --git a/run_agent.py b/run_agent.py
+index 6dbfae8..8be90dd 100644
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -6215,7 +6215,7 @@ class AIAgent:
+         self._set_tool_guardrail_halt(decision)
+         return toolguard_synthetic_result(decision)
+ 
+-    def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
++    def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> bool:
+         """Execute tool calls from the assistant message and append results to messages.
+ 
+         The segment planner splits the batch into maximal contiguous runs of
+@@ -6335,12 +6335,12 @@ class AIAgent:
+         body = ("\n" + indent).join(out_lines)
+         return f"{indent}{label}{body}"
+ 
+-    def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
++    def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> bool:
+         """Forwarder — see ``agent.tool_executor.execute_tool_calls_concurrent``."""
+         from agent.tool_executor import execute_tool_calls_concurrent
+         return execute_tool_calls_concurrent(self, assistant_message, messages, effective_task_id, api_call_count)
+ 
+-    def _execute_tool_calls_sequential(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
++    def _execute_tool_calls_sequential(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> bool:
+         """Forwarder — see ``agent.tool_executor.execute_tool_calls_sequential``."""
+         from agent.tool_executor import execute_tool_calls_sequential
+         return execute_tool_calls_sequential(self, assistant_message, messages, effective_task_id, api_call_count)
+diff --git a/tests/run_agent/test_run_agent.py b/tests/run_agent/test_run_agent.py
+index 539dbdd..6b4256a 100644
+--- a/tests/run_agent/test_run_agent.py
++++ b/tests/run_agent/test_run_agent.py
+@@ -2391,6 +2391,57 @@ class TestExecuteToolCalls:
+         assert messages[0]["role"] == "tool"
+         assert "search result" in messages[0]["content"]
+ 
++    def test_successful_kanban_terminal_result_is_returned(self, agent):
++        tc = _mock_tool_call(
++            name="kanban_complete", arguments='{"summary":"done"}', call_id="c1"
++        )
++        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
++
++        with patch(
++            "run_agent.handle_function_call",
++            return_value=json.dumps({"ok": True, "task_id": "t_1"}),
++        ):
++            completed = agent._execute_tool_calls(mock_msg, [], "task-1")
++
++        assert completed is True
++
++    def test_kanban_completion_reuses_pre_transition_environment(self, agent):
++        tc = _mock_tool_call(
++            name="kanban_complete", arguments='{"summary":"done"}', call_id="c1"
++        )
++        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
++        messages = []
++
++        with (
++            patch(
++                "run_agent.handle_function_call",
++                return_value=json.dumps({"ok": True, "task_id": "t_1"}),
++            ),
++            patch(
++                "agent.tool_executor.get_active_env",
++                side_effect=[None, AssertionError("stale worker lease")],
++            ) as get_env,
++        ):
++            completed = agent._execute_tool_calls(mock_msg, messages, "task-1")
++
++        assert completed is True
++        assert get_env.call_count == 1
++        assert messages[-1]["name"] == "kanban_complete"
++
++    def test_rejected_kanban_terminal_result_keeps_conversation_running(self, agent):
++        tc = _mock_tool_call(
++            name="kanban_complete", arguments='{"summary":"done"}', call_id="c1"
++        )
++        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
++
++        with patch(
++            "run_agent.handle_function_call",
++            return_value=json.dumps({"status": "error", "error": "stale lease"}),
++        ):
++            completed = agent._execute_tool_calls(mock_msg, [], "task-1")
++
++        assert completed is False
++
+     def test_sequential_memory_remove_notifies_provider_with_tool_result(self, agent):
+         old_text = "stale preference entry"
+         tc = _mock_tool_call(
+diff --git a/complete-after/tests/tools/test_kanban_role_boundaries.py b/tests/tools/test_kanban_role_boundaries.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..edae1a2c913379ee08384c43335326b995d3c6a4
+index 0000000..edae1a2
 --- /dev/null
 +++ b/tests/tools/test_kanban_role_boundaries.py
 @@ -0,0 +1,81 @@
@@ -216,7 +500,7 @@ index 0000000000000000000000000000000000000000..edae1a2c913379ee08384c43335326b9
 +    assert kanban._check_kanban_worker_mode()
 +    assert not kanban._check_kanban_orchestrator_mode()
 diff --git a/tests/tools/test_kanban_tools.py b/tests/tools/test_kanban_tools.py
-index 1cabc82b545466ecca62928b9a9e86185d06b81e..2b3ca13eb0171bf8f2da0240f05d07fd6c6b0649 100644
+index 1cabc82..2b3ca13 100644
 --- a/tests/tools/test_kanban_tools.py
 +++ b/tests/tools/test_kanban_tools.py
 @@ -1,8 +1,7 @@
@@ -318,7 +602,7 @@ index 1cabc82b545466ecca62928b9a9e86185d06b81e..2b3ca13eb0171bf8f2da0240f05d07fd
      home = tmp_path / ".hermes"
      home.mkdir()
 diff --git a/tools/kanban_tools.py b/tools/kanban_tools.py
-index 6dbf7608122766139093d2f4f193597b1381f7d2..111b0e5b31942cd55e75cfc3616654de20cf301d 100644
+index 6dbf760..111b0e5 100644
 --- a/tools/kanban_tools.py
 +++ b/tools/kanban_tools.py
 @@ -96,6 +96,11 @@ def _check_kanban_attachment_mode() -> bool:

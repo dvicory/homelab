@@ -572,3 +572,165 @@ index adc2eb9..f448ce4 100644
              elif session.env_ref and session.pid:
                  # Non-local -- kill inside sandbox
                  session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
+diff --git a/tests/tools/test_process_registry.py b/tests/tools/test_process_registry.py
+index 195d0ca..e5138b3 100644
+--- a/tests/tools/test_process_registry.py
++++ b/tests/tools/test_process_registry.py
+@@ -764,18 +764,31 @@ class TestSpawnEnvSanitization:
+         assert result["termination_source"] == "failed_start"
+         assert "environment.capacity" in result["output"]
+ 
+-    def test_managed_backend_kill_uses_opaque_cancel(self, registry):
++    def test_managed_backend_kill_drains_output_once_through_poller(self, registry):
+         class ManagedEnv:
+             def __init__(self):
+                 self.cancelled = []
++                self.cancelled_event = threading.Event()
++                self.first_poll = threading.Event()
+ 
+             def spawn_background(self, _command, _cwd):
+                 return "broker-process"
+ 
+             def poll_background(self, _process_id, cursor):
++                if not self.cancelled_event.is_set():
++                    self.first_poll.set()
++                    return {
++                        "state": "running",
++                        "reason": None,
++                        "exitCode": None,
++                        "signal": None,
++                        "output": ["owner-running\n"],
++                        "nextCursor": 1,
++                        "truncatedBytes": 0,
++                    }
+                 return {
+-                    "state": "running",
+-                    "reason": None,
++                    "state": "cancelled",
++                    "reason": "client_cancel",
+                     "exitCode": None,
+                     "signal": None,
+                     "output": [],
+@@ -785,13 +798,16 @@ class TestSpawnEnvSanitization:
+ 
+             def cancel_background(self, process_id):
+                 self.cancelled.append(process_id)
++                self.cancelled_event.set()
+                 return {
+                     "state": "cancelled",
+                     "reason": "client_cancel",
+                     "exitCode": None,
+                     "signal": None,
+-                    "output": [],
+-                    "nextCursor": 0,
++                    # Cancellation snapshots from cursor zero. The poller
++                    # already consumed this chunk and must remain its owner.
++                    "output": ["owner-running\n"],
++                    "nextCursor": 1,
+                     "truncatedBytes": 0,
+                 }
+ 
+@@ -801,10 +817,13 @@ class TestSpawnEnvSanitization:
+         env = ManagedEnv()
+         with patch.object(registry, "_write_checkpoint"):
+             session = registry.spawn_via_env(env, "sleep 30")
++            assert env.first_poll.wait(timeout=1)
+             result = registry.kill_process(session.id)
+             session._reader_thread.join(timeout=2)
+ 
+         assert result["status"] == "killed"
++        assert result["output"] == "owner-running\n"
++        assert result["termination_source"] == "process.kill"
+         assert env.cancelled == ["broker-process"]
+         assert session.completion_reason == "killed"
+ 
+diff --git a/tools/process_registry.py b/tools/process_registry.py
+index f448ce4..9ede29e 100644
+--- a/tools/process_registry.py
++++ b/tools/process_registry.py
+@@ -129,6 +129,7 @@ class ProcessSession:
+     backend_cursor: int = 0                     # Last broker output cursor consumed
+     backend_truncated_bytes: int = 0             # Cumulative broker-side output loss
+     signal: Optional[int] = None                 # Broker-observed terminal signal
++    _cancel_source: str = field(default="", repr=False)  # trusted caller reason for broker cancellation
+     # Watcher/notification metadata (persisted for crash recovery)
+     watcher_platform: str = ""
+     watcher_chat_id: str = ""
+@@ -1137,7 +1138,11 @@ class ProcessRegistry:
+                     else:
+                         session.exit_code = None
+                         session.completion_reason = "lost"
+-                    session.termination_source = str(result.get("reason") or "")
++                    session.termination_source = (
++                        session._cancel_source
++                        if state == "cancelled" and session._cancel_source
++                        else str(result.get("reason") or "")
++                    )
+                 self._move_to_finished(session)
+                 return
+             except Exception:
+@@ -1735,6 +1740,11 @@ class ProcessRegistry:
+                 # shell wrapper and leaves Git Bash descendants behind.
+                 self._terminate_host_pid(session.process.pid, session.host_start_time)
+             elif session.env_ref and session.backend_process_id:
++                # The poller is the sole output cursor owner. Cancellation is
++                # only a state transition; its cursor-zero output snapshot may
++                # contain chunks the poller already appended.
++                with session._lock:
++                    session._cancel_source = source
+                 terminal = session.env_ref.cancel_background(
+                     session.backend_process_id,
+                 )
+@@ -1743,36 +1753,29 @@ class ProcessRegistry:
+                     raise RuntimeError(
+                         f"backend process cancellation returned invalid state: {state}"
+                     )
+-                delta = "".join(terminal.get("output", []))
+-                with session._lock:
+-                    session.backend_cursor = terminal.get(
+-                        "nextCursor",
+-                        session.backend_cursor,
+-                    )
+-                    if delta:
+-                        session.output_buffer += delta
+-                        if len(session.output_buffer) > session.max_output_chars:
+-                            session.output_buffer = session.output_buffer[
+-                                -session.max_output_chars:
+-                            ]
+-                    if state == "exited":
++                if not session._completion_event.wait(timeout=5):
++                    with session._lock:
+                         session.exited = True
+-                        session.exit_code = terminal.get("exitCode")
+-                        session.signal = terminal.get("signal")
+-                        session.completion_reason = "exited"
+-                        session.termination_source = str(terminal.get("reason") or "")
+-                if state == "exited":
+-                    output = strip_ansi(session.output_buffer[-2000:])
+-                    if consume_output:
+-                        self._completion_consumed.add(session_id)
++                        session.exit_code = None
++                        session.completion_reason = "lost"
++                        session.termination_source = "backend_cancel_timeout"
+                     self._move_to_finished(session)
+-                    return {
+-                        "status": "already_exited",
++                with session._lock:
++                    output = strip_ansi(session.output_buffer[-2000:])
++                    result = {
++                        "status": {
++                            "exited": "already_exited",
++                            "killed": "killed",
++                        }.get(session.completion_reason, "lost"),
++                        "session_id": session.id,
+                         "exit_code": session.exit_code,
+                         "completion_reason": session.completion_reason,
+                         "termination_source": session.termination_source,
+                         "output": output,
+                     }
++                if consume_output:
++                    self._completion_consumed.add(session_id)
++                return result
+             elif session.env_ref and session.pid:
+                 # Non-local -- kill inside sandbox
+                 session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
