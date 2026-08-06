@@ -158,6 +158,31 @@ def test_denial_is_recorded_and_malformed_approval_fails_closed(plugin, monkeypa
     )
 
 
+def test_approval_failure_resolves_pending_request(plugin, monkeypatch):
+    client = FakeClient({
+        "/v1/control/access/prepare": prepared(),
+        "/v1/control/access/decide": {"state": "denied", "requestId": "request-1", "grantIds": []},
+    })
+    monkeypatch.setattr(plugin, "BrokerClient", lambda: client)
+    monkeypatch.setattr(
+        plugin,
+        "request_tool_approval",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("adapter failed")),
+    )
+
+    result = json.loads(plugin.handle_request_access(proposal(), session_id="session-1"))
+
+    assert result == {
+        "ok": False,
+        "reason": "approval.failed",
+        "detail": "sandbox approval failed",
+    }
+    assert client.calls[1] == (
+        "/v1/control/access/decide",
+        {"requestId": "request-1", "decision": "deny", "principal": "paired-user"},
+    )
+
+
 def test_prepare_failure_never_invokes_approval(plugin, monkeypatch):
     class RejectingClient:
         def post(self, _path, _payload):

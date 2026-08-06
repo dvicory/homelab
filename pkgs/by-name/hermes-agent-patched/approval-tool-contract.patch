@@ -3,30 +3,11 @@ From: Daniel Vicory <dvicory@gmail.com>
 Date: Mon, 27 Jul 2026 00:00:00 -0700
 Subject: [PATCH] feat(approvals): expose effective scope and durable-grant ceiling
 
-Approval consumers need an explicit, canonical scope so they can distinguish a
-one-operation decision from a session grant or a durable grant without
-parsing prompt text. Report that effective scope for fresh, cached, bypass,
-and non-interactive approvals.
+Approval consumers need an explicit canonical scope, while callers with
+narrower authority must reject unavailable durable approval choices.
 
-Thread an allow_permanent capability through the shared gate. Callers that do
-not permit durable grants ignore permanent cache entries, retain eligible
-session grants, and attenuate legacy CLI callback choices before persistence.
-Gateway choices are normalized at the authority boundary; unknown choices and
-unavailable permanent choices fail closed without changing approval state.
-
-Keep native rendering and command/execute-code guard policy unchanged. The
-implementation is intentionally shaped as two reusable upstream changes:
-first canonical effective-scope metadata, then the durable-grant ceiling that
-protects callers with narrower authority.
-
----
- tools/approval.py                         | 132 ++++++++++++++++++++++---
- tests/tools/test_request_tool_approval.py  |  17 +++-
- tests/tools/test_approval_choice_result.py | 220 +++++++++++++++++++++++++++++
- tests/tools/test_approval.py               |  6 ++++--
- 4 files changed, 347 insertions(+), 28 deletions(-)
 diff --git a/tests/tools/test_approval.py b/tests/tools/test_approval.py
-index 1ebb3efe6d98d4629af03cae36c2a3978a9fcaae..81d1165b53dcc6ddb6dd6778549919c14675e2e0 100644
+index 1ebb3ef..81d1165 100644
 --- a/tests/tools/test_approval.py
 +++ b/tests/tools/test_approval.py
 @@ -120,9 +120,11 @@ class TestDetectDangerousRm:
@@ -43,9 +24,9 @@ index 1ebb3efe6d98d4629af03cae36c2a3978a9fcaae..81d1165b53dcc6ddb6dd6778549919c1
                      False,
                      None,
                      None,
-diff --git a/tests/tools/test_approval_choice_result.py b/tests/tools/test_approval_choice_result.py
+diff --git b/tests/tools/test_approval_choice_result.py b/tests/tools/test_approval_choice_result.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..f70bf7d96fec64e78c83a4c4c0a269e0f8d9bdc3
+index 0000000..9f24fac
 --- /dev/null
 +++ b/tests/tools/test_approval_choice_result.py
 @@ -0,0 +1,220 @@
@@ -155,13 +136,13 @@ index 0000000000000000000000000000000000000000..f70bf7d96fec64e78c83a4c4c0a269e0
 +    assert result["choice"] == "once"
 +
 +
-+def test_cli_legacy_always_is_attenuated_when_disabled(monkeypatch):
++def test_cli_legacy_always_fails_closed_when_disabled(monkeypatch):
 +    result = _request(monkeypatch, "always", allow_permanent=False)
 +    pattern = "plugin_rule:scope-test-rule"
 +
-+    assert result["approved"] is True
-+    assert result["choice"] == "session"
-+    assert approval._approved_scope("scope-test", pattern) == "session"
++    assert result["approved"] is False
++    assert result["choice"] == "deny"
++    assert approval._approved_scope("scope-test", pattern) is None
 +    assert pattern not in approval._permanent_approved
 +
 +
@@ -270,7 +251,7 @@ index 0000000000000000000000000000000000000000..f70bf7d96fec64e78c83a4c4c0a269e0
 +    assert result["scope"] == "task"
 +    assert client.calls[1][1]["decision"] == "approve"
 diff --git a/tests/tools/test_request_tool_approval.py b/tests/tools/test_request_tool_approval.py
-index 16414fc054c55cd24a2836a15f3ac963a9e513e7..704bde814ee5cb83594200065395cc6a03d491f2 100644
+index 16414fc..704bde8 100644
 --- a/tests/tools/test_request_tool_approval.py
 +++ b/tests/tools/test_request_tool_approval.py
 @@ -20,7 +20,11 @@ def _isolate_approval_state(monkeypatch):
@@ -331,7 +312,7 @@ index 16414fc054c55cd24a2836a15f3ac963a9e513e7..704bde814ee5cb83594200065395cc6a
 -        assert res == {"approved": True, "message": None}
 +        assert res == {"approved": True, "message": None, "choice": "once"}
 diff --git a/tools/approval.py b/tools/approval.py
-index ea3bb82690697cc8afa4ce07cecda4471e871987..988dce8961edda3e4b335023ff99058609993523 100644
+index ea3bb82..9b00b6c 100644
 --- a/tools/approval.py
 +++ b/tools/approval.py
 @@ -2175,12 +2175,28 @@ def is_approved(session_key: str, pattern_key: str) -> bool:
@@ -511,7 +492,7 @@ index ea3bb82690697cc8afa4ce07cecda4471e871987..988dce8961edda3e4b335023ff990586
  
          # No notify callback (e.g. API server without an attached chat):
          # queue for /approve /deny review, agent sees approval_required.
-@@ -2828,8 +2890,17 @@ def _run_approval_gate(
+@@ -2828,8 +2890,12 @@ def _run_approval_gate(
              ),
          }
  
@@ -523,19 +504,16 @@ index ea3bb82690697cc8afa4ce07cecda4471e871987..988dce8961edda3e4b335023ff990586
 +        allow_permanent=allow_permanent,
 +        approval_callback=approval_callback,
 +    )
-+    # Legacy CLI callbacks may still return "always" after receiving a
-+    # restricted prompt. Attenuate that response to a session grant so it
-+    # cannot create durable state.
-+    if choice == "always" and not allow_permanent:
-+        choice = "session"
  
      if choice == "deny":
          return {
-@@ -2843,6 +2914,16 @@ def _run_approval_gate(
+@@ -2843,6 +2909,18 @@ def _run_approval_gate(
              "description": description,
          }
  
-+    if choice not in {"once", "session", "always"}:
++    if choice not in {"once", "session", "always"} or (
++        choice == "always" and not allow_permanent
++    ):
 +        return {
 +            "approved": False,
 +            "choice": "deny",
@@ -548,7 +526,7 @@ index ea3bb82690697cc8afa4ce07cecda4471e871987..988dce8961edda3e4b335023ff990586
      if choice == "session":
          approve_session(session_key, pattern_key)
      elif choice == "always":
-@@ -2850,7 +2931,7 @@ def _run_approval_gate(
+@@ -2850,7 +2928,7 @@ def _run_approval_gate(
          approve_permanent(pattern_key)
          save_permanent_allowlist(_permanent_approved)
  
@@ -557,7 +535,7 @@ index ea3bb82690697cc8afa4ce07cecda4471e871987..988dce8961edda3e4b335023ff990586
  
  
  def _should_skip_container_guards(env_type: str, has_host_access: bool = False) -> bool:
-@@ -2943,6 +3024,7 @@ def request_tool_approval(
+@@ -2943,6 +3021,7 @@ def request_tool_approval(
      *,
      rule_key: str = "",
      approval_callback=None,
@@ -565,7 +543,7 @@ index ea3bb82690697cc8afa4ce07cecda4471e871987..988dce8961edda3e4b335023ff990586
  ) -> dict:
      """Escalate an arbitrary tool call to the human-approval gate.
  
-@@ -2970,9 +3052,12 @@ def request_tool_approval(
+@@ -2970,9 +3049,12 @@ def request_tool_approval(
              on the same tool).
          approval_callback: Optional CLI callback for interactive prompts
              (same contract as ``check_dangerous_command``).
@@ -579,7 +557,7 @@ index ea3bb82690697cc8afa4ce07cecda4471e871987..988dce8961edda3e4b335023ff990586
          ``{"approved": False, "message": <reason>, ...}`` when denied /
          blocked. Shape matches ``check_dangerous_command`` so callers handle
          both paths identically.
-@@ -3005,6 +3090,7 @@ def request_tool_approval(
+@@ -3005,6 +3087,7 @@ def request_tool_approval(
          description=description,
          display_target=display_target,
          approval_callback=approval_callback,

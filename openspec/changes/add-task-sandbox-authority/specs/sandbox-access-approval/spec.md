@@ -2,7 +2,7 @@
 
 ### Requirement: Explicit capability request tool
 
-Hermes MUST expose a Nix-managed `sandbox_request_access` plugin tool that accepts a batch of typed capability proposals, requested scope, optional bounded duration, and model rationale. Ordinary terminal or network denial MUST NOT automatically invoke an approval UI.
+Hermes MUST expose a Nix-managed `sandbox_request_access` plugin tool that accepts a batch of typed capability proposals, a policy-permitted requested scope, and model rationale. When the rendered profile permits timed grants, the tool MUST also accept an optional bounded duration. Ordinary terminal or network denial MUST NOT automatically invoke an approval UI.
 
 #### Scenario: Agent learns missing permission
 - **GIVEN** a tool result containing a requestable structured denial

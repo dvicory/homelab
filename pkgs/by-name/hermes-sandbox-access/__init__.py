@@ -294,12 +294,20 @@ def handle_request_access(args: dict[str, Any], **kwargs: Any) -> str:
         if prepared.get("state") != "pending" or not isinstance(request_id, str):
             raise BrokerProblem(502, "broker.invalid_response", "broker returned invalid preparation state", {})
 
-        approval = request_tool_approval(
-            "sandbox_request_access",
-            _canonical_summary(prepared, args["rationale"]),
-            rule_key=f"sandbox-access:{prepared.get('fingerprint', request_id)}",
-            allow_permanent=False,
-        )
+        try:
+            approval = request_tool_approval(
+                "sandbox_request_access",
+                _canonical_summary(prepared, args["rationale"]),
+                rule_key=f"sandbox-access:{prepared.get('fingerprint', request_id)}",
+                allow_permanent=False,
+            )
+        except Exception:
+            _deny_pending(client, request_id)
+            return json.dumps({
+                "ok": False,
+                "reason": "approval.failed",
+                "detail": "sandbox approval failed",
+            }, sort_keys=True)
         choice = approval.get("choice") if isinstance(approval, dict) else None
         if not isinstance(approval, dict) or not approval.get("approved") or choice not in _VALID_CHOICES:
             _deny_pending(client, request_id)
