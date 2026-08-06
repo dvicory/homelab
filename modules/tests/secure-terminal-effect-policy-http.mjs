@@ -149,6 +149,17 @@ const request = (socketPath, route, method = "GET", payload) =>
     req.end()
   })
 
+const control = async (route, payload) => {
+  const response = await request(
+    process.env.GONDOLIN_EFFECT_CONTROL_SOCKET,
+    route,
+    "POST",
+    payload,
+  )
+  const body = JSON.parse(response.body)
+  return { ...response, body }
+}
+
 const executionHealth = await request(process.env.GONDOLIN_EFFECT_SOCKET, "/v1/health")
 const controlHealth = await request(process.env.GONDOLIN_EFFECT_CONTROL_SOCKET, "/v1/health")
 if (executionHealth.status !== 200 || JSON.parse(executionHealth.body).plane !== "execution") {
@@ -156,6 +167,117 @@ if (executionHealth.status !== 200 || JSON.parse(executionHealth.body).plane !==
 }
 if (controlHealth.status !== 200 || JSON.parse(controlHealth.body).plane !== "control") {
   throw new Error("control health response is not ok")
+}
+
+// Exercise the packaged broker process, not an in-memory service harness.
+const proactiveKey = "nix-proactive-access-check"
+const publicCapability = (host) => ({
+  version: 1,
+  kind: "network-origin",
+  scheme: "https",
+  host,
+  ports: [443],
+  addressMode: "public",
+})
+const dynamicAccess = await control("/v1/control/access/prepare", {
+  environmentKey: proactiveKey,
+  capabilities: [publicCapability("1.1.1.1")],
+  requestedScope: "task",
+})
+if (dynamicAccess.status !== 200 || dynamicAccess.body.state !== "pending") {
+  throw new Error(`proactive public access was not prepared for approval: ${JSON.stringify(dynamicAccess)}`)
+}
+const proactiveAuthority = await control("/v1/control/authority/status", {
+  environmentKey: proactiveKey,
+})
+if (
+  proactiveAuthority.status !== 200 ||
+  proactiveAuthority.body.profile !== "hermes-qa" ||
+  proactiveAuthority.body.executor !== policyDoc.defaultExecutor ||
+  proactiveAuthority.body.authorityClass !== policyDoc.defaultAuthorityClass ||
+  proactiveAuthority.body.policyDigest !== policyDoc.policyDigest ||
+  Object.hasOwn(proactiveAuthority.body, "generation")
+) {
+  throw new Error(`proactive preparation created an invalid authority or VM: ${JSON.stringify(proactiveAuthority)}`)
+}
+
+const approved = await control("/v1/control/access/decide", {
+  requestId: dynamicAccess.body.requestId,
+  decision: "approve",
+  scope: "task",
+  principal: "paired-user",
+})
+if (approved.status !== 200 || approved.body.state !== "approved" || approved.body.grantIds.length !== 1) {
+  throw new Error(`dynamic public access was not activated: ${JSON.stringify(approved)}`)
+}
+const grantId = approved.body.grantIds[0]
+const listed = await control("/v1/control/grants/list", { environmentKey: proactiveKey })
+if (
+  listed.status !== 200 ||
+  listed.body.length !== 1 ||
+  listed.body[0].grantId !== grantId ||
+  listed.body[0].state !== "active"
+) {
+  throw new Error(`active task grant was not isolated and listable: ${JSON.stringify(listed)}`)
+}
+
+const isolatedKey = "nix-isolated-access-check"
+const isolated = await control("/v1/control/access/prepare", {
+  environmentKey: isolatedKey,
+  capabilities: [publicCapability("1.1.1.1")],
+  requestedScope: "task",
+})
+if (isolated.status !== 200 || isolated.body.state !== "pending") {
+  throw new Error(`another authority inherited a task grant: ${JSON.stringify(isolated)}`)
+}
+const denied = await control("/v1/control/access/decide", {
+  requestId: isolated.body.requestId,
+  decision: "deny",
+  principal: "paired-user",
+})
+if (denied.status !== 200 || denied.body.state !== "denied") {
+  throw new Error(`access denial was not recorded: ${JSON.stringify(denied)}`)
+}
+const suppressed = await control("/v1/control/access/prepare", {
+  environmentKey: isolatedKey,
+  capabilities: [publicCapability("1.1.1.1")],
+  requestedScope: "task",
+})
+if (suppressed.status < 400 || suppressed.body.reason !== "approval.request_suppressed") {
+  throw new Error(`denial cooldown did not suppress a duplicate request: ${JSON.stringify(suppressed)}`)
+}
+
+const privateAccess = await control("/v1/control/access/prepare", {
+  environmentKey: "nix-private-access-check",
+  capabilities: [{
+    version: 1,
+    kind: "network-origin",
+    scheme: "http",
+    host: "172.27.50.17",
+    ports: [22],
+    addressMode: "pinned-private",
+  }],
+  requestedScope: "task",
+})
+if (
+  privateAccess.status !== 200 ||
+  privateAccess.body.state !== "pending" ||
+  JSON.stringify(privateAccess.body.capabilities[0].pinnedAddresses) !== JSON.stringify(["172.27.50.17"])
+) {
+  throw new Error(`private access was not pinned for explicit approval: ${JSON.stringify(privateAccess)}`)
+}
+await control("/v1/control/access/decide", {
+  requestId: privateAccess.body.requestId,
+  decision: "deny",
+  principal: "paired-user",
+})
+
+const revoked = await control("/v1/control/grants/revoke", {
+  grantId,
+  principal: "paired-user",
+})
+if (revoked.status !== 200 || revoked.body.state !== "revoked") {
+  throw new Error(`live grant revocation failed: ${JSON.stringify(revoked)}`)
 }
 
 const escapedControl = await request(
