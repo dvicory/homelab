@@ -18,7 +18,8 @@ let
 
   settingsFor = user: user.settings.workloads.hermes or { };
 
-  serviceNameFor = user:
+  serviceNameFor =
+    user:
     let
       cfg = settingsFor user;
       instance =
@@ -122,8 +123,7 @@ in
       workspaceHandoff = secureTerminal.workspaceHandoff or { };
       workspaceHandoffEnabled = workspaceHandoff.enable or false;
       workspaceHandoffLimits =
-        policyLib.workspaceHandoffLimitCeilings
-        // (workspaceHandoff.handoffLimits or { });
+        policyLib.workspaceHandoffLimitCeilings // (workspaceHandoff.handoffLimits or { });
       projectSources = cfg.projectSources or { };
       sourceRevisions = catalogueLib.sourceRevisionsFor projectSources;
       providerRevisions = catalogueLib.providerRevisionsFor catalogueLib.providerContracts;
@@ -148,18 +148,24 @@ in
       cache = lib.optional gondolin "/var/cache/${sandboxUser}";
 
       nixos =
-        { host, pkgs, config, ... }:
+        {
+          host,
+          pkgs,
+          config,
+          ...
+        }:
         lib.mkIf gondolin (
           let
             guestAssets = guestAssetsLib.mkGuestAssets pkgs.stdenv.hostPlatform.system;
-            brokerPackage = pkgs.callPackage (inputs.self + "/pkgs/by-name/gondolin-broker-effect/package.nix") { };
+            brokerPackage = pkgs.callPackage (
+              inputs.self + "/pkgs/by-name/gondolin-broker-effect/package.nix"
+            ) { };
             # The broker resolves logical source credential references through
             # systemd credentials. PID 1 copies the existing runner-owned PAT
             # into the broker's private credential directory; it never enters
             # the guest or any environment/argv channel.
             brokerCredentialAgeFile = host.secretPath + "/${serviceName}-github-pat.age";
-            brokerCredentialEnabled =
-              usesGithubSourceCredential && builtins.pathExists brokerCredentialAgeFile;
+            brokerCredentialEnabled = usesGithubSourceCredential && builtins.pathExists brokerCredentialAgeFile;
             policy = policyLib.mkEffectPolicy {
               inherit pkgs;
               profile = serviceName;
@@ -243,12 +249,7 @@ in
                 GONDOLIN_EFFECT_STATE_DIR = "/var/lib/${sandboxUser}";
                 GONDOLIN_EFFECT_SOCKET = executionSocketPath;
                 GONDOLIN_EFFECT_CONTROL_SOCKET = controlSocketPath;
-                GONDOLIN_EFFECT_WORKSPACE_HANDOFF =
-                  if workspaceHandoffEnabled then "true" else "false";
-                # SDK boot/protocol metadata and Effect HTTP request spans
-                # go to journald. Do not enable Gondolin's `exec` or `vfs`
-                # debug channels: they include commands, env, and paths.
-                GONDOLIN_DEBUG = "protocol,net";
+                GONDOLIN_EFFECT_WORKSPACE_HANDOFF = if workspaceHandoffEnabled then "true" else "false";
               };
               serviceConfig = {
                 Type = "exec";
@@ -283,7 +284,9 @@ in
                 # Trusted source credentials arrive only through systemd
                 # credentials ($CREDENTIALS_DIRECTORY/source-<secretRef>);
                 # they are never environment variables or arguments.
-                LoadCredential = lib.optional brokerCredentialEnabled "source-hermes-terminal-github:${config.age.secrets.${brokerCredentialSecretName}.path}";
+                LoadCredential = lib.optional brokerCredentialEnabled "source-hermes-terminal-github:${
+                  config.age.secrets.${brokerCredentialSecretName}.path
+                }";
 
                 DevicePolicy = "closed";
                 DeviceAllow = [ "/dev/kvm rw" ];

@@ -13,74 +13,76 @@
 
 let
   # CA trust and base environment shared by every asset.
-  baseGuestModule = { pkgs, ... }: {
-    environment.etc."ssl/certs/ca-bundle.crt".source = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-    environment.variables = {
-      SSL_CERT_FILE = "/etc/ssl/certs/ca-bundle.crt";
-      GIT_SSL_CAINFO = "/etc/ssl/certs/ca-bundle.crt";
-      NIX_SSL_CERT_FILE = "/etc/ssl/certs/ca-bundle.crt";
-      CURL_CA_BUNDLE = "/etc/ssl/certs/ca-bundle.crt";
-    };
+  baseGuestModule =
+    { pkgs, ... }:
+    {
+      environment.etc."ssl/certs/ca-bundle.crt".source = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+      environment.variables = {
+        SSL_CERT_FILE = "/etc/ssl/certs/ca-bundle.crt";
+        GIT_SSL_CAINFO = "/etc/ssl/certs/ca-bundle.crt";
+        NIX_SSL_CERT_FILE = "/etc/ssl/certs/ca-bundle.crt";
+        CURL_CA_BUNDLE = "/etc/ssl/certs/ca-bundle.crt";
+      };
 
-    # Keep early PID 1 diagnostics on the QEMU console. Intermittent failures
-    # happen while systemd runs generators, before journald is available.
-    systemd.settings.Manager = {
-      LogLevel = "debug";
-      LogTarget = "console";
-      LogLocation = true;
-    };
+      # Broker-managed guests are disposable and idle-reaped; hourly rotation is
+      # unnecessary and fails against their immutable system configuration.
+      services.logrotate.enable = false;
 
-    # Gondolin's "running" state means its guest control channel is ready, not
-    # that DHCP has completed. Publish the stronger readiness contract consumed
-    # by the broker before it exposes a networked environment.
-    systemd.services.gondolin-network-ready = {
-      description = "Publish Gondolin guest network readiness";
-      requires = [ "dhcpcd.service" ];
-      after = [ "dhcpcd.service" ];
-      wantedBy = [ "multi-user.target" ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = "${pkgs.coreutils}/bin/touch /run/gondolin-network-ready";
+      # Gondolin's "running" state means its guest control channel is ready, not
+      # that DHCP has completed. Publish the stronger readiness contract consumed
+      # by the broker before it exposes a networked environment.
+      systemd.services.gondolin-network-ready = {
+        description = "Publish Gondolin guest network readiness";
+        requires = [ "dhcpcd.service" ];
+        after = [ "dhcpcd.service" ];
+        wantedBy = [ "multi-user.target" ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          ExecStart = "${pkgs.coreutils}/bin/touch /run/gondolin-network-ready";
+        };
       };
     };
-  };
 
   # general: full development surface for project/research work.
-  generalGuestModule = { pkgs, ... }: {
-    environment.systemPackages = with pkgs; [
-      nodejs_22
-      python3
-      git
-      curl
-      jq
-      bashInteractive
-      coreutils
-      findutils
-      gnugrep
-      gnused
-      gawk
-      gnutar
-      gzip
-      bzip2
-      xz
-      zip
-      unzip
-      patch
-    ];
-  };
+  generalGuestModule =
+    { pkgs, ... }:
+    {
+      environment.systemPackages = with pkgs; [
+        nodejs_22
+        python3
+        git
+        curl
+        jq
+        bashInteractive
+        coreutils
+        findutils
+        gnugrep
+        gnused
+        gawk
+        gnutar
+        gzip
+        bzip2
+        xz
+        zip
+        unzip
+        patch
+      ];
+    };
 
   # minimal: narrow surface for authenticated or sensitive operations.
-  minimalGuestModule = { pkgs, ... }: {
-    environment.systemPackages = with pkgs; [
-      gitMinimal
-      curl
-      jq
-      bashInteractive
-      coreutils
-      findutils
-    ];
-  };
+  minimalGuestModule =
+    { pkgs, ... }:
+    {
+      environment.systemPackages = with pkgs; [
+        gitMinimal
+        curl
+        jq
+        bashInteractive
+        coreutils
+        findutils
+      ];
+    };
 
   mkAsset =
     hostSystem: name: guestModule:
