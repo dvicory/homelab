@@ -29,6 +29,21 @@ let
       LogTarget = "console";
       LogLocation = true;
     };
+
+    # Gondolin's "running" state means its guest control channel is ready, not
+    # that DHCP has completed. Publish the stronger readiness contract consumed
+    # by the broker before it exposes a networked environment.
+    systemd.services.gondolin-network-ready = {
+      description = "Publish Gondolin guest network readiness";
+      requires = [ "dhcpcd.service" ];
+      after = [ "dhcpcd.service" ];
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = "${pkgs.coreutils}/bin/touch /run/gondolin-network-ready";
+      };
+    };
   };
 
   # general: full development surface for project/research work.

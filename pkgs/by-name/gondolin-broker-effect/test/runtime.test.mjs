@@ -65,6 +65,69 @@ test("VM creation awaits startup before publishing a live handle", async () => {
   assert.equal(settled, true)
 })
 
+test("networked VM creation waits for the guest readiness contract", async () => {
+  let resolveReady
+  const ready = new Promise((resolve) => {
+    resolveReady = resolve
+  })
+  let readinessArgv
+  let readinessOptions
+  let settled = false
+  const createVm = makeCreateVm(async () =>
+    fakeVm(
+      async () => undefined,
+      async () => undefined,
+      (argv, options) => {
+        readinessArgv = argv
+        readinessOptions = options
+        return { result: ready }
+      },
+    )
+  )
+  const pending = Effect.runPromise(createVm({
+    ...vmSpec,
+    network: {
+      mode: "bundles",
+      destinations: [{ kind: "exact", host: "example.com" }],
+    },
+  }))
+  void pending.then(() => {
+    settled = true
+  })
+
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(readinessArgv[0], "/bin/sh")
+  assert.equal(readinessArgv[2].includes("/run/gondolin-network-ready"), true)
+  assert.deepEqual(readinessOptions, { stdout: "ignore", stderr: "ignore" })
+  assert.equal(settled, false)
+
+  resolveReady({ exitCode: 0 })
+  await pending
+  assert.equal(settled, true)
+})
+
+test("guest network readiness failure closes the VM", async () => {
+  let closes = 0
+  const createVm = makeCreateVm(async () =>
+    fakeVm(
+      async () => undefined,
+      async () => {
+        closes += 1
+      },
+      () => ({ result: Promise.resolve({ exitCode: 1 }) }),
+    )
+  )
+
+  await assert.rejects(Effect.runPromise(createVm({
+    ...vmSpec,
+    network: {
+      mode: "bundles",
+      destinations: [{ kind: "exact", host: "example.com" }],
+    },
+  })), /Gondolin create failed/)
+  assert.equal(closes, 1)
+})
+
 test("VM startup failure closes the partially started VM", async () => {
   let closes = 0
   const createVm = makeCreateVm(async () =>

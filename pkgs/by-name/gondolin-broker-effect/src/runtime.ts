@@ -156,6 +156,21 @@ export const makeCreateVm = (createGondolinVm: typeof GondolinVM.create) =>
         await startedVm.start();
         if (signal.aborted) throw new Error("VM startup was interrupted");
 
+        if (network.netEnabled) {
+          const readiness = startedVm.exec([
+            "/bin/sh",
+            "-c",
+            "i=0; while [ \"$i\" -lt 200 ]; do [ -e /run/gondolin-network-ready ] && exit 0; i=$((i + 1)); sleep 0.05; done; exit 1",
+          ], {
+            stdout: "ignore",
+            stderr: "ignore",
+          });
+          const readinessResult = await readiness.result;
+          if (readinessResult.exitCode !== 0) {
+            throw new Error("guest network did not become ready within 10 seconds");
+          }
+        }
+
         const fs: VmFileSystem = {
           stat: async (path) => {
             const value = await startedVm.fs.stat(path);
