@@ -355,7 +355,22 @@ const make = (options: AccessGrantOptions) => Effect.gen(function* () {
   };
 
   const requireBinding = (environmentKey: string): Effect.Effect<AuthorityBindingRecord, BrokerError> =>
-    requireAuthorityBinding(registry, config, environmentKey);
+    Effect.gen(function* () {
+      const existing = yield* registry.getAuthority(environmentKey);
+      if (existing === undefined) {
+        const acquired = yield* workspaces.acquire(environmentKey);
+        yield* registry.bindAuthority({
+          environmentKey,
+          profile: config.profile,
+          executor: config.policyFile.defaultExecutor,
+          authorityClass: config.policyFile.defaultAuthorityClass,
+          policyDigest: config.policyFile.policyDigest,
+          workspaceId: acquired.workspace.workspaceId,
+          workspaceLeaseId: acquired.lease.leaseId,
+        });
+      }
+      return yield* requireAuthorityBinding(registry, config, environmentKey);
+    });
 
   const matching = (
     binding: AuthorityBindingRecord,

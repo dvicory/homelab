@@ -21,7 +21,7 @@
 - [x] 4.3 Wire the plugin, profile/executor defaults, allowed grant scopes, cooldowns, budgets, and control socket into `modules/den/aspects/workloads/hermes/secure-terminal/` for `hermes-qa`; rebuild the affected `hvn-hyp1` configuration and portable checks, then commit. No SOPS update is required.
 - [x] 4.4 Constrain the rendered QA broker policy to its Nix `maximum.grantScopes`, disable Hermes' permanent approval choice only for sandbox access, reject out-of-profile scopes at the broker, bind persisted state to the full immutable policy digest, and cover the contract with focused checks.
 - [x] 4.5 Preserve running QA gateway connectivity across broker socket inode replacement by mounting a stable read-only broker runtime directory; cover the rendered Quadlet and socket-directory ownership contract, then commit.
-- [ ] 4.6 Make proactive access preparation conflict-safely install the broker default authority without creating a VM, return `active` without prompting for immutable-policy coverage, preserve approval for requestable dynamic and pinned-private capabilities, run focused/package/Nix checks, and commit.
+- [x] 4.6 Make proactive access preparation conflict-safely install the broker default authority without creating a VM, return `active` without prompting for immutable-policy coverage, preserve approval for requestable dynamic and pinned-private capabilities, run focused/package/Nix checks, and commit.
 
 ## 5. End-to-End Validation and Documentation
 

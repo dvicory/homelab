@@ -59,8 +59,7 @@ test("proactive preparation uses explicit authority without starting a VM", asyn
   await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const registry = yield* Registry
     const grants = yield* AccessGrants
-    yield* bind(registry, "task-proactive")
-
+    const workspaces = yield* Workspaces
     const covered = yield* grants.prepare({
       environmentKey: "task-proactive",
       capabilities: [origin()],
@@ -71,6 +70,7 @@ test("proactive preparation uses explicit authority without starting a VM", asyn
     assert.deepEqual(covered.grantIds, [])
     assert.equal(grants.snapshot().grants.length, 0)
     assert.equal((yield* registry.getAuthority("task-proactive")).authorityClass, "default")
+    assert.equal((yield* workspaces.list("task-proactive")).length, 1)
     assert.equal(yield* registry.get("task-proactive"), undefined)
     assert.equal(harness.fake.state.created.length, 0)
 
