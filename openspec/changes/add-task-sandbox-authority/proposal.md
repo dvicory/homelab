@@ -34,7 +34,7 @@ None. This repository has no existing OpenSpec capability baseline for the exper
 
 ## Affected Configurations
 
-- QA host `hvn-hyp1` and the `hermes-qa` profile only.
+- Dynamic authority and grant behavior is enabled only for the QA `hvn-hyp1` profile; the shared Hermes release may pass through the normal QA canary and production-promotion deployment pipeline while production retains its existing backend and policy.
 - `pkgs/by-name/gondolin-broker-effect` and its embedded Agent-X policy kernel.
 - `modules/den/aspects/workloads/hermes/secure-terminal/` policy, network, service, and profile integration.
 - `pkgs/by-name/hermes-agent-patched` only for a generic trusted task-environment authority identity hook.
@@ -69,7 +69,7 @@ Hermes environment identity gains one generic infrastructure-only authority bind
 
 ## Rollback
 
-- Keep production unchanged throughout the QA implementation.
+- Keep dynamic authority disabled in production; normal promotion of the shared Hermes release does not constitute a production secure-terminal cutover.
 - Gate dynamic authority/grants behind the `hermes-qa` secure-terminal configuration.
 - On failure, disable the sandbox-authority plugin and control socket, clear or quarantine runtime grants, and return the QA broker to its fixed `project` default policy.
 - If broker/runtime compatibility regresses, switch QA back to the existing rootless-Podman backend while retaining registry/audit data for diagnosis.

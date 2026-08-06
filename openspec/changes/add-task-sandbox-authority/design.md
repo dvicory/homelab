@@ -241,4 +241,4 @@ operation after each activation before running the full acceptance prompt. This
 ordering limits disruption to broker reconnection and avoids requiring the host
 and Quadlet changes to become active atomically.
 
-Rollback disables the plugin and control socket, revokes/quarantines runtime grants, and leaves the broker on its fixed `project` default. Production remains unchanged; QA may return to the rootless-Podman backend if the broker path is unstable.
+Rollback disables the plugin and control socket, revokes/quarantines runtime grants, and leaves the broker on its fixed `project` default. Production retains its existing backend and authority policy even when the shared Hermes release is promoted through the normal deployment pipeline; QA may return to the rootless-Podman backend if the broker path is unstable.
