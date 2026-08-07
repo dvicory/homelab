@@ -24,7 +24,7 @@ let
         extraDependencyGroups = [ "messaging" ];
       };
     in
-    pkgs.callPackage (inputs.self + "/pkgs/by-name/hermes-agent-with-worker-lanes/package.nix") {
+    pkgs.callPackage (inputs.self + "/pkgs/by-name/hermes-agent-patched/package.nix") {
       hermesAgent = base;
       src = inputs.hermes-agent;
     };
@@ -203,6 +203,9 @@ let
         pkgs.gh
         pkgs.jq
         pkgs.cacert
+        # The client talks only to the aspect-owned, rootless sandbox engine.
+        # No container runtime daemon runs inside the gateway container.
+        pkgs.docker-client
         # This remains inert unless a runner enables the Nix-managed worker
         # plugin. Keeping it in the shared image lets QA and prod use one
         # artifact, and permits out-of-band subscription login with
@@ -259,49 +262,138 @@ in
     { user, ... }:
     let
       profile = profileFor user;
+      secureTerminal = profile.cfg.secureTerminal or { };
+      secureTerminalEnabled = secureTerminal.enable or false;
+      sandboxUser = "${profile.serviceName}-sandbox";
+      sandboxEngine = "${profile.serviceName}-sandbox-engine";
+      sandboxUid = user.system.uid + 50;
+      sandboxSubIdStart = 100000 + ((sandboxUid - 1000) * 65536);
     in
     {
       name = "workloads/hermes-account/${user.userName}";
       includes = [ den.aspects.virtualization.podman-user ];
 
       nixos =
-        { host, ... }:
+        { host, pkgs, ... }:
         let
           inherit (profile) secretNames userName;
           envAgeFile = host.secretPath + "/${secretNames.env}.age";
           patAgeFile = host.secretPath + "/${secretNames.githubPat}.age";
           tailscaleAgeFile = inputs.self + "/.secrets/shared/tailscale-auth-key.age";
         in
-        {
-          secretRequests =
-            lib.optionalAttrs (builtins.pathExists envAgeFile) {
-              ${secretNames.env} = {
-                provider = "agenix";
-                ageFile = envAgeFile;
-                mode = "0400";
-                owner = userName;
-                group = userName;
+        lib.mkMerge [
+          {
+            secretRequests =
+              lib.optionalAttrs (builtins.pathExists envAgeFile) {
+                ${secretNames.env} = {
+                  provider = "agenix";
+                  ageFile = envAgeFile;
+                  mode = "0400";
+                  owner = userName;
+                  group = userName;
+                };
+              }
+              // lib.optionalAttrs (builtins.pathExists patAgeFile) {
+                ${secretNames.githubPat} = {
+                  provider = "agenix";
+                  ageFile = patAgeFile;
+                  mode = "0400";
+                  owner = userName;
+                  group = userName;
+                };
+              }
+              // lib.optionalAttrs (builtins.pathExists tailscaleAgeFile) {
+                ${secretNames.tailscale} = {
+                  provider = "agenix";
+                  ageFile = tailscaleAgeFile;
+                  mode = "0400";
+                  owner = userName;
+                  group = userName;
+                };
               };
-            }
-            // lib.optionalAttrs (builtins.pathExists patAgeFile) {
-              ${secretNames.githubPat} = {
-                provider = "agenix";
-                ageFile = patAgeFile;
-                mode = "0400";
-                owner = userName;
-                group = userName;
-              };
-            }
-            // lib.optionalAttrs (builtins.pathExists tailscaleAgeFile) {
-              ${secretNames.tailscale} = {
-                provider = "agenix";
-                ageFile = tailscaleAgeFile;
-                mode = "0400";
-                owner = userName;
-                group = userName;
+          }
+          (lib.mkIf secureTerminalEnabled {
+            assertions = [
+              {
+                assertion = user.system.uid >= 1100 && user.system.uid < 1150;
+                message = "${profile.serviceName}: secure-terminal companion UID derivation requires runner UID 1100-1149";
+              }
+            ];
+
+            # The sandbox engine identity is an implementation detail of this
+            # Hermes account aspect. Hosts opt into the Hermes profile; they do
+            # not separately place or configure this companion account.
+            users.deterministicIds.${sandboxUser} = {
+              uid = sandboxUid;
+              gid = sandboxUid;
+              subUidRanges = [
+                {
+                  startUid = sandboxSubIdStart;
+                  count = 65536;
+                }
+              ];
+              subGidRanges = [
+                {
+                  startGid = sandboxSubIdStart;
+                  count = 65536;
+                }
+              ];
+            };
+            users.groups.${sandboxUser} = { };
+            users.users.${sandboxUser} = {
+              isNormalUser = true;
+              group = sandboxUser;
+              home = "/var/lib/${sandboxUser}";
+              createHome = true;
+              autoSubUidGidRange = false;
+            };
+
+            # systemd owns the API socket and gives it to the Podman service by
+            # socket activation. The gateway runner owns the mode-0600 socket,
+            # but the process serving requests has the distinct sandbox UID.
+            # This avoids a shared group and keeps the capability one-profile
+            # wide without granting the runner access to the sandbox home.
+            systemd.sockets.${sandboxEngine} = {
+              description = "${profile.serviceName} isolated terminal Podman API";
+              wantedBy = [ "sockets.target" ];
+              socketConfig = {
+                ListenStream = "/run/${sandboxEngine}/podman.sock";
+                SocketUser = user.userName;
+                SocketGroup = user.userName;
+                SocketMode = "0600";
+                DirectoryMode = "0711";
+                RemoveOnStop = true;
               };
             };
-        };
+            systemd.services.${sandboxEngine} = {
+              description = "${profile.serviceName} isolated terminal Podman service";
+              environment = {
+                HOME = "/var/lib/${sandboxUser}";
+                XDG_DATA_HOME = "/var/lib/${sandboxUser}/.local/share";
+                XDG_RUNTIME_DIR = "/run/${sandboxUser}";
+              };
+              serviceConfig = {
+                # Match Podman's shipped socket-activated service semantics,
+                # while using a system unit so systemd can hand a runner-owned
+                # capability socket to a process running as the sandbox UID.
+                Type = "exec";
+                User = sandboxUser;
+                Group = sandboxUser;
+                ExecStart = "${pkgs.podman}/bin/podman --log-level=info system service --time=0";
+                Delegate = true;
+                KillMode = "process";
+                TimeoutStopSec = 70;
+                StateDirectory = sandboxUser;
+                StateDirectoryMode = "0700";
+                RuntimeDirectory = sandboxUser;
+                RuntimeDirectoryMode = "0700";
+                PrivateTmp = true;
+                ProtectHome = true;
+                UMask = "0077";
+              };
+            };
+          })
+        ];
     };
 
   # The independently instantiated home receives its matching registry account
@@ -337,6 +429,11 @@ in
           fortressCdpUrl = fortress.cdpUrl or "http://127.0.0.1:9222";
           codex = cfg.codex or { };
           codexEnabled = codex.enable or false;
+          secureTerminal = cfg.secureTerminal or { };
+          secureTerminalEnabled = secureTerminal.enable or false;
+          sandboxEngine = "${serviceName}-sandbox-engine";
+          sandboxSocketHost = "/run/${sandboxEngine}/podman.sock";
+          sandboxSocketContainer = "/run/hermes-sandbox/podman.sock";
           codexHome = "${containerHome}/.codex";
           codexModel = codex.model or null;
           codexReasoningEffort = codex.reasoningEffort or null;
@@ -349,8 +446,7 @@ in
               (name: lane: {
                 inherit name;
                 description =
-                  lane.description
-                    or (throw "${serviceName}: Codex worker lane '${name}' must declare description");
+                  lane.description or (throw "${serviceName}: Codex worker lane '${name}' must declare description");
                 approvalPolicy = lane.approvalPolicy or codexApprovalPolicy;
                 approvalsReviewer = lane.approvalsReviewer or codexApprovalsReviewer;
                 sandboxMode = lane.sandboxMode;
@@ -391,11 +487,35 @@ in
             # it explicit avoids an interactive `doctor --fix` attempting to
             # migrate the read-only Nix-managed config on every deployment.
             _config_version = 33;
-            terminal = {
-              backend = "local";
-              cwd = workspaceRoot;
-              timeout = 180;
-            };
+            terminal =
+              if secureTerminalEnabled then
+                {
+                  backend = "docker";
+                  cwd = "/workspace";
+                  timeout = 180;
+                  lifetime_seconds = secureTerminal.lifetimeSeconds or 900;
+                  docker_image = secureTerminal.image or "docker.io/nikolaik/python-nodejs:python3.11-nodejs20";
+                  container_cpu = secureTerminal.cpus or 2;
+                  container_memory = secureTerminal.memoryMiB or 4096;
+                  container_disk = secureTerminal.diskMiB or 20480;
+                  container_persistent = true;
+                  docker_network = secureTerminal.network or true;
+                  docker_mount_cwd_to_workspace = false;
+                  docker_forward_env = [ ];
+                  docker_volumes = [ ];
+                  docker_env = { };
+                  docker_extra_args = [ ];
+                  # The container is disposable after idle cleanup; its engine-
+                  # owned named volumes retain the conversation filesystem.
+                  docker_persist_across_processes = false;
+                  docker_orphan_reaper = true;
+                }
+              else
+                {
+                  backend = "local";
+                  cwd = workspaceRoot;
+                  timeout = 180;
+                };
             approvals = {
               mode = "manual";
               cron_mode = "deny";
@@ -585,6 +705,15 @@ in
                     HERMES_PROJECT_REPOSITORY = repository;
                     SECRETS_DIR = "/run/secrets";
                   }
+                  // lib.optionalAttrs secureTerminalEnabled {
+                    DOCKER_HOST = "unix://${sandboxSocketContainer}";
+                    HERMES_DOCKER_BINARY = "${pkgs.docker-client}/bin/docker";
+                    # These security-sensitive controls are deployment-owned
+                    # environment, not model-selected terminal arguments.
+                    TERMINAL_ISOLATION_SCOPE = "conversation";
+                    TERMINAL_DOCKER_STORAGE = "named-volume";
+                    TERMINAL_DOCKER_MOUNT_SUPPORT_FILES = "false";
+                  }
                   // lib.optionalAttrs codexEnabled (
                     {
                       CODEX_EXECUTABLE = lib.getExe (codexPackageFor host.system);
@@ -605,6 +734,7 @@ in
                     "${osConfig.age.secrets.${secretNames.env}.path}:/run/secrets/hermes-env:ro"
                     "${osConfig.age.secrets.${secretNames.githubPat}.path}:/run/secrets/hermes-github-pat:ro"
                   ]
+                  ++ lib.optional secureTerminalEnabled "${sandboxSocketHost}:${sandboxSocketContainer}"
                   ++ lib.optionals codexEnabled [
                     "${serviceName}-codex:${codexHome}"
                     "${codexWorkerLane}/share/hermes-agent/external-skills:${codexSkillRoot}:ro"
