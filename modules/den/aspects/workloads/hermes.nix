@@ -264,6 +264,7 @@ in
       profile = profileFor user;
       secureTerminal = profile.cfg.secureTerminal or { };
       secureTerminalEnabled = secureTerminal.enable or false;
+      secureTerminalBackend = secureTerminal.backend or "podman";
       sandboxUser = "${profile.serviceName}-sandbox";
       sandboxEngine = "${profile.serviceName}-sandbox-engine";
       sandboxUid = user.system.uid + 50;
@@ -271,7 +272,12 @@ in
     in
     {
       name = "workloads/hermes-account/${user.userName}";
-      includes = [ den.aspects.virtualization.podman-user ];
+      includes = [
+        den.aspects.virtualization.podman-user
+        # Self-gates on secureTerminal.backend == "gondolin"; the Podman
+        # slice below remains the backend until the spike decision (V3 §18).
+        den.aspects.workloads.hermes.secureTerminal
+      ];
 
       nixos =
         { host, pkgs, ... }:
@@ -322,7 +328,9 @@ in
 
             # The sandbox engine identity is an implementation detail of this
             # Hermes account aspect. Hosts opt into the Hermes profile; they do
-            # not separately place or configure this companion account.
+            # not separately place or configure this companion account. Both
+            # secure-terminal backends (Podman API, Gondolin broker) run as
+            # this identity.
             users.deterministicIds.${sandboxUser} = {
               uid = sandboxUid;
               gid = sandboxUid;
@@ -347,7 +355,9 @@ in
               createHome = true;
               autoSubUidGidRange = false;
             };
+          })
 
+          (lib.mkIf (secureTerminalEnabled && secureTerminalBackend == "podman") {
             # systemd owns the API socket and gives it to the Podman service by
             # socket activation. The gateway runner owns the mode-0600 socket,
             # but the process serving requests has the distinct sandbox UID.
@@ -431,9 +441,15 @@ in
           codexEnabled = codex.enable or false;
           secureTerminal = cfg.secureTerminal or { };
           secureTerminalEnabled = secureTerminal.enable or false;
+          secureTerminalBackend = secureTerminal.backend or "podman";
           sandboxEngine = "${serviceName}-sandbox-engine";
+          brokerName = "${serviceName}-broker";
           sandboxSocketHost = "/run/${sandboxEngine}/podman.sock";
-          sandboxSocketContainer = "/run/hermes-sandbox/podman.sock";
+          brokerSocketHost = "/run/${brokerName}/broker.sock";
+          # One container-side sandbox path regardless of engine; the host
+          # side selects the podman API socket or the broker socket.
+          sandboxSocketContainer =
+            if secureTerminalBackend == "gondolin" then "/run/hermes-sandbox/broker.sock" else "/run/hermes-sandbox/podman.sock";
           codexHome = "${containerHome}/.codex";
           codexModel = codex.model or null;
           codexReasoningEffort = codex.reasoningEffort or null;
@@ -705,7 +721,7 @@ in
                     HERMES_PROJECT_REPOSITORY = repository;
                     SECRETS_DIR = "/run/secrets";
                   }
-                  // lib.optionalAttrs secureTerminalEnabled {
+                  // lib.optionalAttrs (secureTerminalEnabled && secureTerminalBackend == "podman") {
                     DOCKER_HOST = "unix://${sandboxSocketContainer}";
                     HERMES_DOCKER_BINARY = "${pkgs.docker-client}/bin/docker";
                     # These security-sensitive controls are deployment-owned
@@ -713,6 +729,13 @@ in
                     TERMINAL_ISOLATION_SCOPE = "conversation";
                     TERMINAL_DOCKER_STORAGE = "named-volume";
                     TERMINAL_DOCKER_MOUNT_SUPPORT_FILES = "false";
+                  }
+                  // lib.optionalAttrs (secureTerminalEnabled && secureTerminalBackend == "gondolin") {
+                    # The broker socket is the gateway's only sandbox
+                    # capability (V3 §7). Conversation identity stays enforced
+                    # by the canonical environment key on every surface.
+                    HERMES_GONDOLIN_SOCKET = sandboxSocketContainer;
+                    TERMINAL_ISOLATION_SCOPE = "conversation";
                   }
                   // lib.optionalAttrs codexEnabled (
                     {
@@ -734,7 +757,8 @@ in
                     "${osConfig.age.secrets.${secretNames.env}.path}:/run/secrets/hermes-env:ro"
                     "${osConfig.age.secrets.${secretNames.githubPat}.path}:/run/secrets/hermes-github-pat:ro"
                   ]
-                  ++ lib.optional secureTerminalEnabled "${sandboxSocketHost}:${sandboxSocketContainer}"
+                  ++ lib.optional (secureTerminalEnabled && secureTerminalBackend == "podman") "${sandboxSocketHost}:${sandboxSocketContainer}"
+                  ++ lib.optional (secureTerminalEnabled && secureTerminalBackend == "gondolin") "${brokerSocketHost}:${sandboxSocketContainer}"
                   ++ lib.optionals codexEnabled [
                     "${serviceName}-codex:${codexHome}"
                     "${codexWorkerLane}/share/hermes-agent/external-skills:${codexSkillRoot}:ro"
