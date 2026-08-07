@@ -451,6 +451,8 @@ in
           secureTerminal = cfg.secureTerminal or { };
           secureTerminalEnabled = secureTerminal.enable or false;
           secureTerminalBackend = secureTerminal.backend or "podman";
+          workspaceHandoff = secureTerminal.workspaceHandoff or { };
+          workspaceHandoffEnabled = workspaceHandoff.enable or false;
           sandboxEngine = "${serviceName}-sandbox-engine";
           brokerName = "${serviceName}-broker";
           sandboxSocketHost = "/run/${sandboxEngine}/podman.sock";
@@ -559,7 +561,10 @@ in
             };
             plugins.enabled =
               lib.optional codexEnabled "codex-worker-lane"
-              ++ lib.optional (secureTerminalEnabled && secureTerminalBackend == "gondolin") "sandbox-access";
+              ++ lib.optionals (secureTerminalEnabled && secureTerminalBackend == "gondolin") [
+                "sandbox-access"
+                "workspace-service"
+              ];
             platform_toolsets = {
               cli =
                 [ "hermes-cli" ]
@@ -756,6 +761,7 @@ in
                     TERMINAL_ISOLATION_SCOPE = "conversation";
                     GONDOLIN_EFFECT_CONTROL_SOCKET = brokerControlSocketContainer;
                     HERMES_SANDBOX_AUTHORITY_BINDING = "${serviceName}:hermes-gateway:default:v1";
+                    HERMES_WORKSPACE_HANDOFF = if workspaceHandoffEnabled then "1" else "0";
                   }
                   // lib.optionalAttrs codexEnabled (
                     {
