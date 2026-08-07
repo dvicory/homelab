@@ -10,20 +10,22 @@
   ...
 }:
 let
-  net = import ./_network-dsl.nix { inherit lib; };
-  networkBundles = import ./_network-bundles.nix { inherit net; };
-  policyLib = import ./_policy.nix { };
-  catalogueLib = import ../_catalogue.nix { inherit lib; };
-  guestAssetsLib = import ./_guest-assets.nix { inherit inputs; };
+  hermesLib = inputs.secure-hermes-nix.lib;
+  net = hermesLib.network;
+  networkBundles = hermesLib.networkBundles;
+  policyLib = hermesLib.policy;
+  catalogueLib = hermesLib.catalogue;
+  guestAssetsLib = hermesLib.guestAssets;
 
-  settingsFor = user: user.settings.workloads.hermes or { };
+  settingsFor = user: user.settings.workloads.hermes-runner or { };
 
-  serviceNameFor = user:
+  serviceNameFor =
+    user:
     let
       cfg = settingsFor user;
       instance =
         cfg.instance
-          or (throw "Hermes secure-terminal account '${user.userName}' has no settings.workloads.hermes.instance");
+          or (throw "Hermes secure-terminal account '${user.userName}' has no settings.workloads.hermes-runner.instance");
     in
     "hermes-${instance}";
 
@@ -116,14 +118,18 @@ in
             else
               workspace.projectProvider or "broker-project";
           maximumPermission =
-            if projectMode == "none" then "workspace-write" else workspace.maximumPermission;
+            if projectMode == "none" then
+              "workspace-write"
+            else if (workspace.maximumPermission or "none") == "none" then
+              throw "Hermes Project worker lanes must set workspace.maximumPermission to read-only or workspace-write"
+            else
+              workspace.maximumPermission;
         }
       ) (cfg.workerLanes or { });
       workspaceHandoff = secureTerminal.workspaceHandoff or { };
       workspaceHandoffEnabled = workspaceHandoff.enable or false;
       workspaceHandoffLimits =
-        policyLib.workspaceHandoffLimitCeilings
-        // (workspaceHandoff.handoffLimits or { });
+        policyLib.workspaceHandoffLimitCeilings // (workspaceHandoff.handoffLimits or { });
       projectSources = cfg.projectSources or { };
       sourceRevisions = catalogueLib.sourceRevisionsFor projectSources;
       providerRevisions = catalogueLib.providerRevisionsFor catalogueLib.providerContracts;
@@ -135,6 +141,9 @@ in
           source: lib.optional (source.credential or null != null) source.credential.secretRef
         ) (builtins.attrValues projectSources)
       );
+      unsupportedSourceCredentialRefs = lib.filter (
+        ref: ref != "hermes-terminal-github"
+      ) sourceCredentialRefs;
       usesGithubSourceCredential = lib.elem "hermes-terminal-github" sourceCredentialRefs;
       brokerCredentialSecretName = "${serviceName}-github-pat";
     in
@@ -148,18 +157,31 @@ in
       cache = lib.optional gondolin "/var/cache/${sandboxUser}";
 
       nixos =
-        { host, pkgs, config, ... }:
+        {
+          host,
+          pkgs,
+          config,
+          ...
+        }:
         lib.mkIf gondolin (
           let
             guestAssets = guestAssetsLib.mkGuestAssets pkgs.stdenv.hostPlatform.system;
-            brokerPackage = pkgs.callPackage (inputs.self + "/pkgs/by-name/gondolin-broker-effect/package.nix") { };
+            brokerPackage =
+              inputs.secure-hermes-nix.packages.${pkgs.stdenv.hostPlatform.system}.gondolin-broker-effect;
             # The broker resolves logical source credential references through
             # systemd credentials. PID 1 copies the existing runner-owned PAT
             # into the broker's private credential directory; it never enters
             # the guest or any environment/argv channel.
             brokerCredentialAgeFile = host.secretPath + "/${serviceName}-github-pat.age";
             brokerCredentialEnabled =
-              usesGithubSourceCredential && builtins.pathExists brokerCredentialAgeFile;
+              if unsupportedSourceCredentialRefs != [ ] then
+                throw "Hermes secure-terminal does not support source credential references: ${lib.concatStringsSep ", " unsupportedSourceCredentialRefs}"
+              else if !usesGithubSourceCredential then
+                false
+              else if builtins.pathExists brokerCredentialAgeFile then
+                true
+              else
+                throw "Hermes secure-terminal source credential 'hermes-terminal-github' requires ${brokerCredentialAgeFile}";
             policy = policyLib.mkEffectPolicy {
               inherit pkgs;
               profile = serviceName;
@@ -243,12 +265,7 @@ in
                 GONDOLIN_EFFECT_STATE_DIR = "/var/lib/${sandboxUser}";
                 GONDOLIN_EFFECT_SOCKET = executionSocketPath;
                 GONDOLIN_EFFECT_CONTROL_SOCKET = controlSocketPath;
-                GONDOLIN_EFFECT_WORKSPACE_HANDOFF =
-                  if workspaceHandoffEnabled then "true" else "false";
-                # SDK boot/protocol metadata and Effect HTTP request spans
-                # go to journald. Do not enable Gondolin's `exec` or `vfs`
-                # debug channels: they include commands, env, and paths.
-                GONDOLIN_DEBUG = "protocol,net";
+                GONDOLIN_EFFECT_WORKSPACE_HANDOFF = if workspaceHandoffEnabled then "true" else "false";
               };
               serviceConfig = {
                 Type = "exec";
@@ -283,7 +300,9 @@ in
                 # Trusted source credentials arrive only through systemd
                 # credentials ($CREDENTIALS_DIRECTORY/source-<secretRef>);
                 # they are never environment variables or arguments.
-                LoadCredential = lib.optional brokerCredentialEnabled "source-hermes-terminal-github:${config.age.secrets.${brokerCredentialSecretName}.path}";
+                LoadCredential = lib.optional brokerCredentialEnabled "source-hermes-terminal-github:${
+                  config.age.secrets.${brokerCredentialSecretName}.path
+                }";
 
                 DevicePolicy = "closed";
                 DeviceAllow = [ "/dev/kvm rw" ];

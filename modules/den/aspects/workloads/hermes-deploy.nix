@@ -318,7 +318,9 @@ in
               local uid
               local manager_unit
               local manager_pid
+              local expected_primary
               local expected
+              local actual_primary=
               local actual=
               local key
               local value
@@ -327,6 +329,7 @@ in
               local found
               local groups_match=true
               uid=$(id -u "$user") || return 1
+              expected_primary=$(id -g "$user") || return 1
               manager_unit="user@$uid.service"
               expected=$(id -G "$user") || return 1
               manager_pid=$(systemctl show --property=MainPID --value "$manager_unit") || {
@@ -335,13 +338,19 @@ in
               }
               if [ "$manager_pid" != 0 ] && [ -r "/proc/$manager_pid/status" ]; then
                 while IFS=: read -r key value; do
-                  if [ "$key" = Groups ]; then
+                  if [ "$key" = Gid ]; then
+                    for gid in $value; do
+                      actual_primary=$gid
+                      break
+                    done
+                  elif [ "$key" = Groups ]; then
                     actual=$value
-                    break
                   fi
                 done < "/proc/$manager_pid/status"
               fi
+              [ "$actual_primary" = "$expected_primary" ] || groups_match=false
               for gid in $expected; do
+                [ "$gid" = "$expected_primary" ] && continue
                 found=false
                 for candidate in $actual; do
                   [ "$candidate" = "$gid" ] && found=true
@@ -349,14 +358,16 @@ in
                 [ "$found" = true ] || groups_match=false
               done
               for gid in $actual; do
+                [ "$gid" = "$expected_primary" ] && continue
                 found=false
                 for candidate in $expected; do
+                  [ "$candidate" = "$expected_primary" ] && continue
                   [ "$candidate" = "$gid" ] && found=true
                 done
                 [ "$found" = true ] || groups_match=false
               done
               if [ "$groups_match" = false ]; then
-                log "$user: restarting user manager to refresh supplementary groups"
+                log "$user: restarting user manager to refresh primary or supplementary groups"
                 ${pkgs.coreutils}/bin/timeout --signal=TERM --kill-after=15s \
                   ${toString cfg.timeouts.serviceStartSeconds}s \
                   systemctl restart "$manager_unit" || {

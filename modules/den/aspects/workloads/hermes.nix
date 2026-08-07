@@ -5,10 +5,9 @@
   ...
 }:
 let
-  inherit (lib) mkOption types;
 
   imageTagFor = system: "${system}-${inputs.self.shortRev or "dirty"}";
-  catalogueLib = import ./hermes/_catalogue.nix { inherit lib; };
+  catalogueLib = inputs.secure-hermes-nix.lib.catalogue;
 
   codexPackageFor = system: inputs.llm-agents.packages.${system}.codex;
   codexWorkerLaneFor =
@@ -16,23 +15,17 @@ let
       pkgs,
       lanes ? null,
     }:
-    pkgs.callPackage (inputs.self + "/pkgs/by-name/hermes-codex-worker-lane/package.nix") (
-      lib.optionalAttrs (lanes != null) { inherit lanes; }
-    );
+    let
+      base =
+        inputs.secure-hermes-nix.packages.${pkgs.stdenv.hostPlatform.system}.hermes-codex-worker-lane;
+    in
+    if lanes == null then base else base.override { inherit lanes; };
   sandboxAccessFor =
-    { pkgs }: pkgs.callPackage (inputs.self + "/pkgs/by-name/hermes-sandbox-access/package.nix") { };
+    { pkgs }:
+    inputs.secure-hermes-nix.packages.${pkgs.stdenv.hostPlatform.system}.hermes-sandbox-access;
 
   hermesPackageFor =
-    { pkgs, system }:
-    let
-      base = (inputs.hermes-agent.packages.${system}.default).override {
-        extraDependencyGroups = [ "messaging" ];
-      };
-    in
-    pkgs.callPackage (inputs.self + "/pkgs/by-name/hermes-agent-patched/package.nix") {
-      hermesAgent = base;
-      src = inputs.hermes-agent;
-    };
+    { pkgs, system }: inputs.secure-hermes-nix.packages.${system}.hermes-agent-patched;
 
   profileFor =
     account:
@@ -267,42 +260,22 @@ let
 in
 
 {
-  den.aspects.workloads.hermes-runner.settings.options = {
-    instance = mkOption {
-      type = types.str;
-      description = "Scope-unique Hermes runner instance name.";
-    };
-    image = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      description = "OCI image used by the runner.";
-    };
-    repository = mkOption {
-      type = types.str;
-      default = "https://github.com/dvicory/homelab.git";
-      description = "Git repository cloned into the runner workspace.";
-    };
-    restartDrainTimeout = mkOption {
-      type = types.ints.positive;
-      default = 120;
-      description = "Seconds allowed for the runner to drain before restart.";
-    };
-    config = mkOption {
-      type = types.attrs;
-      default = { };
-      description = "Hermes configuration rendered into the runner container.";
-    };
-    tailscale.hostname = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      description = "Tailscale hostname assigned to the runner sidecar.";
-    };
-  };
 
   # Keep this input with its sole consumer. Shared, cross-cutting inputs live
   # in modules/meta/inputs.nix; workload-specific inputs follow the same local
   # declaration pattern as Hermes Agent, Quadlet, CrowdSec, and deploy-rs.
-  flake-file.inputs.llm-agents.url = "github:numtide/llm-agents.nix";
+  flake-file.inputs.llm-agents.url = "github:numtide/llm-agents.nix/c4fe91eee512d8278f2593fc8f544829c76c84f8";
+
+  # Extracted Hermes infrastructure (patch stack, plugins, broker, libs),
+  # pinned to this flake's shared inputs so one Nixpkgs/Hermes/Gondolin
+  # version serves both the consumer wiring and the consumed packages.
+  flake-file.inputs.secure-hermes-nix = {
+    url = "github:dvicory/secure-hermes-nix";
+    inputs.nixpkgs.follows = "nixpkgs";
+    inputs.hermes-agent.follows = "hermes-agent";
+    inputs.llm-agents.follows = "llm-agents";
+    inputs.gondolin-nix.follows = "gondolin-nix";
+  };
 
   # OCI images contain native binaries, so publish them for every Linux system
   # rather than hard-coding one architecture or creating unusable Darwin images.
@@ -312,7 +285,7 @@ in
       packages.hermes-agent-image = mkHermesImage { inherit pkgs system; };
     };
 
-  den.aspects.workloads.hermes.settings.options = import ./hermes/_settings.nix { inherit lib; };
+  den.aspects.workloads.hermes-runner.settings.options = inputs.secure-hermes-nix.lib.settings;
 
   # A resolved registry user contributes the static host platform and its own
   # secret requests. The profile data still comes only from the registry entry.
@@ -414,9 +387,9 @@ in
               # group membership plus setgid workspace directories keep the
               # broker (owner) and gateway (group) both able to read the same
               # task workspace without world access.
-              members = lib.optionals
-                (((profile.cfg.codex or { }).enable or false) && secureTerminalBackend == "gondolin")
-                [ userName ];
+              members = lib.optionals (
+                ((profile.cfg.codex or { }).enable or false) && secureTerminalBackend == "gondolin"
+              ) [ userName ];
             };
             users.users.${sandboxUser} = {
               isNormalUser = true;
@@ -517,8 +490,7 @@ in
           # consume broker workspaces through a host bind-mount shared via the
           # sandbox group (setgid workspace directories, broker-owned files).
           sandboxUser = "${serviceName}-sandbox";
-          codexBrokerSharing =
-            codexEnabled && secureTerminalEnabled && secureTerminalBackend == "gondolin";
+          codexBrokerSharing = codexEnabled && secureTerminalEnabled && secureTerminalBackend == "gondolin";
           brokerWorkspaceDataHost = "/var/lib/${sandboxUser}/workspaces/data";
           brokerWorkspaceDataContainer = "${containerHome}/broker-workspaces";
           workspaceHandoff = secureTerminal.workspaceHandoff or { };
@@ -582,7 +554,10 @@ in
             if cfg.image == null then "localhost/hermes-agent:${imageTagFor host.system}" else cfg.image;
           project = profile.project // (cfg.project or { });
           projectDir = "${workspaceRoot}/projects/${project.name}";
-          repository = project.repository or cfg.repository;
+          repository = lib.findFirst (value: value != null) "https://github.com/dvicory/homelab.git" [
+            (project.repository or null)
+            cfg.repository
+          ];
           tailscaleHostname = if cfg.tailscale.hostname == null then serviceName else cfg.tailscale.hostname;
           restartDrainTimeout = cfg.restartDrainTimeout;
           defaultConfig = {
@@ -921,16 +896,15 @@ in
                   ++ lib.optional (
                     secureTerminalEnabled && secureTerminalBackend == "gondolin"
                   ) "${brokerSocketHostDirectory}:${brokerSocketContainerDirectory}:ro"
-                  ++ lib.optional codexBrokerSharing
-                    "${brokerWorkspaceDataHost}:${brokerWorkspaceDataContainer}"
+                  ++ lib.optional codexBrokerSharing "${brokerWorkspaceDataHost}:${brokerWorkspaceDataContainer}"
                   ++ lib.optionals codexEnabled [
                     "${serviceName}-codex:${codexHome}"
                     "${codexWorkerLane}/share/hermes-agent/external-skills:${codexSkillRoot}:ro"
                   ];
-                # Rootless user namespaces drop supplementary groups unless
-                # podman keeps them; Codex workers reach the shared broker
-                # workspace data through the sandbox group.
-                addGroups = lib.optional codexBrokerSharing "keep-groups";
+                  # Rootless user namespaces drop supplementary groups unless
+                  # podman keeps them; Codex workers reach the shared broker
+                  # workspace data through the sandbox group.
+                  addGroups = lib.optional codexBrokerSharing "keep-groups";
                 };
                 serviceConfig.TimeoutStopSec = restartDrainTimeout + 30;
               };

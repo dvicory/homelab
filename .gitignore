@@ -15,10 +15,6 @@ result-*
 *.swp
 .DS_Store
 
-# Python bytecode caches
-__pycache__/
-*.pyc
-
 # SECRETS - DO NOT COMMIT
 sops.key
 ssh
