@@ -6,7 +6,7 @@
 }:
 let
   imageTagFor = system: "${system}-${inputs.self.shortRev or "dirty"}";
-  catalogueLib = import ./hermes/_catalogue.nix { inherit lib; };
+  catalogueLib = inputs.secure-hermes-nix.lib.catalogue;
 
   codexPackageFor = system: inputs.llm-agents.packages.${system}.codex;
   codexWorkerLaneFor =
@@ -14,23 +14,15 @@ let
       pkgs,
       lanes ? null,
     }:
-    pkgs.callPackage (inputs.self + "/pkgs/by-name/hermes-codex-worker-lane/package.nix") (
-      lib.optionalAttrs (lanes != null) { inherit lanes; }
-    );
+    let
+      base = inputs.secure-hermes-nix.packages.${pkgs.stdenv.hostPlatform.system}.hermes-codex-worker-lane;
+    in
+    if lanes == null then base else base.override { inherit lanes; };
   sandboxAccessFor =
-    { pkgs }: pkgs.callPackage (inputs.self + "/pkgs/by-name/hermes-sandbox-access/package.nix") { };
+    { pkgs }: inputs.secure-hermes-nix.packages.${pkgs.stdenv.hostPlatform.system}.hermes-sandbox-access;
 
   hermesPackageFor =
-    { pkgs, system }:
-    let
-      base = (inputs.hermes-agent.packages.${system}.default).override {
-        extraDependencyGroups = [ "messaging" ];
-      };
-    in
-    pkgs.callPackage (inputs.self + "/pkgs/by-name/hermes-agent-patched/package.nix") {
-      hermesAgent = base;
-      src = inputs.hermes-agent;
-    };
+    { pkgs, system }: inputs.secure-hermes-nix.packages.${system}.hermes-agent-patched;
 
   profileFor =
     account:
@@ -269,6 +261,17 @@ in
   # declaration pattern as Hermes Agent, Quadlet, CrowdSec, and deploy-rs.
   flake-file.inputs.llm-agents.url = "github:numtide/llm-agents.nix";
 
+  # Extracted Hermes infrastructure (patch stack, plugins, broker, libs),
+  # pinned to this flake's shared inputs so one Nixpkgs/Hermes/Gondolin
+  # version serves both the consumer wiring and the consumed packages.
+  flake-file.inputs.secure-hermes-nix = {
+    url = "github:dvicory/secure-hermes-nix";
+    inputs.nixpkgs.follows = "nixpkgs";
+    inputs.hermes-agent.follows = "hermes-agent";
+    inputs.llm-agents.follows = "llm-agents";
+    inputs.gondolin-nix.follows = "gondolin-nix";
+  };
+
   # OCI images contain native binaries, so publish them for every Linux system
   # rather than hard-coding one architecture or creating unusable Darwin images.
   perSystem =
@@ -277,7 +280,7 @@ in
       packages.hermes-agent-image = mkHermesImage { inherit pkgs system; };
     };
 
-  den.aspects.workloads.hermes.settings.options = import ./hermes/_settings.nix { inherit lib; };
+  den.aspects.workloads.hermes.settings.options = inputs.secure-hermes-nix.lib.settings;
 
   # A resolved registry user contributes the static host platform and its own
   # secret requests. The profile data still comes only from the registry entry.
