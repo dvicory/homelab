@@ -20,26 +20,39 @@ let
         };
         tailscale.hostname = "hermes-${instance}";
       }
-      // (if instance == "qa" then {
-        # The sidecar is opt-in so prod remains unchanged until the browser
-        # workflow has been exercised.
-        fortress.enable = true;
+      // (
+        if instance == "qa" then
+          {
+            # The sidecar is opt-in so prod remains unchanged until the browser
+            # workflow has been exercised.
+            fortress.enable = true;
 
-        # Codex is a distinct coding-only Kanban worker. Its ChatGPT login and
-        # threads persist in a dedicated rootless Podman volume.
-        codex = {
-          enable = true;
-          allowedModels = [
-            "gpt-5.6-luna"
-            "gpt-5.6-terra"
-          ];
-          allowedReasoningEfforts = [
-            "low"
-            "medium"
-            "high"
-          ];
-        };
-      } else { });
+            # QA exercises the direct secure-terminal architecture. The companion
+            # Podman user and service are derived inside the Hermes account aspect;
+            # this registry entry only selects the feature and its resource policy.
+            secureTerminal = {
+              enable = true;
+              network = true;
+            };
+
+            # Codex is a distinct coding-only Kanban worker. Its ChatGPT login and
+            # threads persist in a dedicated rootless Podman volume.
+            codex = {
+              enable = true;
+              allowedModels = [
+                "gpt-5.6-luna"
+                "gpt-5.6-terra"
+              ];
+              allowedReasoningEfforts = [
+                "low"
+                "medium"
+                "high"
+              ];
+            };
+          }
+        else
+          { }
+      );
     };
 in
 {
