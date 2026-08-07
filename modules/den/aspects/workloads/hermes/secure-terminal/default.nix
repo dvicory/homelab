@@ -53,6 +53,10 @@ in
       serviceName = serviceNameFor user;
       sandboxUser = "${serviceName}-sandbox";
       brokerName = "${serviceName}-broker";
+      executionSocketName = "${brokerName}-execution";
+      controlSocketName = "${brokerName}-control";
+      executionSocketPath = "/run/${brokerName}/broker.sock";
+      controlSocketPath = "/run/${brokerName}/control.sock";
 
       defaultTemplate = secureTerminal.defaultTemplate or "project";
       allowedPairs =
@@ -126,11 +130,27 @@ in
             # activation. The gateway runner owns the mode-0600 socket (its
             # only sandbox capability); the broker process runs as the
             # distinct sandbox UID and never gets gateway secret access.
-            systemd.sockets.${brokerName} = {
-              description = "${serviceName} Gondolin sandbox broker";
+            systemd.sockets.${executionSocketName} = {
+              description = "${serviceName} Gondolin sandbox execution plane";
               wantedBy = [ "sockets.target" ];
               socketConfig = {
-                ListenStream = "/run/${brokerName}/broker.sock";
+                ListenStream = executionSocketPath;
+                FileDescriptorName = "execution";
+                Service = "${brokerName}.service";
+                SocketUser = user.userName;
+                SocketGroup = user.userName;
+                SocketMode = "0600";
+                DirectoryMode = "0711";
+                RemoveOnStop = true;
+              };
+            };
+            systemd.sockets.${controlSocketName} = {
+              description = "${serviceName} Gondolin sandbox control plane";
+              wantedBy = [ "sockets.target" ];
+              socketConfig = {
+                ListenStream = controlSocketPath;
+                FileDescriptorName = "control";
+                Service = "${brokerName}.service";
                 SocketUser = user.userName;
                 SocketGroup = user.userName;
                 SocketMode = "0600";
@@ -141,6 +161,14 @@ in
             systemd.services.${brokerName} = {
               description = "${serviceName} Gondolin sandbox broker service";
               # The SDK spawns qemu-img (overlay creation) and
+              requires = [
+                "${executionSocketName}.socket"
+                "${controlSocketName}.socket"
+              ];
+              after = [
+                "${executionSocketName}.socket"
+                "${controlSocketName}.socket"
+              ];
               # qemu-system-* (VM runner) from PATH. This is the NixOS
               # service-level PATH, not a serviceConfig key.
               path = [ pkgs.qemu ];
@@ -151,7 +179,8 @@ in
                 GONDOLIN_EFFECT_POLICY = "${policy.json}";
                 GONDOLIN_EFFECT_PROFILE = serviceName;
                 GONDOLIN_EFFECT_STATE_DIR = "/var/lib/${sandboxUser}";
-                GONDOLIN_EFFECT_SOCKET = "/run/${brokerName}/broker.sock";
+                GONDOLIN_EFFECT_SOCKET = executionSocketPath;
+                GONDOLIN_EFFECT_CONTROL_SOCKET = controlSocketPath;
                 # SDK boot/protocol metadata and Effect HTTP request spans
                 # go to journald. Do not enable Gondolin's `exec` or `vfs`
                 # debug channels: they include commands, env, and paths.
