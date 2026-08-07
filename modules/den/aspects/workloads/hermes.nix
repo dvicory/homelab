@@ -504,7 +504,14 @@ in
             # migrate the read-only Nix-managed config on every deployment.
             _config_version = 33;
             terminal =
-              if secureTerminalEnabled then
+              if secureTerminalEnabled && secureTerminalBackend == "gondolin" then
+                {
+                  backend = "gondolin";
+                  cwd = "/workspace";
+                  timeout = 180;
+                  lifetime_seconds = secureTerminal.lifetimeSeconds or 900;
+                }
+              else if secureTerminalEnabled then
                 {
                   backend = "docker";
                   cwd = "/workspace";

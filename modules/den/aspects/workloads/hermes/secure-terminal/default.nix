@@ -140,6 +140,10 @@ in
             };
             systemd.services.${brokerName} = {
               description = "${serviceName} Gondolin sandbox broker service";
+              # The SDK spawns qemu-img (overlay creation) and
+              # qemu-system-* (VM runner) from PATH. This is the NixOS
+              # service-level PATH, not a serviceConfig key.
+              path = [ pkgs.qemu ];
               # Fail-closed KVM: without acceleration the service does not
               # start; there is no silent fallback to an unaccepted mode.
               unitConfig.ConditionPathExists = "/dev/kvm";
@@ -149,6 +153,10 @@ in
                 HERMES_BROKER_STATE_DIR = "/var/lib/${sandboxUser}";
                 HERMES_BROKER_CACHE_DIR = "/var/cache/${sandboxUser}";
                 HERMES_BROKER_RUNTIME_DIR = "/run/${sandboxUser}";
+                # Spike diagnostics: SDK component logs (boot, exec, vfs,
+                # net) land in the broker journal. Remove after the Phase 4
+                # decision (V3 section 19).
+                GONDOLIN_DEBUG = "all";
               };
               serviceConfig = {
                 Type = "exec";
@@ -169,11 +177,16 @@ in
                 UMask = "0077";
                 PrivateTmp = true;
                 ProtectHome = true;
+                # ProtectKernelTunables makes /sys read-only; the delegated
+                # cgroup v2 subtree must stay writable or the broker (which
+                # fails closed rather than run ungoverned) cannot create
+                # per-VM cgroups (V3 section 16).
                 ProtectSystem = "strict";
                 ReadWritePaths = [
                   "/var/lib/${sandboxUser}"
                   "/var/cache/${sandboxUser}"
                   "/run/${sandboxUser}"
+                  "/sys/fs/cgroup"
                 ];
 
                 DeviceAllow = "/dev/kvm";
