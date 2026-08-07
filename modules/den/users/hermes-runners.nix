@@ -36,6 +36,15 @@ let
               enable = true;
               network = true;
               backend = "gondolin";
+              workspaceHandoff = {
+                enable = true;
+                revisionLimits = {
+                  maxLogicalBytes = 67108864;
+                  maxEntries = 8192;
+                  maxFileBytes = 16777216;
+                  maxPathBytes = 1024;
+                };
+              };
 
               defaultTemplate = "project";
               allowedPairs = [
