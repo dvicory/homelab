@@ -130,6 +130,12 @@ in
             # activation. The gateway runner owns the mode-0600 socket (its
             # only sandbox capability); the broker process runs as the
             # distinct sandbox UID and never gets gateway secret access.
+            # Keep the mount source inode stable while socket units replace
+            # broker.sock/control.sock during activation or operator restarts.
+            # The gateway gets traverse-only access plus its mode-0600 sockets.
+            systemd.tmpfiles.rules = [
+              "d /run/${brokerName} 0711 root root -"
+            ];
             systemd.sockets.${executionSocketName} = {
               description = "${serviceName} Gondolin sandbox execution plane";
               wantedBy = [ "sockets.target" ];
