@@ -10,11 +10,12 @@
   ...
 }:
 let
-  net = import ./_network-dsl.nix { inherit lib; };
-  networkBundles = import ./_network-bundles.nix { inherit net; };
-  policyLib = import ./_policy.nix { };
-  catalogueLib = import ../_catalogue.nix { inherit lib; };
-  guestAssetsLib = import ./_guest-assets.nix { inherit inputs; };
+  hermesLib = inputs.secure-hermes-nix.lib;
+  net = hermesLib.network;
+  networkBundles = hermesLib.networkBundles;
+  policyLib = hermesLib.policy;
+  catalogueLib = hermesLib.catalogue;
+  guestAssetsLib = hermesLib.guestAssets;
 
   settingsFor = user: user.settings.workloads.hermes or { };
 
@@ -157,9 +158,8 @@ in
         lib.mkIf gondolin (
           let
             guestAssets = guestAssetsLib.mkGuestAssets pkgs.stdenv.hostPlatform.system;
-            brokerPackage = pkgs.callPackage (
-              inputs.self + "/pkgs/by-name/gondolin-broker-effect/package.nix"
-            ) { };
+            brokerPackage =
+              inputs.secure-hermes-nix.packages.${pkgs.stdenv.hostPlatform.system}.gondolin-broker-effect;
             # The broker resolves logical source credential references through
             # systemd credentials. PID 1 copies the existing runner-owned PAT
             # into the broker's private credential directory; it never enters
