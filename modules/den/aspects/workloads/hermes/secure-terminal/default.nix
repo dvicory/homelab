@@ -298,7 +298,10 @@ in
                 PrivateMounts = true;
                 LockPersonality = true;
                 RestrictRealtime = true;
-                RestrictSUIDSGID = true;
+                # Workspaces are shared with the runner through their setgid
+                # sandbox group. RestrictSUIDSGID blocks the required chmod(2)
+                # with EPERM even though the broker owns the directory.
+                RestrictSUIDSGID = false;
                 RemoveIPC = true;
                 CapabilityBoundingSet = "";
                 AmbientCapabilities = "";
