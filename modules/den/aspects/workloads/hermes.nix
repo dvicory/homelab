@@ -85,6 +85,7 @@ let
         gnused
         gnutar
         gzip
+        python3
         ripgrep
       ];
 
@@ -222,6 +223,9 @@ let
         # The client talks only to the aspect-owned, rootless sandbox engine.
         # No container runtime daemon runs inside the gateway container.
         pkgs.docker-client
+        # External Codex workers use a per-process mount namespace so broker
+        # storage is visible only through the canonical /workspace planes.
+        pkgs.bubblewrap
         # This remains inert unless a runner enables the Nix-managed worker
         # plugin. Keeping it in the shared image lets QA and prod use one
         # artifact, and permits out-of-band subscription login with
@@ -251,7 +255,8 @@ let
         ];
       };
       fakeRootCommands = ''
-        mkdir -p ./usr/bin ./home/hermes/.hermes ./home/hermes/workspace
+        mkdir -p ./usr/bin ./home/hermes/.hermes ./home/hermes/workspace ./tmp
+        chmod 1777 ./tmp
         # Coreutils provides /bin/env. Some third-party scripts use the
         # conventional FHS location in their shebang instead.
         ln -s /bin/env ./usr/bin/env
@@ -556,7 +561,7 @@ in
               if secureTerminalEnabled && secureTerminalBackend == "gondolin" then
                 {
                   backend = "gondolin";
-                  cwd = "/workspace";
+                  cwd = "/workspace/work";
                   timeout = 180;
                   lifetime_seconds = secureTerminal.lifetimeSeconds or 900;
                 }
@@ -794,6 +799,7 @@ in
                 containerConfig = {
                   inherit image;
                   networks = [ "container:${tailscaleName}" ];
+                  unmask = if codexBrokerSharing then "ALL" else null;
                   environments = {
                     HOME = containerHome;
                     HERMES_HOME = "${containerHome}/.hermes";
@@ -836,6 +842,26 @@ in
                   // lib.optionalAttrs codexEnabled (
                     {
                       CODEX_EXECUTABLE = lib.getExe (codexPackageFor host.system);
+                      BWRAP_EXECUTABLE = lib.getExe pkgs.bubblewrap;
+                      BASH_EXECUTABLE = lib.getExe pkgs.bash;
+                      ENV_EXECUTABLE = lib.getExe' pkgs.coreutils "env";
+                      CODEX_RUNTIME_PATH = lib.makeBinPath [
+                        pkgs.bash
+                        pkgs.coreutils
+                        pkgs.curl
+                        pkgs.file
+                        pkgs.findutils
+                        pkgs.gawk
+                        pkgs.gh
+                        pkgs.git
+                        pkgs.gnugrep
+                        pkgs.gnused
+                        pkgs.gnutar
+                        pkgs.gzip
+                        pkgs.jq
+                        pkgs.python3
+                        pkgs.ripgrep
+                      ];
                       CODEX_WORKER_LANES = builtins.toJSON codexLanes;
                     }
                     // lib.optionalAttrs (codexModel != null) {
