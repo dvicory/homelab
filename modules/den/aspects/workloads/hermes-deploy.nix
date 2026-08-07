@@ -313,6 +313,60 @@ in
                 "$@"
             }
 
+            refresh_user_manager_groups() {
+              local user=$1
+              local uid
+              local manager_unit
+              local manager_pid
+              local expected
+              local actual=
+              local key
+              local value
+              local gid
+              local candidate
+              local found
+              local groups_match=true
+              uid=$(id -u "$user") || return 1
+              manager_unit="user@$uid.service"
+              expected=$(id -G "$user") || return 1
+              manager_pid=$(systemctl show --property=MainPID --value "$manager_unit") || {
+                log "$user: could not inspect user manager"
+                return 1
+              }
+              if [ "$manager_pid" != 0 ] && [ -r "/proc/$manager_pid/status" ]; then
+                while IFS=: read -r key value; do
+                  if [ "$key" = Groups ]; then
+                    actual=$value
+                    break
+                  fi
+                done < "/proc/$manager_pid/status"
+              fi
+              for gid in $expected; do
+                found=false
+                for candidate in $actual; do
+                  [ "$candidate" = "$gid" ] && found=true
+                done
+                [ "$found" = true ] || groups_match=false
+              done
+              for gid in $actual; do
+                found=false
+                for candidate in $expected; do
+                  [ "$candidate" = "$gid" ] && found=true
+                done
+                [ "$found" = true ] || groups_match=false
+              done
+              if [ "$groups_match" = false ]; then
+                log "$user: restarting user manager to refresh supplementary groups"
+                ${pkgs.coreutils}/bin/timeout --signal=TERM --kill-after=15s \
+                  ${toString cfg.timeouts.serviceStartSeconds}s \
+                  systemctl restart "$manager_unit" || {
+                  log "$user: user manager group refresh failed or timed out"
+                  return 1
+                }
+              fi
+            }
+
+
             activate() {
               local target=$1
               local user=$2
@@ -324,6 +378,7 @@ in
               local active_after
               local systemd_action
               archive=$(archive_for "$target")
+              refresh_user_manager_groups "$user" || return 1
 
               if [ ! -e "$archive" ]; then
                 log "$service: no retained image archive for $target"
