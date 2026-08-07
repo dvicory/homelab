@@ -58,7 +58,10 @@ let
                 maxInputPathBytes = 4096;
               };
             };
-            policy.worklane = "default";
+            policy = {
+              worklane = "default";
+              approvalPolicy = "never";
+            };
             execution = {
               timeoutSeconds = 3600;
               maxTurns = 40;
