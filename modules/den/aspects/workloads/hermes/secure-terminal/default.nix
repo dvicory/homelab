@@ -136,7 +136,7 @@ in
         ) (builtins.attrValues projectSources)
       );
       usesGithubSourceCredential = lib.elem "hermes-terminal-github" sourceCredentialRefs;
-      brokerCredentialSecretName = "${serviceName}-broker-github-pat";
+      brokerCredentialSecretName = "${serviceName}-github-pat";
     in
     {
       name = "workloads/hermes-secure-terminal/${user.userName}";
@@ -154,9 +154,9 @@ in
             guestAssets = guestAssetsLib.mkGuestAssets pkgs.stdenv.hostPlatform.system;
             brokerPackage = pkgs.callPackage (inputs.self + "/pkgs/by-name/gondolin-broker-effect/package.nix") { };
             # The broker resolves logical source credential references through
-            # systemd credentials. The decrypted secret is owned by the broker
-            # sandbox user and never enters the gateway container, the guest,
-            # or any environment/argv channel.
+            # systemd credentials. PID 1 copies the existing runner-owned PAT
+            # into the broker's private credential directory; it never enters
+            # the guest or any environment/argv channel.
             brokerCredentialAgeFile = host.secretPath + "/${serviceName}-github-pat.age";
             brokerCredentialEnabled =
               usesGithubSourceCredential && builtins.pathExists brokerCredentialAgeFile;
@@ -181,16 +181,6 @@ in
             };
           in
           {
-            secretRequests = lib.optionalAttrs brokerCredentialEnabled {
-              ${brokerCredentialSecretName} = {
-                provider = "agenix";
-                ageFile = brokerCredentialAgeFile;
-                mode = "0400";
-                owner = sandboxUser;
-                group = sandboxUser;
-                restartUnits = [ "${brokerName}.service" ];
-              };
-            };
 
             # systemd owns the broker socket and hands it to the service by
             # activation. The gateway runner owns the mode-0600 socket (its

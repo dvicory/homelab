@@ -324,6 +324,9 @@ in
                   mode = "0400";
                   owner = userName;
                   group = userName;
+                  restartUnits = lib.optional (
+                    secureTerminalEnabled && secureTerminalBackend == "gondolin"
+                  ) "${profile.serviceName}-broker.service";
                 };
               }
               // lib.optionalAttrs (builtins.pathExists tailscaleAgeFile) {
