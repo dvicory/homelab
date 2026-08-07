@@ -28,11 +28,73 @@ let
             fortress.enable = true;
 
             # QA exercises the direct secure-terminal architecture. The companion
-            # Podman user and service are derived inside the Hermes account aspect;
-            # this registry entry only selects the feature and its resource policy.
+            # sandbox account is derived inside the Hermes account aspect; this
+            # registry entry selects the feature and its resource policy. The
+            # backend remains podman until the Gondolin spike gates pass (V3
+            # §19); the policy selections below are what the broker consumes
+            # when backend flips to "gondolin".
             secureTerminal = {
               enable = true;
               network = true;
+              backend = "podman";
+
+              defaultTemplate = "project";
+              allowedPairs = [
+                {
+                  asset = "general";
+                  template = "project";
+                }
+                {
+                  asset = "general";
+                  template = "research";
+                }
+                {
+                  asset = "general";
+                  template = "offline";
+                }
+                {
+                  asset = "minimal";
+                  template = "offline";
+                }
+              ];
+              maximum = {
+                networkBundles = [
+                  "git-public"
+                  "npm-public"
+                  "pypi-public"
+                  "nix-cache-public"
+                ];
+                credentialCapabilities = [
+                  "github-private-read"
+                  "github-push"
+                ];
+                resources = {
+                  cpus = 4;
+                  memoryMiB = 8192;
+                  diskMiB = 32768;
+                };
+                grantScopes = [
+                  "once"
+                  "task"
+                ];
+              };
+              worklanes.codex = {
+                allowedPairs = [
+                  {
+                    asset = "general";
+                    template = "project";
+                  }
+                  {
+                    asset = "minimal";
+                    template = "offline";
+                  }
+                ];
+                maximum.networkBundles = [
+                  "git-public"
+                  "npm-public"
+                  "pypi-public"
+                ];
+              };
             };
 
             # Codex is a distinct coding-only Kanban worker. Its ChatGPT login and
