@@ -19,7 +19,12 @@ let
           agent.restart_drain_timeout = 120;
         };
         tailscale.hostname = "hermes-${instance}";
-      };
+      }
+      // (if instance == "qa" then {
+        # The sidecar is opt-in so prod remains unchanged until the browser
+        # workflow has been exercised.
+        fortress.enable = true;
+      } else { });
     };
 in
 {
