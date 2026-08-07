@@ -87,13 +87,21 @@
       };
       url = "github:sini/gen-schema";
     };
+    gondolin-nix = {
+      inputs = {
+        nixpkgs = {
+          follows = "nixpkgs";
+        };
+      };
+      url = "github:dvicory/gondolin-nix/secure-terminal-v3";
+    };
     hermes-agent = {
       inputs = {
         nixpkgs = {
           follows = "nixpkgs";
         };
       };
-      url = "github:NousResearch/hermes-agent/v2026.6.19";
+      url = "github:NousResearch/hermes-agent/v2026.7.20";
     };
     home-manager = {
       inputs = {
@@ -128,6 +136,9 @@
       };
       url = "github:nix-community/lanzaboote/v0.4.1";
     };
+    llm-agents = {
+      url = "github:numtide/llm-agents.nix";
+    };
     nix-darwin = {
       inputs = {
         nixpkgs = {
@@ -155,6 +166,23 @@
     };
     scope-engine = {
       url = "github:sini/scope-engine";
+    };
+    secure-hermes-nix = {
+      inputs = {
+        gondolin-nix = {
+          follows = "gondolin-nix";
+        };
+        hermes-agent = {
+          follows = "hermes-agent";
+        };
+        llm-agents = {
+          follows = "llm-agents";
+        };
+        nixpkgs = {
+          follows = "nixpkgs";
+        };
+      };
+      url = "github:dvicory/secure-hermes-nix";
     };
     systems = {
       url = "github:nix-systems/default";
