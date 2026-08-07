@@ -24,6 +24,21 @@ let
         # The sidecar is opt-in so prod remains unchanged until the browser
         # workflow has been exercised.
         fortress.enable = true;
+
+        # Codex is a distinct coding-only Kanban worker. Its ChatGPT login and
+        # threads persist in a dedicated rootless Podman volume.
+        codex = {
+          enable = true;
+          allowedModels = [
+            "gpt-5.6-luna"
+            "gpt-5.6-terra"
+          ];
+          allowedReasoningEfforts = [
+            "low"
+            "medium"
+            "high"
+          ];
+        };
       } else { });
     };
 in
