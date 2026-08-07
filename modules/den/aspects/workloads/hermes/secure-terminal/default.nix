@@ -1,6 +1,6 @@
 # Gondolin/QEMU secure-terminal backend for Hermes (V3).
 #
-# Brokered sandbox architecture: a Node 22 broker consuming a
+# Brokered sandbox architecture: an Effect/Node 24 HTTP broker consuming a
 # systemd-activated, profile-owned Unix socket; immutable Nix-built guest
 # assets; and policy JSON rendered at evaluation time. The gateway's only
 # sandbox capability is the broker socket.
@@ -112,8 +112,8 @@ in
         lib.mkIf gondolin (
           let
             guestAssets = guestAssetsLib.mkGuestAssets pkgs.stdenv.hostPlatform.system;
-            brokerPackage = pkgs.callPackage (inputs.self + "/pkgs/by-name/hermes-gondolin-broker/package.nix") { };
-            policy = policyLib.mkPolicy {
+            brokerPackage = pkgs.callPackage (inputs.self + "/pkgs/by-name/gondolin-broker-effect/package.nix") { };
+            policy = policyLib.mkEffectPolicy {
               inherit pkgs;
               profile = serviceName;
               bundles = networkBundles;
@@ -148,24 +148,23 @@ in
               # start; there is no silent fallback to an unaccepted mode.
               unitConfig.ConditionPathExists = "/dev/kvm";
               environment = {
-                HERMES_BROKER_POLICY = "${policy.json}";
-                HERMES_BROKER_PROFILE = serviceName;
-                HERMES_BROKER_STATE_DIR = "/var/lib/${sandboxUser}";
-                HERMES_BROKER_CACHE_DIR = "/var/cache/${sandboxUser}";
-                HERMES_BROKER_RUNTIME_DIR = "/run/${sandboxUser}";
-                # Spike diagnostics: SDK component logs (boot, exec, vfs,
-                # net) land in the broker journal. Remove after the Phase 4
-                # decision (V3 section 19).
-                GONDOLIN_DEBUG = "all";
+                GONDOLIN_EFFECT_POLICY = "${policy.json}";
+                GONDOLIN_EFFECT_PROFILE = serviceName;
+                GONDOLIN_EFFECT_STATE_DIR = "/var/lib/${sandboxUser}";
+                GONDOLIN_EFFECT_SOCKET = "/run/${brokerName}/broker.sock";
+                # SDK boot/protocol metadata and Effect HTTP request spans
+                # go to journald. Do not enable Gondolin's `exec` or `vfs`
+                # debug channels: they include commands, env, and paths.
+                GONDOLIN_DEBUG = "protocol,net";
               };
               serviceConfig = {
                 Type = "exec";
                 User = sandboxUser;
                 Group = sandboxUser;
-                ExecStart = "${brokerPackage}/bin/hermes-gondolin-broker";
+                ExecStart = "${brokerPackage}/bin/gondolin-broker-effect";
 
-                # Delegated cgroup v2 subtree for per-VM limits (§16).
-                Delegate = true;
+                # Reserve the delegated subtree for the documented per-VM
+                # cgroup compatibility debt; this alone is not enforcement.
 
                 StateDirectory = sandboxUser;
                 StateDirectoryMode = "0700";
@@ -177,10 +176,9 @@ in
                 UMask = "0077";
                 PrivateTmp = true;
                 ProtectHome = true;
-                # ProtectKernelTunables makes /sys read-only; the delegated
-                # cgroup v2 subtree must stay writable or the broker (which
-                # fails closed rather than run ungoverned) cannot create
-                # per-VM cgroups (V3 section 16).
+                # Keep the delegated cgroup v2 subtree writable for the
+                # planned per-VM placement path. The current broker enforces
+                # static VM admission and guest sizing, not host cgroup caps.
                 ProtectSystem = "strict";
                 ReadWritePaths = [
                   "/var/lib/${sandboxUser}"

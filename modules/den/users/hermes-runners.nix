@@ -27,12 +27,11 @@ let
             # workflow has been exercised.
             fortress.enable = true;
 
-            # QA exercises the direct secure-terminal architecture. The companion
+            # QA exercises the Effect/HTTP Gondolin integration. The companion
             # sandbox account is derived inside the Hermes account aspect; this
-            # registry entry selects the feature and its resource policy. The
-            # backend remains podman until the Gondolin spike gates pass (V3
-            # §19); the policy selections below are what the broker consumes
-            # when backend flips to "gondolin".
+            # registry entry selects the feature and its resource policy. This
+            # is an integration-stage selection, not a production parity claim;
+            # the V3 acceptance gates still govern promotion.
             secureTerminal = {
               enable = true;
               network = true;
