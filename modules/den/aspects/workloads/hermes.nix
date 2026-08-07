@@ -16,6 +16,9 @@ let
     pkgs.callPackage (inputs.self + "/pkgs/by-name/hermes-codex-worker-lane/package.nix") (
       lib.optionalAttrs (lanes != null) { inherit lanes; }
     );
+  sandboxAccessFor =
+    { pkgs }:
+    pkgs.callPackage (inputs.self + "/pkgs/by-name/hermes-sandbox-access/package.nix") { };
 
   hermesPackageFor =
     { pkgs, system }:
@@ -63,6 +66,7 @@ let
       hermesPackage = hermesPackageFor { inherit pkgs system; };
       codexPackage = codexPackageFor system;
       codexWorkerLane = codexWorkerLaneFor { inherit pkgs; };
+      sandboxAccess = sandboxAccessFor { inherit pkgs; };
       terminalBaseline = with pkgs; [
         bash
         coreutils
@@ -186,6 +190,11 @@ let
           cp -R ${codexWorkerLane}/share/hermes-agent/plugins/codex-worker-lane \
             "$HERMES_HOME/plugins/codex-worker-lane"
           chmod -R u=rwX,go=rX "$HERMES_HOME/plugins/codex-worker-lane"
+
+          rm -rf "$HERMES_HOME/plugins/sandbox-access"
+          cp -R ${sandboxAccess}/share/hermes-agent/plugins/sandbox-access \
+            "$HERMES_HOME/plugins/sandbox-access"
+          chmod -R u=rwX,go=rX "$HERMES_HOME/plugins/sandbox-access"
 
           exec ${hermesPackage}/bin/hermes gateway "$@"
         ''} $out/entrypoint
@@ -446,6 +455,8 @@ in
           brokerName = "${serviceName}-broker";
           sandboxSocketHost = "/run/${sandboxEngine}/podman.sock";
           brokerSocketHost = "/run/${brokerName}/broker.sock";
+          brokerControlSocketHost = "/run/${brokerName}/control.sock";
+          brokerControlSocketContainer = "/run/hermes-sandbox/control.sock";
           # One container-side sandbox path regardless of engine; the host
           # side selects the podman API socket or the broker socket.
           sandboxSocketContainer =
@@ -543,6 +554,19 @@ in
               mode = "manual";
               cron_mode = "deny";
             };
+            plugins.enabled =
+              lib.optional codexEnabled "codex-worker-lane"
+              ++ lib.optional (secureTerminalEnabled && secureTerminalBackend == "gondolin") "sandbox-access";
+            platform_toolsets = {
+              cli =
+                [ "hermes-cli" ]
+                ++ lib.optional codexEnabled "kanban"
+                ++ lib.optional (secureTerminalEnabled && secureTerminalBackend == "gondolin") "sandbox_access";
+              telegram =
+                [ "hermes-telegram" ]
+                ++ lib.optional codexEnabled "kanban"
+                ++ lib.optional (secureTerminalEnabled && secureTerminalBackend == "gondolin") "sandbox_access";
+            };
             tool_loop_guardrails = {
               hard_stop_enabled = true;
               hard_stop_after = {
@@ -566,28 +590,12 @@ in
             browser.cdp_url = fortressCdpUrl;
           }
           // lib.optionalAttrs codexEnabled {
-            plugins.enabled = [ "codex-worker-lane" ];
             # This external skill intentionally shadows Hermes' bundled
             # `codex` skill. The upstream skill launches Codex directly from
             # the terminal, bypassing our Kanban worktree and review boundary.
             # Do not also add `codex` to skills.disabled: disabled names apply
             # to external skills too and would hide this replacement.
             skills.external_dirs = [ codexSkillRoot ];
-            # Preserve each platform's normal tools while adding the
-            # orchestrator-side Kanban surface (`kanban_create`, `kanban_list`,
-            # and `kanban_unblock`). Hermes ignores the deprecated top-level
-            # `toolsets` key. Dispatcher-spawned workers receive their narrower
-            # lifecycle toolset independently through HERMES_KANBAN_TASK.
-            platform_toolsets = {
-              cli = [
-                "hermes-cli"
-                "kanban"
-              ];
-              telegram = [
-                "hermes-telegram"
-                "kanban"
-              ];
-            };
             kanban = {
               # Worker-lane registrations are held in this gateway's memory.
               # Keep its embedded dispatcher enabled so it can route the
@@ -743,6 +751,9 @@ in
                     # by the canonical environment key on every surface.
                     HERMES_GONDOLIN_SOCKET = sandboxSocketContainer;
                     TERMINAL_ISOLATION_SCOPE = "conversation";
+                    GONDOLIN_EFFECT_CONTROL_SOCKET = brokerControlSocketContainer;
+                    HERMES_SANDBOX_AUTHORITY_BINDING = "${serviceName}:hermes-gateway:default:v1";
+                    HERMES_SANDBOX_APPROVAL_PRINCIPAL = "paired-user";
                   }
                   // lib.optionalAttrs codexEnabled (
                     {
@@ -766,6 +777,7 @@ in
                   ]
                   ++ lib.optional (secureTerminalEnabled && secureTerminalBackend == "podman") "${sandboxSocketHost}:${sandboxSocketContainer}"
                   ++ lib.optional (secureTerminalEnabled && secureTerminalBackend == "gondolin") "${brokerSocketHost}:${sandboxSocketContainer}"
+                  ++ lib.optional (secureTerminalEnabled && secureTerminalBackend == "gondolin") "${brokerControlSocketHost}:${brokerControlSocketContainer}"
                   ++ lib.optionals codexEnabled [
                     "${serviceName}-codex:${codexHome}"
                     "${codexWorkerLane}/share/hermes-agent/external-skills:${codexSkillRoot}:ro"
