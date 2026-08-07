@@ -756,7 +756,6 @@ in
                     TERMINAL_ISOLATION_SCOPE = "conversation";
                     GONDOLIN_EFFECT_CONTROL_SOCKET = brokerControlSocketContainer;
                     HERMES_SANDBOX_AUTHORITY_BINDING = "${serviceName}:hermes-gateway:default:v1";
-                    HERMES_SANDBOX_APPROVAL_PRINCIPAL = "paired-user";
                   }
                   // lib.optionalAttrs codexEnabled (
                     {
