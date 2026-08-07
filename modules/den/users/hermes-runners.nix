@@ -51,6 +51,12 @@ let
             workspace = {
               projectMode = "none";
               scratchProvider = "broker-scratch";
+              inputs = {
+                maxInputs = 8;
+                maxInputBytes = 104857600;
+                maxInputEntries = 20000;
+                maxInputPathBytes = 4096;
+              };
             };
             policy.worklane = "default";
             execution = {
@@ -71,9 +77,15 @@ let
                 plugin = "codex-cli";
                 workspace = {
                   projectMode = "required";
-                  projectProvider = "host-worktree";
+                  projectProvider = "broker-project";
                   maximumPermission = "read-only";
                   supportedSourceKinds = [ "git" ];
+                  inputs = {
+                    maxInputs = 8;
+                    maxInputBytes = 104857600;
+                    maxInputEntries = 20000;
+                    maxInputPathBytes = 4096;
+                  };
                 };
                 policy = {
                   worklane = "codex";
@@ -88,9 +100,15 @@ let
                 plugin = "codex-cli";
                 workspace = {
                   projectMode = "required";
-                  projectProvider = "host-worktree";
+                  projectProvider = "broker-project";
                   maximumPermission = "workspace-write";
                   supportedSourceKinds = [ "git" ];
+                  inputs = {
+                    maxInputs = 8;
+                    maxInputBytes = 104857600;
+                    maxInputEntries = 20000;
+                    maxInputPathBytes = 4096;
+                  };
                 };
                 policy = {
                   worklane = "codex";
@@ -134,6 +152,18 @@ let
               }
             else
               { };
+        };
+        # Nix-authoritative source acquisition for the homelab Project. The
+        # broker's git adapter acquires private generations with the trusted
+        # GitHub token; the credential never enters the guest or the model.
+        projectSources.homelab = {
+          type = "git";
+          upstream = "https://github.com/dvicory/homelab.git";
+          defaultRef = "main";
+          credential = {
+            adapter = "github-token";
+            secretRef = "hermes-terminal-github";
+          };
         };
       }
       // (

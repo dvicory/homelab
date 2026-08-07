@@ -324,6 +324,9 @@ in
                   mode = "0400";
                   owner = userName;
                   group = userName;
+                  restartUnits = lib.optional (
+                    secureTerminalEnabled && secureTerminalBackend == "gondolin"
+                  ) "${profile.serviceName}-broker.service";
                 };
               }
               // lib.optionalAttrs (builtins.pathExists tailscaleAgeFile) {
@@ -365,7 +368,16 @@ in
                 }
               ];
             };
-            users.groups.${sandboxUser} = { };
+            users.groups.${sandboxUser} = {
+              # External Codex workers run as the gateway runner and consume
+              # broker project workspaces through a host bind-mount; shared
+              # group membership plus setgid workspace directories keep the
+              # broker (owner) and gateway (group) both able to read the same
+              # task workspace without world access.
+              members = lib.optionals
+                (((profile.cfg.codex or { }).enable or false) && secureTerminalBackend == "gondolin")
+                [ userName ];
+            };
             users.users.${sandboxUser} = {
               isNormalUser = true;
               group = sandboxUser;
@@ -461,6 +473,14 @@ in
           secureTerminal = cfg.secureTerminal or { };
           secureTerminalEnabled = secureTerminal.enable or false;
           secureTerminalBackend = secureTerminal.backend or "podman";
+          # Trusted external Codex workers run as the gateway runner and
+          # consume broker workspaces through a host bind-mount shared via the
+          # sandbox group (setgid workspace directories, broker-owned files).
+          sandboxUser = "${serviceName}-sandbox";
+          codexBrokerSharing =
+            codexEnabled && secureTerminalEnabled && secureTerminalBackend == "gondolin";
+          brokerWorkspaceDataHost = "/var/lib/${sandboxUser}/workspaces/data";
+          brokerWorkspaceDataContainer = "${containerHome}/broker-workspaces";
           workspaceHandoff = secureTerminal.workspaceHandoff or { };
           workspaceHandoffEnabled = workspaceHandoff.enable or false;
           sandboxEngine = "${serviceName}-sandbox-engine";
@@ -489,6 +509,17 @@ in
                 approvalPolicy = lane.policy.approvalPolicy;
                 approvalsReviewer = lane.policy.approvalReviewer;
                 sandboxMode = lane.workspace.maximumPermission;
+                # The lane's declared project provider selects which durable
+                # workspace kinds its workers may claim.
+                workspaceKinds =
+                  if (lane.workspace.projectProvider or null) == "broker-project" then
+                    [ "broker" ]
+                  else if (lane.workspace.projectProvider or null) == "host-worktree" then
+                    [ "worktree" ]
+                  else if (lane.workspace.scratchProvider or null) == "broker-scratch" then
+                    [ "broker" ]
+                  else
+                    [ "scratch" ];
                 # Generate the adapter policy from the same frozen catalogue
                 # fields that the adapter verifies at spawn time.
                 networkAccess = lane.policy.networkAccess;
@@ -635,7 +666,9 @@ in
                     laneRevisions
                     projectRevisions
                     projects
+                    providerRevisions
                     revision
+                    sourceRevisions
                     ;
                   lanes = catalogue.workerLanes;
                 };
@@ -793,6 +826,13 @@ in
                     HERMES_SANDBOX_AUTHORITY_BINDING = "${serviceName}:hermes-gateway:default:v1";
                     HERMES_WORKSPACE_HANDOFF = if workspaceHandoffEnabled then "1" else "0";
                   }
+                  // lib.optionalAttrs codexBrokerSharing {
+                    # Host-side broker workspace data root; the Codex plugin
+                    # maps each durable workspace binding to its work plane
+                    # below this directory. Read-write so trusted external
+                    # workers can mutate the work and output planes.
+                    HERMES_BROKER_WORKSPACE_DATA = brokerWorkspaceDataContainer;
+                  }
                   // lib.optionalAttrs codexEnabled (
                     {
                       CODEX_EXECUTABLE = lib.getExe (codexPackageFor host.system);
@@ -819,10 +859,16 @@ in
                   ++ lib.optional (
                     secureTerminalEnabled && secureTerminalBackend == "gondolin"
                   ) "${brokerSocketHostDirectory}:${brokerSocketContainerDirectory}:ro"
+                  ++ lib.optional codexBrokerSharing
+                    "${brokerWorkspaceDataHost}:${brokerWorkspaceDataContainer}"
                   ++ lib.optionals codexEnabled [
                     "${serviceName}-codex:${codexHome}"
                     "${codexWorkerLane}/share/hermes-agent/external-skills:${codexSkillRoot}:ro"
                   ];
+                # Rootless user namespaces drop supplementary groups unless
+                # podman keeps them; Codex workers reach the shared broker
+                # workspace data through the sandbox group.
+                addGroups = lib.optional codexBrokerSharing "keep-groups";
                 };
                 serviceConfig.TimeoutStopSec = restartDrainTimeout + 30;
               };
