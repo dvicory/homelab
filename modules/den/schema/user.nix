@@ -1,6 +1,7 @@
-{ lib, ... }:
+{ den, lib, ... }:
 let
   inherit (lib) mkOption types;
+  settingsType = import ./_settings-type.nix { inherit lib den; };
 
   sshKeyType = types.submodule {
     options = {
@@ -23,6 +24,12 @@ in
     imports = [
       (_: {
         options = {
+          settings = mkOption {
+            type = settingsType;
+            default = { };
+            description = "Per-aspect typed settings for this user entity";
+          };
+
           identity = mkOption {
             type = types.submodule {
               options = {
