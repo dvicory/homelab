@@ -12,6 +12,11 @@ const { resolveAssetBuildIds } = await import(
 )
 
 const raw = JSON.parse(fs.readFileSync(process.env.POLICY_JSON, "utf8"))
+for (const field of ["manifest", "contentDigest", "workspace_outputs"]) {
+  if (Object.hasOwn(raw, field)) {
+    throw new Error(`unsupported handoff policy field leaked into the legacy policy: ${field}`)
+  }
+}
 const policy = resolveAssetBuildIds(parsePolicy(raw))
 
 const checks = [
