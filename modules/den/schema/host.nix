@@ -93,72 +93,8 @@ let
     };
   };
 
-  # Dynamic settings type — recursively discovers aspects that declare .settings.
-  # Mirrors the aspect tree: den.aspects.services.mergerfs.settings →
-  # host.settings.services.mergerfs.*
-  settingsType =
-    let
-      inherit (den.lib.aspects.fx.keyClassification) structuralKeysSet;
-      classKeys = den.classes or { };
-      quirkKeys = den.quirks or { };
-      skipKey = k: structuralKeysSet ? ${k} || classKeys ? ${k} || quirkKeys ? ${k};
-
-      reshapeSettings =
-        raw:
-        let
-          imports' = raw.imports or [ ];
-          config' = raw.config or { };
-        in
-        {
-          imports = imports';
-          config = config';
-          options = removeAttrs raw [
-            "imports"
-            "config"
-          ];
-        };
-
-      hasSettingsDeep =
-        node:
-        builtins.isAttrs node
-        && (
-          (node ? settings)
-          || lib.any (k: !(skipKey k) && hasSettingsDeep (node.${k} or null)) (builtins.attrNames node)
-        );
-
-      nodeModule =
-        node:
-        let
-          ownSettings =
-            if node ? settings then
-              reshapeSettings node.settings
-            else
-              {
-                imports = [ ];
-                config = { };
-                options = { };
-              };
-          settingChildren = lib.filterAttrs (
-            k: v: !(skipKey k) && builtins.isAttrs v && hasSettingsDeep v
-          ) node;
-          childOptions = lib.mapAttrs (
-            name: child:
-            mkOption {
-              type = types.submodule (nodeModule child);
-              default = { };
-              description = "Settings under ${name}";
-            }
-          ) settingChildren;
-          ownImports = ownSettings.imports or [ ];
-          ownConfig = ownSettings.config or { };
-        in
-        {
-          imports = ownImports;
-          config = ownConfig;
-          options = (ownSettings.options or { }) // childOptions;
-        };
-    in
-    types.submodule (nodeModule (den.aspects or { }));
+  # Aspect settings are strict modules shared by host and user entity schemas.
+  settingsType = import ./_settings-type.nix { inherit lib den; };
 in
 {
   den.schema.host = { lib, ... }: {

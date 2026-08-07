@@ -101,6 +101,23 @@ in
       }
       // (secureTerminal.maximum or { });
       worklanes = secureTerminal.worklanes or { };
+      laneAuthorities = lib.mapAttrs (
+        _: lane:
+        let
+          workspace = lane.workspace or { };
+          projectMode = workspace.projectMode or "none";
+        in
+        {
+          authorityClass = lane.policy.worklane or "default";
+          workspaceProvider =
+            if projectMode == "none" then
+              workspace.scratchProvider or "broker-scratch"
+            else
+              workspace.projectProvider or "host-worktree";
+          maximumPermission =
+            if projectMode == "none" then "workspace-write" else workspace.maximumPermission;
+        }
+      ) (cfg.workerLanes or { });
       workspaceHandoff = secureTerminal.workspaceHandoff or { };
       workspaceHandoffEnabled = workspaceHandoff.enable or false;
       workspaceHandoffLimits =
@@ -132,6 +149,7 @@ in
                 allowedPairs
                 maximum
                 worklanes
+                laneAuthorities
                 workspaceHandoffEnabled
                 workspaceHandoffLimits
                 ;
