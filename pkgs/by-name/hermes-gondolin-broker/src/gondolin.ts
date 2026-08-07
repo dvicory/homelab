@@ -86,6 +86,7 @@ interface GondolinSdk {
     create(options: Record<string, unknown>): Promise<GondolinVm>;
   };
   createHttpHooks(options: Record<string, unknown>): { httpHooks: unknown };
+  RealFSProvider: new (rootPath: string) => unknown;
 }
 
 interface GondolinExecProcess {
@@ -157,6 +158,20 @@ function wrapFs(fs: GondolinVm["fs"]): VmFs {
 /** Production VM provider over the Gondolin SDK. */
 export async function createGondolinProvider(): Promise<VmProvider> {
   const sdk = await loadGondolinSdk();
+  // SDK component logs land in the broker journal via stderr. Enable with
+  // GONDOLIN_DEBUG=all (spike diagnostics) or a comma list of components.
+  const debugEnv = process.env.GONDOLIN_DEBUG ?? "";
+  const debug: boolean | string[] =
+    debugEnv === "all"
+      ? true
+      : debugEnv.length > 0
+        ? debugEnv.split(",").map((s) => s.trim()).filter(Boolean)
+        : false;
+  const debugLog = debug === false
+    ? null
+    : (component: string, message: string) => {
+        process.stderr.write(`[gondolin:${component}] ${message.replace(/\n$/, "")}\n`);
+      };
   return {
     async createVm(spec: VmSpec): Promise<VmHandle> {
       const vm = await sdk.VM.create({
@@ -170,6 +185,7 @@ export async function createGondolinProvider(): Promise<VmProvider> {
           allowWebSockets: spec.allowWebSockets,
           httpHooks: spec.httpHooks,
           dns: spec.dns,
+          ...(debug !== false ? { debug } : {}),
         },
         // Disposable roots (V3 §7): the SDK materializes a qcow2 overlay
         // over the immutable Nix base rootfs and deletes it on close.
@@ -178,12 +194,16 @@ export async function createGondolinProvider(): Promise<VmProvider> {
         cpus: spec.cpus,
         autoStart: true,
         sessionLabel: spec.sessionLabel,
+        debugLog,
         vfs:
           spec.workspaceHostPath === null
             ? null
             : {
                 fuseMount: spec.workspaceGuestPath,
-                mounts: {},
+                // The environment's workspace is the only writable authority
+                // (V3 §10): one RealFS root per environment, owned by the
+                // sandbox account.
+                mounts: { "/": new sdk.RealFSProvider(spec.workspaceHostPath) },
               },
       });
 

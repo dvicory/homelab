@@ -8,7 +8,8 @@
     "node": ">=22.13.0"
   },
   "bin": {
-    "hermes-gondolin-broker": "./dist/main.js"
+    "hermes-gondolin-broker": "./dist/main.js",
+    "hermes-gondolin-broker-smoke": "./src/smoke.mjs"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

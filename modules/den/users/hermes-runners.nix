@@ -36,7 +36,7 @@ let
             secureTerminal = {
               enable = true;
               network = true;
-              backend = "podman";
+              backend = "gondolin";
 
               defaultTemplate = "project";
               allowedPairs = [
