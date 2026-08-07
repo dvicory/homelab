@@ -24,6 +24,10 @@ let
         # The sidecar is opt-in so prod remains unchanged until the browser
         # workflow has been exercised.
         fortress.enable = true;
+
+        # Codex is a distinct coding-only MCP tool. Its ChatGPT login and
+        # threads persist in a dedicated rootless Podman volume.
+        codex.enable = true;
       } else { });
     };
 in
