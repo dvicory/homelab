@@ -9,7 +9,7 @@ Define ownership boundaries between managed machines, shared Homelab infrastruct
 
 Homelab SHALL own the declarative configuration of managed machines and shared infrastructure. For an independently developed workload, Homelab SHALL own the workload's integration with that infrastructure, including the integration concerns that apply to it such as placement, persistence interfaces, runtime identity and secret delivery, networking and exposure, and deployment integration.
 
-The independently developed workload's own repository SHALL remain authoritative for application-internal behavior and configuration unless ownership is explicitly transferred. Integrating a workload into Homelab SHALL NOT by itself make its internal application design a Homelab contract.
+Application-internal behavior and configuration SHALL remain outside Homelab's authority unless ownership is explicitly transferred. Integrating a workload into Homelab SHALL NOT by itself make its internal application design a Homelab contract.
 
 #### Scenario: An independently developed workload is deployed
 - **WHEN** Homelab deploys a workload whose application is maintained in another repository
@@ -21,7 +21,7 @@ When a workload or service is required for broader Homelab operation, Homelab MA
 
 #### Scenario: A centralized identity service becomes shared infrastructure
 - **WHEN** multiple managed systems depend on an identity service maintained as a separate application
-- **THEN** Homelab may specify the recovery and integration properties required of that service while the application repository continues to own its internal behavior
+- **THEN** Homelab may specify the recovery and integration properties required of that service while Homelab's contract remains limited to those system-facing properties
 
 ### Requirement: A deployment domain retains an independent recovery path
 

@@ -7,9 +7,9 @@ Define how fleet-specific facts, reusable configuration behavior, and environmen
 
 ### Requirement: Fleet facts and reusable behavior have distinct roles
 
-Managed machine, environment, user, group, and other fleet-specific facts SHALL be represented as entity data. Reusable system behavior SHALL be represented as composable configuration behavior rather than copied into each entity that uses it.
+Facts about a managed machine, environment, user, or group SHALL remain owned by the fleet object they describe and distinct from reusable system behavior. Reusable system behavior SHALL be composable across the machines that use it rather than copied into each machine's data.
 
-A reusable behavior component MAY consume entity facts, but SHALL NOT become the owner of those facts merely because it consumes them.
+A reusable behavior component MAY consume fleet facts, but SHALL NOT become the owner of those facts merely because it consumes them.
 
 #### Scenario: Reusable behavior is shared by different hosts
 - **WHEN** two hosts use the same reusable behavior with different host-specific facts
@@ -17,7 +17,7 @@ A reusable behavior component MAY consume entity facts, but SHALL NOT become the
 
 #### Scenario: A host-specific fact changes
 - **WHEN** a fact belonging to one host changes
-- **THEN** the fact can be changed at that host's entity boundary without redefining unrelated reusable behavior
+- **THEN** the fact can be changed in that host's data without redefining unrelated reusable behavior
 
 ### Requirement: Environments provide shared context without lifecycle coupling
 

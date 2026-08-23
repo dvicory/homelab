@@ -44,5 +44,5 @@ The managed machine responsible for attached physical storage SHALL own that sto
 Higher-level workloads or compute domains MAY consume storage through declared interfaces, but consuming storage SHALL NOT implicitly transfer ownership of the underlying physical-device lifecycle.
 
 #### Scenario: A workload consumes host storage
-- **WHEN** a workload or future guest is given access to a host-provided persistent path or volume
+- **WHEN** a workload is given access to a host-provided persistent path or volume
 - **THEN** that access does not by itself authorize the workload to repartition, re-encrypt, provision, or redefine the underlying physical disks

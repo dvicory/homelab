@@ -6,7 +6,7 @@ Follow the plain-language principles of ISO 24495-1:2023: give readers the infor
 
 Current `openspec/specs/*/spec.md` requirements own only the durable Homelab contracts they explicitly state. Nix/Den configuration owns the concrete desired fleet state and implementation details not constrained by those contracts.
 
-Active OpenSpec changes describe proposed target contracts. While a change is being implemented, its delta specs guide that work, but current specs remain canonical until the completed and verified change is synced. Proposals, designs, and tasks are planning artifacts rather than current contract authority.
+Active OpenSpec changes describe proposed target contracts. Their delta specs may guide implementation, but implementation status alone does not change current authority. Current specs remain canonical until a delta is deliberately synced into them. Proposals, designs, and tasks are planning artifacts rather than current contract authority.
 
 Generated documentation is derived from evaluated configuration and is not a source of authority. Historical or exploratory material and external repositories may inform decisions but do not establish current Homelab contracts. When sources disagree or current behavior appears accidental, surface the ambiguity instead of silently turning supporting material into policy.
 
