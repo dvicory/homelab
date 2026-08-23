@@ -124,7 +124,7 @@ in
           system-access-groups = mkOption {
             type = types.listOf types.str;
             default = [ ];
-            description = "Groups granting Unix account creation on this host";
+            description = "Group capabilities that permit Unix account presence on this host";
           };
 
           ipv4 = mkOption {

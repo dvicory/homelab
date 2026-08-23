@@ -20,15 +20,6 @@ let
       builtins.attrNames registry
     );
 
-  # Submodule for group-based access grants.
-  accessGrantType = types.submodule {
-    options.groups = mkOption {
-      type = types.listOf types.str;
-      default = [ ];
-      description = "Groups granted access";
-    };
-  };
-
   # Registry entry type — mirrors the standard user entity shape so that
   # pipeline self-provide, define-user, and other batteries find the
   # expected attributes (userName, aspect, classes).
@@ -63,7 +54,7 @@ let
         groups = mkOption {
           type = types.listOf types.str;
           default = [ ];
-          description = "Group memberships for access policy selection";
+          description = "Direct group memberships; fleet ACL resolution adds transitive memberships";
         };
       };
     }
@@ -74,21 +65,7 @@ in
   options.den.users.registry = mkOption {
     type = types.attrsOf registryUserType;
     default = { };
-    description = "User registry with extended schema for fleet policy resolution";
-  };
-
-  # Access mappings: under fleet (following fleet-demo pattern).
-  options.fleet.user-access = {
-    by-environment = mkOption {
-      type = types.attrsOf accessGrantType;
-      default = { };
-      description = "Grant user groups access to all hosts in an environment";
-    };
-    by-host = mkOption {
-      type = types.attrsOf accessGrantType;
-      default = { };
-      description = "Grant user groups access to a specific host";
-    };
+    description = "User registry for host access and account resolution";
   };
 
   config = {
@@ -101,6 +78,5 @@ in
     den.policies.env-users =
       { host, ... }:
       map (name: resolve.to "user" { user = registry.${name}; }) (matchRegistryUsers host.name);
-
   };
 }

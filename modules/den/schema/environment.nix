@@ -172,16 +172,6 @@ in
               description = "Path to the directory containing secrets for this environment";
             };
 
-            settings =
-              mkOption {
-                type = types.attrsOf (types.attrsOf types.anything);
-                default = { };
-                description = "Environment-level default feature settings for scope-engine cascade";
-              }
-              // {
-                identity = false;
-              };
-
             networks = mkOption {
               type = types.attrsOf networkType;
               default = { };
@@ -274,30 +264,6 @@ in
               description = "Environment-wide tags for metadata and organization";
             };
 
-            delegation = mkOption {
-              type = types.submodule {
-                options = {
-                  metricsTo = mkOption {
-                    type = types.nullOr types.str;
-                    default = null;
-                    description = "Environment to delegate metrics reporting to";
-                  };
-                  authTo = mkOption {
-                    type = types.nullOr types.str;
-                    default = null;
-                    description = "Environment to delegate authentication to";
-                  };
-                  logsTo = mkOption {
-                    type = types.nullOr types.str;
-                    default = null;
-                    description = "Environment to delegate log shipping to";
-                  };
-                };
-              };
-              default = { };
-              description = "Cross-environment delegation configuration";
-            };
-
             monitoring = mkOption {
               type = types.submodule {
                 options = {
@@ -315,13 +281,7 @@ in
             system-access-groups = mkOption {
               type = types.listOf types.str;
               default = [ ];
-              description = "System-scoped groups that grant Unix account creation on all hosts in this environment";
-            };
-
-            access = mkOption {
-              type = types.attrsOf (types.listOf types.str);
-              default = { };
-              description = "Maps usernames to lists of group names for this environment";
+              description = "Group capabilities that permit Unix account presence on every host in this environment";
             };
           };
 

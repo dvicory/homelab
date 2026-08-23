@@ -6,7 +6,7 @@
 # partitioned by group scope.
 #
 # Evaluated attributes:
-#   effectiveGates — merged environment/host gates plus fleet access mappings
+#   effectiveGates — merged environment and host access capabilities
 #   resolveUser    — paramAttr (hostId) (userName) → access record
 #                    { enable, systemGroups, kanidmGroups, allGroups, ... }
 {
@@ -92,20 +92,14 @@ let
         name = "env:${ename}";
         value = {
           name = ename;
-          system-access-groups = lib.unique (
-            (environments.${ename}.system-access-groups or [ ])
-            ++ ((config.fleet.user-access.by-environment.${ename} or { groups = [ ]; }).groups)
-          );
+          system-access-groups = environments.${ename}.system-access-groups or [ ];
         };
       }) envNames
       ++ map (hname: {
         name = "host:${hname}";
         value = {
           name = hname;
-          system-access-groups = lib.unique (
-            (hosts.${hname}.system-access-groups or [ ])
-            ++ ((config.fleet.user-access.by-host.${hname} or { groups = [ ]; }).groups)
-          );
+          system-access-groups = hosts.${hname}.system-access-groups or [ ];
         };
       }) hostNames
     );
