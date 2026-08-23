@@ -1,8 +1,7 @@
 # User registry and access-driven user resolution policies.
 #
-# Users are resolved onto hosts via environment and host-level
-# access group intersection. The fleet.user-access ACL mappings
-# and user registry drive the resolution (following fleet-demo pattern).
+# Users are resolved onto hosts by the same transitive ACL result that supplies
+# their resulting POSIX groups.
 {
   lib,
   den,
@@ -15,16 +14,11 @@ let
 
   registry = config.den.users.registry;
 
-  # Filter registry users whose groups intersect the granted set.
   matchRegistryUsers =
-    grantedGroups:
-    lib.filter (
-      name:
-      let
-        userGroups = registry.${name}.groups or [ ];
-      in
-      builtins.any (g: lib.elem g grantedGroups) userGroups
-    ) (builtins.attrNames registry);
+    hostName:
+    lib.filter (name: (config.fleet.acl.get "host:${hostName}" "resolveUser" name).enable) (
+      builtins.attrNames registry
+    );
 
   # Submodule for group-based access grants.
   accessGrantType = types.submodule {
@@ -102,19 +96,11 @@ in
     den.schema.user.isEntity = true;
     den.schema.user.classes = lib.mkDefault [ "homeManager" ];
 
-    # host -> users: resolve registry users whose groups intersect the
-    # effective access groups (merged env + host, propagated via scope context).
+    # Host account existence and emitted POSIX groups both use fleet.acl's
+    # transitive resolver, so direct and inherited machine grants cannot diverge.
     den.policies.env-users =
-      {
-        accessGroups ? [ ],
-        ...
-      }:
-      let
-        matched = matchRegistryUsers accessGroups;
-      in
-      map (name: resolve.to "user" { user = registry.${name}; }) matched;
+      { host, ... }:
+      map (name: resolve.to "user" { user = registry.${name}; }) (matchRegistryUsers host.name);
 
-    # host-users policy removed — by-host grants are now merged into
-    # accessGroups in the fleet policy's env-to-hosts resolver.
   };
 }

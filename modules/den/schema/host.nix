@@ -2,7 +2,7 @@
   lib,
   inputs,
   den,
-  self,
+  rootPath,
   ...
 }:
 let
@@ -97,11 +97,11 @@ let
   settingsType = import ./_settings-type.nix { inherit lib den; };
 in
 {
-  den.schema.host = { lib, ... }: {
-    isEntity = true;
-
-    imports = [
-      ({ config, ... }: {
+  den.schema.host.isEntity = true;
+  den.schema.host.imports = [
+    (
+      { config, ... }:
+      {
         options = {
           channel = mkOption {
             type = types.str;
@@ -291,10 +291,8 @@ in
         };
 
         config = {
-          secretPath = lib.mkDefault (
-            self + "/.secrets/hosts/${config.name}"
-          );
-          facts = lib.mkDefault (self + "/hosts/${config.name}/facter.json");
+          secretPath = lib.mkDefault (rootPath + "/.secrets/hosts/${config.name}");
+          facts = lib.mkDefault (rootPath + "/hosts/${config.name}/facter.json");
           public_key = lib.mkDefault (
             if config.secretPath != null then config.secretPath + "/runtime_host_key.pub" else null
           );
@@ -303,7 +301,7 @@ in
 
           home-manager.module = lib.mkDefault inputs.home-manager.nixosModules.home-manager;
         };
-      })
-    ];
-  };
+      }
+    )
+  ];
 }

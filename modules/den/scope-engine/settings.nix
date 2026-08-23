@@ -15,7 +15,7 @@
 let
   inherit (lib) mkOption types;
 
-  engine = inputs.scope-engine { inherit lib; };
+  engine = inputs.scope-engine.lib;
 
   flatHosts = lib.foldl' (acc: system: acc // (den.hosts.${system} or { })) { } (
     builtins.attrNames (den.hosts or { })
@@ -47,7 +47,15 @@ let
     ) envNames
   );
 
-  baseNodes = engine.buildNodes {
+  kinds = engine.mkKinds (
+    map (name: engine.mkKind { inherit name; }) [
+      "root"
+      "environment"
+      "host"
+    ]
+  );
+
+  scope = engine.buildRoots {
     parentGraph = parentEdges;
     importGraph = importEdges;
 
@@ -68,6 +76,7 @@ let
       }) hostNames
     );
 
+    inherit kinds;
     types = lib.listToAttrs (
       [
         {
@@ -87,6 +96,9 @@ let
   };
 
   attributes = {
+    children = _self: id: lib.filterAttrs (_: n: n.parent == id) scope.nodes;
+    imports = _self: id: (_self.node id).decls.__edges.I or [ ];
+
     setting = engine.paramAttr (
       self: id: key:
       engine.query { dataFilter = node: node.decls.${key} or null; } self id
@@ -95,13 +107,13 @@ let
     resolvedSettings =
       self: id:
       let
-        node = self.nodes.${id};
-        local = node.decls;
+        node = self.node id;
+        local = builtins.removeAttrs node.decls [ "__edges" ];
+        imports = node.decls.__edges.I or [ ];
         importedSettings = lib.foldl' (
-          acc: iid: engine.shadow (self.evaluated.${iid}.get "resolvedSettings") acc
-        ) { } node.imports;
-        parentSettings =
-          if node.parent != null then self.evaluated.${node.parent}.get "resolvedSettings" else { };
+          acc: imported: engine.shadow (self.get imported "resolvedSettings") acc
+        ) { } imports;
+        parentSettings = if node.parent != null then self.get node.parent "resolvedSettings" else { };
       in
       engine.shadow local (engine.shadow importedSettings parentSettings);
 
@@ -109,27 +121,23 @@ let
       self: id:
       let
         allResults = key: engine.queryAll { dataFilter = node: node.decls.${key} or null; } self id;
-        localKeys = builtins.attrNames self.nodes.${id}.decls;
+        localKeys = builtins.attrNames (builtins.removeAttrs (self.node id).decls [ "__edges" ]);
       in
       builtins.filter (key: builtins.length (allResults key) > 1) localKeys;
 
     settingSources =
       self: id:
       let
-        resolved = self.evaluated.${id}.get "resolvedSettings";
+        node = self.node id;
+        local = builtins.removeAttrs node.decls [ "__edges" ];
+        imports = node.decls.__edges.I or [ ];
+        resolved = self.get id "resolvedSettings";
       in
       lib.mapAttrs (
         key: _:
-        let
-          node = self.nodes.${id};
-          isLocal = node.decls ? ${key};
-          isImported = builtins.any (
-            iid: (self.evaluated.${iid}.get "resolvedSettings") ? ${key}
-          ) node.imports;
-        in
-        if isLocal then
+        if local ? ${key} then
           "local"
-        else if isImported then
+        else if builtins.any (imported: (self.get imported "resolvedSettings") ? ${key}) imports then
           "import"
         else
           "inherited"
@@ -139,9 +147,9 @@ in
 {
   options.fleet.settings = mkOption {
     type = types.raw;
-    description = "Evaluated settings cascade graph from scope-engine";
+    description = "Forward settings cascade graph (currently has no configuration consumers)";
     readOnly = true;
   };
 
-  config.fleet.settings = engine.eval { inherit baseNodes attributes; };
+  config.fleet.settings = engine.eval { inherit scope attributes; };
 }

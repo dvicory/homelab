@@ -24,17 +24,12 @@
     nixos-anywhere.url = "github:nix-community/nixos-anywhere";
     nixos-anywhere.inputs.nixpkgs.follows = "nixpkgs";
 
-    # Den aspect-oriented framework (sini fork with quirk pipes and dynamic settingsType)
-    den.url = "github:sini/den/feat/entity-gen-schema-port";
+    # Den and the entity/scope libraries used by local fleet schemas.
+    den.url = "github:denful/den";
 
-    # gen-schema (entity schema library required by den fork)
     gen-schema.url = "github:sini/gen-schema";
-    gen-schema.inputs.nixpkgs.follows = "nixpkgs";
 
     scope-engine.url = "github:sini/scope-engine";
-
-    # Algebraic validators for entity schemas
-    gen-algebra.url = "github:sini/gen-algebra";
 
     # agenix + agenix-rekey declared by batteries/agenix.nix (self-contained)
 

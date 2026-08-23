@@ -42,7 +42,7 @@
       url = "github:dvicory/nixpkgs/crowdsec";
     };
     den = {
-      url = "github:sini/den/feat/entity-gen-schema-port";
+      url = "github:denful/den";
     };
     deploy-rs = {
       inputs = {
@@ -80,15 +80,7 @@
     flake-root = {
       url = "github:srid/flake-root";
     };
-    gen-algebra = {
-      url = "github:sini/gen-algebra";
-    };
     gen-schema = {
-      inputs = {
-        nixpkgs = {
-          follows = "nixpkgs";
-        };
-      };
       url = "github:sini/gen-schema";
     };
     gondolin-nix = {

@@ -1,7 +1,7 @@
 { den, ... }: {
   den.hosts.aarch64-linux.builder = {
     environment = "dev";
-    system-access-groups = [ "system-access" ];
+    system-access-groups = [ "server-access" ];
     settings.core.nix.gc.enable = false;
 
     zfs = {

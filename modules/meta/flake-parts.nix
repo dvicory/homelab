@@ -8,6 +8,8 @@
     inputs.flake-parts.flakeModules.modules
   ];
 
+  _module.args.rootPath = ../..;
+
   flake-file.description = "Homelab3 - Dendritic Architecture";
 
   flake-file.inputs = {
