@@ -19,9 +19,10 @@ permissions:
 
 jobs:
   gc:
+    name: Garbage collect Hestia cache
     runs-on: ubuntu-24.04
     permissions:
-      actions: write
+      actions: write # Hestia deletes stale Actions cache entries.
       contents: read
     steps:
       - name: Install Nix
@@ -34,6 +35,11 @@ jobs:
 
       - name: Garbage collect cache
         env:
+          DRY_RUN: ${{ inputs.dry-run }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          "$HESTIA_BIN" gc ${{ inputs.dry-run && '--dry-run' || '' }}
+          if [[ "$DRY_RUN" == "true" ]]; then
+            "$HESTIA_BIN" gc --dry-run
+          else
+            "$HESTIA_BIN" gc
+          fi

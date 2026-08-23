@@ -17,3 +17,8 @@ All jobs read the public `dvicory-homelab` Cachix cache. Only a successful push
 to `main` can enter the `cachix-publish` environment and receive its per-cache
 write token; `ci/**` and manual dispatches remain read-only. Nix store contents
 published by CI are public, so CI outputs must never contain decrypted secrets.
+
+GitHub enforces full-SHA action pins and the repository action allowlist.
+Dependabot groups action updates into a weekly pull request after a seven-day
+cooldown. `.github/workflows/security.yml` runs zizmor when GitHub automation
+changes and rejects medium-or-higher findings.
