@@ -9,32 +9,36 @@
       };
     };
 
-    os = { host, ... }: {
-      nix.settings = {
-        experimental-features = [
-          "nix-command"
-          "flakes"
-        ];
-        substituters = [
-          "https://cache.nixos.org/"
-          "https://nix-community.cachix.org"
-        ];
-        trusted-public-keys = [
-          "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
-          "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-        ];
-        connect-timeout = 5;
-        log-lines = 50;
-        min-free = 128000000;
-        max-free = 1000000000;
-        download-buffer-size = 524288000;
-        auto-optimise-store = true;
-        builders-use-substitutes = true;
-        fallback = true;
-        keep-outputs = true;
-        keep-derivations = true;
+    os =
+      { host, ... }:
+      {
+        nix.settings = {
+          experimental-features = [
+            "nix-command"
+            "flakes"
+          ];
+          substituters = [
+            "https://cache.nixos.org/"
+            "https://nix-community.cachix.org"
+            "https://dvicory-homelab.cachix.org"
+          ];
+          trusted-public-keys = [
+            "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+            "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+            "dvicory-homelab.cachix.org-1:QqOtWxxrlmcq0ZPYM5C3H/SkF/DIYg39hHvyomTS3AY="
+          ];
+          connect-timeout = 5;
+          log-lines = 50;
+          min-free = 128000000;
+          max-free = 1000000000;
+          download-buffer-size = 524288000;
+          auto-optimise-store = true;
+          builders-use-substitutes = true;
+          fallback = true;
+          keep-outputs = true;
+          keep-derivations = true;
+        };
       };
-    };
 
     nixos =
       { host, lib, ... }:
