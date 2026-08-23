@@ -1,0 +1,169 @@
+name: Nix CI
+
+on:
+  push:
+    branches:
+      - main
+      - "ci/**"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: nix-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  evaluate:
+    name: Evaluate CI jobs
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      any-jobs: ${{ steps.matrix.outputs.any-jobs }}
+      manifest-version: ${{ steps.matrix.outputs.manifest-version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # nothing-but-nix's conservative "holster" mode, shared inline because
+      # the action invokes mutable srz-zumix/post-run-action@v3 internally.
+      - &prepare-nix-storage
+        name: Prepare Nix storage
+        if: runner.os == 'Linux'
+        run: |
+          free_space=$(df -m --output=avail /mnt | tail -n 1 | tr -d ' ')
+          disk_size=$((free_space - 1024))
+          test "$disk_size" -gt 1024
+          loop_dev=$(sudo losetup --find)
+          sudo fallocate -l "${disk_size}M" /mnt/nix.img
+          sudo losetup "$loop_dev" /mnt/nix.img
+          sudo mkfs.btrfs -L nix --nodiscard "$loop_dev"
+          sudo mkdir -p /nix
+          sudo mount "$loop_dev" /nix -o noatime,nobarrier,nodiscard,compress=zstd:1,space_cache=v2,commit=120
+          sudo mkdir -p /nix/build
+      - &install-nix-linux
+        name: Install Nix on Linux
+        if: runner.os == 'Linux'
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        with:
+          extra_nix_config: build-dir = /nix/build
+
+      - &configure-durable-cache
+        name: Configure durable cache (read only)
+        if: vars.CACHIX_CACHE != ''
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+        with:
+          name: ${{ vars.CACHIX_CACHE }}
+          skipPush: true
+
+      - name: Start Hestia cache
+        uses: Mic92/hestia@f1f4df2801140a36398ed423533c8460618539df # v3.0.1
+        with:
+          version: v3.0.1
+          upstream-cache-filter: true
+
+      - name: Generate native build matrix
+        id: matrix
+        uses: Mic92/hestia/matrix@f1f4df2801140a36398ed423533c8460618539df # v3.0.1
+        with:
+          flake: .#ciJobs
+          attr-prefix: ciJobs
+          # nix-eval-jobs 2.35.2 batches cache-status queries, fixing the
+          # large-closure hang from 2.35.0.
+          nix-eval-jobs: nix run nixpkgs/393661af28713060acd316243831bbdc07f3bf58#nix-eval-jobs --
+          runner-map: |
+            x86_64-linux=ubuntu-24.04
+            aarch64-linux=ubuntu-24.04-arm
+            aarch64-darwin=macos-14
+
+  build:
+    name: ${{ matrix.name }} (${{ matrix.system }})
+    needs: evaluate
+    if: needs.evaluate.outputs.any-jobs == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.evaluate.outputs.matrix) }}
+    steps:
+      - *prepare-nix-storage
+
+      - *install-nix-linux
+
+      - &install-nix-macos
+        name: Install Nix on macOS
+        if: runner.os == 'macOS'
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+
+      - *configure-durable-cache
+
+      - &start-hestia-from-evaluation
+        name: Start Hestia cache
+        uses: Mic92/hestia@f1f4df2801140a36398ed423533c8460618539df # v3.0.1
+        with:
+          version: v3.0.1
+          upstream-cache-filter: true
+          wait-manifest-version: ${{ needs.evaluate.outputs.manifest-version }}
+
+      - name: Prefetch derivation closure
+        env:
+          MATRIX_INSTALLABLES: ${{ matrix.installables }}
+        run: |
+          read -ra installables <<< "$MATRIX_INSTALLABLES"
+          hashes=$(printf '%s\n' "${installables[@]}" | awk -F/ '{printf "%s%s", (NR > 1 ? "," : ""), substr($NF, 1, 32)}')
+          curl -fsS "http://$HESTIA_LISTEN/closure/$hashes" | nix-store --import
+
+      - name: Build
+        env:
+          MATRIX_INSTALLABLES: ${{ matrix.installables }}
+        run: |
+          read -ra installables <<< "$MATRIX_INSTALLABLES"
+          nix build -L --no-link "${installables[@]}"
+
+  publish:
+    name: Publish ${{ matrix.system }} to Cachix
+    needs:
+      - evaluate
+      - build
+    if: >-
+      always() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      vars.CACHIX_CACHE != '' &&
+      needs.evaluate.result == 'success' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
+    environment: cachix-publish
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            os: ubuntu-24.04
+          - system: aarch64-linux
+            os: ubuntu-24.04-arm
+          - system: aarch64-darwin
+            os: macos-14
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - *prepare-nix-storage
+
+      - *install-nix-linux
+
+      - *install-nix-macos
+
+      - *configure-durable-cache
+
+      - *start-hestia-from-evaluation
+
+      - name: Publish successful projection
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          CACHIX_CACHE: ${{ vars.CACHIX_CACHE }}
+          SYSTEM: ${{ matrix.system }}
+        run: |
+          set -o pipefail
+          nix build -L --no-link --print-out-paths ".#ciBundles.$SYSTEM" | cachix push "$CACHIX_CACHE"
