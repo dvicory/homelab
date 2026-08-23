@@ -1,20 +1,21 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  homelab is a declarative NixOS and Den fleet configuration.
+  Current OpenSpec specs define current durable contracts; active changes propose deltas to those contracts. Nix/Den owns concrete desired state and implementation details not constrained by those contracts.
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+  Write OpenSpec artifacts for a maintainer who must be able to understand every line.
+
+rules:
+  proposal:
+    - Identify the durable contract being changed or introduced, and distinguish current behavior from the proposed target.
+    - State important non-goals when they prevent scope or architecture expansion.
+  specs:
+    - Describe durable architecture, safety, ownership, access/security, recovery, lifecycle, and integration contracts; do not prose-mirror concrete Nix configuration.
+    - Do not enumerate host inventory, packages, addresses, option values, aspect membership, or implementation mechanisms unless preserving that detail is itself a durable requirement.
+    - Keep each requirement independently meaningful and prefer one behavior per requirement when practical. Put rationale, history, alternatives, and non-contractual mechanism detail in design rather than normative requirement prose.
+    - Do not infer normative behavior from generated documentation, research, archived changes, external repositories, or implementation accidents.
+  design:
+    - Capture mechanism choices, tradeoffs, relevant repository evidence, and consequential unresolved choices. Do not promote a mechanism into the durable spec unless preserving that mechanism is itself a requirement.
+  tasks:
+    - Prefer the smallest executable check that establishes custom Nix/Den semantics. Prefer evaluation checks over VM, integration, deployment, or hardware tests when evaluation is sufficient.
