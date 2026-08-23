@@ -28,3 +28,6 @@ ssh
 
 /den/
 .secrets/priv/
+
+# JavaScript package installs
+node_modules/
