@@ -45,7 +45,7 @@ in
         let
           hostCfg = den.hosts.${system}.${hostName};
         in
-        lib.optionals ((hostCfg.environment or "prod") == environment.name && hostCfg.intoAttr != [ ]) [
+        lib.optionals (hostCfg.environment == environment.name && hostCfg.intoAttr != [ ]) [
           (resolve.to "host" { host = hostCfg; })
           (den.lib.policy.instantiate hostCfg)
         ]
@@ -62,7 +62,7 @@ in
         lib.concatMap (
           hostName:
           let hostCfg = den.hosts.${system}.${hostName} or { };
-          in lib.optional ((hostCfg.environment or "prod") == environment.name) hostName
+          in lib.optional (hostCfg.environment == environment.name) hostName
         ) (builtins.attrNames (den.hosts.${system} or { }))
       ) (builtins.attrNames (den.hosts or { }));
 

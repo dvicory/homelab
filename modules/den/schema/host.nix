@@ -111,7 +111,6 @@ in
 
           environment = mkOption {
             type = types.str;
-            default = "prod";
             description = "Environment name this host belongs to";
           };
 

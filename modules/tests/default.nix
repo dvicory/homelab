@@ -25,7 +25,8 @@ let
   workstationOnWorkstation = resolveOn "daniels-2021-mbp" [ "workstation-access" ];
   serverOnWorkstation = resolveOn "daniels-2021-mbp" [ "server-access" ];
 
-  builderUsers = self.nixosConfigurations.builder.config.users.users;
+  builderConfig = self.nixosConfigurations.builder.config;
+  builderUsers = builderConfig.users.users;
   hvnConfig = self.nixosConfigurations.hvn-hyp1.config;
   hvnUsers = hvnConfig.users.users;
   registry = config.den.users.registry;
@@ -72,6 +73,10 @@ let
       ) registryNames;
   };
 
+  environmentAssertions.timezone-projection =
+    builderConfig.time.timeZone == config.den.environments.dev.timezone
+    && hvnConfig.time.timeZone == config.den.environments.prod.timezone;
+
   integrationAssertions.secret-requests-resolve =
     let
       requests = attrNames hvnConfig.secretRequests;
@@ -79,7 +84,9 @@ let
     requests != [ ] && builtins.all (name: hasAttr name hvnConfig.age.secrets) requests;
 
   failures = attrNames (
-    lib.filterAttrs (_: passed: !passed) (accessAssertions // integrationAssertions)
+    lib.filterAttrs (_: passed: !passed) (
+      accessAssertions // environmentAssertions // integrationAssertions
+    )
   );
 in
 {

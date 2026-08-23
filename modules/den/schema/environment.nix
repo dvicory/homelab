@@ -1,281 +1,31 @@
 {
   lib,
-  inputs,
-  self,
   den,
   ...
 }:
 let
   inherit (lib) mkOption types;
-  schemaLib = inputs.gen-schema.lib;
-
-  networkType = types.submodule {
-    options = {
-      cidr = mkOption {
-        type = types.str;
-        description = "Network CIDR (e.g., 10.0.0.0/24)";
-      };
-
-      ipv6_cidr = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "IPv6 network CIDR (e.g., fd64:0:1::/64)";
-      };
-
-      description = mkOption {
-        type = types.str;
-        default = "";
-        description = "Human-readable description of the network";
-      };
-
-      gatewayIp = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "Gateway IP address for this network";
-      };
-
-      gatewayIpV6 = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "Gateway IPv6 address for this network";
-      };
-
-      dnsServers = mkOption {
-        type = types.listOf types.str;
-        default = [ ];
-        description = "DNS server IPs for this network";
-      };
-
-      assignments = mkOption {
-        type = types.attrsOf types.str;
-        default = { };
-        description = "Static IP address assignments within this network";
-      };
-
-      wireless = mkOption {
-        type = types.nullOr (
-          types.submodule {
-            options = {
-              ssid = mkOption {
-                type = types.str;
-                description = "SSID of the wireless network";
-              };
-              pskRef = mkOption {
-                type = types.str;
-                description = "PSK reference for the wireless network";
-              };
-            };
-          }
-        );
-        default = null;
-        description = "Wireless network configuration";
-      };
-    };
-  };
-
-  serviceType = types.submodule {
-    options = {
-      domain = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "Override domain for this service";
-      };
-
-      delegateTo = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "Name of another environment to delegate this service to";
-      };
-    };
-  };
-
-  certificatesType = types.submodule {
-    options = {
-      domains = mkOption {
-        type = types.attrsOf (
-          types.submodule {
-            options = {
-              issuer = mkOption {
-                type = types.str;
-                description = "The issuer name to use for this domain";
-              };
-            };
-          }
-        );
-        default = { };
-        description = "Domains to generate certificates for";
-      };
-
-      issuers = mkOption {
-        type = types.attrsOf (
-          types.submodule {
-            options = {
-              ageKeyFile = mkOption {
-                type = types.nullOr types.str;
-                default = null;
-                description = "Path to the file containing the API key (agenix)";
-              };
-            };
-          }
-        );
-        default = { };
-        description = "Certificate issuer configurations";
-      };
-    };
-  };
 in
 {
   config = {
+    # Environments group independently managed machines and provide shared
+    # context only where a policy or aspect consumes it explicitly.
     den.schema.environment.isEntity = true;
-
-    den.schema.environment.methods.getDomainFor =
-      schemaLib.schemaFn "Get the domain for a service, following delegation"
-        (lib.types.functionTo lib.types.str)
-        (
-          {
-            services,
-            domain,
-            ...
-          }:
-          serviceName:
-          let
-            svc = services.${serviceName} or { };
-            delegate = svc.delegateTo or null;
-          in
-          if svc ? domain && svc.domain != null then
-            svc.domain
-          else if delegate != null then
-            "${serviceName}.${delegate}.${domain}"
-          else
-            "${serviceName}.${domain}"
-        );
 
     den.schema.environment.imports = [
       (
-        { config, ... }:
+        { ... }:
         {
           options = {
-            id = mkOption {
-              type = types.int;
-              default = 0;
-              description = "Numeric ID of the environment";
-            };
-
             domain = mkOption {
               type = types.str;
-              description = "Base domain for the environment";
-            };
-
-            secretPath = mkOption {
-              type = types.nullOr types.path;
-              default = null;
-              description = "Path to the directory containing secrets for this environment";
-            };
-
-            networks = mkOption {
-              type = types.attrsOf networkType;
-              default = { };
-              description = "Network definitions for the environment";
-            };
-
-            services = mkOption {
-              type = types.attrsOf serviceType;
-              default = { };
-              description = "Service-specific domain mappings for the environment";
-            };
-
-            certificates = mkOption {
-              type = certificatesType;
-              default = { };
-              description = "Certificate management configuration";
-            };
-
-            email = mkOption {
-              type = types.submodule {
-                options = {
-                  domain = mkOption {
-                    type = types.str;
-                    default = "";
-                    description = "Email domain";
-                  };
-                  adminEmail = mkOption {
-                    type = types.str;
-                    default = "";
-                    description = "Default admin email address";
-                  };
-                };
-              };
-              default = { };
-              description = "Email configuration for the environment";
-            };
-
-            acme = mkOption {
-              type = types.submodule {
-                options = {
-                  server = mkOption {
-                    type = types.str;
-                    default = "https://acme-v02.api.letsencrypt.org/directory";
-                    description = "ACME server URL";
-                  };
-                  dnsProvider = mkOption {
-                    type = types.str;
-                    default = "cloudflare";
-                    description = "DNS provider for ACME challenges";
-                  };
-                  dnsResolver = mkOption {
-                    type = types.str;
-                    default = "1.1.1.1:53";
-                    description = "DNS resolver for ACME validation";
-                  };
-                };
-              };
-              default = { };
-              description = "ACME certificate authority configuration";
+              description = "Shared base DNS namespace for this environment";
             };
 
             timezone = mkOption {
               type = types.str;
               default = "UTC";
-              description = "Default timezone for the environment";
-            };
-
-            location = mkOption {
-              type = types.submodule {
-                options = {
-                  country = mkOption {
-                    type = types.str;
-                    default = "US";
-                    description = "ISO country code";
-                  };
-                  region = mkOption {
-                    type = types.str;
-                    default = "";
-                    description = "Geographic region or datacenter";
-                  };
-                };
-              };
-              default = { };
-              description = "Geographic location information";
-            };
-
-            tags = mkOption {
-              type = types.attrsOf types.str;
-              default = { };
-              description = "Environment-wide tags for metadata and organization";
-            };
-
-            monitoring = mkOption {
-              type = types.submodule {
-                options = {
-                  scanEnvironments = mkOption {
-                    type = types.listOf types.str;
-                    default = [ ];
-                    description = "Additional environments to scan for metrics";
-                  };
-                };
-              };
-              default = { };
-              description = "Monitoring configuration including cross-environment scanning";
+              description = "Shared timezone for hosts in this environment";
             };
 
             system-access-groups = mkOption {
@@ -283,10 +33,6 @@ in
               default = [ ];
               description = "Group capabilities that permit Unix account presence on every host in this environment";
             };
-          };
-
-          config = {
-            secretPath = lib.mkDefault (self + "/.secrets/env/${config.name}");
           };
         }
       )

@@ -58,7 +58,7 @@ let
   scope = engine.buildRoots {
     parentGraph = engine.overlays (
       [ (engine.star "root" (map (e: "env:${e}") envNames)) ]
-      ++ map (host: engine.edge "host:${host}" "env:${hosts.${host}.environment or "prod"}") hostNames
+      ++ map (host: engine.edge "host:${host}" "env:${hosts.${host}.environment}") hostNames
     );
 
     edgeGraphs = [

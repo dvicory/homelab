@@ -3,7 +3,7 @@
     os =
       { environment, ... }:
       {
-        time.timeZone = environment.timezone or "UTC";
+        time.timeZone = environment.timezone;
       };
 
     nixos =
