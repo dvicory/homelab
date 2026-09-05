@@ -25,11 +25,18 @@
     nixos-anywhere.inputs.nixpkgs.follows = "nixpkgs";
 
     # Den and the entity/scope libraries used by local fleet schemas.
-    den.url = "github:denful/den";
+    den.url = "github:denful/den/5f78bef87047c5ecd632a5a23c9b3718f1de3301";
 
-    gen-schema.url = "github:sini/gen-schema";
+    gen-algebra.url = "github:sini/gen-algebra/eb98c3acc4167ba30addb12edbfbb5de9706e095";
 
-    scope-engine.url = "github:sini/scope-engine";
+    gen-schema.url = "github:sini/gen-schema/fd79d909cf5a84be0f902dacf4202044642d44af";
+
+    gen-lsp = {
+      url = "github:sini/gen-lsp/6d5f4cef2676cbfddc0ed7399197d68966c18454";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    scope-engine.url = "github:sini/scope-engine/6984433ba18d18dca455da5919c82e4e34d67827";
 
     # agenix + agenix-rekey declared by batteries/agenix.nix (self-contained)
 

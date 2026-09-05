@@ -42,7 +42,7 @@
       url = "github:dvicory/nixpkgs/crowdsec";
     };
     den = {
-      url = "github:denful/den";
+      url = "github:denful/den/5f78bef87047c5ecd632a5a23c9b3718f1de3301";
     };
     deploy-rs = {
       inputs = {
@@ -80,8 +80,19 @@
     flake-root = {
       url = "github:srid/flake-root";
     };
+    gen-algebra = {
+      url = "github:sini/gen-algebra/eb98c3acc4167ba30addb12edbfbb5de9706e095";
+    };
+    gen-lsp = {
+      inputs = {
+        nixpkgs = {
+          follows = "nixpkgs";
+        };
+      };
+      url = "github:sini/gen-lsp/6d5f4cef2676cbfddc0ed7399197d68966c18454";
+    };
     gen-schema = {
-      url = "github:sini/gen-schema";
+      url = "github:sini/gen-schema/fd79d909cf5a84be0f902dacf4202044642d44af";
     };
     gondolin-nix = {
       inputs = {
@@ -161,7 +172,7 @@
       url = "github:SEIAROTg/quadlet-nix";
     };
     scope-engine = {
-      url = "github:sini/scope-engine";
+      url = "github:sini/scope-engine/6984433ba18d18dca455da5919c82e4e34d67827";
     };
     secure-hermes-nix = {
       inputs = {
