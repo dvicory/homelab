@@ -192,7 +192,7 @@
       url = "github:dvicory/secure-hermes-nix";
     };
     systems = {
-      url = "github:nix-systems/default";
+      url = "github:nix-systems/triplet";
     };
   };
 
