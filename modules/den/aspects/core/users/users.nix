@@ -15,7 +15,7 @@ let
     { host, user }:
     let
       inherit (user) userName;
-      # POSIX group membership is resolved by the scope-engine ACL graph
+      # POSIX group membership is resolved by the gen-scope ACL graph
       # (config.fleet.acl): transitive closure of the user's registry groups
       # over the den.groups membership graph, filtered to posix-scoped groups.
       aclUser = config.fleet.acl.get "host:${host.name}" "resolveUser" userName;

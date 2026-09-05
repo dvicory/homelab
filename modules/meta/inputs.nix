@@ -36,7 +36,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    scope-engine.url = "github:sini/scope-engine/6984433ba18d18dca455da5919c82e4e34d67827";
+    gen-scope.url = "github:sini/gen-scope/3bc93dfdb49da9ae06ce84a1d35905a1c138de99";
 
     # agenix + agenix-rekey declared by batteries/agenix.nix (self-contained)
 

@@ -623,11 +623,11 @@
         "gen-prelude": "gen-prelude_4"
       },
       "locked": {
-        "lastModified": 1787374123,
-        "narHash": "sha256-OCtVxyq51HdiKbwKIgauLS8ch8m144yWhY+dwCOAE5E=",
+        "lastModified": 1788569862,
+        "narHash": "sha256-Xdq9dn5idweufeHeATJypJKZ2FAZuI0ublHAhvkZ+ic=",
         "owner": "sini",
         "repo": "gen-graph",
-        "rev": "f71f94e571626bf9b557e86492082839e248e5e5",
+        "rev": "0a4234614153ad47db63178c89eef371161ae495",
         "type": "github"
       },
       "original": {
@@ -872,7 +872,7 @@
         "gen-algebra": "gen-algebra_3",
         "gen-merge": "gen-merge_2",
         "gen-prelude": [
-          "scope-engine",
+          "gen-scope",
           "gen-prelude"
         ],
         "gen-types": "gen-types_3"
@@ -888,6 +888,28 @@
       "original": {
         "owner": "sini",
         "repo": "gen-schema",
+        "type": "github"
+      }
+    },
+    "gen-scope": {
+      "inputs": {
+        "gen-graph": "gen-graph",
+        "gen-identity": "gen-identity_2",
+        "gen-prelude": "gen-prelude_5",
+        "gen-schema": "gen-schema_2"
+      },
+      "locked": {
+        "lastModified": 1788571890,
+        "narHash": "sha256-wWFchRZD/6HrIGq/Cou76tMeLH2a0yEedw31VblleWA=",
+        "owner": "sini",
+        "repo": "gen-scope",
+        "rev": "3bc93dfdb49da9ae06ce84a1d35905a1c138de99",
+        "type": "github"
+      },
+      "original": {
+        "owner": "sini",
+        "repo": "gen-scope",
+        "rev": "3bc93dfdb49da9ae06ce84a1d35905a1c138de99",
         "type": "github"
       }
     },
@@ -1712,6 +1734,7 @@
         "gen-algebra": "gen-algebra",
         "gen-lsp": "gen-lsp",
         "gen-schema": "gen-schema",
+        "gen-scope": "gen-scope",
         "gondolin-nix": "gondolin-nix",
         "hermes-agent": "hermes-agent",
         "home-manager": "home-manager_2",
@@ -1725,7 +1748,6 @@
         "nixos-facter-modules": "nixos-facter-modules",
         "nixpkgs": "nixpkgs_7",
         "quadlet-nix": "quadlet-nix",
-        "scope-engine": "scope-engine",
         "secure-hermes-nix": "secure-hermes-nix",
         "systems": "systems_7"
       }
@@ -1752,28 +1774,6 @@
       "original": {
         "owner": "oxalica",
         "repo": "rust-overlay",
-        "type": "github"
-      }
-    },
-    "scope-engine": {
-      "inputs": {
-        "gen-graph": "gen-graph",
-        "gen-identity": "gen-identity_2",
-        "gen-prelude": "gen-prelude_5",
-        "gen-schema": "gen-schema_2"
-      },
-      "locked": {
-        "lastModified": 1787413416,
-        "narHash": "sha256-n0SbtIqE2gk4kIFgz05BWMMTJ/O8w/On3CMINfeDn4I=",
-        "owner": "sini",
-        "repo": "scope-engine",
-        "rev": "6984433ba18d18dca455da5919c82e4e34d67827",
-        "type": "github"
-      },
-      "original": {
-        "owner": "sini",
-        "repo": "scope-engine",
-        "rev": "6984433ba18d18dca455da5919c82e4e34d67827",
         "type": "github"
       }
     },

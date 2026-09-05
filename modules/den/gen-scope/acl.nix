@@ -19,7 +19,7 @@
 let
   inherit (lib) mkOption types;
 
-  engine = inputs.scope-engine.lib;
+  engine = inputs.gen-scope.lib;
 
   flatHosts = lib.foldl' (acc: system: acc // (den.hosts.${system} or { })) { } (
     builtins.attrNames (den.hosts or { })
@@ -191,7 +191,7 @@ in
 {
   options.fleet.acl = mkOption {
     type = types.raw;
-    description = "Evaluated ACL scope graph from scope-engine";
+    description = "Evaluated ACL scope graph from gen-scope";
     readOnly = true;
   };
 

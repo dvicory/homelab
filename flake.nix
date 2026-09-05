@@ -94,6 +94,9 @@
     gen-schema = {
       url = "github:sini/gen-schema/fd79d909cf5a84be0f902dacf4202044642d44af";
     };
+    gen-scope = {
+      url = "github:sini/gen-scope/3bc93dfdb49da9ae06ce84a1d35905a1c138de99";
+    };
     gondolin-nix = {
       inputs = {
         nixpkgs = {
@@ -170,9 +173,6 @@
     };
     quadlet-nix = {
       url = "github:SEIAROTg/quadlet-nix";
-    };
-    scope-engine = {
-      url = "github:sini/scope-engine/6984433ba18d18dca455da5919c82e4e34d67827";
     };
     secure-hermes-nix = {
       inputs = {
