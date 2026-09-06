@@ -98,11 +98,11 @@
     },
     "crowdsec-pr": {
       "locked": {
-        "lastModified": 1780212139,
-        "narHash": "sha256-yiadf3TCQXk7tlehd7EA8trMb/LyAdIgIT15pr9toUg=",
+        "lastModified": 1788724433,
+        "narHash": "sha256-Ssrb+imztb6EX+aNSQkyL9AGBRZFilDFH7nfs7h2ts8=",
         "owner": "dvicory",
         "repo": "nixpkgs",
-        "rev": "d8e62899c03588f6679853254ae1f6e8e6dc4cbf",
+        "rev": "98dbf12cb2bb49c47f82bbdb4a6a3190792bdb00",
         "type": "github"
       },
       "original": {
