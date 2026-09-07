@@ -16,6 +16,7 @@ configuration; execution is restricted to the designated disposable test VMs.
 from __future__ import annotations
 
 import argparse
+import base64
 import copy
 import fcntl
 import hashlib
@@ -292,6 +293,61 @@ class Runtime:
                 self.guest("rm", staged)
         self.kubectl("scale", "deployment/jellyfin", "--replicas=1", namespace="jellyfin")
         wait_for("independently delivered Jellyfin", self.app_ready)
+
+    def stage_secrets(self, fixture: dict) -> subprocess.CompletedProcess[str]:
+        # Capture all output: neither a failed producer nor its manifest may
+        # print disposable credential bytes into the test log.
+        root = Path(self.descriptor["devices"]["secrets"]["source"])
+        try:
+            return subprocess.run(
+                ["bash", "-c", fixture["secretStageScript"]],
+                env={**os.environ, "PATH": fixture["secretStagePath"]},
+                capture_output=True, text=True, timeout=COMMAND_TIMEOUT, check=False,
+            )
+        finally:
+            if root not in self.retained_mounts and completed("findmnt", "--mountpoint", str(root)).returncode == 0:
+                self.retained_mounts.append(root)
+
+    def check_secret_payload(self, expected: bytes) -> None:
+        device = self.descriptor["devices"]["secrets"]
+        root = Path(device["source"])
+        manifest = root / "runtime-secrets.yaml"
+        permissions = manifest.stat()
+        check(run("findmnt", "-n", "-o", "FSTYPE", "-M", str(root)) == "tmpfs"
+              and "ro" in run("findmnt", "-n", "-o", "VFS-OPTIONS", "-M", str(root)).split(","),
+              "published credential transport remains a read-only tmpfs")
+        check(permissions.st_uid == self.descriptor["idmapBase"]
+              and permissions.st_gid == self.descriptor["idmapBase"]
+              and permissions.st_mode & 0o7777 == 0o400,
+              "published credentials are readable only by mapped guest root")
+        check(manifest.read_bytes() == expected and sorted(path.name for path in root.iterdir()) == ["runtime-secrets.yaml"],
+              "publication preserves the complete payload without temporary files")
+        check(self.guest("sha256sum", device["path"] + "/runtime-secrets.yaml").split()[0]
+              == hashlib.sha256(expected).hexdigest(),
+              "guest attachment exposes the exact published credential bytes")
+        check(self.guest("sh", "-ec", "test ! -r " + shlex.quote(device["path"] + "/runtime-secrets.yaml"),
+                         user=751) == "",
+              "unprivileged guest identity cannot read staged credentials")
+        result = completed("incus", "--force-local", "--project", self.project, "exec", self.instance,
+                           "--", "touch", device["path"] + "/forbidden")
+        check(result.returncode != 0, "guest root cannot write through the credential attachment")
+
+    def verify_secret_consumers(self, values: dict[str, bytes], *, fresh: bool = False) -> None:
+        if fresh:
+            existing = {item["metadata"]["name"] for item in self.kubectl_json("get", "namespaces", "-o", "json")["items"]}
+            for namespace in sorted({entry["namespace"] for entry in self.descriptor["runtimeSecrets"].values()} - existing):
+                self.kubectl("create", "namespace", namespace)
+
+        def delivered() -> bool:
+            items = self.kubectl_json("get", "secrets", "-A", "-o", "json")["items"]
+            found = {(item["metadata"]["namespace"], item["metadata"]["name"]): item for item in items}
+            return all(
+                base64.b64decode(found.get((entry["namespace"], entry["name"]), {}).get("data", {}).get(entry["key"], "")) == values[source]
+                for source, entry in self.descriptor["runtimeSecrets"].items()
+            )
+
+        wait_for("all declared runtime Secret consumers", delivered)
+        check(delivered(), "Kubernetes consumers receive every declared credential value")
 
     def systemctl(self, *args: str, timeout: int = COMMAND_TIMEOUT) -> str:
         return run("systemctl", *args, timeout=timeout)
@@ -696,6 +752,24 @@ def run_scenario(args: argparse.Namespace) -> None:
             print("PASS: existing Incus project/network/profile/pool are conformant and borrowed", flush=True)
         try:
             persist = Path("/persist")
+            secret_inputs = Path("/run/agenix")
+            prepare_directory(secret_inputs, safe_dirs)
+            run("mount", "-t", "tmpfs", "-o", "mode=0700,size=1m", "tmpfs", str(secret_inputs))
+            runtime.retained_mounts.append(secret_inputs)
+            secret_root = Path(descriptor["devices"]["secrets"]["source"])
+            secret_manifest = secret_root / "runtime-secrets.yaml"
+            check(runtime.stage_secrets(fixture).returncode != 0, "initial missing credential inputs fail closed")
+            check(not any(secret_root.iterdir())
+                  and "ro" in run("findmnt", "-n", "-o", "VFS-OPTIONS", "-M", str(secret_root)).split(","),
+                  "missing inputs leave an empty read-only credential transport before guest creation")
+            secret_values = {source: secrets.token_urlsafe(32).encode() for source in descriptor["runtimeSecrets"]}
+            check(bool(secret_values), "fixture declares runtime credential inputs")
+            for source, value in secret_values.items():
+                with (secret_inputs / source).open("xb") as output:
+                    os.chmod(output.fileno(), 0o400)
+                    output.write(value)
+            check(runtime.stage_secrets(fixture).returncode == 0, "complete disposable credentials publish before guest creation")
+            secret_payload = secret_manifest.read_bytes()
             prepare_directory(persist, safe_dirs)
             durable = workspace / "durable"
             durable.mkdir()
@@ -769,6 +843,30 @@ def run_scenario(args: argparse.Namespace) -> None:
             runtime.helper_run("create", bundle=args.bundle, timeout=3_600)
             wait_for("healthy K3s node", runtime.node_ready)
             wait_for("unrelated CoreDNS availability", runtime.unrelated_ready)
+            runtime.check_secret_payload(secret_payload)
+            runtime.verify_secret_consumers(secret_values, fresh=True)
+            # Change one input but remove another: no partial new credential
+            # set may replace the previously published complete set.
+            sources = list(secret_values)
+            check(len(sources) >= 2, "fixture supports a partial credential update")
+            rotated, missing_source = sources[0], sources[-1]
+            rotated_value = secrets.token_urlsafe(32).encode()
+            (secret_inputs / rotated).write_bytes(rotated_value)
+            (secret_inputs / missing_source).unlink()
+            try:
+                check(runtime.stage_secrets(fixture).returncode != 0, "incomplete credential rotation fails closed")
+                runtime.check_secret_payload(secret_payload)
+                runtime.verify_secret_consumers(secret_values)
+            finally:
+                (secret_inputs / missing_source).write_bytes(secret_values[missing_source])
+                (secret_inputs / missing_source).chmod(0o400)
+            check(runtime.stage_secrets(fixture).returncode == 0, "complete credential rotation publishes successfully")
+            secret_values[rotated] = rotated_value
+            rotated_payload = secret_manifest.read_bytes()
+            check(rotated_payload != secret_payload, "successful rotation changes the published payload")
+            secret_payload = rotated_payload
+            runtime.check_secret_payload(secret_payload)
+            runtime.verify_secret_consumers(secret_values)
             for kind in ("uid", "gid"):
                 mapping = [tuple(map(int, line.split())) for line in runtime.guest("cat", f"/proc/self/{kind}_map").splitlines()]
                 check(mapping == [(0, descriptor["idmapBase"], descriptor["idmapSize"])],
@@ -984,6 +1082,10 @@ def run_scenario(args: argparse.Namespace) -> None:
             wait_for("replacement K3s node", runtime.node_ready)
             new_cluster_token = runtime.guest("cat", "/var/lib/rancher/k3s/server/token")
             check(new_cluster_token != original_cluster_token, "replacement has fresh disposable K3s cluster state")
+            runtime.check_secret_payload(secret_payload)
+            runtime.verify_secret_consumers(secret_values, fresh=True)
+            check(all((secret_inputs / source).read_bytes() == value for source, value in secret_values.items()),
+                  "guest recreation preserves credential inputs rather than regenerating them")
             runtime.install_application(args.application, args.image)
             check(marker.read_text() == "retained-state\n", "guest replacement preserves retained application data")
             check(marker.stat().st_uid == marker_stat.st_uid and marker.stat().st_gid == marker_stat.st_gid and marker.stat().st_mode == marker_stat.st_mode, "guest replacement preserves retained data ownership and mode")

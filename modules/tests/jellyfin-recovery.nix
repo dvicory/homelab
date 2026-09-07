@@ -63,6 +63,8 @@
             nftables
             ;
           rootScript = hostConfig.systemd.services.compute-media-root.script;
+          secretStageScript = hostConfig.systemd.services.compute-stage-secrets.script;
+          secretStagePath = lib.makeBinPath hostConfig.systemd.services.compute-stage-secrets.path;
           exportCommand = hostConfig.systemd.services.compute-media-export.serviceConfig.ExecStart;
           exportStop = hostConfig.systemd.services.compute-media-export.serviceConfig.ExecStop;
         }
