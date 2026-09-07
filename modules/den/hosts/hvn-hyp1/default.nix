@@ -126,6 +126,7 @@
           "gateway--gateway-tls--ca.crt" = { namespace = "gateway"; name = "gateway-tls"; key = "ca.crt"; type = "kubernetes.io/tls"; };
           "identity--kanidm-tls--tls.crt" = { namespace = "identity"; name = "kanidm-tls"; key = "tls.crt"; type = "kubernetes.io/tls"; };
           "identity--kanidm-tls--tls.key" = { namespace = "identity"; name = "kanidm-tls"; key = "tls.key"; type = "kubernetes.io/tls"; };
+          "identity--kanidm-tls--ca.crt" = { namespace = "identity"; name = "kanidm-tls"; key = "ca.crt"; type = "kubernetes.io/tls"; };
           "monitoring--grafana-admin--admin-user" = { namespace = "monitoring"; name = "grafana-admin"; key = "admin-user"; };
           "monitoring--grafana-admin--admin-password" = { namespace = "monitoring"; name = "grafana-admin"; key = "admin-password"; };
           "argocd--argocd-secret--admin.password" = { namespace = "argocd"; name = "argocd-secret"; key = "admin.password"; };

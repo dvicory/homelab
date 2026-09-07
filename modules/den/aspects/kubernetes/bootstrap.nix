@@ -11,8 +11,9 @@
       '';
     in
     {
-      packages.household-bootstrap-manifests = manifests;
-      packages.household-bootstrap = pkgs.writeShellApplication {
+      packages = {
+      household-bootstrap-manifests = manifests;
+      household-bootstrap = pkgs.writeShellApplication {
         name = "household-bootstrap";
         runtimeInputs = [ pkgs.kubectl pkgs.coreutils ];
         text = ''
@@ -41,7 +42,7 @@
         '';
       };
     } // lib.optionalAttrs (lib.hasSuffix "-linux" system) {
-      packages.household-bootstrap-bundle = pkgs.linkFarm "household-bootstrap-bundle" [
+      household-bootstrap-bundle = pkgs.linkFarm "household-bootstrap-bundle" [
         { name = "manifests"; path = manifests; }
         { name = "images/kanidm-provision.tar"; path = self.packages.${system}.kanidm-provision-image; }
         {
@@ -71,5 +72,6 @@
           '';
         }
       ];
+      };
     };
 }

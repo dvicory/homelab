@@ -39,6 +39,15 @@ let
       api POST /v1/auth --data-binary @request.json
       jq -er '"Authorization: Bearer " + (.state.success | select(type == "string" and length > 0))' response > auth.json
 
+      # Revoke before fallible person/client reconciliation. The provisioner
+      # updates group membership last; a failure there must not retain grants.
+      api GET /v1/group/homelab-admin
+      jq -e '. == null or .attrs.name == ["homelab-admin"]' response > /dev/null
+      if jq -e '. != null' response > /dev/null; then
+        printf '%s' '[]' > request.json
+        api PUT /v1/group/homelab-admin/_attr/member --data-binary @request.json
+      fi
+
       # Bootstrap only the declared people/group/client. Removing someone from
       # Nix revokes membership, not their account, credentials or app history.
       export KANIDM_PROVISION_IDM_ADMIN_TOKEN
@@ -89,7 +98,7 @@ let
   };
   image = pkgs.dockerTools.buildLayeredImage {
     name = "homelab/kanidm-provision";
-    tag = imageTag;
+    compressor = "none";
     contents = [ runner pkgs.cacert ];
     config = {
       Entrypoint = [ "${runner}/bin/provision-identity" ];
@@ -97,8 +106,7 @@ let
       User = "1000:1000";
     };
   };
-  imageTag = builtins.substring 0 32 (builtins.hashString "sha256" (toString runner));
-  imageRef = "homelab/kanidm-provision:${imageTag}";
+  imageRef = "${image.imageName}:${image.imageTag}";
 in
 {
   inherit imageRef;

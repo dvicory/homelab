@@ -99,7 +99,7 @@
             kind = "Namespace";
             metadata = { name = namespace; annotations = retained; };
           } ];
-          resources = (storage "library" "1Ti") // (storage "postgres" "32Gi");
+          resources = lib.mkMerge [ (storage "library" "1Ti") (storage "postgres" "32Gi") ];
         };
 
         applications.immich = {

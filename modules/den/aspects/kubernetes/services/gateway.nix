@@ -132,6 +132,7 @@
         inherit namespace;
         helm.releases.envoy-gateway = {
           chart = charts.envoyproxy.gateway-helm;
+          includeCRDs = false;
           values = {
             deployment.replicas = 1;
             config.envoyGateway = {

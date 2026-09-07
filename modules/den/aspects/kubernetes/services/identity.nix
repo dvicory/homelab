@@ -66,6 +66,7 @@
         origin = "https://${domain}"
         [online_backup]
         path = "/data/backups/"
+        schedule = "00 22 * * *"
       '';
     in
     {
@@ -278,7 +279,7 @@
               };
             };
             spec = {
-              backoffLimit = 2;
+              backoffLimit = 6;
               activeDeadlineSeconds = 600;
               template = {
                 metadata.labels = provisionLabels;
@@ -304,17 +305,24 @@
                     env = [
                       { name = "KANIDM_URL"; value = "https://${domain}"; }
                       { name = "HOME"; value = "/work"; }
+                      { name = "SSL_CERT_FILE"; value = "/trust/ca.crt"; }
+                      { name = "CURL_CA_BUNDLE"; value = "/trust/ca.crt"; }
                     ];
                     securityContext = provisionSecurity;
                     volumeMounts = [
                       { name = "work"; mountPath = "/work"; }
                       { name = "desired"; mountPath = "/desired"; readOnly = true; }
                       { name = "credentials"; mountPath = "/credentials"; readOnly = true; }
+                      { name = "trust"; mountPath = "/trust"; readOnly = true; }
                     ];
                   } ];
                   volumes = [
                     { name = "work"; emptyDir = { medium = "Memory"; sizeLimit = "32Mi"; }; }
                     { name = "desired"; configMap.name = "kanidm-provision"; }
+                    { name = "trust"; secret = {
+                      secretName = "kanidm-tls";
+                      items = [ { key = "ca.crt"; path = "ca.crt"; } ];
+                    }; }
                     { name = "credentials"; secret = {
                       secretName = "kanidm-provision";
                       defaultMode = 288;

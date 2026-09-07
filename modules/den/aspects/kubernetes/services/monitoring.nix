@@ -110,7 +110,6 @@
               kubeProxy.enabled = false;
               kubeEtcd.enabled = false;
               prometheusOperator = {
-                admissionWebhooks.enabled = false;
                 resources = resources "256Mi";
                 prometheusConfigReloader.resources = resources "64Mi";
               };

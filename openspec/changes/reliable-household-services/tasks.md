@@ -6,7 +6,7 @@
 
 ## 2. Retained state and runtime credentials
 
-- [ ] 2.1 Replace application-specific compute state plumbing with declared retained-path mappings while preserving non-root ID translation, encryption/persistence, read-only legacy media and independent management. Evaluate exact boundaries and exercise missing-path refusal plus writer/reader permissions in disposable storage.
+- [x] 2.1 Replace application-specific compute state plumbing with declared retained-path mappings while preserving non-root ID translation, encryption/persistence, read-only legacy media and independent management. Evaluate exact boundaries and exercise missing-path refusal plus writer/reader permissions in disposable storage.
 - [ ] 2.2 Deliver named Kubernetes Secrets from host-staged runtime files using the existing agenix flow. Prove missing files fail closed, values stay out of rendered artifacts, and replacement consumers receive the declared secrets without regenerating identities.
 - [ ] 2.3 Implement quiesced, application-consistent export/restore using standard native/database tools and explicit retained inputs. Demonstrate completion/failure reporting, input validation and preservation of displaced state with a representative disposable recovery set; distinguish same-host recovery points from independent backups.
 
