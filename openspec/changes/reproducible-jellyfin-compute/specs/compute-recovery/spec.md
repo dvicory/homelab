@@ -4,6 +4,18 @@ Define the isolation and recovery guarantees of replaceable application compute 
 
 ## ADDED Requirements
 
+### Requirement: Shared compute and application releases have separate lifecycles
+
+Compute lifecycle operations SHALL NOT require knowledge of an individual application's namespace, software version, or database layout. Application releases SHALL be selectable and deliverable independently of the compute operating-system generation. A workload's host-local storage constraint SHALL be explicit and SHALL NOT implicitly constrain unrelated workloads. Declared maintenance outages MAY be accepted; additional compute capacity alone SHALL NOT be represented as providing storage portability or control-plane availability.
+
+#### Scenario: An application is released independently
+- **WHEN** an operator selects a new application release
+- **THEN** the release can be delivered without rebuilding or activating the compute operating system, and its required recovery procedure remains application-scoped
+
+#### Scenario: Shared compute is replaced
+- **WHEN** an operator replaces a compute instance
+- **THEN** the infrastructure operation preserves declared external inputs without an application-specific lifecycle implementation, and the selected workload releases are restored through their declared delivery procedures
+
 ### Requirement: Compute isolation cannot be silently weakened
 
 A compute domain designated as unprivileged SHALL keep guest root distinct from host root and SHALL declare its host-granted mounts, devices, resource limits, and exceptional kernel permissions. Provisioning, normal reconciliation, and recovery SHALL reject incompatible isolation configuration rather than enabling privileged operation, exposing host management sockets, or broadening permissions to make a workload start.

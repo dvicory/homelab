@@ -1,10 +1,77 @@
 { den, inputs, ... }: {
   den.hosts.x86_64-linux.hvn-hyp1 = {
     environment = "prod";
-    system-access-groups = [ "server-access" "workload-access" ];
+    system-access-groups = [
+      "server-access"
+      "workload-access"
+    ];
 
     settings = {
       core.nix.gc.enable = false;
+      virtualization.compute = {
+        project = "compute";
+        instance = "compute-1";
+        profile = "compute-1";
+        pool = "incus-compute";
+        network = "incus-compute";
+        address = "10.210.0.10";
+        idmapBase = 1000000;
+        idmapSize = 65536;
+        statePath = "/var/lib/homelab/compute-1/jellyfin";
+        recoveryPath = "/var/lib/homelab/compute-1/recovery";
+        identityPath = "/var/lib/homelab/compute-1/identity";
+        mediaPath = "/run/homelab-compute/media";
+        mediaSource = "/mnt/storage/media";
+        config = {
+          "boot.autostart" = "true";
+          "limits.cpu" = "4";
+          "limits.memory" = "8GiB";
+          "limits.processes" = "8192";
+          "security.guestapi" = "false";
+          "raw.idmap" = "both 1000000-1065535 0-65535";
+          "security.idmap.isolated" = "true";
+          "security.nesting" = "true";
+          "security.privileged" = "false";
+        };
+        devices = {
+          root = {
+            path = "/";
+            pool = "incus-compute";
+            type = "disk";
+          };
+          eth0 = {
+            name = "eth0";
+            network = "incus-compute";
+            type = "nic";
+            "ipv4.address" = "10.210.0.10";
+            host_name = "veth-comp-1";
+          };
+          config = {
+            path = "/srv/jellyfin/config";
+            propagation = "rprivate";
+            readonly = "false";
+            source = "/var/lib/homelab/compute-1/jellyfin";
+            type = "disk";
+          };
+          media = {
+            path = "/srv/media";
+            propagation = "rslave";
+            # The host export is already recursively read-only. Incus 7.4
+            # rejects readonly=true together with recursive=true.
+            recursive = "true";
+            required = "true";
+            source = "/run/homelab-compute/media";
+            type = "disk";
+          };
+          identity = {
+            path = "/srv/identity";
+            readonly = "true";
+            required = "true";
+            source = "/var/lib/homelab/compute-1/identity";
+            type = "disk";
+          };
+        };
+      };
       services.mergerfs.pools."/mnt/storage/media" = {
         branches = [
           "/mnt/storage-clear/media1"
@@ -64,6 +131,7 @@
       den.aspects.core.facter
       den.aspects.core.base
       den.aspects.virtualization.incus
+      den.aspects.virtualization.compute
       den.aspects.disk.zfs
       den.aspects.disk.zfs.provides.pool
       den.aspects.disk.impermanence
@@ -77,107 +145,120 @@
       den.aspects.workloads.hermes.deploy
     ];
 
-    nixos = { config, pkgs, lib, ... }: let
-      mkGocryptfsMount = { name, device, passfile }: {
-        fileSystems.${device} = {
-          device = "/dev/disk/by-label/${baseNameOf device}";
-          fsType = "btrfs";
-          options = [ "noatime" ];
-        };
-
-        systemd.services."gocryptfs-${baseNameOf name}" = {
-          description = "gocryptfs mount ${name}";
-          wantedBy = [ "multi-user.target" ];
-          reloadIfChanged = true;
-          restartIfChanged = false;
-          stopIfChanged = false;
-
-          serviceConfig = {
-            Type = "oneshot";
-            RemainAfterExit = true;
-            ExecStart = pkgs.writeShellScript "mount-gocryptfs-${baseNameOf name}" ''
-              if mountpoint -q "${name}"; then
-                ${pkgs.fuse3}/bin/fusermount3 -uz "${name}" 2>/dev/null || true
-              fi
-              mkdir -p "${name}"
-              ${pkgs.gocryptfs}/bin/gocryptfs -allow_other -passfile=${passfile} ${device}/crypt "${name}"
-            '';
-            ExecStop = "${pkgs.fuse3}/bin/fusermount3 -uz ${name}";
-            ExecReload = pkgs.writeShellScript "reload-gocryptfs-${baseNameOf name}" ''
-              ${pkgs.fuse3}/bin/fusermount3 -uz "${name}" 2>/dev/null || true
-              ${pkgs.gocryptfs}/bin/gocryptfs -allow_other -passfile=${passfile} ${device}/crypt "${name}"
-            '';
-          };
-        };
-      };
-    in lib.mkMerge [
+    nixos =
       {
-        networking = {
-          hostName = "hvn-hyp1";
-          hostId = "2f618214";
-        };
+        config,
+        pkgs,
+        lib,
+        ...
+      }:
+      let
+        mkGocryptfsMount =
+          {
+            name,
+            device,
+            passfile,
+          }:
+          {
+            fileSystems.${device} = {
+              device = "/dev/disk/by-label/${baseNameOf device}";
+              fsType = "btrfs";
+              options = [ "noatime" ];
+            };
 
-        secretRequests = {
-          "gocryptfs-media1" = {
-            provider = "agenix";
-            ageFile = inputs.self + "/.secrets/hosts/hvn-hyp1/gocryptfs-media1.age";
-            mode = "0400";
-            restartUnits = [ "gocryptfs-media1" ];
+            systemd.services."gocryptfs-${baseNameOf name}" = {
+              description = "gocryptfs mount ${name}";
+              wantedBy = [ "multi-user.target" ];
+              reloadIfChanged = true;
+              restartIfChanged = false;
+              stopIfChanged = false;
+
+              serviceConfig = {
+                Type = "oneshot";
+                RemainAfterExit = true;
+                ExecStart = pkgs.writeShellScript "mount-gocryptfs-${baseNameOf name}" ''
+                  if mountpoint -q "${name}"; then
+                    ${pkgs.fuse3}/bin/fusermount3 -uz "${name}" 2>/dev/null || true
+                  fi
+                  mkdir -p "${name}"
+                  ${pkgs.gocryptfs}/bin/gocryptfs -allow_other -passfile=${passfile} ${device}/crypt "${name}"
+                '';
+                ExecStop = "${pkgs.fuse3}/bin/fusermount3 -uz ${name}";
+                ExecReload = pkgs.writeShellScript "reload-gocryptfs-${baseNameOf name}" ''
+                  ${pkgs.fuse3}/bin/fusermount3 -uz "${name}" 2>/dev/null || true
+                  ${pkgs.gocryptfs}/bin/gocryptfs -allow_other -passfile=${passfile} ${device}/crypt "${name}"
+                '';
+              };
+            };
           };
-          "gocryptfs-media2" = {
-            provider = "agenix";
-            ageFile = inputs.self + "/.secrets/hosts/hvn-hyp1/gocryptfs-media2.age";
-            mode = "0400";
-            restartUnits = [ "gocryptfs-media2" ];
+      in
+      lib.mkMerge [
+        {
+          networking = {
+            hostName = "hvn-hyp1";
+            hostId = "2f618214";
           };
-          "gocryptfs-media3" = {
-            provider = "agenix";
-            ageFile = inputs.self + "/.secrets/hosts/hvn-hyp1/gocryptfs-media3.age";
-            mode = "0400";
-            restartUnits = [ "gocryptfs-media3" ];
+
+          secretRequests = {
+            "gocryptfs-media1" = {
+              provider = "agenix";
+              ageFile = inputs.self + "/.secrets/hosts/hvn-hyp1/gocryptfs-media1.age";
+              mode = "0400";
+              restartUnits = [ "gocryptfs-media1" ];
+            };
+            "gocryptfs-media2" = {
+              provider = "agenix";
+              ageFile = inputs.self + "/.secrets/hosts/hvn-hyp1/gocryptfs-media2.age";
+              mode = "0400";
+              restartUnits = [ "gocryptfs-media2" ];
+            };
+            "gocryptfs-media3" = {
+              provider = "agenix";
+              ageFile = inputs.self + "/.secrets/hosts/hvn-hyp1/gocryptfs-media3.age";
+              mode = "0400";
+              restartUnits = [ "gocryptfs-media3" ];
+            };
           };
-        };
 
+          boot.kernelParams = [
+            "console=tty0"
+            "random.trust_cpu=on"
+            "random.trust_bootloader=on"
+          ];
 
-        boot.kernelParams = [
-          "console=tty0"
-          "random.trust_cpu=on"
-          "random.trust_bootloader=on"
-        ];
+          boot.initrd.availableKernelModules = [ ];
+          hardware.enableAllHardware = false;
 
-        boot.initrd.availableKernelModules = [ ];
-        hardware.enableAllHardware = false;
+          systemd.services."getty@tty1".enable = true;
+          systemd.services."serial-getty@ttyS0".enable = true;
 
-        systemd.services."getty@tty1".enable = true;
-        systemd.services."serial-getty@ttyS0".enable = true;
+          environment.systemPackages = [ pkgs.gocryptfs ];
 
-        environment.systemPackages = [ pkgs.gocryptfs ];
+          deployment = {
+            enable = true;
+            target = "172.27.50.17";
+            sshUser = "daniel";
+            knownHostsPath = "modules/den/hosts/hvn-hyp1/known_hosts";
+          };
+        }
 
-        deployment = {
-          enable = true;
-          target = "172.27.50.17";
-          sshUser = "daniel";
-          knownHostsPath = "modules/den/hosts/hvn-hyp1/known_hosts";
-        };
-      }
+        (mkGocryptfsMount {
+          name = "/mnt/storage-clear/media1";
+          device = "/mnt/storage-crypt/media1";
+          passfile = config.age.secrets."gocryptfs-media1".path;
+        })
 
-      (mkGocryptfsMount {
-        name = "/mnt/storage-clear/media1";
-        device = "/mnt/storage-crypt/media1";
-        passfile = config.age.secrets."gocryptfs-media1".path;
-      })
+        (mkGocryptfsMount {
+          name = "/mnt/storage-clear/media2";
+          device = "/mnt/storage-crypt/media2";
+          passfile = config.age.secrets."gocryptfs-media2".path;
+        })
 
-      (mkGocryptfsMount {
-        name = "/mnt/storage-clear/media2";
-        device = "/mnt/storage-crypt/media2";
-        passfile = config.age.secrets."gocryptfs-media2".path;
-      })
-
-      (mkGocryptfsMount {
-        name = "/mnt/storage-clear/media3";
-        device = "/mnt/storage-crypt/media3";
-        passfile = config.age.secrets."gocryptfs-media3".path;
-      })
-    ];
+        (mkGocryptfsMount {
+          name = "/mnt/storage-clear/media3";
+          device = "/mnt/storage-crypt/media3";
+          passfile = config.age.secrets."gocryptfs-media3".path;
+        })
+      ];
   };
 }

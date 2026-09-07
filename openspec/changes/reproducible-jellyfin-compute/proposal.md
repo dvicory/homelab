@@ -6,15 +6,16 @@ The current checkout enables Incus but does not declare a Kubernetes guest or a 
 
 - Introduce a replaceable application-compute lifecycle with explicitly designated durable data, credentials, ownership mappings, and recovery inputs.
 - Use an **unprivileged Incus system container**, as selected by the operator. Privileged containers, host-root identity mappings, and silent relaxation of isolation are not fallback paths.
-- Use one independently deployable NixOS guest running single-server K3s, its bundled Flannel/kube-proxy networking, and a new private Jellyfin instance. These are the reviewed mechanisms for this slice, not permanent fleet-wide selections; Cilium is not assumed compatible with the user-namespace boundary.
+- Use one independently deployable, shared NixOS compute guest running single-server K3s and its bundled Flannel/kube-proxy networking. Jellyfin is its first workload, not the owner of the guest lifecycle. Diverse applications may share the node; declared maintenance outages are acceptable.
 - Build secret-free guest artifacts. Deliver guest identity through host-managed runtime secret materialization; keep all required bootstrap inputs available outside Kubernetes.
-- Reconstruct Kubernetes resources from stable Nix-generated manifests using native K3s reconciliation. Retain Jellyfin configuration separately from guest and cluster state; expose media through host bind mounts, read-only for this slice.
+- Reconstruct Kubernetes resources from independent Nix-built application artifacts using native K3s reconciliation. Deliver application images and manifests separately from the guest OS generation. Retain Jellyfin configuration separately from guest and cluster state; expose media through host bind mounts, read-only for this slice.
 - Confine missing application storage to the dependent workload. Keep the node, its management path, and unrelated workloads available; prove storage loss and return without node replacement.
 - Use standard NixOS/Incus/Kubernetes facilities first, established upstream tools second, and thin custom glue only for demonstrated gaps. NixOS owns Incus resource configuration; instance operations do not create a second configuration owner.
 - Separate same-version compute recovery from application upgrades. Keep the application image independently pinned and require a consistent data recovery point with matching software before an application-version change.
-- Provide inspectable, safely repeatable instance operations and a separately authorized destructive replacement procedure without building a general-purpose orchestrator.
+- Provide inspectable, safely repeatable application-neutral instance operations and a separately authorized destructive replacement procedure. Use existing NixOS deployment commands and explicit application maintenance procedures; do not build a general-purpose orchestrator or workload-plugin framework.
 - Add an acceptance procedure that preserves real Jellyfin users, library configuration, and playback state across deletion and reconstruction of the guest and Kubernetes database.
 - Preserve the accepted isolation decision in its ADR; keep implementation choices in this change rather than introducing a duplicate architecture/status document.
+- Make host-local storage placement explicit for Jellyfin without imposing it on other applications. Additional physical hosts, portable storage, and control-plane availability are later decisions; this slice must not claim that adding a node makes local data portable.
 
 No deployment is authorized now. Local implementation verification and future target-runtime verification must be reported separately.
 

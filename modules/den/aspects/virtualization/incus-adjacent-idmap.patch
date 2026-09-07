@@ -1,0 +1,48 @@
+--- a/shared/idmap/entry.go
++++ b/shared/idmap/entry.go
+@@ -34,20 +34,9 @@
+ 
+ // HostIDsIntersect checks whether the provided entry intersects with the host IDs of the existing one.
+ func (e *Entry) HostIDsIntersect(i Entry) bool {
+-	if (e.IsUID && i.IsUID) || (e.IsGID && i.IsGID) {
+-		switch {
+-		case isBetween(e.HostID, i.HostID, i.HostID+i.MapRange):
+-			return true
+-		case isBetween(i.HostID, e.HostID, e.HostID+e.MapRange):
+-			return true
+-		case isBetween(e.HostID+e.MapRange, i.HostID, i.HostID+i.MapRange):
+-			return true
+-		case isBetween(i.HostID+i.MapRange, e.HostID, e.HostID+e.MapRange):
+-			return true
+-		}
+-	}
+-
+-	return false
++	return ((e.IsUID && i.IsUID) || (e.IsGID && i.IsGID)) &&
++		e.HostID < i.HostID+i.MapRange &&
++		i.HostID < e.HostID+e.MapRange
+ }
+ 
+ // Intersects checks whether the provided entry intersects with the existing one.
+--- a/shared/idmap/set_test.go
++++ b/shared/idmap/set_test.go
+@@ -200,3 +200,19 @@
+ 	assert.Equal(t, false, combinedEntry.HostIDsCoveredBy(nil, allowedCombinedMaps))
+ 	assert.Equal(t, true, combinedEntry.HostIDsCoveredBy(allowedCombinedMaps, allowedCombinedMaps))
+ }
++
++func TestSetAddSafeAdjacentHostRanges(t *testing.T) {
++	original := Set{Entries: []Entry{
++		{IsUID: true, HostID: 1065536, NSID: 0, MapRange: 65536},
++		{IsGID: true, HostID: 1065536, NSID: 0, MapRange: 65536},
++	}}
++	replacement := Entry{IsUID: true, IsGID: true, HostID: 1000000, NSID: 0, MapRange: 65536}
++	assert.NoError(t, original.AddSafe(replacement))
++	assert.Equal(t, []string{"u 0 1000000 65536", "g 0 1000000 65536"}, original.ToLXCString())
++
++	// Sharing even one host ID must still be rejected.
++	overlap := Set{Entries: []Entry{
++		{IsUID: true, HostID: 1065535, NSID: 0, MapRange: 65536},
++	}}
++	assert.ErrorIs(t, overlap.AddSafe(replacement), ErrHostIDIsSubID)
++}

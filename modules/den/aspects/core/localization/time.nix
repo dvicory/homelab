@@ -7,7 +7,12 @@
       };
 
     nixos =
-      { config, lib, pkgs, ... }:
+      {
+        config,
+        lib,
+        pkgs,
+        ...
+      }:
       let
         logDir = "/var/log/chrony";
         servers = [
@@ -18,7 +23,8 @@
         user = config.users.users.chrony.name;
         group = config.users.groups.chrony.name;
       in
-      {
+      # System containers share their host's clock; they must not discipline it.
+      lib.mkIf (!config.boot.isContainer) {
         services.timesyncd.enable = lib.mkForce false;
 
         services.chrony = {
@@ -51,21 +57,25 @@
         };
       };
 
-    persist = { config, ... }:
+    persist =
+      { config, ... }:
       let
         logDir = "/var/log/chrony";
         user = config.users.users.chrony.name;
         group = config.users.groups.chrony.name;
       in
-      [
-        {
-          directories = [ config.services.chrony.directory ];
-          inherit user group;
-        }
-        {
-          directories = [ logDir ];
-          inherit user group;
-        }
-      ];
+      if config.boot.isContainer then
+        [ ]
+      else
+        [
+          {
+            directories = [ config.services.chrony.directory ];
+            inherit user group;
+          }
+          {
+            directories = [ logDir ];
+            inherit user group;
+          }
+        ];
   };
 }

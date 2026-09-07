@@ -89,6 +89,12 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.evaluate.outputs.matrix) }}
     steps:
+      - name: Enable KVM for native NixOS tests
+        if: matrix.system == 'x86_64-linux'
+        run: |
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+
       - *prepare-nix-storage
 
       - *install-nix-linux
