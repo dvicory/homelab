@@ -68,9 +68,9 @@ in
         "$BOOTSTRAP/bin/household-bootstrap" --fresh-cluster
       This is non-pruning, no-live-Git bootstrap and refuses existing Argo
       Applications. Successful apply is not readiness or completed first setup.
-      Follow bundle operations.txt for publishing the selected rendered directories
-      to the reviewed Git source and applying bootstrap.yaml; normal reconciliation
-      belongs to Argo, not a second static lifecycle. Declared source:
+      Publish the selected rendered directories to the reviewed Git source, then:
+        kubectl apply -f "$ARGO_BOOTSTRAP/"
+      Normal reconciliation belongs to Argo, not a second static lifecycle. Source:
         ${cluster.repository} (branch ${cluster.branch})
       Nixidy application directories are symlinks: any authorized selected-directory
       apply uses a trailing slash, e.g. kubectl apply -f "$ENVIRONMENT/$APPLICATION/".

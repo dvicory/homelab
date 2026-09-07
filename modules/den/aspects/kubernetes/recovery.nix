@@ -15,7 +15,7 @@
         household-recovery export|restore|resume DESCRIPTOR POINT METRICS_DIRECTORY
 
         Run as root on the disposable Linux Incus host. DESCRIPTOR is the
-        root-owned compute JSON from /etc/homelab-compute; POINT is an absolute
+        root-owned compute JSON from /etc/homelab/compute.json; POINT is an absolute
         new export directory, or an existing complete trusted export for restore.
         METRICS_DIRECTORY must already exist and be scraped by node exporter's
         textfile collector on this host. No production invocation is authorized.

@@ -51,7 +51,7 @@
             Build this bundle for the compute guest's Linux architecture.
             Copy it to the Incus host with nix copy; no runtime secrets are included.
 
-            Set PROJECT and INSTANCE from the host's /etc/homelab-compute descriptor.
+            Set PROJECT and INSTANCE from the host's /etc/homelab/compute.json descriptor.
             Before applying manifests, import the pinned application image:
               incus --project "$PROJECT" file push ${self.packages.${system}.kanidm-provision-image} "$INSTANCE/tmp/kanidm-provision.tar"
               incus --project "$PROJECT" exec "$INSTANCE" -- k3s ctr images import --local --snapshotter native /tmp/kanidm-provision.tar
@@ -67,7 +67,8 @@
             --fresh-cluster. It applies these static manifests without live Git or
             pruning. Check actual workload readiness; successful apply is not readiness.
             Only then publish rendered application directories to the selected Git
-            source and apply its bootstrap.yaml to enable Argo reconciliation.
+            source and enable Argo reconciliation with the matching bootstrap output:
+              kubectl apply -f ${self.nixidyEnvs.${system}.prod-home.bootstrapPackage}/
             Do not run the full static bootstrap against an Argo-managed cluster.
           '';
         }
