@@ -15,6 +15,10 @@ let
   ) null preseed.profiles;
   devices = profile.devices;
   idRange = "${toString compute.idmapBase}-${toString (compute.idmapBase + compute.idmapSize - 1)}";
+  expectedDeviceNames = lib.sort builtins.lessThan (
+    [ "eth0" "identity" "media" "root" ] ++ builtins.attrNames compute.retainedPaths
+    ++ lib.optional (compute.runtimeSecrets != { }) "secrets"
+  );
   owners = builtins.attrNames (
     lib.filterAttrs (
       _: configuration: configuration.config.environment.etc ? "homelab/compute.json"
@@ -39,13 +43,7 @@ let
       && project."restricted.idmap.gid" == idRange
       && profile.config."raw.idmap" == "both ${idRange} 0-${toString (compute.idmapSize - 1)}";
     no-management-device-exposure =
-      builtins.attrNames devices == [
-        "config"
-        "eth0"
-        "identity"
-        "media"
-        "root"
-      ]
+      lib.sort builtins.lessThan (builtins.attrNames devices) == expectedDeviceNames
       && builtins.all (
         d:
         builtins.elem d.type [
@@ -54,17 +52,19 @@ let
         ]
       ) (builtins.attrValues devices)
       && devices.root.pool == compute.pool
-      && devices.config.source == compute.statePath
+      && devices."jellyfin-config".source == compute.retainedPaths.jellyfin-config.path
+      && devices."jellyfin-config".path == compute.retainedPaths.jellyfin-config.guestPath
+      && devices."jellyfin-config".readonly == "false"
       && devices.identity.source == compute.identityPath
       && devices.identity.readonly == "true"
       && devices.media.source == compute.mediaPath
       && devices.eth0.network == compute.network
       &&
-        project."restricted.devices.disk.paths" == lib.concatStringsSep "," [
-          compute.statePath
-          compute.identityPath
-          compute.mediaPath
-        ]
+        project."restricted.devices.disk.paths" == lib.concatStringsSep "," (
+          map (entry: entry.path) (builtins.attrValues compute.retainedPaths)
+          ++ [ compute.identityPath compute.mediaPath ]
+          ++ lib.optional (compute.runtimeSecrets != { }) "/run/homelab-compute/secrets"
+        )
       && builtins.all (kind: project."restricted.devices.${kind}" == "block") [
         "gpu"
         "infiniband"

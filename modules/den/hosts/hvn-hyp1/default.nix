@@ -17,7 +17,121 @@
         address = "10.210.0.10";
         idmapBase = 1000000;
         idmapSize = 65536;
-        statePath = "/var/lib/homelab/compute-1/jellyfin";
+        retainedPaths = {
+          jellyfin-config = {
+            path = "/var/lib/homelab/compute-1/jellyfin";
+            guestPath = "/srv/jellyfin/config";
+            uid = 751;
+            gid = 751;
+            mode = "0750";
+          };
+          immich-library = {
+            path = "/var/lib/homelab/compute-1/platform/immich/library";
+            guestPath = "/srv/platform/immich/library";
+            uid = 1000;
+            gid = 1000;
+            mode = "0750";
+          };
+          immich-postgres = {
+            path = "/var/lib/homelab/compute-1/platform/immich/postgres";
+            guestPath = "/srv/platform/immich/postgres";
+            uid = 999;
+            gid = 999;
+            mode = "0700";
+          };
+          radarr = {
+            path = "/var/lib/homelab/compute-1/platform/media/radarr";
+            guestPath = "/srv/platform/media/radarr";
+            uid = 752;
+            gid = 751;
+            mode = "0750";
+          };
+          sonarr = {
+            path = "/var/lib/homelab/compute-1/platform/media/sonarr";
+            guestPath = "/srv/platform/media/sonarr";
+            uid = 753;
+            gid = 751;
+            mode = "0750";
+          };
+          sabnzbd = {
+            path = "/var/lib/homelab/compute-1/platform/media/sabnzbd";
+            guestPath = "/srv/platform/media/sabnzbd";
+            uid = 754;
+            gid = 751;
+            mode = "0750";
+          };
+          seerr = {
+            path = "/var/lib/homelab/compute-1/platform/media/seerr";
+            guestPath = "/srv/platform/media/seerr";
+            uid = 1000;
+            gid = 1000;
+            mode = "0750";
+          };
+          media-data = {
+            path = "/var/lib/homelab/compute-1/platform/media/data";
+            guestPath = "/srv/platform/media/data";
+            uid = 754;
+            gid = 751;
+            mode = "2770";
+          };
+          monitoring-prometheus = {
+            path = "/var/lib/homelab/compute-1/platform/monitoring/prometheus";
+            guestPath = "/srv/platform/monitoring/prometheus";
+            uid = 65534;
+            gid = 65534;
+            mode = "0750";
+          };
+          monitoring-alertmanager = {
+            path = "/var/lib/homelab/compute-1/platform/monitoring/alertmanager";
+            guestPath = "/srv/platform/monitoring/alertmanager";
+            uid = 65534;
+            gid = 65534;
+            mode = "0750";
+          };
+          monitoring-grafana = {
+            path = "/var/lib/homelab/compute-1/platform/monitoring/grafana";
+            guestPath = "/srv/platform/monitoring/grafana";
+            uid = 472;
+            gid = 472;
+            mode = "0750";
+          };
+          monitoring-loki = {
+            path = "/var/lib/homelab/compute-1/platform/monitoring/loki";
+            guestPath = "/srv/platform/monitoring/loki";
+            uid = 10001;
+            gid = 10001;
+            mode = "0750";
+          };
+          identity-kanidm = {
+            path = "/var/lib/homelab/compute-1/platform/identity/kanidm";
+            guestPath = "/srv/platform/identity/kanidm";
+            uid = 1000;
+            gid = 1000;
+            mode = "0700";
+          };
+        };
+        runtimeSecrets = {
+          "immich--immich-runtime--DB_PASSWORD" = { namespace = "immich"; name = "immich-runtime"; key = "DB_PASSWORD"; };
+          "media--media-runtime--RADARR_API_KEY" = { namespace = "media"; name = "media-runtime"; key = "RADARR_API_KEY"; };
+          "media--media-runtime--SONARR_API_KEY" = { namespace = "media"; name = "media-runtime"; key = "SONARR_API_KEY"; };
+          "media--media-runtime--SABNZBD_API_KEY" = { namespace = "media"; name = "media-runtime"; key = "SABNZBD_API_KEY"; };
+          "media--media-runtime--SABNZBD_USERNAME" = { namespace = "media"; name = "media-runtime"; key = "SABNZBD_USERNAME"; };
+          "media--media-runtime--SABNZBD_PASSWORD" = { namespace = "media"; name = "media-runtime"; key = "SABNZBD_PASSWORD"; };
+          "media--media-runtime--JELLYFIN_OWNER_USERNAME" = { namespace = "media"; name = "media-runtime"; key = "JELLYFIN_OWNER_USERNAME"; };
+          "media--media-runtime--JELLYFIN_OWNER_PASSWORD" = { namespace = "media"; name = "media-runtime"; key = "JELLYFIN_OWNER_PASSWORD"; };
+          "media--media-runtime--JELLYFIN_OWNER_EMAIL" = { namespace = "media"; name = "media-runtime"; key = "JELLYFIN_OWNER_EMAIL"; };
+          "identity--kanidm-provision--idm-admin-password" = { namespace = "identity"; name = "kanidm-provision"; key = "idm-admin-password"; };
+          "gateway--gateway-tls--tls.crt" = { namespace = "gateway"; name = "gateway-tls"; key = "tls.crt"; };
+          "gateway--gateway-tls--tls.key" = { namespace = "gateway"; name = "gateway-tls"; key = "tls.key"; };
+          "gateway--gateway-tls--ca.crt" = { namespace = "gateway"; name = "gateway-tls"; key = "ca.crt"; };
+          "identity--kanidm-tls--tls.crt" = { namespace = "identity"; name = "kanidm-tls"; key = "tls.crt"; };
+          "identity--kanidm-tls--tls.key" = { namespace = "identity"; name = "kanidm-tls"; key = "tls.key"; };
+          "monitoring--grafana-admin--admin-user" = { namespace = "monitoring"; name = "grafana-admin"; key = "admin-user"; };
+          "monitoring--grafana-admin--admin-password" = { namespace = "monitoring"; name = "grafana-admin"; key = "admin-password"; };
+          "argocd--argocd-secret--admin.password" = { namespace = "argocd"; name = "argocd-secret"; key = "admin.password"; };
+          "argocd--argocd-secret--admin.passwordMtime" = { namespace = "argocd"; name = "argocd-secret"; key = "admin.passwordMtime"; };
+          "argocd--argocd-secret--server.secretkey" = { namespace = "argocd"; name = "argocd-secret"; key = "server.secretkey"; };
+        };
         recoveryPath = "/var/lib/homelab/compute-1/recovery";
         identityPath = "/var/lib/homelab/compute-1/identity";
         mediaPath = "/run/homelab-compute/media";
@@ -45,13 +159,6 @@
             type = "nic";
             "ipv4.address" = "10.210.0.10";
             host_name = "veth-comp-1";
-          };
-          config = {
-            path = "/srv/jellyfin/config";
-            propagation = "rprivate";
-            readonly = "false";
-            source = "/var/lib/homelab/compute-1/jellyfin";
-            type = "disk";
           };
           media = {
             path = "/srv/media";

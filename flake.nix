@@ -87,6 +87,14 @@
       url = "github:LnL7/nix-darwin";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    nixhelm = {
+      url = "github:nix-community/nixhelm/068e160b626290509ffa4841f03b0cd9e3ebe4b3";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    nixidy = {
+      url = "github:sini/nixidy/e8f90b04d508541120341238aded759150d3d63c";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     nixos-anywhere = {
       url = "github:nix-community/nixos-anywhere";
       inputs.nixpkgs.follows = "nixpkgs";

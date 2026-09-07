@@ -45,9 +45,30 @@ in
           type = types.ints.positive;
           description = "Fixed UID/GID map size reserved for the guest.";
         };
-        statePath = mkOption {
-          type = types.str;
-          description = "Persistent Jellyfin configuration directory on the host.";
+        retainedPaths = mkOption {
+          type = types.attrsOf (types.submodule {
+            options = {
+              path = mkOption { type = types.str; };
+              guestPath = mkOption { type = types.str; };
+              uid = mkOption { type = types.ints.unsigned; };
+              gid = mkOption { type = types.ints.unsigned; };
+              mode = mkOption { type = types.str; };
+              readOnly = mkOption { type = types.bool; default = false; };
+            };
+          });
+          description = "Retained host directories and their guest ownership and attachment boundary.";
+        };
+        runtimeSecrets = mkOption {
+          type = types.attrsOf (types.submodule {
+            options = {
+              namespace = mkOption { type = types.strMatching "[a-z0-9]([-a-z0-9]*[a-z0-9])?"; };
+              name = mkOption { type = types.strMatching "[a-z0-9]([-a-z0-9.]*[a-z0-9])?"; };
+              key = mkOption { type = types.strMatching "[a-zA-Z0-9._-]+"; };
+              type = mkOption { type = types.strMatching "[A-Za-z0-9./-]+"; default = "Opaque"; };
+            };
+          });
+          default = { };
+          description = "Required runtime files keyed namespace--secret--key; encrypted inputs live under the guest's host secret directory.";
         };
         recoveryPath = mkOption {
           type = types.str;
@@ -77,28 +98,36 @@ in
       config = { };
     };
 
-    persist = [
-      {
-        directories = [ "/var/lib/incus-storage-pools/incus-compute" ];
-        user = "root";
-        group = "root";
-      }
-      {
-        directories = [
-          "/var/lib/homelab/compute-1/jellyfin"
-          "/var/lib/homelab/compute-1/recovery"
-        ];
-        user = "1000751";
-        group = "1000751";
-        mode = "0750";
-      }
-      {
-        directories = [ "/var/lib/homelab/compute-1/identity" ];
-        user = "1000000";
-        group = "1000000";
-        mode = "0700";
-      }
-    ];
+    persist =
+      { host, ... }:
+      let
+        cfg = host.settings.virtualization.compute;
+      in
+      [
+        {
+          directories = [ "/var/lib/incus-storage-pools/${cfg.pool}" ];
+          user = "root";
+          group = "root";
+        }
+        {
+          directories = [ cfg.recoveryPath ];
+          user = toString (cfg.idmapBase + 751);
+          group = toString (cfg.idmapBase + 751);
+          mode = "0750";
+        }
+        {
+          directories = [ cfg.identityPath ];
+          user = toString cfg.idmapBase;
+          group = toString cfg.idmapBase;
+          mode = "0700";
+        }
+      ]
+      ++ lib.mapAttrsToList (_: entry: {
+        directories = [ entry.path ];
+        user = toString (cfg.idmapBase + entry.uid);
+        group = toString (cfg.idmapBase + entry.gid);
+        inherit (entry) mode;
+      }) cfg.retainedPaths;
 
     nixos =
       {
@@ -111,6 +140,29 @@ in
       }:
       let
         cfg = host.settings.virtualization.compute;
+        secretPath = "/run/homelab-compute/secrets";
+        secretNames = builtins.attrNames cfg.runtimeSecrets;
+        secretGroups = lib.groupBy (source:
+          let entry = cfg.runtimeSecrets.${source};
+          in "${entry.namespace}/${entry.name}"
+        ) secretNames;
+        secretAge = name: inputs.self + "/.secrets/hosts/${cfg.instance}/${name}.age";
+        devices = cfg.devices // lib.mapAttrs (_: entry: {
+          type = "disk";
+          source = entry.path;
+          path = entry.guestPath;
+          propagation = "rprivate";
+          readonly = lib.boolToString entry.readOnly;
+          required = "true";
+        }) cfg.retainedPaths // lib.optionalAttrs (secretNames != [ ]) {
+          secrets = {
+            type = "disk";
+            source = secretPath;
+            path = "/srv/secrets";
+            readonly = "true";
+            required = "true";
+          };
+        };
         projectConfig = {
           "features.images" = "true";
           "features.networks" = "false";
@@ -128,11 +180,11 @@ in
           "restricted.containers.nesting" = "allow";
           "restricted.containers.privilege" = "unprivileged";
           "restricted.devices.disk" = "allow";
-          "restricted.devices.disk.paths" = lib.concatStringsSep "," [
-            cfg.statePath
-            cfg.identityPath
-            cfg.mediaPath
-          ];
+          "restricted.devices.disk.paths" = lib.concatStringsSep "," (
+            map (entry: entry.path) (builtins.attrValues cfg.retainedPaths)
+            ++ [ cfg.identityPath cfg.mediaPath ]
+            ++ lib.optional (secretNames != [ ]) secretPath
+          );
           "restricted.devices.gpu" = "block";
           "restricted.devices.infiniband" = "block";
           "restricted.devices.nic" = "managed";
@@ -168,26 +220,30 @@ in
           "ipv6.address" = "none";
         };
 
-        requiredPaths = [
-          {
-            path = cfg.statePath;
-            uid = cfg.idmapBase + 751;
-            gid = cfg.idmapBase + 751;
-          }
+        requiredPaths = lib.mapAttrsToList (_: entry: {
+          inherit (entry) path mode readOnly;
+          uid = cfg.idmapBase + entry.uid;
+          gid = cfg.idmapBase + entry.gid;
+        }) cfg.retainedPaths ++ [
           {
             path = cfg.recoveryPath;
             uid = cfg.idmapBase + 751;
             gid = cfg.idmapBase + 751;
+            mode = "0750";
+            readOnly = false;
           }
           {
             path = cfg.identityPath;
             uid = cfg.idmapBase;
             gid = cfg.idmapBase;
+            mode = "0700";
+            readOnly = false;
           }
           {
             path = cfg.mediaPath;
             uid = 0;
             gid = 0;
+            mode = "0755";
             readOnly = true;
           }
         ];
@@ -198,6 +254,7 @@ in
             poolPath
             networkConfig
             requiredPaths
+            devices
             ;
           inherit (cfg)
             project
@@ -208,12 +265,12 @@ in
             address
             idmapBase
             idmapSize
-            statePath
+            retainedPaths
+            runtimeSecrets
             recoveryPath
             identityPath
             mediaPath
             config
-            devices
             ;
         };
       in
@@ -253,7 +310,7 @@ in
               name = cfg.profile;
               description = "Unprivileged private compute envelope";
               config = cfg.config;
-              devices = cfg.devices;
+              inherit devices;
             }
           ];
         };
@@ -280,7 +337,12 @@ in
             mode = "0400";
             restartUnits = [ "compute-stage-identity.service" ];
           };
-        };
+        } // lib.genAttrs (lib.filter (name: builtins.pathExists (secretAge name)) secretNames) (name: {
+          provider = "agenix";
+          ageFile = secretAge name;
+          mode = "0400";
+          restartUnits = [ "compute-stage-secrets.service" ];
+        });
         systemd.services.compute-stage-identity = {
           description = "Stage the declared compute SSH identity";
           wantedBy = lib.optional hasIdentity "multi-user.target";
@@ -308,6 +370,58 @@ in
             install -m 0444 -o ${toString cfg.idmapBase} -g ${toString cfg.idmapBase} ${publicKeyFile} ${cfg.identityPath}/.pub-new
             mv -T ${cfg.identityPath}/.key-new ${cfg.identityPath}/ssh_host_ed25519_key
             mv -T ${cfg.identityPath}/.pub-new ${cfg.identityPath}/ssh_host_ed25519_key.pub
+          '';
+        };
+        systemd.services.compute-stage-secrets = {
+          description = "Stage declared compute runtime credentials";
+          wantedBy = lib.optional (secretNames != [ ]) "multi-user.target";
+          before = [ "incus.service" ];
+          path = [
+            pkgs.coreutils
+            pkgs.util-linux
+            pkgs.kubectl
+          ];
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+          };
+          script = ''
+            set -eu
+            umask 077
+            exec 9>/run/lock/compute-${cfg.project}-${cfg.instance}.lock
+            flock -n 9
+            root=${lib.escapeShellArg secretPath}
+            mkdir -p "$root"
+            if mountpoint -q "$root"; then
+              test "$(findmnt -n -o FSTYPE -M "$root")" = tmpfs
+            else
+              mount -t tmpfs -o ro,uid=${toString cfg.idmapBase},gid=${toString cfg.idmapBase},mode=0700,size=1m tmpfs "$root"
+            fi
+            ${lib.concatMapStringsSep "\n" (name: ''
+              test -s /run/agenix/${lib.escapeShellArg name}
+            '') secretNames}
+            mount -o remount,rw "$root"
+            trap 'rm -f -- "$root/runtime-secrets.yaml.new"; mount -o remount,ro "$root"' EXIT
+            {
+              :
+              ${lib.concatStringsSep "\n" (lib.mapAttrsToList (_: sources:
+                let entry = cfg.runtimeSecrets.${builtins.head sources};
+                in assert lib.assertMsg (lib.all (source: cfg.runtimeSecrets.${source}.type == entry.type) sources)
+                  "Runtime keys for ${entry.namespace}/${entry.name} must share one Secret type";
+                ''
+                  kubectl create secret generic ${lib.escapeShellArg entry.name} \
+                    --namespace ${lib.escapeShellArg entry.namespace} \
+                    --type ${lib.escapeShellArg entry.type} \
+                    ${lib.concatMapStringsSep " " (source:
+                      "--from-file=" + lib.escapeShellArg "${cfg.runtimeSecrets.${source}.key}=/run/agenix/${source}"
+                    ) sources} --dry-run=client -o yaml
+                  printf '\n---\n'
+                ''
+              ) secretGroups)}
+            } > "$root/runtime-secrets.yaml.new"
+            chown ${toString cfg.idmapBase}:${toString cfg.idmapBase} "$root/runtime-secrets.yaml.new"
+            chmod 0400 "$root/runtime-secrets.yaml.new"
+            mv -f -- "$root/runtime-secrets.yaml.new" "$root/runtime-secrets.yaml"
           '';
         };
 

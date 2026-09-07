@@ -1,4 +1,4 @@
-{ ... }:
+{ pkgs, ... }:
 {
   den.aspects.services.kubernetes = {
     nixos =
@@ -31,6 +31,31 @@
           # K3s's native template detects the outer user namespace and sets
           # disable_apparmor/restrict_oom_score_adj itself.
           images = [ config.services.k3s.package.airgap-images ];
+        };
+        systemd.services.kubernetes-runtime-secrets = {
+          description = "Apply the atomically staged Kubernetes runtime Secrets";
+          wantedBy = [ "multi-user.target" ];
+          after = [ "k3s.service" ];
+          requires = [ "k3s.service" ];
+          unitConfig.ConditionPathExists = "/srv/secrets/runtime-secrets.yaml";
+          serviceConfig = {
+            Type = "oneshot";
+            TimeoutStartSec = "5min";
+            Restart = "on-failure";
+            RestartSec = "15s";
+          };
+          script = ''
+            ${pkgs.kubectl}/bin/kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml \
+              apply --server-side --field-manager=homelab-runtime-secrets \
+              -f /srv/secrets/runtime-secrets.yaml
+          '';
+        };
+        systemd.paths.kubernetes-runtime-secrets = {
+          wantedBy = [ "multi-user.target" ];
+          pathConfig = {
+            PathChanged = "/srv/secrets/runtime-secrets.yaml";
+            Unit = "kubernetes-runtime-secrets.service";
+          };
         };
       };
   };

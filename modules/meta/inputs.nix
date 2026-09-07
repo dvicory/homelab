@@ -38,6 +38,15 @@
 
     gen-scope.url = "github:sini/gen-scope/3bc93dfdb49da9ae06ce84a1d35905a1c138de99";
 
+    nixidy = {
+      url = "github:sini/nixidy/e8f90b04d508541120341238aded759150d3d63c";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    nixhelm = {
+      url = "github:nix-community/nixhelm/068e160b626290509ffa4841f03b0cd9e3ebe4b3";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     # agenix + agenix-rekey declared by batteries/agenix.nix (self-contained)
 
     # Impermanence
