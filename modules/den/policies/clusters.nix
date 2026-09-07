@@ -29,7 +29,7 @@ in
             intoAttr = [ "nixidyEnvs" system cluster.name ];
             instantiate = { modules, ... }:
               withSystem system ({ pkgs, ... }:
-                inputs.nixidy.lib.mkEnv {
+                (lib.makeOverridable inputs.nixidy.lib.mkEnv) {
                   inherit pkgs;
                   # Den emits module diagnostics at the standard root paths.
                   modules = modules ++ [

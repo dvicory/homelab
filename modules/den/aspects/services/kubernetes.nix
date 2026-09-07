@@ -1,4 +1,3 @@
-{ pkgs, ... }:
 {
   den.aspects.services.kubernetes = {
     nixos =
@@ -45,7 +44,7 @@
             RestartSec = "15s";
           };
           script = ''
-            ${pkgs.kubectl}/bin/kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml \
+            ${config.services.k3s.package}/bin/k3s kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml \
               apply --server-side --field-manager=homelab-runtime-secrets \
               -f /srv/secrets/runtime-secrets.yaml
           '';

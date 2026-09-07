@@ -33,7 +33,7 @@ in
       requests = route "requests" "media" "seerr" 5055 "native";
       grafana = route "grafana" "monitoring" "monitoring-grafana" 80 "admin";
       argocd = route "argocd" "argocd" "argocd-server" 80 "admin";
-      idm = route "idm" "identity" "kanidm" 8443 "native";
+      idm = route "idm" "identity" "kanidm" 443 "native";
     };
   };
 

@@ -15,24 +15,21 @@
     k8s-manifests =
       { cluster, charts, pkgs, lib, ... }:
       let
-        chart = pkgs.stdenvNoCC.mkDerivation {
-          pname = "immich-helm-chart";
+        chartSource = lib.helm.downloadHelmChart {
+          repo = "oci://ghcr.io/immich-app/immich-charts";
+          chart = "immich";
           version = "0.13.1";
-          nativeBuildInputs = [ pkgs.cacert pkgs.kubernetes-helm ];
-          dontUnpack = true;
-          installPhase = ''
-            export HELM_CACHE_HOME="$TMP/helm-cache"
-            mkdir -p "$TMP/chart"
-            helm pull \
-              --version "0.13.1" \
-              "oci://ghcr.io/immich-app/immich-charts/immich" \
-              --untar \
-              --destination "$TMP/chart"
-            mv "$TMP/chart/immich" "$out"
-          '';
-          outputHashMode = "recursive";
-          outputHash = "sha256-Ekk7MBUJYc+IOMdUzE2H0LPPrKoLbcwEilZIU/YO/kg=";
+          chartHash = "sha256-Ekk7MBUJYc+IOMdUzE2H0LPPrKoLbcwEilZIU/YO/kg=";
         };
+        # Embed the already pinned common schema: Helm validation must not
+        # fetch GitHub from inside the offline rendering sandbox.
+        chart = pkgs.runCommand "immich-chart-offline-schema" { nativeBuildInputs = [ pkgs.jq ]; } ''
+          cp -r ${chartSource} "$out"
+          chmod u+w "$out" "$out/values.schema.json"
+          jq --slurpfile common ${chartSource}/charts/common/values.schema.json \
+            '.["$defs"].common = $common[0]' ${chartSource}/values.schema.json \
+            > "$out/values.schema.json"
+        '';
         namespace = "immich";
         route = cluster.routes.immich;
         configurationSecret = cluster.settings.kubernetes.services.immich.oidcConfigurationSecret;

@@ -11,7 +11,10 @@
       guestSystem = builtins.replaceStrings [ "darwin" ] [ "linux" ] system;
       guestPkgs = inputs.nixpkgs.legacyPackages.${guestSystem};
       guest = self.nixosConfigurations.compute-1.extendModules {
-        modules = [ { nixpkgs.hostPlatform = lib.mkForce guestSystem; } ];
+        modules = [{
+          nixpkgs.hostPlatform = lib.mkForce guestSystem;
+          networking.firewall.allowedTCPPorts = lib.mkAfter [ 30096 ];
+        }];
       };
       host = self.nixosConfigurations.hvn-hyp1.extendModules {
         modules = [ { nixpkgs.hostPlatform = lib.mkForce guestSystem; } ];
@@ -66,7 +69,29 @@
       );
       scenario = ./jellyfin-recovery.py;
       computeGuest = guestPkgs.callPackage (inputs.self + "/pkgs/by-name/compute-guest/package.nix") { };
-      application = self.packages.${guestSystem}.jellyfin-kubernetes;
+      image = self.packages.${guestSystem}.jellyfin-image;
+      # Only this disposable fixture exposes a private NodePort. Production
+      # keeps the shared chart's ClusterIP service behind the authenticated edge.
+      application = (self.nixidyEnvs.${guestSystem}.prod-home.override (old: {
+        modules = old.modules ++ [{
+          applications.jellyfin.helm.releases.jellyfin.values = {
+            service.main = {
+              type = lib.mkForce "NodePort";
+              ports.http.nodePort = 30096;
+            };
+            controllers.main = {
+              initContainers.prepare.image = {
+                tag = lib.mkForce (lib.last (lib.splitString ":" image.imageReference));
+                pullPolicy = lib.mkForce "Never";
+              };
+              containers.main.image = {
+                tag = lib.mkForce (lib.last (lib.splitString ":" image.imageReference));
+                pullPolicy = lib.mkForce "Never";
+              };
+            };
+          };
+        }];
+      })).config.build.environmentPackage;
       test = pkgs.testers.runNixOSTest {
         name = "jellyfin-recovery";
         globalTimeout = 4 * 60 * 60;
@@ -89,6 +114,7 @@
                 fixture
                 guestBundle
                 application
+                image
               ];
 
               incus = {
@@ -142,6 +168,7 @@
               " --bundle ${guestBundle}"
               " --fixture ${fixture}"
               " --application ${application}"
+              " --image ${image}"
               " --helper ${computeGuest}/bin/compute-guest < /dev/null",
               timeout=4 * 60 * 60,
           )
@@ -150,7 +177,10 @@
     in
     {
       # Run locally with native Apple virtualization; CI uses Linux KVM.
-      legacyPackages.jellyfin-recovery-test = test;
+      legacyPackages.jellyfin-recovery-test = test // {
+        # The same inputs can exercise the scenario in a disposable Linux VM.
+        inherit fixture application image guestBundle;
+      };
       checks = lib.optionalAttrs (system == "x86_64-linux") {
         jellyfin-recovery = test // {
           meta = test.meta // {

@@ -17,6 +17,9 @@
             };
             bootstrapManifest.enable = true;
             defaults.helm.extraOpts = [ "--kube-version" cluster.kubeVersion ];
+            applicationImports = [
+              ({ lib, ... }: { syncPolicy.syncOptions.serverSideApply = lib.mkDefault true; })
+            ];
             defaults.syncPolicy.autoSync = {
               enable = true;
               prune = true;

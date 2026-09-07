@@ -141,8 +141,8 @@ in
             };
             service.main = {
               controller = "main";
-              type = "NodePort";
-              ports.http = { port = 8096; targetPort = 8096; nodePort = 30096; };
+              type = "ClusterIP";
+              ports.http = { port = 8096; targetPort = 8096; };
             };
             configMaps.network.data."network.xml" = ''
               <?xml version="1.0" encoding="utf-8"?>

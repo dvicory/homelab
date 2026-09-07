@@ -121,11 +121,11 @@
           "media--media-runtime--JELLYFIN_OWNER_PASSWORD" = { namespace = "media"; name = "media-runtime"; key = "JELLYFIN_OWNER_PASSWORD"; };
           "media--media-runtime--JELLYFIN_OWNER_EMAIL" = { namespace = "media"; name = "media-runtime"; key = "JELLYFIN_OWNER_EMAIL"; };
           "identity--kanidm-provision--idm-admin-password" = { namespace = "identity"; name = "kanidm-provision"; key = "idm-admin-password"; };
-          "gateway--gateway-tls--tls.crt" = { namespace = "gateway"; name = "gateway-tls"; key = "tls.crt"; };
-          "gateway--gateway-tls--tls.key" = { namespace = "gateway"; name = "gateway-tls"; key = "tls.key"; };
-          "gateway--gateway-tls--ca.crt" = { namespace = "gateway"; name = "gateway-tls"; key = "ca.crt"; };
-          "identity--kanidm-tls--tls.crt" = { namespace = "identity"; name = "kanidm-tls"; key = "tls.crt"; };
-          "identity--kanidm-tls--tls.key" = { namespace = "identity"; name = "kanidm-tls"; key = "tls.key"; };
+          "gateway--gateway-tls--tls.crt" = { namespace = "gateway"; name = "gateway-tls"; key = "tls.crt"; type = "kubernetes.io/tls"; };
+          "gateway--gateway-tls--tls.key" = { namespace = "gateway"; name = "gateway-tls"; key = "tls.key"; type = "kubernetes.io/tls"; };
+          "gateway--gateway-tls--ca.crt" = { namespace = "gateway"; name = "gateway-tls"; key = "ca.crt"; type = "kubernetes.io/tls"; };
+          "identity--kanidm-tls--tls.crt" = { namespace = "identity"; name = "kanidm-tls"; key = "tls.crt"; type = "kubernetes.io/tls"; };
+          "identity--kanidm-tls--tls.key" = { namespace = "identity"; name = "kanidm-tls"; key = "tls.key"; type = "kubernetes.io/tls"; };
           "monitoring--grafana-admin--admin-user" = { namespace = "monitoring"; name = "grafana-admin"; key = "admin-user"; };
           "monitoring--grafana-admin--admin-password" = { namespace = "monitoring"; name = "grafana-admin"; key = "admin-password"; };
           "argocd--argocd-secret--admin.password" = { namespace = "argocd"; name = "argocd-secret"; key = "admin.password"; };

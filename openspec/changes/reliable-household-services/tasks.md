@@ -1,7 +1,7 @@
 ## 1. Shared delivery and ownership
 
-- [ ] 1.1 Record the delegated architecture decisions and their relationship to current contracts. Verify the proposal/spec/design/task artifacts with OpenSpec; do not promote active changes to current authority.
-- [ ] 1.2 Integrate Sini-style Den cluster composition, Nixidy and pinned upstream charts. Build the environment/bootstrap outputs and prove cluster settings reach the selected manifests without duplicating host metadata.
+- [x] 1.1 Record the delegated architecture decisions and their relationship to current contracts. Verify the proposal/spec/design/task artifacts with OpenSpec; do not promote active changes to current authority.
+- [x] 1.2 Integrate Sini-style Den cluster composition, Nixidy and pinned upstream charts. Build the environment/bootstrap outputs and prove cluster settings reach the selected manifests without duplicating host metadata.
 - [ ] 1.3 Provide Argo application reconciliation, protected retained resources and static bootstrap/recovery artifacts. Exercise delivery and resource retirement against a disposable Git source; demonstrate a single owner and no-live-Git bootstrap. Migrate the existing Jellyfin AddOn callers without overlapping ownership.
 
 ## 2. Retained state and runtime credentials

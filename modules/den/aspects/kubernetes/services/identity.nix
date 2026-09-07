@@ -139,6 +139,10 @@
                   containers = [ {
                     name = "kanidm";
                     image = image;
+                    resources = {
+                      requests = { cpu = "100m"; memory = "256Mi"; };
+                      limits = { cpu = "2"; memory = "1Gi"; };
+                    };
                     command = [ "/sbin/kanidmd" ];
                     args = [ "server" "-c" "/etc/kanidm/server.toml" ];
                     ports = [ { name = "https"; containerPort = 8443; } ];
@@ -179,7 +183,6 @@
               selector = labels;
               ports = [
                 { name = "https"; port = 443; targetPort = "https"; protocol = "TCP"; }
-                { name = "https-backend"; port = 8443; targetPort = "https"; protocol = "TCP"; }
               ];
             };
           }
@@ -190,7 +193,7 @@
             spec.endpoints = [ {
               fqdn = {
                 hostname = "kanidm.identity.svc.cluster.local";
-                port = 8443;
+                port = 443;
               };
             } ];
           }
@@ -294,6 +297,10 @@
                     name = "provision";
                     image = provisioning.imageRef;
                     imagePullPolicy = "Never";
+                    resources = {
+                      requests = { cpu = "50m"; memory = "64Mi"; };
+                      limits = { cpu = "1"; memory = "256Mi"; };
+                    };
                     env = [
                       { name = "KANIDM_URL"; value = "https://${domain}"; }
                       { name = "HOME"; value = "/work"; }

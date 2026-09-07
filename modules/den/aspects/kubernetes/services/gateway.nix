@@ -46,7 +46,7 @@
                 kind = "Backend";
                 name = "kanidm-oidc";
                 namespace = "identity";
-                port = 8443;
+                port = 443;
               } ];
             };
             clientID = "household-admin";

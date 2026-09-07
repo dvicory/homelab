@@ -10,7 +10,7 @@ Public ingress SHALL support an edge outside the application cluster and a separ
 
 #### Scenario: The remote edge is unavailable
 - **WHEN** an operator uses the configured home backup entrance while the application origin and home connection remain available
-- **THEN** declared services remain reachable without restoring the remote edge or making the replacement edge a cluster member
+- **THEN** declared native-authentication services remain reachable without restoring the remote edge or making the replacement edge a cluster member; fresh centralized-identity sessions require the documented canonical-identity failover when that entrance is affected
 
 ### Requirement: Recovery routing preserves explicit application URL constraints
 
@@ -22,7 +22,7 @@ Ingress SHALL support configurable primary and backup service hostnames and appl
 
 #### Scenario: An operator selects a backup URL
 - **WHEN** the alternate entrance is used
-- **THEN** its TLS identity and applicable authentication redirects are valid, and any application/client URL switch required for recovery is explicit
+- **THEN** its TLS identity and applicable authentication redirects are valid, and any application/client URL switch or canonical-identity DNS failover required for recovery is explicit rather than implied to be instantaneous
 
 ### Requirement: Public authentication is compatible with supported clients
 

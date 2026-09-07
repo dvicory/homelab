@@ -8,6 +8,8 @@ Define the delivery, ownership, and recovery guarantees that make household appl
 
 Each managed household application SHALL declare its release, runtime dependencies, required credentials, durable state, disposable state, and writable storage boundary. Delivering one application SHALL NOT implicitly upgrade another or reset its accounts and content. A resource SHALL have one desired-state reconciliation owner.
 
+Managed configuration fields SHALL be explicit. Reconciliation MAY overwrite out-of-band edits to those fields, but SHALL preserve undeclared application records, identities and content. Application restart SHALL NOT require successful cross-service configuration reconciliation.
+
 #### Scenario: An independent application release
 - **WHEN** an operator delivers a selected application release
 - **THEN** unrelated application releases and retained data remain unchanged and required dependencies are available before the application is declared usable

@@ -8,7 +8,8 @@ configuration; execution is restricted to the designated disposable test VMs.
   sudo modules/tests/jellyfin-recovery.py \
     --bundle /nix/store/...-compute-1-bundle \
     --fixture /tmp/compute-fixture.json \
-    --application /nix/store/...-jellyfin-kubernetes \
+    --application /nix/store/...-nixidy-environment \
+    --image /nix/store/...-jellyfin-image.tar \
     --helper pkgs/by-name/compute-guest/compute-guest.py
 """
 
@@ -98,8 +99,9 @@ def json_copy(value):
 
 
 def descriptor_paths(descriptor: dict, mounts: list[dict]) -> list[Path]:
-    paths = []
-    for key in ("statePath", "recoveryPath", "identityPath", "mediaPath", "poolPath"):
+    paths = [Path(entry["path"]) for entry in descriptor["requiredPaths"]]
+    paths.extend(Path(entry["guestPath"]) for entry in descriptor["retainedPaths"].values())
+    for key in ("recoveryPath", "identityPath", "mediaPath", "poolPath"):
         value = descriptor.get(key)
         if isinstance(value, str):
             paths.append(Path(value))
@@ -276,18 +278,18 @@ class Runtime:
         result = completed(*self.helper_command(operation, spec=spec, bundle=self.bundle, confirm=True), timeout=3_600)
         check(result.returncode != 0, f"helper refuses {expected}")
 
-    def install_application(self, application: Path) -> None:
-        # Standard image import and atomic publication to the native AddOn
-        # directory. Application releases do not activate a NixOS generation.
-        self.incus("file", "push", str(application / "image.tar"), f"{self.instance}/tmp/jellyfin-image.tar", timeout=600)
+    def install_application(self, application: Path, image: Path) -> None:
+        # Nixidy renders the release; recovery applies only the selected static
+        # resources, without an Argo controller, AddOn, or environment-wide prune.
+        self.incus("file", "push", str(image), f"{self.instance}/tmp/jellyfin-image.tar", timeout=600)
         self.guest("k3s", "ctr", "images", "import", "--local", "--snapshotter", "native", "/tmp/jellyfin-image.tar", timeout=600)
         self.guest("rm", "/tmp/jellyfin-image.tar")
-        for member in ("retained", "workload"):
-            staged = f"/tmp/jellyfin-{member}.yaml"
-            self.incus("file", "push", str(application / f"{member}.yaml"), f"{self.instance}{staged}")
-            self.guest("mv", staged, f"/var/lib/rancher/k3s/server/manifests/jellyfin-{member}.yaml")
-        wait_for("Jellyfin deployment object", lambda: self.kubectl_json("get", "deployment/jellyfin", "-o", "json", namespace="jellyfin"))
-        self.guest("rm", "-f", "/var/lib/rancher/k3s/server/manifests/jellyfin-workload.yaml.skip")
+        for member in ("jellyfin-retained", "jellyfin"):
+            for index, manifest in enumerate(sorted((application / member).rglob("*.yaml"))):
+                staged = f"/tmp/{member}-{index}.yaml"
+                self.incus("file", "push", str(manifest), f"{self.instance}{staged}")
+                self.kubectl("apply", "-f", staged)
+                self.guest("rm", staged)
         self.kubectl("scale", "deployment/jellyfin", "--replicas=1", namespace="jellyfin")
         wait_for("independently delivered Jellyfin", self.app_ready)
 
@@ -453,12 +455,7 @@ def load_nftables(runtime: Runtime, tables: list[dict]) -> None:
 
 
 def source_paths(descriptor: dict, mounts: list[dict]) -> list[Path]:
-    protected = {
-        Path(descriptor["mediaPath"]),
-        Path(descriptor["statePath"]),
-        Path(descriptor["identityPath"]),
-        Path(descriptor["recoveryPath"]),
-    }
+    protected = {Path(entry["path"]) for entry in descriptor["requiredPaths"]}
     result: list[Path] = []
     for mount in mounts:
         source = Path(mount["what"])
@@ -487,7 +484,7 @@ def clear_directory(path: Path) -> None:
             child.unlink()
 
 
-def stage_identity(descriptor: dict, identity: Path, state: Path, recovery: Path) -> str:
+def stage_identity(descriptor: dict, identity: Path) -> str:
     private = identity / "ssh_host_ed25519_key"
     run("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(private), timeout=60)
     public = (identity / "ssh_host_ed25519_key.pub").read_text().strip()
@@ -497,10 +494,6 @@ def stage_identity(descriptor: dict, identity: Path, state: Path, recovery: Path
     os.chmod(private, 0o400)
     os.chown(identity / "ssh_host_ed25519_key.pub", descriptor["idmapBase"], descriptor["idmapBase"])
     os.chmod(identity / "ssh_host_ed25519_key.pub", 0o444)
-    os.chown(state, descriptor["idmapBase"] + 751, descriptor["idmapBase"] + 751)
-    os.chmod(state, 0o750)
-    os.chown(recovery, descriptor["idmapBase"] + 751, descriptor["idmapBase"] + 751)
-    os.chmod(recovery, 0o750)
     descriptor["publicKey"] = public
     return public
 
@@ -663,9 +656,14 @@ def run_scenario(args: argparse.Namespace) -> None:
     check(args.bundle.is_dir() and str(args.bundle.resolve()).startswith("/nix/store/"), "bundle is an immutable Nix store output")
     for member in ("metadata.tar.xz", "rootfs.tar.xz", "system"):
         check((args.bundle / member).exists(), f"bundle contains {member}")
+    rootfs_members = run("tar", "-tJf", str(args.bundle / "rootfs.tar.xz"), timeout=600).splitlines()
+    deployed_identity_paths = {"etc/ssh/ssh_host_ed25519_key", "srv/identity/ssh_host_ed25519_key"}
+    check(not any(member.removeprefix("./").lstrip("/") in deployed_identity_paths for member in rootfs_members),
+          "guest root artifact contains no preinstalled runtime host identity")
     check(args.helper.is_file(), "compute helper exists")
-    for member in ("image.tar", "image-reference", "retained.yaml", "workload.yaml"):
-        check((args.application / member).exists(), f"application artifact contains {member}")
+    check(args.image.is_file(), "independent Jellyfin image archive exists")
+    for member in ("jellyfin-retained", "jellyfin"):
+        check(any((args.application / member).rglob("*.yaml")), f"Nixidy environment contains {member} manifests")
     project = descriptor["project"]
     instance_name = descriptor["instance"]
     check(instance_query(project, instance_name) is None, "disposable instance is absent before the scenario")
@@ -675,8 +673,11 @@ def run_scenario(args: argparse.Namespace) -> None:
         workspace = Path(temporary)
         safe_dirs: list[Path] = []
         source_temps: dict[Path, Path] = {}
-        for key in ("statePath", "recoveryPath", "identityPath", "mediaPath"):
-            prepare_directory(Path(descriptor[key]), safe_dirs)
+        host_paths = {Path(entry["path"]) for entry in descriptor["requiredPaths"]}
+        host_paths.update(Path(device["source"]) for device in descriptor["devices"].values()
+                          if device.get("type") == "disk" and "source" in device)
+        for path in sorted(host_paths):
+            prepare_directory(path, safe_dirs)
         for source in source_paths(descriptor, mounts):
             prepare_directory(source, safe_dirs)
             source_temps[source] = workspace / ("source-" + hashlib.sha256(str(source).encode()).hexdigest()[:12])
@@ -700,13 +701,19 @@ def run_scenario(args: argparse.Namespace) -> None:
             durable.mkdir()
             run("mount", "--bind", str(durable), str(persist))
             runtime.retained_mounts.append(persist)
-            for key in ("statePath", "identityPath", "recoveryPath"):
-                target = Path(descriptor[key])
+            for entry in descriptor["requiredPaths"]:
+                target = Path(entry["path"])
+                if str(target) == descriptor["mediaPath"]:
+                    continue
                 backing = persist / str(target).lstrip("/")
                 backing.mkdir(parents=True)
                 run("mount", "--bind", str(backing), str(target))
                 runtime.retained_mounts.append(target)
-            public_key = stage_identity(descriptor, Path(descriptor["identityPath"]), Path(descriptor["statePath"]), Path(descriptor["recoveryPath"]))
+                os.chown(target, entry["uid"], entry["gid"])
+                os.chmod(target, int(entry["mode"], 8))
+                if entry["readOnly"]:
+                    run("mount", "-o", "remount,bind,ro", str(target))
+            public_key = stage_identity(descriptor, Path(descriptor["identityPath"]))
             spec_path.write_text(json.dumps(descriptor, indent=2) + "\n")
         except BaseException:
             runtime.cleanup()
@@ -747,6 +754,17 @@ def run_scenario(args: argparse.Namespace) -> None:
                     staged.append(f"root:{start}:{end - start}")
                 path.write_text("\n".join(staged) + "\n")
 
+            retained = descriptor["retainedPaths"]["jellyfin-config"]
+            retained_path = Path(retained["path"])
+            run("umount", str(retained_path))
+            try:
+                os.chown(retained_path, descriptor["idmapBase"] + retained["uid"],
+                         descriptor["idmapBase"] + retained["gid"])
+                runtime.helper_expect_failure("create", "unmounted retained storage")
+                check(instance_query(project, instance_name) is None,
+                      "missing retained mount cannot create a guest on substitute storage")
+            finally:
+                run("mount", "--bind", str(persist / str(retained_path).lstrip("/")), str(retained_path))
             runtime.created_instance = True
             runtime.helper_run("create", bundle=args.bundle, timeout=3_600)
             wait_for("healthy K3s node", runtime.node_ready)
@@ -755,10 +773,30 @@ def run_scenario(args: argparse.Namespace) -> None:
                 mapping = [tuple(map(int, line.split())) for line in runtime.guest("cat", f"/proc/self/{kind}_map").splitlines()]
                 check(mapping == [(0, descriptor["idmapBase"], descriptor["idmapSize"])],
                       f"guest {kind} mapping uses the declared non-root host range")
+            for name, entry in descriptor["retainedPaths"].items():
+                permissions = Path(entry["path"]).stat()
+                check(permissions.st_mode & 0o7777 == int(entry["mode"], 8),
+                      f"{name} has its declared retained directory permissions")
+                probe = entry["guestPath"] + "/.retained-permission-probe"
+                result = completed(
+                    "incus", "--force-local", "--project", project, "exec", instance_name,
+                    "--user", str(entry["uid"]), "--group", str(entry["gid"]),
+                    "--mode=non-interactive", "--", "sh", "-ec",
+                    "printf retained > " + shlex.quote(probe))
+                if entry["readOnly"]:
+                    check(result.returncode != 0, f"{name} denies writes through its declared read-only attachment")
+                else:
+                    check(result.returncode == 0, f"{name} permits its declared writer")
+                    written = Path(entry["path"]) / ".retained-permission-probe"
+                    check(written.read_text() == "retained"
+                          and written.stat().st_uid == descriptor["idmapBase"] + entry["uid"]
+                          and written.stat().st_gid == descriptor["idmapBase"] + entry["gid"],
+                          f"{name} retains data with the declared mapped owner")
+                    written.unlink()
             check(all(item["metadata"]["namespace"] != "jellyfin"
                       for item in runtime.kubectl_json("get", "deployments", "-A", "-o", "json")["items"]),
                   "guest starts without a bundled Jellyfin deployment")
-            runtime.install_application(args.application)
+            runtime.install_application(args.application, args.image)
             check(runtime.app_ready(), "Jellyfin starts when the intended media source is present")
             verify_private_endpoints(runtime)
 
@@ -780,8 +818,8 @@ def run_scenario(args: argparse.Namespace) -> None:
             api_request(base, "POST", f"/Users/{user_id}/PlayedItems/{item_id}", token=token, expected=(204, 200))
             _, played = api_request(base, "GET", f"/Users/{user_id}/Items/{item_id}?Fields=Path,UserData", token=token, expected=(200,))
             check(played.get("UserData", {}).get("Played") is True, "Jellyfin records meaningful playback state")
-            marker = Path(descriptor["statePath"]) / ".compute-recovery-marker"
-            runtime.kubectl("exec", "deployment/jellyfin", "-c", "jellyfin", "--",
+            marker = Path(descriptor["retainedPaths"]["jellyfin-config"]["path"]) / ".compute-recovery-marker"
+            runtime.kubectl("exec", "deployment/jellyfin", "--",
                             "sh", "-ec", "printf 'retained-state\\n' > /config/.compute-recovery-marker",
                             namespace="jellyfin")
             marker_stat = marker.stat()
@@ -872,29 +910,24 @@ def run_scenario(args: argparse.Namespace) -> None:
             runtime.start_sources_and_storage(list(source_temps), source_temps)
             wait_for("Jellyfin after media restoration", runtime.app_ready)
 
-            disposable_manifest = "/var/lib/rancher/k3s/server/manifests/compute-recovery-disposable.yaml"
-            unrelated_manifest = "/var/lib/rancher/k3s/server/manifests/compute-recovery-unrelated.yaml"
-            runtime.guest("sh", "-ec", f"cat > {shlex.quote(unrelated_manifest)} <<'EOF'\n{yaml_config_map('recovery-unrelated', 'keep-me')}EOF\ncat > {shlex.quote(disposable_manifest)} <<'EOF'\n{yaml_config_map('recovery-disposable', 'remove-me')}EOF")
-            wait_for("native AddOn objects", lambda: runtime.kubectl("get", "configmap/recovery-disposable", namespace="jellyfin") or True)
-            runtime.guest("sh", "-ec", f"cat > {shlex.quote(disposable_manifest)} <<'EOF'\nEOF")
-            wait_for("native AddOn pruning", lambda: not any(
-                item["metadata"]["name"] == "recovery-disposable"
-                for item in runtime.kubectl_json("get", "configmaps", "-o", "json", namespace="jellyfin")["items"]))
+            unrelated_manifest = "/tmp/compute-recovery-unrelated.yaml"
+            runtime.guest("sh", "-ec", f"cat > {shlex.quote(unrelated_manifest)} <<'EOF'\n{yaml_config_map('recovery-unrelated', 'keep-me')}EOF")
+            runtime.kubectl("apply", "-f", unrelated_manifest)
+            runtime.guest("rm", unrelated_manifest)
+            runtime.install_application(args.application, args.image)
             unrelated = runtime.kubectl_json("get", "configmap/recovery-unrelated", "-o", "json", namespace="jellyfin")
-            check(unrelated["data"]["value"] == "keep-me", "native AddOn pruning preserves an unrelated object and its data")
-            check(marker.read_text() == "retained-state\n", "native AddOn pruning preserves retained application data")
-            runtime.guest("rm", "-f", disposable_manifest, unrelated_manifest)
+            check(unrelated["data"]["value"] == "keep-me", "selected static apply preserves unrelated objects")
+            check(marker.read_text() == "retained-state\n", "selected static apply preserves retained application data")
 
             # Exercise the explicit maintenance procedure, not a production
             # application-aware guest manager.
             checkpoint = Path(descriptor["recoveryPath"]) / "checkpoint"
-            state = Path(descriptor["statePath"])
+            state = Path(descriptor["retainedPaths"]["jellyfin-config"]["path"])
             required = int(run("du", "-sb", str(state)).split()[0])
             check(shutil.disk_usage(checkpoint.parent).free >= 3 * required + 1024**3,
                   "space exists for complete checkpoint and preserved restore copies")
             with Path(f"/run/lock/compute-{project}-{instance_name}.lock").open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                runtime.guest("touch", "/var/lib/rancher/k3s/server/manifests/jellyfin-workload.yaml.skip")
                 runtime.kubectl("scale", "deployment/jellyfin", "--replicas=0", namespace="jellyfin")
                 wait_for("no application pods before checkpoint", lambda: not runtime.kubectl_json(
                     "get", "pods", "-l", "app.kubernetes.io/name=jellyfin", "-o", "json", namespace="jellyfin")["items"])
@@ -903,11 +936,11 @@ def run_scenario(args: argparse.Namespace) -> None:
                       "runtime has no application writer before copying retained state")
                 checkpoint.mkdir(mode=0o700)
                 run("nix-store", "--add-root", str(checkpoint / "application"), "--indirect", "--realise", str(args.application))
+                run("nix-store", "--add-root", str(checkpoint / "image"), "--indirect", "--realise", str(args.image))
                 run("cp", "-a", "--reflink=auto", str(state), str(checkpoint / "config"), timeout=600)
                 run("sync", "-f", str(checkpoint))
                 (checkpoint / "complete").touch()
                 run("sync", "-f", str(checkpoint))
-                runtime.guest("rm", "/var/lib/rancher/k3s/server/manifests/jellyfin-workload.yaml.skip")
                 runtime.kubectl("scale", "deployment/jellyfin", "--replicas=1", namespace="jellyfin")
             wait_for("application after checkpoint", runtime.app_ready)
             # A real post-checkpoint state change must be undone by paired restore.
@@ -919,11 +952,11 @@ def run_scenario(args: argparse.Namespace) -> None:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 run("test", "-f", str(checkpoint / "complete"))
                 run("nix-store", "--realise", str(checkpoint / "application"))
+                run("nix-store", "--realise", str(checkpoint / "image"))
                 required = int(run("du", "-sb", str(checkpoint / "config")).split()[0])
                 live = int(run("du", "-sb", str(state)).split()[0])
                 check(shutil.disk_usage(checkpoint.parent).free >= required + live + 1024**3,
                       "space exists for restore and displaced live data")
-                runtime.guest("touch", "/var/lib/rancher/k3s/server/manifests/jellyfin-workload.yaml.skip")
                 runtime.kubectl("scale", "deployment/jellyfin", "--replicas=0", namespace="jellyfin")
                 wait_for("no application pods before restore", lambda: not runtime.kubectl_json(
                     "get", "pods", "-l", "app.kubernetes.io/name=jellyfin", "-o", "json", namespace="jellyfin")["items"])
@@ -942,7 +975,7 @@ def run_scenario(args: argparse.Namespace) -> None:
                 run("sync", "-f", str(state))
                 runtime.incus("start", instance_name)
                 wait_for("node after explicit data restore", runtime.node_ready)
-                runtime.install_application((checkpoint / "application").resolve())
+                runtime.install_application((checkpoint / "application").resolve(), (checkpoint / "image").resolve())
             verify_api_state(base, username, password, "Recovery Media", item_id)
             runtime.helper_run("replace", bundle=args.bundle, confirm=True, timeout=3_600)
             new_instance = instance_query(project, instance_name)
@@ -951,7 +984,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             wait_for("replacement K3s node", runtime.node_ready)
             new_cluster_token = runtime.guest("cat", "/var/lib/rancher/k3s/server/token")
             check(new_cluster_token != original_cluster_token, "replacement has fresh disposable K3s cluster state")
-            runtime.install_application(args.application)
+            runtime.install_application(args.application, args.image)
             check(marker.read_text() == "retained-state\n", "guest replacement preserves retained application data")
             check(marker.stat().st_uid == marker_stat.st_uid and marker.stat().st_gid == marker_stat.st_gid and marker.stat().st_mode == marker_stat.st_mode, "guest replacement preserves retained data ownership and mode")
             verify_api_state(base, username, password, "Recovery Media", item_id)
@@ -964,7 +997,7 @@ def run_scenario(args: argparse.Namespace) -> None:
                 diagnostics = completed("incus", "--force-local", "--project", project, "exec", instance_name,
                                         "--", "journalctl", "-u", "k3s", "-u", "sshd", "-n", "80", "--no-pager")
                 print(diagnostics.stdout or diagnostics.stderr, file=sys.stderr)
-                for command in (["describe", "pods"], ["logs", "deployment/jellyfin", "-c", "jellyfin", "--tail=100"]):
+                for command in (["describe", "pods"], ["logs", "deployment/jellyfin", "--tail=100"]):
                     diagnostics = completed(
                         "incus", "--force-local", "--project", project, "exec", instance_name,
                         "--", "k3s", "kubectl", "--request-timeout=15s", "-n", "jellyfin", *command)
@@ -978,7 +1011,8 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--bundle", required=True, type=Path, help="Nix store guest bundle matching the test host architecture")
     result.add_argument("--fixture", required=True, type=Path, help="evaluated host fixture JSON")
-    result.add_argument("--application", required=True, type=Path, help="independent Jellyfin Kubernetes release artifact")
+    result.add_argument("--application", required=True, type=Path, help="Nixidy environmentPackage with the private fixture's Jellyfin applications")
+    result.add_argument("--image", required=True, type=Path, help="independent jellyfin-image archive matching the rendered image tag")
     result.add_argument("--helper", type=Path, default=Path("/run/current-system/sw/bin/compute-guest"), help="generic compute lifecycle executable or repository .py helper")
     return result
 

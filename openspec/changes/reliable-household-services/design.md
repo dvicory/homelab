@@ -38,7 +38,7 @@ Use application-consistent recovery boundaries: quiesce writers before exporting
 | Seerr | Official image/chart, one replica, retained configuration, internal Jellyfin service URL and user-facing external URL. Native Jellyfin/local sign-in; do not promise undocumented stable OIDC. |
 | Monitoring | One kube-prometheus-stack release for Prometheus, Alertmanager, Grafana and kube-state-metrics; bounded Loki single-binary filesystem storage and an Alloy CRI-log collector. No monitoring PostgreSQL, HA or per-application logging sidecars. |
 
-Nixflix directly owns NixOS/systemd services. Borrow narrowly useful idempotent API configuration patterns only when upstream declarative configuration or an existing tool cannot supply required service connections. Configarr/Recyclarr are existing choices for explicitly selected quality-policy fields, not reasons to overwrite backup-owned libraries, users or history.
+Nix owns explicitly declared service connections, paths, exposure and selected quality policy; UI edits to those fields may be overwritten. Preserve media, users, history and other undeclared records. Prefer native configuration, then independent supported-API reconciliation Jobs—not cross-service setup on every application restart. Nixflix's strong ownership is desirable, but its NixOS/systemd and private-helper coupling is not a Kubernetes interface. Configarr/Recyclarr cover quality policy, not all required connections. See [ADR-0004](../../../docs/architecture/decisions/0004-declarative-application-configuration.md).
 
 ### Independent public ingress and identity
 
@@ -47,6 +47,8 @@ Kubernetes application routes are the only per-service routing inventory. NixOS 
 Use a Gateway API implementation that works with the current CNI, not a CNI replacement. Prefer ordinary HTTP reverse proxying with TLS termination at each edge and authenticated, certificate-verified private transport to the origin. Overwrite client-supplied forwarding headers at the Internet edge and trust them only from declared peers at the origin. Backend bypass denial is part of runtime acceptance, not an assumed property of an OIDC login page.
 
 The normal domain points to a colo/VPS edge. A normally available home edge serves a configurable backup domain. Prepare manual same-name DNS failover, accounting for TTL/cache delays. The accepted privacy goal is keeping home addressing out of normal service DNS, not preventing discovery. Neither entrance survives loss of the home connection or origin.
+
+Kanidm retains one canonical issuer and passkey origin. A fresh administrator login through a backup application hostname still needs that identity hostname; when its normal edge fails, explicitly fail canonical identity DNS over and wait for cache expiry. Native-authentication backup access and fresh OIDC session availability are different claims. See [ADR-0003](../../../docs/architecture/decisions/0003-independent-ingress-and-canonical-identity.md).
 
 Preserve application-native authentication for public media/photo/request clients and centralize where supported. Kanidm is the preferred household identity service; its placement must not become a substrate recovery dependency. Browser-only administration uses strong identity and administrator authorization. Raw SSH, Kubernetes and database protocols remain private. Jellyfin's archived third-party SSO plugin is not a required dependency.
 
@@ -63,4 +65,4 @@ Concentrate durable checks on evaluated storage/secret/access boundaries and the
 - Missing runtime credentials intentionally block their consumers; they must not silently select anonymous access or generated replacement identities.
 - Alternate hostnames may require coordinated canonical URL and OIDC callback changes. Immich does not support subpaths; reject incompatible routing.
 - Image/chart versions evolve independently. Pin compatible pairs and inspect architecture support rather than copying Sini's amd64-only image pins.
-- Declarative integration must not overwrite user-managed application state on restart or recovery.
+- Declarative integration may overwrite explicitly managed configuration, but must preserve undeclared application records on restart and recovery.
