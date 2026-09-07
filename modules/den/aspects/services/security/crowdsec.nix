@@ -1,7 +1,7 @@
 { inputs, ... }: {
   flake-file.inputs = {
-    # CrowdSec PR refactor (based on TornaxO7's rewrite
-    # https://github.com/NixOS/nixpkgs/pull/446307).
+    # CrowdSec refactor from TornaxO7's follow-up PR:
+    # https://github.com/NixOS/nixpkgs/pull/535319
     # Reference config: https://github.com/1randomguy/nixconfig/blob/main/modules/nixos/homelab/services/crowdsec.nix
     crowdsec-pr.url = "github:dvicory/nixpkgs/crowdsec";
   };
@@ -67,17 +67,9 @@
                   "+${pkgs.coreutils}/bin/chown -R crowdsec:crowdsec /etc/crowdsec"
                   "+${pkgs.coreutils}/bin/chmod 750 -R /etc/crowdsec"
                 ];
-                ReadWritePaths = [ persistDataDir ];
               };
             };
 
-            systemd.services.crowdsec.serviceConfig.ReadWritePaths = [
-              persistDataDir
-            ];
-
-            systemd.services.crowdsec-update-hub.serviceConfig.ReadWritePaths = [
-              persistDataDir
-            ];
 
             # Run cscli in the same sandboxed context as CrowdSec while
             # pointing it at the persistent data directory.
@@ -125,16 +117,7 @@
         ];
 
         config = lib.mkIf config.services.crowdsec-firewall-bouncer.enable {
-          systemd.services.crowdsec-firewall-bouncer-register.serviceConfig = {
-            ExecStartPre = [
-              "+${pkgs.coreutils}/bin/chown -R ${config.services.crowdsec.user}:${config.services.crowdsec.group} /var/lib/crowdsec-firewall-bouncer-register"
-            ];
-            ReadWritePaths = lib.mkForce [
-              persistDataDir
-              "/var/lib/crowdsec-firewall-bouncer-register"
-            ];
-          };
-          systemd.services.crowdsec-firewall-bouncer.serviceConfig.ReadWritePaths = lib.mkForce [
+          systemd.services.crowdsec-firewall-bouncer-register.serviceConfig.ReadWritePaths = lib.mkForce [
             persistDataDir
             "/var/lib/crowdsec-firewall-bouncer-register"
           ];
