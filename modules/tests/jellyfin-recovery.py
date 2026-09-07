@@ -300,7 +300,7 @@ class Runtime:
         root = Path(self.descriptor["devices"]["secrets"]["source"])
         try:
             return subprocess.run(
-                ["bash", "-c", fixture["secretStageScript"]],
+                ["/bin/sh", "-c", fixture["secretStageScript"]],
                 env={**os.environ, "PATH": fixture["secretStagePath"]},
                 capture_output=True, text=True, timeout=COMMAND_TIMEOUT, check=False,
             )

@@ -7,12 +7,12 @@
 ## 2. Retained state and runtime credentials
 
 - [x] 2.1 Replace application-specific compute state plumbing with declared retained-path mappings while preserving non-root ID translation, encryption/persistence, read-only legacy media and independent management. Evaluate exact boundaries and exercise missing-path refusal plus writer/reader permissions in disposable storage.
-- [ ] 2.2 Deliver named Kubernetes Secrets from host-staged runtime files using the existing agenix flow. Prove missing files fail closed, values stay out of rendered artifacts, and replacement consumers receive the declared secrets without regenerating identities.
+- [x] 2.2 Deliver named Kubernetes Secrets from host-staged runtime files using the existing agenix flow. Prove missing files fail closed, values stay out of rendered artifacts, and replacement consumers receive the declared secrets without regenerating identities.
 - [ ] 2.3 Implement quiesced, application-consistent export/restore using standard native/database tools and explicit retained inputs. Demonstrate completion/failure reporting, input validation and preservation of displaced state with a representative disposable recovery set; distinguish same-host recovery points from independent backups.
 
 ## 3. Thin workload integrations
 
-- [ ] 3.1 Move Jellyfin onto the shared rendering/delivery path while preserving its retained configuration, pinned image, native-client access and read-only media. Run a representative authenticated service smoke check after delivery/replacement; leave physical GPU validation gated.
+- [x] 3.1 Move Jellyfin onto the shared rendering/delivery path while preserving its retained configuration, pinned image, native-client access and read-only media. Run a representative authenticated service smoke check after delivery/replacement; leave physical GPU validation gated.
 - [ ] 3.2 Add the official Immich chart with compatible server/CPU-ML/database/cache releases and declared asset/database storage. Render and start the real services; use one disposable upload/recovery smoke to establish that our mounts and recovery set are complete, not an upstream feature suite.
 - [ ] 3.3 Add Radarr, Sonarr, SABnzbd and Seerr through thin upstream-chart aspects with retained local state, consistent fresh library/download paths and required internal service connections. Exercise probes/API access and shared-path ownership with disposable content; do not connect production providers or migrate existing libraries.
 
