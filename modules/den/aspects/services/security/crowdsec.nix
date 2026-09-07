@@ -40,8 +40,9 @@
               hub.collections = [ "crowdsecurity/linux" ];
 
               settings = {
+                config.config_paths.data_dir = persistDataDir;
                 config.api.server.online_client.credentials_path =
-                  "/var/lib/crowdsec/data/online_api_credentials.yaml";
+                  "${persistDataDir}/online_api_credentials.yaml";
 
                 acquisitions = [
                   {
@@ -55,19 +56,8 @@
               };
             };
 
-            # DynamicUser + ZFS persist: ZFS doesn't support id-mapped
-            # mounts required for DynamicUser's user namespace setup. If a
-            # ZFS mount sits inside the StateDirectory path, systemd fails
-            # at step NAMESPACE with EBUSY.
-            #
-            # openzfs/zfs#12923 — FS_ALLOW_IDMAP not yet implemented.
-            #
-            # Workaround: persist data outside the StateDirectory
-            # (/persist/crowdsec/data) and symlink into it at runtime.
-            # The id-mapped mount covers only the symlink inode (on
-            # tmpfs/rootfs), not the ZFS data behind it. Ownership is
-            # fixed each boot via chown resolved through nss-systemd
-            # (dynamic users are visible to getpwnam).
+            # Keep CrowdSec data on the persistent dataset without relying on
+            # systemd's private state-directory namespace.
             systemd.services.crowdsec-setup = {
               serviceConfig = {
                 ExecStartPre = [
@@ -76,12 +66,6 @@
                   "+${pkgs.coreutils}/bin/chmod -R 0750 ${persistDataDir}"
                   "+${pkgs.coreutils}/bin/chown -R crowdsec:crowdsec /etc/crowdsec"
                   "+${pkgs.coreutils}/bin/chmod 750 -R /etc/crowdsec"
-                  # Host-level symlink: survives oneshot namespace teardown.
-                  # StateDirectory is created AFTER +ExecStartPre, so we
-                  # mkdir the parent ourselves here.
-                  "+${pkgs.coreutils}/bin/mkdir -p /var/lib/private/crowdsec"
-                  "+${pkgs.coreutils}/bin/rm -rf /var/lib/private/crowdsec/data"
-                  "+${pkgs.coreutils}/bin/ln -sfn ${persistDataDir} /var/lib/private/crowdsec/data"
                 ];
                 ReadWritePaths = [ persistDataDir ];
               };
@@ -95,10 +79,8 @@
               persistDataDir
             ];
 
-            # PR module's cscli wrapper uses systemd-run for a transient
-            # DynamicUser unit. It's missing ReadWritePaths so interactive
-            # cscli commands fail to access the ZFS persist dir via the
-            # symlink. Override with the same wrapper plus the property.
+            # Run cscli in the same sandboxed context as CrowdSec while
+            # pointing it at the persistent data directory.
             environment.systemPackages = lib.mkBefore [
               (pkgs.symlinkJoin {
                 name = "cscli";
@@ -111,13 +93,11 @@
                       --collect \
                       --pipe \
                       --service-type=exec \
-                      --working-directory=/var/lib/crowdsec/data/hub \
+                      --working-directory=${persistDataDir}/hub \
                       --property=ExecPaths="${config.services.crowdsec.settings.config.config_paths.plugin_dir}" \
                       --property=User=${config.services.crowdsec.user} \
                       --property=Group=${config.services.crowdsec.group} \
                       --property=DynamicUser=true \
-                      --property=StateDirectory="crowdsec" \
-                      --property=StateDirectoryMode="0750" \
                       --property=ConfigurationDirectory="crowdsec" \
                       --property=ConfigurationDirectoryMode="0750" \
                       --property=ReadWritePaths=${persistDataDir} \
@@ -145,11 +125,18 @@
         ];
 
         config = lib.mkIf config.services.crowdsec-firewall-bouncer.enable {
-          systemd.services.crowdsec-firewall-bouncer-register.serviceConfig.ReadWritePaths = [
+          systemd.services.crowdsec-firewall-bouncer-register.serviceConfig = {
+            ExecStartPre = [
+              "+${pkgs.coreutils}/bin/chown -R ${config.services.crowdsec.user}:${config.services.crowdsec.group} /var/lib/crowdsec-firewall-bouncer-register"
+            ];
+            ReadWritePaths = lib.mkForce [
+              persistDataDir
+              "/var/lib/crowdsec-firewall-bouncer-register"
+            ];
+          };
+          systemd.services.crowdsec-firewall-bouncer.serviceConfig.ReadWritePaths = lib.mkForce [
             persistDataDir
-          ];
-          systemd.services.crowdsec-firewall-bouncer.serviceConfig.ReadWritePaths = [
-            persistDataDir
+            "/var/lib/crowdsec-firewall-bouncer-register"
           ];
         };
       };
