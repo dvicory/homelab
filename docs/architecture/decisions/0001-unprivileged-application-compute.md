@@ -2,7 +2,7 @@
 id: ADR-0001
 status: accepted
 date: 2026-09-06
-updated: 2026-09-07
+updated: 2026-09-08
 decision-makers:
   - Daniel Vicory
 consulted: []
@@ -18,6 +18,7 @@ related-specs:
   - secret-management
 related-changes:
   - reproducible-jellyfin-compute
+  - reliable-household-services
 target-architecture: []
 ---
 
@@ -69,3 +70,22 @@ attachment and lifecycle implementation.
 The workload needs authority outside this boundary, BPF/hardware access cannot
 be narrowly delegated, stronger tenant isolation is required, or container
 compatibility costs exceed a VM migration.
+
+
+## Later context (2026-09-08)
+
+On 2026-09-08, the operator approved a planning refinement in
+[reliable-household-services](../../../openspec/changes/reliable-household-services/proposal.md)
+that distinguishes routine application-scoped capture from destructive restore
+and guest replacement. Routine capture should use supported online tools first,
+coordinate only writers required for the affected application's consistency set,
+and leave unrelated services and the compute guest running; temporary writer
+pauses must be released when safe, and failures to resume must be reported. Destructive restore and guest
+replacement remain separately authorized operations with their own interruption
+expectations. This clarifies recovery handling within the accepted compute
+boundary; it does not change the unprivileged-container decision, promise
+zero-downtime replacement, or make same-host captures independent backups. The
+active change and its
+[household-services](../../../openspec/changes/reliable-household-services/specs/household-services/spec.md)
+delta remain proposed authority; the current management, storage, and secret
+contracts remain authoritative.

@@ -1,12 +1,12 @@
 ## Context
 
-See [proposal.md](proposal.md) for scope. Current specs remain authoritative. The existing compute slice supplies an unprivileged Incus guest, K3s 1.35.8, Flannel/kube-proxy, host-retained state and an independent host management path. Its native Darwin recovery run currently fails at CoreDNS container creation; the earlier Lima proof is separate evidence. Production inspection, credentials, deployment, DNS changes and migration remain gated.
+See [proposal.md](proposal.md) for scope. Current specs remain authoritative. The existing compute slice supplies an unprivileged Incus guest, K3s, Flannel/kube-proxy, host-retained state and an independent host management path. Earlier disposable Linux recovery and application smokes are separate evidence, not proof of the expanded platform. The current household restore renames retained mount roots and its acceptance scenario does not exercise the shipped household recovery command. Full recovery, Argo handoff, ingress authorization and monitoring delivery remain incomplete. The 2026-09-08 operator review approved this planning refinement, not implementation or production activation.
 
 ## Goals / Non-Goals
 
 Use the operator's delegated authority to build useful, locally verifiable infrastructure. Generic contracts and mechanisms own delivery, storage, secrets, ingress and observability. Thin application aspects own upstream values and compatibility choices. Permanent tests defend our boundaries; representative application operations provide smoke evidence rather than duplicating upstream suites.
 
-Do not replace the CNI, introduce distributed storage, migrate old service data, write a general application framework, or require a live identity/cluster service to repair its own substrate.
+Do not replace the CNI, introduce distributed storage, migrate old service data, write a general application or backup framework, or require a live identity/cluster service to repair its own substrate. Do not turn routine backup capture into whole-guest maintenance.
 
 ## Decisions
 
@@ -20,13 +20,27 @@ Nixidy supports direct apply, but its environment-wide prune also includes names
 
 The existing K3s Jellyfin AddOn and Argo must never manage the same resources concurrently. Migrate the local fixture and operating commands in a clean cutover; a future production handoff is a separately authorized operation. Do not add another renderer or a Nixflix-to-Kubernetes translation layer.
 
+Consolidate facts at their existing owners: host placement and retained storage, application endpoints and container identities, environment domains, and shared agenix master identities. Project those declarations into mounts, PVs, routes, recovery membership and generated references rather than restating them. Reject missing environment/aspect references and mismatched endpoints during evaluation. Preserve existing paths, IDs, resource names and claims during consolidation; an ownership or storage migration needs separate treatment. Container/image IDs are not implicitly NixOS account IDs.
+
 ### Storage and runtime secrets
 
 Generalize the compute envelope's hard-coded application state into explicit retained-path declarations carrying host path, guest path, guest UID/GID, mode and read-only status. Preserve fixed non-root host ID translation, encrypted host persistence and the existing read-only legacy-media boundary. Fresh writable download/library paths are separate from legacy data. Static local PVs bind only declared paths and node placement; missing paths must not create substitute storage.
 
 Keep agenix/rekey authoritative. Stage required runtime files on the physical host and expose a narrow read-only credential directory to the guest. Materialize named Kubernetes Secrets at runtime through the native API; secret references and file mappings may be rendered, plaintext values may not enter images, Nix store artifacts or Git. Reuse the existing missing-identity preflight pattern for unprovisioned production files. A secret operator and another encryption translation layer are not required merely to retain Sini's manifest composition.
 
-Use application-consistent recovery boundaries: quiesce writers before exporting a matched set, validate before restore, and preserve displaced state. Standard database/native backup tools own application-specific formats; infrastructure owns ordering, retained inputs, permissions, completion publication and failure visibility. Same-host exports are recovery points, not independent backups.
+### Backup capture and recovery
+
+Keep the application-consistent recovery boundary, but do not equate it with the whole guest. A recovery point identifies a restorable set; an independently protected backup copies that set outside the failure domain it must survive. Retained directories, same-host snapshots and exports do not by themselves protect against losing the host.
+
+Use supported online application/database backups first. Pause writers only when needed to capture mutually consistent state, and only within the affected data boundary. Where the actual host filesystem supports suitable snapshots, obtain a stable capture, resume writers, then perform the slow backup transfer. A filesystem snapshot is not automatically application-consistent. Do not assume snapshot support on every mount or introduce a new storage topology to satisfy this plan.
+
+The coordination rule is data safety, not connectivity: include another component only if independently captured state can lose records, omit referenced files or make restoration unsupported. A temporary API error is not enough. Sonarr calling SAB does not alone require stopping both; shared-file mutation or non-retryable work requires concrete examination. No dependency discovery engine or recursive service shutdown graph is planned. Each application's capture procedure identifies its durable data and relevant writers, using existing declarations and native tools.
+
+Immich's database and referenced assets remain a matched recovery set. PostgreSQL supports online backups, but that alone does not synchronize the asset filesystem. Verify the pinned application's supported capture method, including concurrent upload, deletion and move behavior; do not silently substitute a weaker live-copy guarantee. Record any unavoidable interruption and seek an operator decision if it requires extended downtime or weaker consistency.
+
+Restore validates the complete selected set before mutation, preserves displaced contents without renaming retained mount roots, and leaves affected writers stopped on failure until explicitly resumed. Resume checks actual application readiness and restores any paused reconciliation owner only when safe. Routine capture must restore its temporary writer/reconciliation pauses and report failure if service resumption fails; it must not leave the guest stopped awaiting a manual resume. Destructive restore and guest replacement remain separately authorized operations with different interruption expectations.
+
+Measure capture interruption, completion, per-application recovery-point age and restore results. A successful export does not establish that an independent backup transfer succeeded. Independent applications may have different capture times; do not promise a globally synchronized history. Backup cadence, tolerated data loss, retention, destination protection and any pause limit require operator policy before production scheduling; none is invented by this revision.
 
 ### Thin service aspects
 
@@ -38,7 +52,13 @@ Use application-consistent recovery boundaries: quiesce writers before exporting
 | Seerr | Official image/chart, one replica, retained configuration, internal Jellyfin service URL and user-facing external URL. Native Jellyfin/local sign-in; do not promise undocumented stable OIDC. |
 | Monitoring | One kube-prometheus-stack release for Prometheus, Alertmanager, Grafana and kube-state-metrics; bounded Loki single-binary filesystem storage and an Alloy CRI-log collector. No monitoring PostgreSQL, HA or per-application logging sidecars. |
 
-Nix owns explicitly declared service connections, paths, exposure and selected quality policy; UI edits to those fields may be overwritten. Preserve media, users, history and other undeclared records. Prefer native configuration, then independent supported-API reconciliation Jobs—not cross-service setup on every application restart. Nixflix's strong ownership is desirable, but its NixOS/systemd and private-helper coupling is not a Kubernetes interface. Configarr/Recyclarr cover quality policy, not all required connections. See [ADR-0004](../../../docs/architecture/decisions/0004-declarative-application-configuration.md).
+Nix owns explicitly declared service connections, paths, exposure and selected quality policy; UI edits to those fields may be overwritten. Preserve media, users, history and other undeclared records. Prefer native configuration, then independent supported-API reconciliation Jobs—not cross-service setup on every application restart. Nixflix's NixOS/systemd and private-helper coupling is not a Kubernetes interface. See [ADR-0004](../../../docs/architecture/decisions/0004-declarative-application-configuration.md).
+
+Use an existing configuration-driven TRaSH tool instead of the custom quality-profile reconciler. Evaluate Configarr first: it supports templates, local custom formats, runtime secret references and revision controls; broader root-folder/download-client management is documented as experimental. Recyclarr is the narrower alternative if those broader features do not replace our code reliably. Clonarr's browser-managed policy is less aligned with repository ownership. Tool selection remains subject to disposable verification, not an accepted dependency merely because it appears here.
+
+Pin the tool and upstream TRaSH/template revisions, keep personal overrides in repository configuration, and retain the selected inputs for reconstruction without live upstream content. Review upstream changes rather than silently following a moving branch. Verify managed-field repair, preservation of unrelated records and credential updates before cutting over; remove overlapping custom writers. Do not assume that configuring an Arr download client also configures SAB itself or Seerr.
+
+Separate Radarr, Sonarr, SAB and Seerr application definitions rather than extending the application-name exception loop. Reuse a Radarr definition across Radarr instances and a Sonarr definition across Sonarr instances, with distinct configuration volumes, credentials, library roots, categories and profile selections. Share unchanged defaults and image metadata, not an all-application runtime model. Exercise two same-application instance declarations locally; actual 4K deployment remains later work. One Jellyfin instance is the intended reader of both library trees, initially presented as separate libraries.
 
 ### Independent public ingress and identity
 
@@ -50,19 +70,28 @@ The normal domain points to a colo/VPS edge. A normally available home edge serv
 
 Kanidm retains one canonical issuer and passkey origin. A fresh administrator login through a backup application hostname still needs that identity hostname; when its normal edge fails, explicitly fail canonical identity DNS over and wait for cache expiry. Native-authentication backup access and fresh OIDC session availability are different claims. See [ADR-0003](../../../docs/architecture/decisions/0003-independent-ingress-and-canonical-identity.md).
 
-Preserve application-native authentication for public media/photo/request clients and centralize where supported. Kanidm is the preferred household identity service; its placement must not become a substrate recovery dependency. Browser-only administration uses strong identity and administrator authorization. Raw SSH, Kubernetes and database protocols remain private. Jellyfin's archived third-party SSO plugin is not a required dependency.
+Preserve application-native authentication for public media/photo/request clients and centralize where supported. Kanidm is the preferred household identity service; its placement must not become a substrate recovery dependency. Arr and SAB start with public administrator-only browser access and private API-key-authenticated access for automation and private-network clients. The public browser UI may make its own authenticated API requests; “private API” means no separate public non-browser API access path, not blocking the UI's requests. Keep application-native API authentication independent of the browser gateway. Adding a reviewed public client path later must not require replacing application state or disabling authentication. No unused public API route is added now. Raw SSH, Kubernetes and database protocols remain private. Jellyfin's archived third-party SSO plugin is not a required dependency.
 
 ### Verification and operator handoff
 
-Run the existing infrastructure recovery scenario where practical, but do not spend the work window repeatedly chasing a Darwin-only runtime limitation. Use the authorized disposable Linux environment for application/platform runtime evidence. Keep environment-specific failures visible.
+Use the authorized disposable Linux environment for platform runtime evidence; report native Darwin evidence separately. Earlier passes do not establish that revised artifacts pass. Exercise the packaged capture/restore/resume path rather than a second manual recovery procedure.
 
-Concentrate durable checks on evaluated storage/secret/access boundaries and the owned lifecycle. Exercise real rendered manifests, a representative retained marker/database set, route and authentication denial, Argo ownership/retirement, and Alertmanager firing/resolution against disposable destinations. Do not create per-application regression suites for upstream authentication, playback or library behavior. Record exact checks and unverified production/hardware/provider gates.
+Concentrate durable checks on evaluated storage/secret/access boundaries and owned lifecycle behavior. Exercise matched database/assets, unrelated-service availability during capture, failure and resumption, mount-root preservation, route/authentication denial, Argo ownership/retirement, and Alertmanager firing/resolution against disposable destinations. Verify native private API access and public browser authorization separately. Do not create per-application upstream feature suites.
+
+Check Incus adoption conflicts before preseed can modify an existing envelope. Static bootstrap must distinguish successful apply from ready services and explicit first-enrollment prerequisites; exercise the transition to Argo ownership. Maintain Markdown orientation and operating procedures with prerequisites and expected outcomes. Generate Markdown tables only for evaluated inventories and artifact references, not duplicate procedural prose. Keep disposable evidence in local continuity notes and production/hardware/provider gates explicit.
 
 ## Risks / Trade-offs
 
 - Argo adds a controller and Git dependency for normal reconciliation; static bootstrap and non-pruning recovery artifacts must remain usable without live Git.
-- Single-node local storage accepts planned outages and host failure. Host disk capacity and memory need production inspection before deployment.
+- Single-node local storage accepts guest-replacement and host-failure outages, not routine whole-guest backup shutdowns. Online capture can add IO load; short pauses depend on actual application and filesystem support. Host capacity and pause duration need evidence before scheduling.
 - Missing runtime credentials intentionally block their consumers; they must not silently select anonymous access or generated replacement identities.
 - Alternate hostnames may require coordinated canonical URL and OIDC callback changes. Immich does not support subpaths; reject incompatible routing.
 - Image/chart versions evolve independently. Pin compatible pairs and inspect architecture support rather than copying Sini's amd64-only image pins.
 - Declarative integration may overwrite explicitly managed configuration, but must preserve undeclared application records on restart and recovery.
+
+## Evidence informing this revision
+
+- [PostgreSQL online dumps](https://www.postgresql.org/docs/14/app-pgdump.html) provide database consistency, not consistency with external files.
+- [Immich backup ordering](https://docs.immich.app/administration/backup-and-restore/#backup-ordering) distinguishes stopped-server capture from live database-first/file-second backup.
+- [Configarr configuration](https://configarr.de/docs/configuration/config-file/) documents revision controls, templates, runtime secrets and experimental broader settings; verify against the selected release.
+- [Recyclarr](https://recyclarr.dev/guide/getting-started/) and [Clonarr](https://github.com/ProphetSe7en/clonarr) offer different configuration ownership and interaction models.

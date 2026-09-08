@@ -36,6 +36,18 @@ Public household services SHALL enforce application-native authentication, with 
 - **WHEN** the requester lacks administrator authorization or supplies untrusted identity headers
 - **THEN** the administrative operation is denied and supplied headers do not establish trust
 
+### Requirement: Administrative browser exposure is separate from API client exposure
+
+Public administrative browser access SHALL NOT implicitly provide a browser-login bypass for non-browser API clients. Native authenticated API access SHALL remain available through the declared private access boundary independently of browser gateway authentication. Later approval of public API clients SHALL be implementable without replacing application state or removing native authentication.
+
+#### Scenario: A private automation client uses an administratively exposed application
+- **WHEN** it connects through the declared private boundary with valid native API credentials
+- **THEN** its supported operations do not require a browser login; invalid credentials are rejected
+
+#### Scenario: A non-browser client targets the public administrative address
+- **WHEN** it has no authorized browser session and no separately approved public API access path
+- **THEN** it cannot bypass administrator authorization using only the application's API key, while authenticated browser UI requests remain usable
+
 ### Requirement: Public application ingress does not expose raw management protocols
 
 SSH, cluster APIs, database protocols, and recovery credentials SHALL remain outside public application ingress. Management access SHALL retain a recovery path independent of cluster, public-edge, and centralized identity availability, consistent with management-boundaries.

@@ -143,7 +143,8 @@
                     group_interval = "1m";
                     repeat_interval = "4h";
                   };
-                  receivers = [ ({ name = "operator"; } // lib.optionalAttrs (cfg.webhookURL != null) {
+                  # The chart routes its always-firing Watchdog to this receiver.
+                  receivers = [ { name = "null"; } ({ name = "operator"; } // lib.optionalAttrs (cfg.webhookURL != null) {
                     webhook_configs = [ { url = cfg.webhookURL; send_resolved = true; } ];
                   }) ];
                 };

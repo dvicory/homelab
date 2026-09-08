@@ -14,6 +14,22 @@ Managed configuration fields SHALL be explicit. Reconciliation MAY overwrite out
 - **WHEN** an operator delivers a selected application release
 - **THEN** unrelated application releases and retained data remain unchanged and required dependencies are available before the application is declared usable
 
+#### Scenario: Another instance of an application is declared
+- **WHEN** a second instance of the same application is delivered
+- **THEN** it uses its declared state and credentials without overwriting the first instance; shared writable paths require explicit declaration
+
+### Requirement: Managed policy reconstruction uses selected inputs
+
+Externally sourced managed policy SHALL identify the selected upstream inputs and declarative local overrides. Reconstructing that policy SHALL NOT silently adopt newer upstream policy. Changing the reconciliation implementation SHALL NOT leave competing writers for the same managed fields.
+
+#### Scenario: Upstream policy changes after a release is selected
+- **WHEN** managed application configuration is reconstructed from the selected release
+- **THEN** it uses the selected policy inputs and local overrides rather than the newer upstream state
+
+#### Scenario: A managed field and an unrelated record are edited
+- **WHEN** configuration reconciliation runs
+- **THEN** the managed field returns to its declared value while the unrelated record is preserved
+
 ### Requirement: Household data is recovered as an application-consistent set
 
 A recovery point SHALL identify the matching application/database versions and contain the complete non-reproducible state required to restore user-visible behavior. Database metadata and referenced assets SHALL be mutually consistent. Failed or partial exports SHALL NOT be presented as complete recovery points. Restore SHALL validate inputs before replacing state and preserve displaced state until explicitly retired.
@@ -25,6 +41,26 @@ A recovery point SHALL identify the matching application/database versions and c
 #### Scenario: A compute environment is replaced
 - **WHEN** the declared retained state is reattached to its replacement
 - **THEN** infrastructure does not rerun destructive initialization or overwrite existing application-managed state
+
+#### Scenario: Restore targets retained mounted storage
+- **WHEN** verified state is restored into an existing retained mount
+- **THEN** the mount boundary is preserved, displaced contents remain recoverable, and affected writers do not resume against a partial restore
+
+### Requirement: Routine capture limits disruption to the data consistency boundary
+
+Routine backup capture SHALL NOT require stopping the compute environment or unrelated applications. Any coordinated writer pause SHALL be limited to components needed to make the selected data mutually consistent. A service-to-service connection alone SHALL NOT establish a shared capture boundary. Temporary pauses made for capture SHALL be released when safe after capture or failure; inability to resume SHALL be reported as an operational failure. Destructive restoration and compute replacement are separate operations, not routine capture.
+
+#### Scenario: One application is captured while another remains in use
+- **WHEN** a recovery point is captured for an application
+- **THEN** unrelated applications remain running and the capture does not require their shutdown
+
+#### Scenario: An application uses independently stored database metadata and files
+- **WHEN** its capture completes
+- **THEN** the database and referenced files meet the application-consistency guarantee without expanding the pause solely because another service calls its API
+
+#### Scenario: Capture fails after writers were paused
+- **WHEN** capture cannot complete
+- **THEN** no complete recovery point is published, its temporary pauses are released when safe, and any inability to resume is visible without stopping unrelated services
 
 ### Requirement: Storage availability and writer authority remain application-scoped
 

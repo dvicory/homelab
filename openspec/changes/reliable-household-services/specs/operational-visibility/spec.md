@@ -14,7 +14,7 @@ Managed metrics and logs SHALL have explicit resource and retention limits. Coll
 
 ### Requirement: Alerts describe actionable service and recovery failures
 
-The platform SHALL report service unavailability, storage capacity pressure, and failed or stale recovery points through established alert routing software. Alerts SHALL identify the affected service or resource, expose the condition and its resolution, and support grouping and routing to operator-selected destinations without a custom notification broker. Missing collection targets SHALL NOT be interpreted as healthy services.
+The platform SHALL report service unavailability, storage capacity pressure, and failed or stale recovery points through established alert routing software. Recovery reporting SHALL identify the affected application consistency set; success for one set SHALL NOT conceal failure or staleness of another. Alerts SHALL identify the affected service or resource, expose the condition and its resolution, and support grouping and routing to operator-selected destinations without a custom notification broker. Missing collection targets SHALL NOT be interpreted as healthy services.
 
 #### Scenario: An application becomes unavailable and recovers
 - **WHEN** the failure persists beyond the configured tolerance and the application subsequently recovers
@@ -23,6 +23,22 @@ The platform SHALL report service unavailability, storage capacity pressure, and
 #### Scenario: A recovery operation fails
 - **WHEN** an export fails or no sufficiently recent complete recovery point exists
 - **THEN** the failure or staleness is visible independently of a successful application readiness probe
+
+#### Scenario: One application's capture succeeds while another is stale
+- **WHEN** a new complete recovery point is published for only the first application
+- **THEN** the second application's stale or failed capture remains visible
+
+### Requirement: Backup evidence distinguishes capture from protection and interruption
+
+Operational evidence SHALL distinguish a complete local capture from successful transfer to an independently protected backup destination. Capture evidence SHALL record any writer interruption and whether affected services resumed. A restore claim SHALL identify the data set and environment actually restored rather than infer recoverability from capture success.
+
+#### Scenario: Capture succeeds but independent transfer fails
+- **WHEN** a local recovery point exists but its backup transfer fails
+- **THEN** local capture remains identifiable and independent backup success is not reported
+
+#### Scenario: A disposable restore is exercised
+- **WHEN** the selected application state is restored and its consistency checked
+- **THEN** evidence identifies the restored set and disposable environment without claiming production or host-loss recovery was proven
 
 ### Requirement: Dashboards and notification claims have runtime evidence
 
