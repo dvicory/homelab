@@ -182,7 +182,8 @@
             template = {
               metadata.labels."app.kubernetes.io/name" = "media-configuration-${target}";
               spec = {
-                restartPolicy = "Never";
+                # Retain the pod IP while namespace network policy converges.
+                restartPolicy = "OnFailure";
                 automountServiceAccountToken = false;
                 securityContext = { runAsUser = 1000; runAsGroup = 1000; runAsNonRoot = true; fsGroup = 1000; seccompProfile.type = "RuntimeDefault"; };
                 containers = [ {

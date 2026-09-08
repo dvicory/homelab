@@ -284,7 +284,8 @@
               template = {
                 metadata.labels = provisionLabels;
                 spec = {
-                  restartPolicy = "Never";
+                  # Retain the pod IP while namespace network policy converges.
+                  restartPolicy = "OnFailure";
                   serviceAccountName = "kanidm-provision";
                   automountServiceAccountToken = true;
                   securityContext = {
