@@ -3,6 +3,9 @@
     nixos =
       { config, ... }:
       {
+        # Metrics collectors reach the authenticated kubelet through Flannel's
+        # local pod bridge, not the guest's external management interface.
+        networking.firewall.interfaces.cni0.allowedTCPPorts = [ 10250 ];
         services.k3s = {
           enable = true;
           role = "server";

@@ -263,6 +263,10 @@ class Runtime:
     def kubectl_json(self, *args: str, namespace: str | None = None):
         return json.loads(self.kubectl(*args, namespace=namespace))
 
+    def metrics_ready(self) -> bool:
+        metrics = self.kubectl_json("get", "--raw", f"/apis/metrics.k8s.io/v1beta1/nodes/{self.instance}")
+        return metrics["metadata"]["name"] == self.instance and {"cpu", "memory"} <= metrics["usage"].keys()
+
     def helper_command(self, operation: str, *, spec: Path | None = None, bundle: Path | None = None, confirm: bool = False) -> list[str]:
         command = [str(self.helper)] if self.helper.suffix != ".py" else [sys.executable, str(self.helper)]
         command.extend(["--spec", str(spec or self.spec_path), operation])
@@ -636,7 +640,7 @@ def verify_private_endpoints(runtime: Runtime) -> None:
         for origin in ("same-bridge", "routed"):
             gateway = str(bridge.ip) if origin == "same-bridge" else "198.18.0.1"
             run("ip", "netns", "exec", namespace, "ping", "-c", "1", "-W", "2", gateway)
-            for port in ports:
+            for port in (*ports, 10250):
                 result = completed("ip", "netns", "exec", namespace, "python3", "-c", probe, address, str(port))
                 check(result.returncode != 0, f"{origin} peer cannot reach private endpoint {port}")
             if origin == "same-bridge":
@@ -843,6 +847,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             runtime.helper_run("create", bundle=args.bundle, timeout=3_600)
             wait_for("healthy K3s node", runtime.node_ready)
             wait_for("unrelated CoreDNS availability", runtime.unrelated_ready)
+            wait_for("node resource metrics", runtime.metrics_ready)
             runtime.check_secret_payload(secret_payload)
             runtime.verify_secret_consumers(secret_values, fresh=True)
             # Change one input but remove another: no partial new credential
@@ -1080,6 +1085,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             check(new_instance is not None, "helper recreates the guest instance")
             check(new_instance["config"]["volatile.uuid"] != original_uuid, "replacement has a fresh Incus instance root")
             wait_for("replacement K3s node", runtime.node_ready)
+            wait_for("replacement node resource metrics", runtime.metrics_ready)
             new_cluster_token = runtime.guest("cat", "/var/lib/rancher/k3s/server/token")
             check(new_cluster_token != original_cluster_token, "replacement has fresh disposable K3s cluster state")
             runtime.check_secret_payload(secret_payload)
