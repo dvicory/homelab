@@ -140,7 +140,7 @@
         config = {
           "boot.autostart" = "true";
           "limits.cpu" = "4";
-          "limits.memory" = "8GiB";
+          "limits.memory" = "12GiB";
           "limits.processes" = "8192";
           "security.guestapi" = "false";
           "raw.idmap" = "both 1000000-1065535 0-65535";

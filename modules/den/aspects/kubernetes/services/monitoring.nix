@@ -184,7 +184,7 @@
                   analytics = { reporting_enabled = false; check_for_updates = false; };
                   "auth.anonymous".enabled = false;
                 };
-                sidecar.resources = resources "64Mi";
+                sidecar.resources = resources "256Mi";
                 additionalDataSources = [ {
                   name = "Loki";
                   type = "loki";
