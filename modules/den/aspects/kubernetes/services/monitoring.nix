@@ -14,8 +14,8 @@
         runAsNonRoot = true;
         runAsUser = uid;
         runAsGroup = uid;
-        fsGroup = uid;
-        fsGroupChangePolicy = "OnRootMismatch";
+        # Clear chart defaults: retained directory ownership belongs to the host.
+        fsGroup = null;
       };
       disks = {
         prometheus = { size = "20Gi"; claim = "prometheus-data-prometheus-monitoring-prometheus-0"; };

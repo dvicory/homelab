@@ -134,7 +134,6 @@
                     runAsNonRoot = true;
                     runAsUser = 1000;
                     runAsGroup = 1000;
-                    fsGroup = 1000;
                     seccompProfile.type = "RuntimeDefault";
                   };
                   containers = [ {

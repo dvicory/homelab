@@ -41,8 +41,6 @@
             runAsUser = 1000;
             runAsGroup = 1000;
             runAsNonRoot = true;
-            fsGroup = 1000;
-            fsGroupChangePolicy = "OnRootMismatch";
           };
         };
         containerSecurity = {
@@ -198,7 +196,6 @@
                 securityContext = podOptions.securityContext // {
                   runAsUser = 999;
                   runAsGroup = 999;
-                  fsGroup = 999;
                 };
               };
               controllers.main = {
