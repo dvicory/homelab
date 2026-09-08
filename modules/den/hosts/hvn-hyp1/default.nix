@@ -1,4 +1,11 @@
-{ den, inputs, ... }: {
+{
+  den,
+  inputs,
+  config,
+  lib,
+  ...
+}:
+{
   den.hosts.x86_64-linux.hvn-hyp1 = {
     environment = "prod";
     system-access-groups = [
@@ -8,178 +15,83 @@
 
     settings = {
       core.nix.gc.enable = false;
-      virtualization.compute = {
-        project = "compute";
-        instance = "compute-1";
-        profile = "compute-1";
-        pool = "incus-compute";
-        network = "incus-compute";
-        address = "10.210.0.10";
-        idmapBase = 1000000;
-        idmapSize = 65536;
-        retainedPaths = {
-          jellyfin-config = {
-            path = "/var/lib/homelab/compute-1/jellyfin";
-            guestPath = "/srv/jellyfin/config";
-            uid = 751;
-            gid = 751;
-            mode = "0750";
+      services.compute-media.source = "/mnt/storage/media";
+      virtualization.compute =
+        let
+          compute = config.den.hosts.x86_64-linux.hvn-hyp1.settings.virtualization.compute;
+        in
+        {
+          stateRoot = "/var/lib/homelab/compute-1/state";
+          address = "10.210.0.10";
+          pool = "incus-compute";
+          network = "incus-compute";
+          idmapBase = 1000000;
+          idmapSize = 65536;
+          identityPath = "/var/lib/homelab/compute-1/identity";
+          project = "compute";
+          instance = "compute-1";
+          profile = "compute-1";
+          retainedPaths = lib.mapAttrs (
+            name: entry:
+            entry
+            // {
+              path = "${compute.stateRoot}/${name}";
+              guestPath = "/srv/state/${name}";
+            }
+          ) config.flake.clusterResources.prod-home.retainedPaths;
+          runtimeSecrets = config.flake.clusterResources.prod-home.runtimeSecrets;
+          recoveryPath = "/var/lib/homelab/compute-1/recovery";
+          config = {
+            "boot.autostart" = "true";
+            "limits.cpu" = "4";
+            "limits.memory" = "12GiB";
+            "limits.processes" = "8192";
+            "security.guestapi" = "false";
+            "raw.idmap" = "both ${toString compute.idmapBase}-${
+              toString (compute.idmapBase + compute.idmapSize - 1)
+            } 0-${toString (compute.idmapSize - 1)}";
+            "security.idmap.isolated" = "true";
+            "security.nesting" = "true";
+            "security.privileged" = "false";
           };
-          immich-library = {
-            path = "/var/lib/homelab/compute-1/platform/immich/library";
-            guestPath = "/srv/platform/immich/library";
-            uid = 1000;
-            gid = 1000;
-            mode = "0750";
-          };
-          immich-postgres = {
-            path = "/var/lib/homelab/compute-1/platform/immich/postgres";
-            guestPath = "/srv/platform/immich/postgres";
-            uid = 999;
-            gid = 999;
-            mode = "0700";
-          };
-          radarr = {
-            path = "/var/lib/homelab/compute-1/platform/media/radarr";
-            guestPath = "/srv/platform/media/radarr";
-            uid = 752;
-            gid = 751;
-            mode = "0750";
-          };
-          sonarr = {
-            path = "/var/lib/homelab/compute-1/platform/media/sonarr";
-            guestPath = "/srv/platform/media/sonarr";
-            uid = 753;
-            gid = 751;
-            mode = "0750";
-          };
-          sabnzbd = {
-            path = "/var/lib/homelab/compute-1/platform/media/sabnzbd";
-            guestPath = "/srv/platform/media/sabnzbd";
-            uid = 754;
-            gid = 751;
-            mode = "0750";
-          };
-          seerr = {
-            path = "/var/lib/homelab/compute-1/platform/media/seerr";
-            guestPath = "/srv/platform/media/seerr";
-            uid = 1000;
-            gid = 1000;
-            mode = "0750";
-          };
-          media-data = {
-            path = "/var/lib/homelab/compute-1/platform/media/data";
-            guestPath = "/srv/platform/media/data";
-            uid = 754;
-            gid = 751;
-            mode = "2770";
-          };
-          monitoring-prometheus = {
-            path = "/var/lib/homelab/compute-1/platform/monitoring/prometheus";
-            guestPath = "/srv/platform/monitoring/prometheus";
-            uid = 65534;
-            gid = 65534;
-            mode = "0750";
-          };
-          monitoring-alertmanager = {
-            path = "/var/lib/homelab/compute-1/platform/monitoring/alertmanager";
-            guestPath = "/srv/platform/monitoring/alertmanager";
-            uid = 65534;
-            gid = 65534;
-            mode = "0750";
-          };
-          monitoring-grafana = {
-            path = "/var/lib/homelab/compute-1/platform/monitoring/grafana";
-            guestPath = "/srv/platform/monitoring/grafana";
-            uid = 472;
-            gid = 472;
-            mode = "0750";
-          };
-          monitoring-loki = {
-            path = "/var/lib/homelab/compute-1/platform/monitoring/loki";
-            guestPath = "/srv/platform/monitoring/loki";
-            uid = 10001;
-            gid = 10001;
-            mode = "0750";
-          };
-          identity-kanidm = {
-            path = "/var/lib/homelab/compute-1/platform/identity/kanidm";
-            guestPath = "/srv/platform/identity/kanidm";
-            uid = 1000;
-            gid = 1000;
-            mode = "0700";
+          devices = {
+            root = {
+              path = "/";
+              inherit (compute) pool;
+              type = "disk";
+            };
+            eth0 = {
+              name = "eth0";
+              inherit (compute) network;
+              type = "nic";
+              "ipv4.address" = compute.address;
+              host_name = "veth-comp-1";
+            };
+            media = {
+              path = "/srv/media";
+              propagation = "rslave";
+              # The host export is already recursively read-only. Incus 7.4
+              # rejects readonly=true together with recursive=true.
+              recursive = "true";
+              required = "true";
+              source = "/run/homelab-compute/media";
+              type = "disk";
+              requiredPath = {
+                uid = 0;
+                gid = 0;
+                mode = "0755";
+                readOnly = true;
+              };
+            };
+            identity = {
+              path = "/srv/identity";
+              readonly = "true";
+              required = "true";
+              source = compute.identityPath;
+              type = "disk";
+            };
           };
         };
-        runtimeSecrets = {
-          "immich--immich-runtime--DB_PASSWORD" = { namespace = "immich"; name = "immich-runtime"; key = "DB_PASSWORD"; };
-          "media--media-runtime--RADARR_API_KEY" = { namespace = "media"; name = "media-runtime"; key = "RADARR_API_KEY"; };
-          "media--media-runtime--SONARR_API_KEY" = { namespace = "media"; name = "media-runtime"; key = "SONARR_API_KEY"; };
-          "media--media-runtime--SABNZBD_API_KEY" = { namespace = "media"; name = "media-runtime"; key = "SABNZBD_API_KEY"; };
-          "media--media-runtime--SABNZBD_USERNAME" = { namespace = "media"; name = "media-runtime"; key = "SABNZBD_USERNAME"; };
-          "media--media-runtime--SABNZBD_PASSWORD" = { namespace = "media"; name = "media-runtime"; key = "SABNZBD_PASSWORD"; };
-          "media--media-runtime--JELLYFIN_OWNER_USERNAME" = { namespace = "media"; name = "media-runtime"; key = "JELLYFIN_OWNER_USERNAME"; };
-          "media--media-runtime--JELLYFIN_OWNER_PASSWORD" = { namespace = "media"; name = "media-runtime"; key = "JELLYFIN_OWNER_PASSWORD"; };
-          "media--media-runtime--JELLYFIN_OWNER_EMAIL" = { namespace = "media"; name = "media-runtime"; key = "JELLYFIN_OWNER_EMAIL"; };
-          "identity--kanidm-provision--idm-admin-password" = { namespace = "identity"; name = "kanidm-provision"; key = "idm-admin-password"; };
-          "gateway--gateway-tls--tls.crt" = { namespace = "gateway"; name = "gateway-tls"; key = "tls.crt"; type = "kubernetes.io/tls"; };
-          "gateway--gateway-tls--tls.key" = { namespace = "gateway"; name = "gateway-tls"; key = "tls.key"; type = "kubernetes.io/tls"; };
-          "gateway--gateway-tls--ca.crt" = { namespace = "gateway"; name = "gateway-tls"; key = "ca.crt"; type = "kubernetes.io/tls"; };
-          "identity--kanidm-tls--tls.crt" = { namespace = "identity"; name = "kanidm-tls"; key = "tls.crt"; type = "kubernetes.io/tls"; };
-          "identity--kanidm-tls--tls.key" = { namespace = "identity"; name = "kanidm-tls"; key = "tls.key"; type = "kubernetes.io/tls"; };
-          "identity--kanidm-tls--ca.crt" = { namespace = "identity"; name = "kanidm-tls"; key = "ca.crt"; type = "kubernetes.io/tls"; };
-          "monitoring--grafana-admin--admin-user" = { namespace = "monitoring"; name = "grafana-admin"; key = "admin-user"; };
-          "monitoring--grafana-admin--admin-password" = { namespace = "monitoring"; name = "grafana-admin"; key = "admin-password"; };
-          "argocd--argocd-secret--admin.password" = { namespace = "argocd"; name = "argocd-secret"; key = "admin.password"; };
-          "argocd--argocd-secret--admin.passwordMtime" = { namespace = "argocd"; name = "argocd-secret"; key = "admin.passwordMtime"; };
-          "argocd--argocd-secret--server.secretkey" = { namespace = "argocd"; name = "argocd-secret"; key = "server.secretkey"; };
-        };
-        recoveryPath = "/var/lib/homelab/compute-1/recovery";
-        identityPath = "/var/lib/homelab/compute-1/identity";
-        mediaPath = "/run/homelab-compute/media";
-        mediaSource = "/mnt/storage/media";
-        config = {
-          "boot.autostart" = "true";
-          "limits.cpu" = "4";
-          "limits.memory" = "12GiB";
-          "limits.processes" = "8192";
-          "security.guestapi" = "false";
-          "raw.idmap" = "both 1000000-1065535 0-65535";
-          "security.idmap.isolated" = "true";
-          "security.nesting" = "true";
-          "security.privileged" = "false";
-        };
-        devices = {
-          root = {
-            path = "/";
-            pool = "incus-compute";
-            type = "disk";
-          };
-          eth0 = {
-            name = "eth0";
-            network = "incus-compute";
-            type = "nic";
-            "ipv4.address" = "10.210.0.10";
-            host_name = "veth-comp-1";
-          };
-          media = {
-            path = "/srv/media";
-            propagation = "rslave";
-            # The host export is already recursively read-only. Incus 7.4
-            # rejects readonly=true together with recursive=true.
-            recursive = "true";
-            required = "true";
-            source = "/run/homelab-compute/media";
-            type = "disk";
-          };
-          identity = {
-            path = "/srv/identity";
-            readonly = "true";
-            required = "true";
-            source = "/var/lib/homelab/compute-1/identity";
-            type = "disk";
-          };
-        };
-      };
       services.mergerfs.pools."/mnt/storage/media" = {
         branches = [
           "/mnt/storage-clear/media1"
@@ -240,6 +152,8 @@
       den.aspects.core.base
       den.aspects.virtualization.incus
       den.aspects.virtualization.compute
+      den.aspects.services.compute-media
+      den.aspects.services.kubernetes-runtime-secrets
       den.aspects.disk.zfs
       den.aspects.disk.zfs.provides.pool
       den.aspects.disk.impermanence

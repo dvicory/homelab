@@ -1,8 +1,14 @@
+{ inputs, ... }:
 {
   den.aspects.services.kubernetes = {
     nixos =
       { config, ... }:
       {
+        assertions = [ {
+          assertion = config.services.k3s.package.version
+            == inputs.nixpkgs.legacyPackages.${config.nixpkgs.hostPlatform.system}.k3s.version;
+          message = "The K3s runtime must match the pinned package used to render Kubernetes manifests.";
+        } ];
         # Metrics collectors reach the authenticated kubelet through Flannel's
         # local pod bridge, not the guest's external management interface.
         networking.firewall.interfaces.cni0.allowedTCPPorts = [ 10250 ];
@@ -47,8 +53,10 @@
             RestartSec = "15s";
           };
           script = ''
+            # Reconcile source-owned keys after application bootstrap edits;
+            # server-side apply preserves undeclared application-owned keys.
             ${config.services.k3s.package}/bin/k3s kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml \
-              apply --server-side --field-manager=homelab-runtime-secrets \
+              apply --server-side --force-conflicts --field-manager=homelab-runtime-secrets \
               -f /srv/secrets/runtime-secrets.yaml
           '';
         };

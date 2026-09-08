@@ -1,23 +1,40 @@
-{ den, ... }:
+{
+  den,
+  config,
+  inputs,
+  lib,
+  ...
+}:
 let
-  domain = "plus2.danielvicory.dev";
-  backupDomain = "backup.${domain}";
-  hosts = name: [ "${name}.${domain}" "${name}.${backupDomain}" ];
+  inherit (config.den.environments.prod) domain backupDomain;
+  hosts = name: [
+    "${name}.${domain}"
+    "${name}.${backupDomain}"
+  ];
+  cluster = config.den.clusters.prod-home;
+  kubeVersion = builtins.head (
+    lib.splitString "+"
+      inputs.nixpkgs.legacyPackages.${cluster.hostSystem}.k3s.version
+  );
   route = key: namespace: service: port: auth: {
-    inherit namespace service port auth;
+    inherit
+      namespace
+      service
+      port
+      auth
+      ;
     hostnames = hosts key;
     pathPrefix = "/";
-    backendTLS = service == "kanidm";
+    backendTLS = false;
   };
 in
 {
   den.clusters.prod-home = {
     environment = "prod";
-    nodeName = "compute-1";
-    storageRoot = "/srv/platform";
-    inherit domain backupDomain;
-    kubeVersion = "1.35.8";
-    k8sVersion = "1.35";
+    hostSystem = "x86_64-linux";
+    hostName = "hvn-hyp1";
+    inherit kubeVersion;
+    k8sVersion = lib.versions.majorMinor kubeVersion;
     repository = "https://github.com/dvicory/homelab.git";
     branch = "main";
     ingress = {
@@ -33,13 +50,17 @@ in
       requests = route "requests" "media" "seerr" 5055 "native";
       grafana = route "grafana" "monitoring" "monitoring-grafana" 80 "admin";
       argocd = route "argocd" "argocd" "argocd-server" 80 "admin";
-      idm = route "idm" "identity" "kanidm" 443 "native";
+      idm = (route "idm" "identity" "kanidm" 443 "native") // {
+        backendTLS = true;
+      };
     };
   };
 
   den.aspects.prod-home = {
     includes = with den.aspects.kubernetes.services; [
       argocd
+      cluster-dns
+      retained-storage
       jellyfin
       immich
       media

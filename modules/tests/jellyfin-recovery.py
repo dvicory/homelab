@@ -102,7 +102,7 @@ def json_copy(value):
 def descriptor_paths(descriptor: dict, mounts: list[dict]) -> list[Path]:
     paths = [Path(entry["path"]) for entry in descriptor["requiredPaths"]]
     paths.extend(Path(entry["guestPath"]) for entry in descriptor["retainedPaths"].values())
-    for key in ("recoveryPath", "identityPath", "mediaPath", "poolPath"):
+    for key in ("recoveryPath", "identityPath", "poolPath"):
         value = descriptor.get(key)
         if isinstance(value, str):
             paths.append(Path(value))
@@ -227,6 +227,7 @@ class Runtime:
         self.bundle = bundle
         self.project = descriptor["project"]
         self.instance = descriptor["instance"]
+        self.media_path = Path(descriptor["devices"]["media"]["source"])
         self.mount_units: list[str] = []
         self.source_mounts: list[Path] = []
         self.loaded_nft: list[tuple[str, str]] = []
@@ -384,8 +385,8 @@ class Runtime:
         self.systemctl("start", *self.mount_units, timeout=600)
         self.systemctl("start", self.export_unit, timeout=600)
         self.export_started = True
-        check("ro" in run("findmnt", "-n", "-o", "VFS-OPTIONS", "-M", self.descriptor["mediaPath"]).split(","), "media parent is mounted read-only")
-        check(run("findmnt", "-n", "-o", "FSTYPE", "-M", self.descriptor["mediaPath"]) == "tmpfs", "media parent is the declared tmpfs root")
+        check("ro" in run("findmnt", "-n", "-o", "VFS-OPTIONS", "-M", str(self.media_path)).split(","), "media parent is mounted read-only")
+        check(run("findmnt", "-n", "-o", "FSTYPE", "-M", str(self.media_path)) == "tmpfs", "media parent is the declared tmpfs root")
 
     def app_ready(self) -> bool:
         deployment = self.kubectl_json("get", "deployment/jellyfin", "-o", "json", namespace="jellyfin")
@@ -418,8 +419,8 @@ class Runtime:
             self.stop_storage()
         except (OSError, ScenarioError):
             pass
-        completed("umount", "-l", self.descriptor["mediaPath"] + "/data", timeout=120)
-        completed("umount", "-l", self.descriptor["mediaPath"], timeout=120)
+        completed("umount", "-l", str(self.media_path / "data"), timeout=120)
+        completed("umount", "-l", str(self.media_path), timeout=120)
         for unit in (self.export_unit, self.root_unit, *self.mount_units):
             completed("systemctl", "stop", unit, timeout=120)
         for path in self.units:
@@ -781,7 +782,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             runtime.retained_mounts.append(persist)
             for entry in descriptor["requiredPaths"]:
                 target = Path(entry["path"])
-                if str(target) == descriptor["mediaPath"]:
+                if target == runtime.media_path:
                     continue
                 backing = persist / str(target).lstrip("/")
                 backing.mkdir(parents=True)
@@ -793,6 +794,7 @@ def run_scenario(args: argparse.Namespace) -> None:
                     run("mount", "-o", "remount,bind,ro", str(target))
             public_key = stage_identity(descriptor, Path(descriptor["identityPath"]))
             spec_path.write_text(json.dumps(descriptor, indent=2) + "\n")
+            spec_path.chmod(0o400)
         except BaseException:
             runtime.cleanup()
             for path in safe_dirs:
@@ -877,9 +879,17 @@ def run_scenario(args: argparse.Namespace) -> None:
                 check(mapping == [(0, descriptor["idmapBase"], descriptor["idmapSize"])],
                       f"guest {kind} mapping uses the declared non-root host range")
             for name, entry in descriptor["retainedPaths"].items():
-                permissions = Path(entry["path"]).stat()
+                target = Path(entry["path"])
+                permissions = target.stat()
                 check(permissions.st_mode & 0o7777 == int(entry["mode"], 8),
                       f"{name} has its declared retained directory permissions")
+                if name == "jellyfin-config":
+                    expected_mode = int(entry["mode"], 8)
+                    os.chmod(target, expected_mode ^ 0o001)
+                    try:
+                        runtime.helper_expect_failure("inspect", "required path mode drift")
+                    finally:
+                        os.chmod(target, expected_mode)
                 probe = entry["guestPath"] + "/.retained-permission-probe"
                 result = completed(
                     "incus", "--force-local", "--project", project, "exec", instance_name,
@@ -907,7 +917,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             del media_probe
             result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--mode=non-interactive", "--", "sh", "-ec", "touch /srv/media/data/forbidden")
             check(result.returncode != 0, "guest media write is denied at the Incus read-only boundary")
-            result = completed("touch", str(Path(descriptor["mediaPath"]) / "data" / "forbidden"))
+            result = completed("touch", str(runtime.media_path / "data" / "forbidden"))
             check(result.returncode != 0, "host root cannot write through the read-only media export")
             result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--mode=non-interactive", "--", "sh", "-ec", "mount -o remount,rw /srv/media")
             check(result.returncode != 0, "guest root cannot remount the media attachment read-write")
@@ -949,6 +959,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             bad_descriptor["publicKey"] = public_key.replace("ssh-ed25519", "ssh-ed25519-bad", 1)
             bad_spec = workspace / "bad-public.json"
             bad_spec.write_text(json.dumps(bad_descriptor) + "\n")
+            bad_spec.chmod(0o400)
             runtime.helper_expect_failure("replace", "declared public identity", spec=bad_spec)
             check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid, "mismatched identity does not mutate the instance")
             public_path = Path(descriptor["identityPath"]) / "ssh_host_ed25519_key.pub"
@@ -980,6 +991,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid, "missing identity does not mutate the instance")
             runtime.incus("config", "set", instance_name, "user.homelab.unsafe-drift", "true")
             try:
+                runtime.helper_expect_failure("inspect", "unsafe effective configuration")
                 runtime.helper_expect_failure("replace", "incompatible effective configuration")
             finally:
                 runtime.incus("config", "unset", instance_name, "user.homelab.unsafe-drift")

@@ -24,10 +24,8 @@ in
       {
         options = {
           environment = mkOption { type = types.str; };
-          nodeName = mkOption { type = types.str; };
-          storageRoot = mkOption { type = types.strMatching "/.+"; };
-          domain = mkOption { type = types.str; };
-          backupDomain = mkOption { type = types.str; };
+          hostSystem = mkOption { type = types.str; description = "System key of the host owning this compute environment"; };
+          hostName = mkOption { type = types.str; description = "Host entity owning this compute environment"; };
           kubeVersion = mkOption { type = types.str; };
           k8sVersion = mkOption { type = types.str; };
           repository = mkOption { type = types.str; };

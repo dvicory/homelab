@@ -11,11 +11,24 @@ let
       hash = "sha256-cBRppWXdJvlinEJUX90rr4Kte9Fqly+ELWaBufWEOT4=";
     };
   };
-  retain = { "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false"; };
+  retain = {
+    "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
+  };
 in
 {
+  den.aspects.kubernetes.services.jellyfin.compute-resources.retainedPaths.jellyfin-config = {
+    uid = 751;
+    gid = 751;
+    mode = "0750";
+  };
   den.aspects.kubernetes.services.jellyfin.k8s-manifests =
-    { cluster, charts, pkgs, ... }:
+    {
+      cluster,
+      compute,
+      charts,
+      pkgs,
+      ...
+    }:
     let
       system = builtins.replaceStrings [ "darwin" ] [ "linux" ] pkgs.stdenv.hostPlatform.system;
       pin = imagePins.${system};
@@ -32,6 +45,12 @@ in
         seccompProfile.type = "RuntimeDefault";
       };
     in
+    assert lib.assertMsg (
+      route.namespace == "jellyfin"
+      && route.service == "jellyfin"
+      && route.port == 8096
+      && !route.backendTLS
+    ) "Jellyfin route must target its declared HTTP Service jellyfin/jellyfin:8096";
     {
       applications.jellyfin-retained = {
         namespace = "jellyfin";
@@ -45,14 +64,18 @@ in
               persistentVolumeReclaimPolicy = "Retain";
               storageClassName = "jellyfin-retained";
               volumeMode = "Filesystem";
-              local.path = "/srv/jellyfin/config";
-              nodeAffinity.required.nodeSelectorTerms = [{
-                matchExpressions = [{
-                  key = "kubernetes.io/hostname";
-                  operator = "In";
-                  values = [ cluster.nodeName ];
-                }];
-              }];
+              local.path = compute.retainedPaths.jellyfin-config.guestPath;
+              nodeAffinity.required.nodeSelectorTerms = [
+                {
+                  matchExpressions = [
+                    {
+                      key = "kubernetes.io/hostname";
+                      operator = "In";
+                      values = [ compute.instance ];
+                    }
+                  ];
+                }
+              ];
             };
           };
           persistentVolumeClaims.jellyfin-config = {
@@ -72,9 +95,13 @@ in
           chart = charts.bjw-s-labs.app-template;
           values = {
             defaultPodOptions = {
-              nodeSelector."kubernetes.io/hostname" = cluster.nodeName;
+              nodeSelector."kubernetes.io/hostname" = compute.instance;
               automountServiceAccountToken = false;
-              securityContext = { runAsUser = 751; runAsGroup = 751; runAsNonRoot = true; };
+              securityContext = {
+                runAsUser = compute.retainedPaths.jellyfin-config.uid;
+                runAsGroup = compute.retainedPaths.jellyfin-config.gid;
+                runAsNonRoot = true;
+              };
             };
             controllers.main = {
               type = "deployment";
@@ -83,20 +110,31 @@ in
               initContainers.prepare = {
                 inherit image;
                 securityContext = security;
-                command = [ "/bin/sh" "-ec" ''
-                  found=0
-                  while IFS= read -r line; do
-                    case "$line" in *" /media/data "*) found=1 ;; esac
-                  done < /proc/self/mountinfo
-                  test "$found" = 1
-                  test -d /media/data && test -r /media/data
-                  mkdir -p /config/config
-                  cp /network/network.xml /config/config/network.xml.new
-                  mv /config/config/network.xml.new /config/config/network.xml
-                '' ];
+                command = [
+                  "/bin/sh"
+                  "-ec"
+                  ''
+                    found=0
+                    while IFS= read -r line; do
+                      case "$line" in *" /media/data "*) found=1 ;; esac
+                    done < /proc/self/mountinfo
+                    test "$found" = 1
+                    test -d /media/data && test -r /media/data
+                    mkdir -p /config/config
+                    cp /network/network.xml /config/config/network.xml.new
+                    mv /config/config/network.xml.new /config/config/network.xml
+                  ''
+                ];
                 resources = {
-                  requests = { cpu = "10m"; memory = "16Mi"; };
-                  limits = { cpu = "100m"; memory = "64Mi"; ephemeral-storage = "64Mi"; };
+                  requests = {
+                    cpu = "10m";
+                    memory = "16Mi";
+                  };
+                  limits = {
+                    cpu = "100m";
+                    memory = "64Mi";
+                    ephemeral-storage = "64Mi";
+                  };
                 };
               };
               containers.main = {
@@ -108,7 +146,10 @@ in
                     enabled = true;
                     custom = true;
                     spec = {
-                      httpGet = { path = "${prefix}/health"; port = 8096; };
+                      httpGet = {
+                        path = "${prefix}/health";
+                        port = 8096;
+                      };
                       periodSeconds = 10;
                       timeoutSeconds = 5;
                       failureThreshold = 30;
@@ -118,7 +159,10 @@ in
                     enabled = true;
                     custom = true;
                     spec = {
-                      httpGet = { path = "${prefix}/health"; port = 8096; };
+                      httpGet = {
+                        path = "${prefix}/health";
+                        port = 8096;
+                      };
                       periodSeconds = 10;
                       timeoutSeconds = 5;
                     };
@@ -127,22 +171,35 @@ in
                     enabled = true;
                     custom = true;
                     spec = {
-                      httpGet = { path = "${prefix}/health"; port = 8096; };
+                      httpGet = {
+                        path = "${prefix}/health";
+                        port = 8096;
+                      };
                       periodSeconds = 30;
                       timeoutSeconds = 5;
                     };
                   };
                 };
                 resources = {
-                  requests = { cpu = "500m"; memory = "512Mi"; };
-                  limits = { cpu = "2"; memory = "2Gi"; ephemeral-storage = "1Gi"; };
+                  requests = {
+                    cpu = "500m";
+                    memory = "512Mi";
+                  };
+                  limits = {
+                    cpu = "2";
+                    memory = "2Gi";
+                    ephemeral-storage = "1Gi";
+                  };
                 };
               };
             };
             service.main = {
               controller = "main";
               type = "ClusterIP";
-              ports.http = { port = 8096; targetPort = 8096; };
+              ports.http = {
+                port = 8096;
+                targetPort = 8096;
+              };
             };
             configMaps.network.data."network.xml" = ''
               <?xml version="1.0" encoding="utf-8"?>
@@ -157,15 +214,37 @@ in
               </NetworkConfiguration>
             '';
             persistence = {
-              config = { existingClaim = "jellyfin-config"; globalMounts = [{ path = "/config"; }]; };
-              cache = { type = "emptyDir"; sizeLimit = "4Gi"; globalMounts = [{ path = "/cache"; }]; };
+              config = {
+                existingClaim = "jellyfin-config";
+                globalMounts = [ { path = "/config"; } ];
+              };
+              cache = {
+                type = "emptyDir";
+                sizeLimit = "4Gi";
+                globalMounts = [ { path = "/cache"; } ];
+              };
               media = {
                 type = "hostPath";
-                hostPath = "/srv/media";
+                hostPath = compute.devices.media.path;
                 hostPathType = "Directory";
-                globalMounts = [{ path = "/media"; readOnly = true; mountPropagation = "HostToContainer"; }];
+                globalMounts = [
+                  {
+                    path = "/media";
+                    readOnly = true;
+                    mountPropagation = "HostToContainer";
+                  }
+                ];
               };
-              network = { type = "configMap"; identifier = "network"; globalMounts = [{ path = "/network"; readOnly = true; }]; };
+              network = {
+                type = "configMap";
+                identifier = "network";
+                globalMounts = [
+                  {
+                    path = "/network";
+                    readOnly = true;
+                  }
+                ];
+              };
             };
           };
         };
@@ -174,19 +253,24 @@ in
 
   # Optional offline image input for recovery fixtures; application rendering
   # and release ownership remain in Nixidy, not a parallel manifest package.
-  perSystem = { pkgs, system, ... }: lib.optionalAttrs (lib.hasSuffix "-linux" system) {
-    packages.jellyfin-image =
-      let
-        pin = imagePins.${system};
-        tag = builtins.replaceStrings [ ":" ] [ "-" ] pin.digest;
-      in
-      (pkgs.dockerTools.pullImage {
-        inherit imageName;
-        imageDigest = pin.digest;
-        hash = pin.hash;
-        finalImageTag = tag;
-      }).overrideAttrs (old: {
-        passthru = (old.passthru or { }) // { imageReference = "${imageName}:${tag}"; };
-      });
-  };
+  perSystem =
+    { pkgs, system, ... }:
+    lib.optionalAttrs (lib.hasSuffix "-linux" system) {
+      packages.jellyfin-image =
+        let
+          pin = imagePins.${system};
+          tag = builtins.replaceStrings [ ":" ] [ "-" ] pin.digest;
+        in
+        (pkgs.dockerTools.pullImage {
+          inherit imageName;
+          imageDigest = pin.digest;
+          hash = pin.hash;
+          finalImageTag = tag;
+        }).overrideAttrs
+          (old: {
+            passthru = (old.passthru or { }) // {
+              imageReference = "${imageName}:${tag}";
+            };
+          });
+    };
 }

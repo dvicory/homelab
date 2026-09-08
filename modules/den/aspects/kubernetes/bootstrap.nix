@@ -1,6 +1,7 @@
 { self, lib, ... }:
 {
-  perSystem = { pkgs, system, ... }:
+  perSystem =
+    { pkgs, system, ... }:
     let
       environment = self.nixidyEnvs.${system}.prod-home.environmentPackage;
       manifests = pkgs.runCommand "household-static-bootstrap" { nativeBuildInputs = [ pkgs.yq-go ]; } ''
@@ -8,71 +9,585 @@
         yq 'select(.kind == "Namespace")' ${environment}/*/*.yaml > "$out/namespaces.yaml"
         yq 'select(.kind == "CustomResourceDefinition")' ${environment}/*/*.yaml > "$out/crds.yaml"
         yq 'select(.kind != "Namespace" and .kind != "CustomResourceDefinition" and .kind != "Application")' ${environment}/*/*.yaml > "$out/workloads.yaml"
+        yq 'select(.kind == "Deployment" or .kind == "StatefulSet" or .kind == "DaemonSet")' ${environment}/*/*.yaml > "$out/readiness.yaml"
+        yq 'select(.kind == "Prometheus" or .kind == "Alertmanager")' ${environment}/*/*.yaml > "$out/operator-readiness.yaml"
+        yq 'select(.kind == "Job")' ${environment}/*/*.yaml > "$out/jobs.yaml"
+        yq 'select(.kind == "Job" and .spec.ttlSecondsAfterFinished == null)' ${environment}/*/*.yaml > "$out/persistent-jobs.yaml"
       '';
+      bootstrap = pkgs.writeShellApplication {
+        name = "household-bootstrap";
+        runtimeInputs = with pkgs; [
+          coreutils
+          jq
+          kubectl
+          yq-go
+        ];
+        text = ''
+          set -euo pipefail
+
+          manifests=${lib.escapeShellArg manifests}
+
+          usage() {
+            cat <<'EOF'
+          Usage:
+            household-bootstrap --status
+            household-bootstrap --fresh-cluster
+            household-bootstrap --retry-jobs
+            household-bootstrap --check-ready
+
+          --status         Read-only report of declared controllers and bootstrap Jobs.
+          --fresh-cluster  Apply namespaces, CRDs and workloads without pruning or Git.
+          --retry-jobs     Recreate only declared terminal Failed hook Jobs.
+          --check-ready    Block until the declared node, controllers and Jobs are ready.
+          EOF
+          }
+
+          check_argo() {
+            local crd applications
+            if ! crd=$(kubectl get crd applications.argoproj.io --ignore-not-found -o name); then
+              echo 'Unable to inspect Argo Applications; refusing static operation.' >&2
+              return 1
+            fi
+            if [ -n "$crd" ]; then
+              if ! applications=$(kubectl get applications.argoproj.io --all-namespaces -o name); then
+                echo 'Unable to inspect Argo Applications; refusing static operation.' >&2
+                return 1
+              fi
+              if [ -n "$applications" ]; then
+                echo 'Refusing static operation while Argo Applications exist.' >&2
+                return 1
+              fi
+            fi
+          }
+
+          report_file() {
+            local file=$1 kind namespace name object desired ready succeeded state details
+            local unavailable=0
+            while IFS=$'\t' read -r kind namespace name; do
+              [ -n "$name" ] || continue
+              if ! object=$(kubectl get "$kind" "$name" --namespace "$namespace" \
+                --ignore-not-found -o json 2>/dev/null); then
+                printf '  UNAVAILABLE %s %s/%s\n' "$kind" "$namespace" "$name"
+                unavailable=1
+                continue
+              fi
+              if [ -z "$object" ]; then
+                printf '  MISSING %s %s/%s\n' "$kind" "$namespace" "$name"
+                continue
+              fi
+              if ! jq -e --arg name "$name" '.metadata.name == $name' <<<"$object" >/dev/null; then
+                printf '  UNAVAILABLE %s %s/%s\n' "$kind" "$namespace" "$name"
+                unavailable=1
+                continue
+              fi
+              case "$kind" in
+                Deployment|StatefulSet)
+                  desired=$(jq -r '.spec.replicas // 1' <<<"$object")
+                  ready=$(jq -r '.status.readyReplicas // 0' <<<"$object")
+                  if [[ "$desired" =~ ^[0-9]+$ && "$ready" =~ ^[0-9]+$ ]] &&
+                    (( ready == desired )); then
+                    state=READY
+                  else
+                    state=NOT_READY
+                  fi
+                  details="$ready/$desired ready"
+                  ;;
+                DaemonSet)
+                  desired=$(jq -r '.status.desiredNumberScheduled // 0' <<<"$object")
+                  ready=$(jq -r '.status.numberReady // 0' <<<"$object")
+                  if [[ "$desired" =~ ^[0-9]+$ && "$ready" =~ ^[0-9]+$ ]] &&
+                    (( desired > 0 && ready == desired )); then
+                    state=READY
+                  else
+                    state=NOT_READY
+                  fi
+                  details="$ready/$desired ready"
+                  ;;
+                Prometheus|Alertmanager)
+                  state=NOT_READY
+                  if jq -e 'any(.status.conditions[]?;
+                    .type == "Available" and .status == "True" and
+                    .observedGeneration == $generation)' \
+                    --argjson generation "$(jq '.metadata.generation' <<<"$object")" \
+                    <<<"$object" >/dev/null; then
+                    state=READY
+                  fi
+                  details=$(jq -r '.status.conditions[]? | select(.type == "Available") | .reason' <<<"$object")
+                  ;;
+                Job)
+                  desired=$(jq -r '.spec.completions // 1' <<<"$object")
+                  succeeded=$(jq -r '.status.succeeded // 0' <<<"$object")
+                  if jq -e 'any(.status.conditions[]?; .type == "Complete" and .status == "True")' <<<"$object" >/dev/null; then
+                    state=READY
+                  elif jq -e 'any(.status.conditions[]?; .type == "Failed" and .status == "True")' <<<"$object" >/dev/null; then
+                    state=FAILED
+                  else
+                    state=NOT_READY
+                  fi
+                  details="$succeeded/$desired succeeded"
+                  ;;
+                *)
+                  state=UNKNOWN
+                  details='unsupported declared kind'
+                  ;;
+              esac
+              printf '  %s %s %s/%s (%s)\n' "$state" "$kind" "$namespace" "$name" "$details"
+            done < <(
+              yq -r -N '
+                select(.kind != null and .metadata.name != null) |
+                [.kind, (.metadata.namespace // "default"), .metadata.name] | @tsv
+              ' "$file"
+            )
+            return "$unavailable"
+          }
+
+          status() {
+            local unavailable=0
+            echo 'Declared controllers:'
+            if [ -s "$manifests/readiness.yaml" ]; then
+              report_file "$manifests/readiness.yaml" || unavailable=1
+            else
+              echo '  (none declared)'
+            fi
+            if [ -s "$manifests/operator-readiness.yaml" ]; then
+              report_file "$manifests/operator-readiness.yaml" || unavailable=1
+            fi
+            echo 'Declared bootstrap Jobs:'
+            if [ -s "$manifests/jobs.yaml" ]; then
+              report_file "$manifests/jobs.yaml" || unavailable=1
+            else
+              echo '  (none declared)'
+            fi
+            echo 'Missing TTL-managed Helm Jobs may have been collected; their completion history is not retained.'
+            return "$unavailable"
+          }
+
+          retry_jobs() {
+            local kind namespace name policy object active failed_condition complete_condition current_policy
+            local -a retry_targets=()
+
+            check_argo
+            while IFS=$'\t' read -r kind namespace name policy; do
+              [ "$kind" = Job ] || continue
+              case ",$policy," in
+                *,BeforeHookCreation,*) ;;
+                *) continue ;;
+              esac
+              if ! object=$(kubectl get job "$name" --namespace "$namespace" \
+                --ignore-not-found -o json 2>/dev/null); then
+                echo "Unable to inspect declared Job $namespace/$name; refusing retry." >&2
+                return 1
+              fi
+              if [ -z "$object" ]; then
+                echo "Declared Job $namespace/$name is missing; refusing retry." >&2
+                return 1
+              fi
+              active=$(jq -r '.status.active // 0' <<<"$object")
+              if ! [[ "$active" =~ ^[0-9]+$ ]]; then
+                echo "Declared Job $namespace/$name has unknown activity; refusing retry." >&2
+                return 1
+              fi
+              if (( active > 0 )); then
+                echo "Declared Job $namespace/$name is active; refusing retry." >&2
+                return 1
+              fi
+              failed_condition=$(jq -r '
+                any(.status.conditions[]?; .type == "Failed" and .status == "True")
+              ' <<<"$object")
+              complete_condition=$(jq -r '
+                any(.status.conditions[]?; .type == "Complete" and .status == "True")
+              ' <<<"$object")
+              if [ "$failed_condition" = true ]; then
+                retry_targets+=("$namespace"$'\t'"$name")
+              elif [ "$complete_condition" = true ]; then
+                :
+              else
+                echo "Declared Job $namespace/$name is not terminal; refusing retry." >&2
+                return 1
+              fi
+            done < <(
+              yq -r -N '
+                select(.kind == "Job") |
+                [
+                  (.kind),
+                  (.metadata.namespace // "default"),
+                  .metadata.name,
+                  (.metadata.annotations."argocd.argoproj.io/hook-delete-policy" // "")
+                ] | @tsv
+              ' "$manifests/jobs.yaml"
+            )
+
+            if [ "''${#retry_targets[@]}" -eq 0 ]; then
+              echo 'No declared terminal Failed Jobs require retry.'
+              return 0
+            fi
+            local target selected
+            for target in "''${retry_targets[@]}"; do
+              IFS=$'\t' read -r namespace name <<<"$target"
+              check_argo
+              if ! object=$(kubectl get job "$name" --namespace "$namespace" \
+                --ignore-not-found -o json 2>/dev/null); then
+                echo "Unable to recheck declared Job $namespace/$name; refusing retry." >&2
+                return 1
+              fi
+              if [ -z "$object" ]; then
+                echo "Declared Job $namespace/$name disappeared; refusing retry." >&2
+                return 1
+              fi
+              current_policy=$(jq -r '.metadata.annotations."argocd.argoproj.io/hook-delete-policy" // ""' <<<"$object")
+              case ",$current_policy," in
+                *,BeforeHookCreation,*) ;;
+                *)
+                  echo "Declared Job $namespace/$name no longer has BeforeHookCreation; refusing retry." >&2
+                  return 1
+                  ;;
+              esac
+              active=$(jq -r '.status.active // 0' <<<"$object")
+              failed_condition=$(jq -r '
+                any(.status.conditions[]?; .type == "Failed" and .status == "True")
+              ' <<<"$object")
+              if ! [[ "$active" =~ ^[0-9]+$ ]] || (( active > 0 )) ||
+                [ "$failed_condition" != true ]; then
+                echo "Declared Job $namespace/$name is no longer a terminal Failed Job; refusing retry." >&2
+                return 1
+              fi
+              selected=$(namespace="$namespace" name="$name" yq -o=yaml '
+                select(
+                  .kind == "Job" and
+                  (.metadata.namespace // "default") == strenv(namespace) and
+                  .metadata.name == strenv(name)
+                )
+              ' "$manifests/jobs.yaml")
+              [ -n "$selected" ] || {
+                echo "Declared Job $namespace/$name could not be selected; refusing retry." >&2
+                return 1
+              }
+              echo "Retrying terminal Failed Job $namespace/$name."
+              kubectl delete job "$name" --namespace "$namespace" \
+                --cascade=foreground --wait=true --timeout=120s
+              printf '%s\n' "$selected" |
+                kubectl apply --server-side --field-manager=argocd-controller -f -
+            done
+            echo 'Declared terminal Failed Jobs were recreated; run household-bootstrap --status or --check-ready.'
+          }
+
+
+          check_ready() {
+            cat >&2 <<'EOF'
+          Readiness prerequisites: complete native Kanidm recovery-account setup and
+          first administrator/passkey enrollment, complete Jellyfin's native first-run
+          owner setup, and stage all declared runtime credentials through agenix.
+          This command does not generate identities or perform enrollment.
+          EOF
+            kubectl wait --for=condition=Ready nodes --all --timeout=180s
+            kubectl rollout status --timeout=600s -f "$manifests/readiness.yaml"
+            if [ -s "$manifests/operator-readiness.yaml" ]; then
+              kubectl wait --for=condition=Available --timeout=600s -f "$manifests/operator-readiness.yaml"
+            fi
+            if [ -s "$manifests/persistent-jobs.yaml" ]; then
+              kubectl wait --for=condition=Complete --timeout=600s -f "$manifests/persistent-jobs.yaml"
+            fi
+            echo 'Declared controllers and persistent bootstrap Jobs are ready. TTL-cleaned hook completion is not retained; application authentication and recovery acceptance remain separate checks.'
+          }
+
+          fresh_cluster() {
+            check_argo
+            kubectl apply --server-side --field-manager=argocd-controller -f "$manifests/namespaces.yaml"
+            kubectl apply --server-side --field-manager=argocd-controller -f "$manifests/crds.yaml"
+            kubectl wait --for=condition=Established --timeout=180s -f "$manifests/crds.yaml"
+            # Controllers and admission Jobs converge while dependent objects retry.
+            for _ in $(seq 1 60); do
+              if kubectl apply --server-side --field-manager=argocd-controller -f "$manifests/workloads.yaml"; then
+                echo 'Static resources applied, not yet ready. Complete native first enrollment, then run household-bootstrap --check-ready before enabling Git reconciliation.'
+                return 0
+              fi
+              sleep 5
+            done
+            echo 'Static application failed to converge; retained resources were not pruned.' >&2
+            return 1
+          }
+
+          if [ "$#" -eq 1 ] && [ "$1" = "--help" ]; then
+            usage
+            exit 0
+          fi
+          if [ "$#" -ne 1 ]; then
+            usage >&2
+            exit 2
+          fi
+          case "$1" in
+            --status) status ;;
+            --fresh-cluster) fresh_cluster ;;
+            --retry-jobs) retry_jobs ;;
+            --check-ready) check_ready ;;
+            *) usage >&2; exit 2 ;;
+          esac
+        '';
+      };
     in
     {
       packages = {
-      household-bootstrap-manifests = manifests;
-      household-bootstrap = pkgs.writeShellApplication {
-        name = "household-bootstrap";
-        runtimeInputs = [ pkgs.kubectl pkgs.coreutils ];
-        text = ''
-          if [ "$#" -ne 1 ] || [ "$1" != "--fresh-cluster" ]; then
-            echo 'Usage: household-bootstrap --fresh-cluster (uses KUBECONFIG; no pruning or Git access)' >&2
-            exit 2
-          fi
-          crd=$(kubectl get crd applications.argoproj.io --ignore-not-found -o name)
-          if [ -n "$crd" ]; then
-            applications=$(kubectl get applications.argoproj.io --all-namespaces -o name)
-            test -z "$applications" || { echo 'Refusing static bootstrap while Argo Applications exist.' >&2; exit 1; }
-          fi
-          kubectl apply --server-side --field-manager=argocd-controller -f ${manifests}/namespaces.yaml
-          kubectl apply --server-side --field-manager=argocd-controller -f ${manifests}/crds.yaml
-          kubectl wait --for=condition=Established --timeout=180s -f ${manifests}/crds.yaml
-          # Controllers and admission Jobs converge while dependent objects retry.
-          for _ in $(seq 1 60); do
-            if kubectl apply --server-side --field-manager=argocd-controller -f ${manifests}/workloads.yaml; then
-              echo 'Static resources applied. Check workload readiness before enabling Git reconciliation.'
-              exit 0
-            fi
-            sleep 5
-          done
-          echo 'Static application failed to converge; retained resources were not pruned.' >&2
-          exit 1
-        '';
-      };
-    } // lib.optionalAttrs (lib.hasSuffix "-linux" system) {
-      household-bootstrap-bundle = pkgs.linkFarm "household-bootstrap-bundle" [
-        { name = "manifests"; path = manifests; }
-        { name = "images/kanidm-provision.tar"; path = self.packages.${system}.kanidm-provision-image; }
+        household-bootstrap-manifests = manifests;
+        household-bootstrap = bootstrap;
+      }
+      // lib.optionalAttrs (lib.hasSuffix "-linux" system) (
+        let
+          image = self.packages.${system}.kanidm-provision-image;
+          computeGuest = self.packages.${system}.compute-guest;
+          hostBootstrap = pkgs.writeShellApplication {
+            name = "household-bootstrap-host";
+            runtimeInputs = with pkgs; [
+              computeGuest
+              coreutils
+              incus
+              jq
+              kubectl
+              yq-go
+              util-linux
+            ];
+            text = ''
+              set -euo pipefail
+
+              usage() {
+                cat <<'EOF'
+              Usage: household-bootstrap-host DESCRIPTOR --confirm INSTANCE
+
+              Deliver the selected static stack to an existing Running Incus guest.
+              The command never creates/deletes guests, enables Argo, publishes Git,
+              changes host configuration, or generates credentials.
+              EOF
+              }
+              die() {
+                echo "household-bootstrap-host: $1" >&2
+                exit 1
+              }
+
+              if [ "$#" -eq 1 ] && [ "$1" = "--help" ]; then
+                usage
+                exit 0
+              fi
+              if [ "$#" -ne 3 ] || [ "$2" != "--confirm" ]; then
+                usage >&2
+                exit 2
+              fi
+              [ "$(id -u)" -eq 0 ] || die 'run as root on the physical Linux Incus host'
+
+              descriptor=$1
+              descriptor_target=$(readlink -f -- "$descriptor") ||
+                die "cannot resolve descriptor: $descriptor"
+              [ -f "$descriptor_target" ] || die 'descriptor is not a regular file'
+              [ "$(stat -c %u "$descriptor_target")" = 0 ] ||
+                die 'descriptor must be root-owned'
+              descriptor_mode=$(stat -c %a "$descriptor_target")
+              if (( 0$descriptor_mode & 022 )); then
+                die 'descriptor must not be writable by group or other users'
+              fi
+              descriptor_json=$(cat "$descriptor_target") ||
+                die 'cannot read descriptor'
+              project=$(jq -er '.project | strings | select(length > 0)' <<<"$descriptor_json") ||
+                die 'descriptor has no project'
+              instance=$(jq -er '.instance | strings | select(length > 0)' <<<"$descriptor_json") ||
+                die 'descriptor has no instance'
+              address=$(jq -er '.address | strings | select(length > 0)' <<<"$descriptor_json") ||
+                die 'descriptor has no address'
+              [ "$3" = "$instance" ] ||
+                die "explicit acknowledgment required: --confirm $instance"
+              [[ "$project" =~ ^[a-zA-Z0-9_-]+$ && "$instance" =~ ^[a-zA-Z0-9_-]+$ ]] ||
+                die 'invalid project or instance name'
+              exec 9>"/run/lock/compute-$project-$instance.lock"
+              flock -n 9 || die 'another compute lifecycle operation is running'
+
+              manifests=${lib.escapeShellArg manifests}
+              image=${lib.escapeShellArg (toString image)}
+              bootstrap=${lib.escapeShellArg "${bootstrap}/bin/household-bootstrap"}
+              [ -f "$image" ] || die "pinned Kanidm image is unavailable: $image"
+              for file in namespaces.yaml workloads.yaml; do
+                [ -r "$manifests/$file" ] || die "bootstrap artifact is incomplete: $file"
+              done
+
+              export INCUS_SOCKET=/var/lib/incus/unix.socket
+              incus_cmd() {
+                incus --force-local --project "$project" "$@"
+              }
+              # Reuse this command's held lock; inspect takes the lock itself otherwise.
+              compute-guest --spec "$descriptor_target" --lock-fd 9 inspect ||
+                die 'unable to validate declared compute envelope; refusing before mutation'
+              instances=$(incus_cmd list "$instance" --format json) ||
+                die "cannot inspect Incus target $project/$instance"
+              if ! jq -e --arg expected "$instance" '
+                length == 1 and
+                .[0].name == $expected and
+                .[0].status == "Running"
+              ' <<<"$instances" >/dev/null; then
+                die "target $project/$instance must already exist and be Running"
+              fi
+
+              tmp=$(mktemp -d)
+              chmod 700 "$tmp"
+              [ "$(stat -c %u:%a "$tmp")" = 0:700 ] ||
+                die 'temporary directory is not root-private'
+              raw_kubeconfig="$tmp/kubeconfig.raw"
+              kubeconfig="$tmp/kubeconfig"
+              argo_error="$tmp/argo-error"
+              remote_image="/tmp/household-kanidm-provision-$$.tar"
+              image_staged=0
+              cleanup() {
+                if [ "$image_staged" -eq 1 ]; then
+                  incus_cmd exec "$instance" --mode=non-interactive -- \
+                    rm -f -- "$remote_image" >/dev/null 2>&1 || true
+                fi
+                rm -rf -- "$tmp"
+              }
+              trap cleanup EXIT
+
+              incus_cmd exec "$instance" --mode=non-interactive -- \
+                cat /etc/rancher/k3s/k3s.yaml > "$raw_kubeconfig" ||
+                die 'cannot acquire fresh kubeconfig from selected guest'
+              chmod 600 "$raw_kubeconfig"
+              yq -e '
+                (.clusters | length == 1) and
+                (.users | length >= 1) and
+                (.contexts | length >= 1) and
+                ((.clusters[0].cluster."certificate-authority-data" // "") | length > 0) and
+                ((.users[0].user."client-certificate-data" // "") | length > 0) and
+                ((.users[0].user."client-key-data" // "") | length > 0) and
+                ((.clusters[0].cluster.server // "") | length > 0)
+              ' "$raw_kubeconfig" >/dev/null ||
+                die 'guest kubeconfig lacks embedded CA/client identity'
+              endpoint="https://$address:6443"
+              endpoint="$endpoint" yq -o=yaml '
+                .clusters[0].cluster.server = strenv(endpoint)
+              ' "$raw_kubeconfig" > "$kubeconfig" ||
+                die 'cannot rewrite kubeconfig endpoint'
+              chmod 600 "$kubeconfig"
+              endpoint="$endpoint" yq -e '
+                .clusters[0].cluster.server == strenv(endpoint) and
+                ((.clusters[0].cluster."certificate-authority-data" // "") | length > 0) and
+                ((.users[0].user."client-certificate-data" // "") | length > 0) and
+                ((.users[0].user."client-key-data" // "") | length > 0)
+              ' "$kubeconfig" >/dev/null ||
+                die 'kubeconfig rewrite changed or lost cluster identity'
+              export KUBECONFIG="$kubeconfig"
+
+              node=$(kubectl get node "$instance" -o json) ||
+                die "Kubernetes target node $instance is missing"
+              jq -e --arg expected "$instance" '
+                .metadata.name == $expected and
+                (.metadata.labels["kubernetes.io/hostname"] // "") == $expected
+              ' <<<"$node" >/dev/null ||
+                die "Kubernetes target node does not match declared placement: $instance"
+              declared_nodes=$(
+                {
+                  yq -r -N '
+                    select(.spec.template.spec.nodeSelector."kubernetes.io/hostname" != null) |
+                    .spec.template.spec.nodeSelector."kubernetes.io/hostname"
+                  ' "$manifests/workloads.yaml"
+                  yq -r -N '
+                    .. | select(tag == "!!map" and .key == "kubernetes.io/hostname") |
+                    .values[]
+                  ' "$manifests/workloads.yaml"
+                } | sort -u
+              )
+              if [ -n "$declared_nodes" ]; then
+                while IFS= read -r declared_node; do
+                  [ "$declared_node" = "$instance" ] ||
+                    die "bootstrap artifact declares node $declared_node, not $instance"
+                done <<<"$declared_nodes"
+              fi
+
+              if ! crd=$(kubectl get crd applications.argoproj.io \
+                --ignore-not-found -o name 2>"$argo_error"); then
+                cat "$argo_error" >&2
+                die 'unable to inspect Argo Applications; refusing before mutation'
+              fi
+              if [ -n "$crd" ]; then
+                applications=$(kubectl get applications.argoproj.io --all-namespaces \
+                  -o name 2>"$argo_error") || {
+                  cat "$argo_error" >&2
+                  die 'unable to inspect Argo Applications; refusing before mutation'
+                }
+                [ -z "$applications" ] ||
+                  die 'Argo Applications already exist; refusing before mutation'
+              fi
+              incus_cmd exec "$instance" --mode=non-interactive -- \
+                test -s /srv/secrets/runtime-secrets.yaml ||
+                die 'existing staged runtime secrets are missing from the guest'
+
+              echo "Importing the pinned Kanidm provisioning image into $project/$instance."
+              image_staged=1
+              incus_cmd file push "$image" "$instance$remote_image"
+              incus_cmd exec "$instance" --mode=non-interactive -- \
+                k3s ctr images import --local --snapshotter native "$remote_image"
+              incus_cmd exec "$instance" --mode=non-interactive -- \
+                rm -f -- "$remote_image"
+              image_staged=0
+
+              kubectl apply --server-side --field-manager=argocd-controller \
+                -f "$manifests/namespaces.yaml"
+              incus_cmd exec "$instance" --mode=non-interactive -- \
+                cat /srv/secrets/runtime-secrets.yaml |
+                kubectl apply --server-side --force-conflicts --field-manager=homelab-runtime-secrets -f -
+              "$bootstrap" --fresh-cluster
+              echo 'Static household bootstrap completed; run household-bootstrap --status or --check-ready.'
+            '';
+          };
+        in
         {
-          name = "operations.txt";
-          path = pkgs.writeText "household-bootstrap-operations.txt" ''
-            Build this bundle for the compute guest's Linux architecture.
-            Copy it to the Incus host with nix copy; no runtime secrets are included.
+          household-bootstrap-host = hostBootstrap;
+          household-bootstrap-bundle = pkgs.linkFarm "household-bootstrap-bundle" [
+            {
+              name = "manifests";
+              path = manifests;
+            }
+            {
+              name = "images/kanidm-provision.tar";
+              path = image;
+            }
+            {
+              name = "bin/household-bootstrap";
+              path = "${bootstrap}/bin/household-bootstrap";
+            }
+            {
+              name = "bin/household-bootstrap-host";
+              path = "${hostBootstrap}/bin/household-bootstrap-host";
+            }
+            {
+              name = "operations.txt";
+              path = pkgs.writeText "household-bootstrap-operations.txt" ''
+                Build this bundle for the compute guest's Linux architecture.
+                Copy it to the Incus host with nix copy; no runtime secrets are included.
 
-            Set PROJECT and INSTANCE from the host's /etc/homelab/compute.json descriptor.
-            Before applying manifests, import the pinned application image:
-              incus --project "$PROJECT" file push ${self.packages.${system}.kanidm-provision-image} "$INSTANCE/tmp/kanidm-provision.tar"
-              incus --project "$PROJECT" exec "$INSTANCE" -- k3s ctr images import --local --snapshotter native /tmp/kanidm-provision.tar
-              incus --project "$PROJECT" exec "$INSTANCE" -- rm /tmp/kanidm-provision.tar
+                The bundle's executable performs the complete non-destructive delivery
+                against one explicitly selected existing guest:
+                  "$BUNDLE/bin/household-bootstrap-host" /etc/homelab/compute.json --confirm "$INSTANCE"
 
-            Repeat this import after guest replacement or provisioning-image changes.
-            It is application delivery, not an input to the guest OS image.
-            The identity Job uses imagePullPolicy=Never and cannot substitute an
-            unpinned registry image if this explicit import is missing.
+                It verifies the root-owned descriptor, project/instance confirmation,
+                the declared compute envelope, an existing Running target, fresh guest
+                kubeconfig identity, declared node placement, absent Argo Applications
+                and existing staged runtime credentials before any image import or
+                application mutation. It imports the pinned Kanidm image with the guest's
+                native local snapshotter, applies namespaces and staged runtime Secrets,
+                then invokes household-bootstrap --fresh-cluster. It never creates/deletes guests,
+                changes host configuration, publishes Git or enables Argo.
 
-            Stage the declared runtime credentials through the host agenix flow.
-            With KUBECONFIG targeting the new guest, run household-bootstrap
-            --fresh-cluster. It applies these static manifests without live Git or
-            pruning. Check actual workload readiness; successful apply is not readiness.
-            Only then publish rendered application directories to the selected Git
-            source and enable Argo reconciliation with the matching bootstrap output:
-              kubectl apply -f ${self.nixidyEnvs.${system}.prod-home.bootstrapPackage}/
-            Do not run the full static bootstrap against an Argo-managed cluster.
-          '';
+                The host command reacquires kubeconfig after guest replacement; do not
+                reuse an old CA or client identity. Runtime credentials must already
+                be staged through agenix/rekey; no identities are generated here.
+                After delivery, inspect with:
+                  "$BUNDLE/bin/household-bootstrap" --status
+                Complete the explicit native Kanidm and Jellyfin enrollment prerequisites
+                before the blocking readiness check:
+                  "$BUNDLE/bin/household-bootstrap" --check-ready
+                If a declared hook Job is terminal Failed, and no Argo Applications are
+                present, retry only those safe Jobs explicitly:
+                  "$BUNDLE/bin/household-bootstrap" --retry-jobs
+                This ignores undeclared and unannotated/TTL-managed Jobs. For eligible
+                BeforeHookCreation Jobs it refuses missing, active, non-terminal or
+                unknown Jobs and never mutates an active or unknown object.
+              '';
+            }
+          ];
         }
-      ];
-      };
+      );
     };
 }

@@ -2,14 +2,14 @@
 id: ADR-0002
 status: accepted
 date: 2026-09-07
-updated: 2026-09-07
+updated: 2026-09-08
 decision-makers: [Homelab operator through delegated implementation authority]
 consulted: []
 informed: [Homelab operator]
 supersedes: []
 superseded-by: []
 modifies: []
-modified-by: []
+modified-by: [ADR-0005]
 related-adrs: [ADR-0001]
 related-specs: [management-boundaries, storage-foundations, secret-management]
 related-changes: [reliable-household-services]
@@ -37,6 +37,8 @@ The initial compute slice uses a hand-built application artifact and K3s AddOn d
 ## Decision Outcome
 
 Choose **Den/Nixidy with Argo**, under the operator's delegated authority. Reuse cluster entities and the `k8s-manifests` class; keep applications as thin chart/resource aspects. Argo owns normal reconciliation. Static rendered resources support ordered bootstrap and selected, non-pruning recovery. Existing AddOn ownership must be retired before Argo owns the same objects.
+
+The delivery scope is modified by [ADR-0005](0005-standard-platform-interfaces.md): this remains the integrated path, not a prerequisite for using standard platform storage or secrets with ordinary Helm/application-owned resources.
 
 Agenix/rekey remains the secret authority. Host-staged runtime files supply Kubernetes Secrets through the native API; rendering contains references, not plaintext. A second encryption/operator stack is not required to adopt Nixidy.
 

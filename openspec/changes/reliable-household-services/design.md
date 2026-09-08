@@ -18,6 +18,8 @@ Use Nixidy-rendered upstream charts and native resources, with Argo CD as the no
 
 Nixidy supports direct apply, but its environment-wide prune also includes namespaces and does not honor Argo retention annotations. It is not an unrestricted recovery shortcut. Recovery applies retained resources and selected workload manifests without pruning, with the normal reconciler paused when required. Resource retirement uses the selected owner and an explicit retained-data gate.
 
+The operator's subsequent platform review approved ordinary Helm and application-owned manifests alongside optional Den/Nixidy integrations. Argo owns the resources assigned to it, not every workload admitted to the cluster. Standard storage and secret interfaces must work without a Homelab application definition. Retain the chart/version, values, Helm release records and required credentials for reconstruction; an unrecorded exploratory install does not acquire a recovery guarantee merely by using persistent storage.
+
 The existing K3s Jellyfin AddOn and Argo must never manage the same resources concurrently. Migrate the local fixture and operating commands in a clean cutover; a future production handoff is a separately authorized operation. Do not add another renderer or a Nixflix-to-Kubernetes translation layer.
 
 Consolidate facts at their existing owners: host placement and retained storage, application endpoints and container identities, environment domains, and shared agenix master identities. Project those declarations into mounts, PVs, routes, recovery membership and generated references rather than restating them. Reject missing environment/aspect references and mismatched endpoints during evaluation. Preserve existing paths, IDs, resource names and claims during consolidation; an ownership or storage migration needs separate treatment. Container/image IDs are not implicitly NixOS account IDs.
@@ -25,6 +27,10 @@ Consolidate facts at their existing owners: host placement and retained storage,
 ### Storage and runtime secrets
 
 Generalize the compute envelope's hard-coded application state into explicit retained-path declarations carrying host path, guest path, guest UID/GID, mode and read-only status. Preserve fixed non-root host ID translation, encrypted host persistence and the existing read-only legacy-media boundary. Fresh writable download/library paths are separate from legacy data. Static local PVs bind only declared paths and node placement; missing paths must not create substitute storage.
+
+For ordinary private PVCs, use a pinned upstream local-path provisioner producing local PVs under one explicitly retained host parent. Use `Retain`, delayed binding, explicit node placement and unique PV-based backing directories; keep existing static volumes unchanged. Private directories start root-owned and mode 0700 inside the mapped guest; Kubernetes local-volume ownership handling uses the chart's declared filesystem group. Application users do not allocate Unix IDs or host directories. Capacity requests are not filesystem quotas, and this is not distributed storage.
+
+Guest replacement with surviving data restores recorded PV/PVC mappings before releasing their consumers. Do not adopt a retained directory by namespace/claim name alone. Record Helm-owned metadata outside the guest under protected host storage, separately from reconstructible platform resources and host-staged secrets. This reattachment proof is distinct from restoring lost data from an independent backup.
 
 Keep agenix/rekey authoritative. Stage required runtime files on the physical host and expose a narrow read-only credential directory to the guest. Materialize named Kubernetes Secrets at runtime through the native API; secret references and file mappings may be rendered, plaintext values may not enter images, Nix store artifacts or Git. Reuse the existing missing-identity preflight pattern for unprovisioned production files. A secret operator and another encryption translation layer are not required merely to retain Sini's manifest composition.
 
@@ -42,6 +48,8 @@ Restore validates the complete selected set before mutation, preserves displaced
 
 Measure capture interruption, completion, per-application recovery-point age and restore results. A successful export does not establish that an independent backup transfer succeeded. Independent applications may have different capture times; do not promise a globally synchronized history. Backup cadence, tolerated data loss, retention, destination protection and any pause limit require operator policy before production scheduling; none is invented by this revision.
 
+The operator subsequently authorized implementation: aim for second-scale capture pauses, accepting minutes overnight when that materially simplifies implementation or maintenance. Prefer application-specific native procedures when they substantially shorten interruption, sharing common safety and reporting rather than forcing a generic capture mechanism. Actual interruption remains to be measured before scheduling.
+
 ### Thin service aspects
 
 | Service group | Initial implementation choices |
@@ -57,6 +65,8 @@ Nix owns explicitly declared service connections, paths, exposure and selected q
 Use an existing configuration-driven TRaSH tool instead of the custom quality-profile reconciler. Evaluate Configarr first: it supports templates, local custom formats, runtime secret references and revision controls; broader root-folder/download-client management is documented as experimental. Recyclarr is the narrower alternative if those broader features do not replace our code reliably. Clonarr's browser-managed policy is less aligned with repository ownership. Tool selection remains subject to disposable verification, not an accepted dependency merely because it appears here.
 
 Pin the tool and upstream TRaSH/template revisions, keep personal overrides in repository configuration, and retain the selected inputs for reconstruction without live upstream content. Review upstream changes rather than silently following a moving branch. Verify managed-field repair, preservation of unrelated records and credential updates before cutting over; remove overlapping custom writers. Do not assume that configuring an Arr download client also configures SAB itself or Seerr.
+
+Initial acquisition policy is balanced, WEB-oriented 1080p with straightforward declarative changes later. A later imported library need not match that policy: policy reconciliation must not itself search for upgrades, replace, or delete existing media merely because profiles differ. Acquisition and upgrade actions remain distinct from configuration reconciliation.
 
 Separate Radarr, Sonarr, SAB and Seerr application definitions rather than extending the application-name exception loop. Reuse a Radarr definition across Radarr instances and a Sonarr definition across Sonarr instances, with distinct configuration volumes, credentials, library roots, categories and profile selections. Share unchanged defaults and image metadata, not an all-application runtime model. Exercise two same-application instance declarations locally; actual 4K deployment remains later work. One Jellyfin instance is the intended reader of both library trees, initially presented as separate libraries.
 

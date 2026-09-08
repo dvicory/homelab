@@ -18,6 +18,14 @@ Managed configuration fields SHALL be explicit. Reconciliation MAY overwrite out
 - **WHEN** a second instance of the same application is delivered
 - **THEN** it uses its declared state and credentials without overwriting the first instance; shared writable paths require explicit declaration
 
+### Requirement: Standard platform interfaces do not require an application wrapper
+
+Applications MAY use ordinary Helm or application-owned manifests without a Homelab-specific application declaration. Access to approved persistent storage and runtime Secrets SHALL NOT depend on choosing the Nix application integration. Each resource SHALL retain one reconciliation owner. Reconstruction guarantees SHALL identify the installation inputs and protected metadata needed by that owner, including state kept outside Nix.
+
+#### Scenario: A Helm-managed application survives compute replacement
+- **WHEN** its designated persistent files, volume mappings, release inputs and required secrets survive guest replacement
+- **THEN** the operator can recover its application-managed state through standard Kubernetes and Helm interfaces without inventing a Homelab application definition or silently assigning unrelated retained data
+
 ### Requirement: Managed policy reconstruction uses selected inputs
 
 Externally sourced managed policy SHALL identify the selected upstream inputs and declarative local overrides. Reconstructing that policy SHALL NOT silently adopt newer upstream policy. Changing the reconciliation implementation SHALL NOT leave competing writers for the same managed fields.

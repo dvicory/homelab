@@ -6,8 +6,25 @@
 }:
 let
   inherit (lib) mkOption types;
-
-  deviceType = types.attrsOf types.str;
+  requiredPathType = types.submodule {
+    options = {
+      uid = mkOption { type = types.ints.unsigned; };
+      gid = mkOption { type = types.ints.unsigned; };
+      mode = mkOption { type = types.str; };
+      readOnly = mkOption {
+        type = types.bool;
+        default = false;
+      };
+    };
+  };
+  deviceType = types.submodule {
+    freeformType = types.attrsOf types.anything;
+        options.requiredPath = mkOption {
+          type = types.nullOr requiredPathType;
+          default = null;
+          description = "Host ownership metadata for a required source-backed disk device.";
+        };
+  };
 in
 {
   den.aspects.virtualization.compute = {
@@ -45,30 +62,27 @@ in
           type = types.ints.positive;
           description = "Fixed UID/GID map size reserved for the guest.";
         };
-        retainedPaths = mkOption {
-          type = types.attrsOf (types.submodule {
-            options = {
-              path = mkOption { type = types.str; };
-              guestPath = mkOption { type = types.str; };
-              uid = mkOption { type = types.ints.unsigned; };
-              gid = mkOption { type = types.ints.unsigned; };
-              mode = mkOption { type = types.str; };
-              readOnly = mkOption { type = types.bool; default = false; };
-            };
-          });
-          description = "Retained host directories and their guest ownership and attachment boundary.";
+        stateRoot = mkOption {
+          type = types.str;
+          description = "Host-owned parent for the selected services' retained state.";
         };
-        runtimeSecrets = mkOption {
-          type = types.attrsOf (types.submodule {
-            options = {
-              namespace = mkOption { type = types.strMatching "[a-z0-9]([-a-z0-9]*[a-z0-9])?"; };
-              name = mkOption { type = types.strMatching "[a-z0-9]([-a-z0-9.]*[a-z0-9])?"; };
-              key = mkOption { type = types.strMatching "[a-zA-Z0-9._-]+"; };
-              type = mkOption { type = types.strMatching "[A-Za-z0-9./-]+"; default = "Opaque"; };
-            };
-          });
-          default = { };
-          description = "Required runtime files keyed namespace--secret--key; encrypted inputs live under the guest's host secret directory.";
+        retainedPaths = mkOption {
+          type = types.attrsOf (
+            types.submodule {
+              options = {
+                path = mkOption { type = types.str; };
+                guestPath = mkOption { type = types.str; };
+                uid = mkOption { type = types.ints.unsigned; };
+                gid = mkOption { type = types.ints.unsigned; };
+                mode = mkOption { type = types.str; };
+                readOnly = mkOption {
+                  type = types.bool;
+                  default = false;
+                };
+              };
+            }
+          );
+          description = "Retained host directories and their guest ownership and attachment boundary.";
         };
         recoveryPath = mkOption {
           type = types.str;
@@ -77,14 +91,6 @@ in
         identityPath = mkOption {
           type = types.str;
           description = "Persistent guest identity directory on the host.";
-        };
-        mediaPath = mkOption {
-          type = types.str;
-          description = "Stable parent of the host-provided media export.";
-        };
-        mediaSource = mkOption {
-          type = types.str;
-          description = "Declared mergerfs pool whose branches feed the read-only compute view.";
         };
         config = mkOption {
           type = types.attrsOf types.str;
@@ -111,8 +117,8 @@ in
         }
         {
           directories = [ cfg.recoveryPath ];
-          user = toString (cfg.idmapBase + 751);
-          group = toString (cfg.idmapBase + 751);
+          user = "root";
+          group = "root";
           mode = "0750";
         }
         {
@@ -133,36 +139,84 @@ in
       {
         host,
         config,
-        utils,
         lib,
         pkgs,
         ...
       }:
       let
         cfg = host.settings.virtualization.compute;
+        runtimeSecrets = cfg.runtimeSecrets or { };
         secretPath = "/run/homelab-compute/secrets";
-        secretNames = builtins.attrNames cfg.runtimeSecrets;
-        secretGroups = lib.groupBy (source:
-          let entry = cfg.runtimeSecrets.${source};
-          in "${entry.namespace}/${entry.name}"
-        ) secretNames;
-        secretAge = name: inputs.self + "/.secrets/hosts/${cfg.instance}/${name}.age";
-        devices = cfg.devices // lib.mapAttrs (_: entry: {
-          type = "disk";
-          source = entry.path;
-          path = entry.guestPath;
-          propagation = "rprivate";
-          readonly = lib.boolToString entry.readOnly;
-          required = "true";
-        }) cfg.retainedPaths // lib.optionalAttrs (secretNames != [ ]) {
-          secrets = {
+        secretNames = builtins.attrNames runtimeSecrets;
+        retainedNames = builtins.attrNames cfg.retainedPaths;
+        reservedDeviceNames = [ "secrets" ];
+        baseDeviceNames = builtins.attrNames cfg.devices;
+        reservedCollisions = lib.filter (name: builtins.elem name baseDeviceNames) reservedDeviceNames;
+        retainedCollisions = lib.filter (
+          name: builtins.elem name (baseDeviceNames ++ reservedDeviceNames)
+        ) retainedNames;
+        invalidRetainedIds = lib.filter (
+          name:
+          let
+            entry = cfg.retainedPaths.${name};
+          in
+          entry.uid >= cfg.idmapSize || entry.gid >= cfg.idmapSize
+        ) retainedNames;
+        baseDevices = lib.mapAttrs (_: entry: removeAttrs entry [ "requiredPath" ]) cfg.devices;
+        requiredDeviceEntries = lib.filterAttrs (
+          _: entry:
+          (entry.type or null) == "disk"
+          && (entry.required or "false") == "true"
+          && (entry.source or null) != null
+          && (entry.source or null) != cfg.identityPath
+        ) cfg.devices;
+        missingRequiredPathMetadata = lib.attrNames (
+          lib.filterAttrs (_: entry: (entry.requiredPath or null) == null) requiredDeviceEntries
+        );
+        deviceRequiredPaths = lib.mapAttrsToList (_: entry: {
+          path = entry.source;
+          inherit (entry.requiredPath)
+            uid
+            gid
+            mode
+            readOnly
+            ;
+        }) requiredDeviceEntries;
+        deviceDiskPaths = lib.filter (path: path != null) (
+          lib.mapAttrsToList (
+            _: entry: if (entry.type or null) == "disk" then entry.source or null else null
+          ) cfg.devices
+        );
+        devices =
+          assert lib.assertMsg (
+            reservedCollisions == [ ]
+          ) "Incus device map uses reserved names: ${lib.concatStringsSep ", " reservedCollisions}";
+          assert lib.assertMsg (
+            retainedCollisions == [ ]
+          ) "Retained paths collide with Incus device names: ${lib.concatStringsSep ", " retainedCollisions}";
+          assert lib.assertMsg (
+            invalidRetainedIds == [ ]
+          ) "Retained path IDs must be below idmapSize: ${lib.concatStringsSep ", " invalidRetainedIds}";
+          assert lib.assertMsg (missingRequiredPathMetadata == [ ])
+            "Required source-backed disk devices need requiredPath metadata: ${lib.concatStringsSep ", " missingRequiredPathMetadata}";
+          baseDevices
+          // lib.mapAttrs (_: entry: {
             type = "disk";
-            source = secretPath;
-            path = "/srv/secrets";
-            readonly = "true";
+            source = entry.path;
+            path = entry.guestPath;
+            propagation = "rprivate";
+            readonly = lib.boolToString entry.readOnly;
             required = "true";
+          }) cfg.retainedPaths
+          // lib.optionalAttrs (secretNames != [ ]) {
+            secrets = {
+              type = "disk";
+              source = secretPath;
+              path = "/srv/secrets";
+              readonly = "true";
+              required = "true";
+            };
           };
-        };
         projectConfig = {
           "features.images" = "true";
           "features.networks" = "false";
@@ -181,9 +235,12 @@ in
           "restricted.containers.privilege" = "unprivileged";
           "restricted.devices.disk" = "allow";
           "restricted.devices.disk.paths" = lib.concatStringsSep "," (
-            map (entry: entry.path) (builtins.attrValues cfg.retainedPaths)
-            ++ [ cfg.identityPath cfg.mediaPath ]
-            ++ lib.optional (secretNames != [ ]) secretPath
+            lib.unique (
+              map (entry: entry.path) (builtins.attrValues cfg.retainedPaths)
+              ++ [ cfg.identityPath ]
+              ++ deviceDiskPaths
+              ++ lib.optional (secretNames != [ ]) secretPath
+            )
           );
           "restricted.devices.gpu" = "block";
           "restricted.devices.infiniband" = "block";
@@ -196,13 +253,6 @@ in
           "restricted.devices.usb" = "block";
           "restricted.networks.access" = cfg.network;
         };
-        branches = host.settings.services.mergerfs.pools.${cfg.mediaSource}.branches;
-        pinned = lib.imap0 (index: source: {
-          inherit source;
-          path = "/run/homelab-compute/pinned-${toString index}";
-        }) branches;
-        mountUnit = path: "${utils.escapeSystemdPath path}.mount";
-        pinnedUnits = map (branch: mountUnit branch.path) pinned;
         identityAge = inputs.self + "/.secrets/hosts/${cfg.instance}/runtime_host_key.age";
         identityPub = inputs.self + "/.secrets/hosts/${cfg.instance}/runtime_host_key.pub";
         hasIdentity = builtins.pathExists identityAge && builtins.pathExists identityPub;
@@ -219,34 +269,178 @@ in
           "ipv4.nat" = "true";
           "ipv6.address" = "none";
         };
+        preseed = {
+          projects = [
+            {
+              name = cfg.project;
+              config = projectConfig;
+            }
+          ];
+          storage_pools = [
+            {
+              name = cfg.pool;
+              driver = "dir";
+              config.source = poolPath;
+            }
+          ];
+          networks = [
+            {
+              # Incus managed bridges live in the default network project.
+              project = "default";
+              name = cfg.network;
+              type = "bridge";
+              config = networkConfig;
+            }
+          ];
+          profiles = [
+            {
+              project = cfg.project;
+              name = cfg.profile;
+              description = "Unprivileged private compute envelope";
+              config = cfg.config;
+              inherit devices;
+            }
+          ];
+        };
+        preseedFile = pkgs.writeText "compute-incus-preseed.json" (builtins.toJSON preseed);
+        preseedGate = pkgs.writeShellScript "compute-incus-preseed-gate" ''
+          set -eu
+          export INCUS_SOCKET=/var/lib/incus/unix.socket
+          incus=${config.virtualisation.incus.package}/bin/incus
+          jq=${pkgs.jq}/bin/jq
+          desired=${lib.escapeShellArg preseedFile}
+          missing=0
+          project_exists=0
 
-        requiredPaths = lib.mapAttrsToList (_: entry: {
-          inherit (entry) path mode readOnly;
-          uid = cfg.idmapBase + entry.uid;
-          gid = cfg.idmapBase + entry.gid;
-        }) cfg.retainedPaths ++ [
-          {
-            path = cfg.recoveryPath;
-            uid = cfg.idmapBase + 751;
-            gid = cfg.idmapBase + 751;
-            mode = "0750";
-            readOnly = false;
+          conflict() {
+            echo "compute Incus preseed conflict: $1" >&2
+            exit 1
           }
-          {
-            path = cfg.identityPath;
-            uid = cfg.idmapBase;
-            gid = cfg.idmapBase;
-            mode = "0700";
-            readOnly = false;
+
+          query() {
+            "$incus" --force-local query "$1"
           }
-          {
-            path = cfg.mediaPath;
-            uid = 0;
-            gid = 0;
-            mode = "0755";
-            readOnly = true;
+
+          check_project() {
+            wanted=$("$jq" -c '.projects[0]' "$desired")
+            name=$(printf '%s\n' "$wanted" | "$jq" -r '.name')
+            project="$name"
+            current=$(query "/1.0/projects?recursion=1")
+            actual=$(printf '%s\n' "$current" |
+              "$jq" -c --arg name "$name" '[.[] | select(.name == $name)] | .[0] // empty')
+            if [ -z "$actual" ]; then
+              missing=1
+              return
+            fi
+            if ! "$jq" -n -e --argjson wanted "$wanted" --argjson actual "$actual" '
+              all($wanted.config | to_entries[]; $actual.config[.key] == .value)
+            ' >/dev/null; then
+              conflict "project/$name"
+            fi
+            project_exists=1
           }
-        ];
+
+          check_pool() {
+            wanted=$("$jq" -c '.storage_pools[0]' "$desired")
+            name=$(printf '%s\n' "$wanted" | "$jq" -r '.name')
+            current=$(query "/1.0/storage-pools?recursion=1")
+            actual=$(printf '%s\n' "$current" |
+              "$jq" -c --arg name "$name" '[.[] | select(.name == $name)] | .[0] // empty')
+            if [ -z "$actual" ]; then
+              missing=1
+              return
+            fi
+            if ! "$jq" -n -e --argjson wanted "$wanted" --argjson actual "$actual" '
+              $actual.driver == $wanted.driver
+              and $actual.config.source == $wanted.config.source
+            ' >/dev/null; then
+              conflict "storage-pool/$name"
+            fi
+          }
+
+          check_network() {
+            wanted=$("$jq" -c '.networks[0]' "$desired")
+            name=$(printf '%s\n' "$wanted" | "$jq" -r '.name')
+            current=$(query "/1.0/networks?recursion=1&project=default")
+            actual=$(printf '%s\n' "$current" |
+              "$jq" -c --arg name "$name" '[.[] | select(.name == $name)] | .[0] // empty')
+            if [ -z "$actual" ]; then
+              missing=1
+              return
+            fi
+            if ! "$jq" -n -e --argjson wanted "$wanted" --argjson actual "$actual" '
+              $actual.type == $wanted.type
+              and (($actual.config // {}) | with_entries(
+                select(.key != "bridge.hwaddr" and ((.key | startswith("volatile.")) | not))
+              )) == ($wanted.config // {})
+            ' >/dev/null; then
+              conflict "network/default/$name"
+            fi
+          }
+
+          check_profile() {
+            wanted=$("$jq" -c '.profiles[0]' "$desired")
+            name=$(printf '%s\n' "$wanted" | "$jq" -r '.name')
+            if [ "$project_exists" -eq 0 ]; then
+              missing=1
+              return
+            fi
+            project_query=$("$jq" -nr --arg project "$project" '$project | @uri')
+            current=$(query "/1.0/profiles?recursion=1&project=$project_query")
+            actual=$(printf '%s\n' "$current" |
+              "$jq" -c --arg name "$name" '[.[] | select(.name == $name)] | .[0] // empty')
+            if [ -z "$actual" ]; then
+              missing=1
+              return
+            fi
+            if ! "$jq" -n -e --argjson wanted "$wanted" --argjson actual "$actual" '
+              $actual.config == $wanted.config and $actual.devices == $wanted.devices
+            ' >/dev/null; then
+              conflict "profile/$project/$name"
+            fi
+          }
+
+          check_project
+          check_pool
+          check_network
+          check_profile
+
+          if [ "$missing" -eq 1 ]; then
+            echo missing
+          else
+            echo matching
+          fi
+        '';
+        lockedPreseed = pkgs.writeShellScript "locked-compute-preseed" ''
+          set -eu
+          result="$(${preseedGate})"
+          echo "compute Incus envelope adoption check: $result; applying native preseed."
+          ${config.systemd.services.incus-preseed.script}
+        '';
+
+        requiredPaths =
+          lib.mapAttrsToList (_: entry: {
+            inherit (entry) path mode readOnly;
+            uid = cfg.idmapBase + entry.uid;
+            gid = cfg.idmapBase + entry.gid;
+          }) cfg.retainedPaths
+          ++ [
+            {
+              path = cfg.recoveryPath;
+              uid = 0;
+              gid = 0;
+              mode = "0750";
+              readOnly = false;
+            }
+            {
+              path = cfg.identityPath;
+              uid = cfg.idmapBase;
+              gid = cfg.idmapBase;
+              mode = "0700";
+              readOnly = false;
+            }
+          ]
+          ++ deviceRequiredPaths;
         descriptor = {
           inherit
             publicKey
@@ -269,7 +463,6 @@ in
             runtimeSecrets
             recoveryPath
             identityPath
-            mediaPath
             config
             ;
         };
@@ -278,44 +471,11 @@ in
         environment.systemPackages = [
           (pkgs.callPackage (inputs.self + "/pkgs/by-name/compute-guest/package.nix") { })
         ];
-        virtualisation.incus.preseed = {
-          projects = [
-            {
-              name = cfg.project;
-              config = projectConfig;
-            }
-          ];
-
-          storage_pools = [
-            {
-              name = cfg.pool;
-              driver = "dir";
-              config.source = poolPath;
-            }
-          ];
-
-          networks = [
-            {
-              # Incus managed bridges live in the default network project.
-              project = "default";
-              name = cfg.network;
-              type = "bridge";
-              config = networkConfig;
-            }
-          ];
-
-          profiles = [
-            {
-              project = cfg.project;
-              name = cfg.profile;
-              description = "Unprivileged private compute envelope";
-              config = cfg.config;
-              inherit devices;
-            }
-          ];
-        };
+        virtualisation.incus.preseed = preseed;
+        # Keep the read-only adoption check and any native preseed in one
+        # lifecycle lock; a conflict therefore aborts before preseed mutation.
         systemd.services.incus-preseed.serviceConfig.ExecStart =
-          lib.mkForce "${pkgs.util-linux}/bin/flock -n /run/lock/compute-${cfg.project}-${cfg.instance}.lock ${pkgs.writeShellScript "locked-compute-preseed" config.systemd.services.incus-preseed.script}";
+          lib.mkForce "${pkgs.util-linux}/bin/flock -n /run/lock/compute-${cfg.project}-${cfg.instance}.lock ${lockedPreseed}";
 
         environment.etc."homelab/compute.json" = {
           mode = "0444";
@@ -337,12 +497,7 @@ in
             mode = "0400";
             restartUnits = [ "compute-stage-identity.service" ];
           };
-        } // lib.genAttrs (lib.filter (name: builtins.pathExists (secretAge name)) secretNames) (name: {
-          provider = "agenix";
-          ageFile = secretAge name;
-          mode = "0400";
-          restartUnits = [ "compute-stage-secrets.service" ];
-        });
+        };
         systemd.services.compute-stage-identity = {
           description = "Stage the declared compute SSH identity";
           wantedBy = lib.optional hasIdentity "multi-user.target";
@@ -371,124 +526,6 @@ in
             mv -T ${cfg.identityPath}/.key-new ${cfg.identityPath}/ssh_host_ed25519_key
             mv -T ${cfg.identityPath}/.pub-new ${cfg.identityPath}/ssh_host_ed25519_key.pub
           '';
-        };
-        systemd.services.compute-stage-secrets = {
-          description = "Stage declared compute runtime credentials";
-          wantedBy = lib.optional (secretNames != [ ]) "multi-user.target";
-          before = [ "incus.service" ];
-          path = [
-            pkgs.coreutils
-            pkgs.util-linux
-            pkgs.kubectl
-          ];
-          serviceConfig = {
-            Type = "oneshot";
-            RemainAfterExit = true;
-          };
-          script = ''
-            set -eu
-            umask 077
-            exec 9>/run/lock/compute-${cfg.project}-${cfg.instance}.lock
-            flock -n 9
-            root=${lib.escapeShellArg secretPath}
-            mkdir -p "$root"
-            if mountpoint -q "$root"; then
-              test "$(findmnt -n -o FSTYPE -M "$root")" = tmpfs
-            else
-              mount -t tmpfs -o ro,uid=${toString cfg.idmapBase},gid=${toString cfg.idmapBase},mode=0700,size=1m tmpfs "$root"
-            fi
-            ${lib.concatMapStringsSep "\n" (name: ''
-              test -s /run/agenix/${lib.escapeShellArg name}
-            '') secretNames}
-            mount -o remount,rw "$root"
-            trap 'rm -f -- "$root/runtime-secrets.yaml.new"; mount -o remount,ro "$root"' EXIT
-            {
-              :
-              ${lib.concatStringsSep "\n" (lib.mapAttrsToList (_: sources:
-                let entry = cfg.runtimeSecrets.${builtins.head sources};
-                in assert lib.assertMsg (lib.all (source: cfg.runtimeSecrets.${source}.type == entry.type) sources)
-                  "Runtime keys for ${entry.namespace}/${entry.name} must share one Secret type";
-                ''
-                  kubectl create secret generic ${lib.escapeShellArg entry.name} \
-                    --namespace ${lib.escapeShellArg entry.namespace} \
-                    --type ${lib.escapeShellArg entry.type} \
-                    ${lib.concatMapStringsSep " " (source:
-                      "--from-file=" + lib.escapeShellArg "${cfg.runtimeSecrets.${source}.key}=/run/agenix/${source}"
-                    ) sources} --dry-run=client -o yaml
-                  printf '\n---\n'
-                ''
-              ) secretGroups)}
-            } > "$root/runtime-secrets.yaml.new"
-            chown ${toString cfg.idmapBase}:${toString cfg.idmapBase} "$root/runtime-secrets.yaml.new"
-            chmod 0400 "$root/runtime-secrets.yaml.new"
-            mv -f -- "$root/runtime-secrets.yaml.new" "$root/runtime-secrets.yaml"
-          '';
-        };
-
-        # Pin the real branch mounts before merging. Merging the original
-        # paths directly can turn a lost branch into a successful partial
-        # library listing. Stop ordering removes the view before its pins.
-        systemd.mounts = map (branch: {
-          what = branch.source;
-          where = branch.path;
-          type = "none";
-          options = "bind,ro";
-          bindsTo = [ (mountUnit branch.source) ];
-          after = [ (mountUnit branch.source) ];
-        }) pinned;
-
-        systemd.services.compute-media-root = {
-          description = "Prepare the read-only compute media attachment";
-          wantedBy = [ "multi-user.target" ];
-          before = [ "incus.service" ];
-          path = [
-            pkgs.coreutils
-            pkgs.util-linux
-          ];
-          serviceConfig = {
-            Type = "oneshot";
-            RemainAfterExit = true;
-          };
-          script = ''
-            set -eu
-            root=${lib.escapeShellArg cfg.mediaPath}
-            mkdir -p "$root"
-            if ! mountpoint -q "$root"; then
-              mount -t tmpfs -o mode=0755,size=1m tmpfs "$root"
-              mkdir -m 000 "$root/data"
-              mount --make-rshared "$root"
-              mount -o remount,ro "$root"
-            fi
-            test "$(findmnt -n -o FSTYPE -M "$root")" = tmpfs
-            if ! mountpoint -q "$root/data"; then
-              test "$(stat -c '%u:%g:%a' "$root/data")" = 0:0:0
-            fi
-            findmnt -n -o VFS-OPTIONS -M "$root" | tr ',' '\n' | ${pkgs.gnugrep}/bin/grep -qx ro
-          '';
-        };
-        systemd.services.incus.requires = [ "compute-media-root.service" ];
-
-        systemd.services.compute-media-export = {
-          description = "Read-only media view over pinned source mounts";
-          requires = [ "compute-media-root.service" ];
-          bindsTo = pinnedUnits;
-          after = [ "compute-media-root.service" ] ++ pinnedUnits;
-          serviceConfig = {
-            Type = "simple";
-            ExecStart = "${pkgs.mergerfs}/bin/mergerfs -f -o allow_other,ro ${
-              lib.concatMapStringsSep ":" (branch: branch.path) pinned
-            } ${cfg.mediaPath}/data";
-            ExecStop = "${pkgs.util-linux}/bin/umount -l ${cfg.mediaPath}/data";
-          };
-        };
-        # Retry native mount dependencies after late unlock/reattachment.
-        # This timer does not monitor or restart the compute node.
-        systemd.timers.compute-media-export = {
-          wantedBy = [ "timers.target" ];
-          timerConfig = {
-            OnBootSec = "30s";
-            OnUnitInactiveSec = "30s";
-          };
         };
 
         # Native nftables bridge rules own L2 filtering. A second br_netfilter

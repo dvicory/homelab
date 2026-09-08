@@ -1,6 +1,31 @@
 { lib, ... }:
 {
   den.aspects.kubernetes.services.immich = {
+    compute-resources = {
+      preCaptureChecks = ''
+        k -n immich exec -i deployment/immich-postgres -- sh -es <<'DATABASE'
+        export PGPASSWORD="$POSTGRES_PASSWORD"
+        test "$(psql -U immich -d immich -Atc "SELECT count(*) FROM pg_tablespace WHERE spcname NOT IN ('pg_default','pg_global')")" = 0
+        DATABASE
+      '';
+      retainedPaths = {
+        immich-library = {
+          uid = 1000;
+          gid = 1000;
+          mode = "0750";
+        };
+        immich-postgres = {
+          uid = 999;
+          gid = 999;
+          mode = "0700";
+        };
+      };
+      runtimeSecrets."immich--immich-runtime--DB_PASSWORD" = {
+        namespace = "immich";
+        name = "immich-runtime";
+        key = "DB_PASSWORD";
+      };
+    };
     settings.oidcConfigurationSecret = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -13,7 +38,14 @@
     };
 
     k8s-manifests =
-      { cluster, charts, pkgs, lib, ... }:
+      {
+        cluster,
+        compute,
+        charts,
+        pkgs,
+        lib,
+        ...
+      }:
       let
         chartSource = lib.helm.downloadHelmChart {
           repo = "oci://ghcr.io/immich-app/immich-charts";
@@ -33,13 +65,15 @@
         namespace = "immich";
         route = cluster.routes.immich;
         configurationSecret = cluster.settings.kubernetes.services.immich.oidcConfigurationSecret;
-        retained = { "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false"; };
+        retained = {
+          "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
+        };
         podOptions = {
-          nodeSelector."kubernetes.io/hostname" = cluster.nodeName;
+          nodeSelector."kubernetes.io/hostname" = compute.instance;
           automountServiceAccountToken = false;
           securityContext = {
-            runAsUser = 1000;
-            runAsGroup = 1000;
+            runAsUser = compute.retainedPaths.immich-library.uid;
+            runAsGroup = compute.retainedPaths.immich-library.gid;
             runAsNonRoot = true;
           };
         };
@@ -60,15 +94,22 @@
               accessModes = [ "ReadWriteOnce" ];
               persistentVolumeReclaimPolicy = "Retain";
               storageClassName = "";
-              local.path = "${cluster.storageRoot}/immich/${name}";
-              claimRef = { inherit namespace; name = "immich-${name}"; };
-              nodeAffinity.required.nodeSelectorTerms = [ {
-                matchExpressions = [ {
-                  key = "kubernetes.io/hostname";
-                  operator = "In";
-                  values = [ cluster.nodeName ];
-                } ];
-              } ];
+              local.path = compute.retainedPaths."immich-${name}".guestPath;
+              claimRef = {
+                inherit namespace;
+                name = "immich-${name}";
+              };
+              nodeAffinity.required.nodeSelectorTerms = [
+                {
+                  matchExpressions = [
+                    {
+                      key = "kubernetes.io/hostname";
+                      operator = "In";
+                      values = [ compute.instance ];
+                    }
+                  ];
+                }
+              ];
             };
           };
           persistentVolumeClaims."immich-${name}" = {
@@ -84,20 +125,38 @@
         configuration = lib.optionalAttrs (configurationSecret == null) {
           server.externalDomain = "https://${builtins.head route.hostnames}";
           passwordLogin.enabled = true;
-          oauth = { enabled = false; autoLaunch = false; };
+          oauth = {
+            enabled = false;
+            autoLaunch = false;
+          };
         };
       in
-      assert lib.assertMsg (route.pathPrefix == "/")
-        "Immich only supports a hostname root; cluster.routes.immich.pathPrefix must be /.";
+      assert lib.assertMsg (
+        route.pathPrefix == "/"
+      ) "Immich only supports a hostname root; cluster.routes.immich.pathPrefix must be /.";
+      assert lib.assertMsg (
+        route.namespace == namespace
+        && route.service == "immich-server"
+        && route.port == 2283
+        && !route.backendTLS
+      ) "Immich route must target its declared HTTP Service immich/immich-server:2283";
       {
         applications.immich-storage = {
           inherit namespace;
-          objects = [ {
-            apiVersion = "v1";
-            kind = "Namespace";
-            metadata = { name = namespace; annotations = retained; };
-          } ];
-          resources = lib.mkMerge [ (storage "library" "1Ti") (storage "postgres" "32Gi") ];
+          objects = [
+            {
+              apiVersion = "v1";
+              kind = "Namespace";
+              metadata = {
+                name = namespace;
+                annotations = retained;
+              };
+            }
+          ];
+          resources = lib.mkMerge [
+            (storage "library" "1Ti")
+            (storage "postgres" "32Gi")
+          ];
         };
 
         applications.immich = {
@@ -136,8 +195,14 @@
                       HOME = "/tmp";
                     };
                     resources = {
-                      requests = { cpu = "500m"; memory = "2Gi"; };
-                      limits = { cpu = "4"; memory = "4Gi"; };
+                      requests = {
+                        cpu = "500m";
+                        memory = "2Gi";
+                      };
+                      limits = {
+                        cpu = "4";
+                        memory = "4Gi";
+                      };
                     };
                   };
                 };
@@ -153,8 +218,14 @@
                     securityContext = containerSecurity;
                     env.HOME = "/cache";
                     resources = {
-                      requests = { cpu = "250m"; memory = "1Gi"; };
-                      limits = { cpu = "2"; memory = "3Gi"; };
+                      requests = {
+                        cpu = "250m";
+                        memory = "1Gi";
+                      };
+                      limits = {
+                        cpu = "2";
+                        memory = "3Gi";
+                      };
                     };
                   };
                 };
@@ -174,13 +245,31 @@
                     digest = "sha256:8e8d64b405ce18f41b8e5ee20aa4687a8ed0022d1298f2ce31cdcf3a76e09411";
                   };
                   securityContext = containerSecurity;
-                  args = [ "--save" "" "--appendonly" "no" "--maxmemory" "384mb" "--maxmemory-policy" "noeviction" ];
+                  args = [
+                    "--save"
+                    ""
+                    "--appendonly"
+                    "no"
+                    "--maxmemory"
+                    "384mb"
+                    "--maxmemory-policy"
+                    "noeviction"
+                  ];
                   resources = {
-                    requests = { cpu = "100m"; memory = "128Mi"; };
-                    limits = { cpu = "1"; memory = "512Mi"; };
+                    requests = {
+                      cpu = "100m";
+                      memory = "128Mi";
+                    };
+                    limits = {
+                      cpu = "1";
+                      memory = "512Mi";
+                    };
                   };
                 };
-                persistence.data = { type = "emptyDir"; sizeLimit = "1Gi"; };
+                persistence.data = {
+                  type = "emptyDir";
+                  sizeLimit = "1Gi";
+                };
               };
             };
           };
@@ -194,8 +283,8 @@
               fullnameOverride = "immich-postgres";
               defaultPodOptions = podOptions // {
                 securityContext = podOptions.securityContext // {
-                  runAsUser = 999;
-                  runAsGroup = 999;
+                  runAsUser = compute.retainedPaths.immich-postgres.uid;
+                  runAsGroup = compute.retainedPaths.immich-postgres.gid;
                 };
               };
               controllers.main = {
@@ -217,22 +306,42 @@
                     POSTGRES_INITDB_ARGS = "--data-checksums";
                     PGDATA = "/var/lib/postgresql/data/pgdata";
                   };
-                  probes = builtins.listToAttrs (map (name: {
-                    inherit name;
-                    value = {
-                      enabled = true;
-                      custom = true;
-                      spec = {
-                        exec.command = [ "pg_isready" "-U" "immich" "-d" "immich" ];
-                        periodSeconds = 10;
-                        timeoutSeconds = 5;
-                        failureThreshold = if name == "startup" then 60 else 3;
-                      };
-                    };
-                  }) [ "startup" "readiness" "liveness" ]);
+                  probes = builtins.listToAttrs (
+                    map
+                      (name: {
+                        inherit name;
+                        value = {
+                          enabled = true;
+                          custom = true;
+                          spec = {
+                            exec.command = [
+                              "pg_isready"
+                              "-U"
+                              "immich"
+                              "-d"
+                              "immich"
+                            ];
+                            periodSeconds = 10;
+                            timeoutSeconds = 5;
+                            failureThreshold = if name == "startup" then 60 else 3;
+                          };
+                        };
+                      })
+                      [
+                        "startup"
+                        "readiness"
+                        "liveness"
+                      ]
+                  );
                   resources = {
-                    requests = { cpu = "250m"; memory = "512Mi"; };
-                    limits = { cpu = "2"; memory = "2Gi"; };
+                    requests = {
+                      cpu = "250m";
+                      memory = "512Mi";
+                    };
+                    limits = {
+                      cpu = "2";
+                      memory = "2Gi";
+                    };
                   };
                 };
               };

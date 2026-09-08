@@ -1,4 +1,9 @@
-Checked tasks record the earlier baseline only. The 2026-09-08 planning revision adds open consolidation and acceptance work; no new implementation or runtime proof is claimed. Implementation is paused until separately resumed. Production inspection, credentials, deployment and destructive operations remain separately gated.
+Checked tasks record the earlier baseline and task 2.8's disposable Grafana recovery proof. The remaining tasks cover consolidation and broader acceptance. The operator authorized local implementation and disposable Linux verification. Production inspection, credentials, deployment and destructive production operations remain separately gated.
+
+The [household operations runbook](../../../docs/operations.md) records the
+current declaration tables, command boundaries and remaining gates. It does not
+claim completion of Git handoff, ingress, backup/restore or production
+acceptance.
 
 ## 1. Shared delivery and ownership
 
@@ -17,6 +22,7 @@ Checked tasks record the earlier baseline only. The 2026-09-08 planning revision
 - [ ] 2.5 Repair packaged restore/resume to validate selected inputs, preserve retained mount roots and displaced contents, and resume only against consistent state with actual workload/reconciler readiness. Exercise successful restore, failed capture and interrupted restore using the shipped commands; do not substitute the old manual Jellyfin checkpoint procedure.
 - [ ] 2.6 Consolidate retained paths, container identities and explicit recovery membership into shared projections for host attachments, manifests and inventory. Prove cross-layer agreement without changing existing IDs, paths or claim identities; reject invalid map ranges and duplicate destinations. Exercise preservation of host-owned modes across workload startup.
 - [ ] 2.7 Make host agenix consume the existing canonical master-identity declaration and reconcile runtime secret producer/consumer references. Evaluate agreement and reuse the atomic-rotation regression: incomplete replacement retains the prior complete payload; do not introduce revocation behavior as incidental cleanup.
+- [x] 2.8 Provide standard retained private PVC provisioning for ordinary Helm without an application wrapper or per-application host identity allocation. Exercise chart-native ownership, restart, and guest replacement using recorded PV/PVC and Helm metadata plus host-staged credentials; verify user-created Grafana state, original backing storage and no accidental adoption by a new same-named claim. Document reattachment separately from backup restore. Evidence: [tested native Helm recovery procedure](../../../modules/den/aspects/kubernetes/services/retained-storage.md).
 
 ## 3. Thin workload integrations
 

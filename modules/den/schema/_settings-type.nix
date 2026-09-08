@@ -35,15 +35,9 @@ let
   nodeModule =
     node:
     let
-      ownSettings =
-        if node ? settings then
-          reshapeSettings node.settings
-        else
-          {
-            imports = [ ];
-            config = { };
-            options = { };
-          };
+      ownSettings = map reshapeSettings (
+        den.lib.aspects.fx.contentUtil.unwrapContentValuesAll (node.settings or { })
+      );
       settingChildren = lib.filterAttrs (
         key: value: !(skipKey key) && builtins.isAttrs value && hasSettingsDeep value
       ) node;
@@ -57,9 +51,8 @@ let
       ) settingChildren;
     in
     {
-      imports = ownSettings.imports or [ ];
-      config = ownSettings.config or { };
-      options = (ownSettings.options or { }) // childOptions;
+      imports = ownSettings;
+      options = childOptions;
     };
 in
 types.submodule (nodeModule (den.aspects or { }))

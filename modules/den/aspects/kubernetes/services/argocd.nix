@@ -1,8 +1,37 @@
 { ... }:
 {
   den.aspects.kubernetes.services.argocd = {
+    compute-resources.runtimeSecrets = {
+      "argocd--argocd-secret--admin.password" = {
+        namespace = "argocd";
+        name = "argocd-secret";
+        key = "admin.password";
+      };
+      "argocd--argocd-secret--admin.passwordMtime" = {
+        namespace = "argocd";
+        name = "argocd-secret";
+        key = "admin.passwordMtime";
+      };
+      "argocd--argocd-secret--server.secretkey" = {
+        namespace = "argocd";
+        name = "argocd-secret";
+        key = "server.secretkey";
+      };
+    };
     k8s-manifests =
-      { charts, ... }:
+      {
+        charts,
+        cluster,
+        lib,
+        ...
+      }:
+      assert lib.assertMsg (
+        cluster.routes.argocd.namespace == "argocd"
+        && cluster.routes.argocd.service == "argocd-server"
+        && cluster.routes.argocd.port == 80
+        && !cluster.routes.argocd.backendTLS
+        && cluster.routes.argocd.pathPrefix == "/"
+      ) "Argo route must target the hostname-root HTTP Service argocd/argocd-server:80";
       {
         applications.argocd-retained = {
           namespace = "argocd";

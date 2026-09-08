@@ -8,10 +8,10 @@ contains the proposed guarantees; it is not current specification authority.
 Production inspection, secrets, deployment, and destruction remain separately
 authorized gates.
 
-Nix/Den owns concrete configuration. Operational steps live beside the
-[workload](../../../modules/den/aspects/workloads/jellyfin-operations.md), not in
-this design. Historical branches and Sini's configuration informed the choices
-but do not establish contracts or supply a configuration bundle to transplant.
+Nix/Den owns concrete configuration. Operational steps live in the
+[household operations runbook](../../../docs/operations.md), not in this
+design. Historical branches and Sini's configuration informed the choices but
+do not establish contracts or supply a configuration bundle to transplant.
 
 ## Ownership and lifecycle
 

@@ -14,9 +14,17 @@ let
     p: p.name == compute.profile && p.project == compute.project
   ) null preseed.profiles;
   devices = profile.devices;
+  baseDiskPaths = lib.filter (path: path != null) (
+    lib.mapAttrsToList (
+      _: entry: if (entry.type or null) == "disk" then entry.source or null else null
+    ) compute.devices
+  );
+  descriptor = builtins.fromJSON host.environment.etc."homelab/compute.json".text;
+  recovery = lib.findFirst (entry: entry.path == compute.recoveryPath) null descriptor.requiredPaths;
   idRange = "${toString compute.idmapBase}-${toString (compute.idmapBase + compute.idmapSize - 1)}";
   expectedDeviceNames = lib.sort builtins.lessThan (
-    [ "eth0" "identity" "media" "root" ] ++ builtins.attrNames compute.retainedPaths
+    builtins.attrNames compute.devices
+    ++ builtins.attrNames compute.retainedPaths
     ++ lib.optional (compute.runtimeSecrets != { }) "secrets"
   );
   owners = builtins.attrNames (
@@ -52,19 +60,28 @@ let
         ]
       ) (builtins.attrValues devices)
       && devices.root.pool == compute.pool
-      && devices."jellyfin-config".source == compute.retainedPaths.jellyfin-config.path
-      && devices."jellyfin-config".path == compute.retainedPaths.jellyfin-config.guestPath
-      && devices."jellyfin-config".readonly == "false"
+      && builtins.all (
+        name:
+        devices.${name}.source == compute.retainedPaths.${name}.path
+        && devices.${name}.path == compute.retainedPaths.${name}.guestPath
+        && devices.${name}.readonly == lib.boolToString compute.retainedPaths.${name}.readOnly
+      ) (builtins.attrNames compute.retainedPaths)
       && devices.identity.source == compute.identityPath
       && devices.identity.readonly == "true"
-      && devices.media.source == compute.mediaPath
       && devices.eth0.network == compute.network
       &&
         project."restricted.devices.disk.paths" == lib.concatStringsSep "," (
-          map (entry: entry.path) (builtins.attrValues compute.retainedPaths)
-          ++ [ compute.identityPath compute.mediaPath ]
-          ++ lib.optional (compute.runtimeSecrets != { }) "/run/homelab-compute/secrets"
+          lib.unique (
+            map (entry: entry.path) (builtins.attrValues compute.retainedPaths)
+            ++ [ compute.identityPath ]
+            ++ baseDiskPaths
+            ++ lib.optional (compute.runtimeSecrets != { }) "/run/homelab-compute/secrets"
+          )
         )
+      && recovery.uid == 0
+      && recovery.gid == 0
+      && recovery.mode == "0750"
+      && !recovery.readOnly
       && builtins.all (kind: project."restricted.devices.${kind}" == "block") [
         "gpu"
         "infiniband"

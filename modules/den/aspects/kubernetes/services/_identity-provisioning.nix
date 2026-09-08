@@ -4,7 +4,13 @@ let
   # unpatched REST API is used; recovery credentials are never reset here.
   runner = pkgs.writeShellApplication {
     name = "provision-identity";
-    runtimeInputs = [ pkgs.kanidm-provision pkgs.curl pkgs.jq pkgs.coreutils pkgs.kubectl ];
+    runtimeInputs = [
+      pkgs.kanidm-provision
+      pkgs.curl
+      pkgs.jq
+      pkgs.coreutils
+      pkgs.kubectl
+    ];
     text = ''
       umask 077
       cd /work
@@ -41,11 +47,11 @@ let
 
       # Revoke before fallible person/client reconciliation. The provisioner
       # updates group membership last; a failure there must not retain grants.
-      api GET /v1/group/homelab-admin
-      jq -e '. == null or .attrs.name == ["homelab-admin"]' response > /dev/null
+      api GET "/v1/group/$KANIDM_ADMIN_GROUP"
+      jq -e --arg group "$KANIDM_ADMIN_GROUP" '. == null or .attrs.name == [$group]' response > /dev/null
       if jq -e '. != null' response > /dev/null; then
         printf '%s' '[]' > request.json
-        api PUT /v1/group/homelab-admin/_attr/member --data-binary @request.json
+        api PUT "/v1/group/$KANIDM_ADMIN_GROUP/_attr/member" --data-binary @request.json
       fi
 
       # Bootstrap only the declared people/group/client. Removing someone from
@@ -61,16 +67,16 @@ let
       # The first phase leaves this group empty. Grant membership only after
       # passkey policy and the dedicated client's exhaustive grants are applied.
       printf '%s' '["account_policy"]' > request.json
-      api POST /v1/group/homelab-admin/_attr/class --data-binary @request.json
+      api POST "/v1/group/$KANIDM_ADMIN_GROUP/_attr/class" --data-binary @request.json
       printf '%s' '["passkey"]' > request.json
-      api PUT /v1/group/homelab-admin/_attr/credential_type_minimum --data-binary @request.json
+      api PUT "/v1/group/$KANIDM_ADMIN_GROUP/_attr/credential_type_minimum" --data-binary @request.json
       printf '%s' '{"attrs":{"oauth2_strict_redirect_uri":["true"]}}' > request.json
-      api PATCH /v1/oauth2/household-admin --data-binary @request.json
+      api PATCH "/v1/oauth2/$KANIDM_OIDC_CLIENT" --data-binary @request.json
 
       # v1.3.0 only merges scope maps. Remove every existing normal and
       # supplemental map before granting the one authorized group. These are
       # Kanidm v1.10's native OAuth endpoints, not a private provisioning API.
-      api GET /v1/oauth2/household-admin
+      api GET "/v1/oauth2/$KANIDM_OIDC_CLIENT"
       cp response client.json
       for mapping in 'oauth2_rs_scope_map:_scopemap' 'oauth2_rs_sup_scope_map:_sup_scopemap'; do
         attribute="''${mapping%%:*}"
@@ -78,28 +84,31 @@ let
         jq -r --arg attr "$attribute" '.attrs[$attr][]? | split(": ")[0] | split("@")[0]' client.json > groups
         while IFS= read -r group; do
           [[ "$group" =~ ^[a-zA-Z0-9_.-]+$ ]]
-          api DELETE "/v1/oauth2/household-admin/$endpoint/$group"
+          api DELETE "/v1/oauth2/$KANIDM_OIDC_CLIENT/$endpoint/$group"
         done < groups
       done
       printf '%s' '["openid","profile","email","homelab_admin"]' > request.json
-      api POST /v1/oauth2/household-admin/_scopemap/homelab-admin --data-binary @request.json
+      api POST "/v1/oauth2/$KANIDM_OIDC_CLIENT/_scopemap/$KANIDM_ADMIN_GROUP" --data-binary @request.json
       # Unpatched Kanidm generates this secret; the Job is its only Kubernetes
       # publisher. Never put a configured basicSecretFile into the state.
-      api GET /v1/oauth2/household-admin/_basic_secret
-      jq -e '{apiVersion:"v1",kind:"Secret",metadata:{name:"oidc-client",namespace:"gateway"},
+      api GET "/v1/oauth2/$KANIDM_OIDC_CLIENT/_basic_secret"
+      jq -e --arg name "$KANIDM_CLIENT_SECRET" '{apiVersion:"v1",kind:"Secret",metadata:{name:$name,namespace:"gateway"},
         type:"Opaque",data:{"client-secret":(. | select(type == "string" and length > 0) | @base64)}}' response > client-secret.json
       if ! kubectl apply --server-side --field-manager=identity-provisioner -f client-secret.json > secret-publish.log 2>&1; then
         echo 'Kanidm client Secret publication failed (credential-bearing diagnostics withheld)' >&2
         exit 1
       fi
-      api PUT /v1/group/homelab-admin/_attr/member --data-binary @/desired/members.json
+      api PUT "/v1/group/$KANIDM_ADMIN_GROUP/_attr/member" --data-binary @/desired/members.json
       echo 'Kanidm household administrator policy applied'
     '';
   };
   image = pkgs.dockerTools.buildLayeredImage {
     name = "homelab/kanidm-provision";
     compressor = "none";
-    contents = [ runner pkgs.cacert ];
+    contents = [
+      runner
+      pkgs.cacert
+    ];
     config = {
       Entrypoint = [ "${runner}/bin/provision-identity" ];
       Env = [ "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt" ];
@@ -111,6 +120,8 @@ in
 {
   inherit imageRef;
   image = image.overrideAttrs (old: {
-    passthru = (old.passthru or { }) // { imageReference = imageRef; };
+    passthru = (old.passthru or { }) // {
+      imageReference = imageRef;
+    };
   });
 }
