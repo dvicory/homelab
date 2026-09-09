@@ -1,7 +1,6 @@
 {
   config,
   lib,
-  self,
   ...
 }:
 let
@@ -62,9 +61,9 @@ let
 in
 {
   perSystem =
-    { pkgs, ... }:
-    let
-      document = pkgs.writeText "operations.md" ''
+    { ... }:
+    {
+      files.file."docs/operations.md".text = ''
         # Household operations
 
         > This runbook is generated from the evaluated `prod-home` route, compute and runtime-secret declarations. It is a declaration reference, not a readiness result or production authorization.
@@ -72,7 +71,7 @@ in
         Regenerate the committed copy after changing those declarations:
 
         ```sh
-        nix run .#write-operations
+        nix run .#write-files
         ```
 
         Run it from the repository root.
@@ -220,10 +219,10 @@ in
         present after a restart or reconciliation. Do not record a successful
         apply as readiness.
 
-        An empty identity database still needs its native recovery-account and
-        passkey setup, and Jellyfin still needs its native first owner. Escrow
-        generated credentials through agenix/rekey and never put them in this
-        runbook.
+        Complete each service's native first-enrollment prerequisites before
+        expecting its configuration Jobs to succeed. Keep service-specific
+        requirements with the service declaration. Escrow generated credentials
+        through agenix/rekey and never put them in this runbook.
 
         ## Failure handling
 
@@ -280,36 +279,5 @@ in
         client access; routine capture/restore/resume results; independent
         off-host backup; or production approval.
       '';
-      writer = pkgs.writeShellApplication {
-        name = "write-operations";
-        runtimeInputs = [ pkgs.coreutils ];
-        text = ''
-          set -euo pipefail
-          target=docs/operations.md
-          mkdir -p "$(dirname "$target")"
-          if cmp -s ${document} "$target"; then
-            echo "ok     docs/operations.md"
-          else
-            cp ${document} "$target"
-            echo "updated docs/operations.md"
-          fi
-        '';
-      };
-      documentCheck =
-        pkgs.runCommandLocal "operations-docs-check"
-          {
-            nativeBuildInputs = [ pkgs.diffutils ];
-          }
-          ''
-            if ! diff --unified=3 ${self + "/docs/operations.md"} ${document}; then
-              echo "docs/operations.md is stale; run nix run .#write-operations" >&2
-              exit 1
-            fi
-            touch "$out"
-          '';
-    in
-    {
-      packages.write-operations = writer;
-      checks.operations = documentCheck;
     };
 }

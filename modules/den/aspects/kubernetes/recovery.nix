@@ -20,7 +20,6 @@ in
             lib.mapAttrs (_: entry: { inherit (entry) guestPath readOnly; }) compute.retainedPaths
           )
         );
-        preflight = pkgs.writeText "household-recovery-preflight.sh" config.flake.clusterResources.prod-home.preCaptureChecks;
         inventory =
           pkgs.runCommand "household-recovery-inventory.json"
             {
@@ -210,9 +209,12 @@ in
           text = ''
             export RECOVERY_INVENTORY=${inventory}
             export RECOVERY_GUIDANCE=${guidance}
-            export RECOVERY_PREFLIGHT=${preflight}
           ''
-          + builtins.readFile ./_recovery.sh;
+          +
+            lib.replaceStrings
+              [ "@preCaptureChecks@" ]
+              [ config.flake.clusterResources.prod-home.preCaptureChecks ]
+              (builtins.readFile ./_recovery.sh);
         };
       }
     );

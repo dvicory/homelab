@@ -182,8 +182,8 @@ for index in "${!names[@]}"; do
   [[ $point != "$path" && $point != "$path/"* && $path != "$point/"* ]]
   [[ $session != "$path" && $session != "$path/"* && $path != "$session/"* ]]
   [[ $metrics != "$path" && $metrics != "$path/"* ]]
-  root_attrs[$index]=$(stat -c '%u:%g:%f' -- "$path")
-  root_mounts[$index]=$(findmnt -n -o SOURCE,FSTYPE,MAJ:MIN -T "$path" 2>/dev/null || true)
+  root_attrs[index]=$(stat -c '%u:%g:%f' -- "$path")
+  root_mounts[index]=$(findmnt -n -o SOURCE,FSTYPE,MAJ:MIN -T "$path" 2>/dev/null || true)
 done
 assert_no_dynamic_content
 for path in "${paths[@]}"; do
@@ -233,8 +233,9 @@ if [[ $action == restore ]]; then
   mkdir -p "$session/staged" "$session/displaced"
 fi
 if [[ $action == export ]]; then
-  # This file is generated from trusted cluster resource declarations.
-  source "$RECOVERY_PREFLIGHT"
+  # Nix inserts checks contributed by the selected services.
+  :
+  @preCaptureChecks@
 fi
 note "Starting $action; reconcilers will remain stopped until explicit resume"
 # Stop the owner itself, not Application syncPolicy: app-of-apps cannot undo this
@@ -312,10 +313,10 @@ else
     [[ ! -e $displaced ]]
     [[ -d $path && ! -L $path && $(realpath -e "$path") == "$path" ]]
     current_mount=$(findmnt -n -o SOURCE,FSTYPE,MAJ:MIN -T "$path" 2>/dev/null || true)
-    if [[ -n ${root_mounts[$index]} ]]; then
-      [[ $current_mount == "${root_mounts[$index]}" ]]
+    if [[ -n ${root_mounts[index]} ]]; then
+      [[ $current_mount == "${root_mounts[index]}" ]]
     fi
-    [[ ${root_attrs[$index]} == "$(stat -c '%u:%g:%f' -- "$path")" ]]
+    [[ ${root_attrs[index]} == "$(stat -c '%u:%g:%f' -- "$path")" ]]
     assert_no_descendant_mounts "$path"
     note "Copying live $path to $displaced"
     cp -a --reflink=auto -- "$path" "$displaced"
@@ -324,10 +325,10 @@ else
     copy_contents "$stage" "$path"
     sync -f "$path"
     [[ -d $path && ! -L $path && $(realpath -e "$path") == "$path" ]]
-    [[ ${root_attrs[$index]} == "$(stat -c '%u:%g:%f' -- "$path")" ]]
+    [[ ${root_attrs[index]} == "$(stat -c '%u:%g:%f' -- "$path")" ]]
     current_mount=$(findmnt -n -o SOURCE,FSTYPE,MAJ:MIN -T "$path" 2>/dev/null || true)
-    if [[ -n ${root_mounts[$index]} ]]; then
-      [[ $current_mount == "${root_mounts[$index]}" ]]
+    if [[ -n ${root_mounts[index]} ]]; then
+      [[ $current_mount == "${root_mounts[index]}" ]]
     fi
     note "Installed $path; root mount and metadata remain in place"
   done

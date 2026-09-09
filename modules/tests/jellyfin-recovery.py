@@ -947,6 +947,13 @@ def run_scenario(args: argparse.Namespace) -> None:
             with Path(f"/run/lock/compute-{project}-{instance_name}.lock").open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 runtime.helper_expect_failure("replace", "concurrent maintenance")
+                command = runtime.helper_command("inspect") + ["--lock-fd", str(lock.fileno())]
+                inspected = subprocess.run(command, pass_fds=(lock.fileno(),), capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
+                check(inspected.returncode == 0, "inspection reuses the selected held lifecycle lock")
+                with runtime.spec_path.open("r") as wrong_lock:
+                    command = runtime.helper_command("inspect") + ["--lock-fd", str(wrong_lock.fileno())]
+                    rejected = subprocess.run(command, pass_fds=(wrong_lock.fileno(),), capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
+                    check(rejected.returncode != 0, "an unrelated inherited descriptor cannot bypass lifecycle serialization")
             check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid,
                   "concurrent maintenance cannot replace the guest")
             runtime.guest("nix-env", "--profile", "/nix/var/nix/profiles/system", "--set", str((args.bundle / "system").resolve()))

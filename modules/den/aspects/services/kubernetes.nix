@@ -4,11 +4,14 @@
     nixos =
       { config, ... }:
       {
-        assertions = [ {
-          assertion = config.services.k3s.package.version
-            == inputs.nixpkgs.legacyPackages.${config.nixpkgs.hostPlatform.system}.k3s.version;
-          message = "The K3s runtime must match the pinned package used to render Kubernetes manifests.";
-        } ];
+        assertions = [
+          {
+            assertion =
+              config.services.k3s.package.version
+              == inputs.nixpkgs.legacyPackages.${config.nixpkgs.hostPlatform.system}.k3s.version;
+            message = "The K3s runtime must match the pinned package used to render Kubernetes manifests.";
+          }
+        ];
         # Metrics collectors reach the authenticated kubelet through Flannel's
         # local pod bridge, not the guest's external management interface.
         networking.firewall.interfaces.cni0.allowedTCPPorts = [ 10250 ];

@@ -5,7 +5,7 @@
 Regenerate the committed copy after changing those declarations:
 
 ```sh
-nix run .#write-operations
+nix run .#write-files
 ```
 
 Run it from the repository root.
@@ -180,10 +180,10 @@ service declarations, and that application-owned records remain
 present after a restart or reconciliation. Do not record a successful
 apply as readiness.
 
-An empty identity database still needs its native recovery-account and
-passkey setup, and Jellyfin still needs its native first owner. Escrow
-generated credentials through agenix/rekey and never put them in this
-runbook.
+Complete each service's native first-enrollment prerequisites before
+expecting its configuration Jobs to succeed. Keep service-specific
+requirements with the service declaration. Escrow generated credentials
+through agenix/rekey and never put them in this runbook.
 
 ## Failure handling
 

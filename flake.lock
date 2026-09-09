@@ -295,6 +295,21 @@
         "type": "github"
       }
     },
+    "files": {
+      "locked": {
+        "lastModified": 1780084175,
+        "narHash": "sha256-hmXRqcp+rWLW8GEYgrBDFHPGziP1R59oQbG+Imji2kE=",
+        "owner": "sini",
+        "repo": "files",
+        "rev": "b79ab01ba5394ddf3c1d0fadafbcc1ccb9536c5f",
+        "type": "github"
+      },
+      "original": {
+        "owner": "sini",
+        "repo": "files",
+        "type": "github"
+      }
+    },
     "flake-compat": {
       "flake": false,
       "locked": {
@@ -1829,6 +1844,7 @@
         "deploy-rs": "deploy-rs",
         "devshell": "devshell_2",
         "disko-zfs": "disko-zfs",
+        "files": "files",
         "flake-file": "flake-file",
         "flake-parts": "flake-parts_2",
         "flake-root": "flake-root",

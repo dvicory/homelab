@@ -246,6 +246,10 @@ def open_lifecycle_lock(path, inherited_fd=None):
     if inherited_fd is None:
         return path.open("a")
     try:
+        inherited = os.fstat(inherited_fd)
+        expected = path.stat()
+        if (inherited.st_dev, inherited.st_ino) != (expected.st_dev, expected.st_ino):
+            raise RuntimeError("inherited descriptor is not the selected lifecycle lock")
         return os.fdopen(os.dup(inherited_fd), "a")
     except OSError as error:
         raise RuntimeError("invalid inherited lifecycle lock") from error

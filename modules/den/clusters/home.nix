@@ -13,8 +13,7 @@ let
   ];
   cluster = config.den.clusters.prod-home;
   kubeVersion = builtins.head (
-    lib.splitString "+"
-      inputs.nixpkgs.legacyPackages.${cluster.hostSystem}.k3s.version
+    lib.splitString "+" inputs.nixpkgs.legacyPackages.${cluster.hostSystem}.k3s.version
   );
   route = key: namespace: service: port: auth: {
     inherit

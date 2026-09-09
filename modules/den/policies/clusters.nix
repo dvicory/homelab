@@ -48,37 +48,39 @@ in
         ];
         instantiate =
           { modules, ... }:
-          let evaluated = lib.evalModules {
-            specialArgs = { inherit cluster; };
-            modules = modules ++ [
-              (inputs.nixpkgs + "/nixos/modules/misc/assertions.nix")
-              {
-                options.preCaptureChecks = lib.mkOption {
-                  type = lib.types.lines;
-                  default = "";
-                  description = "Service-owned checks run with k() access before cold capture stops writers.";
-                };
-                options.retainedPaths = lib.mkOption {
-                  default = { };
-                  type = lib.types.attrsOf (
-                    lib.types.submodule {
-                      options = {
-                        uid = lib.mkOption { type = lib.types.ints.unsigned; };
-                        gid = lib.mkOption { type = lib.types.ints.unsigned; };
-                        mode = lib.mkOption { type = lib.types.str; };
-                        readOnly = lib.mkOption {
-                          type = lib.types.bool;
-                          default = false;
+          let
+            evaluated = lib.evalModules {
+              specialArgs = { inherit cluster; };
+              modules = modules ++ [
+                (inputs.nixpkgs + "/nixos/modules/misc/assertions.nix")
+                {
+                  options.preCaptureChecks = lib.mkOption {
+                    type = lib.types.lines;
+                    default = "";
+                    description = "Service-owned checks run with k() access before cold capture stops writers.";
+                  };
+                  options.retainedPaths = lib.mkOption {
+                    default = { };
+                    type = lib.types.attrsOf (
+                      lib.types.submodule {
+                        options = {
+                          uid = lib.mkOption { type = lib.types.ints.unsigned; };
+                          gid = lib.mkOption { type = lib.types.ints.unsigned; };
+                          mode = lib.mkOption { type = lib.types.str; };
+                          readOnly = lib.mkOption {
+                            type = lib.types.bool;
+                            default = false;
+                          };
                         };
-                      };
-                    }
-                  );
-                };
-                options.runtimeSecrets = den.aspects.virtualization.compute.settings.options.runtimeSecrets;
-              }
-            ];
-          };
-          in lib.asserts.checkAssertWarn evaluated.config.assertions evaluated.config.warnings evaluated.config;
+                      }
+                    );
+                  };
+                  options.runtimeSecrets = den.aspects.virtualization.compute.settings.options.runtimeSecrets;
+                }
+              ];
+            };
+          in
+          lib.asserts.checkAssertWarn evaluated.config.assertions evaluated.config.warnings evaluated.config;
       };
 
     den.policies.cluster-to-nixidy =
