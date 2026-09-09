@@ -5,6 +5,9 @@
   lib,
   ...
 }:
+let
+  clusterResources = config.flake.clusterResources.prod-home;
+in
 {
   den.hosts.x86_64-linux.hvn-hyp1 = {
     environment = "prod";
@@ -17,78 +20,78 @@
       core.nix.gc.enable = false;
       services.compute-media.source = "/mnt/storage/media";
       virtualization.compute =
-        let
-          compute = config.den.hosts.x86_64-linux.hvn-hyp1.settings.virtualization.compute;
-        in
+        { config, ... }:
         {
-          stateRoot = "/var/lib/homelab/compute-1/state";
-          address = "10.210.0.10";
-          pool = "incus-compute";
-          network = "incus-compute";
-          idmapBase = 1000000;
-          idmapSize = 65536;
-          identityPath = "/var/lib/homelab/compute-1/identity";
-          project = "compute";
-          instance = "compute-1";
-          profile = "compute-1";
-          retainedPaths = lib.mapAttrs (
-            name: entry:
-            entry
-            // {
-              path = "${compute.stateRoot}/${name}";
-              guestPath = "/srv/state/${name}";
-            }
-          ) config.flake.clusterResources.prod-home.retainedPaths;
-          runtimeSecrets = config.flake.clusterResources.prod-home.runtimeSecrets;
-          recoveryPath = "/var/lib/homelab/compute-1/recovery";
           config = {
-            "boot.autostart" = "true";
-            "limits.cpu" = "4";
-            "limits.memory" = "12GiB";
-            "limits.processes" = "8192";
-            "security.guestapi" = "false";
-            "raw.idmap" = "both ${toString compute.idmapBase}-${
-              toString (compute.idmapBase + compute.idmapSize - 1)
-            } 0-${toString (compute.idmapSize - 1)}";
-            "security.idmap.isolated" = "true";
-            "security.nesting" = "true";
-            "security.privileged" = "false";
-          };
-          devices = {
-            root = {
-              path = "/";
-              inherit (compute) pool;
-              type = "disk";
+            stateRoot = "/var/lib/homelab/compute-1/state";
+            address = "10.210.0.10";
+            pool = "incus-compute";
+            network = "incus-compute";
+            idmapBase = 1000000;
+            idmapSize = 65536;
+            identityPath = "/var/lib/homelab/compute-1/identity";
+            project = "compute";
+            instance = "compute-1";
+            profile = "compute-1";
+            retainedPaths = lib.mapAttrs (
+              name: entry:
+              entry
+              // {
+                path = "${config.stateRoot}/${name}";
+                guestPath = "/srv/state/${name}";
+              }
+            ) clusterResources.retainedPaths;
+            runtimeSecrets = clusterResources.runtimeSecrets;
+            recoveryPath = "/var/lib/homelab/compute-1/recovery";
+            config = {
+              "boot.autostart" = "true";
+              "limits.cpu" = "4";
+              "limits.memory" = "12GiB";
+              "limits.processes" = "8192";
+              "security.guestapi" = "false";
+              "raw.idmap" = "both ${toString config.idmapBase}-${
+                toString (config.idmapBase + config.idmapSize - 1)
+              } 0-${toString (config.idmapSize - 1)}";
+              "security.idmap.isolated" = "true";
+              "security.nesting" = "true";
+              "security.privileged" = "false";
             };
-            eth0 = {
-              name = "eth0";
-              inherit (compute) network;
-              type = "nic";
-              "ipv4.address" = compute.address;
-              host_name = "veth-comp-1";
-            };
-            media = {
-              path = "/srv/media";
-              propagation = "rslave";
-              # The host export is already recursively read-only. Incus 7.4
-              # rejects readonly=true together with recursive=true.
-              recursive = "true";
-              required = "true";
-              source = "/run/homelab-compute/media";
-              type = "disk";
-              requiredPath = {
-                uid = 0;
-                gid = 0;
-                mode = "0755";
-                readOnly = true;
+            devices = {
+              root = {
+                path = "/";
+                inherit (config) pool;
+                type = "disk";
               };
-            };
-            identity = {
-              path = "/srv/identity";
-              readonly = "true";
-              required = "true";
-              source = compute.identityPath;
-              type = "disk";
+              eth0 = {
+                name = "eth0";
+                inherit (config) network;
+                type = "nic";
+                "ipv4.address" = config.address;
+                host_name = "veth-comp-1";
+              };
+              media = {
+                path = "/srv/media";
+                propagation = "rslave";
+                # The host export is already recursively read-only. Incus 7.4
+                # rejects readonly=true together with recursive=true.
+                recursive = "true";
+                required = "true";
+                source = "/run/homelab-compute/media";
+                type = "disk";
+                requiredPath = {
+                  uid = 0;
+                  gid = 0;
+                  mode = "0755";
+                  readOnly = true;
+                };
+              };
+              identity = {
+                path = "/srv/identity";
+                readonly = "true";
+                required = "true";
+                source = config.identityPath;
+                type = "disk";
+              };
             };
           };
         };
