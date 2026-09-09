@@ -1,7 +1,12 @@
 { self, lib, ... }:
 {
   perSystem =
-    { pkgs, system, ... }:
+    {
+      config,
+      pkgs,
+      system,
+      ...
+    }:
     let
       environment = self.nixidyEnvs.${system}.prod-home.environmentPackage;
       manifests = pkgs.runCommand "household-static-bootstrap" { nativeBuildInputs = [ pkgs.yq-go ]; } ''
@@ -552,39 +557,8 @@
               path = "${hostBootstrap}/bin/household-bootstrap-host";
             }
             {
-              name = "operations.txt";
-              path = pkgs.writeText "household-bootstrap-operations.txt" ''
-                Build this bundle for the compute guest's Linux architecture.
-                Copy it to the Incus host with nix copy; no runtime secrets are included.
-
-                The bundle's executable performs the complete non-destructive delivery
-                against one explicitly selected existing guest:
-                  "$BUNDLE/bin/household-bootstrap-host" /etc/homelab/compute.json --confirm "$INSTANCE"
-
-                It verifies the root-owned descriptor, project/instance confirmation,
-                the declared compute envelope, an existing Running target, fresh guest
-                kubeconfig identity, declared node placement, absent Argo Applications
-                and existing staged runtime credentials before any image import or
-                application mutation. It imports the pinned Kanidm image with the guest's
-                native local snapshotter, applies namespaces and staged runtime Secrets,
-                then invokes household-bootstrap --fresh-cluster. It never creates/deletes guests,
-                changes host configuration, publishes Git or enables Argo.
-
-                The host command reacquires kubeconfig after guest replacement; do not
-                reuse an old CA or client identity. Runtime credentials must already
-                be staged through agenix/rekey; no identities are generated here.
-                After delivery, inspect with:
-                  "$BUNDLE/bin/household-bootstrap" --status
-                Complete the explicit native Kanidm and Jellyfin enrollment prerequisites
-                before the blocking readiness check:
-                  "$BUNDLE/bin/household-bootstrap" --check-ready
-                If a declared hook Job is terminal Failed, and no Argo Applications are
-                present, retry only those safe Jobs explicitly:
-                  "$BUNDLE/bin/household-bootstrap" --retry-jobs
-                This ignores undeclared and unannotated/TTL-managed Jobs. For eligible
-                BeforeHookCreation Jobs it refuses missing, active, non-terminal or
-                unknown Jobs and never mutates an active or unknown object.
-              '';
+              name = "operations.md";
+              path = config.files.file."docs/operations.md".source;
             }
           ];
         }
