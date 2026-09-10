@@ -156,6 +156,7 @@ in
       den.aspects.virtualization.incus
       den.aspects.virtualization.compute
       den.aspects.services.compute-media
+      den.aspects.services.storage-roots
       den.aspects.services.kubernetes-runtime-secrets
       den.aspects.disk.zfs
       den.aspects.disk.zfs.provides.pool
