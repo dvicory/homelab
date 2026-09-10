@@ -114,10 +114,23 @@ application owns the bytes. Application ownership governs authorization for
 human users *inside* the application; it is not a claim that the data should be
 workable from the host only as root.
 
-Media is the clearest case. It is service-owned for writes, and it still has to
-be manageable from the host — inspecting it, fixing a bad import, moving
-something by hand — without becoming root and without going through the
-service.
+Access decomposes into three axes that one group cannot answer together:
+
+- **Ownership** — whose data this is: a person, or a service identity. Decided
+  by the root's owner, not by a group.
+- **Sharing** — which other people may reach it. Expressed by a group per real
+  sharing boundary. A group with one member adds a name, not access, so these
+  appear when a second person actually needs the data.
+- **Administration** — who may inspect and repair it from the host. Expressed by
+  inherited access entries naming the administrative group.
+
+The three compose: content can be owned by one person, shared with a group, and
+administrable by another.
+
+Media is the clearest administration case. It is service-owned for writes, and
+it still has to be manageable from the host — inspecting it, fixing a bad
+import, moving something by hand — without becoming root and without going
+through the service.
 
 Concretely, managed roots declare a default access entry for the operator group
 so that content created later inherits it. The declared entries use the
@@ -199,7 +212,9 @@ the namespace exists to provide.
 Media is the case that constrains the design, so it is stated explicitly.
 
 `/srv/media` is presented to consumers as **one filesystem** containing both
-`library/` and `downloads/`. This is not cosmetic. Acquisition services import
+`library/` and `downloads/`. The host mounts it as well: operators and
+workloads consume the same paths, and `/mnt/storage` stays implementation
+detail. This is not cosmetic. Acquisition services import
 a completed download into the library using hardlinks or atomic renames, and
 Linux refuses both across mount boundaries even when the two mounts come from
 the same underlying device. A consumer that must link or rename receives the
