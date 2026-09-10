@@ -109,6 +109,24 @@ Players get read-only views; only acquisition services get a writable one.
 server, so host root cannot read it. This is a confidentiality property, not a
 separate tier or a top-level namespace.
 
+All four models carry inherited access entries, including the ones where the
+application owns the bytes. Application ownership governs authorization for
+human users *inside* the application; it is not a claim that the data should be
+workable from the host only as root.
+
+Media is the clearest case. It is service-owned for writes, and it still has to
+be manageable from the host — inspecting it, fixing a bad import, moving
+something by hand — without becoming root and without going through the
+service.
+
+Concretely, managed roots declare a default access entry for the operator group
+so that content created later inherits it. The declared entries use the
+identifiers the host actually observes; for content written by a workload
+inside the compute boundary that is the translated identifier of the workload's
+identity, not its number inside the guest. Applying inherited access to content
+that already exists is a deliberate one-time migration, not something routine
+activation does.
+
 Access decisions must resolve to stable numeric IDs, because the compute
 boundary translates between host and guest IDs. Group names and their IDs come
 from the fleet group registry; a host does not invent its own.

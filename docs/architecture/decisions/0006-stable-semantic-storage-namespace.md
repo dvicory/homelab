@@ -1,9 +1,10 @@
 ---
 id: ADR-0006
-status: proposed
+status: accepted
 date: 2026-09-10
 updated: 2026-09-10
-decision-makers: []
+decision-makers:
+  - Daniel Vicory
 consulted: []
 informed: []
 supersedes: []
@@ -92,6 +93,13 @@ Chosen option: **Stable semantic namespace with policy-driven physical
 placement**, because it is the only option that keeps link semantics correct
 while leaving placement free to change, and because the cost of adopting it
 grows with the amount of data already placed.
+
+Accepted with one clarification about ownership: service- and
+application-owned content is not root-only content. Managing authorization
+inside an application decides what its *users* may do; it does not mean the data
+should be workable from the host only as root. Managed roots therefore carry
+inherited access for the operator and for declared groups, while guests and
+workloads still receive only the access they are declared.
 
 The direction is described in [`docs/architecture/storage.md`](../storage.md):
 `/srv` is the durable interface; devices, pools, dataset names and tiers stay
