@@ -137,13 +137,37 @@ cat "$STAGE/profile.yaml" "$STAGE/firewall.nft"
 - Leave shared host space for staging and Incus's compressed archives under
   `/var/lib/incus/images`. Those archives are **outside** the dataset quota.
 
-The 12 GiB quota is the minimum validated size for this bundle: the
-directory-backed pool, guest root, K3s image store, Jellyfin image layers,
-state and media used about 9.3 GiB before the application became healthy.
-It is a ceiling, not reserved capacity; leave additional shared host space for
-staging and Incus's compressed image archives. Compressed archive size is not
-installed size. Check space after each import. If the dataset approaches its
-limit, stop the sandbox and investigate rather than tolerating disk pressure.
+The 12 GiB quota is what this exercise was validated against, not a measured
+minimum. Steady state is roughly 9.3 GiB for the directory-backed pool, guest
+root, K3s image store, Jellyfin image layers, state and media. Only about
+2.8 GiB remains, and the guest root is the filesystem kubelet measures for
+node-level ephemeral storage. In this exercise kubelet's eviction threshold was
+reported as `644245104` bytes, exactly 5% of that filesystem, so the eviction
+margin is under 700 MiB.
+
+Image import and container startup are transient high-water marks. A live run
+of this exercise crossed that margin: kubelet evicted the Jellyfin pod for
+ephemeral-storage pressure, and the same pressure let the CRI image store
+garbage-collect the pinned Jellyfin image, so the replacement pod failed with
+`Init:ErrImageNeverPull` while the node reported `DiskPressure=False`.
+
+Raising the quota alone does not clear that state. Recover by re-importing the
+pinned image, then let the workload start:
+
+```sh
+c exec "$INSTANCE" -- k3s ctr images list
+c file push "$STAGE/jellyfin-image.tar" "$INSTANCE/tmp/jellyfin-image.tar"
+c exec "$INSTANCE" -- k3s ctr images import --local --snapshotter native \
+  /tmp/jellyfin-image.tar
+c exec "$INSTANCE" -- rm -f /tmp/jellyfin-image.tar
+k -n jellyfin rollout restart deployment/jellyfin
+k -n jellyfin rollout status deployment/jellyfin --timeout=300s
+```
+
+The quota is a ceiling, not reserved capacity, and compressed archive size is
+not installed size. Check free space after each import. If the dataset
+approaches its limit, stop the sandbox and investigate rather than tolerating
+repeated eviction.
 
 ## 4. Create only sandbox resources — host
 
