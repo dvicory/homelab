@@ -1,10 +1,29 @@
-# Deterministic UIDs/GIDs — consistent IDs across all hosts for NFS and service accounts.
+# Deterministic UIDs/GIDs — default IDs for service accounts across the fleet.
 #
 # Ported from main:modules/_legacy/core/deterministic-uids/
-# The option module defines `users.deterministicIds` which auto-assigns uid/gid
-# to users/groups via mkDefault. The data module provides the central ID registry.
+# The option module defines `users.deterministicIds` which supplies uid/gid via
+# mkDefault. The data module provides the central ID registry.
 #
-# UID/GID Layout:
+# These entries are FALLBACKS, not a fleet-wide contract:
+#
+#   - They apply only where nothing stronger already defines the identity. A
+#     nixpkgs service module that creates its own account wins, which is why
+#     several entries below resolve to a different number than they declare
+#     (wheel, nginx, chrony, audio, video, render, kvm, docker, and others).
+#   - Shadowing an upstream name is therefore expected, not a defect. Do not
+#     rename or renumber an entry to remove a divergence from nixpkgs.
+#   - What they must guarantee is that nothing is left non-deterministic: every
+#     user and group that exists on a host has an ID, which is asserted below.
+#
+# Persistent storage identities — groups such as `media` or `family` that appear
+# in filesystem metadata, exports and container mappings — need more than a
+# fallback, because a number that merely "usually" resolves correctly is not
+# good enough when it is written into file ownership. Those are declared in
+# `den.groups` with the `fleet-identity` label, which asserts that the resolved
+# GID equals the declared one; see fleet-groups.nix.
+#
+# Number layout (a guide for choosing a free number, not a statement about the
+# value that resolves on a host):
 #   10        wheel (standard Linux)
 #   500-599   All groups — access control, POSIX, service groups (100 slots)
 #   600-649   Core system daemons (50 slots)
@@ -136,22 +155,44 @@
 
         config.users.deterministicIds = {
           # ── Standard Linux groups ────────────────────────────────────
-          wheel = { gid = 10; };
+          wheel = {
+            gid = 10;
+          };
 
           # ── All groups (500-599) ────────────────────────────────────
           # Access control groups
-          admins = { gid = 500; };
-          system-access = { gid = 501; };
-          server-access = { gid = 502; };
-          workstation-access = { gid = 503; };
+          admins = {
+            gid = 500;
+          };
+          system-access = {
+            gid = 501;
+          };
+          server-access = {
+            gid = 502;
+          };
+          workstation-access = {
+            gid = 503;
+          };
 
           # POSIX service groups (add as needed)
-          docker = { gid = 510; };
-          kvm = { gid = 511; };
-          audio = { gid = 512; };
-          video = { gid = 513; };
-          render = { gid = 514; };
-          i2c = { gid = 515; };
+          docker = {
+            gid = 510;
+          };
+          kvm = {
+            gid = 511;
+          };
+          audio = {
+            gid = 512;
+          };
+          video = {
+            gid = 513;
+          };
+          render = {
+            gid = 514;
+          };
+          i2c = {
+            gid = 515;
+          };
 
           # ── Core system daemons (600-649) ───────────────────────────
           systemd-oom = uidGid 600;

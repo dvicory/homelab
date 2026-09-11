@@ -37,6 +37,18 @@ in
           lib.concatMap (user: user.extraGroups or [ ]) (builtins.attrValues config.users.users)
         );
         unbacked = builtins.filter (name: !(config.users.groups ? ${name})) granted;
+
+        # A fleet identity's number is written into file ownership, exports and
+        # container mappings, so the declared value has to be the resolved value.
+        # This is the difference between a fleet identity and a fallback entry in
+        # the deterministic registry, where an upstream definition legitimately
+        # wins. Checked when the system toplevel is evaluated.
+        fleetIdentities = lib.filterAttrs (
+          _: group: (group.gid or null) != null && builtins.elem "fleet-identity" (group.labels or [ ])
+        ) registry;
+        diverged = builtins.filter (
+          name: (config.users.groups.${name}.gid or null) != fleetIdentities.${name}.gid
+        ) (builtins.attrNames fleetIdentities);
       in
       {
         users.groups = lib.mapAttrs (name: group: { gid = lib.mkDefault group.gid; }) withId;
@@ -45,6 +57,10 @@ in
           {
             assertion = unbacked == [ ];
             message = "den: accounts are granted groups this host does not define: ${lib.concatStringsSep ", " unbacked}";
+          }
+          {
+            assertion = diverged == [ ];
+            message = "den: fleet identities did not resolve to their declared GID: ${lib.concatStringsSep ", " diverged}";
           }
         ];
       };

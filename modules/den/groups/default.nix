@@ -17,33 +17,48 @@
     # Access control groups (500-509)
     admins = {
       description = "Administrative role; privilege only, not machine login";
-      labels = [ "posix" ];
+      labels = [
+        "posix"
+        "fleet-identity"
+      ];
       gid = 500;
     };
 
     system-access = {
       description = "Broad login access to ordinary machines";
-      labels = [ "posix" ];
+      labels = [
+        "posix"
+        "fleet-identity"
+      ];
       gid = 501;
     };
 
     server-access = {
       description = "Login access to server hosts";
-      labels = [ "posix" ];
+      labels = [
+        "posix"
+        "fleet-identity"
+      ];
       gid = 502;
       members = [ "system-access" ];
     };
 
     workstation-access = {
       description = "Login access to workstation hosts";
-      labels = [ "posix" ];
+      labels = [
+        "posix"
+        "fleet-identity"
+      ];
       gid = 503;
       members = [ "system-access" ];
     };
 
     workload-access = {
       description = "Service account access for container runners and CI agents";
-      labels = [ "posix" ];
+      labels = [
+        "posix"
+        "fleet-identity"
+      ];
       gid = 504;
     };
   };
