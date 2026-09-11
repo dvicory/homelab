@@ -29,6 +29,16 @@
       {
         environment.systemPackages = [ pkgs.mergerfs pkgs.attr ];
         boot.supportedFilesystems = [ "fuse" "fuse.mergerfs" ];
+        assertions = [
+          {
+            # Before 2.42.0 mergerfs resolved entitlements from the host group
+            # database instead of the process, so a workload holding a storage
+            # capability as a supplemental group had its writes refused with no
+            # useful error. Measured on 2.40.2 and 2.42.0.
+            assertion = lib.versionAtLeast pkgs.mergerfs.version "2.42.0";
+            message = "services.mergerfs: mergerfs ${pkgs.mergerfs.version} cannot authorize supplemental storage groups; 2.42.0 or later is required";
+          }
+        ];
       }
 
       {
