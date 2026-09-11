@@ -223,7 +223,7 @@ in
               };
               data = {
                 type = "hostPath";
-                hostPath = "/srv/media";
+                hostPath = compute.devices.media.path;
                 hostPathType = "Directory";
                 globalMounts = [ { path = "/data"; } ];
               };

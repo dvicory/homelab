@@ -1,4 +1,4 @@
-{ lib, ... }:
+{ lib, config, ... }:
 let
   imageName = "jellyfin/jellyfin";
   imagePins = {
@@ -14,11 +14,15 @@ let
   retain = {
     "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
   };
-  # Container IDs coincide with host service-account numbers by convention only.
+  # The workload's own identity. The numbers coincide with host service-account
+  # numbers by convention; they are not derived from that registry.
   identity = {
     uid = 751;
     gid = 751;
   };
+  # The storage capability, which is a different thing: the layout root is
+  # root:media 2770, so without the group this workload cannot even traverse it.
+  mediaGid = (config.den.groups or { }).media.gid;
 in
 {
   den.aspects.kubernetes.services.jellyfin.compute-resources.retainedPaths.jellyfin-config = {
@@ -105,6 +109,7 @@ in
                 runAsUser = identity.uid;
                 runAsGroup = identity.gid;
                 runAsNonRoot = true;
+                supplementalGroups = [ mediaGid ];
               };
             };
             controllers.main = {
@@ -229,7 +234,7 @@ in
               };
               media = {
                 type = "hostPath";
-                hostPath = "/srv/media/library";
+                hostPath = "${compute.devices.media.path}/library";
                 hostPathType = "Directory";
                 globalMounts = [
                   {

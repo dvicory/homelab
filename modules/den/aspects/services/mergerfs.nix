@@ -1,4 +1,8 @@
-{ lib, ... }: {
+{ lib, ... }:
+let
+  mergerfs = import ./_mergerfs.nix { inherit lib; };
+in
+{
   den.aspects.services.mergerfs = {
     settings.pools = lib.mkOption {
       type = lib.types.attrsOf (lib.types.submodule {
@@ -49,7 +53,7 @@
             optionsString = lib.concatStringsSep "," (poolCfg.options or [ "allow_other" ]);
           in lib.nameValuePair "mergerfs/${escapedPath}.conf" {
             text = ''
-              PATH=${path}
+              MOUNTPOINT=${path}
               BRANCHES=${branchString}
               OPTIONS=${optionsString}
             '';
@@ -67,13 +71,15 @@
             after = (poolCfg.depends or [ ]) ++ [ "local-fs.target" ];
             requires = poolCfg.depends or [ ];
 
+            path = [ pkgs.util-linux ];
             serviceConfig = {
               Type = "oneshot";
               RemainAfterExit = true;
               EnvironmentFile = "/etc/mergerfs/${escapedPath}.conf";
-              ExecStart = "${pkgs.bash}/bin/bash -c '${pkgs.util-linux}/bin/mount -t fuse.mergerfs -o $OPTIONS $BRANCHES $PATH'";
-              ExecReload = "${pkgs.bash}/bin/bash -c '${pkgs.attr}/bin/setfattr -n user.mergerfs.branches -v \"$BRANCHES\" \"$PATH/.mergerfs\"'";
-              ExecStop = "${pkgs.bash}/bin/bash -c '${pkgs.util-linux}/bin/umount \"$PATH\"'";
+              ExecStartPre = "${pkgs.bash}/bin/bash -c ${lib.escapeShellArg (mergerfs.branchGuard poolCfg.branches)}";
+              ExecStart = "${pkgs.bash}/bin/bash -c '${pkgs.util-linux}/bin/mount -t fuse.mergerfs -o $OPTIONS $BRANCHES $MOUNTPOINT'";
+              ExecReload = "${pkgs.bash}/bin/bash -c '${pkgs.attr}/bin/setfattr -n user.mergerfs.branches -v \"$BRANCHES\" \"$MOUNTPOINT/.mergerfs\"'";
+              ExecStop = "${pkgs.bash}/bin/bash -c '${pkgs.util-linux}/bin/umount \"$MOUNTPOINT\"'";
             };
           }
         ) cfg;
@@ -105,7 +111,7 @@
               Type = "oneshot";
               User = "root";
               EnvironmentFile = "/etc/mergerfs/${escapedPath}.conf";
-              ExecStart = "${pkgs.bash}/bin/bash -c '${pkgs.attr}/bin/setfattr -n user.mergerfs.branches -v \"$BRANCHES\" \"$PATH/.mergerfs\"'";
+              ExecStart = "${pkgs.bash}/bin/bash -c '${pkgs.attr}/bin/setfattr -n user.mergerfs.branches -v \"$BRANCHES\" \"$MOUNTPOINT/.mergerfs\"'";
             };
           }
         ) cfg;
@@ -135,7 +141,9 @@
 
       {
         systemd.tmpfiles.rules = lib.mapAttrsToList (path: poolCfg:
-          "d ${path} 0755 root root -"
+          # Deliberately inaccessible while unmounted: a pool that failed to
+          # mount must not look like a usable empty directory.
+          "d ${path} 0000 root root -"
         ) cfg;
       }
     ]);

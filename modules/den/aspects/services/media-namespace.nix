@@ -16,6 +16,7 @@
   ...
 }:
 let
+  mergerfs = import ./_mergerfs.nix { inherit lib; };
   root = "/srv/media";
   layout = [
     "library"
@@ -38,13 +39,16 @@ in
       }:
       let
         pools = host.settings.services.mergerfs.pools or { };
+        poolUnit = mergerfs.unitNameFor root;
       in
       lib.mkIf (pools ? ${root}) {
         systemd.services.media-namespace = {
           description = "Create the media namespace layout on the merged filesystem";
           wantedBy = [ "multi-user.target" ];
-          # Resolves the mount unit for the path rather than naming it, so the
-          # ordering survives whatever the pooling layer calls its unit.
+          # The pool is a service, not a .mount unit, so RequiresMountsFor would
+          # order against nothing. Depend on the unit that actually mounts it.
+          after = [ poolUnit ];
+          requires = [ poolUnit ];
           unitConfig.RequiresMountsFor = [ root ];
           serviceConfig = {
             Type = "oneshot";
