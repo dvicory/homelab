@@ -172,8 +172,22 @@ def check_idmap(spec, instance):
                     gid_ranges.append(row)
         except (TypeError, KeyError, ValueError) as error:
             raise RuntimeError("Existing instance has no valid effective ID map; refusing mutation.") from error
-        expected = [(0, start, size)]
-        if sorted(uid_ranges) != expected or sorted(gid_ranges) != expected:
+        capability_gids = sorted(int(gid) for gid in spec.get("capabilityGids", [ ]))
+        # UID map stays the ordinary contiguous shift; the GID map is that same
+        # range with one identity-mapped hole per capability that crosses.
+        expected_uid = [(0, start, size)]
+        expected_gid = []
+        cursor = start
+        for gid in capability_gids:
+            if gid < start or gid >= start + size:
+                raise RuntimeError("Nix descriptor declares a capability GID outside the ID map.")
+            if gid > cursor:
+                expected_gid.append((cursor - start, cursor, gid - cursor))
+            expected_gid.append((gid, gid, 1))
+            cursor = gid + 1
+        if cursor < start + size:
+            expected_gid.append((cursor - start, cursor, start + size - cursor))
+        if sorted(uid_ranges) != expected_uid or sorted(gid_ranges) != sorted(expected_gid):
             raise RuntimeError("Existing instance has incompatible effective ID map; refusing mutation.")
 
     for allocation_file in ["/etc/subuid", "/etc/subgid"]:
@@ -187,6 +201,18 @@ def check_idmap(spec, instance):
             for owner, base, count in allocations
         ):
             raise RuntimeError(f"Root lacks the declared subordinate range in {allocation_file}.")
+        # A crossing capability is mapped to its own host ID, and the kernel's
+        # setuid helpers refuse host IDs the caller holds no subordinate range
+        # for. Only the GID side needs it: service UIDs stay translated.
+        if allocation_file.endswith("subgid"):
+            for gid in capability_gids:
+                if not any(
+                    owner == "root" and int(base) <= gid < int(base) + int(count)
+                    for owner, base, count in allocations
+                ):
+                    raise RuntimeError(
+                        f"Root lacks subordinate coverage for capability GID {gid} in {allocation_file}."
+                    )
         if any(
             owner != "root" and int(base) < end and int(base) + int(count) > start
             for owner, base, count in allocations

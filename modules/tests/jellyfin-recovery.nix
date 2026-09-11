@@ -62,11 +62,9 @@
             mounts
             nftables
             ;
-          rootScript = hostConfig.systemd.services.compute-media-root.script;
+          rootScript = hostConfig.systemd.services.media-namespace.script;
           secretStageScript = hostConfig.systemd.services.compute-stage-secrets.script;
           secretStagePath = lib.makeBinPath hostConfig.systemd.services.compute-stage-secrets.path;
-          exportCommand = hostConfig.systemd.services.compute-media-export.serviceConfig.ExecStart;
-          exportStop = hostConfig.systemd.services.compute-media-export.serviceConfig.ExecStop;
         }
       );
       scenario = ./jellyfin-recovery.py;

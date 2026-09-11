@@ -18,7 +18,6 @@ in
 
     settings = {
       core.nix.gc.enable = false;
-      services.compute-media.source = "/mnt/storage/media";
       virtualization.compute =
         { config, ... }:
         {
@@ -43,15 +42,16 @@ in
             ) clusterResources.retainedPaths;
             runtimeSecrets = clusterResources.runtimeSecrets;
             recoveryPath = "/var/lib/homelab/compute-1/recovery";
+            storageCapabilities = [ "media" ];
             config = {
               "boot.autostart" = "true";
               "limits.cpu" = "4";
               "limits.memory" = "12GiB";
               "limits.processes" = "8192";
               "security.guestapi" = "false";
-              "raw.idmap" = "both ${toString config.idmapBase}-${
-                toString (config.idmapBase + config.idmapSize - 1)
-              } 0-${toString (config.idmapSize - 1)}";
+              # raw.idmap is derived from storageCapabilities: the ordinary
+              # contiguous shift for everything, with an identity mapping for
+              # each declared capability GID.
               "security.idmap.isolated" = "true";
               "security.nesting" = "true";
               "security.privileged" = "false";
@@ -72,17 +72,17 @@ in
               media = {
                 path = "/srv/media";
                 propagation = "rslave";
-                # The host export is already recursively read-only. Incus 7.4
-                # rejects readonly=true together with recursive=true.
-                recursive = "true";
                 required = "true";
-                source = "/run/homelab-compute/media";
+                # The host's one semantic namespace, presented to the guest as
+                # itself and writable: what authorizes a write is the `media`
+                # capability, not the absence of a mount option.
+                source = "/srv/media";
                 type = "disk";
                 requiredPath = {
                   uid = 0;
                   gid = 0;
                   mode = "0755";
-                  readOnly = true;
+                  readOnly = false;
                 };
               };
               identity = {
@@ -95,7 +95,7 @@ in
             };
           };
         };
-      services.mergerfs.pools."/mnt/storage/media" = {
+      services.mergerfs.pools."/srv/media" = {
         branches = [
           "/mnt/storage-clear/media1"
           "/mnt/storage-clear/media2"
@@ -155,7 +155,7 @@ in
       den.aspects.core.base
       den.aspects.virtualization.incus
       den.aspects.virtualization.compute
-      den.aspects.services.compute-media
+      den.aspects.services.media-namespace
       den.aspects.services.storage-roots
       den.aspects.services.kubernetes-runtime-secrets
       den.aspects.disk.zfs

@@ -2,10 +2,15 @@
   den,
   lib,
   inputs,
+  config,
   ...
 }:
 let
   inherit (lib) mkOption types;
+  # The fleet group registry belongs to Den's configuration scope, not to the
+  # resulting NixOS configuration, so it is captured here where the compute
+  # aspect can resolve a declared capability name to its stable GID.
+  fleetGroups = config.den.groups or { };
   requiredPathType = types.submodule {
     options = {
       uid = mkOption { type = types.ints.unsigned; };
@@ -184,7 +189,7 @@ in
         # minus one hole per capability. The host authorization, the project
         # range, and the map the lifecycle tool expects all derive from this one
         # set, so a capability cannot be half-declared.
-        groupRegistry = config.den.groups or { };
+        groupRegistry = fleetGroups;
         capabilityEntries = map (name: {
           inherit name;
           group = groupRegistry.${name} or null;
@@ -232,12 +237,12 @@ in
         );
         capabilitySubGidRanges = [
           {
-            start = cfg.idmapBase;
+            startGid = cfg.idmapBase;
             count = cfg.idmapSize;
           }
         ]
         ++ map (gid: {
-          start = gid;
+          startGid = gid;
           count = 1;
         }) capabilityGids;
         instanceConfig =
