@@ -732,6 +732,15 @@ def run_scenario(args: argparse.Namespace) -> None:
         check((args.repo / member).exists(), f"canonical recovery input contains {member}")
     project = descriptor["project"]
     instance_name = descriptor["instance"]
+    # The fixture host only waits for the Incus unit; the API socket
+    # needs its own readiness gate before the first query.
+    def incus_responsive() -> bool:
+        try:
+            instance_query(project, instance_name)
+        except Exception:
+            return False
+        return True
+    wait_for("Incus API", incus_responsive)
     check(instance_query(project, instance_name) is None, "disposable instance is absent before the scenario")
     missing = preseed_conflicts(preseed, descriptor)
 

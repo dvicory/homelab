@@ -181,7 +181,7 @@
             fixture_host.wait_for_unit("incus.service", timeout=600)
             fixture_host.copy_from_host_via_shell("${scenario}", "/tmp/prod-home-replacement.py")
             fixture_host.copy_from_host_via_shell("${smoke}", "/tmp/jellyfin_smoke.py")
-            fixture_host.succeed(
+            (status, output) = fixture_host.execute(
                 "python3 /tmp/prod-home-replacement.py"
                 " --bundle ${guestBundle}"
                 " --fixture ${fixture}"
@@ -192,6 +192,10 @@
                 " --helper ${computeGuest}/bin/compute-guest < /dev/null",
                 timeout=4 * 60 * 60,
             )
+            # Stream the scenario log into the builder log: a silent pass
+            # is indistinguishable from a test that never executed.
+            print(output)
+            assert status == 0, "prod-home-replacement scenario failed"
           '';
         };
       in
