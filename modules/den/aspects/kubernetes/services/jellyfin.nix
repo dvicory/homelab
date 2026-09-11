@@ -1,14 +1,18 @@
 { lib, config, ... }:
 let
-  imageName = "jellyfin/jellyfin";
-  imagePins = {
-    x86_64-linux = {
-      digest = "sha256:0b901391a662862eddb5dc55d244d7883cbb6236ef5b9a6ea82abc78a89819f0";
-      hash = "sha256-fxbzgklRCoL3h/5UQyo72BbJFaEtClvWsUwy2n9DPtI=";
-    };
-    aarch64-linux = {
-      digest = "sha256:7536c1009c6ea50dadd2b244165efb357504ca0f2670abefbceb1c773cc7e13d";
-      hash = "sha256-cBRppWXdJvlinEJUX90rr4Kte9Fqly+ELWaBufWEOT4=";
+  # Jellyfin 10.11.11 as one multi-architecture registry reference. Registry
+  # checks resolved this index to both linux/amd64 and linux/arm64, so rendered
+  # manifests intentionally do not select an architecture from the renderer.
+  jellyfinImage = {
+    name = "jellyfin/jellyfin";
+    version = "10.11.11";
+    digest = "sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db";
+    # Archive hashes pin the bytes produced when this index is copied for the
+  # builder platform. They verify an offline recovery fixture; they do not
+  # change the deployed image identity.
+    fixtureArchiveHashes = {
+      x86_64-linux = "sha256-HnH4Hr0t4MSWKdYAW5fDFX6juRHg0sdLP0e/O7Gmfwg=";
+      aarch64-linux = "sha256-3Hfg8vk0UOVQ19zRglciKO9aWMB0tAv1l+kkgXDDb5U=";
     };
   };
   retain = {
@@ -34,15 +38,12 @@ in
       cluster,
       compute,
       charts,
-      pkgs,
       ...
     }:
     let
-      system = builtins.replaceStrings [ "darwin" ] [ "linux" ] pkgs.stdenv.hostPlatform.system;
-      pin = imagePins.${system};
       image = {
-        repository = imageName;
-        tag = "10.11.11@${pin.digest}";
+        repository = jellyfinImage.name;
+        tag = "${jellyfinImage.version}@${jellyfinImage.digest}";
         pullPolicy = "IfNotPresent";
       };
       route = cluster.routes.jellyfin;
@@ -267,18 +268,17 @@ in
     lib.optionalAttrs (lib.hasSuffix "-linux" system) {
       packages.jellyfin-image =
         let
-          pin = imagePins.${system};
-          tag = builtins.replaceStrings [ ":" ] [ "-" ] pin.digest;
+          tag = "${image.version}-fixture";
         in
         (pkgs.dockerTools.pullImage {
-          inherit imageName;
-          imageDigest = pin.digest;
-          hash = pin.hash;
+          imageName = image.name;
+          imageDigest = image.digest;
+          hash = image.fixtureArchiveHashes.${system};
           finalImageTag = tag;
         }).overrideAttrs
           (old: {
             passthru = (old.passthru or { }) // {
-              imageReference = "${imageName}:${tag}";
+              imageReference = "${image.name}:${tag}";
             };
           });
     };
