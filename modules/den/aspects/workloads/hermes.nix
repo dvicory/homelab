@@ -5,7 +5,22 @@
   ...
 }:
 let
-  imageTagFor = system: "${system}-${inputs.self.shortRev or "dirty"}";
+  # Content-derived image tag. The tag changes exactly when the image content
+  # changes, so deployments restart the container for new content and never
+  # for an unrelated commit. The probe is never built: its output path is a
+  # pure function of its inputs, and the string context is discarded so the
+  # final image does not depend on the probe. Switching schemes retags once
+  # on the next deploy.
+  hermesImageTag =
+    { pkgs, system }:
+    let
+      probe = mkHermesImage {
+        inherit pkgs system;
+        tag = "latest";
+      };
+      probeHash = builtins.unsafeDiscardStringContext (builtins.substring 0 16 (builtins.baseNameOf probe.outPath));
+    in
+    "${system}-${probeHash}";
   catalogueLib = inputs.secure-hermes-nix.lib.catalogue;
 
   codexPackageFor = system: inputs.llm-agents.packages.${system}.codex;
@@ -60,7 +75,11 @@ let
     };
 
   mkHermesImage =
-    { pkgs, system }:
+    {
+      pkgs,
+      system,
+      tag,
+    }:
     let
       hermesPackage = hermesPackageFor { inherit pkgs system; };
       codexPackage = codexPackageFor system;
@@ -202,7 +221,7 @@ let
     in
     pkgs.dockerTools.buildLayeredImage {
       name = "hermes-agent";
-      tag = imageTagFor system;
+      inherit tag;
       contents = [
         hermesPackage
         # Hermes uses this client to drive the configured Fortress CDP
@@ -277,7 +296,11 @@ in
   perSystem =
     { system, pkgs, ... }:
     lib.optionalAttrs (lib.hasSuffix "-linux" system) {
-      packages.hermes-agent-image = mkHermesImage { inherit pkgs system; };
+      packages.hermes-agent-image =
+        let
+          tag = hermesImageTag { inherit pkgs system; };
+        in
+        mkHermesImage { inherit pkgs system tag; };
     };
 
   den.aspects.workloads.hermes.settings.options = inputs.secure-hermes-nix.lib.settings;
@@ -547,7 +570,7 @@ in
             name: lib.hasAttrByPath [ "age" "secrets" name ] osConfig
           ) requiredSecrets;
           image =
-            if cfg.image != null then cfg.image else "localhost/hermes-agent:${imageTagFor host.system}";
+            if cfg.image != null then cfg.image else "localhost/hermes-agent:${hermesImageTag { inherit pkgs; system = host.system; }}";
           project = profile.project // (cfg.project or { });
           projectDir = "${workspaceRoot}/projects/${project.name}";
           repository =
