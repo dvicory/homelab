@@ -1,8 +1,11 @@
 import ./_arr.nix {
   kind = "radarr";
   port = 7878;
-  # LinuxServer supports an explicit PUID; this is a guest-local identity.
-  uid = 752;
+  # Container IDs coincide with host service-account numbers by convention only.
+  identity = {
+    uid = 752;
+    gid = 752;
+  };
   image = {
     repository = "ghcr.io/linuxserver/radarr";
     tag = "latest";

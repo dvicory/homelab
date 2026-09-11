@@ -1,5 +1,11 @@
-{ lib, ... }:
+{ config, lib, ... }:
 let
+  fleetGroups = config.den.groups or { };
+  # Container IDs coincide with host service-account numbers by convention only.
+  identity = {
+    uid = 754;
+    gid = 754;
+  };
   apps.sabnzbd = {
     namespace = "media";
     service = "sabnzbd";
@@ -17,13 +23,13 @@ let
     secretRef
     mkStorage
     ;
+  mediaGid = fleetGroups.media.gid;
 in
 {
-  den.aspects.kubernetes.services.sabnzbd.compute-resources = { cluster, config, ... }: {
-    # LinuxServer PUID is guest-local; only the media-data group is shared.
+  den.aspects.kubernetes.services.sabnzbd.compute-resources = { cluster, ... }: {
+    # LinuxServer PUID/PGID are guest-local; media is a supplemental capability.
     retainedPaths.sabnzbd = {
-      uid = 754;
-      gid = config.retainedPaths.media-data.gid;
+      inherit (identity) uid gid;
       mode = "0700";
     };
     runtimeSecrets = lib.listToAttrs (
@@ -53,7 +59,6 @@ in
     let
       app = apps.sabnzbd;
       state = retainedEntry compute "sabnzbd";
-      data = retainedEntry compute "media-data";
       route = fixedRoute {
         cluster = cluster;
         name = "sabnzbd";
@@ -84,13 +89,13 @@ in
               )
             },
             'inet_exposure': '4', 'permissions': '770',
-            'download_dir': '/data/usenet/incomplete',
-            'complete_dir': '/data/usenet/complete',
+            'download_dir': '/data/downloads/usenet/incomplete',
+            'complete_dir': '/data/downloads/usenet/complete',
         })
         for key in ('SABNZBD_API_KEY', 'SABNZBD_USERNAME', 'SABNZBD_PASSWORD'):
             if not os.environ[key].strip():
                 raise ValueError('Required runtime secret is empty: ' + key)
-        for directory in ('usenet/incomplete', 'usenet/complete', 'movies', 'tv'):
+        for directory in ('library/movies', 'library/tv', 'downloads/usenet/incomplete', 'downloads/usenet/complete'):
             os.makedirs('/data/' + directory, mode=0o2770, exist_ok=True)
         categories = config.setdefault('categories', {})
         for name in ('movies', 'tv'):
@@ -115,6 +120,7 @@ in
             defaultPodOptions = {
               nodeSelector."kubernetes.io/hostname" = compute.instance;
               automountServiceAccountToken = false;
+              securityContext.supplementalGroups = [ mediaGid ];
             };
             controllers.main = {
               type = "deployment";
@@ -124,8 +130,8 @@ in
                 image = images.sabnzbd;
                 env = {
                   TZ = "UTC";
-                  PUID = toString state.uid;
-                  PGID = toString data.gid;
+                  PUID = toString identity.uid;
+                  PGID = toString identity.gid;
                   UMASK = "007";
                 };
                 securityContext = {
@@ -186,8 +192,8 @@ in
                   SABNZBD_PASSWORD = secretRef secretName "SABNZBD_PASSWORD";
                 };
                 securityContext = {
-                  runAsUser = state.uid;
-                  runAsGroup = data.gid;
+                  runAsUser = identity.uid;
+                  runAsGroup = identity.gid;
                   runAsNonRoot = true;
                   allowPrivilegeEscalation = false;
                   capabilities.drop = [ "ALL" ];
@@ -216,8 +222,9 @@ in
                 globalMounts = [ { path = "/config"; } ];
               };
               data = {
-                type = "persistentVolumeClaim";
-                existingClaim = "media-data";
+                type = "hostPath";
+                hostPath = "/srv/media";
+                hostPathType = "Directory";
                 globalMounts = [ { path = "/data"; } ];
               };
             };

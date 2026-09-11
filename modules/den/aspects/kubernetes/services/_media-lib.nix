@@ -40,7 +40,7 @@ rec {
     compute: key: size:
     let
       entry = retainedEntry compute key;
-      claim = if key == "media-data" then "media-data" else "media-${key}";
+      claim = "media-${key}";
     in
     assert lib.assertMsg (!entry.readOnly) "Media claim ${claim} must be writable.";
     [

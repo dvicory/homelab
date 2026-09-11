@@ -146,8 +146,10 @@ in
         | --- | --- | --- | --- | --- | --- |
         ${lib.concatStringsSep "\n" stateRows}
 
-        Jellyfin's legacy media export is a separate read-only attachment. It
-        is not part of the retained state table or the household recovery set.
+        The host-owned media namespace at `/srv/media` is attached to acquisition
+        workloads at `/data` and to Jellyfin's library subtree at `/media`
+        read-only. It is not part of the retained state table or the household
+        recovery set.
         The `retained-local` capability for ordinary Helm PVCs is documented in
         the [retained-storage notes](../modules/den/aspects/kubernetes/services/retained-storage.md).
 
@@ -264,8 +266,9 @@ in
         investigating an explicitly authorized operation.
 
         A recovery point contains only the declared retained set. Host identity,
-        runtime credentials, read-only media, external providers and any
-        undeclared application data need separate protection and reconstruction.
+        runtime credentials, the host-owned `/srv/media` media namespace,
+        external providers and any undeclared application data need separate
+        protection and reconstruction.
         Same-host retained directories and exports do not survive loss or
         corruption of that host and are not independent backups. Copy a complete
         trusted point and its pinned inputs to a separately protected destination

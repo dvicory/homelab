@@ -14,11 +14,15 @@ let
   retain = {
     "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
   };
+  # Container IDs coincide with host service-account numbers by convention only.
+  identity = {
+    uid = 751;
+    gid = 751;
+  };
 in
 {
   den.aspects.kubernetes.services.jellyfin.compute-resources.retainedPaths.jellyfin-config = {
-    uid = 751;
-    gid = 751;
+    inherit (identity) uid gid;
     mode = "0750";
   };
   den.aspects.kubernetes.services.jellyfin.k8s-manifests =
@@ -98,8 +102,8 @@ in
               nodeSelector."kubernetes.io/hostname" = compute.instance;
               automountServiceAccountToken = false;
               securityContext = {
-                runAsUser = compute.retainedPaths.jellyfin-config.uid;
-                runAsGroup = compute.retainedPaths.jellyfin-config.gid;
+                runAsUser = identity.uid;
+                runAsGroup = identity.gid;
                 runAsNonRoot = true;
               };
             };
@@ -116,10 +120,10 @@ in
                   ''
                     found=0
                     while IFS= read -r line; do
-                      case "$line" in *" /media/data "*) found=1 ;; esac
+                      case "$line" in *" /media "*) found=1 ;; esac
                     done < /proc/self/mountinfo
                     test "$found" = 1
-                    test -d /media/data && test -r /media/data
+                    test -d /media && test -r /media
                     mkdir -p /config/config
                     cp /network/network.xml /config/config/network.xml.new
                     mv /config/config/network.xml.new /config/config/network.xml
@@ -225,7 +229,7 @@ in
               };
               media = {
                 type = "hostPath";
-                hostPath = compute.devices.media.path;
+                hostPath = "/srv/media/library";
                 hostPathType = "Directory";
                 globalMounts = [
                   {

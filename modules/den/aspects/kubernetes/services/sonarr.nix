@@ -1,8 +1,11 @@
 import ./_arr.nix {
   kind = "sonarr";
   port = 8989;
-  # LinuxServer supports an explicit PUID; this is a guest-local identity.
-  uid = 753;
+  # Container IDs coincide with host service-account numbers by convention only.
+  identity = {
+    uid = 753;
+    gid = 753;
+  };
   image = {
     repository = "ghcr.io/linuxserver/sonarr";
     tag = "latest";

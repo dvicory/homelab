@@ -1,11 +1,12 @@
 {
   kind,
   port,
-  uid,
   image,
+  identity,
 }:
-{ lib, ... }:
+{ config, lib, ... }:
 let
+  fleetGroups = config.den.groups or { };
   apps.${kind} = {
     namespace = "media";
     inherit port;
@@ -20,6 +21,7 @@ let
     mkStorage
     serviceName
     ;
+  mediaGid = fleetGroups.media.gid;
 
   instanceType =
     kind:
@@ -48,7 +50,7 @@ let
               && path != "/data/"
               && lib.all (part: part != ".." && part != ".") (lib.splitString "/" path)
             );
-            default = if kind == "radarr" then "/data/movies" else "/data/tv";
+            default = if kind == "radarr" then "/data/library/movies" else "/data/library/tv";
             description = "Fresh writable library root managed by the native root-folder reconciler.";
           };
           category = mkOption {
@@ -112,7 +114,6 @@ let
     let
       app = apps.${kind};
       state = retainedEntry compute cfg.state;
-      data = retainedEntry compute "media-data";
       route = routeFor {
         inherit
           cluster
@@ -125,6 +126,7 @@ let
       service = serviceName kind instanceName;
       secretName = cluster.settings.kubernetes.services.media.configurationSecret;
       apiKeyEnv = "${lib.toUpper kind}__AUTH__APIKEY";
+
     in
     assert lib.assertMsg (!state.readOnly) "Media state ${cfg.state} must be writable.";
     {
@@ -132,6 +134,7 @@ let
       defaultPodOptions = {
         nodeSelector."kubernetes.io/hostname" = compute.instance;
         automountServiceAccountToken = false;
+        securityContext.supplementalGroups = [ mediaGid ];
       };
       controllers.main = {
         type = "deployment";
@@ -141,8 +144,8 @@ let
           image = images.${kind};
           env = {
             TZ = "UTC";
-            PUID = toString state.uid;
-            PGID = toString data.gid;
+            PUID = toString identity.uid;
+            PGID = toString identity.gid;
             UMASK = "007";
             "${apiKeyEnv}" = secretRef secretName cfg.apiSecretKey;
             "${lib.toUpper kind}__SERVER__URLBASE" = prefix;
@@ -186,11 +189,10 @@ let
           existingClaim = "media-${cfg.state}";
           globalMounts = [ { path = "/config"; } ];
         };
-        # media-data is an explicitly shared fresh download/library boundary;
-        # each instance keeps its private database on its own retained claim.
         data = {
-          type = "persistentVolumeClaim";
-          existingClaim = "media-data";
+          type = "hostPath";
+          hostPath = "/srv/media";
+          hostPathType = "Directory";
           globalMounts = [ { path = "/data"; } ];
         };
       };
@@ -239,13 +241,13 @@ in
       { cluster, config, ... }:
       let
         settings = cluster.settings.kubernetes.services.media;
+
       in
       {
         retainedPaths = lib.mapAttrs' (
           _: cfg:
           lib.nameValuePair cfg.state {
-            inherit uid;
-            gid = config.retainedPaths.media-data.gid;
+            inherit (identity) uid gid;
             mode = "0700";
           }
         ) settings.${kind};

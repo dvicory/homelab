@@ -153,9 +153,10 @@ in
           Evaluated service-owned pre-capture checks run while writers are still
           online; a failed check aborts before any writer is quiesced. The Incus
           guest is then stopped before archiving every declared retained path.
-          Runtime credentials and read-only legacy media are separate prerequisites,
-          not silently captured: retain the agenix identities, staged secrets and
-          original read-only media independently. Queue/model/cache state is disposable.
+          Runtime credentials and the host-owned `/srv/media` media namespace are
+          separate prerequisites, not silently captured: retain the agenix
+          identities, staged secrets and bulk media independently. Queue/model/cache
+          state is disposable.
           Restore accepts only the identical versioned inventory, descriptor and
           complete SHA256-verified file set. It stages every retained path under
           POINT.session/staged before changing any target.
