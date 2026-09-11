@@ -268,17 +268,17 @@ in
     lib.optionalAttrs (lib.hasSuffix "-linux" system) {
       packages.jellyfin-image =
         let
-          tag = "${image.version}-fixture";
+          tag = "${jellyfinImage.version}-fixture";
         in
         (pkgs.dockerTools.pullImage {
-          imageName = image.name;
-          imageDigest = image.digest;
-          hash = image.fixtureArchiveHashes.${system};
+          imageName = jellyfinImage.name;
+          imageDigest = jellyfinImage.digest;
+          hash = jellyfinImage.fixtureArchiveHashes.${system};
           finalImageTag = tag;
         }).overrideAttrs
           (old: {
             passthru = (old.passthru or { }) // {
-              imageReference = "${image.name}:${tag}";
+              imageReference = "${jellyfinImage.name}:${tag}";
             };
           });
     };

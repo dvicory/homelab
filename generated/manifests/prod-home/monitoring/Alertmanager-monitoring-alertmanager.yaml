@@ -1,0 +1,81 @@
+apiVersion: monitoring.coreos.com/v1
+kind: Alertmanager
+metadata:
+  labels:
+    app: kube-prometheus-stack-alertmanager
+    app.kubernetes.io/instance: monitoring
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: kube-prometheus-stack
+    app.kubernetes.io/version: 88.6.2
+    chart: kube-prometheus-stack-88.6.2
+    heritage: Helm
+    release: monitoring
+  name: monitoring-alertmanager
+  namespace: monitoring
+spec:
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                    - alertmanager
+                - key: alertmanager
+                  operator: In
+                  values:
+                    - monitoring-alertmanager
+            topologyKey: kubernetes.io/hostname
+          weight: 100
+  alertmanagerConfigNamespaceSelector: {}
+  alertmanagerConfigSelector: {}
+  automountServiceAccountToken: true
+  externalUrl: http://monitoring-alertmanager.monitoring:9093
+  hostNetwork: false
+  image: quay.io/prometheus/alertmanager:v0.34.0
+  imagePullPolicy: IfNotPresent
+  listenLocal: false
+  logFormat: logfmt
+  logLevel: info
+  nodeSelector:
+    kubernetes.io/hostname: compute-1
+  paused: false
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  portName: http-web
+  replicas: 1
+  resources:
+    limits:
+      cpu: "2"
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi
+  retention: 48h
+  routePrefix: /
+  securityContext:
+    runAsGroup: 65534
+    runAsNonRoot: true
+    runAsUser: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  serviceAccountName: monitoring-alertmanager
+  storage:
+    disableMountSubPath: true
+    volumeClaimTemplate:
+      metadata:
+        annotations:
+          argocd.argoproj.io/sync-options: Prune=false,Delete=false
+        name: alertmanager-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+        storageClassName: ""
+        volumeName: monitoring-alertmanager
+  version: v0.34.0

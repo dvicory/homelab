@@ -1,0 +1,106 @@
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  labels:
+    app: kube-prometheus-stack-prometheus
+    app.kubernetes.io/instance: monitoring
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: kube-prometheus-stack
+    app.kubernetes.io/version: 88.6.2
+    chart: kube-prometheus-stack-88.6.2
+    heritage: Helm
+    release: monitoring
+  name: monitoring-prometheus
+  namespace: monitoring
+spec:
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                    - prometheus
+                - key: app.kubernetes.io/instance
+                  operator: In
+                  values:
+                    - monitoring-prometheus
+            topologyKey: kubernetes.io/hostname
+          weight: 100
+  alerting:
+    alertmanagers:
+      - apiVersion: v2
+        name: monitoring-alertmanager
+        namespace: monitoring
+        pathPrefix: /
+        port: http-web
+  automountServiceAccountToken: true
+  enableAdminAPI: false
+  enableOTLPReceiver: false
+  externalUrl: http://monitoring-prometheus.monitoring:9090
+  hostNetwork: false
+  image: quay.io/prometheus/prometheus:v3.14.0-distroless
+  imagePullPolicy: IfNotPresent
+  listenLocal: false
+  logFormat: logfmt
+  logLevel: info
+  nodeSelector:
+    kubernetes.io/hostname: compute-1
+  paused: false
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  podMonitorNamespaceSelector: {}
+  podMonitorSelector: {}
+  portName: http-web
+  probeNamespaceSelector: {}
+  probeSelector:
+    matchLabels:
+      release: monitoring
+  replicas: 1
+  resources:
+    limits:
+      cpu: "2"
+      memory: 2Gi
+    requests:
+      cpu: 50m
+      memory: 2Gi
+  retention: 7d
+  retentionSize: 15GB
+  routePrefix: /
+  ruleNamespaceSelector: {}
+  ruleSelector: {}
+  scrapeConfigNamespaceSelector: {}
+  scrapeConfigSelector:
+    matchLabels:
+      release: monitoring
+  securityContext:
+    runAsGroup: 65534
+    runAsNonRoot: true
+    runAsUser: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  serviceAccountName: monitoring-prometheus
+  serviceMonitorNamespaceSelector: {}
+  serviceMonitorSelector: {}
+  shards: 1
+  storage:
+    volumeClaimTemplate:
+      metadata:
+        annotations:
+          argocd.argoproj.io/sync-options: Prune=false,Delete=false
+        name: prometheus-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 20Gi
+        storageClassName: ""
+        volumeName: monitoring-prometheus
+  tsdb:
+    outOfOrderTimeWindow: 0s
+  version: v3.14.0-distroless
+  walCompression: true

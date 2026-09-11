@@ -8,7 +8,7 @@
       ...
     }:
     let
-      environment = self.nixidyEnvs.${system}.prod-home.environmentPackage;
+      environment = ../../../../generated/manifests/prod-home;
       manifests = pkgs.runCommand "household-static-bootstrap" { nativeBuildInputs = [ pkgs.yq-go ]; } ''
         mkdir -p "$out"
         yq 'select(.kind == "Namespace")' ${environment}/*/*.yaml > "$out/namespaces.yaml"

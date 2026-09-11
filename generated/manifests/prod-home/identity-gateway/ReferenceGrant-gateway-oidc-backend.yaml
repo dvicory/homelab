@@ -1,0 +1,14 @@
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: gateway-oidc-backend
+  namespace: identity
+spec:
+  from:
+    - group: gateway.envoyproxy.io
+      kind: SecurityPolicy
+      namespace: gateway
+  to:
+    - group: gateway.envoyproxy.io
+      kind: Backend
+      name: kanidm-oidc

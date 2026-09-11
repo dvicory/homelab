@@ -3,7 +3,7 @@
   perSystem = { pkgs, system, ... }: {
     checks.jellyfin-contracts =
       let
-        environment = self.nixidyEnvs.${system}.prod-home.config.build.environmentPackage;
+        environment = ../../generated/manifests/prod-home;
         cluster = config.den.clusters.prod-home;
         compute =
           config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;

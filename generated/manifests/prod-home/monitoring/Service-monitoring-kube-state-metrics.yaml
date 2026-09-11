@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/instance: monitoring
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/part-of: kube-state-metrics
+    app.kubernetes.io/version: 2.20.0
+    helm.sh/chart: kube-state-metrics-8.4.1
+    release: monitoring
+  name: monitoring-kube-state-metrics
+  namespace: monitoring
+spec:
+  ports:
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: http
+  selector:
+    app.kubernetes.io/instance: monitoring
+    app.kubernetes.io/name: kube-state-metrics
+  type: ClusterIP

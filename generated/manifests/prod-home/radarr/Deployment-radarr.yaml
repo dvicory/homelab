@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/controller: main
+    app.kubernetes.io/instance: radarr
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: radarr
+    helm.sh/chart: app-template-5.1.0
+  name: radarr
+  namespace: media
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/controller: main
+      app.kubernetes.io/instance: radarr
+      app.kubernetes.io/name: radarr
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/controller: main
+        app.kubernetes.io/instance: radarr
+        app.kubernetes.io/name: radarr
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - env:
+            - name: PGID
+              value: "752"
+            - name: PUID
+              value: "752"
+            - name: RADARR__AUTH__APIKEY
+              valueFrom:
+                secretKeyRef:
+                  key: RADARR_API_KEY
+                  name: media-runtime
+            - name: RADARR__SERVER__URLBASE
+              value: ""
+            - name: TZ
+              value: UTC
+            - name: UMASK
+              value: "007"
+          image: ghcr.io/linuxserver/radarr:latest@sha256:95ba0801df4d9d1d79d0d9a3849f656542497dab061d91b87ad4f53a71aff3ef
+          livenessProbe:
+            failureThreshold: 6
+            httpGet:
+              path: /ping
+              port: 7878
+            periodSeconds: 10
+            timeoutSeconds: 5
+          name: main
+          readinessProbe:
+            failureThreshold: 6
+            httpGet:
+              path: /ping
+              port: 7878
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            limits:
+              cpu: "2"
+              memory: 1Gi
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            seccompProfile:
+              type: RuntimeDefault
+          startupProbe:
+            failureThreshold: 60
+            httpGet:
+              path: /ping
+              port: 7878
+            periodSeconds: 10
+            timeoutSeconds: 5
+          volumeMounts:
+            - mountPath: /config
+              name: config
+            - mountPath: /data
+              name: data
+      dnsPolicy: ClusterFirst
+      enableServiceLinks: false
+      hostIPC: false
+      hostNetwork: false
+      hostPID: false
+      nodeSelector:
+        kubernetes.io/hostname: compute-1
+      securityContext:
+        supplementalGroups:
+          - 505
+      serviceAccountName: radarr
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: media-radarr
+        - hostPath:
+            path: /srv/media
+            type: Directory
+          name: data

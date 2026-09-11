@@ -1,0 +1,8 @@
+apiVersion: v1
+data:
+  kanidm.override: |
+    rewrite name exact idm.plus2.danielvicory.dev kanidm.identity.svc.cluster.local
+kind: ConfigMap
+metadata:
+  name: coredns-custom
+  namespace: kube-system

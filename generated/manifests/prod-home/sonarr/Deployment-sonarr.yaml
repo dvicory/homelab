@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/controller: main
+    app.kubernetes.io/instance: sonarr
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: sonarr
+    helm.sh/chart: app-template-5.1.0
+  name: sonarr
+  namespace: media
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/controller: main
+      app.kubernetes.io/instance: sonarr
+      app.kubernetes.io/name: sonarr
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/controller: main
+        app.kubernetes.io/instance: sonarr
+        app.kubernetes.io/name: sonarr
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - env:
+            - name: PGID
+              value: "753"
+            - name: PUID
+              value: "753"
+            - name: SONARR__AUTH__APIKEY
+              valueFrom:
+                secretKeyRef:
+                  key: SONARR_API_KEY
+                  name: media-runtime
+            - name: SONARR__SERVER__URLBASE
+              value: ""
+            - name: TZ
+              value: UTC
+            - name: UMASK
+              value: "007"
+          image: ghcr.io/linuxserver/sonarr:latest@sha256:4d9df314875e1249ab7d6170c2b9b3dc1d8e6383f168ceb10dc9a5ad9b324739
+          livenessProbe:
+            failureThreshold: 6
+            httpGet:
+              path: /ping
+              port: 8989
+            periodSeconds: 10
+            timeoutSeconds: 5
+          name: main
+          readinessProbe:
+            failureThreshold: 6
+            httpGet:
+              path: /ping
+              port: 8989
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            limits:
+              cpu: "2"
+              memory: 1Gi
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            seccompProfile:
+              type: RuntimeDefault
+          startupProbe:
+            failureThreshold: 60
+            httpGet:
+              path: /ping
+              port: 8989
+            periodSeconds: 10
+            timeoutSeconds: 5
+          volumeMounts:
+            - mountPath: /config
+              name: config
+            - mountPath: /data
+              name: data
+      dnsPolicy: ClusterFirst
+      enableServiceLinks: false
+      hostIPC: false
+      hostNetwork: false
+      hostPID: false
+      nodeSelector:
+        kubernetes.io/hostname: compute-1
+      securityContext:
+        supplementalGroups:
+          - 505
+      serviceAccountName: sonarr
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: media-sonarr
+        - hostPath:
+            path: /srv/media
+            type: Directory
+          name: data

@@ -1,0 +1,30 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: radarr
+  namespace: gateway
+spec:
+  hostnames:
+    - radarr.plus2.danielvicory.dev
+    - radarr.backup.plus2.danielvicory.dev
+  parentRefs:
+    - name: household
+  rules:
+    - backendRefs:
+        - name: radarr
+          namespace: media
+          port: 7878
+      filters:
+        - requestHeaderModifier:
+            remove:
+              - X-Forwarded-User
+              - X-Forwarded-Email
+              - X-Auth-Request-User
+              - X-Auth-Request-Email
+              - Remote-User
+              - Forwarded
+          type: RequestHeaderModifier
+      matches:
+        - path:
+            type: PathPrefix
+            value: /

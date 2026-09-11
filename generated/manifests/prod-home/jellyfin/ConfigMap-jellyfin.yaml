@@ -1,0 +1,22 @@
+apiVersion: v1
+data:
+  network.xml: |-
+    <?xml version="1.0" encoding="utf-8"?>
+    <NetworkConfiguration>
+      <BaseUrl></BaseUrl>
+      <InternalHttpPort>8096</InternalHttpPort>
+      <EnableIPv4>true</EnableIPv4>
+      <EnableIPv6>false</EnableIPv6>
+      <EnableHttps>false</EnableHttps>
+      <RequireHttps>false</RequireHttps>
+      <EnableRemoteAccess>true</EnableRemoteAccess>
+    </NetworkConfiguration>
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/instance: jellyfin
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: jellyfin
+    helm.sh/chart: app-template-5.1.0
+  name: jellyfin
+  namespace: jellyfin

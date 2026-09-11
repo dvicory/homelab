@@ -1,0 +1,13 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: private-origin
+  namespace: gateway
+spec:
+  ingress: []
+  podSelector:
+    matchLabels:
+      gateway.envoyproxy.io/owning-gateway-name: household
+      gateway.envoyproxy.io/owning-gateway-namespace: gateway
+  policyTypes:
+    - Ingress

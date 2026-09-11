@@ -1,0 +1,12 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: trusted-edges
+  namespace: gateway
+spec:
+  clientIPDetection:
+    directSourceIP: {}
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: household

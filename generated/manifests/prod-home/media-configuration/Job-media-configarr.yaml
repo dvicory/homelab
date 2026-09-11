@@ -1,0 +1,153 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "1"
+  name: media-configarr
+  namespace: media
+spec:
+  activeDeadlineSeconds: 900
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: media-configarr
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - env:
+            - name: ROOT_PATH
+              value: /app
+            - name: CONFIG_LOCATION
+              value: /app/config/config.yml
+            - name: CUSTOM_REPO_ROOT
+              value: /app/repos
+            - name: RADARR_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: RADARR_API_KEY
+                  name: media-runtime
+            - name: SONARR_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: SONARR_API_KEY
+                  name: media-runtime
+            - name: SABNZBD_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: SABNZBD_API_KEY
+                  name: media-runtime
+            - name: SABNZBD_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  key: SABNZBD_USERNAME
+                  name: media-runtime
+            - name: SABNZBD_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: SABNZBD_PASSWORD
+                  name: media-runtime
+          image: docker.io/configarr/configarr:1.30.2@sha256:ec585b6d2530f6090ee26fdcc9701f279666c24dc96c9087208e88ec867c2416
+          name: configarr
+          resources:
+            limits:
+              cpu: "1"
+              memory: 512Mi
+            requests:
+              cpu: 25m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - mountPath: /app/config
+              name: configuration
+              readOnly: true
+            - mountPath: /app/templates
+              name: templates
+              readOnly: true
+            - mountPath: /app/repos
+              name: repos
+      initContainers:
+        - command:
+            - /bin/sh
+            - -ec
+            - |
+              set -eu
+              for repo in trash-guides recyclarr-config; do
+                root="/app/repos/$repo"
+                rm -rf "$root"
+                mkdir -p "$root"
+              done
+              trash="/app/repos/trash-guides/docs/json"
+              for app in radarr sonarr; do
+                for directory in cf cf-groups naming quality-profiles quality-size; do
+                  mkdir -p "$trash/$app/$directory"
+                done
+                for directory in custom-formats quality-definitions quality-profiles; do
+                  mkdir -p "/app/repos/recyclarr-config/$app/includes/$directory"
+                done
+              done
+              cp /seed/radarr-movie.json "$trash/radarr/quality-size/movie.json"
+              cp /seed/sonarr-series.json "$trash/sonarr/quality-size/series.json"
+              cp /seed/sonarr-anime.json "$trash/sonarr/quality-size/anime.json"
+              cp /seed/conflicts.json "$trash/radarr/conflicts.json"
+              cp /seed/conflicts.json "$trash/sonarr/conflicts.json"
+              printf '%s\n' '04e692c8926f6b9736943afcd9b505bad29f5e54' > /app/repos/trash-guides/TRASH-GUIDES-REVISION
+              for repo in trash-guides recyclarr-config; do
+                git -C "/app/repos/$repo" init -q
+                git -C "/app/repos/$repo" config user.email "media-policy@localhost"
+                git -C "/app/repos/$repo" config user.name "media-policy"
+                git -C "/app/repos/$repo" add .
+                git -C "/app/repos/$repo" commit --allow-empty -qm "Pinned offline media policy inputs"
+                git -C "/app/repos/$repo" checkout --detach -q HEAD
+              done
+          image: docker.io/configarr/configarr:1.30.2@sha256:ec585b6d2530f6090ee26fdcc9701f279666c24dc96c9087208e88ec867c2416
+          name: seed-policy
+          resources:
+            limits:
+              cpu: 250m
+              memory: 128Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - mountPath: /seed
+              name: policy-inputs
+              readOnly: true
+            - mountPath: /app/repos
+              name: repos
+      restartPolicy: OnFailure
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - configMap:
+            items:
+              - key: config.yml
+                path: config.yml
+            name: media-configuration
+          name: configuration
+        - configMap:
+            name: media-configarr-templates
+          name: templates
+        - configMap:
+            name: media-configarr-inputs
+          name: policy-inputs
+        - emptyDir: {}
+          name: repos

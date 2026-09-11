@@ -1,0 +1,22 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  name: identity
+  namespace: argocd
+spec:
+  destination:
+    namespace: identity
+    server: https://kubernetes.default.svc
+  project: default
+  source:
+    path: ./generated/manifests/prod-home/identity
+    repoURL: https://github.com/dvicory/homelab.git
+    targetRevision: main
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

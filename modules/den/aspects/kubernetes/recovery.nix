@@ -14,7 +14,7 @@ in
     { pkgs, system, ... }:
     lib.optionalAttrs (lib.hasSuffix "-linux" system) (
       let
-        environment = self.nixidyEnvs.${system}.prod-home.environmentPackage;
+        environment = ../../../../generated/manifests/prod-home;
         retained = pkgs.writeText "household-recovery-retained-paths.json" (
           builtins.toJSON (
             lib.mapAttrs (_: entry: { inherit (entry) guestPath readOnly; }) compute.retainedPaths

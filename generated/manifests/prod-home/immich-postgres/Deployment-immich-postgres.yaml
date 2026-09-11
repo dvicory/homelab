@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/controller: main
+    app.kubernetes.io/instance: immich-postgres
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: immich-postgres
+    helm.sh/chart: app-template-5.1.0
+  name: immich-postgres
+  namespace: immich
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/controller: main
+      app.kubernetes.io/instance: immich-postgres
+      app.kubernetes.io/name: immich-postgres
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/controller: main
+        app.kubernetes.io/instance: immich-postgres
+        app.kubernetes.io/name: immich-postgres
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            - name: POSTGRES_DB
+              value: immich
+            - name: POSTGRES_INITDB_ARGS
+              value: --data-checksums
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: DB_PASSWORD
+                  name: immich-runtime
+            - name: POSTGRES_USER
+              value: immich
+          image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - immich
+                - -d
+                - immich
+            failureThreshold: 3
+            periodSeconds: 10
+            timeoutSeconds: 5
+          name: main
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - immich
+                - -d
+                - immich
+            failureThreshold: 3
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            limits:
+              cpu: "2"
+              memory: 2Gi
+            requests:
+              cpu: 250m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          startupProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - immich
+                - -d
+                - immich
+            failureThreshold: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+          volumeMounts:
+            - mountPath: /var/lib/postgresql/data
+              name: data
+            - mountPath: /dev/shm
+              name: shm
+      dnsPolicy: ClusterFirst
+      enableServiceLinks: false
+      hostIPC: false
+      hostNetwork: false
+      hostPID: false
+      nodeSelector:
+        kubernetes.io/hostname: compute-1
+      securityContext:
+        runAsGroup: 999
+        runAsNonRoot: true
+        runAsUser: 999
+      serviceAccountName: immich-postgres
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: immich-postgres
+        - emptyDir:
+            medium: Memory
+            sizeLimit: 128Mi
+          name: shm

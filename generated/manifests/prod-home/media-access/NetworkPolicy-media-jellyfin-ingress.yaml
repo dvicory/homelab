@@ -1,0 +1,17 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: media-jellyfin-ingress
+  namespace: jellyfin
+spec:
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: media
+      ports:
+        - port: 8096
+          protocol: TCP
+  podSelector: {}
+  policyTypes:
+    - Ingress

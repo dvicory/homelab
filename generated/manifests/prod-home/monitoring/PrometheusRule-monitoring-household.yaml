@@ -1,0 +1,98 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    app: kube-prometheus-stack
+    app.kubernetes.io/instance: monitoring
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: kube-prometheus-stack
+    app.kubernetes.io/version: 88.6.2
+    chart: kube-prometheus-stack-88.6.2
+    heritage: Helm
+    release: monitoring
+  name: monitoring-household
+  namespace: monitoring
+spec:
+  groups:
+    - name: homelab.household
+      rules:
+        - alert: ServiceUnavailable
+          annotations:
+            description: Inspect deployment conditions, pod probes, events, runtime Secrets and retained volume bindings.
+            summary: 'Deployment unavailable: {{ $labels.namespace }}/{{ $labels.deployment }}'
+          expr: kube_deployment_status_replicas_available{namespace=~"jellyfin|immich|media|identity|monitoring"} < kube_deployment_spec_replicas{namespace=~"jellyfin|immich|media|identity|monitoring"}
+          for: 5m
+          labels:
+            severity: warning
+        - alert: StatefulServiceUnavailable
+          annotations:
+            description: Inspect readiness, storage mounts and runtime credentials before restarting a stateful writer.
+            summary: 'Stateful service unavailable: {{ $labels.namespace }}/{{ $labels.statefulset }}'
+          expr: kube_statefulset_status_replicas_ready{namespace=~"immich|monitoring|identity"} < kube_statefulset_replicas{namespace=~"immich|monitoring|identity"}
+          for: 5m
+          labels:
+            severity: warning
+        - alert: MetricsTargetUnavailable
+          annotations:
+            description: Inspect the exporter, private network path and Prometheus target error; missing metrics do not indicate health.
+            summary: 'Metrics target unavailable: {{ $labels.job }} / {{ $labels.instance }}'
+          expr: up == 0
+          for: 5m
+          labels:
+            severity: warning
+        - alert: MetricsCollectionMissing
+          annotations:
+            description: Inspect Prometheus target discovery and the private scrape path; an absent target set is not healthy.
+            summary: All metrics collection targets are missing
+          expr: absent_over_time(up[15m])
+          for: 5m
+          labels:
+            severity: warning
+        - alert: ClusterInventoryMissing
+          annotations:
+            description: Check kube-state-metrics and its ServiceMonitor before trusting workload availability panels.
+            summary: Kubernetes inventory metrics are missing
+          expr: absent_over_time(kube_node_info[15m])
+          for: 5m
+          labels:
+            severity: warning
+        - alert: PersistentStoragePressure
+          annotations:
+            description: Inspect the owning workload and retained filesystem. Reduce retention or increase capacity; do not remove household data to make room for monitoring.
+            summary: 'Persistent volume low on space: {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }}'
+          expr: kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.15
+          for: 10m
+          labels:
+            severity: warning
+        - alert: NodeStoragePressure
+          annotations:
+            description: Check shared filesystem usage and recovery destination capacity; local PV capacity declarations are not filesystem quotas.
+            summary: 'Node filesystem low on space: {{ $labels.hostname }} {{ $labels.mountpoint }}'
+          expr: node_filesystem_avail_bytes{fstype!~"tmpfs|ramfs|overlay|squashfs"} / node_filesystem_size_bytes < 0.15
+          for: 10m
+          labels:
+            severity: warning
+        - alert: RecoveryMetricsMissing
+          annotations:
+            description: Check the recovery command, its atomic textfile publication and the node exporter scrape target. Missing reporting is not a successful recovery point.
+            summary: 'Recovery reporting missing: household'
+          expr: absent(homelab_recovery_last_attempt_success{recovery_set="household"}) or absent(homelab_recovery_last_success_timestamp_seconds{recovery_set="household"})
+          for: 15m
+          labels:
+            severity: warning
+        - alert: RecoveryPointStale
+          annotations:
+            description: Inspect the last export and retained destination, then complete a new application-consistent export. Same-host exports are not independent backups.
+            summary: 'No recent complete recovery point: household'
+          expr: time() - homelab_recovery_last_success_timestamp_seconds{recovery_set="household"} > 172800
+          for: 15m
+          labels:
+            severity: warning
+        - alert: RecoveryAttemptFailed
+          annotations:
+            description: Inspect the recovery command output and destination capacity; correct the failure and rerun the complete recovery set.
+            summary: 'Recovery attempt failed: household'
+          expr: homelab_recovery_last_attempt_success{recovery_set="household"} == 0
+          for: 1m
+          labels:
+            severity: warning
