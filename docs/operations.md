@@ -91,18 +91,19 @@ backup.
 | `immich-postgres` | `/var/lib/homelab/compute-1/state/immich-postgres` | `/srv/state/immich-postgres` | `999:999` | `0700` | writable |
 | `jellyfin-config` | `/var/lib/homelab/compute-1/state/jellyfin-config` | `/srv/state/jellyfin-config` | `751:751` | `0750` | writable |
 | `kubernetes-volumes` | `/var/lib/homelab/compute-1/state/kubernetes-volumes` | `/srv/state/kubernetes-volumes` | `0:0` | `0700` | writable |
-| `media-data` | `/var/lib/homelab/compute-1/state/media-data` | `/srv/state/media-data` | `754:751` | `2770` | writable |
 | `monitoring-alertmanager` | `/var/lib/homelab/compute-1/state/monitoring-alertmanager` | `/srv/state/monitoring-alertmanager` | `65534:65534` | `0750` | writable |
 | `monitoring-grafana` | `/var/lib/homelab/compute-1/state/monitoring-grafana` | `/srv/state/monitoring-grafana` | `472:472` | `0750` | writable |
 | `monitoring-loki` | `/var/lib/homelab/compute-1/state/monitoring-loki` | `/srv/state/monitoring-loki` | `10001:10001` | `0750` | writable |
 | `monitoring-prometheus` | `/var/lib/homelab/compute-1/state/monitoring-prometheus` | `/srv/state/monitoring-prometheus` | `65534:65534` | `0750` | writable |
-| `radarr` | `/var/lib/homelab/compute-1/state/radarr` | `/srv/state/radarr` | `752:751` | `0700` | writable |
-| `sabnzbd` | `/var/lib/homelab/compute-1/state/sabnzbd` | `/srv/state/sabnzbd` | `754:751` | `0700` | writable |
+| `radarr` | `/var/lib/homelab/compute-1/state/radarr` | `/srv/state/radarr` | `752:752` | `0700` | writable |
+| `sabnzbd` | `/var/lib/homelab/compute-1/state/sabnzbd` | `/srv/state/sabnzbd` | `754:754` | `0700` | writable |
 | `seerr` | `/var/lib/homelab/compute-1/state/seerr` | `/srv/state/seerr` | `1000:1000` | `0700` | writable |
-| `sonarr` | `/var/lib/homelab/compute-1/state/sonarr` | `/srv/state/sonarr` | `753:751` | `0700` | writable |
+| `sonarr` | `/var/lib/homelab/compute-1/state/sonarr` | `/srv/state/sonarr` | `753:753` | `0700` | writable |
 
-Jellyfin's legacy media export is a separate read-only attachment. It
-is not part of the retained state table or the household recovery set.
+The host-owned media namespace at `/srv/media` is attached to acquisition
+workloads at `/data` and to Jellyfin's library subtree at `/media`
+read-only. It is not part of the retained state table or the household
+recovery set.
 The `retained-local` capability for ordinary Helm PVCs is documented in
 the [retained-storage notes](../modules/den/aspects/kubernetes/services/retained-storage.md).
 
@@ -225,8 +226,9 @@ production readiness. Follow the packaged guidance only when
 investigating an explicitly authorized operation.
 
 A recovery point contains only the declared retained set. Host identity,
-runtime credentials, read-only media, external providers and any
-undeclared application data need separate protection and reconstruction.
+runtime credentials, the host-owned `/srv/media` media namespace,
+external providers and any undeclared application data need separate
+protection and reconstruction.
 Same-host retained directories and exports do not survive loss or
 corruption of that host and are not independent backups. Copy a complete
 trusted point and its pinned inputs to a separately protected destination

@@ -16,15 +16,49 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  evaluate:
-    name: Evaluate CI jobs
-    runs-on: ubuntu-24.04
-    outputs:
-      matrix: ${{ steps.matrix.outputs.matrix }}
-      any-jobs: ${{ steps.matrix.outputs.any-jobs }}
-      manifest-version: ${{ steps.matrix.outputs.manifest-version }}
+  # One job per (system, ciJobs group).
+  #
+  # Evaluation has to happen per system: nixidy reads the chart derivation while
+  # evaluating, so evaluating a foreign system forces realising charts for a
+  # platform the runner cannot build. The previous single evaluate job worked
+  # only while no nixidy environment was in ciJobs.
+  #
+  # `.#ciJobs.<system>.<group>` is an attrset of derivations, so the matrix can
+  # be static and needs no evaluation stage or cross-job matrix handoff.
+  build:
+    name: ${{ matrix.group }} (${{ matrix.system }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        system:
+          - x86_64-linux
+          - aarch64-linux
+          - aarch64-darwin
+        group:
+          - packages
+          - checks
+          - devShells
+          - formatters
+          - nixosConfigurations
+          - darwinConfigurations
+          - homeConfigurations
+        include:
+          - system: x86_64-linux
+            os: ubuntu-24.04
+          - system: aarch64-linux
+            os: ubuntu-24.04-arm
+          - system: aarch64-darwin
+            os: macos-14
     steps:
-      - name: Check out repository
+      - name: Enable KVM for native NixOS tests
+        if: matrix.system == 'x86_64-linux' && matrix.group == 'checks'
+        run: |
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+
+      - &checkout
+        name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -45,12 +79,18 @@ jobs:
           sudo mkdir -p /nix
           sudo mount "$loop_dev" /nix -o noatime,nobarrier,nodiscard,compress=zstd:1,space_cache=v2,commit=120
           sudo mkdir -p /nix/build
+
       - &install-nix-linux
         name: Install Nix on Linux
         if: runner.os == 'Linux'
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
         with:
           extra_nix_config: build-dir = /nix/build
+
+      - &install-nix-macos
+        name: Install Nix on macOS
+        if: runner.os == 'macOS'
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
 
       - &configure-durable-cache
         name: Configure durable cache (read only)
@@ -60,86 +100,40 @@ jobs:
           name: ${{ vars.CACHIX_CACHE }}
           skipPush: true
 
-      - name: Start Hestia cache
-        uses: Mic92/hestia@f1f4df2801140a36398ed423533c8460618539df # v3.0.1
-        with:
-          version: v3.0.1
-          upstream-cache-filter: true
-
-      - name: Generate native build matrix
-        id: matrix
-        uses: Mic92/hestia/matrix@f1f4df2801140a36398ed423533c8460618539df # v3.0.1
-        with:
-          flake: .#ciJobs
-          attr-prefix: ciJobs
-          # nix-eval-jobs 2.35.2 batches cache-status queries, fixing the
-          # large-closure hang from 2.35.0.
-          nix-eval-jobs: nix run nixpkgs/393661af28713060acd316243831bbdc07f3bf58#nix-eval-jobs --
-          runner-map: |
-            x86_64-linux=ubuntu-24.04
-            aarch64-linux=ubuntu-24.04-arm
-            aarch64-darwin=macos-14
-
-  build:
-    name: ${{ matrix.name }} (${{ matrix.system }})
-    needs: evaluate
-    if: needs.evaluate.outputs.any-jobs == 'true'
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.evaluate.outputs.matrix) }}
-    steps:
-      - name: Enable KVM for native NixOS tests
-        if: matrix.system == 'x86_64-linux'
-        run: |
-          test -c /dev/kvm
-          sudo chmod a+rw /dev/kvm
-
-      - *prepare-nix-storage
-
-      - *install-nix-linux
-
-      - &install-nix-macos
-        name: Install Nix on macOS
-        if: runner.os == 'macOS'
-        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
-
-      - *configure-durable-cache
-
-      - &start-hestia-from-evaluation
+      - &start-hestia
         name: Start Hestia cache
         uses: Mic92/hestia@f1f4df2801140a36398ed423533c8460618539df # v3.0.1
         with:
           version: v3.0.1
           upstream-cache-filter: true
-          wait-manifest-version: ${{ needs.evaluate.outputs.manifest-version }}
-
-      - name: Prefetch derivation closure
-        env:
-          MATRIX_INSTALLABLES: ${{ matrix.installables }}
-        run: |
-          read -ra installables <<< "$MATRIX_INSTALLABLES"
-          hashes=$(printf '%s\n' "${installables[@]}" | awk -F/ '{printf "%s%s", (NR > 1 ? "," : ""), substr($NF, 1, 32)}')
-          curl -fsS "http://$HESTIA_LISTEN/closure/$hashes" | nix-store --import
 
       - name: Build
         env:
-          MATRIX_INSTALLABLES: ${{ matrix.installables }}
+          SYSTEM: ${{ matrix.system }}
+          GROUP: ${{ matrix.group }}
         run: |
-          read -ra installables <<< "$MATRIX_INSTALLABLES"
-          nix build -L --no-link "${installables[@]}"
+          set -euo pipefail
+          # `ciJobs.<system>.<group>` is an attrset of derivations, and nix build
+          # wants a derivation, so resolve the group to explicit store paths
+          # rather than changing the flake output that hestia also consumes.
+          attr=".#ciJobs.$SYSTEM.$GROUP"
+          derivations=$(nix eval --json "$attr" --apply 'x: map (d: d.drvPath) (builtins.attrValues x)' | jq -r '.[]')
+          if [ -z "$derivations" ]; then
+            echo "no jobs in $attr"
+            exit 0
+          fi
+          echo "building $(echo "$derivations" | wc -l) job(s) from $attr"
+          # shellcheck disable=SC2086
+          nix build -L --no-link $derivations
 
   publish:
     name: Publish ${{ matrix.system }} to Cachix
-    needs:
-      - evaluate
-      - build
+    needs: build
     if: >-
       always() &&
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
       vars.CACHIX_CACHE != '' &&
-      needs.evaluate.result == 'success' &&
       (needs.build.result == 'success' || needs.build.result == 'skipped')
     environment: cachix-publish
     runs-on: ${{ matrix.os }}
@@ -159,10 +153,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
+      - *checkout
 
       - *prepare-nix-storage
 
@@ -172,7 +163,7 @@ jobs:
 
       - *configure-durable-cache
 
-      - *start-hestia-from-evaluation
+      - *start-hestia
 
       - name: Publish successful projection
         env:

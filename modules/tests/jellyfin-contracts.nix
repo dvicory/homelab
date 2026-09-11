@@ -11,6 +11,7 @@
           builtins.toJSON {
             inherit (compute) instance retainedPaths;
             media = compute.devices.media.path;
+            mediaGid = config.den.groups.media.gid;
             mediaInstances = {
               radarr = builtins.attrNames cluster.settings.kubernetes.services.media.radarr;
               sonarr = builtins.attrNames cluster.settings.kubernetes.services.media.sonarr;
@@ -60,7 +61,10 @@
                          and expression["operator"] == "In" and expression["values"] == [storage["instance"]]
                          for expression in term["matchExpressions"]) for term in terms)
           media = next(volume for volume in pod["volumes"] if volume["name"] == "media")
-          assert media["hostPath"] == {"path": storage["media"], "type": "Directory"}
+          assert media["hostPath"] == {"path": storage["media"] + "/library", "type": "Directory"}
+          # The layout root is root:media 2770, so a read-only consumer still
+          # needs the capability: read-only is the write restriction.
+          assert storage["mediaGid"] in pod["securityContext"]["supplementalGroups"]
           for container in pod["containers"] + pod.get("initContainers", []):
               security = pod.get("securityContext", {}) | container.get("securityContext", {})
               assert security["runAsNonRoot"] and security["runAsUser"] > 0 and security["runAsGroup"] > 0
