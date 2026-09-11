@@ -109,40 +109,46 @@ Players get read-only views; only acquisition services get a writable one.
 server, so host root cannot read it. This is a confidentiality property, not a
 separate tier or a top-level namespace.
 
-All four models carry inherited access entries, including the ones where the
-application owns the bytes. Application ownership governs authorization for
-human users *inside* the application; it is not a claim that the data should be
-workable from the host only as root.
+Inherited access entries appear where a tree genuinely has more than one
+consumer. They are not applied uniformly: a service-owned library that only its
+own services write does not need them, and application-owned human data keeps
+its sharing model inside the application rather than mirroring it into
+filesystem entries.
 
-Access decomposes into three axes that one group cannot answer together:
+Access decomposes into two questions that one group cannot answer together:
 
 - **Ownership** — whose data this is: a person, or a service identity. Decided
   by the root's owner, not by a group.
-- **Sharing** — which other people may reach it. Expressed by a group per real
-  sharing boundary. A group with one member adds a name, not access, so these
-  appear when a second person actually needs the data.
-- **Administration** — who may inspect and repair it from the host. Expressed by
-  inherited access entries naming the administrative group.
+- **Capability** — which other identities may reach it, and how. Expressed by a
+  deliberately numbered persistent capability group such as `family` or `media`.
+  A group with one member adds a name, not access, so these appear when a second
+  identity actually needs the data.
 
-The three compose: content can be owned by one person, shared with a group, and
-administrable by another.
+Administration is not a third axis. There is no group with routine access to
+every managed root: ordinary access comes from ordinary membership, and
+administrative access to another person's private tree requires root on the host
+unless that data was deliberately shared. That keeps a real barrier against a
+mistake or a stray process running as the normal operator account, without
+pretending root is unable to administer the machine.
 
-Media is the clearest administration case. It is service-owned for writes, and
-it still has to be manageable from the host — inspecting it, fixing a bad
-import, moving something by hand — without becoming root and without going
-through the service.
+Media is the clearest capability case. A library is written by several service
+identities that are not the same identity as each other and must not become one:
+each keeps its own user and primary group and receives the media capability
+group, and content created inside a setgid directory carries the capability
+group regardless of which of them wrote it.
 
-Concretely, managed roots declare a default access entry for the operator group
-so that content created later inherits it. The declared entries use the
-identifiers the host actually observes; for content written by a workload
-inside the compute boundary that is the translated identifier of the workload's
-identity, not its number inside the guest. Applying inherited access to content
-that already exists is a deliberate one-time migration, not something routine
-activation does.
+Where access control entries are used at all, they are inherited defaults on
+collaborative human trees rather than a policy plane. They name the capability
+identity, not a person, so they survive a rebuild of the consumers.
 
-Access decisions must resolve to stable numeric IDs, because the compute
-boundary translates between host and guest IDs. Group names and their IDs come
-from the fleet group registry; a host does not invent its own.
+Access decisions must resolve to stable numeric IDs, because a capability
+group's number is written into file ownership and has to keep meaning the same
+thing after an export, a restore, another host, or a rebuilt compute environment.
+Group names and their IDs come from the fleet group registry; a host does not
+invent its own. The identity is the contract: the mechanism that presents it — an
+unprivileged container, a shared filesystem, a network export — may change
+without changing the number, and the number is never the boundary's translated
+value.
 
 ## Durability classes
 
@@ -269,8 +275,9 @@ decision; the following hold regardless:
 
 - Consumers that must link or rename see one filesystem for `downloads/` and
   `library/` together.
-- Access identity survives host-to-guest ID translation, so on-disk ownership
-  is stable across guest replacement.
+- The capability identity is the same number on both sides of a boundary, so
+  on-disk ownership stays meaningful across guest replacement, export, restore
+  and direct inspection; a consumer's own identity may be translated.
 - Persistent volume lifecycle stays independent of application deployment
   lifecycle. A redeploy must not delete or reinitialize application data.
 - Bulk media does not require distributed storage. Node locality is preferred
