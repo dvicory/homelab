@@ -140,6 +140,31 @@ avoids a separate, undocumented identity space.
 group growth, no stable IDs across hosts, and no relationship to the identities
 the compute boundary translates.
 
+### The storage capability identity is the contract, not the transport
+
+A root is authorized by a persistent storage capability identity — a
+deliberately numbered POSIX group such as `media` or `family` — and not by the
+identity of whichever workload or container consumes it. A workload keeps its own
+UID and primary GID and receives the capability group; it does not become the
+storage group, and its identity is never written into shared storage metadata.
+
+The contract is therefore the stable GID. The attachment mechanism is an
+implementation detail beneath it and may differ per consumer: an unprivileged
+container today, a filesystem-sharing mechanism for a VM later, NFS for another
+host. The durable number is the same in every case, which is what makes the
+namespace portable across hosts, restores and direct disk inspection.
+
+Explicitly rejected: letting the persistent on-disk GID become the current
+container boundary's translated value (`idmapBase + guestGid`). That number is
+meaningful only relative to one host's mapping, so it would have to be
+reconstructed on every other consumer. Also rejected: changing the container's
+user namespace globally to make the numbers line up.
+
+The capability identity is verified rather than assumed: a group whose number is
+part of the filesystem contract is asserted at evaluation time to resolve to
+exactly its declared GID, so an upstream or platform definition cannot silently
+take the number
+
 ## Risks / Trade-offs
 
 - **Hardlinks cannot cross branch boundaries within the pool** → creation is
@@ -154,6 +179,16 @@ the compute boundary translates.
 - **A wrong configuration produces confusing failures rather than obvious
   ones** → the fail-closed checks above turn the common misconfigurations into
   refusals instead of silent writes.
+- **MergerFS authorizes from the host group database, so a supplemental
+  capability group does not reach a workload behind it.** Measured in a
+  disposable host: a process holding the capability group only as a supplemental
+  group is denied on a mergerfs mount and allowed on a plain filesystem, with or
+  without `default_permissions`; a process whose *primary* group is the
+  capability is allowed, and a host-side group membership for the requesting UID
+  also allows it. MergerFS documents the behaviour, and the media pool is
+  mergerfs-backed → the capability model as stated cannot be relied on through
+  mergerfs without one of the resolutions in Open Questions. Do not begin the
+  writable-boundary repoint until that is decided.
 - **Two-level indirection makes "where is this file" non-obvious** → the
   namespace and its branches must be inspectable as a mapping, not inferred
   from a path.
@@ -187,6 +222,16 @@ out of scope here.
 
 ## Open Questions
 
+- **How a workload's capability group survives MergerFS.** Options, each with a
+  real cost: give the workload the capability as its *primary* group inside the
+  compute environment (works, loses the separation between consumer identity and
+  storage identity); declare the workload's boundary-translated UID as a member
+  of the capability group on the host (works, but makes the translated ID
+  meaningful again); keep workload-writable trees off MergerFS (preserves the
+  model, constrains where pooling may be used); or map the workload UID band
+  across the boundary as well (attractive, and materially raises the isolation
+  question). Evidence is in the storage-contract work notes; a disposable-host
+  reproduction exists and is reproducible.
 - Internal directory naming beneath each tier root is not fixed by this change.
 - Watermark and free-space reserve values are operational tuning.
 - Whether archive branches join the namespace immediately or in a later phase
