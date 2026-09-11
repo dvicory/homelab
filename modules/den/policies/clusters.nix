@@ -85,6 +85,9 @@ in
 
     den.policies.cluster-to-nixidy =
       { cluster, environment, ... }:
+      # Every entry is a renderer/build-platform snapshot of the same deployment
+      # cluster. `system` names the Nix toolchain used to realize this output; it
+      # is not the target workload architecture or a separate cluster identity.
       map (
         system:
         den.lib.policy.instantiate {

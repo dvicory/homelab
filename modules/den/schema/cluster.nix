@@ -24,12 +24,27 @@ in
       {
         options = {
           environment = mkOption { type = types.str; };
-          hostSystem = mkOption { type = types.str; description = "System key of the host owning this compute environment"; };
-          hostName = mkOption { type = types.str; description = "Host entity owning this compute environment"; };
-          kubeVersion = mkOption { type = types.str; };
+          hostSystem = mkOption {
+            type = types.str;
+            description = "System key identifying the physical host/toolchain that owns compute, storage lifecycle, guest tooling, and cluster API input. It does not describe Kubernetes node architectures, renderer independence, or workload image selection.";
+          };
+          hostName = mkOption {
+            type = types.str;
+            description = "Host entity owning this cluster's physical compute environment. It identifies where the Incus guest and its storage live; it is not a Kubernetes scheduling boundary and does not itself encode node or workload architecture.";
+          };
+          kubeVersion = mkOption {
+            type = types.str;
+            description = "Kubernetes API/tooling version used when rendering and validating manifests. It does not identify a Nix builder or physical machine.";
+          };
           k8sVersion = mkOption { type = types.str; };
-          repository = mkOption { type = types.str; };
-          branch = mkOption { type = types.str; };
+          repository = mkOption {
+            type = types.str;
+            description = "Git repository containing the generated production manifest tree reconciled by Argo CD.";
+          };
+          branch = mkOption {
+            type = types.str;
+            description = "Approved Git revision whose checked-in production manifests Argo CD reconciles.";
+          };
           ingress = mkOption {
             type = types.submodule {
               options = {
