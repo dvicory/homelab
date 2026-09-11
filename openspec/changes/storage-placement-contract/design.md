@@ -179,16 +179,17 @@ take the number
 - **A wrong configuration produces confusing failures rather than obvious
   ones** → the fail-closed checks above turn the common misconfigurations into
   refusals instead of silent writes.
-- **MergerFS authorizes from the host group database, so a supplemental
-  capability group does not reach a workload behind it.** Measured in a
-  disposable host: a process holding the capability group only as a supplemental
-  group is denied on a mergerfs mount and allowed on a plain filesystem, with or
-  without `default_permissions`; a process whose *primary* group is the
-  capability is allowed, and a host-side group membership for the requesting UID
-  also allows it. MergerFS documents the behaviour, and the media pool is
-  mergerfs-backed → the capability model as stated cannot be relied on through
-  mergerfs without one of the resolutions in Open Questions. Do not begin the
-  writable-boundary repoint until that is decided.
+- **MergerFS older than 2.42.0 does not honour a supplemental capability
+  group.** Measured: on 2.40.2 a process holding the capability only as a
+  supplemental group was denied on a mergerfs mount and allowed on a plain
+  filesystem, because mergerfs resolved entitlements from the host group
+  database instead of the process. On **2.42.0 the same write is allowed**,
+  including from a boundary-translated UID with no host account, and the result
+  is identical to a plain filesystem; upstream reworked credential handling so
+  that "the kernel manages entitlements". 2.42.0 also refuses to disable
+  `default_permissions` for that reason → the capability model needs no
+  workaround, but the deployed pool must not run an older mergerfs. A version
+  floor belongs with the pooling declaration, not in prose.
 - **Two-level indirection makes "where is this file" non-obvious** → the
   namespace and its branches must be inspectable as a mapping, not inferred
   from a path.
@@ -222,16 +223,18 @@ out of scope here.
 
 ## Open Questions
 
-- **How a workload's capability group survives MergerFS.** Options, each with a
-  real cost: give the workload the capability as its *primary* group inside the
-  compute environment (works, loses the separation between consumer identity and
-  storage identity); declare the workload's boundary-translated UID as a member
-  of the capability group on the host (works, but makes the translated ID
-  meaningful again); keep workload-writable trees off MergerFS (preserves the
-  model, constrains where pooling may be used); or map the workload UID band
-  across the boundary as well (attractive, and materially raises the isolation
-  question). Evidence is in the storage-contract work notes; a disposable-host
-  reproduction exists and is reproducible.
+- **Whether the on-disk capability number has to be the stable identity or the
+  boundary's translated value.** Both were demonstrated in a disposable host.
+  With the stock compute-boundary configuration — a single contiguous range and
+  no identity entry — a workload holding the capability as a supplemental group
+  writes successfully through mergerfs, and the host records the translated
+  value (`idmapBase + gid`); the guest still sees the semantic number, so the
+  capability reads as the same group on both sides of a well-known mapping.
+  Presenting the stable number on the host as well requires splitting the range
+  around the capability band and covering that band with host subordinate GID
+  ranges, and is also demonstrated. `shift=true` is neither required nor helpful
+  for either shape: with data already in the shifted space it presents the
+  capability as overflow, while an ordinary mount shows it correctly.
 - Internal directory naming beneath each tier root is not fixed by this change.
 - Watermark and free-space reserve values are operational tuning.
 - Whether archive branches join the namespace immediately or in a later phase
