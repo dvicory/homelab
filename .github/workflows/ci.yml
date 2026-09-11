@@ -83,19 +83,19 @@ jobs:
       - &install-nix-linux
         name: Install Nix on Linux
         if: runner.os == 'Linux'
-        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
           extra_nix_config: build-dir = /nix/build
 
       - &install-nix-macos
         name: Install Nix on macOS
         if: runner.os == 'macOS'
-        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
 
       - &configure-durable-cache
         name: Configure durable cache (read only)
         if: vars.CACHIX_CACHE != ''
-        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ${{ vars.CACHIX_CACHE }}
           skipPush: true
