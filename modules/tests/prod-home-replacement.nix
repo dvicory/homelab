@@ -182,7 +182,7 @@
             fixture_host.copy_from_host_via_shell("${scenario}", "/tmp/prod-home-replacement.py")
             fixture_host.copy_from_host_via_shell("${smoke}", "/tmp/jellyfin_smoke.py")
             (status, output) = fixture_host.execute(
-                "python3 /tmp/prod-home-replacement.py"
+                "python3 /tmp/prod-home-replacement.py 2>&1"
                 " --bundle ${guestBundle}"
                 " --fixture ${fixture}"
                 " --repo ${testRepo}"
