@@ -1,14 +1,14 @@
 ## 1. Declare host-owned semantic roots
 
-- [ ] 1.1 Add a host-owned semantic-root declaration alongside the existing compute-retained path declaration, carrying host path, owning user and group, mode, default access entries, and whether its absence must deny access. Verify by evaluating the host and confirming each declared root's values appear in the evaluated configuration.
-- [ ] 1.2 Add evaluation-time rejection of incoherent declarations: unknown owning user or group, a root nested inside another declared root, and a root declared both as host-owned semantic storage and as compute-retained state. Verify each by evaluating a conflicting variant and confirming evaluation fails while naming that specific conflict.
-- [ ] 1.3 Emit managed-root creation carrying declared ownership, mode, and default access entries, with no operation that recurses over existing content. Verify by evaluating the emitted directory-creation rules and asserting that none of them traverse or rewrite existing entries.
-- [ ] 1.4 Wire shared-root identities through the existing group registry so their numeric IDs are stable across hosts. Verify by evaluating the resolved groups for the host and confirming the expected IDs, and that the declaration introduces no additional ad-hoc group.
+- [x] 1.1 Add a host-owned semantic-root declaration alongside the existing compute-retained path declaration, carrying host path, owning user, owning group, mode, and default access entries. Verified by evaluating the host with a declared root and confirming the emitted directory and access rules carry those values.
+- [x] 1.2 Add evaluation-time rejection of incoherent declarations. Verified by evaluating four conflicting variants — duplicate path, a root nested inside another root, a root overlapping a compute-managed path, and an undeclared identity — and confirming each fails naming that specific conflict, while a conformant declaration still evaluates.
+- [x] 1.3 Emit managed-root creation carrying declared ownership, mode, and default access entries, with no operation that recurses over existing content. Verified by inspecting the emitted rules for a declared root: one directory rule and one non-recursive access rule, and by confirming on real `systemd-tmpfiles` that pre-existing content is left untouched.
+- [x] 1.4 Wire shared-root identities through the existing group registry so their numeric IDs are stable and the groups actually exist on hosts. Verified by evaluating the resolved groups for the host and confirming the registry IDs are present, with no ad-hoc group introduced by the declaration.
 
 ## 2. Reconcile pooling into one namespace
 
 - [ ] 2.1 Make a single pooling instance serve the namespace, with creation restricted to placements declared to accept new content. Verify by evaluating the host: exactly one pooling instance is declared for the namespace, its rendered options restrict creation to those placements, and archive placements are present without accepting creation.
-- [ ] 2.2 Declare each required placement so that its absence denies access instead of exposing an empty writable location. Verify by evaluating a variant with one required placement removed and confirming the declaration refuses rather than degrading silently.
+- [ ] 2.2 Declare each managed root's backing location as required or optional, and make an absent required location deny access instead of exposing an empty writable location. Verify by evaluating a variant with one required placement removed and confirming the declaration refuses rather than degrading silently.
 - [ ] 2.3 Replace the independent read-only export with a read-only view of the same namespace, so both views are the same filesystem. Verify in a disposable Linux environment that a file created through the writable view and the same file read through the read-only view share one underlying allocation.
 
 ## 3. Repoint consumers — gated on the operator decision
