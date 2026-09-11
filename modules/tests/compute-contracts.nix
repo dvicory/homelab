@@ -44,12 +44,43 @@ let
       && profile.config."security.guestapi" == "false"
       &&
         lib.filter (name: lib.hasPrefix "raw." name) (builtins.attrNames profile.config) == [ "raw.idmap" ];
+    # The map is generated from the declared capability set, so the contracts
+    # assert the generated rows rather than restating a hand-written shape.
     fixed-nonroot-translation =
       compute.idmapBase > 0
       && compute.idmapSize > 0
+      # the profile is rendered from the effective config the descriptor carries
+      && profile.config."raw.idmap" == descriptor.config."raw.idmap"
+      # UID remains one contiguous subordinate range
+      && descriptor.idmap.uid == [
+        {
+          nsid = 0;
+          hostid = compute.idmapBase;
+          range = compute.idmapSize;
+        }
+      ]
+      # GID covers the whole guest range, interrupted only by declared capabilities
+      && (builtins.foldl' (total: row: total + row.range) 0 descriptor.idmap.gid) == compute.idmapSize
+      && builtins.length (builtins.filter (row: row.nsid == row.hostid && row.range == 1) descriptor.idmap.gid)
+      == builtins.length descriptor.capabilityGids
+      # every declared capability is identity-mapped
+      && builtins.all (gid: builtins.elem {
+        nsid = gid;
+        hostid = gid;
+        range = 1;
+      } descriptor.idmap.gid) descriptor.capabilityGids
+      # project allowances are exactly the host IDs the generated map uses
+      && project."restricted.idmap.gid" == lib.concatStringsSep "," (
+        map (row: "${toString row.hostid}-${toString (row.hostid + row.range - 1)}") descriptor.idmap.gid
+      )
       && project."restricted.idmap.uid" == idRange
-      && project."restricted.idmap.gid" == idRange
-      && profile.config."raw.idmap" == "both ${idRange} 0-${toString (compute.idmapSize - 1)}";
+      # host authorization for each capability is one narrow ID, not a band
+      && builtins.all (
+        gid: builtins.elem {
+          startGid = gid;
+          count = 1;
+        } host.users.users.root.subGidRanges
+      ) descriptor.capabilityGids;
     no-management-device-exposure =
       lib.sort builtins.lessThan (builtins.attrNames devices) == expectedDeviceNames
       && builtins.all (

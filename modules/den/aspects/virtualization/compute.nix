@@ -11,6 +11,7 @@ let
   # resulting NixOS configuration, so it is captured here where the compute
   # aspect can resolve a declared capability name to its stable GID.
   fleetGroups = config.den.groups or { };
+  idmap = import ./_idmap.nix { inherit lib; };
   requiredPathType = types.submodule {
     options = {
       uid = mkOption { type = types.ints.unsigned; };
@@ -204,6 +205,7 @@ in
             && (
               (entry.group.gid or null) == null
               || !(builtins.elem "posix" (entry.group.labels or [ ]))
+              || entry.group.gid < 1
               || entry.group.gid >= cfg.idmapSize
             )
           ) capabilityEntries
@@ -213,48 +215,32 @@ in
             builtins.filter (entry: entry.group != null) capabilityEntries
           )
         );
-        duplicatedCapabilities = lib.unique (
-          lib.subtractLists (lib.unique capabilityGids) capabilityGids
-        );
-        idmapEnd = cfg.idmapBase + cfg.idmapSize - 1;
-        gidSegments = builtins.filter (segment: segment.start <= segment.end) (
-          lib.zipListsWith (start: end: { inherit start end; }) (
-            [ cfg.idmapBase ] ++ map (gid: gid + 1) capabilityGids
-          ) (map (gid: gid - 1) capabilityGids ++ [ idmapEnd ])
-        );
-        rawIdmap = lib.concatStringsSep "\n" (
-          [
-            "uid ${toString cfg.idmapBase}-${toString idmapEnd} 0-${toString (cfg.idmapSize - 1)}"
-          ]
-          ++ map (
-            segment:
-            "gid ${toString segment.start}-${toString segment.end} ${toString (segment.start - cfg.idmapBase)}-${toString (segment.end - cfg.idmapBase)}"
-          ) gidSegments
-          ++ map (gid: "gid ${toString gid} ${toString gid}") capabilityGids
-        );
-        permittedHostGids = lib.concatStringsSep "," (
-          [ "${toString cfg.idmapBase}-${toString idmapEnd}" ] ++ map toString capabilityGids
-        );
-        capabilitySubGidRanges = [
-          {
-            startGid = cfg.idmapBase;
-            count = cfg.idmapSize;
-          }
-        ]
-        ++ map (gid: {
-          startGid = gid;
-          count = 1;
-        }) capabilityGids;
+        capabilityGidsUnique = capabilityGids == lib.unique capabilityGids;
+        capabilityNamesUnique = cfg.storageCapabilities == lib.unique cfg.storageCapabilities;
+        idmapPlan = idmap.plan {
+          inherit (cfg) idmapBase idmapSize;
+          inherit capabilityGids;
+        };
+        # An identity-mapped capability host ID must live outside the ordinary
+        # host range, or the same host ID would be claimed twice.
+        overlappingCapabilities = builtins.filter (
+          hostId: hostId >= cfg.idmapBase && hostId < cfg.idmapBase + cfg.idmapSize
+        ) idmapPlan.identityHostIds;
+        capabilitySubGidRanges = builtins.filter (entry: entry != null) idmapPlan.subordinateGidRanges;
         instanceConfig =
           assert lib.assertMsg (unknownCapabilities == [ ])
             "Declared storage capabilities are not fleet groups: ${lib.concatStringsSep ", " unknownCapabilities}";
           assert lib.assertMsg (invalidCapabilities == [ ])
-            "Storage capabilities must be POSIX groups with a GID below idmapSize: ${lib.concatStringsSep ", " invalidCapabilities}";
-          assert lib.assertMsg (duplicatedCapabilities == [ ])
-            "Storage capabilities resolve to the same GID: ${lib.concatStringsSep ", " duplicatedCapabilities}";
+            "Storage capabilities must be POSIX groups with a GID between 1 and idmapSize: ${lib.concatStringsSep ", " invalidCapabilities}";
+          assert lib.assertMsg capabilityNamesUnique
+            "Storage capability names must be unique.";
+          assert lib.assertMsg capabilityGidsUnique
+            "Storage capabilities resolve to the same GID.";
+          assert lib.assertMsg (overlappingCapabilities == [ ])
+            "A capability host ID overlaps the ordinary subordinate range: ${lib.concatStringsSep ", " (map toString overlappingCapabilities)}";
           assert lib.assertMsg (!(cfg.config ? "raw.idmap"))
             "raw.idmap is derived from storageCapabilities and must not be declared directly on the instance";
-          cfg.config // { "raw.idmap" = rawIdmap; };
+          cfg.config // { "raw.idmap" = idmapPlan.rawIdmap; };
         baseDevices = lib.mapAttrs (_: entry: removeAttrs entry [ "requiredPath" ]) cfg.devices;
         requiredDeviceEntries = lib.filterAttrs (
           _: entry:
@@ -318,10 +304,8 @@ in
           "restricted.containers.lowlevel" = "block";
           # Incus classifies security.idmap.base/size as unrestricted low-level
           # config. A range-limited raw.idmap keeps raw LXC/AppArmor blocked.
-          "restricted.idmap.uid" = "${toString cfg.idmapBase}-${
-            toString (cfg.idmapBase + cfg.idmapSize - 1)
-          }";
-          "restricted.idmap.gid" = permittedHostGids;
+          "restricted.idmap.uid" = idmapPlan.permittedHostUidRanges;
+          "restricted.idmap.gid" = idmapPlan.permittedHostGidRanges;
           "restricted.containers.nesting" = "allow";
           "restricted.containers.privilege" = "unprivileged";
           "restricted.devices.disk" = "allow";
@@ -554,9 +538,16 @@ in
             runtimeSecrets
             recoveryPath
             identityPath
-            config
             ;
+          # The profile is rendered from the effective config, so the descriptor
+          # must carry that same value or the adoption gate compares the desired
+          # envelope against something the same evaluation never produced.
+          config = instanceConfig;
+          baseConfig = cfg.config;
           inherit capabilityGids;
+          idmap = {
+            inherit (idmapPlan) uid gid;
+          };
         };
       in
       {

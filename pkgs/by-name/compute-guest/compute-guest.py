@@ -172,22 +172,20 @@ def check_idmap(spec, instance):
                     gid_ranges.append(row)
         except (TypeError, KeyError, ValueError) as error:
             raise RuntimeError("Existing instance has no valid effective ID map; refusing mutation.") from error
-        capability_gids = sorted(int(gid) for gid in spec.get("capabilityGids", [ ]))
-        # UID map stays the ordinary contiguous shift; the GID map is that same
-        # range with one identity-mapped hole per capability that crosses.
-        expected_uid = [(0, start, size)]
-        expected_gid = []
-        cursor = start
-        for gid in capability_gids:
-            if gid < start or gid >= start + size:
-                raise RuntimeError("Nix descriptor declares a capability GID outside the ID map.")
-            if gid > cursor:
-                expected_gid.append((cursor - start, cursor, gid - cursor))
-            expected_gid.append((gid, gid, 1))
-            cursor = gid + 1
-        if cursor < start + size:
-            expected_gid.append((cursor - start, cursor, start + size - cursor))
-        if sorted(uid_ranges) != expected_uid or sorted(gid_ranges) != sorted(expected_gid):
+        # Compare against the rows Nix generated. This function must not
+        # reconstruct mapping semantics: a second coordinate algorithm is a
+        # second chance to disagree with the profile actually applied.
+        def desired(kind):
+            return sorted(
+                (int(entry["nsid"]), int(entry["hostid"]), int(entry["range"]))
+                for entry in spec.get("idmap", {}).get(kind, [])
+            )
+
+        expected_uid = desired("uid")
+        expected_gid = desired("gid")
+        if not expected_uid or not expected_gid:
+            raise RuntimeError("Nix descriptor carries no expected ID map.")
+        if sorted(uid_ranges) != expected_uid or sorted(gid_ranges) != expected_gid:
             raise RuntimeError("Existing instance has incompatible effective ID map; refusing mutation.")
 
     for allocation_file in ["/etc/subuid", "/etc/subgid"]:
@@ -205,7 +203,12 @@ def check_idmap(spec, instance):
         # setuid helpers refuse host IDs the caller holds no subordinate range
         # for. Only the GID side needs it: service UIDs stay translated.
         if allocation_file.endswith("subgid"):
-            for gid in capability_gids:
+            identity_host_ids = [
+                int(entry["hostid"])
+                for entry in spec.get("idmap", {}).get("gid", [])
+                if int(entry["nsid"]) == int(entry["hostid"]) and int(entry["range"]) == 1
+            ]
+            for gid in identity_host_ids:
                 if not any(
                     owner == "root" and int(base) <= gid < int(base) + int(count)
                     for owner, base, count in allocations
