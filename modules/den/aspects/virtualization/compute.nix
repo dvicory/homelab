@@ -62,6 +62,21 @@ in
           type = types.ints.positive;
           description = "Fixed UID/GID map size reserved for the guest.";
         };
+        storageCapabilities = mkOption {
+          type = types.listOf types.str;
+          default = [ ];
+          description = ''
+            Fleet group names whose stable POSIX GID crosses this compute
+            boundary as an identity mapping, so a workload can hold the
+            capability under the same number inside and outside the guest.
+
+            Only capabilities that actually have to cross belong here. Each one
+            becomes a hole in the guest's otherwise contiguous GID map and needs
+            matching host subordinate-GID authorization and a project range that
+            permits it; the guest's UID map and its other GIDs stay ordinary
+            translated ones.
+          '';
+        };
         stateRoot = mkOption {
           type = types.str;
           description = "Host-owned parent for the selected services' retained state.";
@@ -162,6 +177,79 @@ in
           in
           entry.uid >= cfg.idmapSize || entry.gid >= cfg.idmapSize
         ) retainedNames;
+
+        # Crossing storage capabilities. A declared capability keeps its fleet
+        # GID on both sides of the boundary: its number is mapped identically,
+        # which turns the guest's ordinary contiguous GID shift into that range
+        # minus one hole per capability. The host authorization, the project
+        # range, and the map the lifecycle tool expects all derive from this one
+        # set, so a capability cannot be half-declared.
+        groupRegistry = config.den.groups or { };
+        capabilityEntries = map (name: {
+          inherit name;
+          group = groupRegistry.${name} or null;
+        }) cfg.storageCapabilities;
+        unknownCapabilities = map (entry: entry.name) (
+          builtins.filter (entry: entry.group == null) capabilityEntries
+        );
+        invalidCapabilities = map (entry: entry.name) (
+          builtins.filter (
+            entry:
+            entry.group != null
+            && (
+              (entry.group.gid or null) == null
+              || !(builtins.elem "posix" (entry.group.labels or [ ]))
+              || entry.group.gid >= cfg.idmapSize
+            )
+          ) capabilityEntries
+        );
+        capabilityGids = lib.sort builtins.lessThan (
+          map (entry: entry.group.gid) (
+            builtins.filter (entry: entry.group != null) capabilityEntries
+          )
+        );
+        duplicatedCapabilities = lib.unique (
+          lib.subtractLists (lib.unique capabilityGids) capabilityGids
+        );
+        idmapEnd = cfg.idmapBase + cfg.idmapSize - 1;
+        gidSegments = builtins.filter (segment: segment.start <= segment.end) (
+          lib.zipListsWith (start: end: { inherit start end; }) (
+            [ cfg.idmapBase ] ++ map (gid: gid + 1) capabilityGids
+          ) (map (gid: gid - 1) capabilityGids ++ [ idmapEnd ])
+        );
+        rawIdmap = lib.concatStringsSep "\n" (
+          [
+            "uid ${toString cfg.idmapBase}-${toString idmapEnd} 0-${toString (cfg.idmapSize - 1)}"
+          ]
+          ++ map (
+            segment:
+            "gid ${toString segment.start}-${toString segment.end} ${toString (segment.start - cfg.idmapBase)}-${toString (segment.end - cfg.idmapBase)}"
+          ) gidSegments
+          ++ map (gid: "gid ${toString gid} ${toString gid}") capabilityGids
+        );
+        permittedHostGids = lib.concatStringsSep "," (
+          [ "${toString cfg.idmapBase}-${toString idmapEnd}" ] ++ map toString capabilityGids
+        );
+        capabilitySubGidRanges = [
+          {
+            start = cfg.idmapBase;
+            count = cfg.idmapSize;
+          }
+        ]
+        ++ map (gid: {
+          start = gid;
+          count = 1;
+        }) capabilityGids;
+        instanceConfig =
+          assert lib.assertMsg (unknownCapabilities == [ ])
+            "Declared storage capabilities are not fleet groups: ${lib.concatStringsSep ", " unknownCapabilities}";
+          assert lib.assertMsg (invalidCapabilities == [ ])
+            "Storage capabilities must be POSIX groups with a GID below idmapSize: ${lib.concatStringsSep ", " invalidCapabilities}";
+          assert lib.assertMsg (duplicatedCapabilities == [ ])
+            "Storage capabilities resolve to the same GID: ${lib.concatStringsSep ", " duplicatedCapabilities}";
+          assert lib.assertMsg (!(cfg.config ? "raw.idmap"))
+            "raw.idmap is derived from storageCapabilities and must not be declared directly on the instance";
+          cfg.config // { "raw.idmap" = rawIdmap; };
         baseDevices = lib.mapAttrs (_: entry: removeAttrs entry [ "requiredPath" ]) cfg.devices;
         requiredDeviceEntries = lib.filterAttrs (
           _: entry:
@@ -228,9 +316,7 @@ in
           "restricted.idmap.uid" = "${toString cfg.idmapBase}-${
             toString (cfg.idmapBase + cfg.idmapSize - 1)
           }";
-          "restricted.idmap.gid" = "${toString cfg.idmapBase}-${
-            toString (cfg.idmapBase + cfg.idmapSize - 1)
-          }";
+          "restricted.idmap.gid" = permittedHostGids;
           "restricted.containers.nesting" = "allow";
           "restricted.containers.privilege" = "unprivileged";
           "restricted.devices.disk" = "allow";
@@ -297,7 +383,7 @@ in
               project = cfg.project;
               name = cfg.profile;
               description = "Unprivileged private compute envelope";
-              config = cfg.config;
+              config = instanceConfig;
               inherit devices;
             }
           ];
@@ -465,12 +551,17 @@ in
             identityPath
             config
             ;
+          inherit capabilityGids;
         };
       in
       {
         environment.systemPackages = [
           (pkgs.callPackage (inputs.self + "/pkgs/by-name/compute-guest/package.nix") { })
         ];
+        # The kernel's setuid helpers refuse to build a map containing host IDs
+        # the caller has no subordinate range for, so a crossing capability needs
+        # its own line here — narrow, one ID per capability, not a band.
+        users.users.root.subGidRanges = capabilitySubGidRanges;
         virtualisation.incus.preseed = preseed;
         # Keep the read-only adoption check and any native preseed in one
         # lifecycle lock; a conflict therefore aborts before preseed mutation.

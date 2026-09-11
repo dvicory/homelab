@@ -46,5 +46,15 @@
       labels = [ "posix" ];
       gid = 504;
     };
+
+    # Storage capabilities (505-509): the stable POSIX identity a workload
+    # holds to reach a shared namespace. The GID is the contract — it is what
+    # appears in file ownership on the host and what the compute boundary
+    # preserves across the guest — while membership is what authorizes.
+    media = {
+      description = "Shared media namespace capability";
+      labels = [ "posix" ];
+      gid = 505;
+    };
   };
 }

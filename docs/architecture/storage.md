@@ -145,10 +145,16 @@ Access decisions must resolve to stable numeric IDs, because a capability
 group's number is written into file ownership and has to keep meaning the same
 thing after an export, a restore, another host, or a rebuilt compute environment.
 Group names and their IDs come from the fleet group registry; a host does not
-invent its own. The identity is the contract: the mechanism that presents it — an
-unprivileged container, a shared filesystem, a network export — may change
-without changing the number, and the number is never the boundary's translated
-value.
+invent its own.
+
+**Persistent cross-boundary storage capabilities use stable fleet GIDs.**
+Process and service identities remain independently managed and may be
+namespace-translated. A compute adapter preserves the capability identity using
+whatever mechanism suits that boundary — an unprivileged container's ID map, a
+shared filesystem, a network export — and that mechanism is an implementation
+detail, not part of this contract. A workload therefore holds its own user and
+primary group, whether translated or not, and holds a storage capability under
+the fleet's own stable number on both sides of the boundary.
 
 ## Durability classes
 

@@ -163,7 +163,24 @@ user namespace globally to make the numbers line up.
 The capability identity is verified rather than assumed: a group whose number is
 part of the filesystem contract is asserted at evaluation time to resolve to
 exactly its declared GID, so an upstream or platform definition cannot silently
-take the number
+take the number.
+
+Verified end to end in a disposable host, with the real mergerfs-backed mount:
+the service UID and primary GID stay ordinarily subordinate-mapped, a single
+capability GID is mapped identically on both sides, and the workload holds it
+**only as a supplemental group**. A file created that way carries the translated
+service UID and the bare capability GID on the host, the guest sees the
+capability under its fleet number, the same UID without the capability is denied,
+container root is denied, and hardlink, rename, unlink and append all behave.
+Restarting preserves all of it.
+
+Only capabilities that actually have to cross a given boundary receive such a
+mapping, so the exceptions stay as narrow as possible: the mapping is derived
+from an explicit declared set rather than from a band, and the subordinate-ID
+authorization and project permission follow that same set. The mechanism —
+which map entries exist, which subordinate lines authorize them — is
+implementation detail beneath this decision and is expected to differ for a VM,
+an export, or another host.
 
 ## Risks / Trade-offs
 
@@ -223,18 +240,12 @@ out of scope here.
 
 ## Open Questions
 
-- **Whether the on-disk capability number has to be the stable identity or the
-  boundary's translated value.** Both were demonstrated in a disposable host.
-  With the stock compute-boundary configuration — a single contiguous range and
-  no identity entry — a workload holding the capability as a supplemental group
-  writes successfully through mergerfs, and the host records the translated
-  value (`idmapBase + gid`); the guest still sees the semantic number, so the
-  capability reads as the same group on both sides of a well-known mapping.
-  Presenting the stable number on the host as well requires splitting the range
-  around the capability band and covering that band with host subordinate GID
-  ranges, and is also demonstrated. `shift=true` is neither required nor helpful
-  for either shape: with data already in the shifted space it presents the
-  capability as overflow, while an ordinary mount shows it correctly.
+- **Which capabilities cross a given compute boundary, and how.** Decided in
+  principle — an explicit declared set, initially `media` alone — with the
+  mechanism kept as implementation detail. What remains open is only the
+  spelling of the declaration and the lifecycle tool's representation of a
+  range with declared holes, which should stay small and deterministic rather
+  than becoming a general idmap policy language.
 - Internal directory naming beneath each tier root is not fixed by this change.
 - Watermark and free-space reserve values are operational tuning.
 - Whether archive branches join the namespace immediately or in a later phase

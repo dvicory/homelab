@@ -38,12 +38,13 @@ in
         );
         unbacked = builtins.filter (name: !(config.users.groups ? ${name})) granted;
 
-        # A GID declared on a fleet POSIX group is authoritative: it is the
-        # number written into file ownership, exports and container mappings, so
-        # the resolved value has to be exactly that number. This is the whole
-        # contract — an ordinary entry in the deterministic registry is only a
-        # fallback, where an upstream definition legitimately wins. Checked when
-        # the system toplevel is evaluated.
+        # A GID declared on a fleet POSIX group is the exact fleet identity, so
+        # the resolved value has to be exactly that number. Whether it also ends
+        # up in filesystem metadata depends on some root actually using it as a
+        # capability; the number is fixed either way. This is the whole contract
+        # — an ordinary entry in the deterministic registry is only a fallback,
+        # where an upstream definition legitimately wins. Checked when the
+        # system toplevel is evaluated.
         declared = lib.filterAttrs (
           _: group: (group.gid or null) != null && builtins.elem "posix" (group.labels or [ ])
         ) registry;

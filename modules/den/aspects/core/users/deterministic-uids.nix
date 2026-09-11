@@ -17,12 +17,11 @@
 #   - What they must guarantee is that nothing is left non-deterministic: every
 #     user and group that exists on a host has an ID, which is asserted below.
 #
-# Persistent storage identities — groups such as `media` or `family` that appear
-# in filesystem metadata, exports and container mappings — need more than a
-# fallback, because a number that merely "usually" resolves correctly is not
-# good enough when it is written into file ownership. A GID declared on a
-# `den.groups` entry carrying the `posix` label is authoritative: the resolved
-# GID must equal it, which fleet-groups.nix asserts.
+# Groups the fleet owns need more than a fallback: a GID declared on a
+# `den.groups` entry carrying the `posix` label is the exact fleet identity, and
+# the resolved GID must equal it, which fleet-groups.nix asserts. That matters
+# wherever the capability is actually used as one — a shared tree, an export, a
+# container mapping — and costs nothing where it is not.
 #
 # Number layout (a guide for choosing a free number, not a statement about the
 # value that resolves on a host):
