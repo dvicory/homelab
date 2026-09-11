@@ -124,6 +124,14 @@ jobs:
             exit 0
           fi
           echo "building $(echo "$derivations" | wc -l) job(s) from $attr"
+          if [ "$GROUP" = checks ] && [ "$SYSTEM" = x86_64-linux ]; then
+            # Diagnostic: prove the replacement test output really exists
+            # and show what Hestia served, before trusting success.
+            out=$(nix build --no-link --print-out-paths ".#checks.$SYSTEM.prod-home-replacement")
+            echo "test output: $out"
+            ls -la "$out" || echo "TEST OUTPUT MISSING"
+            tail -100 "${HESTIA_SERVE_LOG:-/dev/null}" || true
+          fi
           # shellcheck disable=SC2086
           nix build -L --no-link $derivations
 
