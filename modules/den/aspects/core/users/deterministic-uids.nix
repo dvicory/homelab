@@ -9,22 +9,23 @@
 #   - They apply only where nothing stronger already defines the identity. A
 #     nixpkgs service module that creates its own account wins, which is why
 #     several entries below resolve to a different number than they declare
-#     (wheel, nginx, chrony, audio, video, render, kvm, docker, and others).
+#     (nginx, chrony, audio, video, render, kvm, docker, and others).
 #   - Shadowing an upstream name is therefore expected, not a defect. Do not
 #     rename or renumber an entry to remove a divergence from nixpkgs.
+#   - A group the platform owns outright, such as `wheel`, is not listed here at
+#     all: inventing a number for it would only be wrong.
 #   - What they must guarantee is that nothing is left non-deterministic: every
 #     user and group that exists on a host has an ID, which is asserted below.
 #
 # Persistent storage identities — groups such as `media` or `family` that appear
 # in filesystem metadata, exports and container mappings — need more than a
 # fallback, because a number that merely "usually" resolves correctly is not
-# good enough when it is written into file ownership. Those are declared in
-# `den.groups` with the `fleet-identity` label, which asserts that the resolved
-# GID equals the declared one; see fleet-groups.nix.
+# good enough when it is written into file ownership. A GID declared on a
+# `den.groups` entry carrying the `posix` label is authoritative: the resolved
+# GID must equal it, which fleet-groups.nix asserts.
 #
 # Number layout (a guide for choosing a free number, not a statement about the
 # value that resolves on a host):
-#   10        wheel (standard Linux)
 #   500-599   All groups — access control, POSIX, service groups (100 slots)
 #   600-649   Core system daemons (50 slots)
 #   650-699   Infrastructure services (50 slots)
@@ -154,11 +155,6 @@
         };
 
         config.users.deterministicIds = {
-          # ── Standard Linux groups ────────────────────────────────────
-          wheel = {
-            gid = 10;
-          };
-
           # ── All groups (500-599) ────────────────────────────────────
           # Access control groups
           admins = {

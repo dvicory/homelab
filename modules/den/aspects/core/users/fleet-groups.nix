@@ -38,17 +38,18 @@ in
         );
         unbacked = builtins.filter (name: !(config.users.groups ? ${name})) granted;
 
-        # A fleet identity's number is written into file ownership, exports and
-        # container mappings, so the declared value has to be the resolved value.
-        # This is the difference between a fleet identity and a fallback entry in
-        # the deterministic registry, where an upstream definition legitimately
-        # wins. Checked when the system toplevel is evaluated.
-        fleetIdentities = lib.filterAttrs (
-          _: group: (group.gid or null) != null && builtins.elem "fleet-identity" (group.labels or [ ])
+        # A GID declared on a fleet POSIX group is authoritative: it is the
+        # number written into file ownership, exports and container mappings, so
+        # the resolved value has to be exactly that number. This is the whole
+        # contract — an ordinary entry in the deterministic registry is only a
+        # fallback, where an upstream definition legitimately wins. Checked when
+        # the system toplevel is evaluated.
+        declared = lib.filterAttrs (
+          _: group: (group.gid or null) != null && builtins.elem "posix" (group.labels or [ ])
         ) registry;
         diverged = builtins.filter (
-          name: (config.users.groups.${name}.gid or null) != fleetIdentities.${name}.gid
-        ) (builtins.attrNames fleetIdentities);
+          name: (config.users.groups.${name}.gid or null) != declared.${name}.gid
+        ) (builtins.attrNames declared);
       in
       {
         users.groups = lib.mapAttrs (name: group: { gid = lib.mkDefault group.gid; }) withId;
@@ -60,7 +61,7 @@ in
           }
           {
             assertion = diverged == [ ];
-            message = "den: fleet identities did not resolve to their declared GID: ${lib.concatStringsSep ", " diverged}";
+            message = "den: declared fleet group GIDs did not resolve to the declared value: ${lib.concatStringsSep ", " diverged}";
           }
         ];
       };
