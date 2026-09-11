@@ -728,7 +728,7 @@ def run_scenario(args: argparse.Namespace) -> None:
     check(args.helper.is_file(), "compute helper exists")
     for member in ("apps/Application-jellyfin.yaml", "apps/Application-jellyfin-retained.yaml",
                    "jellyfin", "jellyfin-retained",
-                   "seed/namespaces.yaml", "seed/crds.yaml", "seed/controllers.yaml", "seed/root.yaml"):
+                   "canonical-bootstrap.yaml"):
         check((args.repo / member).exists(), f"canonical recovery input contains {member}")
     project = descriptor["project"]
     instance_name = descriptor["instance"]
