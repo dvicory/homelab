@@ -51,9 +51,11 @@ let
     else
       "${kind} ${toString entry.hostid}-${toString (entry.hostid + entry.range - 1)} ${toString entry.nsid}-${toString (entry.nsid + entry.range - 1)}";
 
-  # Incus is given host-side ranges; always write them as explicit ranges.
+  # Incus is given host-side ranges. A singleton uses the bare form:
+  # upstream ParseUint32Range accepts "number" or "start-end" but rejects
+  # "start-start" (start must be lower than end).
   spans = entries: lib.concatStringsSep "," (
-    map (entry: "${toString entry.hostid}-${toString (entry.hostid + entry.range - 1)}") entries
+    map (entry: if entry.range == 1 then toString entry.hostid else "${toString entry.hostid}-${toString (entry.hostid + entry.range - 1)}") entries
   );
 in
 {

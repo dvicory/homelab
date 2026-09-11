@@ -182,5 +182,3 @@ jobs:
         run: |
           set -o pipefail
           nix build -L --no-link --print-out-paths ".#ciBundles.$SYSTEM" | cachix push "$CACHIX_CACHE"
-
-# diagnostic comment

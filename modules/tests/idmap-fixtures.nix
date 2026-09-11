@@ -33,7 +33,7 @@ let
     "one-capability-raw" =
       one.rawIdmap == "uid ${toString base}-${toString last} 0-${toString (size - 1)}\ngid ${toString base}-${toString (base + 504)} 0-504\ngid 505 505\ngid ${toString (base + 506)}-${toString last} 506-${toString (size - 1)}";
     "one-capability-project-ranges" =
-      one.permittedHostGidRanges == "${toString base}-${toString (base + 504)},505-505,${toString (base + 506)}-${toString last}"
+      one.permittedHostGidRanges == "${toString base}-${toString (base + 504)},505,${toString (base + 506)}-${toString last}"
       && one.permittedHostUidRanges == "${toString base}-${toString last}";
     "one-capability-subordinate" =
       one.subordinateGidRanges == [
