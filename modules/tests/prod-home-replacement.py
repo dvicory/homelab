@@ -911,8 +911,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             base = forward_start(runtime, kubeconfig)
             verify_private_endpoints(runtime)
 
-            media_probe = runtime.guest("sh", "-ec", "test -r /srv/media/library/recovery.wav")
-            del media_probe
+            runtime.guest("sh", "-ec", "test -r /srv/media/library/recovery.wav")
             # The Incus media attachment itself is writable host storage; the
             # read-only boundary lives at the Jellyfin workload mount.
             hosted = runtime.media_path / "library" / ".compute-recovery-probe"
@@ -921,6 +920,16 @@ def run_scenario(args: argparse.Namespace) -> None:
             hosted.unlink()
             result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "751", "--group", "751", "--mode=non-interactive", "--", "sh", "-ec", "touch /srv/media/library/forbidden")
             check(result.returncode != 0, "Jellyfin identity cannot write the read-only library mount")
+            # The real boundary proof runs inside the Jellyfin pod at /media,
+            # not merely as a guest process holding the same UID.
+            pod_write = completed("incus", "--force-local", "--project", project, "exec", instance_name,
+                                  "--mode=non-interactive", "--", "k3s", "kubectl", "-n", "jellyfin",
+                                  "exec", "deployment/jellyfin", "--", "sh", "-ec", "touch /media/.compute-recovery-probe")
+            check(pod_write.returncode != 0, "Jellyfin pod cannot write its /media library mount")
+            pod_mounts = runtime.kubectl("exec", "deployment/jellyfin", "--", "cat", "/proc/mounts", namespace="jellyfin")
+            media_entries = [fields for line in pod_mounts.splitlines() if len(fields := line.split()) >= 4 and fields[1] == "/media"]
+            check(bool(media_entries) and all("ro" in fields[3].split(",") for fields in media_entries),
+                  "Jellyfin pod mounts /media read-only")
             mounts = runtime.kubectl_json("get", "deployment/jellyfin", "-o", "json", namespace="jellyfin")["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
             library_mount = next(mount for mount in mounts if mount["name"] == "media")
             check(library_mount.get("readOnly") is True, "Jellyfin library mount is declared read-only")
