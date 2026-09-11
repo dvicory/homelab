@@ -48,9 +48,9 @@ target environment and confirm the selected immutable flake revision.
 - Select a private management path. The routes in this document do not
   prove reachable edges, certificates, DNS, router forwarding or login
   success.
-- Run recovery only with a protected recovery destination, a matching
-  descriptor and the exact packaged inventory. Keep recovery output and
-  staged credentials outside Git and the Nix store.
+- Run compute replacement only with surviving durable storage, staged
+  runtime credentials, and the matching guest descriptor. Keep staged
+  credentials outside Git and the Nix store.
 
 ## Declared access and routes
 

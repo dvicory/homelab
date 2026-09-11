@@ -43,6 +43,12 @@
 
           manifests=${lib.escapeShellArg manifests}
 
+          # Test seam: a fixture host may point the same implementation at a
+          # variant seed tree (e.g. a test-local root Application).
+          if [ -n "''${HOUSEHOLD_BOOTSTRAP_MANIFESTS:-}" ]; then
+            manifests=$HOUSEHOLD_BOOTSTRAP_MANIFESTS
+          fi
+
           usage() {
             cat <<'EOF'
           Usage:
@@ -416,12 +422,23 @@
               manifests=${lib.escapeShellArg manifests}
               image=${lib.escapeShellArg (toString image)}
               bootstrap=${lib.escapeShellArg "${bootstrap}/bin/household-bootstrap"}
+              # Test seams: a fixture host runs the same implementation against
+              # a variant seed tree and its own Incus socket.
+              if [ -n "''${HOUSEHOLD_BOOTSTRAP_MANIFESTS:-}" ]; then
+                manifests=$HOUSEHOLD_BOOTSTRAP_MANIFESTS
+              fi
+              if [ -n "''${HOUSEHOLD_KANIDM_IMAGE:-}" ]; then
+                image=$HOUSEHOLD_KANIDM_IMAGE
+              fi
+              if [ -n "''${HOUSEHOLD_BOOTSTRAP_BIN:-}" ]; then
+                bootstrap=$HOUSEHOLD_BOOTSTRAP_BIN
+              fi
               [ -f "$image" ] || die "pinned Kanidm image is unavailable: $image"
               for file in namespaces.yaml controllers.yaml root.yaml; do
                 [ -r "$manifests/$file" ] || die "bootstrap artifact is incomplete: $file"
               done
 
-              export INCUS_SOCKET=/var/lib/incus/unix.socket
+              export INCUS_SOCKET="''${INCUS_SOCKET:-/var/lib/incus/unix.socket}"
               incus_cmd() {
                 incus --force-local --project "$project" "$@"
               }

@@ -326,14 +326,14 @@ Nix owns the durable contract: storage inventory and its mapping to stable
 device identifiers, encryption and unlock configuration, pool and dataset
 intent with their properties, mounts and their ordering and failure behavior,
 service users and groups with stable IDs, managed root directories with
+declared owner/group/mode and, only where the sharing policy requires it,
 inherited default permissions, application-to-storage mappings, and the
 policies for snapshot, scrub, and backup.
 
-Nix does **not** own the contents of those roots. Activation creates managed
-roots and applies default permissions so that new files inherit them. It does
-not recursively rewrite ownership, modes, or ACLs across existing payload
-trees; that is a migration or repair action that an operator runs deliberately.
-
+Activation creates managed roots and applies declared default permissions where the sharing policy
+requires them, so that new files inherit them. It does not recursively
+rewrite ownership, modes, or ACLs across existing payload trees; that is a
+migration or repair action that an operator runs deliberately.
 Establishing an on-disk format or an encryption container is likewise an
 explicit provisioning action, separate from ordinary activation.
 

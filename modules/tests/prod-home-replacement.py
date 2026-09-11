@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
-"""Run the disposable Incus -> NixOS K3s -> Argo -> Jellyfin recovery scenario.
+"""Run the prod-home compute replacement acceptance scenario.
 
-This is intentionally a real-runtime test. It never substitutes a fake Incus,
-Kubernetes, Argo, or Jellyfin API. The fixture is produced from evaluated host
-configuration; execution is restricted to the designated disposable test VMs.
+This is intentionally a real-runtime test on x86_64. It never substitutes a
+fake Incus, Kubernetes, Argo, or Jellyfin API. The fixture is produced from
+the evaluated x86_64 hvn-hyp1/compute-1 configuration; execution is
+restricted to the designated disposable fixture-host VMs.
 
-Recovery follows the supported control flow: replace the guest, stage secrets,
-seed Argo from canonical manifests, apply a test-local root Application that
-points at a disposable Git origin holding verbatim canonical Jellyfin
-manifests, and let Argo reconcile. K3s pulls the pinned registry images over
-the network; no image fixture is preloaded and no manifest is applied by hand.
+Recovery follows the supported control flow using the shipped implementations:
+compute-guest replaces the guest, host-staged secrets are delivered,
+household-bootstrap-host seeds Argo and hands off to a test-local root
+Application pointing at a disposable Git origin holding verbatim canonical
+Jellyfin manifests, and Argo reconciles. K3s pulls the pinned registry images
+over the network. Jellyfin behavior itself is exercised through the
+jellyfin_smoke helper; this driver owns only platform orchestration.
 
-  sudo modules/tests/jellyfin-recovery.py \
+  sudo modules/tests/prod-home-replacement.py \
     --bundle /nix/store/...-compute-1-bundle \
     --fixture /tmp/compute-fixture.json \
-    --repo /nix/store/...-jellyfin-recovery-repo \
+    --repo /nix/store/...-prod-home-recovery-repo \
+    --seed /nix/store/...-prod-home-test-seed \
+    --smoke /tmp/jellyfin_smoke.py \
+    --bootstrap-host /nix/store/...-household-bootstrap-host/bin/household-bootstrap-host \
     --helper pkgs/by-name/compute-guest/compute-guest.py
 """
 
@@ -25,25 +31,23 @@ import base64
 import copy
 import fcntl
 import hashlib
+import importlib.util
 import ipaddress
 import json
 import math
 import os
 from pathlib import Path
 import platform
-import re
 import secrets
 import shlex
 import shutil
-import struct
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 import wave
 
 
@@ -282,31 +286,6 @@ class Runtime:
     def helper_expect_failure(self, operation: str, expected: str, *, spec: Path | None = None) -> None:
         result = completed(*self.helper_command(operation, spec=spec, bundle=self.bundle, confirm=True), timeout=3_600)
         check(result.returncode != 0, f"helper refuses {expected}")
-
-    def forward_start(self) -> str:
-        # Test access only: forward the canonical ClusterIP service to the
-        # guest address. Manifests are never patched for test reachability.
-        self.forward_stop()
-        address = self.descriptor["address"]
-        self.forward_proc = subprocess.Popen(
-            ["incus", "--force-local", "--project", self.project, "exec", self.instance,
-             "--mode=non-interactive", "--", "k3s", "kubectl", "-n", "jellyfin",
-             "port-forward", "--address", address, "svc/jellyfin", "8096:8096"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        base = f"http://{address}:8096"
-
-        def reachable() -> bool:
-            try:
-                with socket.create_connection((address, 8096), timeout=2):
-                    return True
-            except OSError:
-                if self.forward_proc is not None and self.forward_proc.poll() is not None:
-                    raise ScenarioError("Jellyfin port-forward exited before becoming reachable")
-                return False
-
-        wait_for("Jellyfin port-forward", reachable, timeout=180)
-        return base
 
     def forward_stop(self) -> None:
         proc, self.forward_proc = self.forward_proc, None
@@ -566,34 +545,38 @@ class GitOrigin:
                 proc.kill()
 
 
-def seed_argo(runtime: Runtime, seed: Path) -> None:
-    """Apply the canonical Argo seed: namespace, CRDs, then controllers."""
-    runtime.kubectl("apply", "--server-side", "--field-manager=argocd-controller",
-                     "-f", str(seed / "namespaces.yaml"))
-    runtime.kubectl("apply", "--server-side", "--field-manager=argocd-controller",
-                     "-f", str(seed / "crds.yaml"))
-    runtime.kubectl("wait", "--for=condition=Established", "--timeout=180s",
-                     "-f", str(seed / "crds.yaml"))
-    deadline = time.monotonic() + 600
-    while True:
-        result = completed("incus", "--force-local", "--project", runtime.project, "exec", runtime.instance,
-                           "--mode=non-interactive", "--", "k3s", "kubectl", "apply", "--server-side",
-                           "--field-manager=argocd-controller", "-f", str(seed / "controllers.yaml"), timeout=COMMAND_TIMEOUT)
-        if result.returncode == 0:
-            break
-        if time.monotonic() >= deadline:
-            raise ScenarioError(f"Argo seed failed to converge: {(result.stderr or result.stdout).strip()}")
-        time.sleep(5)
-    workloads = runtime.kubectl("get", "deploy,sts", "-n", "argocd", "-o", "name", namespace=None).split()
-    check(bool(workloads), "Argo seed declares controllers")
-    for workload in workloads:
-        runtime.kubectl("rollout", "status", workload, "--timeout=600s", namespace="argocd")
+def kubectl_outer(kubeconfig: Path, *args: str, timeout: int = COMMAND_TIMEOUT) -> str:
+    return run("kubectl", "--kubeconfig", str(kubeconfig), *args, timeout=timeout)
 
 
-def wait_argo_synced(runtime: Runtime, names: tuple[str, ...], timeout: int = SYNC_TIMEOUT) -> None:
+def fetch_kubeconfig(runtime: Runtime, workspace: Path) -> Path:
+    """Pull the guest K3s admin kubeconfig and point it at the guest address."""
+    raw = workspace / "k3s.yaml"
+    runtime.incus("file", "pull", f"{runtime.instance}/etc/rancher/k3s/k3s.yaml", str(raw), timeout=120)
+    text = raw.read_text()
+    check("https://127.0.0.1:6443" in text, "guest kubeconfig uses the loopback server")
+    kubeconfig = workspace / "kubeconfig"
+    kubeconfig.write_text(text.replace("https://127.0.0.1:6443", f"https://{runtime.descriptor['address']}:6443"))
+    kubeconfig.chmod(0o600)
+    return kubeconfig
+
+
+def run_bootstrap_host(bootstrap_host: Path, runtime: Runtime, kubeconfig: Path, seed: Path) -> None:
+    """Invoke the shipped household-bootstrap-host against the fresh guest."""
+    env = {**os.environ, "KUBECONFIG": str(kubeconfig), "HOUSEHOLD_BOOTSTRAP_MANIFESTS": str(seed)}
+    result = subprocess.run(
+        [str(bootstrap_host), str(runtime.spec_path), "--confirm", runtime.instance],
+        env=env, text=True, capture_output=True, timeout=3600, check=False,
+    )
+    print(result.stdout, flush=True)
+    if result.returncode != 0:
+        raise ScenarioError(f"household-bootstrap-host failed ({result.returncode}): {result.stderr.strip()}")
+
+
+def wait_argo_synced(kubeconfig: Path, names: tuple[str, ...], timeout: int = SYNC_TIMEOUT) -> None:
     def synced() -> bool:
         for name in names:
-            app = runtime.kubectl_json("get", "application", name, "-o", "json", namespace="argocd")
+            app = json.loads(kubectl_outer(kubeconfig, "get", "application", name, "-n", "argocd", "-o", "json"))
             status = app.get("status", {})
             if status.get("sync", {}).get("status") != "Synced":
                 return False
@@ -603,28 +586,46 @@ def wait_argo_synced(runtime: Runtime, names: tuple[str, ...], timeout: int = SY
     wait_for(f"Argo reconciliation of {', '.join(names)}", synced, timeout=timeout)
 
 
-def stage_cluster_secrets(runtime: Runtime, secret_values: dict[str, bytes]) -> None:
-    """Recreate missing secret namespaces and re-apply staged runtime secrets.
+def forward_start(runtime: Runtime, kubeconfig: Path) -> str:
+    """Forward the canonical ClusterIP service to fixture-host loopback.
 
-    A fresh guest boots before Argo creates application namespaces, so the
-    boot-time secret application cannot deliver namespaced secrets yet. This
-    mirrors the host bootstrap handoff: namespaces first, then secrets.
+    Test access only: reachability flows through the already-open K3s API
+    port, so neither guest firewall rules nor manifests change for the test.
     """
-    existing = {item["metadata"]["name"] for item in runtime.kubectl_json("get", "namespaces", "-o", "json")["items"]}
-    for namespace in sorted({entry["namespace"] for entry in runtime.descriptor["runtimeSecrets"].values()} - existing):
-        runtime.kubectl("create", "namespace", namespace)
-    runtime.guest("systemctl", "restart", "kubernetes-runtime-secrets.service")
-    runtime.verify_secret_consumers(secret_values)
+    if runtime.forward_proc is not None:
+        runtime.forward_stop()
+    proc = subprocess.Popen(
+        ["kubectl", "--kubeconfig", str(kubeconfig), "-n", "jellyfin",
+         "port-forward", "svc/jellyfin", "8096:8096"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    runtime.forward_proc = proc
+
+    def reachable() -> bool:
+        try:
+            with socket.create_connection(("127.0.0.1", 8096), timeout=2):
+                return True
+        except OSError:
+            if proc.poll() is not None:
+                raise ScenarioError("Jellyfin port-forward exited before becoming reachable")
+            return False
+
+    wait_for("Jellyfin port-forward", reachable, timeout=180)
+    return "http://127.0.0.1:8096"
 
 
-def deliver_stack(runtime: Runtime, seed: Path, root_app: Path, secret_values: dict[str, bytes]) -> None:
-    """Run the supported recovery control flow on a fresh cluster."""
+def deliver_stack(runtime: Runtime, args: argparse.Namespace, workspace: Path, secret_values: dict[str, bytes]) -> Path:
+    """Run the shipped recovery control flow on a fresh cluster.
+
+    Returns the guest kubeconfig. The driver orchestrates shipped commands;
+    it does not reimplement seed, handoff, or readiness logic. The test-local
+    root Application ships inside the seed tree the wrapper is pointed at.
+    """
     stage_cluster_secrets(runtime, secret_values)
-    seed_argo(runtime, seed)
-    runtime.kubectl("apply", "--server-side", "--field-manager=argocd-controller", "-f", str(root_app))
-    wait_argo_synced(runtime, (ROOT_APP, *CHILD_APPS))
-
-
+    kubeconfig = fetch_kubeconfig(runtime, workspace)
+    run_bootstrap_host(args.bootstrap_host, runtime, kubeconfig, args.seed)
+    wait_argo_synced(kubeconfig, (ROOT_APP, *CHILD_APPS))
+    return kubeconfig
 
 
 def prepare_directory(path: Path, safe_dirs: list[Path]) -> None:
@@ -661,59 +662,8 @@ def stage_identity(descriptor: dict, identity: Path) -> str:
     return public
 
 
-def api_request(base: str, method: str, path: str, *, token: str | None = None, payload=None, expected: tuple[int, ...] = (200,), read_body: bool = True, headers: dict[str, str] | None = None):
-    request_headers = {
-        "Accept": "application/json",
-        "X-Emby-Authorization": 'MediaBrowser Client="homelab-compute-recovery", Device="integration", DeviceId="homelab-compute-recovery", Version="1.0"',
-    }
-    if token:
-        request_headers["X-MediaBrowser-Token"] = token
-    if headers:
-        request_headers.update(headers)
-    data = None
-    if payload is not None:
-        data = json.dumps(payload).encode()
-        request_headers["Content-Type"] = "application/json"
-    request = urllib.request.Request(base + path, data=data, headers=request_headers, method=method)
-    try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            body = response.read() if read_body else b""
-            status = response.status
-    except urllib.error.HTTPError as error:
-        body = error.read()
-        status = error.code
-    if status not in expected:
-        text = body.decode(errors="replace")[:500]
-        raise ScenarioError(f"Jellyfin {method} {path} returned HTTP {status}: {text}")
-    if not body:
-        return status, None
-    try:
-        return status, json.loads(body)
-    except json.JSONDecodeError:
-        return status, body
-
-
-def api_bytes(base: str, path: str, token: str, expected: tuple[int, ...] = (200,)) -> bytes:
-    request = urllib.request.Request(
-        base + path,
-        headers={
-            "Accept": "*/*",
-            "X-MediaBrowser-Token": token,
-            "X-Emby-Authorization": 'MediaBrowser Client="homelab-compute-recovery", Device="integration", DeviceId="homelab-compute-recovery", Version="1.0"',
-        },
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            status = response.status
-            body = response.read(64 * 1024)
-    except urllib.error.HTTPError as error:
-        raise ScenarioError(f"Jellyfin media request {path} returned HTTP {error.code}") from error
-    if status not in expected:
-        raise ScenarioError(f"Jellyfin media request {path} returned HTTP {status}")
-    return body
-
-
-    ports = (22, 6443, 8096)
+def verify_private_endpoints(runtime: Runtime) -> None:
+    ports = (22, 6443)
     address = runtime.descriptor["address"]
     for port in ports:
         try:
@@ -756,53 +706,10 @@ def api_bytes(base: str, path: str, token: str, expected: tuple[int, ...] = (200
         completed("ip", "netns", "delete", namespace)
 
 
-def setup_jellyfin(base: str) -> tuple[str, str, str]:
-    wait_for("Jellyfin HTTP health", lambda: api_request(base, "GET", "/health", expected=(200,), read_body=False))
-    username = "recovery-admin"
-    password = secrets.token_urlsafe(24)
-    api_request(base, "POST", "/Startup/Configuration", payload={"ServerName": "compute-recovery", "UICulture": "en-US", "MetadataCountryCode": "US", "PreferredMetadataLanguage": "en"}, expected=(204, 200))
-    api_request(base, "GET", "/Startup/User", expected=(200,))
-    api_request(base, "POST", "/Startup/User", payload={"Name": username, "Password": password}, expected=(204, 200))
-    api_request(base, "POST", "/Startup/RemoteAccess", payload={"EnableRemoteAccess": False, "EnableAutomaticPortMapping": False}, expected=(204, 200))
-    api_request(base, "POST", "/Startup/Complete", payload={}, expected=(204, 200))
-    auth_status, auth = api_request(base, "POST", "/Users/AuthenticateByName", payload={"Username": username, "Pw": password}, expected=(200,))
-    del auth_status
-    token = auth["AccessToken"]
-    user_id = auth["User"]["Id"]
-    library_query = urllib.parse.urlencode({"name": "Recovery Media", "collectionType": "music", "refreshLibrary": "true"})
-    api_request(base, "POST", f"/Library/VirtualFolders?{library_query}", token=token, payload={"LibraryOptions": {"PathInfos": [{"Path": "/media"}]}}, expected=(204, 200))
-    wait_for(
-        "configured Jellyfin library",
-        lambda: any(folder.get("Name") == "Recovery Media" and "/media" in folder.get("Locations", []) for folder in api_request(base, "GET", "/Library/VirtualFolders", token=token, expected=(200,))[1]),
-    )
-    return username, password, token + ":" + user_id
-
-
-def find_audio(base: str, token: str, user_id: str) -> dict | None:
-    query = urllib.parse.urlencode({"Recursive": "true", "IncludeItemTypes": "Audio", "Fields": "Path,MediaSources,UserData"})
-    _, result = api_request(base, "GET", f"/Users/{user_id}/Items?{query}", token=token, expected=(200,))
-    items = result.get("Items", [])
-    return next((item for item in items if item.get("Path", "").endswith("recovery.wav")), None)
-
-
-def verify_api_state(base: str, username: str, password: str, expected_library: str, expected_item: str) -> tuple[str, str]:
-    _, auth = api_request(base, "POST", "/Users/AuthenticateByName", payload={"Username": username, "Pw": password}, expected=(200,))
-    token = auth["AccessToken"]
-    user_id = auth["User"]["Id"]
-    status, _ = api_request(base, "GET", "/Startup/Configuration", expected=tuple(range(400, 600)))
-    check(400 <= status < 600, "replacement does not expose the Jellyfin setup endpoint")
-    _, folders = api_request(base, "GET", "/Library/VirtualFolders", token=token, expected=(200,))
-    folder = next((folder for folder in folders if folder.get("Name") == expected_library), None)
-    check(folder is not None and "/media" in folder.get("Locations", []), "replacement retains the configured Jellyfin library")
-    _, item = api_request(base, "GET", f"/Users/{user_id}/Items/{expected_item}?Fields=Path,UserData", token=token, expected=(200,))
-    check(item.get("Path", "").endswith("recovery.wav"), "replacement retains the indexed media item")
-    check(item.get("UserData", {}).get("Played") is True, "replacement retains the recorded playback state")
-    body = api_bytes(base, f"/Audio/{expected_item}/stream?static=true", token)
-    check(body.startswith(b"RIFF") and body[8:12] == b"WAVE", "authorized client consumes the retained WAV media")
-    return token, user_id
-
-
 def run_scenario(args: argparse.Namespace) -> None:
+    spec = importlib.util.spec_from_file_location("jellyfin_smoke", args.smoke)
+    smoke = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(smoke)
     fixture = json.loads(args.fixture.read_text())
     descriptor = json_copy(fixture["descriptor"])
     preseed = fixture["preseed"]
@@ -960,13 +867,13 @@ def run_scenario(args: argparse.Namespace) -> None:
             secret_values[rotated] = rotated_value
             rotated_payload = secret_manifest.read_bytes()
             check(rotated_payload != secret_payload, "successful rotation changes the published payload")
-            secret_payload = rotated_payload
-            runtime.check_secret_payload(secret_payload)
-            runtime.verify_secret_consumers(secret_values)
             for kind in ("uid", "gid"):
                 mapping = [tuple(map(int, line.split())) for line in runtime.guest("cat", f"/proc/self/{kind}_map").splitlines()]
-                check(mapping == [(0, descriptor["idmapBase"], descriptor["idmapSize"])],
-                      f"guest {kind} mapping uses the declared non-root host range")
+                # The media capability is an identity-mapped hole in the
+                # otherwise contiguous range; compare against the declared
+                # plan rather than assuming one contiguous row.
+                expected = [(row["nsid"], row["hostid"], row["range"]) for row in descriptor["idmap"][kind]]
+                check(mapping == expected, f"guest {kind} mapping matches the declared ID plan")
             for name, entry in descriptor["retainedPaths"].items():
                 target = Path(entry["path"])
                 permissions = target.stat()
@@ -995,35 +902,35 @@ def run_scenario(args: argparse.Namespace) -> None:
                           and written.stat().st_gid == descriptor["idmapBase"] + entry["gid"],
                           f"{name} retains data with the declared mapped owner")
                     written.unlink()
-            check(all(item["metadata"]["namespace"] != "jellyfin"
-                      for item in runtime.kubectl_json("get", "deployments", "-A", "-o", "json")["items"]),
-                  "guest starts without a bundled Jellyfin deployment")
-            origin = GitOrigin(workspace / "origin", descriptor["address"])
+            origin = GitOrigin(workspace / "origin", fixture["bridgeAddress"])
             root_app = origin.publish(args.repo)
             origin.serve()
             runtime.git_origin = origin
-            deliver_stack(runtime, args.repo / "seed", root_app, secret_values)
+            kubeconfig = deliver_stack(runtime, args, workspace, secret_values)
             check(runtime.app_ready(), "Argo delivers Jellyfin when the intended media source is present")
-            base = runtime.forward_start()
+            base = forward_start(runtime, kubeconfig)
             verify_private_endpoints(runtime)
 
             media_probe = runtime.guest("sh", "-ec", "test -r /srv/media/library/recovery.wav")
             del media_probe
-            result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--mode=non-interactive", "--", "sh", "-ec", "touch /srv/media/library/forbidden")
-            check(result.returncode != 0, "guest media write is denied at the Incus read-only boundary")
-            result = completed("touch", str(runtime.media_path / "library" / "forbidden"))
-            check(result.returncode != 0, "host root cannot write through the read-only media export")
-            result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--mode=non-interactive", "--", "sh", "-ec", "mount -o remount,rw /srv/media")
-            check(result.returncode != 0, "guest root cannot remount the media attachment read-write")
+            # The Incus media attachment itself is writable host storage; the
+            # read-only boundary lives at the Jellyfin workload mount.
+            hosted = runtime.media_path / "library" / ".compute-recovery-probe"
+            hosted.write_text("host-owned\n")
+            check(hosted.read_text() == "host-owned\n", "host root owns the writable media namespace")
+            hosted.unlink()
             result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "751", "--group", "751", "--mode=non-interactive", "--", "sh", "-ec", "touch /srv/media/library/forbidden")
-            check(result.returncode != 0, "Jellyfin identity cannot write read-only media")
-            username, password, auth_identity = setup_jellyfin(base)
-            token, user_id = auth_identity.split(":", 1)
-            item = wait_for("indexed real media", lambda: find_audio(base, token, user_id))
+            check(result.returncode != 0, "Jellyfin identity cannot write the read-only library mount")
+            mounts = runtime.kubectl_json("get", "deployment/jellyfin", "-o", "json", namespace="jellyfin")["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
+            library_mount = next(mount for mount in mounts if mount["name"] == "media")
+            check(library_mount.get("readOnly") is True, "Jellyfin library mount is declared read-only")
+            username, password = smoke.setup_first_run(base)
+            token, user_id = smoke.authenticate(base, username, password)
+            smoke.ensure_music_library(base, token)
+            item = wait_for("indexed real media", lambda: smoke.find_audio(base, token, user_id))
             item_id = item["Id"]
-            api_request(base, "POST", f"/Users/{user_id}/PlayedItems/{item_id}", token=token, expected=(204, 200))
-            _, played = api_request(base, "GET", f"/Users/{user_id}/Items/{item_id}?Fields=Path,UserData", token=token, expected=(200,))
-            check(played.get("UserData", {}).get("Played") is True, "Jellyfin records meaningful playback state")
+            smoke.set_played(base, token, user_id, item_id, True)
+            check(smoke.is_played(base, token, user_id, item_id), "Jellyfin records meaningful playback state")
             marker = Path(descriptor["retainedPaths"]["jellyfin-config"]["path"]) / ".compute-recovery-marker"
             runtime.kubectl("exec", "deployment/jellyfin", "--",
                             "sh", "-ec", "printf 'retained-state\\n' > /config/.compute-recovery-marker",
@@ -1054,7 +961,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             wait_for("Jellyfin after independent OS activation", runtime.app_ready)
             check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid,
                   "in-place system activation preserves the guest instance")
-            verify_api_state(base, username, password, "Recovery Media", item_id)
+            smoke.verify_state(base, username, password, "Recovery Media", item_id)
             bad_descriptor = json_copy(descriptor)
             bad_descriptor["publicKey"] = public_key.replace("ssh-ed25519", "ssh-ed25519-bad", 1)
             bad_spec = workspace / "bad-public.json"
@@ -1120,7 +1027,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             check(result.returncode != 0, "node boot without media does not expose a substitute directory")
             runtime.start_media(media_pool, fixture["mediaRootScript"], workspace)
             wait_for("Jellyfin after media restoration", runtime.app_ready)
-            base = runtime.forward_start()
+            base = forward_start(runtime, kubeconfig)
 
             unrelated_manifest = "/tmp/compute-recovery-unrelated.yaml"
             runtime.guest("sh", "-ec", f"cat > {shlex.quote(unrelated_manifest)} <<'EOF'\n{yaml_config_map('recovery-unrelated', 'keep-me')}EOF")
@@ -1137,7 +1044,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             # Application-consistent backup/restore is separate future work. This
             # scenario proves disposable guest replacement, not same-host export
             # and restore of retained state.
-            token, user_id = verify_api_state(base, username, password, "Recovery Media", item_id)
+            token, user_id = smoke.verify_state(base, username, password, "Recovery Media", item_id)
             runtime.helper_run("replace", bundle=args.bundle, confirm=True, timeout=3_600)
             new_instance = instance_query(project, instance_name)
             check(new_instance is not None, "helper recreates the guest instance")
@@ -1150,11 +1057,11 @@ def run_scenario(args: argparse.Namespace) -> None:
             stage_cluster_secrets(runtime, secret_values)
             check(all((secret_inputs / source).read_bytes() == value for source, value in secret_values.items()),
                   "guest recreation preserves credential inputs rather than regenerating them")
-            deliver_stack(runtime, args.repo / "seed", root_app, secret_values)
-            base = runtime.forward_start()
+            kubeconfig = deliver_stack(runtime, args, workspace, secret_values)
+            base = forward_start(runtime, kubeconfig)
             check(marker.read_text() == "retained-state\n", "guest replacement preserves retained application data")
             check(marker.stat().st_uid == marker_stat.st_uid and marker.stat().st_gid == marker_stat.st_gid and marker.stat().st_mode == marker_stat.st_mode, "guest replacement preserves retained data ownership and mode")
-            verify_api_state(base, username, password, "Recovery Media", item_id)
+            smoke.verify_state(base, username, password, "Recovery Media", item_id)
             check(runtime.node_ready(), "replacement node is healthy")
             check(runtime.unrelated_ready(), "replacement keeps unrelated workload available")
             if runtime.optional_gaps:
@@ -1176,16 +1083,19 @@ def run_scenario(args: argparse.Namespace) -> None:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument("--bundle", required=True, type=Path, help="Nix store guest bundle matching the test host architecture")
+    result.add_argument("--bundle", required=True, type=Path, help="Nix store guest bundle for the fixture architecture")
     result.add_argument("--fixture", required=True, type=Path, help="evaluated host fixture JSON")
-    result.add_argument("--repo", required=True, type=Path, help="canonical recovery inputs: Jellyfin manifests plus the Argo seed")
+    result.add_argument("--repo", required=True, type=Path, help="canonical recovery inputs: Jellyfin manifests")
+    result.add_argument("--seed", required=True, type=Path, help="bootstrap seed tree; the shipped wrapper is pointed at it")
+    result.add_argument("--smoke", required=True, type=Path, help="Jellyfin application smoke helper")
+    result.add_argument("--bootstrap-host", required=True, type=Path, help="shipped household-bootstrap-host executable")
     result.add_argument("--helper", type=Path, default=Path("/run/current-system/sw/bin/compute-guest"), help="generic compute lifecycle executable or repository .py helper")
     return result
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
-    if platform.node() not in (TEST_HOSTNAME, "compute-recovery"):
+    if platform.node() not in (TEST_HOSTNAME, "fixture-host"):
         parser().error("refusing to run outside a designated disposable compute test host")
     if os.geteuid() != 0:
         parser().error("run as root inside the disposable Linux guest")

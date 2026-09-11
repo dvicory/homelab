@@ -9,6 +9,9 @@
 # the declared access entries to the root together with their default entries,
 # which is what makes newly created content inherit them. Neither rewrites
 # anything that already exists, so routine activation never becomes a migration.
+#
+# ponytail: arbitrary named-access ACL model predates the semantic-namespace
+# policy; redesign before implementing /srv/files or /srv/footage.
 {
   den,
   lib,
@@ -98,7 +101,6 @@ in
           [
             compute.stateRoot
             compute.identityPath
-            compute.recoveryPath
           ]
           ++ map (entry: entry.path) (builtins.attrValues (compute.retainedPaths or { }))
         );

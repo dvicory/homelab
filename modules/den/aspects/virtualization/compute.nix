@@ -25,11 +25,11 @@ let
   };
   deviceType = types.submodule {
     freeformType = types.attrsOf types.anything;
-        options.requiredPath = mkOption {
-          type = types.nullOr requiredPathType;
-          default = null;
-          description = "Host ownership metadata for a required source-backed disk device.";
-        };
+    options.requiredPath = mkOption {
+      type = types.nullOr requiredPathType;
+      default = null;
+      description = "Host ownership metadata for a required source-backed disk device.";
+    };
   };
 in
 {
@@ -105,10 +105,6 @@ in
           );
           description = "Retained host directories and their guest ownership and attachment boundary.";
         };
-        recoveryPath = mkOption {
-          type = types.str;
-          description = "Persistent application recovery directory on the host.";
-        };
         identityPath = mkOption {
           type = types.str;
           description = "Persistent guest identity directory on the host.";
@@ -135,12 +131,6 @@ in
           directories = [ "/var/lib/incus-storage-pools/${cfg.pool}" ];
           user = "root";
           group = "root";
-        }
-        {
-          directories = [ cfg.recoveryPath ];
-          user = "root";
-          group = "root";
-          mode = "0750";
         }
         {
           directories = [ cfg.identityPath ];
@@ -211,9 +201,7 @@ in
           ) capabilityEntries
         );
         capabilityGids = lib.sort builtins.lessThan (
-          map (entry: entry.group.gid) (
-            builtins.filter (entry: entry.group != null) capabilityEntries
-          )
+          map (entry: entry.group.gid) (builtins.filter (entry: entry.group != null) capabilityEntries)
         );
         capabilityGidsUnique = capabilityGids == lib.unique capabilityGids;
         capabilityNamesUnique = cfg.storageCapabilities == lib.unique cfg.storageCapabilities;
@@ -232,14 +220,13 @@ in
             "Declared storage capabilities are not fleet groups: ${lib.concatStringsSep ", " unknownCapabilities}";
           assert lib.assertMsg (invalidCapabilities == [ ])
             "Storage capabilities must be POSIX groups with a GID between 1 and idmapSize: ${lib.concatStringsSep ", " invalidCapabilities}";
-          assert lib.assertMsg capabilityNamesUnique
-            "Storage capability names must be unique.";
-          assert lib.assertMsg capabilityGidsUnique
-            "Storage capabilities resolve to the same GID.";
+          assert lib.assertMsg capabilityNamesUnique "Storage capability names must be unique.";
+          assert lib.assertMsg capabilityGidsUnique "Storage capabilities resolve to the same GID.";
           assert lib.assertMsg (overlappingCapabilities == [ ])
             "A capability host ID overlaps the ordinary subordinate range: ${lib.concatStringsSep ", " (map toString overlappingCapabilities)}";
-          assert lib.assertMsg (!(cfg.config ? "raw.idmap"))
-            "raw.idmap is derived from storageCapabilities and must not be declared directly on the instance";
+          assert lib.assertMsg (
+            !(cfg.config ? "raw.idmap")
+          ) "raw.idmap is derived from storageCapabilities and must not be declared directly on the instance";
           cfg.config // { "raw.idmap" = idmapPlan.rawIdmap; };
         baseDevices = lib.mapAttrs (_: entry: removeAttrs entry [ "requiredPath" ]) cfg.devices;
         requiredDeviceEntries = lib.filterAttrs (
@@ -501,13 +488,6 @@ in
           }) cfg.retainedPaths
           ++ [
             {
-              path = cfg.recoveryPath;
-              uid = 0;
-              gid = 0;
-              mode = "0750";
-              readOnly = false;
-            }
-            {
               path = cfg.identityPath;
               uid = cfg.idmapBase;
               gid = cfg.idmapBase;
@@ -536,7 +516,6 @@ in
             idmapSize
             retainedPaths
             runtimeSecrets
-            recoveryPath
             identityPath
             ;
           # The profile is rendered from the effective config, so the descriptor

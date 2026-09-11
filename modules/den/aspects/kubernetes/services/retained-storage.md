@@ -52,8 +52,8 @@ The following captures **reattachment metadata, not a data backup**. Refresh it 
 ```sh
 set -eu
 umask 077
-recovery=/var/lib/homelab/compute-1/recovery/grafana-helm-reattach
-mkdir -m 0700 "$recovery" # Use a fresh directory; do not overwrite an older set.
+recovery=/var/lib/homelab/compute-1/manual/grafana-helm-reattach
+mkdir -p -m 0700 "$recovery" # Use a fresh directory; do not overwrite an older set.
 kubectl -n monitoring get pvc grafana-example -o json > "$recovery/pvc-original.json"
 volume=$(jq -er '.spec.volumeName' "$recovery/pvc-original.json")
 kubectl get pv "$volume" -o json > "$recovery/pv-original.json"
@@ -95,7 +95,7 @@ management path; the old cluster's CA/client material is stale. Preserve the
 configured node hostname. A different host/node is a deliberate storage-placement
 migration, not this procedure.
 
-1. Bootstrap the matching static platform resources and required namespaces without live Git or pruning. Reestablish host-staged runtime Secrets; verify `monitoring/grafana-admin` exists. Do not install the ordinary Helm release yet.
+1. Seed Argo on the replacement guest with `household-bootstrap-host` and reestablish host-staged runtime Secrets; verify `monitoring/grafana-admin` exists. Do not install the ordinary Helm release yet, and keep Argo from owning its objects.
 2. Verify the saved PV's host backing directory and existing application files are present on the intended retained mount. **Do not create an empty substitute or clear an unrelated existing binding.** Stop if this is not the recorded storage.
 3. On the fresh cluster, restore the original binding and Helm records before starting the application:
 
@@ -118,6 +118,7 @@ Reopen private access, authenticate with the same credential and inspect the ori
 ## Limits
 
 - Retention is not backup. This procedure does not survive loss/corruption of the host data or prove an independent backup destination.
+- After total Kubernetes datastore loss, dynamically provisioned `retained-local` volumes reattach only through metadata captured by this procedure beforehand. There is no deterministic in-cluster recovery mechanism yet; treat captures as perishable prerequisites, not backups.
 - PVC capacity requests are not enforced filesystem quotas; expansion and cross-node failover are not provided.
 - Do not migrate existing media volumes or permissions through this procedure. Shared-media access requires separate writer/reader verification.
 - Production deployment, credentials, public access and hardware validation remain separate gates.

@@ -54,7 +54,7 @@ This modifies ADR-0002's delivery scope in one bounded respect: static bootstrap
 
 - No `household-recovery` export/restore/resume interface exists in the tree.
 - Static bootstrap artifacts contain only the Argo seed plus the root Application handoff.
-- The automated recovery test replaces the guest, observes a fresh cluster identity, and verifies retained Jellyfin state through Argo reconciliation.
+- Acceptance criterion (not yet evidenced): the `prod-home-replacement` test replaces the guest, observes a fresh cluster identity, and verifies retained Jellyfin state through Argo reconciliation on a successful run.
 
 ## Pros and Cons of the Options
 

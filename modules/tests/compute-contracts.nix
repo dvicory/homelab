@@ -20,7 +20,6 @@ let
     ) compute.devices
   );
   descriptor = builtins.fromJSON host.environment.etc."homelab/compute.json".text;
-  recovery = lib.findFirst (entry: entry.path == compute.recoveryPath) null descriptor.requiredPaths;
   idRange = "${toString compute.idmapBase}-${toString (compute.idmapBase + compute.idmapSize - 1)}";
   expectedDeviceNames = lib.sort builtins.lessThan (
     builtins.attrNames compute.devices
@@ -52,31 +51,39 @@ let
       # the profile is rendered from the effective config the descriptor carries
       && profile.config."raw.idmap" == descriptor.config."raw.idmap"
       # UID remains one contiguous subordinate range
-      && descriptor.idmap.uid == [
-        {
-          nsid = 0;
-          hostid = compute.idmapBase;
-          range = compute.idmapSize;
-        }
-      ]
+      &&
+        descriptor.idmap.uid == [
+          {
+            nsid = 0;
+            hostid = compute.idmapBase;
+            range = compute.idmapSize;
+          }
+        ]
       # GID covers the whole guest range, interrupted only by declared capabilities
       && (builtins.foldl' (total: row: total + row.range) 0 descriptor.idmap.gid) == compute.idmapSize
-      && builtins.length (builtins.filter (row: row.nsid == row.hostid && row.range == 1) descriptor.idmap.gid)
-      == builtins.length descriptor.capabilityGids
+      &&
+        builtins.length (
+          builtins.filter (row: row.nsid == row.hostid && row.range == 1) descriptor.idmap.gid
+        ) == builtins.length descriptor.capabilityGids
       # every declared capability is identity-mapped
-      && builtins.all (gid: builtins.elem {
-        nsid = gid;
-        hostid = gid;
-        range = 1;
-      } descriptor.idmap.gid) descriptor.capabilityGids
+      && builtins.all (
+        gid:
+        builtins.elem {
+          nsid = gid;
+          hostid = gid;
+          range = 1;
+        } descriptor.idmap.gid
+      ) descriptor.capabilityGids
       # project allowances are exactly the host IDs the generated map uses
-      && project."restricted.idmap.gid" == lib.concatStringsSep "," (
-        map (row: "${toString row.hostid}-${toString (row.hostid + row.range - 1)}") descriptor.idmap.gid
-      )
+      &&
+        project."restricted.idmap.gid" == lib.concatStringsSep "," (
+          map (row: "${toString row.hostid}-${toString (row.hostid + row.range - 1)}") descriptor.idmap.gid
+        )
       && project."restricted.idmap.uid" == idRange
       # host authorization for each capability is one narrow ID, not a band
       && builtins.all (
-        gid: builtins.elem {
+        gid:
+        builtins.elem {
           startGid = gid;
           count = 1;
         } host.users.users.root.subGidRanges
@@ -109,10 +116,9 @@ let
             ++ lib.optional (compute.runtimeSecrets != { }) "/run/homelab-compute/secrets"
           )
         )
-      && recovery.uid == 0
-      && recovery.gid == 0
-      && recovery.mode == "0750"
-      && !recovery.readOnly
+      && devices.media.required == "false"
+      && devices.media.source == "/srv/media"
+      && builtins.all (entry: entry.path != "/srv/media") descriptor.requiredPaths
       && builtins.all (kind: project."restricted.devices.${kind}" == "block") [
         "gpu"
         "infiniband"

@@ -150,16 +150,17 @@ workloads.
 - **THEN** the dependent workload fails or stops, while host management, the
   compute environment, and unrelated workloads continue to operate
 
-### Requirement: Managed roots declare ownership and inherited access
+### Requirement: Managed roots declare ownership
 
-A storage root created by configuration SHALL carry declared ownership, mode,
-and inherited default permissions, so that content created inside it later
-receives the intended access without a further corrective step.
+A storage root created by configuration SHALL carry declared owner, group, and
+mode. Inherited default access entries are optional: a root declares them
+only when its sharing policy requires that content created inside it later
+receives access beyond owner/group/mode without a further corrective step.
 
 #### Scenario: A new entry appears inside a shared root
 
 - **WHEN** a participating identity creates a file or directory inside a
-  managed shared root
+  managed shared root whose sharing policy declares inherited default access
 - **THEN** the entry carries the declared group and permissions without an
   additional operation being run afterwards
 

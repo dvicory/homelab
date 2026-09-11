@@ -41,7 +41,6 @@ in
               }
             ) clusterResources.retainedPaths;
             runtimeSecrets = clusterResources.runtimeSecrets;
-            recoveryPath = "/var/lib/homelab/compute-1/recovery";
             storageCapabilities = [ "media" ];
             config = {
               "boot.autostart" = "true";
@@ -72,18 +71,16 @@ in
               media = {
                 path = "/srv/media";
                 propagation = "rslave";
-                required = "true";
-                # The host's one semantic namespace, presented to the guest as
-                # itself and writable: what authorizes a write is the `media`
-                # capability, not the absence of a mount option.
+                # Application-only storage must not gate the compute
+                # environment: Incus skips this device when the source is
+                # absent, and lifecycle preflight does not require it. The
+                # unmounted pool root stays mode 0000, so an absent pool can
+                # never present a writable substitute directory; workload
+                # mounts fail closed until the pool (re)appears, and rslave
+                # propagation carries a restored pool into the running guest.
+                required = "false";
                 source = "/srv/media";
                 type = "disk";
-                requiredPath = {
-                  uid = 0;
-                  gid = 0;
-                  mode = "0755";
-                  readOnly = false;
-                };
               };
               identity = {
                 path = "/srv/identity";
@@ -100,6 +97,11 @@ in
           "/mnt/storage-clear/media1"
           "/mnt/storage-clear/media2"
           "/mnt/storage-clear/media3"
+        ];
+        depends = [
+          "gocryptfs-media1.service"
+          "gocryptfs-media2.service"
+          "gocryptfs-media3.service"
         ];
       };
       services.hermes.agent = {
@@ -185,6 +187,9 @@ in
             device,
             passfile,
           }:
+          let
+            backingUnit = lib.replaceStrings [ "/" ] [ "-" ] (lib.removePrefix "/" device) + ".mount";
+          in
           {
             fileSystems.${device} = {
               device = "/dev/disk/by-label/${baseNameOf device}";
@@ -192,13 +197,20 @@ in
               options = [ "noatime" ];
             };
 
+            # A bare branch mountpoint must never look usable: tmpfiles owns
+            # it root:root 0000, and only a successful gocryptfs mount makes
+            # it accessible. The pool's branch guard then refuses unmounted
+            # branches instead of serving a smaller pool.
+            systemd.tmpfiles.rules = [ "d ${name} 0000 root root -" ];
+
             systemd.services."gocryptfs-${baseNameOf name}" = {
               description = "gocryptfs mount ${name}";
               wantedBy = [ "multi-user.target" ];
+              after = [ backingUnit ];
+              bindsTo = [ backingUnit ];
               reloadIfChanged = true;
               restartIfChanged = false;
               stopIfChanged = false;
-
               serviceConfig = {
                 Type = "oneshot";
                 RemainAfterExit = true;
