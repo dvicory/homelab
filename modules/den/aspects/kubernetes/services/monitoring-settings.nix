@@ -17,10 +17,4 @@
     description = "Runtime Secret names mounted at /etc/alertmanager/secrets for native SMTP/Telegram *_file references in the operator-supplied Alertmanager config.";
   };
 
-
-  den.aspects.kubernetes.services.monitoring.settings.recoveryMaxAgeSeconds = lib.mkOption {
-    type = lib.types.ints.positive;
-    default = 172800;
-    description = "Maximum age of the complete household recovery point published by the standard node-exporter textfile collector.";
-  };
 }

@@ -54,11 +54,6 @@ in
               modules = modules ++ [
                 (inputs.nixpkgs + "/nixos/modules/misc/assertions.nix")
                 {
-                  options.preCaptureChecks = lib.mkOption {
-                    type = lib.types.lines;
-                    default = "";
-                    description = "Service-owned checks run with k() access before cold capture stops writers.";
-                  };
                   options.retainedPaths = lib.mkOption {
                     default = { };
                     type = lib.types.attrsOf (

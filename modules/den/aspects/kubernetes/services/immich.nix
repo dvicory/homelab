@@ -2,12 +2,6 @@
 {
   den.aspects.kubernetes.services.immich = {
     compute-resources = {
-      preCaptureChecks = ''
-        k -n immich exec -i deployment/immich-postgres -- sh -es <<'DATABASE'
-        export PGPASSWORD="$POSTGRES_PASSWORD"
-        test "$(psql -U immich -d immich -Atc "SELECT count(*) FROM pg_tablespace WHERE spcname NOT IN ('pg_default','pg_global')")" = 0
-        DATABASE
-      '';
       retainedPaths = {
         immich-library = {
           uid = 1000;

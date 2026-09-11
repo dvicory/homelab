@@ -7,13 +7,6 @@ let
     name = "jellyfin/jellyfin";
     version = "10.11.11";
     digest = "sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db";
-    # Archive hashes pin the bytes produced when this index is copied for the
-  # builder platform. They verify an offline recovery fixture; they do not
-  # change the deployed image identity.
-    fixtureArchiveHashes = {
-      x86_64-linux = "sha256-HnH4Hr0t4MSWKdYAW5fDFX6juRHg0sdLP0e/O7Gmfwg=";
-      aarch64-linux = "sha256-3Hfg8vk0UOVQ19zRglciKO9aWMB0tAv1l+kkgXDDb5U=";
-    };
   };
   retain = {
     "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
@@ -261,25 +254,4 @@ in
       };
     };
 
-  # Optional offline image input for recovery fixtures; application rendering
-  # and release ownership remain in Nixidy, not a parallel manifest package.
-  perSystem =
-    { pkgs, system, ... }:
-    lib.optionalAttrs (lib.hasSuffix "-linux" system) {
-      packages.jellyfin-image =
-        let
-          tag = "${jellyfinImage.version}-fixture";
-        in
-        (pkgs.dockerTools.pullImage {
-          imageName = jellyfinImage.name;
-          imageDigest = jellyfinImage.digest;
-          hash = jellyfinImage.fixtureArchiveHashes.${system};
-          finalImageTag = tag;
-        }).overrideAttrs
-          (old: {
-            passthru = (old.passthru or { }) // {
-              imageReference = "${jellyfinImage.name}:${tag}";
-            };
-          });
-    };
 }

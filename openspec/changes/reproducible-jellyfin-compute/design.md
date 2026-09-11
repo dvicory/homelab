@@ -48,6 +48,11 @@ do not establish contracts or supply a configuration bundle to transplant.
   manifests as an independent Nix artifact through native K3s AddOns. No registry,
   Git server, secret operator, or GitOps controller inside the failed domain may
   be required to recover it. Pins still require retained artifact closures.
+  **Superseded by `disposable-control-plane-recovery` / ADR-0008:** recovery now
+  replaces the guest, seeds Argo, and reconciles canonical Git manifests; the
+  control plane is disposable and registry/Git access during rebuild is
+  accepted. Offline bundled-image recovery is test scaffolding at most, never
+  the production path.
 - Keep retained storage/namespace separate from disposable workload manifests.
   Native AddOn pruning applies to updated manifests; deleting a file alone is
   not resource retirement. Do not give a second controller the same objects.

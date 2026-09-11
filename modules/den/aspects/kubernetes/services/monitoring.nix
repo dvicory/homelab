@@ -120,26 +120,6 @@
         labels.severity = "warning";
         annotations = { inherit summary description; };
       };
-      recoveryRules = [
-        (alert "RecoveryMetricsMissing"
-          ''absent(homelab_recovery_last_attempt_success{recovery_set="household"}) or absent(homelab_recovery_last_success_timestamp_seconds{recovery_set="household"})''
-          "15m"
-          "Recovery reporting missing: household"
-          "Check the recovery command, its atomic textfile publication and the node exporter scrape target. Missing reporting is not a successful recovery point."
-        )
-        (alert "RecoveryPointStale"
-          ''time() - homelab_recovery_last_success_timestamp_seconds{recovery_set="household"} > ${toString cfg.recoveryMaxAgeSeconds}''
-          "15m"
-          "No recent complete recovery point: household"
-          "Inspect the last export and retained destination, then complete a new application-consistent export. Same-host exports are not independent backups."
-        )
-        (alert "RecoveryAttemptFailed"
-          ''homelab_recovery_last_attempt_success{recovery_set="household"} == 0''
-          "1m"
-          "Recovery attempt failed: household"
-          "Inspect the recovery command output and destination capacity; correct the failure and rerun the complete recovery set."
-        )
-      ];
     in
     assert lib.assertMsg (
       route.namespace == "monitoring"
@@ -396,8 +376,7 @@
                       "Node filesystem low on space: {{ $labels.hostname }} {{ $labels.mountpoint }}"
                       "Check shared filesystem usage and recovery destination capacity; local PV capacity declarations are not filesystem quotas."
                     )
-                  ]
-                  ++ recoveryRules;
+                  ];
                 }
               ];
             };

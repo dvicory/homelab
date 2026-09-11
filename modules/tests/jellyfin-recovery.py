@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-"""Run the disposable Incus -> NixOS K3s -> Jellyfin recovery scenario.
+"""Run the disposable Incus -> NixOS K3s -> Argo -> Jellyfin recovery scenario.
 
-This is intentionally a real-runtime test.  It never substitutes a fake Incus,
-Kubernetes, or Jellyfin API. The fixture is produced from evaluated host
+This is intentionally a real-runtime test. It never substitutes a fake Incus,
+Kubernetes, Argo, or Jellyfin API. The fixture is produced from evaluated host
 configuration; execution is restricted to the designated disposable test VMs.
+
+Recovery follows the supported control flow: replace the guest, stage secrets,
+seed Argo from canonical manifests, apply a test-local root Application that
+points at a disposable Git origin holding verbatim canonical Jellyfin
+manifests, and let Argo reconcile. K3s pulls the pinned registry images over
+the network; no image fixture is preloaded and no manifest is applied by hand.
 
   sudo modules/tests/jellyfin-recovery.py \
     --bundle /nix/store/...-compute-1-bundle \
     --fixture /tmp/compute-fixture.json \
-    --application /nix/store/...-nixidy-environment \
-    --image /nix/store/...-jellyfin-image.tar \
+    --repo /nix/store/...-jellyfin-recovery-repo \
     --helper pkgs/by-name/compute-guest/compute-guest.py
 """
 
@@ -99,7 +104,7 @@ def json_copy(value):
     return copy.deepcopy(value)
 
 
-def descriptor_paths(descriptor: dict, mounts: list[dict]) -> list[Path]:
+def descriptor_paths(descriptor: dict) -> list[Path]:
     paths = [Path(entry["path"]) for entry in descriptor["requiredPaths"]]
     paths.extend(Path(entry["guestPath"]) for entry in descriptor["retainedPaths"].values())
     for key in ("recoveryPath", "identityPath", "poolPath"):
@@ -111,17 +116,13 @@ def descriptor_paths(descriptor: dict, mounts: list[dict]) -> list[Path]:
             value = device.get(key)
             if isinstance(value, str) and value.startswith("/"):
                 paths.append(Path(value))
-    for mount in mounts:
-        for key in ("what", "where"):
-            value = mount.get(key)
-            if isinstance(value, str) and value.startswith("/"):
-                paths.append(Path(value))
     return paths
 
 
-def ensure_absolute_paths(descriptor: dict, mounts: list[dict]) -> None:
-    for path in descriptor_paths(descriptor, mounts):
+def ensure_absolute_paths(descriptor: dict) -> None:
+    for path in descriptor_paths(descriptor):
         check(path.is_absolute(), f"fixture path is absolute: {path}")
+
 
 
 def instance_query(project: str, name: str) -> dict | None:
@@ -188,8 +189,6 @@ def preseed_conflicts(preseed: dict, descriptor: dict) -> list[str]:
     return missing
 
 
-def systemd_escape(path: str) -> str:
-    return run("systemd-escape", "--path", "--suffix=mount", path)
 
 
 def yaml_config_map(name: str, value: str) -> str:
@@ -228,17 +227,17 @@ class Runtime:
         self.project = descriptor["project"]
         self.instance = descriptor["instance"]
         self.media_path = Path(descriptor["devices"]["media"]["source"])
-        self.mount_units: list[str] = []
-        self.source_mounts: list[Path] = []
+        self.media_branches: list[Path] = []
+        self.media_environment: dict[str, str] = {}
+        self.media_stop = ""
+        self.media_scripts: list[Path] = []
+        self.media_started = False
         self.loaded_nft: list[tuple[str, str]] = []
         self.retained_mounts: list[Path] = []
         self.subid_files: dict[Path, str] = {}
-        self.units: list[Path] = []
         self.created_instance = False
-        self.export_unit = "homelab-compute-recovery-export.service"
-        self.root_unit = "homelab-compute-recovery-root.service"
-        self.export_started = False
-        self.optional_gaps: list[str] = []
+        self.forward_proc: subprocess.Popen | None = None
+        self.git_origin: GitOrigin | None = None
 
     def incus(self, *args: str, timeout: int = COMMAND_TIMEOUT, input: str | None = None) -> str:
         return run("incus", "--force-local", "--project", self.project, *args, timeout=timeout, input=input)
@@ -284,20 +283,41 @@ class Runtime:
         result = completed(*self.helper_command(operation, spec=spec, bundle=self.bundle, confirm=True), timeout=3_600)
         check(result.returncode != 0, f"helper refuses {expected}")
 
-    def install_application(self, application: Path, image: Path) -> None:
-        # Nixidy renders the release; recovery applies only the selected static
-        # resources, without an Argo controller, AddOn, or environment-wide prune.
-        self.incus("file", "push", str(image), f"{self.instance}/tmp/jellyfin-image.tar", timeout=600)
-        self.guest("k3s", "ctr", "images", "import", "--local", "--snapshotter", "native", "/tmp/jellyfin-image.tar", timeout=600)
-        self.guest("rm", "/tmp/jellyfin-image.tar")
-        for member in ("jellyfin-retained", "jellyfin"):
-            for index, manifest in enumerate(sorted((application / member).rglob("*.yaml"))):
-                staged = f"/tmp/{member}-{index}.yaml"
-                self.incus("file", "push", str(manifest), f"{self.instance}{staged}")
-                self.kubectl("apply", "-f", staged)
-                self.guest("rm", staged)
-        self.kubectl("scale", "deployment/jellyfin", "--replicas=1", namespace="jellyfin")
-        wait_for("independently delivered Jellyfin", self.app_ready)
+    def forward_start(self) -> str:
+        # Test access only: forward the canonical ClusterIP service to the
+        # guest address. Manifests are never patched for test reachability.
+        self.forward_stop()
+        address = self.descriptor["address"]
+        self.forward_proc = subprocess.Popen(
+            ["incus", "--force-local", "--project", self.project, "exec", self.instance,
+             "--mode=non-interactive", "--", "k3s", "kubectl", "-n", "jellyfin",
+             "port-forward", "--address", address, "svc/jellyfin", "8096:8096"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        base = f"http://{address}:8096"
+
+        def reachable() -> bool:
+            try:
+                with socket.create_connection((address, 8096), timeout=2):
+                    return True
+            except OSError:
+                if self.forward_proc is not None and self.forward_proc.poll() is not None:
+                    raise ScenarioError("Jellyfin port-forward exited before becoming reachable")
+                return False
+
+        wait_for("Jellyfin port-forward", reachable, timeout=180)
+        return base
+
+    def forward_stop(self) -> None:
+        proc, self.forward_proc = self.forward_proc, None
+        if proc is None:
+            return
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
 
     def stage_secrets(self, fixture: dict) -> subprocess.CompletedProcess[str]:
         # Capture all output: neither a failed producer nor its manifest may
@@ -358,35 +378,45 @@ class Runtime:
         return run("systemctl", *args, timeout=timeout)
 
 
-    def stop_storage(self, *, remove_sources: bool = True) -> None:
-        if self.export_started:
-            result = completed("systemctl", "stop", self.export_unit, timeout=180)
-            if result.returncode:
-                print(f"WARN: export stop: {(result.stderr or result.stdout).strip()}", file=sys.stderr)
-            self.export_started = False
-        if self.mount_units:
-            result = completed("systemctl", "stop", *self.mount_units, timeout=300)
-            if result.returncode:
-                print(f"WARN: mount stop: {(result.stderr or result.stdout).strip()}", file=sys.stderr)
-        if remove_sources:
-            for source in reversed(self.source_mounts):
-                result = completed("umount", "-l", str(source), timeout=120)
-                if result.returncode:
-                    print(f"WARN: source unmount {source}: {(result.stderr or result.stdout).strip()}", file=sys.stderr)
-            self.source_mounts.clear()
+    def start_media(self, pool: dict, root_script: str, workspace: Path) -> None:
+        environment = {}
+        for line in pool["environment"].splitlines():
+            name, separator, value = line.partition("=")
+            check(separator and name.isupper(), "media pool environment is explicit")
+            environment[name] = value
+        branches = [Path(branch) for branch in environment["BRANCHES"].split(":")]
+        check(branches, "media pool declares branches")
+        check(Path(environment["MOUNTPOINT"]) == self.media_path, "media pool targets the declared guest source")
+        for branch in branches:
+            branch.mkdir(parents=True, exist_ok=True)
+            # Disposable tmpfs branches stand in for the host's decrypted branch
+            # mounts. Pool refusal, layout, and attachment behavior stay production.
+            run("mount", "-t", "tmpfs", "-o", "mode=0755,size=1g", "tmpfs", str(branch))
+            self.media_branches.append(branch)
+        self.media_environment = environment
+        self.media_stop = pool["stop"]
+        root_wrapper = workspace / "compute-media-root.sh"
+        root_wrapper.write_text("#!/bin/sh\nset -eu\nexport PATH=" + shlex.quote(os.environ["PATH"]) + "\n" + root_script)
+        root_wrapper.chmod(0o700)
+        self.media_scripts.append(root_wrapper)
+        for label in ("preStart", "start"):
+            result = subprocess.run(shlex.split(pool[label]), env={**os.environ, **environment}, text=True, capture_output=True, timeout=COMMAND_TIMEOUT, check=False)
+            check(result.returncode == 0, f"production media pool {label} succeeds: {(result.stderr or result.stdout).strip()}")
+        run(str(root_wrapper))
+        check(run("findmnt", "-n", "-o", "FSTYPE", "-M", str(self.media_path)) == "fuse.mergerfs", "media parent is the production pooled filesystem")
+        self.media_started = True
 
-    def start_sources_and_storage(self, source_dirs: list[Path], source_temps: dict[Path, Path]) -> None:
-        self.systemctl("start", self.root_unit)
-        for source in source_dirs:
-            source.mkdir(parents=True, exist_ok=True)
-            run("mount", "--bind", str(source_temps[source]), str(source))
-            self.source_mounts.append(source)
-        self.systemctl("daemon-reload")
-        self.systemctl("start", *self.mount_units, timeout=600)
-        self.systemctl("start", self.export_unit, timeout=600)
-        self.export_started = True
-        check("ro" in run("findmnt", "-n", "-o", "VFS-OPTIONS", "-M", str(self.media_path)).split(","), "media parent is mounted read-only")
-        check(run("findmnt", "-n", "-o", "FSTYPE", "-M", str(self.media_path)) == "tmpfs", "media parent is the declared tmpfs root")
+    def stop_media(self) -> None:
+        if not self.media_started:
+            return
+        try:
+            result = subprocess.run(shlex.split(self.media_stop), env={**os.environ, **self.media_environment}, text=True, capture_output=True, timeout=COMMAND_TIMEOUT, check=False)
+            check(result.returncode == 0, f"production media pool stop succeeds: {(result.stderr or result.stdout).strip()}")
+        finally:
+            self.media_started = False
+            for branch in reversed(self.media_branches):
+                completed("umount", str(branch), timeout=120)
+            self.media_branches.clear()
 
     def app_ready(self) -> bool:
         deployment = self.kubectl_json("get", "deployment/jellyfin", "-o", "json", namespace="jellyfin")
@@ -408,6 +438,9 @@ class Runtime:
         )
 
     def cleanup(self) -> None:
+        self.forward_stop()
+        if self.git_origin is not None:
+            self.git_origin.stop()
         if self.created_instance:
             result = completed("incus", "--force-local", "--project", self.project, "stop", self.instance, "--timeout=120", timeout=180)
             if result.returncode and "not found" not in (result.stderr or result.stdout).lower():
@@ -416,90 +449,21 @@ class Runtime:
             if result.returncode and "not found" not in (result.stderr or result.stdout).lower():
                 print(f"WARN: instance delete: {(result.stderr or result.stdout).strip()}", file=sys.stderr)
         try:
-            self.stop_storage()
+            self.stop_media()
         except (OSError, ScenarioError):
             pass
-        completed("umount", "-l", str(self.media_path / "data"), timeout=120)
         completed("umount", "-l", str(self.media_path), timeout=120)
-        for unit in (self.export_unit, self.root_unit, *self.mount_units):
-            completed("systemctl", "stop", unit, timeout=120)
-        for path in self.units:
+        for path in self.media_scripts:
             try:
                 path.unlink()
             except FileNotFoundError:
                 pass
-        completed("systemctl", "daemon-reload", timeout=120)
         for family, name in reversed(self.loaded_nft):
             completed("nft", "delete", "table", family, name, timeout=120)
         for path in reversed(self.retained_mounts):
             run("umount", str(path), timeout=120)
         for path, original in self.subid_files.items():
             path.write_text(original)
-
-
-def materialize_units(runtime: Runtime, fixture: dict, root_script: str, workspace: Path) -> tuple[list[Path], list[Path]]:
-    unit_dir = Path("/run/systemd/system")
-    check(not (unit_dir / runtime.root_unit).exists(), f"root unit {runtime.root_unit} is disposable")
-    check(not (unit_dir / runtime.export_unit).exists(), f"export unit {runtime.export_unit} is disposable")
-    root_script_path = workspace / "compute-media-root.sh"
-    root_script_path.write_text("#!/bin/sh\nset -eu\nexport PATH=" + shlex.quote(os.environ["PATH"]) + "\n" + root_script)
-    root_script_path.chmod(0o700)
-    export_start = workspace / "compute-media-export-start.sh"
-    export_stop = workspace / "compute-media-export-stop.sh"
-    export_start.write_text("#!/bin/sh\nset -eu\nexec /bin/sh -c " + shlex.quote(fixture["exportCommand"]) + "\n")
-    export_stop.write_text("#!/bin/sh\nset -eu\nexec /bin/sh -c " + shlex.quote(fixture["exportStop"]) + "\n")
-    export_start.chmod(0o700)
-    export_stop.chmod(0o700)
-
-    root_unit_path = unit_dir / runtime.root_unit
-    root_unit_path.write_text(
-        "[Unit]\n"
-        "Description=Disposable compute media root\n"
-        "Before=incus.service\n\n"
-        "[Service]\n"
-        "Type=oneshot\n"
-        f"ExecStart={root_script_path}\n"
-        "RemainAfterExit=yes\n"
-    )
-    runtime.units.append(root_unit_path)
-    mount_paths: list[Path] = []
-    for index, mount in enumerate(fixture["mounts"]):
-        where = Path(mount["where"])
-        unit_name = systemd_escape(str(where))
-        unit_path = unit_dir / unit_name
-        check(not unit_path.exists(), f"mount unit {unit_name} is disposable")
-        after = " ".join(mount.get("after", []))
-        binds_to = " ".join(mount.get("bindsTo", []))
-        unit_path.write_text(
-            "[Unit]\n"
-            f"Description=Disposable compute source mount {index}\n"
-            + (f"After={after}\n" if after else "")
-            + (f"BindsTo={binds_to}\n" if binds_to else "")
-            + "\n[Mount]\n"
-            f"What={mount['what']}\n"
-            f"Where={mount['where']}\n"
-            "Type=none\n"
-            f"Options={mount['options']}\n"
-        )
-        runtime.units.append(unit_path)
-        runtime.mount_units.append(unit_name)
-        mount_paths.append(where)
-
-    export_unit_path = unit_dir / runtime.export_unit
-    export_unit_path.write_text(
-        "[Unit]\n"
-        "Description=Disposable compute media export\n"
-        f"Requires={runtime.root_unit}\n"
-        f"After={runtime.root_unit} {' '.join(runtime.mount_units)}\n"
-        f"BindsTo={' '.join(runtime.mount_units)}\n\n"
-        "[Service]\n"
-        "Type=simple\n"
-        f"ExecStart={export_start}\n"
-        f"ExecStop={export_stop}\n"
-        "Restart=no\n"
-    )
-    runtime.units.append(export_unit_path)
-    return [root_unit_path, export_unit_path], mount_paths
 
 
 def load_nftables(runtime: Runtime, tables: list[dict]) -> None:
@@ -514,15 +478,153 @@ def load_nftables(runtime: Runtime, tables: list[dict]) -> None:
         runtime.loaded_nft.append((family, name))
         check(completed("nft", "list", "table", family, name).returncode == 0, f"nftables table {family}/{name} loaded from the fixture")
 
+ROOT_APP = "recovery-test-apps"
+CHILD_APPS = ("jellyfin", "jellyfin-retained")
+SYNC_TIMEOUT = 1500
 
-def source_paths(descriptor: dict, mounts: list[dict]) -> list[Path]:
-    protected = {Path(entry["path"]) for entry in descriptor["requiredPaths"]}
-    result: list[Path] = []
-    for mount in mounts:
-        source = Path(mount["what"])
-        if source not in protected and source not in result:
-            result.append(source)
-    return result
+
+def rewrite_text(path: Path, replacements: dict[str, str]) -> None:
+    text = path.read_text()
+    for old, new in replacements.items():
+        check(old in text, f"{path.name} contains replaceable {old}")
+        text = text.replace(old, new)
+    path.write_text(text)
+
+
+class GitOrigin:
+    """Disposable Git origin fixture standing in for the canonical Git remote.
+
+    The repository holds verbatim canonical manifests; only the child
+    Application repository URLs/paths and the test-local root Application are
+    written at runtime. Argo speaks the real Git protocol to this origin.
+    """
+
+    def __init__(self, parent: Path, address: str):
+        self.parent = parent
+        self.address = address
+        self.url = f"git://{address}/recovery.git"
+        self.process: subprocess.Popen | None = None
+    def publish(self, repo: Path) -> Path:
+        work = self.parent / "work"
+        if work.exists():
+            shutil.rmtree(work)
+        shutil.copytree(repo, work, symlinks=True)
+        for child in CHILD_APPS:
+            rewrite_text(work / "apps" / f"Application-{child}.yaml", {
+                "repoURL: https://github.com/dvicory/homelab.git": f"repoURL: {self.url}",
+                f"path: ./generated/manifests/prod-home/{child}": f"path: ./{child}",
+            })
+        (work / "apps" / f"Application-{ROOT_APP}.yaml").write_text(
+            "apiVersion: argoproj.io/v1alpha1\n"
+            "kind: Application\n"
+            "metadata:\n"
+            f"  name: {ROOT_APP}\n"
+            "  namespace: argocd\n"
+            "spec:\n"
+            "  destination:\n"
+            "    namespace: argocd\n"
+            "    server: https://kubernetes.default.svc\n"
+            "  project: default\n"
+            "  source:\n"
+            f"    repoURL: {self.url}\n"
+            "    targetRevision: main\n"
+            "    path: ./apps\n"
+            "  syncPolicy:\n"
+            "    automated:\n"
+            "      prune: true\n"
+            "      selfHeal: true\n"
+            "    syncOptions:\n"
+            "      - ServerSideApply=true\n"
+        )
+        git = ["git", "-C", str(work)]
+        run(*git, "init", "-b", "main")
+        run(*git, "-c", "user.email=recovery@test", "-c", "user.name=recovery", "add", "-A")
+        run(*git, "-c", "user.email=recovery@test", "-c", "user.name=recovery", "commit", "-m", "recovery fixture")
+        bare = self.parent / "recovery.git"
+        if bare.exists():
+            shutil.rmtree(bare)
+        run("git", "clone", "--bare", "--", str(work), str(bare))
+        return work / "apps" / f"Application-{ROOT_APP}.yaml"
+
+    def serve(self) -> None:
+        check(self.process is None or self.process.poll() is not None, "git origin is not already serving")
+        self.process = subprocess.Popen(
+            ["git", "daemon", "--export-all", f"--base-path={self.parent}",
+             f"--listen={self.address}", "--port=9418", str(self.parent)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+
+    def stop(self) -> None:
+        proc, self.process = self.process, None
+        if proc is None:
+            return
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+
+def seed_argo(runtime: Runtime, seed: Path) -> None:
+    """Apply the canonical Argo seed: namespace, CRDs, then controllers."""
+    runtime.kubectl("apply", "--server-side", "--field-manager=argocd-controller",
+                     "-f", str(seed / "namespaces.yaml"))
+    runtime.kubectl("apply", "--server-side", "--field-manager=argocd-controller",
+                     "-f", str(seed / "crds.yaml"))
+    runtime.kubectl("wait", "--for=condition=Established", "--timeout=180s",
+                     "-f", str(seed / "crds.yaml"))
+    deadline = time.monotonic() + 600
+    while True:
+        result = completed("incus", "--force-local", "--project", runtime.project, "exec", runtime.instance,
+                           "--mode=non-interactive", "--", "k3s", "kubectl", "apply", "--server-side",
+                           "--field-manager=argocd-controller", "-f", str(seed / "controllers.yaml"), timeout=COMMAND_TIMEOUT)
+        if result.returncode == 0:
+            break
+        if time.monotonic() >= deadline:
+            raise ScenarioError(f"Argo seed failed to converge: {(result.stderr or result.stdout).strip()}")
+        time.sleep(5)
+    workloads = runtime.kubectl("get", "deploy,sts", "-n", "argocd", "-o", "name", namespace=None).split()
+    check(bool(workloads), "Argo seed declares controllers")
+    for workload in workloads:
+        runtime.kubectl("rollout", "status", workload, "--timeout=600s", namespace="argocd")
+
+
+def wait_argo_synced(runtime: Runtime, names: tuple[str, ...], timeout: int = SYNC_TIMEOUT) -> None:
+    def synced() -> bool:
+        for name in names:
+            app = runtime.kubectl_json("get", "application", name, "-o", "json", namespace="argocd")
+            status = app.get("status", {})
+            if status.get("sync", {}).get("status") != "Synced":
+                return False
+            if status.get("health", {}).get("status") != "Healthy":
+                return False
+        return True
+    wait_for(f"Argo reconciliation of {', '.join(names)}", synced, timeout=timeout)
+
+
+def stage_cluster_secrets(runtime: Runtime, secret_values: dict[str, bytes]) -> None:
+    """Recreate missing secret namespaces and re-apply staged runtime secrets.
+
+    A fresh guest boots before Argo creates application namespaces, so the
+    boot-time secret application cannot deliver namespaced secrets yet. This
+    mirrors the host bootstrap handoff: namespaces first, then secrets.
+    """
+    existing = {item["metadata"]["name"] for item in runtime.kubectl_json("get", "namespaces", "-o", "json")["items"]}
+    for namespace in sorted({entry["namespace"] for entry in runtime.descriptor["runtimeSecrets"].values()} - existing):
+        runtime.kubectl("create", "namespace", namespace)
+    runtime.guest("systemctl", "restart", "kubernetes-runtime-secrets.service")
+    runtime.verify_secret_consumers(secret_values)
+
+
+def deliver_stack(runtime: Runtime, seed: Path, root_app: Path, secret_values: dict[str, bytes]) -> None:
+    """Run the supported recovery control flow on a fresh cluster."""
+    stage_cluster_secrets(runtime, secret_values)
+    seed_argo(runtime, seed)
+    runtime.kubectl("apply", "--server-side", "--field-manager=argocd-controller", "-f", str(root_app))
+    wait_argo_synced(runtime, (ROOT_APP, *CHILD_APPS))
+
+
 
 
 def prepare_directory(path: Path, safe_dirs: list[Path]) -> None:
@@ -611,9 +713,8 @@ def api_bytes(base: str, path: str, token: str, expected: tuple[int, ...] = (200
     return body
 
 
-def verify_private_endpoints(runtime: Runtime) -> None:
+    ports = (22, 6443, 8096)
     address = runtime.descriptor["address"]
-    ports = (22, 6443, 30096)
     for port in ports:
         try:
             with socket.create_connection((address, port), timeout=3):
@@ -655,9 +756,7 @@ def verify_private_endpoints(runtime: Runtime) -> None:
         completed("ip", "netns", "delete", namespace)
 
 
-def setup_jellyfin(runtime: Runtime) -> tuple[str, str, str, str]:
-    address = runtime.descriptor["address"]
-    base = f"http://{address}:30096"
+def setup_jellyfin(base: str) -> tuple[str, str, str]:
     wait_for("Jellyfin HTTP health", lambda: api_request(base, "GET", "/health", expected=(200,), read_body=False))
     username = "recovery-admin"
     password = secrets.token_urlsafe(24)
@@ -676,7 +775,7 @@ def setup_jellyfin(runtime: Runtime) -> tuple[str, str, str, str]:
         "configured Jellyfin library",
         lambda: any(folder.get("Name") == "Recovery Media" and "/media" in folder.get("Locations", []) for folder in api_request(base, "GET", "/Library/VirtualFolders", token=token, expected=(200,))[1]),
     )
-    return base, username, password, token + ":" + user_id
+    return username, password, token + ":" + user_id
 
 
 def find_audio(base: str, token: str, user_id: str) -> dict | None:
@@ -707,13 +806,11 @@ def run_scenario(args: argparse.Namespace) -> None:
     fixture = json.loads(args.fixture.read_text())
     descriptor = json_copy(fixture["descriptor"])
     preseed = fixture["preseed"]
-    mounts = fixture["mounts"]
+    media_pool = fixture["mediaPool"]
     check("config" not in preseed, "fixture preseed omits top-level Incus host API configuration")
-    check(isinstance(fixture["rootScript"], str) and fixture["rootScript"].strip(), "fixture contains the native media-root script")
-    check(isinstance(fixture["exportCommand"], str) and fixture["exportCommand"].strip(), "fixture contains the native media export command")
-    check(isinstance(fixture["exportStop"], str) and fixture["exportStop"].strip(), "fixture contains the native media export stop command")
-    check(isinstance(mounts, list) and mounts, "fixture contains native source mount declarations")
-    ensure_absolute_paths(descriptor, mounts)
+    check(isinstance(fixture["mediaRootScript"], str) and fixture["mediaRootScript"].strip(), "fixture contains the native media-root script")
+    check(all(isinstance(media_pool[key], str) and media_pool[key].strip() for key in ("preStart", "start", "stop", "environment")), "fixture contains native media pool commands")
+    ensure_absolute_paths(descriptor)
     check(args.bundle.is_dir() and str(args.bundle.resolve()).startswith("/nix/store/"), "bundle is an immutable Nix store output")
     for member in ("metadata.tar.xz", "rootfs.tar.xz", "system"):
         check((args.bundle / member).exists(), f"bundle contains {member}")
@@ -722,9 +819,10 @@ def run_scenario(args: argparse.Namespace) -> None:
     check(not any(member.removeprefix("./").lstrip("/") in deployed_identity_paths for member in rootfs_members),
           "guest root artifact contains no preinstalled runtime host identity")
     check(args.helper.is_file(), "compute helper exists")
-    check(args.image.is_file(), "independent Jellyfin image archive exists")
-    for member in ("jellyfin-retained", "jellyfin"):
-        check(any((args.application / member).rglob("*.yaml")), f"Nixidy environment contains {member} manifests")
+    for member in ("apps/Application-jellyfin.yaml", "apps/Application-jellyfin-retained.yaml",
+                   "jellyfin", "jellyfin-retained",
+                   "seed/namespaces.yaml", "seed/crds.yaml", "seed/controllers.yaml", "seed/root.yaml"):
+        check((args.repo / member).exists(), f"canonical recovery input contains {member}")
     project = descriptor["project"]
     instance_name = descriptor["instance"]
     check(instance_query(project, instance_name) is None, "disposable instance is absent before the scenario")
@@ -733,19 +831,11 @@ def run_scenario(args: argparse.Namespace) -> None:
     with tempfile.TemporaryDirectory(prefix="homelab-compute-recovery-") as temporary:
         workspace = Path(temporary)
         safe_dirs: list[Path] = []
-        source_temps: dict[Path, Path] = {}
         host_paths = {Path(entry["path"]) for entry in descriptor["requiredPaths"]}
         host_paths.update(Path(device["source"]) for device in descriptor["devices"].values()
                           if device.get("type") == "disk" and "source" in device)
         for path in sorted(host_paths):
             prepare_directory(path, safe_dirs)
-        for source in source_paths(descriptor, mounts):
-            prepare_directory(source, safe_dirs)
-            source_temps[source] = workspace / ("source-" + hashlib.sha256(str(source).encode()).hexdigest()[:12])
-            source_temps[source].mkdir()
-        check(source_temps, "fixture identifies at least one disposable media source")
-        first_source = next(iter(source_temps))
-        write_test_wav(source_temps[first_source] / "recovery.wav")
         spec_path = workspace / "compute.json"
         runtime = Runtime(descriptor, spec_path, args.helper, args.bundle)
         # Native preseed validates recursive bind sources; the production
@@ -801,10 +891,9 @@ def run_scenario(args: argparse.Namespace) -> None:
                 clear_directory(path)
             raise
         try:
-            materialize_units(runtime, fixture, fixture["rootScript"], workspace)
-            run("systemctl", "daemon-reload", timeout=120)
             load_nftables(runtime, fixture["nftables"])
-            runtime.start_sources_and_storage(list(source_temps), source_temps)
+            runtime.start_media(media_pool, fixture["mediaRootScript"], workspace)
+            write_test_wav(runtime.media_path / "library" / "recovery.wav")
             check(public_key == descriptor["publicKey"], "descriptor public identity is the disposable staged key")
             # Lima reserves a very large range for its login user. Carve the
             # fixture's range out temporarily; never weaken the helper's check.
@@ -851,7 +940,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             wait_for("unrelated CoreDNS availability", runtime.unrelated_ready)
             wait_for("node resource metrics", runtime.metrics_ready)
             runtime.check_secret_payload(secret_payload)
-            runtime.verify_secret_consumers(secret_values, fresh=True)
+            stage_cluster_secrets(runtime, secret_values)
             # Change one input but remove another: no partial new credential
             # set may replace the previously published complete set.
             sources = list(secret_values)
@@ -909,22 +998,26 @@ def run_scenario(args: argparse.Namespace) -> None:
             check(all(item["metadata"]["namespace"] != "jellyfin"
                       for item in runtime.kubectl_json("get", "deployments", "-A", "-o", "json")["items"]),
                   "guest starts without a bundled Jellyfin deployment")
-            runtime.install_application(args.application, args.image)
-            check(runtime.app_ready(), "Jellyfin starts when the intended media source is present")
+            origin = GitOrigin(workspace / "origin", descriptor["address"])
+            root_app = origin.publish(args.repo)
+            origin.serve()
+            runtime.git_origin = origin
+            deliver_stack(runtime, args.repo / "seed", root_app, secret_values)
+            check(runtime.app_ready(), "Argo delivers Jellyfin when the intended media source is present")
+            base = runtime.forward_start()
             verify_private_endpoints(runtime)
 
-            media_probe = runtime.guest("sh", "-ec", "test -r /srv/media/data/recovery.wav")
+            media_probe = runtime.guest("sh", "-ec", "test -r /srv/media/library/recovery.wav")
             del media_probe
-            result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--mode=non-interactive", "--", "sh", "-ec", "touch /srv/media/data/forbidden")
+            result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--mode=non-interactive", "--", "sh", "-ec", "touch /srv/media/library/forbidden")
             check(result.returncode != 0, "guest media write is denied at the Incus read-only boundary")
-            result = completed("touch", str(runtime.media_path / "data" / "forbidden"))
+            result = completed("touch", str(runtime.media_path / "library" / "forbidden"))
             check(result.returncode != 0, "host root cannot write through the read-only media export")
             result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--mode=non-interactive", "--", "sh", "-ec", "mount -o remount,rw /srv/media")
             check(result.returncode != 0, "guest root cannot remount the media attachment read-write")
-            result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "751", "--group", "751", "--mode=non-interactive", "--", "sh", "-ec", "touch /srv/media/data/forbidden")
+            result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "751", "--group", "751", "--mode=non-interactive", "--", "sh", "-ec", "touch /srv/media/library/forbidden")
             check(result.returncode != 0, "Jellyfin identity cannot write read-only media")
-
-            base, username, password, auth_identity = setup_jellyfin(runtime)
+            username, password, auth_identity = setup_jellyfin(base)
             token, user_id = auth_identity.split(":", 1)
             item = wait_for("indexed real media", lambda: find_audio(base, token, user_id))
             item_id = item["Id"]
@@ -1005,100 +1098,46 @@ def run_scenario(args: argparse.Namespace) -> None:
             check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid, "unsafe instance drift does not trigger replacement")
 
             before_init = runtime.guest("cat", "/proc/1/stat").split()[21]
-            run("umount", "-l", str(first_source))
-            runtime.source_mounts.remove(first_source)
-            wait_for("native source-loss shutdown",
-                     lambda: completed("systemctl", "is-active", runtime.export_unit).returncode != 0)
+            runtime.stop_media()
             check(runtime.node_ready(), "K3s node remains healthy during application source loss")
             check(runtime.unrelated_ready(), "unrelated workload remains available during application source loss")
-            result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/data/recovery.wav")
+            result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/library/recovery.wav")
             check(result.returncode != 0, "source loss never exposes a substitute media directory")
             runtime.kubectl("delete", "pod", "-l", "app.kubernetes.io/name=jellyfin", "--wait=false", namespace="jellyfin")
             wait_for("Jellyfin to stop after source loss", lambda: not runtime.app_ready(), timeout=180)
-            runtime.stop_storage()
-            runtime.start_sources_and_storage(list(source_temps), source_temps)
+            runtime.start_media(media_pool, fixture["mediaRootScript"], workspace)
             wait_for("Jellyfin to recover after source return", runtime.app_ready, timeout=240)
             after_init = runtime.guest("cat", "/proc/1/stat").split()[21]
             check(after_init == before_init, "source return recovers Jellyfin without a node restart")
 
-            runtime.stop_storage()
+            runtime.stop_media()
             runtime.incus("stop", instance_name, "--timeout=120")
             runtime.incus("start", instance_name)
             wait_for("healthy node boot without application media", runtime.node_ready)
             wait_for("CoreDNS availability without media", runtime.unrelated_ready)
             wait_for("Jellyfin to remain blocked without media", lambda: not runtime.app_ready(), timeout=180)
-            result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/data/recovery.wav")
+            result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/library/recovery.wav")
             check(result.returncode != 0, "node boot without media does not expose a substitute directory")
-            runtime.start_sources_and_storage(list(source_temps), source_temps)
+            runtime.start_media(media_pool, fixture["mediaRootScript"], workspace)
             wait_for("Jellyfin after media restoration", runtime.app_ready)
+            base = runtime.forward_start()
 
             unrelated_manifest = "/tmp/compute-recovery-unrelated.yaml"
             runtime.guest("sh", "-ec", f"cat > {shlex.quote(unrelated_manifest)} <<'EOF'\n{yaml_config_map('recovery-unrelated', 'keep-me')}EOF")
             runtime.kubectl("apply", "-f", unrelated_manifest)
             runtime.guest("rm", unrelated_manifest)
-            runtime.install_application(args.application, args.image)
+            # Argo, not the test driver, owns the workload: deleting the
+            # Deployment must converge back to the reconciled desired state.
+            runtime.kubectl("delete", "deployment/jellyfin", namespace="jellyfin")
+            wait_for("Argo self-heals the Jellyfin deployment", runtime.app_ready, timeout=600)
             unrelated = runtime.kubectl_json("get", "configmap/recovery-unrelated", "-o", "json", namespace="jellyfin")
-            check(unrelated["data"]["value"] == "keep-me", "selected static apply preserves unrelated objects")
-            check(marker.read_text() == "retained-state\n", "selected static apply preserves retained application data")
+            check(unrelated["data"]["value"] == "keep-me", "Argo reconciliation preserves unmanaged objects")
+            check(marker.read_text() == "retained-state\n", "Argo reconciliation preserves retained application data")
 
-            # Exercise the explicit maintenance procedure, not a production
-            # application-aware guest manager.
-            checkpoint = Path(descriptor["recoveryPath"]) / "checkpoint"
-            state = Path(descriptor["retainedPaths"]["jellyfin-config"]["path"])
-            required = int(run("du", "-sb", str(state)).split()[0])
-            check(shutil.disk_usage(checkpoint.parent).free >= 3 * required + 1024**3,
-                  "space exists for complete checkpoint and preserved restore copies")
-            with Path(f"/run/lock/compute-{project}-{instance_name}.lock").open("a") as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                runtime.kubectl("scale", "deployment/jellyfin", "--replicas=0", namespace="jellyfin")
-                wait_for("no application pods before checkpoint", lambda: not runtime.kubectl_json(
-                    "get", "pods", "-l", "app.kubernetes.io/name=jellyfin", "-o", "json", namespace="jellyfin")["items"])
-                running = json.loads(runtime.guest("k3s", "crictl", "ps", "-o", "json"))["containers"]
-                check(not any(c.get("labels", {}).get("io.kubernetes.pod.namespace") == "jellyfin" for c in running),
-                      "runtime has no application writer before copying retained state")
-                checkpoint.mkdir(mode=0o700)
-                run("nix-store", "--add-root", str(checkpoint / "application"), "--indirect", "--realise", str(args.application))
-                run("nix-store", "--add-root", str(checkpoint / "image"), "--indirect", "--realise", str(args.image))
-                run("cp", "-a", "--reflink=auto", str(state), str(checkpoint / "config"), timeout=600)
-                run("sync", "-f", str(checkpoint))
-                (checkpoint / "complete").touch()
-                run("sync", "-f", str(checkpoint))
-                runtime.kubectl("scale", "deployment/jellyfin", "--replicas=1", namespace="jellyfin")
-            wait_for("application after checkpoint", runtime.app_ready)
-            # A real post-checkpoint state change must be undone by paired restore.
+            # Application-consistent backup/restore is separate future work. This
+            # scenario proves disposable guest replacement, not same-host export
+            # and restore of retained state.
             token, user_id = verify_api_state(base, username, password, "Recovery Media", item_id)
-            api_request(base, "DELETE", f"/Users/{user_id}/PlayedItems/{item_id}", token=token, expected=(204, 200))
-            _, changed = api_request(base, "GET", f"/Users/{user_id}/Items/{item_id}?Fields=UserData", token=token, expected=(200,))
-            check(changed.get("UserData", {}).get("Played") is False, "post-checkpoint playback state differs")
-            with Path(f"/run/lock/compute-{project}-{instance_name}.lock").open("a") as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                run("test", "-f", str(checkpoint / "complete"))
-                run("nix-store", "--realise", str(checkpoint / "application"))
-                run("nix-store", "--realise", str(checkpoint / "image"))
-                required = int(run("du", "-sb", str(checkpoint / "config")).split()[0])
-                live = int(run("du", "-sb", str(state)).split()[0])
-                check(shutil.disk_usage(checkpoint.parent).free >= required + live + 1024**3,
-                      "space exists for restore and displaced live data")
-                runtime.kubectl("scale", "deployment/jellyfin", "--replicas=0", namespace="jellyfin")
-                wait_for("no application pods before restore", lambda: not runtime.kubectl_json(
-                    "get", "pods", "-l", "app.kubernetes.io/name=jellyfin", "-o", "json", namespace="jellyfin")["items"])
-                check(not runtime.guest("k3s", "crictl", "ps", "--label", "io.kubernetes.pod.namespace=jellyfin", "-q").strip(),
-                      "runtime has no application writer before restore")
-                runtime.incus("stop", instance_name, "--timeout=120")
-                displaced = checkpoint.parent / "displaced"
-                run("cp", "-a", "--reflink=auto", str(state), str(displaced), timeout=600)
-                run("sync", "-f", str(displaced))
-                for child in state.iterdir():
-                    if child.is_dir() and not child.is_symlink():
-                        shutil.rmtree(child)
-                    else:
-                        child.unlink()
-                run("cp", "-a", "--reflink=auto", str(checkpoint / "config") + "/.", str(state), timeout=600)
-                run("sync", "-f", str(state))
-                runtime.incus("start", instance_name)
-                wait_for("node after explicit data restore", runtime.node_ready)
-                runtime.install_application((checkpoint / "application").resolve(), (checkpoint / "image").resolve())
-            verify_api_state(base, username, password, "Recovery Media", item_id)
             runtime.helper_run("replace", bundle=args.bundle, confirm=True, timeout=3_600)
             new_instance = instance_query(project, instance_name)
             check(new_instance is not None, "helper recreates the guest instance")
@@ -1108,10 +1147,11 @@ def run_scenario(args: argparse.Namespace) -> None:
             new_cluster_token = runtime.guest("cat", "/var/lib/rancher/k3s/server/token")
             check(new_cluster_token != original_cluster_token, "replacement has fresh disposable K3s cluster state")
             runtime.check_secret_payload(secret_payload)
-            runtime.verify_secret_consumers(secret_values, fresh=True)
+            stage_cluster_secrets(runtime, secret_values)
             check(all((secret_inputs / source).read_bytes() == value for source, value in secret_values.items()),
                   "guest recreation preserves credential inputs rather than regenerating them")
-            runtime.install_application(args.application, args.image)
+            deliver_stack(runtime, args.repo / "seed", root_app, secret_values)
+            base = runtime.forward_start()
             check(marker.read_text() == "retained-state\n", "guest replacement preserves retained application data")
             check(marker.stat().st_uid == marker_stat.st_uid and marker.stat().st_gid == marker_stat.st_gid and marker.stat().st_mode == marker_stat.st_mode, "guest replacement preserves retained data ownership and mode")
             verify_api_state(base, username, password, "Recovery Media", item_id)
@@ -1138,8 +1178,7 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--bundle", required=True, type=Path, help="Nix store guest bundle matching the test host architecture")
     result.add_argument("--fixture", required=True, type=Path, help="evaluated host fixture JSON")
-    result.add_argument("--application", required=True, type=Path, help="Nixidy environmentPackage with the private fixture's Jellyfin applications")
-    result.add_argument("--image", required=True, type=Path, help="independent jellyfin-image archive matching the rendered image tag")
+    result.add_argument("--repo", required=True, type=Path, help="canonical recovery inputs: Jellyfin manifests plus the Argo seed")
     result.add_argument("--helper", type=Path, default=Path("/run/current-system/sw/bin/compute-guest"), help="generic compute lifecycle executable or repository .py helper")
     return result
 

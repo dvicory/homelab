@@ -151,12 +151,12 @@ household-bootstrap-host /etc/homelab/compute.json --confirm compute-1
 It verifies the target guest, fresh kubeconfig, declared node placement,
 absent Argo Applications, staged runtime credentials and the pinned
 provisioning image before mutation. It does not create or delete
-guests, deploy the host OS, publish Git or enable Argo.
+guests, deploy the host OS, publish Git, or generate credentials.
 
-The wrapper applies static namespaces, runtime Secrets and workload
-resources without live Git or pruning. Normal Argo reconciliation is a
-separate, explicit handoff after static delivery and native first-run
-enrollment. Do not use environment-wide pruning or manual scale/copy
+The wrapper applies the Argo namespace/controllers, runtime Secrets, waits
+for the Argo seed, then applies the canonical root Application. Argo then
+owns workload reconciliation from Git. Do not statically apply application
+workloads, use environment-wide pruning, or use manual scale/copy
 operations as a substitute.
 
 ## Verify
@@ -168,9 +168,9 @@ household-bootstrap --status
 household-bootstrap --check-ready
 ```
 
-`--status` reports declared controllers and bootstrap Jobs without
-mutation. `--check-ready` waits for the declared node, controllers and
-persistent bootstrap Jobs. It does not prove application acceptance,
+`--status` reports Argo seed controllers and bootstrap Jobs without
+mutation. `--check-ready` waits for the replacement node and Argo seed.
+It does not prove child synchronization, application acceptance,
 native first-run enrollment, authenticated clients, provider delivery,
 GPU/transcoding behavior or backup success.
 
@@ -205,39 +205,33 @@ Job completion is not retained as evidence. A failed guest lifecycle
 operation leaves retained inputs in place and stops the guest when
 possible; inspect the reported layer before retrying.
 
-A failed recovery operation leaves the guest and reconcilers stopped.
-Inspect its journal and staged/displaced paths, correct the cause, and
-do not resume blindly. There is no automatic rollback for a partial
-restore.
+A failed bootstrap leaves the replacement guest and cluster in place.
+Inspect the failed layer, correct the prerequisite, and start a new
+explicit operation. Do not resume blindly and do not restore a prior
+Kubernetes database over the replacement.
 
 ## Recovery limits
 
-The packaged recovery interface is:
+The supported compute-loss path is:
 
-```sh
-household-recovery export|restore|resume DESCRIPTOR POINT METRICS_DIRECTORY
-household-recovery --help
+```text
+replace guest -> stage secrets -> seed Argo -> apply root Application ->
+Argo reconciles Git -> reattached storage serves applications
 ```
 
-It is an investigation interface, not a routine backup recipe. Its
-whole-stack export/restore procedure remains unverified and does not
-establish guest-loss recovery, application-consistent capture or
-production readiness. Follow the packaged guidance only when
-investigating an explicitly authorized operation.
-
-A recovery point contains only the declared retained set. Host identity,
-runtime credentials, the host-owned `/srv/media` media namespace,
-external providers and any undeclared application data need separate
-protection and reconstruction.
-Same-host retained directories and exports do not survive loss or
-corruption of that host and are not independent backups. Copy a complete
-trusted point and its pinned inputs to a separately protected destination
-only under the backup policy approved for the environment.
+The instance root, Kubernetes datastore, container cache, and prior object
+identities are disposable. Host identity, runtime credentials, retained
+application data, the host-owned `/srv/media` media namespace, external
+providers, and undeclared application data need separate protection and
+reconstruction.
+Same-host retained directories do not survive loss or corruption of that
+host and are not independent backups. Application-consistent capture and
+off-host backup remain separate future work.
 
 ## Remaining gates
 
 The declarations and commands above do not establish physical mount,
 encryption, capacity, subordinate-ID or GPU evidence; production
 credentials, DNS/router/provider changes; authenticated primary/backup
-client access; routine capture/restore/resume results; independent
-off-host backup; or production approval.
+client access; routine application-consistent capture or off-host backup
+results; independent off-host backup; or production approval.

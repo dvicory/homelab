@@ -72,27 +72,3 @@ spec:
           for: 10m
           labels:
             severity: warning
-        - alert: RecoveryMetricsMissing
-          annotations:
-            description: Check the recovery command, its atomic textfile publication and the node exporter scrape target. Missing reporting is not a successful recovery point.
-            summary: 'Recovery reporting missing: household'
-          expr: absent(homelab_recovery_last_attempt_success{recovery_set="household"}) or absent(homelab_recovery_last_success_timestamp_seconds{recovery_set="household"})
-          for: 15m
-          labels:
-            severity: warning
-        - alert: RecoveryPointStale
-          annotations:
-            description: Inspect the last export and retained destination, then complete a new application-consistent export. Same-host exports are not independent backups.
-            summary: 'No recent complete recovery point: household'
-          expr: time() - homelab_recovery_last_success_timestamp_seconds{recovery_set="household"} > 172800
-          for: 15m
-          labels:
-            severity: warning
-        - alert: RecoveryAttemptFailed
-          annotations:
-            description: Inspect the recovery command output and destination capacity; correct the failure and rerun the complete recovery set.
-            summary: 'Recovery attempt failed: household'
-          expr: homelab_recovery_last_attempt_success{recovery_set="household"} == 0
-          for: 1m
-          labels:
-            severity: warning

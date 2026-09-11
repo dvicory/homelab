@@ -11,13 +11,24 @@
       environment = ../../../../generated/manifests/prod-home;
       manifests = pkgs.runCommand "household-static-bootstrap" { nativeBuildInputs = [ pkgs.yq-go ]; } ''
         mkdir -p "$out"
-        yq 'select(.kind == "Namespace")' ${environment}/*/*.yaml > "$out/namespaces.yaml"
-        yq 'select(.kind == "CustomResourceDefinition")' ${environment}/*/*.yaml > "$out/crds.yaml"
-        yq 'select(.kind != "Namespace" and .kind != "CustomResourceDefinition" and .kind != "Application")' ${environment}/*/*.yaml > "$out/workloads.yaml"
-        yq 'select(.kind == "Deployment" or .kind == "StatefulSet" or .kind == "DaemonSet")' ${environment}/*/*.yaml > "$out/readiness.yaml"
-        yq 'select(.kind == "Prometheus" or .kind == "Alertmanager")' ${environment}/*/*.yaml > "$out/operator-readiness.yaml"
-        yq 'select(.kind == "Job")' ${environment}/*/*.yaml > "$out/jobs.yaml"
-        yq 'select(.kind == "Job" and .spec.ttlSecondsAfterFinished == null)' ${environment}/*/*.yaml > "$out/persistent-jobs.yaml"
+        cp ${environment}/argocd-retained/Namespace-argocd.yaml "$out/namespaces.yaml"
+        yq -N '.' ${environment}/argocd/CustomResourceDefinition-*.yaml > "$out/crds.yaml"
+        rm -f "$out/controllers.yaml"
+        first=1
+        for file in ${environment}/argocd/*.yaml; do
+          case "$(basename "$file")" in
+            CustomResourceDefinition-*) ;;
+            *)
+              if [ "$first" -eq 1 ]; then first=0; else printf '\n---\n' >> "$out/controllers.yaml"; fi
+              cat "$file" >> "$out/controllers.yaml"
+              ;;
+          esac
+        done
+        cp ${environment}/bootstrap.yaml "$out/root.yaml"
+        yq 'select(.kind == "Deployment" or .kind == "StatefulSet" or .kind == "DaemonSet")' "$out/controllers.yaml" > "$out/readiness.yaml"
+        yq 'select(.kind == "Prometheus" or .kind == "Alertmanager")' "$out/controllers.yaml" > "$out/operator-readiness.yaml"
+        yq 'select(.kind == "Job")' "$out/controllers.yaml" > "$out/jobs.yaml"
+        yq 'select(.kind == "Job" and .spec.ttlSecondsAfterFinished == null)' "$out/controllers.yaml" > "$out/persistent-jobs.yaml"
       '';
       bootstrap = pkgs.writeShellApplication {
         name = "household-bootstrap";
@@ -41,7 +52,7 @@
             household-bootstrap --check-ready
 
           --status         Read-only report of declared controllers and bootstrap Jobs.
-          --fresh-cluster  Apply namespaces, CRDs and workloads without pruning or Git.
+          --fresh-cluster  Apply the Argo namespace, CRDs and controllers without pruning or Git.
           --retry-jobs     Recreate only declared terminal Failed hook Jobs.
           --check-ready    Block until the declared node, controllers and Jobs are ready.
           EOF
@@ -279,10 +290,9 @@
 
           check_ready() {
             cat >&2 <<'EOF'
-          Readiness prerequisites: complete native Kanidm recovery-account setup and
-          first administrator/passkey enrollment, complete Jellyfin's native first-run
-          owner setup, and stage all declared runtime credentials through agenix.
-          This command does not generate identities or perform enrollment.
+          Readiness prerequisites: stage all declared runtime credentials through agenix.
+          This command checks the replacement node and Argo seed only. Native
+          first-run enrollment and application acceptance remain separate checks.
           EOF
             kubectl wait --for=condition=Ready nodes --all --timeout=180s
             kubectl rollout status --timeout=600s -f "$manifests/readiness.yaml"
@@ -292,8 +302,9 @@
             if [ -s "$manifests/persistent-jobs.yaml" ]; then
               kubectl wait --for=condition=Complete --timeout=600s -f "$manifests/persistent-jobs.yaml"
             fi
-            echo 'Declared controllers and persistent bootstrap Jobs are ready. TTL-cleaned hook completion is not retained; application authentication and recovery acceptance remain separate checks.'
+            echo 'Replacement node and Argo seed are ready. Apply the canonical root Application next.'
           }
+
 
           fresh_cluster() {
             check_argo
@@ -302,13 +313,13 @@
             kubectl wait --for=condition=Established --timeout=180s -f "$manifests/crds.yaml"
             # Controllers and admission Jobs converge while dependent objects retry.
             for _ in $(seq 1 60); do
-              if kubectl apply --server-side --field-manager=argocd-controller -f "$manifests/workloads.yaml"; then
-                echo 'Static resources applied, not yet ready. Complete native first enrollment, then run household-bootstrap --check-ready before enabling Git reconciliation.'
+              if kubectl apply --server-side --field-manager=argocd-controller -f "$manifests/controllers.yaml"; then
+                echo 'Argo seed applied, not yet ready. Run household-bootstrap --check-ready, then apply the canonical root Application.'
                 return 0
               fi
               sleep 5
             done
-            echo 'Static application failed to converge; retained resources were not pruned.' >&2
+            echo 'Argo seed failed to converge.' >&2
             return 1
           }
 
@@ -357,8 +368,8 @@
                 cat <<'EOF'
               Usage: household-bootstrap-host DESCRIPTOR --confirm INSTANCE
 
-              Deliver the selected static stack to an existing Running Incus guest.
-              The command never creates/deletes guests, enables Argo, publishes Git,
+              Deliver the Argo seed to an existing Running Incus guest, then hand off to Git reconciliation.
+              The command never creates/deletes guests, publishes Git,
               changes host configuration, or generates credentials.
               EOF
               }
@@ -406,7 +417,7 @@
               image=${lib.escapeShellArg (toString image)}
               bootstrap=${lib.escapeShellArg "${bootstrap}/bin/household-bootstrap"}
               [ -f "$image" ] || die "pinned Kanidm image is unavailable: $image"
-              for file in namespaces.yaml workloads.yaml; do
+              for file in namespaces.yaml controllers.yaml root.yaml; do
                 [ -r "$manifests/$file" ] || die "bootstrap artifact is incomplete: $file"
               done
 
@@ -486,11 +497,11 @@
                   yq -r -N '
                     select(.spec.template.spec.nodeSelector."kubernetes.io/hostname" != null) |
                     .spec.template.spec.nodeSelector."kubernetes.io/hostname"
-                  ' "$manifests/workloads.yaml"
+                  ' "$manifests/controllers.yaml"
                   yq -r -N '
                     .. | select(tag == "!!map" and .key == "kubernetes.io/hostname") |
                     .values[]
-                  ' "$manifests/workloads.yaml"
+                  ' "$manifests/controllers.yaml"
                 } | sort -u
               )
               if [ -n "$declared_nodes" ]; then
@@ -533,7 +544,9 @@
                 cat /srv/secrets/runtime-secrets.yaml |
                 kubectl apply --server-side --force-conflicts --field-manager=homelab-runtime-secrets -f -
               "$bootstrap" --fresh-cluster
-              echo 'Static household bootstrap completed; run household-bootstrap --status or --check-ready.'
+              "$bootstrap" --check-ready
+              kubectl apply --server-side --field-manager=argocd-controller -f "$manifests/root.yaml"
+              echo 'Argo seed is ready and the canonical root Application was applied. Verify child synchronization before application acceptance.'
             '';
           };
         in

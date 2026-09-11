@@ -11,13 +11,12 @@ household-bootstrap --status
 household-bootstrap --fresh-cluster
 household-bootstrap --check-ready
 household-bootstrap --retry-jobs
-household-recovery export|restore|resume DESCRIPTOR POINT METRICS_DIRECTORY
 ```
 
-The `household-recovery` prototype remains unverified and must not be treated
-as routine backup or proof of guest-loss recovery. The commands below document
-the retained-local interface and its representative Grafana fixture; they do
-not duplicate the whole-stack guidance.
+The commands below document only the ordinary-Helm `retained-local` interface
+and its representative Grafana fixture. Household compute-loss recovery uses
+guest replacement plus Argo reconciliation; it does not use whole-stack export,
+restore, or resume commands.
 
 ## Ordinary Helm applications on retained storage
 

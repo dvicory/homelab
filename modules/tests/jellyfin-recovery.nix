@@ -11,10 +11,14 @@
       guestSystem = builtins.replaceStrings [ "darwin" ] [ "linux" ] system;
       guestPkgs = inputs.nixpkgs.legacyPackages.${guestSystem};
       guest = self.nixosConfigurations.compute-1.extendModules {
-        modules = [{
-          nixpkgs.hostPlatform = lib.mkForce guestSystem;
-          networking.firewall.allowedTCPPorts = lib.mkAfter [ 30096 ];
-        }];
+        modules = [
+          {
+            nixpkgs.hostPlatform = lib.mkForce guestSystem;
+            # Test access only: the scenario port-forwards the canonical
+            # ClusterIP service to the guest address for API verification.
+            networking.firewall.allowedTCPPorts = lib.mkAfter [ 8096 ];
+          }
+        ];
       };
       host = self.nixosConfigurations.hvn-hyp1.extendModules {
         modules = [ { nixpkgs.hostPlatform = lib.mkForce guestSystem; } ];
@@ -23,22 +27,6 @@
       hostConfig = host.config;
       descriptor = builtins.fromJSON hostConfig.environment.etc."homelab/compute.json".text;
       preseed = removeAttrs hostConfig.virtualisation.incus.preseed [ "config" ];
-      mounts =
-        map
-          (mount: {
-            inherit (mount)
-              what
-              where
-              options
-              bindsTo
-              after
-              ;
-          })
-          (
-            lib.filter (
-              mount: lib.hasPrefix "/run/homelab-compute/pinned-" mount.where
-            ) hostConfig.systemd.mounts
-          );
       nftables =
         lib.mapAttrsToList
           (name: table: {
@@ -59,39 +47,35 @@
           inherit
             descriptor
             preseed
-            mounts
             nftables
             ;
-          rootScript = hostConfig.systemd.services.media-namespace.script;
+          mediaPool = {
+            start = hostConfig.systemd.services."mergerfs-mnt-srv-media".serviceConfig.ExecStart;
+            preStart = hostConfig.systemd.services."mergerfs-mnt-srv-media".serviceConfig.ExecStartPre;
+            stop = hostConfig.systemd.services."mergerfs-mnt-srv-media".serviceConfig.ExecStop;
+            environment = hostConfig.environment.etc."mergerfs/srv-media.conf".text;
+          };
+          mediaRootScript = hostConfig.systemd.services.media-namespace.script;
           secretStageScript = hostConfig.systemd.services.compute-stage-secrets.script;
           secretStagePath = lib.makeBinPath hostConfig.systemd.services.compute-stage-secrets.path;
         }
       );
       scenario = ./jellyfin-recovery.py;
       computeGuest = guestPkgs.callPackage (inputs.self + "/pkgs/by-name/compute-guest/package.nix") { };
-      image = self.packages.${guestSystem}.jellyfin-image;
-      # Only this disposable fixture exposes a private NodePort. Production
-      # keeps the shared chart's ClusterIP service behind the authenticated edge.
-      application = (self.nixidyEnvs.${guestSystem}.prod-home.override (old: {
-        modules = old.modules ++ [{
-          applications.jellyfin.helm.releases.jellyfin.values = {
-            service.main = {
-              type = lib.mkForce "NodePort";
-              ports.http.nodePort = 30096;
-            };
-            controllers.main = {
-              initContainers.prepare.image = {
-                tag = lib.mkForce (lib.last (lib.splitString ":" image.imageReference));
-                pullPolicy = lib.mkForce "Never";
-              };
-              containers.main.image = {
-                tag = lib.mkForce (lib.last (lib.splitString ":" image.imageReference));
-                pullPolicy = lib.mkForce "Never";
-              };
-            };
-          };
-        }];
-      })).config.build.environmentPackage;
+      canonical = inputs.self + "/generated/manifests/prod-home";
+      seed = self.packages.${guestSystem}.household-bootstrap-manifests;
+      # Verbatim canonical inputs for the recovery test. The scenario copies
+      # these into a disposable local Git origin; only the test-local root
+      # Application and the fixture's repository URL are written at runtime.
+      # No image fixture lives here: K3s pulls the pinned registry images.
+      testRepo = pkgs.runCommand "jellyfin-recovery-repo" { } ''
+        mkdir -p "$out"/{apps,jellyfin,jellyfin-retained,seed}
+        cp ${canonical}/apps/Application-jellyfin.yaml ${canonical}/apps/Application-jellyfin-retained.yaml "$out/apps/"
+        cp ${canonical}/jellyfin/*.yaml "$out/jellyfin/"
+        cp ${canonical}/jellyfin-retained/*.yaml "$out/jellyfin-retained/"
+        cp ${seed}/* "$out/seed/"
+        cp ${canonical}/bootstrap.yaml "$out/canonical-bootstrap.yaml"
+      '';
       test = pkgs.testers.runNixOSTest {
         name = "jellyfin-recovery";
         globalTimeout = 4 * 60 * 60;
@@ -105,7 +89,10 @@
               cores = 4;
               memorySize = 5120;
               diskSize = 24576;
-              restrictNetwork = true;
+              # The recovery path pulls pinned registry images, so this
+              # integration test keeps normal network access. Deterministic
+              # contract checks stay in evaluation-time tests.
+              restrictNetwork = false;
               useNixStoreImage = true;
               writableStore = true;
               writableStoreUseTmpfs = false;
@@ -113,8 +100,7 @@
                 computeGuest
                 fixture
                 guestBundle
-                application
-                image
+                testRepo
               ];
 
               incus = {
@@ -129,6 +115,7 @@
               pkgs.bash
               pkgs.coreutils
               pkgs.findutils
+              pkgs.git
               pkgs.gnugrep
               pkgs.gnused
               pkgs.gnutar
@@ -151,6 +138,9 @@
             networking.dhcpcd.enable = hostConfig.networking.dhcpcd.enable;
             networking.firewall.interfaces.${descriptor.network} =
               hostConfig.networking.firewall.interfaces.${descriptor.network};
+            # The disposable Git origin fixture serves the guest over the
+            # Incus bridge; registry pulls use normal outbound access.
+            networking.firewall.allowedTCPPorts = [ 9418 ];
             networking.nftables.enable = true;
 
             systemd.tmpfiles.rules = [
@@ -167,8 +157,7 @@
               "python3 /tmp/jellyfin-recovery.py"
               " --bundle ${guestBundle}"
               " --fixture ${fixture}"
-              " --application ${application}"
-              " --image ${image}"
+              " --repo ${testRepo}"
               " --helper ${computeGuest}/bin/compute-guest < /dev/null",
               timeout=4 * 60 * 60,
           )
@@ -179,7 +168,7 @@
       # Run locally with native Apple virtualization; CI uses Linux KVM.
       legacyPackages.jellyfin-recovery-test = test // {
         # The same inputs can exercise the scenario in a disposable Linux VM.
-        inherit fixture application image guestBundle;
+        inherit fixture testRepo guestBundle;
       };
       checks = lib.optionalAttrs (system == "x86_64-linux") {
         jellyfin-recovery = test // {
