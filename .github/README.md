@@ -2,10 +2,9 @@
 
 ## CI
 
-`.github/workflows/ci.yml` runs only for pushes to `main` or `ci/**`, plus
-manual dispatches. Push a temporary `ci/<name>` branch to explicitly send a
-revision to the GitHub-hosted build farm. Ordinary branches and pull requests
-do not start the workflow.
+`.github/workflows/ci.yml` runs for pushes to `main` or `ci/**`, for pull
+requests, and for manual dispatches. Pull-request, `ci/**`, and manual runs are
+read-only; only `main` can publish build outputs.
 
 `modules/flake/ci.nix` automatically projects packages, checks, development
 shells, formatters, NixOS and Darwin systems, and Home Manager activation
