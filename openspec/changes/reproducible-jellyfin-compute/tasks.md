@@ -6,9 +6,9 @@
 
 ## 3. Persistent workload and managed resources
 
-- [x] 3.1 Generate Jellyfin namespace, explicitly bound retained PVs/PVCs, Recreate deployment, service, probes, non-root security context, resource bounds, read-only media, persistent config, and disposable cache. Build a pinned application artifact independently of the guest OS. Keep application-only HTTP behavior in `modules/tests/jellyfin_smoke.py`; platform orchestration and replacement acceptance are owned by `modules/tests/prod-home-replacement.{nix,py}`. The target runtime gate remains 6.3; physical GPU validation requires separate authorization.
-- [x] 3.2 Use stable Nix-delivered manifest names and one Argo reconciliation owner with retained-resource protection. Separate retained storage and namespace from disposable workload resources; introduce no custom inventory or pruning controller. Runtime retirement, reattachment, and replacement evidence remain part of the unexecuted target gate 6.3.
-- [x] 3.3 Provide operator-private access and bridge-aware enforcement for workload and Kubernetes management ports without public listeners, physical-uplink bridge changes, or broad trusted interfaces. Cover same-bridge guests as well as routed traffic; do not assume NAT or FORWARD rules alone suffice. Generate and inspect the local rules and tunnel boundaries; target reachability evidence remains in the unexecuted gate 6.2.
+- [x] 3.1 Generate Jellyfin namespace, explicitly bound retained PVs/PVCs, Recreate deployment, service, probes, non-root security context, resource bounds, read-only media, persistent config, and disposable cache. Build a pinned application artifact independently of the guest OS. Keep application-only HTTP behavior in `modules/tests/jellyfin_smoke.py`; platform orchestration and replacement acceptance are owned by `modules/tests/prod-home-replacement.{nix,py}`. Physical GPU validation requires separate authorization.
+- [x] 3.2 Use stable Nix-delivered manifest names and one Argo reconciliation owner with retained-resource protection. Separate retained storage and namespace from disposable workload resources; introduce no custom inventory or pruning controller.
+- [x] 3.3 Provide operator-private access and bridge-aware enforcement for workload and Kubernetes management ports without public listeners, physical-uplink bridge changes, or broad trusted interfaces. Cover same-bridge guests as well as routed traffic; do not assume NAT or FORWARD rules alone suffice. Generate and inspect the local rules and tunnel boundaries.
 
 ## 4. Lifecycle and recovery tooling
 

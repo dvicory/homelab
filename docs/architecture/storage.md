@@ -215,10 +215,10 @@ repository's transitional state are separate:
 
 ### Observed deployment
 
-No production storage inspection, successful software-cutover acceptance, or
-measured healthy runtime is recorded here. Do not infer deployed mounts,
-redundancy, provider state, or recovery readiness from repository desired
-state.
+The operator reports that production media remains gocryptfs-backed. This pass
+does not inspect or activate production. Repository desired state and disposable
+acceptance results do not establish the deployed `/srv/media` integration,
+redundancy, or recovery readiness.
 
 The target's replaceable tiers deliberately avoid spending capacity on
 redundancy for data that can be reacquired. Protected ZFS tiers deliberately
