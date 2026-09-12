@@ -624,7 +624,6 @@ def forward_start(runtime: Runtime, kubeconfig: Path) -> str:
     wait_for("Jellyfin port-forward", reachable, timeout=180)
     return "http://127.0.0.1:8096"
 
-
 def deliver_stack(runtime: Runtime, args: argparse.Namespace, workspace: Path) -> Path:
     """Run the shipped recovery control flow on a fresh cluster.
 
@@ -634,6 +633,13 @@ def deliver_stack(runtime: Runtime, args: argparse.Namespace, workspace: Path) -
     """
     kubeconfig = fetch_kubeconfig(runtime, workspace)
     run_bootstrap_host(args.bootstrap_host, runtime, kubeconfig, args.seed)
+    # Bisect point: if these are absent here, the shipped secret apply is
+    # broken; if present here but gone later, something in Argo sync removes
+    # them. Bounded to Secret identities so it stays readable on failure.
+    seeding = runtime.kubectl_json("get", "secrets", "-A", "-o", "json")["items"]
+    want = {(entry["namespace"], entry["name"]) for entry in runtime.descriptor["runtimeSecrets"].values()}
+    have = {(item["metadata"]["namespace"], item["metadata"]["name"]) for item in seeding}
+    check(want <= have, f"shipped bootstrap applies all staged Secrets (missing: {sorted(want - have)})")
     wait_argo_synced(kubeconfig, (ROOT_APP, *CHILD_APPS))
     return kubeconfig
 
