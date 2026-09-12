@@ -37,6 +37,20 @@ nix build -L --no-link --option sandbox relaxed .#checks.x86_64-linux.prod-home-
 The test explicitly opts out of the build sandbox for public registry pulls.
 Its guest egress setting alone does not grant the builder network access.
 
+To run only this acceptance on GitHub's x86_64 runner, select a branch or tag
+containing the revision to verify:
+
+```sh
+gh workflow run ci.yml --repo dvicory/homelab --ref "$REF" -f target=replacement
+```
+
+This diagnostic selection does not replace the full release checks. The test
+verifies its serial output channel before starting, then streams phase markers
+and bootstrap output. Kernel activity alone does not establish progress or pass.
+While bootstrap waits, bounded read-only snapshots show Argo pods/events, the
+Redis-init Job log, and active image downloads. Bootstrap has a one-hour
+process-group deadline with a 30-second forced-kill grace.
+
 ## Host preparation and activation
 
 1. Inspect the actual storage mounts and Incus inventory. Confirm encrypted

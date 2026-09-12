@@ -318,7 +318,24 @@
             check_argo
             kubectl apply --server-side --field-manager=argocd-controller -f "$manifests/namespaces.yaml"
             kubectl apply --server-side --field-manager=argocd-controller -f "$manifests/crds.yaml"
-            kubectl wait --for=condition=Established --timeout=180s -f "$manifests/crds.yaml"
+            # New CRDs can report null conditions, which kubectl wait rejects.
+            local deadline=$((SECONDS + 180)) remaining crds
+            while :; do
+              remaining=$((deadline - SECONDS))
+              if [ "$remaining" -le 0 ]; then
+                echo 'Timed out waiting for all Argo CRDs to become Established.' >&2
+                return 1
+              fi
+              crds=$(kubectl get --request-timeout="$remaining"s -f "$manifests/crds.yaml" -o json)
+              if jq -e '
+                (.items // [.]) | length > 0 and
+                all(.[]; any(.status.conditions[]?; .type == "Established" and .status == "True"))
+              ' <<<"$crds" >/dev/null; then
+                break
+              fi
+              sleep 1
+            done
+            echo 'All Argo CRDs are established.'
             # Honour the chart's pre-install boundary: Redis credentials must
             # exist before controller rollout deadlines start.
             if [ -s "$manifests/pre-install.yaml" ]; then
