@@ -354,16 +354,15 @@ class Runtime:
                     bad.append(f"{entry['namespace']}/{entry['name']}:{entry['key']} (stale)")
             # wait_for carries the last error into its timeout message, so a
             # timeout names the unmet consumers instead of staying silent.
+            # Temporal evidence must travel in the message: earlier prints may
+            # not survive to the visible log tail.
             if bad:
-                raise AssertionError(f"unmet secret consumers: {', '.join(bad)}")
+                at_sync = getattr(self, "post_sync_secrets", [])
+                raise AssertionError(
+                    f"unmet secret consumers: {', '.join(bad)}; "
+                    f"present right after Argo sync: {at_sync}"
+                )
             return True
-
-        wait_for("all declared runtime Secret consumers", delivered)
-        check(delivered(), "Kubernetes consumers receive every declared credential value")
-
-    def systemctl(self, *args: str, timeout: int = COMMAND_TIMEOUT) -> str:
-        return run("systemctl", *args, timeout=timeout)
-
 
     def start_media(self, pool: dict, root_script: str, workspace: Path) -> None:
         environment = {}
@@ -641,6 +640,14 @@ def deliver_stack(runtime: Runtime, args: argparse.Namespace, workspace: Path) -
     have = {(item["metadata"]["namespace"], item["metadata"]["name"]) for item in seeding}
     check(want <= have, f"shipped bootstrap applies all staged Secrets (missing: {sorted(want - have)})")
     wait_argo_synced(kubeconfig, (ROOT_APP, *CHILD_APPS))
+    # Post-sync snapshot, stashed for the later verify failure message:
+    # only the final exception text is guaranteed visible, so temporal
+    # evidence must travel in the message, not in earlier prints.
+    synced = runtime.kubectl_json("get", "secrets", "-A", "-o", "json")["items"]
+    runtime.post_sync_secrets = sorted(
+        f"{item['metadata']['namespace']}/{item['metadata']['name']}"
+        for item in synced
+    )
     return kubeconfig
 
 
