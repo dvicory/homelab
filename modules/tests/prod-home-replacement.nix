@@ -208,10 +208,14 @@
             testScript = ''
               start_all()
               fixture_host.wait_for_unit("incus.service", timeout=600)
+              console = "/dev/ttyS0"
+              fixture_host.succeed(f"echo 'Replacement serial output ready' > {console}")
+              fixture_host.wait_for_console_text("Replacement serial output ready", timeout=10)
               fixture_host.copy_from_host_via_shell("${scenario}", "/tmp/prod-home-replacement.py")
               fixture_host.copy_from_host_via_shell("${smoke}", "/tmp/jellyfin_smoke.py")
-              (status, output) = fixture_host.execute(
-                  "python3 /tmp/prod-home-replacement.py 2>&1"
+              # The driver streams the VM console while execute waits for exit.
+              (status, _) = fixture_host.execute(
+                  "python3 -u /tmp/prod-home-replacement.py"
                   " --bundle ${guestBundle}"
                   " --fixture ${fixture}"
                   " --repo ${testRepo}"
@@ -219,11 +223,9 @@
                   " --smoke /tmp/jellyfin_smoke.py"
                   " --bootstrap-host ${bootstrapHost}/bin/household-bootstrap-host"
                   " --helper ${computeGuest}/bin/compute-guest"
-                  " < /dev/null",
+                  f" < /dev/null > {console} 2>&1",
                   timeout=4 * 60 * 60,
               )
-              # Preserve scenario assertions and phase timings in the build log.
-              print(output)
               assert status == 0, "prod-home-replacement scenario failed"
             '';
           }).overrideTestDerivation

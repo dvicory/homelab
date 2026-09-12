@@ -87,6 +87,7 @@ def check(condition: bool, message: str) -> None:
 
 
 def wait_for(label: str, predicate, timeout: int = WAIT_TIMEOUT):
+    print(f"WAIT: {label} (timeout: {timeout}s)", flush=True)
     deadline = time.monotonic() + timeout
     last_error: Exception | None = None
     while time.monotonic() < deadline:
@@ -584,20 +585,52 @@ def fetch_kubeconfig(runtime: Runtime, workspace: Path) -> Path:
 def run_bootstrap_host(bootstrap_host: Path, runtime: Runtime, kubeconfig: Path, seed: Path) -> None:
     """Invoke the shipped household-bootstrap-host against the fresh guest."""
     env = {**os.environ, "KUBECONFIG": str(kubeconfig), "HOUSEHOLD_BOOTSTRAP_MANIFESTS": str(seed)}
-    result = subprocess.run(
-        [str(bootstrap_host), str(runtime.spec_path), "--confirm", runtime.instance],
-        env=env, text=True, capture_output=True, timeout=3600, check=False,
-    )
-    print(result.stdout, flush=True)
-    if result.returncode != 0:
-        raise ScenarioError(f"household-bootstrap-host failed ({result.returncode}): {result.stderr.strip()}")
+    with phase("household-bootstrap-host (timeout: 3600s)"):
+        # GNU timeout bounds the bootstrap process group, including its children.
+        with subprocess.Popen(
+            ["timeout", "--kill-after=30s", "3600s", str(bootstrap_host),
+             str(runtime.spec_path), "--confirm", runtime.instance],
+            env=env,
+        ) as process:
+            while True:
+                try:
+                    status = process.wait(timeout=60)
+                    break
+                except subprocess.TimeoutExpired:
+                    print("BOOTSTRAP WAIT: collecting read-only Argo diagnostics", flush=True)
+                    for command in (
+                        ["kubectl", "--request-timeout=10s", "-n", "argocd", "get", "pods", "-o", "wide"],
+                        ["kubectl", "--request-timeout=10s", "-n", "argocd", "get", "events", "--sort-by=.metadata.creationTimestamp"],
+                        ["kubectl", "--request-timeout=10s", "-n", "argocd", "logs", "job/argocd-redis-secret-init", "--tail=40", "--pod-running-timeout=1s"],
+                        ["incus", "--force-local", "--project", runtime.project, "exec", runtime.instance,
+                         "--", "k3s", "ctr", "-n", "k8s.io", "content", "active"],
+                    ):
+                        if process.poll() is not None:
+                            break
+                        print(f"DIAGNOSTIC: {shlex.join(command)}", flush=True)
+                        try:
+                            subprocess.run(command, env=env, timeout=15, check=False)
+                        except subprocess.TimeoutExpired:
+                            print("DIAGNOSTIC: command exceeded 15s; bootstrap deadline unchanged", flush=True)
+    if status != 0:
+        raise ScenarioError(f"household-bootstrap-host failed ({status}); see streamed output above")
 
 
 def wait_argo_synced(kubeconfig: Path, names: tuple[str, ...], timeout: int = SYNC_TIMEOUT) -> None:
+    last_status = {}
     def synced() -> bool:
         for name in names:
             app = json.loads(kubectl_outer(kubeconfig, "get", "application", name, "-n", "argocd", "-o", "json"))
             status = app.get("status", {})
+            summary = {
+                "sync": status.get("sync", {}).get("status", "Unknown"),
+                "health": status.get("health", {}),
+                "operation": status.get("operationState", {}).get("message", ""),
+                "conditions": status.get("conditions", []),
+            }
+            if last_status.get(name) != summary:
+                print(f"ARGO {name}: {json.dumps(summary)}", flush=True)
+                last_status[name] = summary
             if status.get("sync", {}).get("status") != "Synced":
                 return False
             if status.get("health", {}).get("status") != "Healthy":

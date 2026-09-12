@@ -7,6 +7,14 @@ on:
       - "ci/**"
   pull_request:
   workflow_dispatch:
+    inputs:
+      target:
+        description: Build the full projection or only replacement acceptance
+        type: choice
+        default: all
+        options:
+          - all
+          - replacement
 
 permissions:
   actions: read
@@ -28,29 +36,12 @@ jobs:
   # be static and needs no evaluation stage or cross-job matrix handoff.
   build:
     name: ${{ matrix.group }} (${{ matrix.system }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.system == 'x86_64-linux' && 'ubuntu-24.04' || matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'macos-14' }}
     strategy:
       fail-fast: false
       matrix:
-        system:
-          - x86_64-linux
-          - aarch64-linux
-          - aarch64-darwin
-        group:
-          - packages
-          - checks
-          - devShells
-          - formatters
-          - nixosConfigurations
-          - darwinConfigurations
-          - homeConfigurations
-        include:
-          - system: x86_64-linux
-            os: ubuntu-24.04
-          - system: aarch64-linux
-            os: ubuntu-24.04-arm
-          - system: aarch64-darwin
-            os: macos-14
+        system: ${{ fromJSON(inputs.target == 'replacement' && '["x86_64-linux"]' || '["x86_64-linux","aarch64-linux","aarch64-darwin"]') }}
+        group: ${{ fromJSON(inputs.target == 'replacement' && '["checks"]' || '["packages","checks","devShells","formatters","nixosConfigurations","darwinConfigurations","homeConfigurations"]') }}
     steps:
       - name: Enable KVM for native NixOS tests
         if: matrix.system == 'x86_64-linux' && matrix.group == 'checks'
@@ -114,12 +105,18 @@ jobs:
         env:
           SYSTEM: ${{ matrix.system }}
           GROUP: ${{ matrix.group }}
+          TARGET: ${{ inputs.target }}
         run: |
           set -euo pipefail
           # Select derivation outputs explicitly: a bare .drv installable only
           # realises the derivation file, not the build it describes.
-          attr=".#ciJobs.$SYSTEM.$GROUP"
-          derivations=$(nix eval --json "$attr" --apply 'x: map (d: d.drvPath) (builtins.attrValues x)' | jq -r '.[] + "^*"')
+          if [ "$TARGET" = replacement ]; then
+            attr=".#checks.x86_64-linux.prod-home-replacement"
+            derivations="$(nix eval --raw "$attr.drvPath")^*"
+          else
+            attr=".#ciJobs.$SYSTEM.$GROUP"
+            derivations=$(nix eval --json "$attr" --apply 'x: map (d: d.drvPath) (builtins.attrValues x)' | jq -r '.[] + "^*"')
+          fi
           if [ -z "$derivations" ]; then
             echo "no jobs in $attr"
             exit 0
