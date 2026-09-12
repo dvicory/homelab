@@ -562,7 +562,7 @@
               # manifest itself so a narrowed seed cannot silently drop secret
               # targets (server-side apply fails objects in missing namespaces).
               secret_namespaces=$(incus_cmd exec "$instance" --mode=non-interactive -- \
-                cat /srv/secrets/runtime-secrets.yaml | yq -r '.metadata.namespace' | sort -u) ||
+                cat /srv/secrets/runtime-secrets.yaml | yq -N -r '.metadata.namespace | select(. != null)' | sort -u) ||
                 die 'unable to list secret namespaces from the staged manifest'
               while IFS= read -r secret_namespace; do
                 [ -n "$secret_namespace" ] || die 'staged Secret without a namespace'
