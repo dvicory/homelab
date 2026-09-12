@@ -369,8 +369,11 @@ class Runtime:
         for branch in branches:
             branch.mkdir(parents=True, exist_ok=True)
             # Disposable tmpfs branches stand in for the host's decrypted branch
-            # mounts. Pool refusal, layout, and attachment behavior stay production.
-            run("mount", "-t", "tmpfs", "-o", "mode=0755,size=1g", "tmpfs", str(branch))
+            # mounts. The cap is not a reservation: only written bytes consume
+            # guest memory. It must clear mergerfs' default 4 GiB minfreespace
+            # or every create fails with ENOSPC; production branches are
+            # terabytes and never notice.
+            run("mount", "-t", "tmpfs", "-o", "mode=0755,size=5g", "tmpfs", str(branch))
             self.media_branches.append(branch)
         self.media_environment = environment
         self.media_stop = pool["stop"]
