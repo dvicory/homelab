@@ -345,10 +345,18 @@ class Runtime:
         def delivered() -> bool:
             items = self.kubectl_json("get", "secrets", "-A", "-o", "json")["items"]
             found = {(item["metadata"]["namespace"], item["metadata"]["name"]): item for item in items}
-            return all(
-                base64.b64decode(found.get((entry["namespace"], entry["name"]), {}).get("data", {}).get(entry["key"], "")) == values[source]
-                for source, entry in self.descriptor["runtimeSecrets"].items()
-            )
+            bad = []
+            for source, entry in self.descriptor["runtimeSecrets"].items():
+                got = found.get((entry["namespace"], entry["name"]), {}).get("data", {}).get(entry["key"], "")
+                if not got:
+                    bad.append(f"{entry['namespace']}/{entry['name']}:{entry['key']} (absent)")
+                elif base64.b64decode(got) != values[source]:
+                    bad.append(f"{entry['namespace']}/{entry['name']}:{entry['key']} (stale)")
+            # wait_for carries the last error into its timeout message, so a
+            # timeout names the unmet consumers instead of staying silent.
+            if bad:
+                raise AssertionError(f"unmet secret consumers: {', '.join(bad)}")
+            return True
 
         wait_for("all declared runtime Secret consumers", delivered)
         check(delivered(), "Kubernetes consumers receive every declared credential value")
