@@ -107,6 +107,12 @@
             {
               system.stateVersion = "26.05";
 
+              # Production hosts materialize the storage-capability groups
+              # from the group registry; the media-namespace layout script
+              # installs paths owned by group media (GID 505, see
+              # modules/den/groups/default.nix).
+              users.groups.media.gid = 505;
+
               virtualisation = {
                 cores = 4;
                 memorySize = 5120;
