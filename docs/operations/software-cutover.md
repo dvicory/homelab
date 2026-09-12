@@ -51,6 +51,36 @@ While bootstrap waits, bounded read-only snapshots show Argo pods/events, the
 Redis-init Job log, and active image downloads. Bootstrap has a one-hour
 process-group deadline with a 30-second forced-kill grace.
 
+## Focused storage check
+
+For a storage-only CI run, select a revision containing the desired manifests
+and check:
+
+```sh
+gh workflow run ci.yml --repo dvicory/homelab --ref "$REF" -f target=storage
+```
+
+This dispatch runs exactly one check,
+`checks.x86_64-linux.compute-storage-zfs`. The equivalent local build on an
+x86_64 Linux/KVM builder is:
+
+```sh
+nix build -L --no-link --option sandbox relaxed .#checks.x86_64-linux.compute-storage-zfs
+```
+
+The focused check is a disposable x86 NixOS/ZFS/Jellyfin storage test using
+the production-declared kernel 6.18.49, ZFS 2.4.4, a real ZFS-backed Incus
+pool, and pinned Jellyfin manifests. Native observations are diagnostic;
+overlayfs must show real Jellyfin `Healthy` responses under the unchanged 1Gi
+limit. Successful runs upload the build log and copied check output. Failed runs
+upload the build log without asserting successful check output. This is
+not the full `prod-home-replacement` acceptance, does not make an Argo or
+recovery claim, and changes no production system.
+
+The workflow resolves the check's `.drvPath` and builds all derivation outputs
+explicitly with `^*`, using the durable/upstream caches instead of Hestia's
+RAM-heavy path for this focused run.
+
 ## Host preparation and activation
 
 1. Inspect the actual storage mounts and Incus inventory. Confirm encrypted
