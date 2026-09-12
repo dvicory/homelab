@@ -124,6 +124,10 @@ jobs:
             exit 0
           fi
           echo "building $(echo "$derivations" | wc -l) job(s) from $attr"
+          if [ "$GROUP" = checks ] && [ "$SYSTEM" = x86_64-linux ]; then
+            # TEMPORARY: log the test derivation under evaluation.
+            nix eval --raw ".#checks.$SYSTEM.prod-home-replacement.drvPath" || true
+          fi
           # shellcheck disable=SC2086
           nix build -L --no-link $derivations
 

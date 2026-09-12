@@ -730,6 +730,9 @@ def verify_private_endpoints(runtime: Runtime) -> None:
 
 
 def run_scenario(args: argparse.Namespace) -> None:
+    # Provenance stamp: binds a run to exact scenario content. A green run
+    # without this line in its log never executed this file.
+    print(f"PROVENANCE scenario={hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}", flush=True)
     spec = importlib.util.spec_from_file_location("jellyfin_smoke", args.smoke)
     smoke = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(smoke)
