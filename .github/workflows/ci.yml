@@ -9,12 +9,13 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: Build the full projection or only replacement acceptance
+        description: Build the full projection, replacement acceptance, or focused storage check
         type: choice
         default: all
         options:
           - all
           - replacement
+          - storage
 
 permissions:
   actions: read
@@ -40,11 +41,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        system: ${{ fromJSON(inputs.target == 'replacement' && '["x86_64-linux"]' || '["x86_64-linux","aarch64-linux","aarch64-darwin"]') }}
-        group: ${{ fromJSON(inputs.target == 'replacement' && '["checks"]' || '["packages","checks","devShells","formatters","nixosConfigurations","darwinConfigurations","homeConfigurations"]') }}
+        system: ${{ fromJSON(inputs.target == 'storage' && '["x86_64-linux"]' || inputs.target == 'replacement' && '["x86_64-linux"]' || '["x86_64-linux","aarch64-linux","aarch64-darwin"]') }}
+        group: ${{ fromJSON(inputs.target == 'storage' && '["storage"]' || inputs.target == 'replacement' && '["checks"]' || '["packages","checks","devShells","formatters","nixosConfigurations","darwinConfigurations","homeConfigurations"]') }}
     steps:
       - name: Enable KVM for native NixOS tests
-        if: matrix.system == 'x86_64-linux' && matrix.group == 'checks'
+        if: matrix.system == 'x86_64-linux' && (matrix.group == 'checks' || matrix.group == 'storage')
         run: |
           test -c /dev/kvm
           sudo chmod a+rw /dev/kvm
@@ -57,6 +58,7 @@ jobs:
 
       # nothing-but-nix's conservative "holster" mode, shared inline because
       # the action invokes mutable srz-zumix/post-run-action@v3 internally.
+
       - &prepare-nix-storage
         name: Prepare Nix storage
         if: runner.os == 'Linux'
@@ -95,22 +97,30 @@ jobs:
       # Hestia v3 assembles whole NARs in RAM. Multi-GiB system images use
       # the durable/upstream caches instead until Hestia has bounded reads.
       - name: Start Hestia cache
-        if: matrix.group != 'nixosConfigurations'
+        if: matrix.group != 'nixosConfigurations' && inputs.target != 'storage'
         uses: Mic92/hestia@f1f4df2801140a36398ed423533c8460618539df # v3.0.1
         with:
           version: v3.0.1
           upstream-cache-filter: true
 
       - name: Build
+        id: storage-build
         env:
           SYSTEM: ${{ matrix.system }}
           GROUP: ${{ matrix.group }}
           TARGET: ${{ inputs.target }}
         run: |
           set -euo pipefail
+          if [ "$TARGET" = storage ]; then
+            mkdir -p storage-artifacts
+            exec > >(tee -a storage-build.log) 2>&1
+          fi
           # Select derivation outputs explicitly: a bare .drv installable only
           # realises the derivation file, not the build it describes.
-          if [ "$TARGET" = replacement ]; then
+          if [ "$TARGET" = storage ]; then
+            attr=".#checks.x86_64-linux.compute-storage-zfs"
+            derivations="$(nix eval --raw "$attr.drvPath")^*"
+          elif [ "$TARGET" = replacement ]; then
             attr=".#checks.x86_64-linux.prod-home-replacement"
             derivations="$(nix eval --raw "$attr.drvPath")^*"
           else
@@ -123,12 +133,43 @@ jobs:
           fi
           echo "building $(echo "$derivations" | wc -l) job(s) from $attr"
           build_options=(-L --no-link --stdin --keep-going)
-          if [ "$GROUP" = checks ] && [ "$SYSTEM" = x86_64-linux ]; then
-            # Only the online replacement test opts out; other derivations
-            # retain their normal sandbox under relaxed mode.
+          if [ "$SYSTEM" = x86_64-linux ] && { [ "$GROUP" = checks ] || [ "$GROUP" = storage ]; }; then
+            # Online x86 checks explicitly permit registry/network access.
             build_options+=(--option sandbox relaxed)
           fi
+          if [ "$TARGET" = storage ]; then
+            output_paths=storage-artifacts/output-paths.txt
+            build_status=0
+            printf '%s\n' "$derivations" |
+              nix build "${build_options[@]}" --print-out-paths |
+              tee "$output_paths" || build_status=$?
+            if [ "$build_status" -eq 0 ]; then
+              while IFS= read -r output; do
+                [ -n "$output" ] || continue
+                cp -a "$output" "storage-artifacts/$(basename "$output")"
+              done < "$output_paths"
+            else
+              rm -f "$output_paths"
+            fi
+            exit "$build_status"
+          fi
           printf '%s\n' "$derivations" | nix build "${build_options[@]}"
+
+      - name: Upload storage build log
+        if: always() && inputs.target == 'storage'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: storage-build-log-${{ github.run_id }}
+          path: storage-build.log
+          if-no-files-found: warn
+
+      - name: Upload successful storage check output
+        if: always() && inputs.target == 'storage' && steps.storage-build.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: storage-check-output-${{ github.run_id }}
+          path: storage-artifacts
+          if-no-files-found: warn
 
   publish:
     name: Publish ${{ matrix.system }} to Cachix
