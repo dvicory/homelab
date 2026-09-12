@@ -113,6 +113,27 @@
               # modules/den/groups/default.nix).
               users.groups.media.gid = 505;
 
+              # The lifecycle helper requires root subordinate coverage for
+              # the compute range and every identity-mapped capability GID.
+              # NixOS defaults provide neither, so declare both from the
+              # same descriptor the helper verifies against.
+              users.users.root.subUidRanges = [
+                {
+                  startUid = descriptor.idmapBase;
+                  count = descriptor.idmapSize;
+                }
+              ];
+              users.users.root.subGidRanges = [
+                {
+                  startGid = descriptor.idmapBase;
+                  count = descriptor.idmapSize;
+                }
+              ]
+              ++ map (row: {
+                startGid = row.hostid;
+                count = 1;
+              }) (lib.filter (row: row.nsid == row.hostid) descriptor.idmap.gid);
+
               virtualisation = {
                 cores = 4;
                 memorySize = 5120;

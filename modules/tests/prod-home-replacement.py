@@ -840,6 +840,14 @@ def run_scenario(args: argparse.Namespace) -> None:
                 if not any(owner == "root" and int(base) <= start and int(base) + int(count) >= end
                            for owner, base, count in rows):
                     staged.append(f"root:{start}:{end - start}")
+                if kind == "gid":
+                    # The helper also requires root coverage for every
+                    # identity-mapped capability GID, not just the range.
+                    for row in descriptor["idmap"]["gid"]:
+                        if row["nsid"] == row["hostid"] and not any(
+                                owner == "root" and int(base) <= row["hostid"] < int(base) + int(count)
+                                for owner, base, count in rows):
+                            staged.append(f"root:{row['hostid']}:1")
                 path.write_text("\n".join(staged) + "\n")
 
             retained = descriptor["retainedPaths"]["jellyfin-config"]
