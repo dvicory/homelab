@@ -1,7 +1,6 @@
 ## Context
 
-See [proposal.md](proposal.md) for motivation. This section records only the
-current state and constraints that shape the approach.
+This section records only the current state and constraints that shape the approach.
 
 Evidence from the current repository:
 
@@ -81,9 +80,8 @@ exporting the library separately (the status quo) — it cannot express the link
 that import depends on. Giving the player the whole namespace read-only was also
 rejected: it would let it see in-progress downloads.
 
-The writable media boundary is the host-owned namespace. The task list repoints
-acquisition consumers as implementation work; that work does not require
-changing the current media provider or physical disks.
+The writable media boundary is the host-owned namespace. Repointing acquisition
+consumers does not change the current media provider or physical disks.
 
 ### One pooling instance per namespace
 
@@ -142,10 +140,10 @@ UID and primary GID and receives the capability group; it does not become the
 storage group, and its identity is never written into shared storage metadata.
 
 The contract is therefore the stable GID. The attachment mechanism is an
-implementation detail beneath it and may differ per consumer: an unprivileged
-container today, a filesystem-sharing mechanism for a VM later, NFS for another
-host. The durable number is the same in every case, which is what makes the
-namespace portable across hosts, restores and direct disk inspection.
+implementation detail beneath it and may differ by consumer: an unprivileged
+container, a filesystem-sharing mechanism, or NFS. The durable number is the
+same in every case, which is what makes the namespace portable across hosts,
+restores and direct disk inspection.
 
 Explicitly rejected: letting the persistent on-disk GID become the current
 container boundary's translated value (`idmapBase + guestGid`). That number is
@@ -165,8 +163,7 @@ capability GID is mapped identically on both sides, and the workload holds it
 translated service UID and bare capability GID on the host, the guest sees the
 capability under its fleet number, the same UID without the capability is
 denied, container root is denied, and hardlink, rename, unlink and append all
-behave. Restarting preserves all of it. This low-level contract is separate from
-the unexecuted replacement acceptance.
+behave. Restarting preserves all of it.
 
 Only capabilities that actually have to cross a given boundary receive such a
 mapping, so the exceptions stay as narrow as possible: the mapping is derived
@@ -208,29 +205,15 @@ an export, or another host.
   schema exposes no second root-pool device, so "protected" describes intent
   rather than current redundancy → the architecture document records this as an
   open decision, and nothing here depends on redundancy existing yet.
-- **This contract is adopted before the mover exists**, so archive placement
-  cannot be exercised immediately → the mover is a separate, later task and the
-  contract is written so that a single-tier deployment still satisfies it.
+- **Archive placement movement is not exercised until a link-aware mover exists**
+  → keep the requirement explicit; a single-tier deployment still satisfies the
+  contract.
 
 ## Migration Plan
 
-No content migration is in scope. Ordering matters because the namespace is
-cheaper to change while empty:
-
-1. Declare the host semantic roots and their identity, with no content present.
-2. Reconcile pooling so one instance serves the namespace, with creation
-   placement and fail-closed attachment.
-3. Repoint the writable media boundary from compute-retained state to the
-   namespace, and reduce the read-only export to a view of it. This is the
-   selected current boundary; the step does not imply a provider or physical
-   storage migration.
-4. Verify placement, linking, capacity reporting, permission inheritance, and
-   missing-branch refusal against synthetic content.
-5. Only then import real content.
-
-Rollback for steps 1–4 is reverting the configuration while no content depends
-on it. Once real content is imported, reverting becomes a data migration and is
-out of scope here.
+No content migration is in scope. Run synthetic placement, linking, capacity,
+permission, and fail-closed checks before importing real content. Reverting
+after content import would be a data migration outside this change.
 
 ## Open Questions
 
@@ -242,5 +225,5 @@ out of scope here.
   than becoming a general idmap policy language.
 - Internal directory naming beneath each tier root is not fixed by this change.
 - Watermark and free-space reserve values are operational tuning.
-- Whether archive branches join the namespace immediately or in a later phase
-  does not change the contract, only when the second placement exists.
+- Whether archive branches join the namespace does not change the contract; it
+  only determines the deployed placement set.

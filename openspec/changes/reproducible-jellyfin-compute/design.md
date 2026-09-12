@@ -1,17 +1,15 @@
 ## Context
 
-The operator approved a shared unprivileged Incus compute guest, persistent
-Jellyfin, independent application releases, and declared maintenance outages.
+The design uses a shared unprivileged Incus compute guest, persistent Jellyfin,
+independent application releases, and declared maintenance outages.
 [ADR-0001](../../../docs/architecture/decisions/0001-unprivileged-application-compute.md)
 records the isolation choice. The [delta spec](specs/compute-recovery/spec.md)
-contains the proposed guarantees; it is not current specification authority.
-Production inspection, secrets, deployment, and destruction remain separately
-authorized gates.
+contains proposed guarantees; current specs remain authoritative.
+Production inspection, secrets, deployment, and destruction require separate
+authorization.
 
 Nix/Den owns concrete configuration. Operational steps live in the
-[household operations runbook](../../../docs/operations.md), not in this
-design. Historical branches and Sini's configuration informed the choices but
-do not establish contracts or supply a configuration bundle to transplant.
+[household operations runbook](../../../docs/operations.md), not in this design.
 
 ## Ownership and lifecycle
 
@@ -42,8 +40,8 @@ do not establish contracts or supply a configuration bundle to transplant.
   collisions; do not recursively change existing data ownership.
 - Keep the container unprivileged with explicit grants. Do not add broad syscall
   interception, host sockets, writable host-global trees, or disabled confinement
-  to obtain startup. Cilium/BPF delegation and hardware access require separate
-  compatibility evidence; they are deferred, not declared impossible.
+  to obtain startup. Cilium/BPF delegation and hardware access require
+  compatibility evidence and remain outside this slice.
 - Keep the guest OS and application manifests as separate artifacts. The
   `prod-home-replacement` acceptance uses the shipped
   `household-bootstrap-host`, a disposable Git origin, and real registry pulls
@@ -66,7 +64,8 @@ Stable read-only export parents and native mount propagation separate media
 availability from node boot. Validate actual source mounts, not directory
 existence. Loss must deny access without exposing a substitute directory;
 reattachment must work without restarting the node. Probes alone do not provide
-that storage guarantee. Do not pre-grant future applications write access.
+that storage guarantee. Do not pre-grant write access to applications not
+declared in this slice.
 
 Stage identity through existing agenix/rekey ownership, atomically under the
 lifecycle lock. Derive the public key from the private key before trusting it.
@@ -83,7 +82,7 @@ Household/public access and shared routing/TLS remain separate decisions.
 Declared outages are acceptable. Shared compute does not imply shared workload
 placement: Jellyfin may remain storage-host-bound; other applications need not.
 More nodes alone provide neither portable storage nor a highly available control
-plane. Multi-node maintenance needs a later capacity/drain/storage review.
+plane. Multi-node maintenance requires a capacity, drain, and storage review.
 
 Use standard commands, not an application manager, backup engine, plugin
 framework, or automatic rollback controller. Before an application upgrade,
@@ -113,12 +112,12 @@ pulls, first Argo reconciliation, media loss/return, compute replacement, and
 second Argo reconciliation. Local evaluation or build output does not close
 target boot, storage, or destructive-replacement evidence.
 
-After separate permission, inspect actual host mounts/encryption, capacity,
+With separate authorization, inspect actual host mounts/encryption, capacity,
 kernel/cgroups/confinement, ID and route collisions, existing Incus resources,
 media permissions, and independent management access. Stop for any required
 permission/isolation expansion; configuration evaluation cannot settle these.
 
-Deploy only after that gate. Prove real playback before obtaining guest-deletion
-approval, then perform the destruction/rebuild acceptance. Local evidence does
-not close those target gates or prove recovery from physical-host loss.
-Independent backup and restore is a later capability, not an implied result.
+Deployment and destructive replacement require separate authorization. Prove real
+playback before destruction, then perform the destruction/rebuild acceptance.
+Local evidence does not close those target gates or prove recovery from
+physical-host loss. Independent backup and restore is outside this change.

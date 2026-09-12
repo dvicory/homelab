@@ -1,17 +1,20 @@
-# Media4-first LUKS/XFS conversion
+# Planned media4-first LUKS2/XFS conversion
 
-Status: follow-up outline, not an executable or authorized migration. First
-complete the [software cutover](software-cutover.md) with the existing gocryptfs
-media1–media3 providers. No physical conversion was performed to prepare this
-outline.
+Status: follow-up outline, not an executable or authorized migration. No
+physical conversion or successful media acceptance has been performed. First
+complete the [software cutover](software-cutover.md) with the existing
+gocryptfs media1–media3 providers. This operation is separate and does not
+prepare or prove that cutover.
 
 ## Required repository changes before provisioning
 
-- Change only media4's future filesystem declaration from Btrfs to XFS. Keep
-  the current gocryptfs backing filesystems unchanged. Update the provisioning
-  recipe/help examples to agree; do not turn this into a fleet-wide XFS rule.
-  Ensure the provisioning environment supplies `xfsprogs`/`mkfs.xfs`; the
-  current provisioner package does not include it.
+- In repository desired state, media4 remains unprovisioned with a Btrfs
+  declaration. Before physical provisioning, change only media4's future
+  filesystem declaration and provisioning help to XFS above LUKS2. Keep the
+  current media1–media3 gocryptfs backing filesystems unchanged; do not turn
+  this into a fleet-wide XFS rule. The current provisioner package does not
+  include `xfsprogs`/`mkfs.xfs`, so the provisioning environment must supply
+  it.
 - Remove the unconditional `discard` from `disk.luks-storage` crypttab output
   for these HDDs. The minimum change is `luks`; SSD discard policy can be
   explicit if needed later.
@@ -32,7 +35,8 @@ outline.
 Relevant sources: [LUKS aspect](../../modules/den/aspects/disk/luks-storage.nix),
 [host declaration](../../modules/den/hosts/hvn-hyp1/default.nix), and
 [provisioner](../../pkgs/by-name/prepare-luks-storage/prepare-luks-storage.sh).
-Media4 is currently `provisioned = false` and is not an active mergerfs branch.
+In repository desired state, media4 remains `provisioned = false` and is not an
+active mergerfs branch.
 
 ## Provisioning and recovery gate
 
@@ -69,9 +73,10 @@ Media4 is currently `provisioned = false` and is not an active mergerfs branch.
    contents, metadata and hardlink groups, not just total sizes. Preserve the
    untouched source if any check fails.
 4. Change the pool's declared branch set to replace the source with the
-   verified destination. Use a controlled restart with all intended providers
-   mounted; validate `/srv/media`, authorized writes, hardlinks and Jellyfin
-   reads. Follow the measured pod-remount procedure.
+   verified destination. Apply the change with a controlled restart of the
+   mergerfs service after all intended providers are mounted; do not attempt a
+   live branch reload. Validate `/srv/media`, authorized writes, hardlinks and
+   Jellyfin reads. Follow the measured pod-remount procedure.
 5. Only after explicit acceptance may the retired source disk be wiped and
    provisioned as the next empty LUKS/XFS destination. The sequence can be
    media1 → media4, media2 → converted media1, media3 → converted media2,

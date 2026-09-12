@@ -1,18 +1,13 @@
-Remaining tasks cover consolidation and broader acceptance. Local implementation and
+Open tasks cover consolidation and broader acceptance. Local implementation and
 disposable Linux verification are authorized; production inspection, credentials,
-deployment, and destructive production operations remain separately gated.
-
-The [household operations runbook](../../../docs/operations.md) records the
-current declaration tables, command boundaries and remaining gates. It does not
-claim completion of Git handoff, ingress, backup/restore or production
-acceptance.
+deployment, and destructive production operations require separate authorization.
 
 ## 1. Shared delivery and ownership
 
-- [x] 1.2 Integrate Sini-style Den cluster composition, Nixidy and pinned upstream charts. Build the environment/bootstrap outputs and prove cluster settings reach the selected manifests without duplicating host metadata.
-- [ ] 1.3 Provide Argo application reconciliation, protected retained resources and the narrowed static Argo seed plus explicit root-Application handoff. Distinguish successful apply from readiness and explicit first-enrollment prerequisites. Exercise delivery, readiness, handoff and resource retirement against a disposable Git source; demonstrate a single owner where the static seed applies without Git and only the root handoff enables Git reconciliation.
-- [ ] 1.4 Consolidate placement, environment domains and application endpoints through existing Den owners. Reject missing environment/aspect references and route/backend mismatches with focused evaluation checks; verify current placements and endpoint identities are preserved without a new application framework.
-- [ ] 1.5 Add a read-only Incus adoption/conflict gate before preseed can modify existing resources. Exercise absent, matching and conflicting envelopes in the disposable environment; refuse conflicts before mutation.
+- [x] 1.1 Integrate Sini-style Den cluster composition, Nixidy and pinned upstream charts. Build the environment/bootstrap outputs and prove cluster settings reach the selected manifests without duplicating host metadata.
+- [ ] 1.2 Provide Argo application reconciliation, protected retained resources and the narrowed static Argo seed plus explicit root-Application handoff. Distinguish successful apply from readiness and explicit first-enrollment prerequisites. Exercise delivery, readiness, handoff and resource retirement against a disposable Git source; demonstrate a single owner where the static seed applies without Git and only the root handoff enables Git reconciliation.
+- [ ] 1.3 Consolidate placement, environment domains and application endpoints through existing Den owners. Reject missing environment/aspect references and route/backend mismatches with focused evaluation checks; verify current placements and endpoint identities are preserved without a new application framework.
+- [ ] 1.4 Add a read-only Incus adoption/conflict gate before preseed can modify existing resources. Exercise absent, matching and conflicting envelopes in the disposable environment; refuse conflicts before mutation.
 
 ## 2. Retained state and runtime credentials
 
@@ -20,13 +15,13 @@ acceptance.
 - [x] 2.2 Deliver named Kubernetes Secrets from host-staged runtime files using the existing agenix flow. Prove missing files fail closed, values stay out of rendered artifacts, and replacement consumers receive the declared secrets without regenerating identities.
 - [ ] 2.3 Define each application's capture data and relevant writers from existing declarations. Compare pinned upstream online backup support and actual disposable filesystem snapshot capabilities; document only data-consistency dependencies, not a recursive service dependency graph. Establish a concrete capture method for each stateful application without assuming a new host storage topology.
 - [ ] 2.4 Implement routine application-scoped capture with native tools. Prove matched database/files under representative concurrent writes, unrelated-service availability, safe release of temporary writer/reconciler pauses after success or failure, and truthful completion. Measure interruption; any extended pause or weaker consistency requires operator review, not silent scope expansion.
-- [ ] 2.5 Preserve retained mount roots across the supported guest-replacement recovery, and resume only against consistent state with actual workload/reconciler readiness. Application-consistent restore of database/filesystem state is deferred to the backup slice with measured capture/restore evidence.
+- [ ] 2.5 Preserve retained mount roots across the supported guest-replacement recovery, and resume only against consistent state with actual workload/reconciler readiness. Application-consistent restore of database/filesystem state remains outside this task and requires measured capture/restore evidence.
 - [ ] 2.6 Consolidate retained paths, container identities, and storage declarations into shared projections for host attachments and manifests. Prove cross-layer agreement without changing existing IDs, paths or claim identities; reject invalid map ranges and duplicate destinations. Exercise preservation of host-owned modes across workload startup.
 - [ ] 2.7 Make host agenix consume the existing canonical master-identity declaration and reconcile runtime secret producer/consumer references. Evaluate agreement and reuse the atomic-rotation regression: incomplete replacement retains the prior complete payload; do not introduce revocation behavior as incidental cleanup.
 
 ## 3. Thin workload integrations
 
-- [x] 3.1 Move Jellyfin onto the shared rendering/delivery path while preserving its retained configuration, pinned image, native-client access and read-only media. Keep application-only HTTP behavior in `modules/tests/jellyfin_smoke.py`; platform orchestration and replacement acceptance are owned by `modules/tests/prod-home-replacement.{nix,py}`. The x86_64 runtime smoke remains unexecuted in task 5.1; physical GPU validation remains gated.
+- [x] 3.1 Move Jellyfin onto the shared rendering/delivery path while preserving its retained configuration, pinned image, native-client access and read-only media. Keep application-only HTTP behavior in `modules/tests/jellyfin_smoke.py`; platform orchestration and replacement acceptance are owned by `modules/tests/prod-home-replacement.{nix,py}`. Physical GPU validation requires separate authorization.
 - [ ] 3.2 Add the official Immich chart with compatible server/CPU-ML/database/cache releases and declared asset/database storage. Render and start the real services; use one disposable upload/recovery smoke to establish that our mounts and recovery set are complete, not an upstream feature suite.
 - [ ] 3.3 Add Radarr, Sonarr, SABnzbd and Seerr through thin upstream-chart aspects with retained local state, consistent fresh library/download paths and required internal service connections. Exercise probes/API access and shared-path ownership with disposable content; do not connect production providers or migrate existing libraries.
 - [ ] 3.4 Evaluate Configarr with pinned TRaSH/template inputs and declarative overrides against disposable Arr instances, using Recyclarr if the broader experimental settings do not meet the required boundary. Prove managed-field repair, unchanged results from the same inputs despite newer upstream data, unrelated-record preservation and credential updates. Record the supported field set and selected release; do not assume SAB or Seerr setup is covered.
@@ -37,8 +32,8 @@ acceptance.
 
 - [ ] 4.1 Declare one route inventory and Gateway API integration compatible with the existing CNI. Build/render domain and supported-prefix variants; reject unsupported prefixes and observe routing to real local services.
 - [ ] 4.2 Add independently deployable NixOS remote/home proxy roles with verified private-origin transport, trusted forwarding boundaries, valid primary/backup TLS and explicit manual failover. Exercise both local entrances, unknown-route denial and backend bypass refusal; no public DNS changes.
-- [ ] 4.3 Integrate Kanidm and supported native OIDC plus administrator-only browser access without breaking native media authentication or independent management. Verify non-admin and backend-bypass denial, usable browser UI API requests, authenticated private Arr/SAB API access and rejection of public API-key-only bypass. Document supported clients and show that later reviewed API exposure requires no application-state replacement.
-- [ ] 4.4 Add bounded Prometheus/Alertmanager/Grafana/Loki/Alloy integration using upstream charts and existing discovery patterns. Observe collected metrics/logs and actionable failure firing/resolution through a disposable receiver. Prove one application's successful capture does not clear another's stale/failed state; distinguish local capture, service resumption and independent transfer status. Keep external email/Telegram delivery gated on real credentials.
+- [ ] 4.3 Integrate Kanidm and supported native OIDC plus administrator-only browser access without breaking native media authentication or independent management. Verify non-admin and backend-bypass denial, usable browser UI API requests, authenticated private Arr/SAB API access and rejection of public API-key-only bypass. Document supported clients and ensure any reviewed public API exposure requires no application-state replacement.
+- [ ] 4.4 Add bounded Prometheus/Alertmanager/Grafana/Loki/Alloy integration using upstream charts and existing discovery patterns. Observe collected metrics/logs and actionable failure firing/resolution through a disposable receiver. Prove one application's successful capture does not clear another's stale/failed state; distinguish local capture, service resumption and independent transfer status. External email/Telegram delivery requires real credentials.
 
 ## 5. Verification and handoff
 

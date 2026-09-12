@@ -38,7 +38,7 @@ Public household services SHALL enforce application-native authentication, with 
 
 ### Requirement: Administrative browser exposure is separate from API client exposure
 
-Public administrative browser access SHALL NOT implicitly provide a browser-login bypass for non-browser API clients. Native authenticated API access SHALL remain available through the declared private access boundary independently of browser gateway authentication. Later approval of public API clients SHALL be implementable without replacing application state or removing native authentication.
+Public administrative browser access SHALL NOT implicitly provide a browser-login bypass for non-browser API clients. Native authenticated API access SHALL remain available through the declared private access boundary independently of browser gateway authentication. Any approved public API client path SHALL be implementable without replacing application state or removing native authentication.
 
 #### Scenario: A private automation client uses an administratively exposed application
 - **WHEN** it connects through the declared private boundary with valid native API credentials

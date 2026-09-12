@@ -1,16 +1,20 @@
 # Household software cutover
 
-Status: preparation only. Production deployment is not authorized. Complete the
-current `prod-home-replacement` acceptance before scheduling this cutover.
-This procedure keeps media1–media3 on their existing gocryptfs providers. It does
-not provision media4, convert filesystems, or migrate media ownership.
+Status: preparation only. Production deployment is not authorized. No
+successful `prod-home-replacement` acceptance or measured healthy runtime is
+recorded here; complete the current acceptance before scheduling this cutover.
+The repository desired state for this cutover keeps media1–media3 on their
+existing gocryptfs providers. That is transitional until the software cutover
+is proven, not the target LUKS2/XFS bulk-media state. This procedure does not
+provision media4, convert filesystems, or migrate media ownership.
 
 ## Release gate
 
 - Select one immutable revision with current generated manifests and passing
-  checks. Record the Linux replacement run URL, actual duration, phase timings,
-  and media-return observations. A successful evaluation or a cached `.drv`
-  file is not an executed acceptance test.
+  checks. This is a gate for a future run, not a current acceptance result.
+  Record the Linux replacement run URL, actual duration, phase timings, and
+  media-return observations. A successful evaluation or a cached `.drv` file
+  is not an executed acceptance test.
 - Review [generated operations](../operations.md) for current paths, routes,
   retained-state ownership and secret references. Review the canonical manifest
   diff before merging: `main` is the production Argo desired-state branch.
@@ -47,7 +51,10 @@ Its guest egress setting alone does not grant the builder network access.
    may interrupt every Incus guest, not just `compute-1`.
 4. Verify gocryptfs units depend on the real escaped backing `.mount` units,
    absent branch mountpoints are root-owned mode `0000`, and mergerfs refuses
-   missing providers. Verify host-private management remains reachable.
+   missing providers. If the selected revision changes the branch set, apply
+   that change through a controlled mergerfs service restart after all intended
+   providers are mounted; do not use a live branch reload. Verify host-private
+   management remains reachable.
 5. Inspect `/etc/homelab/compute.json` with the shipped `compute-guest inspect`.
    A preseed, identity, mount or effective-map mismatch is a stop condition, not
    permission to bypass a guard or hand-edit the instance into agreement.

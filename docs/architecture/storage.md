@@ -1,20 +1,27 @@
 # Storage architecture
 
-This document describes where storage is going, not what is deployed today. It
-is architectural direction, not a contract. Durable behavior belongs in
-OpenSpec, settled choices belong in
-[`decisions/`](decisions/), and concrete desired state belongs in Nix.
+This document describes the target storage architecture and distinguishes it
+from the repository's transitional desired state. It is not a report of what
+production currently deploys. Durable behavior belongs in OpenSpec, settled
+choices belong in [`decisions/`](decisions/), and concrete desired state
+belongs in Nix.
 
 Where this document explains what storage has to do, it is explaining the
 reasoning behind a contract rather than defining one. The normative statement
 lives in OpenSpec.
 
-Read the two levels differently:
+Read the state labels differently:
 
-- **Direction** describes intended structure. Changing it is an architectural
+- **Target architecture** describes the intended destination. Changing it is
+  an architectural decision.
+- **Repository desired state** describes what checked-in Nix currently asks a
+  host to realize. During a migration it can intentionally lag the target.
+- **Observed deployment** requires approved inspection or an executed
+  acceptance. This document records no production inspection, successful
+  replacement acceptance, or measured healthy runtime.
+- **Not yet decided** lists implementation choices deliberately left open.
+  Anything named there is illustrative and can change without an architecture
   decision.
-- **Not yet decided** lists choices deliberately left open. Anything named
-  there is illustrative and can change without an architecture decision.
 
 The originating review is recorded in
 [ADR-0006](decisions/0006-stable-semantic-storage-namespace.md).
@@ -172,52 +179,74 @@ hard-to-reacquire title can be promoted into a backed-up policy without its
 ## Physical tiers
 
 Placement determines how a root is stored. Tier names describe physical
-reality and stay out of application-visible paths.
+reality and stay out of application-visible paths. The target and the
+repository's transitional state are separate:
 
-- **Protected fast tier.** A redundant pool backing host state, application
-  state, and small high-value data. This is the root pool. It sets — among other
-  properties — a ZFS-native encryption root, POSIX ACLs, and `xattr=sa`; the
-  pool declaration is authoritative for the full set. Two 1 TB NVMe devices are
-  installed and this tier is meant to be a mirror of them. Today the pool is
-  declared from one device, the host schema exposes only a single root-pool
-  device, and the second device is in use elsewhere, so the mirror needs a
-  device migration and a schema change before it is real.
-- **Protected bulk tier.** A redundant pool for photos, documents, user files,
-  and footage. It will use the two 8 TB devices that are not attached yet, and
-  no pool or mount is configured for it.
-- **Replaceable media tier.** Individually mounted 12 TB devices carrying the
-  media archive: movies, television, and the ingest path that feeds them. Each
-  device is independent, so losing one loses only what it holds. Today three of
-  them are aggregated into the media namespace and a fourth is attached and
-  waiting to be used for the encryption transition described below. Media is
-  largely reacquirable, which is why this tier is not mirrored.
+### Target architecture
 
-There is no fast ingest tier. New media is created directly on the media tier,
-and the namespace is structured so that adding a fast ingest placement later
-does not change any consumer-visible path.
+- **Replaceable NVMe hot tier (future).** A fast, replaceable placement
+  reserved for ingest and other hot data. It is not a protection tier; its
+  exact capacity, branch policy, and rollout remain open.
+- **Protected ZFS root tier.** A redundant ZFS mirror of two 1 TB NVMe devices
+  for host state, application state, and small high-value data. The target
+  properties include a ZFS-native encryption root, POSIX ACLs, and `xattr=sa`;
+  the pool declaration is authoritative for the full set.
+- **Protected ZFS bulk tier.** A redundant ZFS pool for photos, documents, user
+  files, and footage, backed by the two 8 TB devices reserved for that tier.
+- **Replaceable LUKS2/XFS bulk-media tier.** Independent 12 TB devices carry
+  the media archive and ingest. Each device has a LUKS2 container with XFS
+  above it. Losing one device loses only what it holds; this tier is
+  deliberately not mirrored.
 
-Replaceable tiers deliberately avoid spending capacity on redundancy for data
-that can be reacquired. Protected tiers deliberately avoid silently degrading
-to unmirrored placement when full: capacity pressure must be visible.
+### Repository desired state
 
-## Encryption
+- The root pool `rpool` is declared as ZFS from `/dev/nvme0n1`. The host
+  schema exposes only `disk1`, so the target mirror still needs a device
+  migration and a schema change; the repository declaration is not evidence
+  that the mirror exists.
+- No protected bulk pool or mount is declared yet.
+- `/srv/media` is declared as one mergerfs namespace over the existing
+  media1–media3 gocryptfs branches, with no separate hot branch. This is the
+  approved transitional state until the software cutover is proven, not the
+  LUKS2/XFS target.
+- Media4 remains declared `provisioned = false` with Btrfs as its pending
+  filesystem setting, and is not an active mergerfs branch. Its conversion is
+  a separate later operation; it has not been executed.
 
-Data devices are encrypted with a block-level container per device. The
-filesystem and everything above it see a plain block device, and the key
-material and unlock path belong to the device rather than to a directory tree.
+### Observed deployment
 
-This replaces the current arrangement, where a media filesystem is mounted in
-the clear and a userspace layer presents an encrypted tree on top of it. The
-userspace layer is being retired rather than extended: it duplicates a concern
-the block layer already covers on other devices, it puts a FUSE layer on the
-data path, and it leaves the filesystem's own metadata outside the encrypted
-boundary. The decision and its alternatives are recorded in
+No production storage inspection, successful software-cutover acceptance, or
+measured healthy runtime is recorded here. Do not infer deployed mounts,
+redundancy, provider state, or recovery readiness from repository desired
+state.
+
+The target's replaceable tiers deliberately avoid spending capacity on
+redundancy for data that can be reacquired. Protected ZFS tiers deliberately
+avoid silently degrading to unmirrored placement when full: capacity pressure
+must be visible.
+
+## Encryption and conversion
+
+**Target architecture.** Each bulk-media device uses a LUKS2 container with
+XFS above it. The filesystem and everything above it see a plain block device,
+and key material and the unlock path belong to the device rather than to a
+directory tree. This replaces the repository's transitional arrangement: a
+clear media filesystem with gocryptfs presenting an encrypted tree. The
+userspace layer is being retired rather than extended because it adds a FUSE
+layer to the data path and leaves filesystem metadata outside the encrypted
+boundary.
+The decision and its alternatives are recorded in
 [ADR-0007](decisions/0007-block-level-device-encryption.md).
 
-The transition uses the spare 12 TB device: content moves onto it, the vacated
-device is re-created as an encrypted container, and the process repeats until
-the tier is converted. No media path changes during this, which is the property
-the namespace exists to provide.
+**Repository desired state.** Until the software cutover is proven, media1–media3
+remain on their existing gocryptfs providers. Media4 remains unprovisioned and
+is not a mergerfs branch. The repository therefore does not claim that any
+media branch has already reached the LUKS2/XFS target.
+
+**Separate physical conversion.** After software acceptance, content moves to
+the spare 12 TB device, the vacated device is re-created as LUKS2/XFS, and the
+process repeats. Consumer-visible media paths do not change. This is a later,
+separately approved operation; no physical conversion has been executed.
 
 ## Media: one filesystem for ingest and library
 
@@ -238,9 +267,15 @@ accept new content, archive placements stay fully usable for what they already
 hold, and a separate mover — not an application — decides when content moves
 between them.
 
-Today media has one placement, so creation restriction and movement are not yet
-exercised. They become real when a second placement is added, and adding one
-changes no consumer-visible path.
+The current repository declaration has one mergerfs namespace over media1–media3
+and no separate hot placement. Creation restriction and movement across
+placements remain unexercised; the future NVMe hot tier is still target
+architecture, not deployed behavior.
+
+When a declared branch set changes, the mergerfs service is restarted in a
+controlled window after all intended providers are mounted. Do not treat a
+branch-set change as a live reload. Consumers whose bind mounts need to see the
+remounted namespace follow the measured cutover procedure.
 
 The mover is a storage component rather than an application behavior. The
 contract requires a placement move to preserve every path that refers to the
@@ -303,6 +338,11 @@ depth:
   different schedule than its bulk content;
 - surveillance uses time-based retention.
 
+These are target policies, not evidence of present redundancy or recovery
+readiness. The repository still declares one root-pool device and no protected
+bulk pool, and no deployment freshness or healthy runtime has been observed
+here.
+
 Snapshots on the same pool are not a backup: host root can destroy them. Data
 in the `critical` class needs a protection path with a separate trust boundary.
 
@@ -322,51 +362,50 @@ used by one workload not to gate unrelated operation. What that implies here:
 
 ## What Nix owns
 
-Nix owns the durable contract: storage inventory and its mapping to stable
-device identifiers, encryption and unlock configuration, pool and dataset
-intent with their properties, mounts and their ordering and failure behavior,
-service users and groups with stable IDs, managed root directories with
-declared owner/group/mode and, only where the sharing policy requires it,
-inherited default permissions, application-to-storage mappings, and the
-policies for snapshot, scrub, and backup.
+Nix owns the concrete repository desired state and implementation details:
+storage inventory and its mapping to stable device identifiers, encryption and
+unlock configuration, pool and dataset intent with their properties, mounts and
+their ordering and failure behavior, service users and groups with stable IDs,
+managed root directories with declared owner/group/mode and, only where the
+sharing policy requires it, inherited default permissions,
+application-to-storage mappings, and the policies for snapshot, scrub, and
+backup. Nix configuration does not by itself establish target conformance or
+observed deployment.
 
-Activation creates managed roots and applies declared default permissions where the sharing policy
-requires them, so that new files inherit them. It does not recursively
-rewrite ownership, modes, or ACLs across existing payload trees; that is a
-migration or repair action that an operator runs deliberately.
+Activation creates managed roots and applies declared default permissions where
+the sharing policy requires them, so that new files inherit them. It does not
+recursively rewrite ownership, modes, or ACLs across existing payload trees;
+that is a migration or repair action that an operator runs deliberately.
 Establishing an on-disk format or an encryption container is likewise an
 explicit provisioning action, separate from ordinary activation.
 
 ## Not yet decided
 
-These are open. Implementation must not quietly settle them.
+These are genuine open implementation or policy details. The target choices
+above are not reopened by this list:
 
-1. **Filesystem on the encrypted media devices.** The declared device uses
-   btrfs. The choice is only worth revisiting if a concrete requirement appears;
-   single-device filesystems on this tier are not mirrored, so the filesystem
-   does not need to provide redundancy.
-2. **Whether the media devices gain any parity or weaving protection layer**
-   later, and if so whether that sits above or below the encryption container.
-   The current direction assumes none.
-3. **Key hierarchy and unlock timing for the media containers**, including where
-   unlock material lives relative to the existing boot-unlock path, and whether
-   these devices unlock at boot or on demand.
-4. **Whether a fast ingest placement is added** for the media namespace. Nothing
-   currently depends on one, and the namespace is designed so that adding one
-   changes no consumer-visible path.
-5. **How the host schema expresses a multi-device root pool.** The mirror is
+1. **Whether the media devices gain any parity or weaving protection layer**
+   later, and if so whether that sits above or below the LUKS2 container. The
+   current target assumes none.
+2. **Key hierarchy and unlock timing for the media containers**, including
+   where unlock material lives relative to the existing boot-unlock path, and
+   whether these devices unlock at boot or on demand.
+3. **Hot-tier rollout and exact placement policy.** The target reserves a
+   replaceable NVMe hot tier; its capacity, creation eligibility, and
+   activation timing remain open.
+4. **How the host schema expresses a multi-device root pool.** The mirror is
    decided, but the schema currently exposes a single root-pool device.
-6. **Dataset boundaries for application-owned human data** once each
+5. **Dataset boundaries for application-owned human data** once each
    application's durable and regenerable files are known.
-7. **The mover's implementation** and its coordination protocol with
+6. **The mover's implementation** and its coordination protocol with
    acquisition services.
-8. **Placement watermarks** and the free-space reserve that keeps ingest from
+7. **Placement watermarks** and the free-space reserve that keeps ingest from
    failing.
-9. **Backup engine and off-host retention model.**
-10. **How guests present their own Nix store.** It is deliberately independent
-    of this namespace, and whether it shares the physical devices with this
-    namespace is part of that open question.
-11. **Surveillance placement and retention**, once that workload exists.
+8. **Backup engine and off-host retention model.**
+9. **How guests present their own Nix store.** It is deliberately independent
+   of this namespace, and whether it shares the physical devices with this
+   namespace is part of that open question.
+10. **Surveillance placement and retention**, once that workload exists.
 
 ## References
 

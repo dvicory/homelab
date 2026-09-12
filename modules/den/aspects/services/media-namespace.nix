@@ -45,11 +45,10 @@ in
         systemd.services.media-namespace = {
           description = "Create the media namespace layout on the merged filesystem";
           wantedBy = [ "multi-user.target" ];
-          # The pool is a service, not a .mount unit, so RequiresMountsFor would
-          # order against nothing. Depend on the unit that actually mounts it.
+          # The pool is a service, not a .mount unit. Depend on the unit that
+          # actually mounts it so layout creation never runs on the bare path.
           after = [ poolUnit ];
           requires = [ poolUnit ];
-          unitConfig.RequiresMountsFor = [ root ];
           serviceConfig = {
             Type = "oneshot";
             RemainAfterExit = true;

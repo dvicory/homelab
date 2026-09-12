@@ -44,7 +44,6 @@ in
           {
             environment.systemPackages = [
               pkgs.mergerfs
-              pkgs.attr
             ];
             boot.supportedFilesystems = [
               "fuse"
@@ -92,6 +91,11 @@ in
                 after = (poolCfg.depends or [ ]) ++ [ "local-fs.target" ];
                 requires = poolCfg.depends or [ ];
 
+                # The generated EnvironmentFile is not part of the unit
+                # definition, so make branch/config changes restart the pool.
+                restartTriggers = [
+                  config.environment.etc."mergerfs/${escapedPath}.conf".source
+                ];
                 path = [ pkgs.util-linux ];
                 serviceConfig = {
                   Type = "oneshot";
@@ -99,79 +103,11 @@ in
                   EnvironmentFile = "/etc/mergerfs/${escapedPath}.conf";
                   ExecStartPre = "${pkgs.bash}/bin/bash -c ${lib.escapeShellArg (mergerfs.branchGuard poolCfg.branches)}";
                   ExecStart = "${pkgs.bash}/bin/bash -c '${pkgs.util-linux}/bin/mount -t fuse.mergerfs -o $OPTIONS $BRANCHES $MOUNTPOINT'";
-                  ExecReload = "${pkgs.bash}/bin/bash -c '${pkgs.attr}/bin/setfattr -n user.mergerfs.branches -v \"$BRANCHES\" \"$MOUNTPOINT/.mergerfs\"'";
                   ExecStop = "${pkgs.bash}/bin/bash -c '${pkgs.util-linux}/bin/umount \"$MOUNTPOINT\"'";
                 };
               }
             ) cfg;
           }
-
-          {
-            systemd.paths = lib.mapAttrs' (
-              path: poolCfg:
-              let
-                escapedPath = escapeSystemdPath path;
-              in
-              lib.nameValuePair "mergerfs-branch-${escapedPath}" {
-                description = "Watch MergerFS branches for ${path}";
-                pathConfig = {
-                  PathChanged = "/etc/mergerfs/${escapedPath}.conf";
-                  Unit = "mergerfs-branch-reload-${escapedPath}.service";
-                };
-                wantedBy = [ "multi-user.target" ];
-                after = [ "mergerfs-mnt-${escapedPath}.service" ];
-              }
-            ) cfg;
-          }
-
-          {
-            systemd.services = lib.mapAttrs' (
-              path: poolCfg:
-              let
-                escapedPath = escapeSystemdPath path;
-              in
-              lib.nameValuePair "mergerfs-branch-reload-${escapedPath}" {
-                description = "Reload MergerFS branches for ${path}";
-                serviceConfig = {
-                  Type = "oneshot";
-                  User = "root";
-                  # Validate the candidate branch set exactly like initial mount:
-                  # a reload over unmounted branches must fail, not shrink the pool.
-                  # The conf file (not the Nix declaration) is the candidate set.
-                  ExecStartPre = "${pkgs.bash}/bin/bash -c 'IFS=: read -ra branches <<< \"$BRANCHES\"; for branch in \"\${branches[@]}\"; do mountpoint -q \"$branch\" || { echo \"mergerfs: branch $branch is not a mountpoint; refusing reload over an unmounted branch\" >&2; exit 1; }; done'";
-                  ExecStart = "${pkgs.bash}/bin/bash -c '${pkgs.attr}/bin/setfattr -n user.mergerfs.branches -v \"$BRANCHES\" \"$MOUNTPOINT/.mergerfs\"'";
-                };
-              }
-            ) cfg;
-          }
-
-          {
-            system.activationScripts.mergerfsReload = lib.stringAfter [ "etc" ] (
-              let
-                reloadCommands = lib.concatStringsSep "\n" (
-                  lib.mapAttrsToList (
-                    path: poolCfg:
-                    let
-                      escapedPath = escapeSystemdPath path;
-                    in
-                    ''
-                      echo "Triggering reload for mergerfs pool: ${path}"
-                                        ${pkgs.systemd}/bin/systemctl --no-block start mergerfs-branch-reload-${escapedPath}.service
-                                        echo "Reload service start result: $?"''
-                  ) cfg
-                );
-              in
-              if cfg != { } then
-                ''
-                  echo "=== MergerFS Activation Script ==="
-                  ${reloadCommands}
-                  echo "=== End MergerFS Activation Script ==="
-                ''
-              else
-                ""
-            );
-          }
-
           {
             systemd.tmpfiles.rules = lib.mapAttrsToList (
               path: poolCfg:

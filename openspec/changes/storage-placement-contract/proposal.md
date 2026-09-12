@@ -47,16 +47,9 @@ underneath it.
 
 ### Modified Capabilities
 
-None. No existing requirement changes. `storage-foundations` continues to govern
-encryption at rest, persistence across ephemeral roots, separation of
-destructive provisioning from activation, and machine ownership of physical
-storage; this change does not restate it. It also deliberately does not restate
-the application-storage failure boundary proposed in
-`reproducible-jellyfin-compute`, or `access-control`'s rules for account
-presence and group resolution. Where the new capability states a related but
-distinct behavior — fail-closed attachment, ownership stability across compute
-replacement, and non-destructive activation of payload content — that behavior
-is not currently covered by an accepted requirement.
+None. Existing storage, management, access, and compute contracts remain
+unchanged; this proposal adds a distinct `storage-placement` capability for
+consumer-visible paths, placement, and attachment behavior.
 
 ## Impact
 

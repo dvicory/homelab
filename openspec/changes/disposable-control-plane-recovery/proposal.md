@@ -25,4 +25,4 @@ None.
 - Removes `modules/den/aspects/kubernetes/recovery.nix`, `modules/den/aspects/kubernetes/_recovery.sh`, offline `jellyfin-image` fixtures, and `modules/flake/jellyfin-sandbox.nix`/`docs/jellyfin-sandbox.md`.
 - Narrows `household-bootstrap` to Argo seeding plus explicit root-application handoff.
 - Replaces the offline VM recovery scenario with the x86_64 `prod-home-replacement` acceptance test, which exercises the shipped bootstrap path, disposable Git origin, real registry pulls, and retained application state.
-- Updates recovery monitoring, operations docs, active OpenSpec deltas, and ADR history.
+- Updates recovery monitoring and operations documentation for the supported path.

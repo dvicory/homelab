@@ -14,10 +14,10 @@ The current checkout enables Incus but does not declare a Kubernetes guest or a 
 - Separate same-version compute recovery from application upgrades. Keep the application image independently pinned and require a consistent data recovery point with matching software before an application-version change.
 - Provide inspectable, safely repeatable application-neutral instance operations and a separately authorized destructive replacement procedure. Use existing NixOS deployment commands and explicit application maintenance procedures; do not build a general-purpose orchestrator or workload-plugin framework.
 - Add an x86_64 `prod-home-replacement` acceptance procedure that preserves real Jellyfin users, library configuration, and playback state across deletion and reconstruction of the guest and Kubernetes database.
-- Preserve the accepted isolation decision in its ADR; keep implementation choices in this change rather than introducing a duplicate architecture/status document.
-- Make host-local storage placement explicit for Jellyfin without imposing it on other applications. Additional physical hosts, portable storage, and control-plane availability are later decisions; this slice must not claim that adding a node makes local data portable.
+- Preserve the accepted isolation decision recorded in ADR-0001.
+- Keep host-local storage placement explicit for Jellyfin without imposing it on other applications. Additional physical hosts, portable storage, and control-plane availability are outside this slice; adding a node does not make local data portable.
 
-No deployment is authorized now. Local implementation verification and future target-runtime verification must be reported separately.
+No deployment is authorized by this plan. Local implementation evidence is distinct from target-runtime evidence; production inspection, credentials, deployment, and destructive operations remain separately authorized.
 
 ### Non-goals
 
@@ -39,5 +39,4 @@ None. The new capability specializes, without changing, the existing `management
 - New Den guest entity and reusable guest/platform aspects; host metadata stays in entities and behavior in aspects.
 - Nix-generated Kubernetes namespace, static retained volumes/claims, Jellyfin deployment/service, and a pinned workload image available as a reproducible build input.
 - Workstation-accessible build, lifecycle, status, and recovery commands; no essential dependency on a source checkout on the deployment host.
-- Focused local verification plus an explicit later deployment and destructive-test gate on `hvn-hyp1`.
-- Historical `initial-k8s` and `mpkkqksmmwrl` work informs review only. Do not merge their unrelated changes, secret artifacts, old package pins, or unverified runtime assumptions wholesale.
+- Focused local verification; target deployment and destructive-test acceptance on `hvn-hyp1` remain unexecuted and separately authorized.
