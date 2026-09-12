@@ -1,7 +1,3 @@
-## 1. Review boundary
-
-- [x] 1.1 Review and reconcile the approved isolation, storage, delivery, and recovery boundaries. The operator confirmed shared compute, acceptable declared outages, explicit host-local Jellyfin placement, independent application releases, an undecided NixOS deployment frontend, and native facilities before custom orchestration. Updated planning is not runtime evidence.
-
 ## 2. Host and guest configuration
 
 - [x] 2.1 Add the Den compute entity and NixOS-owned Incus envelope using existing aspect, settings, persistence, and access-resolution conventions. Supply native preseed with Nix attrsets; instance operations only verify its resources. Declare isolated non-root host ID translation, resource limits, private networking, retained directories, and node-essential startup prerequisites without changing physical storage or legacy Hermes. Application-only storage must not gate node boot. Verify exact evaluated option leaves, host-specific inclusion, safe expanded settings, and a conflict check before first preseed adoption.
@@ -10,9 +6,9 @@
 
 ## 3. Persistent workload and managed resources
 
-- [x] 3.1 Generate Jellyfin namespace, explicitly bound retained PVs/PVCs, Recreate deployment, service, probes, non-root security context, resource bounds, read-only media, persistent config, and disposable cache. Build a pinned application artifact independently of the guest OS; preload only platform images in the guest. Prove explicit application delivery after guest creation, config writes as the declared identity, denied media writes, and native mount propagation. Missing media must block only consumers; loss must not expose substitute storage; source return must recover without restarting the node.
-- [x] 3.2 Use stable Nix-delivered manifest names and native K3s AddOn pruning for objects omitted from updated manifests. Separate retained storage and namespace from disposable workload resources; introduce no custom inventory or pruning controller. Verify removal of a disposable object, survival of an unrelated object, retained-data preservation/reattachment, and safe retirement before deleting an entire manifest file.
-- [x] 3.3 Provide operator-private access and bridge-aware enforcement for workload and Kubernetes management ports without public listeners, physical-uplink bridge changes, or broad trusted interfaces. Cover same-bridge guests as well as routed traffic; do not assume NAT or FORWARD rules alone suffice. Verify local-only tunnel binding, separate SSH trust for both hops, and generated rules locally; prove authorized and unauthorized reachability at runtime before declaring private exposure complete.
+- [x] 3.1 Generate Jellyfin namespace, explicitly bound retained PVs/PVCs, Recreate deployment, service, probes, non-root security context, resource bounds, read-only media, persistent config, and disposable cache. Build a pinned application artifact independently of the guest OS. Keep application-only HTTP behavior in `modules/tests/jellyfin_smoke.py`; platform orchestration and replacement acceptance are owned by `modules/tests/prod-home-replacement.{nix,py}`. The target runtime gate remains 6.3; physical GPU validation remains separately gated.
+- [x] 3.2 Use stable Nix-delivered manifest names and one Argo reconciliation owner with retained-resource protection. Separate retained storage and namespace from disposable workload resources; introduce no custom inventory or pruning controller. Runtime retirement, reattachment, and replacement evidence remain part of the unexecuted target gate 6.3.
+- [x] 3.3 Provide operator-private access and bridge-aware enforcement for workload and Kubernetes management ports without public listeners, physical-uplink bridge changes, or broad trusted interfaces. Cover same-bridge guests as well as routed traffic; do not assume NAT or FORWARD rules alone suffice. Generate and inspect the local rules and tunnel boundaries; target reachability evidence remains in the unexecuted gate 6.2.
 
 ## 4. Lifecycle and recovery tooling
 
@@ -22,10 +18,13 @@
 
 - [x] 5.1 Run focused local Nix evaluation/build checks for the host, guest, images, and lifecycle packages; run formatter/linter once after integration. Verify unrelated fleet outputs still evaluate without changing the lockfile. Report exact commands and distinguish evaluated derivations from built outputs.
 
-## 6. Target verification — blocked until separately authorized
+## 6. Target runtime verification — unexecuted
 
-No command in this section is authorized by the current request. Do not mark it complete from local evaluation or a different runtime.
+The x86_64 disposable replacement acceptance has not yet run successfully. Do
+not substitute local evaluation, a different test, or a Darwin fixture for this
+evidence. Production inspection, credential provisioning, deployment, and
+production destructive operations remain separately authorized.
 
 - [ ] 6.1 Obtain permission for read-only inspection of hvn-hyp1, then check actual encryption/mounts, free space, kernel/cgroups, Incus resources, subordinate-ID collisions, route collisions, media readability, and independent management access. Record the observed prerequisites; stop before any required storage-permission or isolation expansion rather than inventing a compatibility workaround.
 - [ ] 6.2 Obtain permission for secret provisioning and host/guest deployment; check conflicts before first preseed adoption, create only approved slice-owned resources, deploy, privately complete new-instance Jellyfin setup, and verify real playback plus denied media writes. Check effective unprivileged maps and actual network restrictions, including same-bridge peers and management ports. Prove node boot without application media, media loss/return without node restart, and continued unrelated workload/management access. Keep incompatible-kernel, filesystem, or nesting results as failed gates; no privileged fallback.
-- [ ] 6.3 Obtain explicit guest-deletion approval and execute the design's destruction acceptance twice: retain declared inputs, remove root and cluster database, recreate through repository tooling, then verify the same user, library, recorded playback state, and representative playback without setup. Record evidence of fresh cluster state and preserved application state; validate failed-prerequisite behavior and confirm no retained data or unrelated host service was changed. Only this evidence closes the target guest-rebuild acceptance gate.
+- [ ] 6.3 On an appropriate x86_64 Linux/KVM runner, execute `checks.prod-home-replacement` from `modules/tests/prod-home-replacement.nix` through its `prod-home-replacement.py` driver and `jellyfin_smoke.py` helper. Record derivation/build preparation, fixture-host startup, compute guest creation, registry pulls, first Argo reconciliation, media loss/return, compute replacement, and second Argo reconciliation. Verify the same user, library, recorded playback state, retained data, unrelated workload availability, and Jellyfin's read-only `/media` mount. Only a successful run closes the target guest-rebuild acceptance gate.

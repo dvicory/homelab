@@ -27,9 +27,10 @@ underneath it.
   temporary duplication permitted.
 - Require reported free space to reflect where new content can actually be
   created rather than total attached capacity.
-- Require managed roots to carry declared ownership and inherited default
-  permissions, and require routine activation to leave existing payload trees
-  alone.
+- Require managed roots to carry declared owner, group, and mode. Inherited
+  default access is optional policy: a root declares it only when its sharing
+  policy requires later content to receive access beyond owner/group/mode.
+- Require routine activation to leave existing payload trees alone.
 - Require required backing storage to fail closed: an unavailable mount denies
   access rather than exposing a writable empty directory in its place.
 
@@ -41,8 +42,8 @@ underneath it.
   namespace. Covers path stability versus placement, single-filesystem
   presentation for link-dependent consumers, placement-driven creation,
   link-preserving movement, truthful capacity reporting, fail-closed
-  attachment, inherited permissions on managed roots, and non-destructive
-  activation.
+  attachment, optional inherited-permission policy on managed roots, and
+  non-destructive activation.
 
 ### Modified Capabilities
 

@@ -8,7 +8,7 @@ Cold whole-stack export/restore machinery preserves a disposable Kubernetes cont
 - Recover by recreating the Incus guest, seeding Argo CD from canonical manifests, staging host-owned secrets, and letting Argo reconcile Git.
 - Reattach host-owned retained storage through declared local volumes; do not capture/restore the whole retained set as cold tar archives.
 - **BREAKING**: Remove `household-recovery` export/restore/resume, its inventory/journal/metrics protocol, offline Jellyfin image fixtures, and the manual offline sandbox as recovery mechanisms.
-- Retain `compute-guest create/replace`, host-owned storage bindings, runtime secret staging, canonical manifests, and an online replacement test.
+- Retain `compute-guest create/replace`, host-owned storage bindings, runtime secret staging, canonical manifests, and the x86_64 `prod-home-replacement` acceptance test with its application-only `jellyfin_smoke.py` helper.
 
 ## Capabilities
 
@@ -24,5 +24,5 @@ None.
 
 - Removes `modules/den/aspects/kubernetes/recovery.nix`, `modules/den/aspects/kubernetes/_recovery.sh`, offline `jellyfin-image` fixtures, and `modules/flake/jellyfin-sandbox.nix`/`docs/jellyfin-sandbox.md`.
 - Narrows `household-bootstrap` to Argo seeding plus explicit root-application handoff.
-- Replaces the offline VM recovery scenario with an online replacement test.
+- Replaces the offline VM recovery scenario with the x86_64 `prod-home-replacement` acceptance test, which exercises the shipped bootstrap path, disposable Git origin, real registry pulls, and retained application state.
 - Updates recovery monitoring, operations docs, active OpenSpec deltas, and ADR history.

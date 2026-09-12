@@ -46,7 +46,6 @@
     {
       cluster,
       compute,
-      pkgs,
       lib,
       ...
     }:
@@ -103,11 +102,9 @@
           };
         };
       }) (lib.filterAttrs (_: route: route.auth == "admin") cluster.routes);
-      linuxSystem = builtins.replaceStrings [ "darwin" ] [ "linux" ] pkgs.stdenv.hostPlatform.system;
-      provisioning = import ./_identity-provisioning.nix {
-        pkgs = inputs.nixpkgs.legacyPackages.${linuxSystem};
-        inherit lib;
-      };
+      # The image runs on the selected compute node, not on the renderer.
+      linuxSystem = inputs.self.nixosConfigurations.${compute.instance}.pkgs.stdenv.hostPlatform.system;
+      provisioning = inputs.self.packages.${linuxSystem}.kanidm-provision-image;
       registry = config.den.users.registry;
       administrators = lib.filterAttrs (
         name: _:
@@ -569,6 +566,7 @@
                   restartPolicy = "OnFailure";
                   serviceAccountName = "kanidm-provision";
                   automountServiceAccountToken = true;
+                  nodeSelector."kubernetes.io/hostname" = compute.instance;
                   securityContext = {
                     runAsNonRoot = true;
                     runAsUser = 1000;
@@ -579,7 +577,7 @@
                   containers = [
                     {
                       name = "provision";
-                      image = provisioning.imageRef;
+                      image = provisioning.imageReference;
                       imagePullPolicy = "Never";
                       resources = {
                         requests = {

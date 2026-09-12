@@ -44,18 +44,15 @@ do not establish contracts or supply a configuration bundle to transplant.
   interception, host sockets, writable host-global trees, or disabled confinement
   to obtain startup. Cilium/BPF delegation and hardware access require separate
   compatibility evidence; they are deferred, not declared impossible.
-- Bundle platform images with the guest. Deliver Jellyfin's pinned image and
-  manifests as an independent Nix artifact through native K3s AddOns. No registry,
-  Git server, secret operator, or GitOps controller inside the failed domain may
-  be required to recover it. Pins still require retained artifact closures.
-  **Superseded by `disposable-control-plane-recovery` / ADR-0008:** recovery now
-  replaces the guest, seeds Argo, and reconciles canonical Git manifests; the
-  control plane is disposable and registry/Git access during rebuild is
-  accepted. Offline bundled-image recovery is test scaffolding at most, never
-  the production path.
+- Keep the guest OS and application manifests as separate artifacts. The
+  `prod-home-replacement` acceptance uses the shipped
+  `household-bootstrap-host`, a disposable Git origin, and real registry pulls
+  for pinned images; Git and registry access during rebuild is an accepted
+  dependency. No offline image bundle is a supported recovery path.
 - Keep retained storage/namespace separate from disposable workload manifests.
-  Native AddOn pruning applies to updated manifests; deleting a file alone is
-  not resource retirement. Do not give a second controller the same objects.
+  The selected reconciler owns workload resources, and retained resources are
+  protected from pruning and deletion. Do not give a second controller the same
+  objects.
 
 ## Storage, identity, and access
 
@@ -102,11 +99,19 @@ until explicitly retired. Same-host retention is not independent backup.
 
 ## Verification and deployment gates
 
-The tasks and disposable integration scenario own executable acceptance. Prove
-fresh root/cluster state with the same Jellyfin user, library, recorded playback
-state, and authorized media consumption without setup. Include failed identity,
-unsafe drift, concurrency, independent OS/application delivery, native resource
-retirement, media loss/return, and denied network/media access.
+The executable replacement acceptance is
+`modules/tests/prod-home-replacement.nix`
+(`checks.prod-home-replacement`), driven by
+`modules/tests/prod-home-replacement.py`; it delegates application behavior to
+`modules/tests/jellyfin_smoke.py`. Its x86_64 Linux runtime has not yet
+established acceptance. The configured four-hour timeout is a safety ceiling,
+not a measured runtime.
+
+Run it on an appropriate x86_64/KVM runner and record derivation/build
+preparation, fixture-host startup, compute guest creation, registry image
+pulls, first Argo reconciliation, media loss/return, compute replacement, and
+second Argo reconciliation. Local evaluation or build output does not close
+target boot, storage, or destructive-replacement evidence.
 
 After separate permission, inspect actual host mounts/encryption, capacity,
 kernel/cgroups/confinement, ID and route collisions, existing Incus resources,
@@ -114,6 +119,6 @@ media permissions, and independent management access. Stop for any required
 permission/isolation expansion; configuration evaluation cannot settle these.
 
 Deploy only after that gate. Prove real playback before obtaining guest-deletion
-approval, then perform the destruction/rebuild acceptance twice. Local evidence
-does not close those target gates or prove recovery from physical-host loss.
+approval, then perform the destruction/rebuild acceptance. Local evidence does
+not close those target gates or prove recovery from physical-host loss.
 Independent backup and restore is a later capability, not an implied result.

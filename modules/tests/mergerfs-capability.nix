@@ -44,7 +44,8 @@
           machine.wait_for_unit("multi-user.target")
 
           machine.succeed("mkdir -p /srv/b0 /srv/b1 /srv/pool")
-          machine.succeed("mergerfs -o use_ino,category.create=mfs,allow_other /srv/b0:/srv/b1 /srv/pool")
+          # The fixture disk is smaller than mergerfs's default 4 GiB reserve.
+          machine.succeed("mergerfs -o use_ino,category.create=mfs,minfreespace=16M,allow_other /srv/b0:/srv/b1 /srv/pool")
           machine.succeed("mountpoint -q /srv/pool")
 
           # A storage capability owned by the fleet, materialized as a real group.
@@ -75,23 +76,25 @@
               " 'printf x > /srv/pool/downloads/usenet/complete/src"
               " && ln /srv/pool/downloads/usenet/complete/src /srv/pool/library/movies/dst'"
           )
-          machine.succeed(
-              "test \"$(stat -c %h /srv/pool/downloads/usenet/complete/src)\" -eq 2"
+          # FUSE may retain the source's pre-link attributes for one second.
+          machine.wait_until_succeeds(
+              "test \"$(stat -c %h /srv/pool/downloads/usenet/complete/src)\" -eq 2",
+              timeout=5,
           )
           machine.succeed(
-              "test \"$(stat -c %i /srv/pool/downloads/usenet/complete/src)\""
-              " = \"$(stat -c %i /srv/pool/library/movies/dst)\""
+              "test \"$(stat -c '%d:%i' /srv/pool/downloads/usenet/complete/src)\""
+              " = \"$(stat -c '%d:%i' /srv/pool/library/movies/dst)\""
           )
+          # Compare backend aliases to each other, not to FUSE's synthetic IDs.
           machine.succeed(
               "set -eu; branch=; matches=0; "
-              "for candidate in /srv/b0/downloads/usenet/complete/src"
-              " /srv/b1/downloads/usenet/complete/src; do "
-              "if test -e \"$candidate\"; then matches=$((matches + 1)); branch=$candidate; fi; "
+              "for candidate in /srv/b0 /srv/b1; do "
+              "if test -e \"$candidate/downloads/usenet/complete/src\"; then "
+              "matches=$((matches + 1)); branch=$candidate; fi; "
               "done; test \"$matches\" -eq 1; test -n \"$branch\"; "
-              "test \"$(stat -c '%d:%i' /srv/pool/downloads/usenet/complete/src)\""
-              " = \"$(stat -c '%d:%i' \"$branch\")\"; "
-              "test \"$(stat -c '%d:%i' /srv/pool/library/movies/dst)\""
-              " = \"$(stat -c '%d:%i' \"$branch\")\""
+              "test \"$(stat -c '%d:%i' \"$branch/downloads/usenet/complete/src\")\""
+              " = \"$(stat -c '%d:%i' \"$branch/library/movies/dst\")\"; "
+              "test \"$(stat -c %h \"$branch/downloads/usenet/complete/src\")\" -eq 2"
           )
         '';
       };

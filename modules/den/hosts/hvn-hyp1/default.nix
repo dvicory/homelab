@@ -178,6 +178,7 @@ in
         config,
         pkgs,
         lib,
+        utils,
         ...
       }:
       let
@@ -188,7 +189,7 @@ in
             passfile,
           }:
           let
-            backingUnit = lib.replaceStrings [ "/" ] [ "-" ] (lib.removePrefix "/" device) + ".mount";
+            backingUnit = "${utils.escapeSystemdPath device}.mount";
           in
           {
             fileSystems.${device} = {
@@ -215,10 +216,11 @@ in
                 Type = "oneshot";
                 RemainAfterExit = true;
                 ExecStart = pkgs.writeShellScript "mount-gocryptfs-${baseNameOf name}" ''
+                  set -eu
                   if mountpoint -q "${name}"; then
-                    ${pkgs.fuse3}/bin/fusermount3 -uz "${name}" 2>/dev/null || true
+                    ${pkgs.fuse3}/bin/fusermount3 -uz "${name}"
                   fi
-                  mkdir -p "${name}"
+                  install -d -m 0000 -o root -g root "${name}"
                   ${pkgs.gocryptfs}/bin/gocryptfs -allow_other -passfile=${passfile} ${device}/crypt "${name}"
                 '';
                 ExecStop = "${pkgs.fuse3}/bin/fusermount3 -uz ${name}";

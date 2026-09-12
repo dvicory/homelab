@@ -31,7 +31,7 @@ spec:
               value: /trust/ca.crt
             - name: CURL_CA_BUNDLE
               value: /trust/ca.crt
-          image: homelab/kanidm-provision:6pvskmrp1hi2mxdijzrnpqdb0d64fqna
+          image: homelab/kanidm-provision:zh2wqlbrfxm50k46csghr0316n47vwi1
           imagePullPolicy: Never
           name: provision
           resources:
@@ -59,6 +59,8 @@ spec:
             - mountPath: /trust
               name: trust
               readOnly: true
+      nodeSelector:
+        kubernetes.io/hostname: compute-1
       restartPolicy: OnFailure
       securityContext:
         fsGroup: 1000

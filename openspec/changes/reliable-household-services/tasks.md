@@ -1,4 +1,6 @@
-Checked tasks record the earlier baseline and task 2.8's disposable Grafana recovery proof. The remaining tasks cover consolidation and broader acceptance. The operator authorized local implementation and disposable Linux verification. Production inspection, credentials, deployment and destructive production operations remain separately gated.
+Remaining tasks cover consolidation and broader acceptance. Local implementation and
+disposable Linux verification are authorized; production inspection, credentials,
+deployment, and destructive production operations remain separately gated.
 
 The [household operations runbook](../../../docs/operations.md) records the
 current declaration tables, command boundaries and remaining gates. It does not
@@ -7,7 +9,6 @@ acceptance.
 
 ## 1. Shared delivery and ownership
 
-- [x] 1.1 Record the delegated architecture decisions and their relationship to current contracts. Verify the proposal/spec/design/task artifacts with OpenSpec; do not promote active changes to current authority.
 - [x] 1.2 Integrate Sini-style Den cluster composition, Nixidy and pinned upstream charts. Build the environment/bootstrap outputs and prove cluster settings reach the selected manifests without duplicating host metadata.
 - [ ] 1.3 Provide Argo application reconciliation, protected retained resources and the narrowed static Argo seed plus explicit root-Application handoff. Distinguish successful apply from readiness and explicit first-enrollment prerequisites. Exercise delivery, readiness, handoff and resource retirement against a disposable Git source; demonstrate a single owner where the static seed applies without Git and only the root handoff enables Git reconciliation.
 - [ ] 1.4 Consolidate placement, environment domains and application endpoints through existing Den owners. Reject missing environment/aspect references and route/backend mismatches with focused evaluation checks; verify current placements and endpoint identities are preserved without a new application framework.
@@ -25,7 +26,7 @@ acceptance.
 
 ## 3. Thin workload integrations
 
-- [x] 3.1 Move Jellyfin onto the shared rendering/delivery path while preserving its retained configuration, pinned image, native-client access and read-only media. Run a representative authenticated service smoke check after delivery/replacement; leave physical GPU validation gated.
+- [x] 3.1 Move Jellyfin onto the shared rendering/delivery path while preserving its retained configuration, pinned image, native-client access and read-only media. Keep application-only HTTP behavior in `modules/tests/jellyfin_smoke.py`; platform orchestration and replacement acceptance are owned by `modules/tests/prod-home-replacement.{nix,py}`. The x86_64 runtime smoke remains unexecuted in task 5.1; physical GPU validation remains gated.
 - [ ] 3.2 Add the official Immich chart with compatible server/CPU-ML/database/cache releases and declared asset/database storage. Render and start the real services; use one disposable upload/recovery smoke to establish that our mounts and recovery set are complete, not an upstream feature suite.
 - [ ] 3.3 Add Radarr, Sonarr, SABnzbd and Seerr through thin upstream-chart aspects with retained local state, consistent fresh library/download paths and required internal service connections. Exercise probes/API access and shared-path ownership with disposable content; do not connect production providers or migrate existing libraries.
 - [ ] 3.4 Evaluate Configarr with pinned TRaSH/template inputs and declarative overrides against disposable Arr instances, using Recyclarr if the broader experimental settings do not meet the required boundary. Prove managed-field repair, unchanged results from the same inputs despite newer upstream data, unrelated-record preservation and credential updates. Record the supported field set and selected release; do not assume SAB or Seerr setup is covered.
@@ -41,6 +42,6 @@ acceptance.
 
 ## 5. Verification and handoff
 
-- [ ] 5.1 Run focused Nix/Den boundary checks and disposable runtime acceptance against the revised artifacts and the supported guest-replacement recovery. Verify actual per-application records and referenced bytes after guest replacement, plus capture interruption and unrelated-service availability. Keep permanent tests limited to Homelab-owned behavior; report native Darwin and Linux evidence separately.
+- [ ] 5.1 Run focused Nix/Den boundary checks and the x86_64 `checks.prod-home-replacement` disposable runtime acceptance against the revised artifacts and supported guest-replacement recovery. Record phase timings and verify actual per-application records, referenced bytes, media loss/return behavior, Jellyfin's read-only `/media` mount, capture interruption, and unrelated-service availability. Keep permanent tests limited to Homelab-owned behavior; report native Darwin and Linux evidence separately, and do not claim acceptance before the Linux run succeeds.
 - [ ] 5.2 Provide maintained Markdown orientation and deployment/capture/restore procedures with prerequisites, expected outcomes and remaining gates. Generate Markdown tables from evaluated storage, identities, routes, secrets and artifact references; remove duplicate procedural text. Check links and generated references; preserve useful private evidence before removing spent diagnostic scripts.
 - [ ] 5.3 Prepare the production backup-policy handoff without scheduling or provisioning: identify cadence, tolerated data loss, retention, destination failure/access boundaries and acceptable interruption as operator decisions, supported by measured capture and restore results. Document that same-host exports do not prove independent backups and target prerequisites need separate authorization.

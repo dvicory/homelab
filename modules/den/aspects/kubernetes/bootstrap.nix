@@ -12,7 +12,7 @@
       manifests = pkgs.runCommand "household-static-bootstrap" { nativeBuildInputs = [ pkgs.yq-go ]; } ''
         mkdir -p "$out"
         cp ${environment}/argocd-retained/Namespace-argocd.yaml "$out/namespaces.yaml"
-        yq -N '.' ${environment}/argocd/CustomResourceDefinition-*.yaml > "$out/crds.yaml"
+        yq '.' ${environment}/argocd/CustomResourceDefinition-*.yaml > "$out/crds.yaml"
         rm -f "$out/controllers.yaml"
         first=1
         for file in ${environment}/argocd/*.yaml; do
@@ -29,6 +29,8 @@
         yq 'select(.kind == "Prometheus" or .kind == "Alertmanager")' "$out/controllers.yaml" > "$out/operator-readiness.yaml"
         yq 'select(.kind == "Job")' "$out/controllers.yaml" > "$out/jobs.yaml"
         yq 'select(.kind == "Job" and .spec.ttlSecondsAfterFinished == null)' "$out/controllers.yaml" > "$out/persistent-jobs.yaml"
+        yq 'select((.metadata.annotations."helm.sh/hook" // "") | contains("pre-install"))' "$out/controllers.yaml" > "$out/pre-install.yaml"
+        yq 'select(.kind == "Job")' "$out/pre-install.yaml" > "$out/pre-install-jobs.yaml"
       '';
       bootstrap = pkgs.writeShellApplication {
         name = "household-bootstrap";
@@ -317,7 +319,15 @@
             kubectl apply --server-side --field-manager=argocd-controller -f "$manifests/namespaces.yaml"
             kubectl apply --server-side --field-manager=argocd-controller -f "$manifests/crds.yaml"
             kubectl wait --for=condition=Established --timeout=180s -f "$manifests/crds.yaml"
-            # Controllers and admission Jobs converge while dependent objects retry.
+            # Honour the chart's pre-install boundary: Redis credentials must
+            # exist before controller rollout deadlines start.
+            if [ -s "$manifests/pre-install.yaml" ]; then
+              kubectl apply --server-side --field-manager=argocd-controller -f "$manifests/pre-install.yaml"
+              if [ -s "$manifests/pre-install-jobs.yaml" ]; then
+                kubectl wait --for=condition=Complete --timeout=600s -f "$manifests/pre-install-jobs.yaml"
+              fi
+            fi
+            # Apply the remaining seed after its prerequisite hooks complete.
             for _ in $(seq 1 60); do
               if kubectl apply --server-side --field-manager=argocd-controller -f "$manifests/controllers.yaml"; then
                 echo 'Argo seed applied, not yet ready. Run household-bootstrap --check-ready, then apply the canonical root Application.'
@@ -348,6 +358,14 @@
       };
     in
     {
+      checks.household-bootstrap-crds =
+        pkgs.runCommand "household-bootstrap-crds" { nativeBuildInputs = [ pkgs.yq-go ]; }
+          ''
+            yq ea -e '[select(.kind == "CustomResourceDefinition") | .metadata.name] | sort | join(",") == "applications.argoproj.io,applicationsets.argoproj.io,appprojects.argoproj.io"' \
+              ${manifests}/crds.yaml > /dev/null
+            touch "$out"
+          '';
+
       packages = {
         household-bootstrap-manifests = manifests;
         household-bootstrap = bootstrap;

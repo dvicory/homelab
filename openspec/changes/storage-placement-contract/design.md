@@ -12,21 +12,13 @@ Evidence from the current repository:
   systemd-based and the blank snapshot exists. `/persist` is `neededForBoot`.
   Any storage root that must survive a rollback has to be declared as
   persistent; nothing under `/` qualifies.
-- Replaceable media devices mount individually; a file-level encryption layer
-  over each plain filesystem produces the clear view, and those clear views are
-  what get aggregated. That layering is being retired in favor of a block-level
-  container per device ([ADR-0007](../../../docs/architecture/decisions/0007-block-level-device-encryption.md));
-  this design must work with either, because the aggregation step is the same.
-- That media currently reaches consumers **twice**: a declared pooling instance
-  over the decrypted branches, and a second, independent read-only pooling
-  instance that pins each real device, verifies it, and exposes the result to
-  the compute guest. The two are configured separately and share no policy.
-- The writable tree the acquisition workloads use is a compute-retained path.
-  Its host location is derived from the compute state root and its ownership is
-  translated to the guest's ID range, so it cannot be placed on the media
-  devices without changing the compute model.
-- The player reads the same devices through a read-only view, but nothing
-  connects what acquisition writes to what the player reads.
+- Current media branches mount individually; production uses gocryptfs over plain
+  filesystems and one mergerfs namespace at `/srv/media`. The namespace
+  aggregates the clear views and is the host-owned media boundary. Changing the
+  provider or encryption layer is outside this contract.
+- Acquisition workloads attach that namespace at `/data`, while Jellyfin
+  attaches only `/srv/media/library` at `/media` read-only. Private application
+  state remains in separately declared retained paths.
 
 ## Goals / Non-Goals
 
@@ -40,8 +32,8 @@ Evidence from the current repository:
   writable namespace as well as the read-only one.
 - A writable media boundary that is host-owned rather than guest-retained, so
   that it can rest on the media devices and survive guest replacement.
-- Managed roots whose ownership and inherited permissions are declared once and
-  then left alone by routine activation.
+- Managed roots whose ownership is declared once may also declare optional
+  inherited permissions policy; routine activation leaves both untouched.
 
 **Non-Goals:**
 
@@ -66,7 +58,7 @@ must sit on specific devices, and whose ownership is a host-visible service
 identity.
 
 Introduce a separate declaration for host-owned semantic roots, carrying the
-path, owning user and group, mode, and default access entries, and mount
+path, owning user and group, mode, optional default access entries, and mount
 failures that must deny access.
 
 *Alternatives considered:* widening the existing retained-path declaration to
@@ -78,20 +70,20 @@ recorded in the proposed ADR-0006.
 
 ### The writable media boundary is the namespace, not a per-application tree
 
-Acquisition services and the player consume the same namespace with different
-access: writers receive the common parent because they link into the library,
-and the player receives the library read-only. This replaces today's split
-between a guest-retained writable tree and an unrelated read-only export.
+Acquisition services and the player consume the same host-owned namespace with
+different access: writers receive the common parent because they link into the
+library, and the player receives the library read-only. This is the selected
+boundary and removes the former split between a guest-retained writable tree
+and an unrelated read-only export.
 
 *Alternatives considered:* keeping a per-application writable tree and
 exporting the library separately (the status quo) — it cannot express the link
 that import depends on. Giving the player the whole namespace read-only was also
 rejected: it would let it see in-progress downloads.
 
-Replacing the current writable boundary changes where the acquisition workloads
-write, so it requires the operator's decision before implementation. The task
-list section that repoints those workloads is gated on it; nothing else in this
-change depends on the answer.
+The writable media boundary is the host-owned namespace. The task list repoints
+acquisition consumers as implementation work; that work does not require
+changing the current media provider or physical disks.
 
 ### One pooling instance per namespace
 
@@ -118,11 +110,12 @@ prevents some races but does not detect a device that failed to unlock or was
 removed, which is exactly the case that produces silent writes to the wrong
 place.
 
-### Managed roots carry default permissions; activation does not recurse
+### Managed roots declare ownership; inherited permissions are policy
 
-Roots are created with declared ownership, mode, and default access entries so
-that later content inherits the intended access. Activation never recursively
-rewrites ownership, modes, or access control entries of existing content.
+Roots always carry declared ownership and mode. A root declares default access
+entries only when its sharing policy requires later content to inherit access
+beyond owner/group/mode. Activation never recursively rewrites ownership, modes,
+or access control entries of existing content.
 
 *Alternatives considered:* enforcing desired state recursively on every
 activation. Rejected: it is unbounded work over large trees, it makes a rebuild
@@ -165,14 +158,15 @@ part of the filesystem contract is asserted at evaluation time to resolve to
 exactly its declared GID, so an upstream or platform definition cannot silently
 take the number.
 
-Verified end to end in a disposable host, with the real mergerfs-backed mount:
-the service UID and primary GID stay ordinarily subordinate-mapped, a single
+The disposable contract test must show the real mergerfs-backed mount: the
+service UID and primary GID stay ordinarily subordinate-mapped, a single
 capability GID is mapped identically on both sides, and the workload holds it
-**only as a supplemental group**. A file created that way carries the translated
-service UID and the bare capability GID on the host, the guest sees the
-capability under its fleet number, the same UID without the capability is denied,
-container root is denied, and hardlink, rename, unlink and append all behave.
-Restarting preserves all of it.
+**only as a supplemental group**. A file created that way carries the
+translated service UID and bare capability GID on the host, the guest sees the
+capability under its fleet number, the same UID without the capability is
+denied, container root is denied, and hardlink, rename, unlink and append all
+behave. Restarting preserves all of it. This low-level contract is separate from
+the unexecuted replacement acceptance.
 
 Only capabilities that actually have to cross a given boundary receive such a
 mapping, so the exceptions stay as narrow as possible: the mapping is derived
@@ -227,9 +221,9 @@ cheaper to change while empty:
 2. Reconcile pooling so one instance serves the namespace, with creation
    placement and fail-closed attachment.
 3. Repoint the writable media boundary from compute-retained state to the
-   namespace, and reduce the read-only export to a view of it. Gated on the
-   operator decision described in the writable-boundary section above; do not
-   start it before that decision.
+   namespace, and reduce the read-only export to a view of it. This is the
+   selected current boundary; the step does not imply a provider or physical
+   storage migration.
 4. Verify placement, linking, capacity reporting, permission inheritance, and
    missing-branch refusal against synthetic content.
 5. Only then import real content.

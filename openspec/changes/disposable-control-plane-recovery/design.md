@@ -24,7 +24,12 @@ See `proposal.md` for motivation. The current tree already has replaceable Incus
   - Alternative retained: keep them as an offline fallback. Rejected because the operator does not require offline cluster reconstruction and the fallback preserves the wrong architecture.
 - Delete the manual offline sandbox bundle/guide.
   - Alternative retained: relabel it as a learning exercise. Rejected because it duplicates test inputs and documents an unsupported recovery shape.
-- Rewrite the VM recovery test around online replacement: new guest, fresh cluster identity, staged secrets, Argo seed, test-local root Application against a disposable Git origin holding verbatim canonical manifests, real registry image pulls, retained Jellyfin state verification.
+- Rewrite the x86_64 `prod-home-replacement` acceptance around online
+  replacement: a new guest, fresh cluster identity, staged secrets, the shipped
+  Argo seed/root handoff through a test-local root Application, a disposable Git
+  origin holding verbatim canonical manifests, real registry image pulls, and
+  retained Jellyfin state verification. Keep application-only HTTP behavior in
+  `modules/tests/jellyfin_smoke.py`; the platform driver owns orchestration.
   - Alternative retained: hermetic `dockerTools.pullImage` fixtures with per-architecture hashes. Rejected by the operator: the test should exercise the registry dependency production recovery actually has, and must not carry version-specific archive fixtures.
   - The disposable Git origin stands in for GitHub transport only; manifest content under test stays canonical, and production image identity is never duplicated into the test.
 - Replace household recovery alerts with replacement/reconciliation health and future backup-completion signals.

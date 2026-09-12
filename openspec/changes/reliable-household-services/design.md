@@ -1,6 +1,6 @@
 ## Context
 
-See [proposal.md](proposal.md) for scope. Current specs remain authoritative. The existing compute slice supplies an unprivileged Incus guest, K3s, Flannel/kube-proxy, host-retained state and an independent host management path. Earlier disposable Linux recovery and application smokes are separate evidence, not proof of the expanded platform. The current household restore renames retained mount roots and its acceptance scenario does not exercise the shipped household recovery command. Full recovery, Argo handoff, ingress authorization and monitoring delivery remain incomplete. The 2026-09-08 operator review approved this planning refinement, not implementation or production activation.
+See [proposal.md](proposal.md) for scope. Current specs remain authoritative. The existing compute slice supplies an unprivileged Incus guest, K3s, Flannel/kube-proxy, host-retained state and an independent host management path. Current compute-loss recovery is guest replacement → staged secrets → Argo seed/root handoff → Git reconciliation → reattachment of retained state; no whole-stack export/restore/resume path is supported. The x86_64 `prod-home-replacement` acceptance and broader Argo handoff, ingress, backup and monitoring evidence remain incomplete. The 2026-09-08 operator review approved this planning refinement, not implementation or production activation.
 
 ## Goals / Non-Goals
 
@@ -14,9 +14,9 @@ Do not replace the CNI, introduce distributed storage, migrate old service data,
 
 Reuse Sini's Den cluster entity, `k8s-manifests` class and cluster-to-Nixidy policy. Both repositories pin the same Den revision. Pass the existing nixpkgs package set and pinned nixhelm charts to Nixidy; keep host metadata in host entities and cluster metadata in a cluster entity. Do not copy Sini's unrelated overlays, fleet inventory, network/storage topology or update automation.
 
-Use Nixidy-rendered upstream charts and native resources, with Argo CD as the normal per-application reconciler. Pin application versions independently of node OS releases. Retained namespaces/PVs/PVCs have explicit protection from automatic pruning and deletion. Keep a static bootstrap artifact for controller/CRD installation and a documented no-live-Git recovery path. A disposable Git repository can exercise reconciliation locally without publishing to the production origin.
+Use Nixidy-rendered upstream charts and native resources, with Argo CD as the normal per-application reconciler. Pin application versions independently of node OS releases. Retained namespaces/PVs/PVCs have explicit protection from automatic pruning and deletion. Keep a static bootstrap artifact for controller/CRD installation and explicit root-Application handoff; after handoff Argo reconciles canonical Git manifests. A disposable Git repository can exercise this transport locally without publishing to the production origin.
 
-Nixidy supports direct apply, but its environment-wide prune also includes namespaces and does not honor Argo retention annotations. It is not an unrestricted recovery shortcut. Recovery applies retained resources and selected workload manifests without pruning, with the normal reconciler paused when required. Resource retirement uses the selected owner and an explicit retained-data gate.
+Nixidy supports direct apply, but its environment-wide prune also includes namespaces and does not honor Argo retention annotations. It is not an unrestricted recovery shortcut. Bootstrap applies only the retained Argo seed resources and then hands off to the root Application; Argo owns workload reconciliation, while retained-resource protection controls retirement.
 
 The operator's subsequent platform review approved ordinary Helm and application-owned manifests alongside optional Den/Nixidy integrations. Argo owns the resources assigned to it, not every workload admitted to the cluster. Standard storage and secret interfaces must work without a Homelab application definition. Retain the chart/version, values, Helm release records and required credentials for reconstruction; an unrecorded exploratory install does not acquire a recovery guarantee merely by using persistent storage.
 
@@ -84,7 +84,7 @@ Preserve application-native authentication for public media/photo/request client
 
 ### Verification and operator handoff
 
-Use the authorized disposable Linux environment for platform runtime evidence; report native Darwin evidence separately. Earlier passes do not establish that revised artifacts pass. Exercise the packaged capture/restore/resume path rather than a second manual recovery procedure.
+Use the authorized disposable Linux environment for platform runtime evidence; report native Darwin evidence separately. Exercise the shipped guest-replacement/bootstrap/Argo path through `modules/tests/prod-home-replacement.{nix,py}`, with `modules/tests/jellyfin_smoke.py` limited to HTTP application behavior. Broader household capture/restore remains separate and incomplete.
 
 Concentrate durable checks on evaluated storage/secret/access boundaries and owned lifecycle behavior. Exercise matched database/assets, unrelated-service availability during capture, failure and resumption, mount-root preservation, route/authentication denial, Argo ownership/retirement, and Alertmanager firing/resolution against disposable destinations. Verify native private API access and public browser authorization separately. Do not create per-application upstream feature suites.
 
@@ -92,7 +92,7 @@ Check Incus adoption conflicts before preseed can modify an existing envelope. S
 
 ## Risks / Trade-offs
 
-- Argo adds a controller and Git dependency for normal reconciliation; static bootstrap and non-pruning recovery artifacts must remain usable without live Git.
+- Argo adds a controller and Git dependency for normal reconciliation; static bootstrap remains usable without live Git until root handoff, while replacement acceptance requires Git and registry access.
 - Single-node local storage accepts guest-replacement and host-failure outages, not routine whole-guest backup shutdowns. Online capture can add IO load; short pauses depend on actual application and filesystem support. Host capacity and pause duration need evidence before scheduling.
 - Missing runtime credentials intentionally block their consumers; they must not silently select anonymous access or generated replacement identities.
 - Alternate hostnames may require coordinated canonical URL and OIDC callback changes. Immich does not support subpaths; reject incompatible routing.

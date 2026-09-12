@@ -101,8 +101,10 @@ jobs:
           name: ${{ vars.CACHIX_CACHE }}
           skipPush: true
 
-      - &start-hestia
-        name: Start Hestia cache
+      # Hestia v3 assembles whole NARs in RAM. Multi-GiB system images use
+      # the durable/upstream caches instead until Hestia has bounded reads.
+      - name: Start Hestia cache
+        if: matrix.group != 'nixosConfigurations'
         uses: Mic92/hestia@f1f4df2801140a36398ed423533c8460618539df # v3.0.1
         with:
           version: v3.0.1
@@ -114,32 +116,22 @@ jobs:
           GROUP: ${{ matrix.group }}
         run: |
           set -euo pipefail
-          # `ciJobs.<system>.<group>` is an attrset of derivations, and nix build
-          # wants a derivation, so resolve the group to explicit store paths
-          # rather than changing the flake output that hestia also consumes.
+          # Select derivation outputs explicitly: a bare .drv installable only
+          # realises the derivation file, not the build it describes.
           attr=".#ciJobs.$SYSTEM.$GROUP"
-          derivations=$(nix eval --json "$attr" --apply 'x: map (d: d.drvPath) (builtins.attrValues x)' | jq -r '.[]')
+          derivations=$(nix eval --json "$attr" --apply 'x: map (d: d.drvPath) (builtins.attrValues x)' | jq -r '.[] + "^*"')
           if [ -z "$derivations" ]; then
             echo "no jobs in $attr"
             exit 0
           fi
           echo "building $(echo "$derivations" | wc -l) job(s) from $attr"
+          build_options=(-L --no-link --stdin --keep-going)
           if [ "$GROUP" = checks ] && [ "$SYSTEM" = x86_64-linux ]; then
-            # TEMPORARY: prove whether the test output is already valid
-            # before nix build runs (distinguishes pre-seeded store from
-            # substitution without log lines).
-            mount | grep -c " on /nix " || true
-            df -h /nix | tail -1 || true
-            ls /nix/store | wc -l || true
-            testdrv=$(nix eval --raw ".#checks.$SYSTEM.prod-home-replacement.drvPath")
-            echo "test drv: $testdrv"
-            testout=$(nix derivation show "$testdrv" | jq -r '.[].outputs.out.path')
-            echo "test out: $testout"
-            nix path-info "$testout" || echo "TEST OUTPUT NOT VALID BEFORE BUILD"
-            ls "$testout" 2>/dev/null || echo "TEST OUTPUT CONTENT MISSING"
+            # Only the online replacement test opts out; other derivations
+            # retain their normal sandbox under relaxed mode.
+            build_options+=(--option sandbox relaxed)
           fi
-          # shellcheck disable=SC2086
-          nix build -L --no-link $derivations
+          printf '%s\n' "$derivations" | nix build "${build_options[@]}"
 
   publish:
     name: Publish ${{ matrix.system }} to Cachix
@@ -178,8 +170,6 @@ jobs:
 
       - *configure-durable-cache
 
-      - *start-hestia
-
       - name: Publish successful projection
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -187,4 +177,8 @@ jobs:
           SYSTEM: ${{ matrix.system }}
         run: |
           set -o pipefail
-          nix build -L --no-link --print-out-paths ".#ciBundles.$SYSTEM" | cachix push "$CACHIX_CACHE"
+          build_options=(-L --no-link --print-out-paths)
+          if [ "$SYSTEM" = x86_64-linux ]; then
+            build_options+=(--option sandbox relaxed)
+          fi
+          nix build "${build_options[@]}" ".#ciBundles.$SYSTEM" | cachix push "$CACHIX_CACHE"

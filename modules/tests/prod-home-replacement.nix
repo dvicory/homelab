@@ -65,6 +65,7 @@
           cp ${canonical}/jellyfin/*.yaml "$out/jellyfin/"
           cp ${canonical}/jellyfin-retained/*.yaml "$out/jellyfin-retained/"
           cp ${canonical}/bootstrap.yaml "$out/canonical-bootstrap.yaml"
+          cp ${canonical}/radarr/Deployment-radarr.yaml "$out/writer-fixture.yaml"
         '';
         # The shipped seed tree with only the root Application swapped for the
         # fixture origin. This is the dependency-injection seam: the same
@@ -98,134 +99,139 @@
           EOF
         '';
         bootstrapHost = self.packages.${system}.household-bootstrap-host;
-        test = pkgs.testers.runNixOSTest {
-          name = "prod-home-replacement";
-          globalTimeout = 4 * 60 * 60;
+        test =
+          (pkgs.testers.runNixOSTest {
+            name = "prod-home-replacement";
+            globalTimeout = 4 * 60 * 60;
 
-          nodes.fixture-host =
-            { pkgs, ... }:
-            {
-              system.stateVersion = "26.05";
+            nodes.fixture-host =
+              { pkgs, ... }:
+              {
+                system.stateVersion = "26.05";
 
-              # Production hosts materialize the storage-capability groups
-              # from the group registry; the media-namespace layout script
-              # installs paths owned by group media (GID 505, see
-              # modules/den/groups/default.nix).
-              users.groups.media.gid = 505;
+                # Production hosts materialize the storage-capability groups
+                # from the group registry; the media-namespace layout script
+                # installs paths owned by group media (GID 505, see
+                # modules/den/groups/default.nix).
+                users.groups.media.gid = 505;
 
-              # The lifecycle helper requires root subordinate coverage for
-              # the compute range and every identity-mapped capability GID.
-              # NixOS defaults provide neither, so declare both from the
-              # same descriptor the helper verifies against.
-              users.users.root.subUidRanges = [
-                {
-                  startUid = descriptor.idmapBase;
-                  count = descriptor.idmapSize;
-                }
-              ];
-              users.users.root.subGidRanges = [
-                {
-                  startGid = descriptor.idmapBase;
-                  count = descriptor.idmapSize;
-                }
-              ]
-              ++ map (row: {
-                startGid = row.hostid;
-                count = 1;
-              }) (lib.filter (row: row.nsid == row.hostid) descriptor.idmap.gid);
+                # The lifecycle helper requires root subordinate coverage for
+                # the compute range and every identity-mapped capability GID.
+                # NixOS defaults provide neither, so declare both from the
+                # same descriptor the helper verifies against.
+                users.users.root.subUidRanges = [
+                  {
+                    startUid = descriptor.idmapBase;
+                    count = descriptor.idmapSize;
+                  }
+                ];
+                users.users.root.subGidRanges = [
+                  {
+                    startGid = descriptor.idmapBase;
+                    count = descriptor.idmapSize;
+                  }
+                ]
+                ++ map (row: {
+                  startGid = row.hostid;
+                  count = 1;
+                }) (lib.filter (row: row.nsid == row.hostid) descriptor.idmap.gid);
 
-              virtualisation = {
-                cores = 4;
-                memorySize = 5120;
-                diskSize = 24576;
-                # The recovery path pulls pinned registry images, so this
-                # integration test keeps normal network access. Deterministic
-                # contract checks stay in evaluation-time tests.
-                restrictNetwork = false;
-                useNixStoreImage = true;
-                writableStore = true;
-                writableStoreUseTmpfs = false;
-                additionalPaths = [
+                virtualisation = {
+                  cores = 4;
+                  memorySize = 5120;
+                  diskSize = 24576;
+                  # The recovery path pulls pinned registry images, so this
+                  # integration test keeps normal network access. Deterministic
+                  # contract checks stay in evaluation-time tests.
+                  restrictNetwork = false;
+                  useNixStoreImage = true;
+                  writableStore = true;
+                  writableStoreUseTmpfs = false;
+                  additionalPaths = [
+                    computeGuest
+                    fixture
+                    guestBundle
+                    testRepo
+                    testSeed
+                    bootstrapHost
+                  ];
+
+                  incus = {
+                    enable = true;
+                    package = hostConfig.virtualisation.incus.package;
+                    # The scenario deliberately exercises a fresh native preseed.
+                    preseed = null;
+                  };
+                };
+
+                environment.systemPackages = [
+                  pkgs.bash
+                  pkgs.coreutils
+                  pkgs.findutils
+                  pkgs.git
+                  pkgs.gnugrep
+                  pkgs.gnused
+                  pkgs.gnutar
+                  pkgs.iproute2
+                  pkgs.iputils
+                  pkgs.jq
+                  pkgs.kubectl
+                  pkgs.mergerfs
+                  pkgs.nftables
+                  pkgs.nix
+                  pkgs.openssh
+                  pkgs.python3
+                  pkgs.util-linux
+                  pkgs.xz
+                  pkgs.yq-go
                   computeGuest
-                  fixture
-                  guestBundle
-                  testRepo
-                  testSeed
-                  bootstrapHost
                 ];
 
-                incus = {
-                  enable = true;
-                  package = hostConfig.virtualisation.incus.package;
-                  # The scenario deliberately exercises a fresh native preseed.
-                  preseed = null;
-                };
+                boot.kernel.sysctl = lib.filterAttrs (
+                  name: _: lib.hasPrefix "net.bridge.bridge-nf-call-" name
+                ) hostConfig.boot.kernel.sysctl;
+                networking.useNetworkd = hostConfig.networking.useNetworkd;
+                networking.dhcpcd.enable = hostConfig.networking.dhcpcd.enable;
+                networking.firewall.interfaces.${descriptor.network} =
+                  hostConfig.networking.firewall.interfaces.${descriptor.network};
+                # The disposable Git origin fixture serves the guest over the
+                # Incus bridge; registry pulls use normal outbound access.
+                networking.firewall.allowedTCPPorts = [ 9418 ];
+                networking.nftables.enable = true;
+
+                systemd.tmpfiles.rules = [
+                  "d /var/lib/incus-storage-pools 0755 root root -"
+                  "d /var/lib/incus-storage-pools/incus-compute 0755 root root -"
+                ];
               };
 
-              environment.systemPackages = [
-                pkgs.bash
-                pkgs.coreutils
-                pkgs.findutils
-                pkgs.git
-                pkgs.gnugrep
-                pkgs.gnused
-                pkgs.gnutar
-                pkgs.iproute2
-                pkgs.iputils
-                pkgs.jq
-                pkgs.kubectl
-                pkgs.mergerfs
-                pkgs.nftables
-                pkgs.nix
-                pkgs.openssh
-                pkgs.python3
-                pkgs.util-linux
-                pkgs.xz
-                pkgs.yq-go
-                computeGuest
-              ];
-
-              boot.kernel.sysctl = lib.filterAttrs (
-                name: _: lib.hasPrefix "net.bridge.bridge-nf-call-" name
-              ) hostConfig.boot.kernel.sysctl;
-              networking.useNetworkd = hostConfig.networking.useNetworkd;
-              networking.dhcpcd.enable = hostConfig.networking.dhcpcd.enable;
-              networking.firewall.interfaces.${descriptor.network} =
-                hostConfig.networking.firewall.interfaces.${descriptor.network};
-              # The disposable Git origin fixture serves the guest over the
-              # Incus bridge; registry pulls use normal outbound access.
-              networking.firewall.allowedTCPPorts = [ 9418 ];
-              networking.nftables.enable = true;
-
-              systemd.tmpfiles.rules = [
-                "d /var/lib/incus-storage-pools 0755 root root -"
-                "d /var/lib/incus-storage-pools/incus-compute 0755 root root -"
-              ];
-            };
-
-          testScript = ''
-            start_all()
-            fixture_host.wait_for_unit("incus.service", timeout=600)
-            fixture_host.copy_from_host_via_shell("${scenario}", "/tmp/prod-home-replacement.py")
-            fixture_host.copy_from_host_via_shell("${smoke}", "/tmp/jellyfin_smoke.py")
-            (status, output) = fixture_host.execute(
-                "python3 /tmp/prod-home-replacement.py 2>&1"
-                " --bundle ${guestBundle}"
-                " --fixture ${fixture}"
-                " --repo ${testRepo}"
-                " --seed ${testSeed}"
-                " --smoke /tmp/jellyfin_smoke.py"
-                " --bootstrap-host ${bootstrapHost}/bin/household-bootstrap-host"
-                " --helper ${computeGuest}/bin/compute-guest"
-                " --rev ${self.shortRev or "dirty"} < /dev/null",
-                timeout=4 * 60 * 60,
-            )
-            # Stream the scenario log into the builder log: a silent pass
-            # is indistinguishable from a test that never executed.
-            print(output)
-            assert status == 0, "prod-home-replacement scenario failed"
-          '';
-        };
+            testScript = ''
+              start_all()
+              fixture_host.wait_for_unit("incus.service", timeout=600)
+              fixture_host.copy_from_host_via_shell("${scenario}", "/tmp/prod-home-replacement.py")
+              fixture_host.copy_from_host_via_shell("${smoke}", "/tmp/jellyfin_smoke.py")
+              (status, output) = fixture_host.execute(
+                  "python3 /tmp/prod-home-replacement.py 2>&1"
+                  " --bundle ${guestBundle}"
+                  " --fixture ${fixture}"
+                  " --repo ${testRepo}"
+                  " --seed ${testSeed}"
+                  " --smoke /tmp/jellyfin_smoke.py"
+                  " --bootstrap-host ${bootstrapHost}/bin/household-bootstrap-host"
+                  " --helper ${computeGuest}/bin/compute-guest"
+                  " < /dev/null",
+                  timeout=4 * 60 * 60,
+              )
+              # Preserve scenario assertions and phase timings in the build log.
+              print(output)
+              assert status == 0, "prod-home-replacement scenario failed"
+            '';
+          }).overrideTestDerivation
+            (_: {
+              # Registry pulls are part of this online recovery acceptance.
+              # Builders must explicitly permit this with sandbox = relaxed.
+              __noChroot = true;
+            });
       in
       {
         # The same inputs can exercise the scenario on a disposable x86_64 Linux host.

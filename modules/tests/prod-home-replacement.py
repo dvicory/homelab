@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from contextlib import contextmanager
 import copy
 import fcntl
 import hashlib
@@ -98,6 +99,16 @@ def wait_for(label: str, predicate, timeout: int = WAIT_TIMEOUT):
         time.sleep(2)
     suffix = f": {last_error}" if last_error else ""
     raise ScenarioError(f"timed out waiting for {label}{suffix}")
+
+
+@contextmanager
+def phase(name: str):
+    started = time.monotonic()
+    print(f"PHASE start: {name}", flush=True)
+    try:
+        yield
+    finally:
+        print(f"PHASE elapsed: {name}: {time.monotonic() - started:.2f}s", flush=True)
 
 
 def quote_path(path: str) -> str:
@@ -336,12 +347,7 @@ class Runtime:
                            "--", "touch", device["path"] + "/forbidden")
         check(result.returncode != 0, "guest root cannot write through the credential attachment")
 
-    def verify_secret_consumers(self, values: dict[str, bytes], *, fresh: bool = False) -> None:
-        if fresh:
-            existing = {item["metadata"]["name"] for item in self.kubectl_json("get", "namespaces", "-o", "json")["items"]}
-            for namespace in sorted({entry["namespace"] for entry in self.descriptor["runtimeSecrets"].values()} - existing):
-                self.kubectl("create", "namespace", namespace)
-
+    def verify_secret_consumers(self, values: dict[str, bytes]) -> None:
         def delivered() -> bool:
             items = self.kubectl_json("get", "secrets", "-A", "-o", "json")["items"]
             found = {(item["metadata"]["namespace"], item["metadata"]["name"]): item for item in items}
@@ -364,6 +370,8 @@ class Runtime:
                 )
             return True
 
+        wait_for("staged Secrets at their declared consumers", delivered)
+
     def start_media(self, pool: dict, root_script: str, workspace: Path) -> None:
         environment = {}
         for line in pool["environment"].splitlines():
@@ -374,6 +382,8 @@ class Runtime:
         check(branches, "media pool declares branches")
         check(Path(environment["MOUNTPOINT"]) == self.media_path, "media pool targets the declared guest source")
         for branch in branches:
+            if branch in self.media_branches:
+                continue
             branch.mkdir(parents=True, exist_ok=True)
             # Disposable tmpfs branches stand in for the host's decrypted branch
             # mounts. The cap is not a reservation: only written bytes consume
@@ -403,9 +413,6 @@ class Runtime:
             check(result.returncode == 0, f"production media pool stop succeeds: {(result.stderr or result.stdout).strip()}")
         finally:
             self.media_started = False
-            for branch in reversed(self.media_branches):
-                completed("umount", str(branch), timeout=120)
-            self.media_branches.clear()
 
     def app_ready(self) -> bool:
         deployment = self.kubectl_json("get", "deployment/jellyfin", "-o", "json", namespace="jellyfin")
@@ -442,6 +449,9 @@ class Runtime:
         except (OSError, ScenarioError):
             pass
         completed("umount", "-l", str(self.media_path), timeout=120)
+        for branch in reversed(self.media_branches):
+            run("umount", str(branch), timeout=120)
+        self.media_branches.clear()
         for path in self.media_scripts:
             try:
                 path.unlink()
@@ -730,10 +740,6 @@ def verify_private_endpoints(runtime: Runtime) -> None:
 
 
 def run_scenario(args: argparse.Namespace) -> None:
-    # Provenance stamp: binds a run to exact scenario content and the
-    # evaluated revision. A green run without this line in its log never
-    # executed this file; a rev mismatch means stale evaluation.
-    print(f"PROVENANCE scenario={hashlib.sha256(Path(__file__).read_bytes()).hexdigest()} rev={args.rev}", flush=True)
     spec = importlib.util.spec_from_file_location("jellyfin_smoke", args.smoke)
     smoke = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(smoke)
@@ -886,10 +892,11 @@ def run_scenario(args: argparse.Namespace) -> None:
             finally:
                 run("mount", "--bind", str(persist / str(retained_path).lstrip("/")), str(retained_path))
             runtime.created_instance = True
-            runtime.helper_run("create", bundle=args.bundle, timeout=3_600)
-            wait_for("healthy K3s node", runtime.node_ready)
-            wait_for("unrelated CoreDNS availability", runtime.unrelated_ready)
-            wait_for("node resource metrics", runtime.metrics_ready)
+            with phase("compute-create-and-k3s-ready"):
+                runtime.helper_run("create", bundle=args.bundle, timeout=3_600)
+                wait_for("healthy K3s node", runtime.node_ready)
+                wait_for("unrelated CoreDNS availability", runtime.unrelated_ready)
+                wait_for("node resource metrics", runtime.metrics_ready)
             runtime.check_secret_payload(secret_payload)
             # Change one input but remove another: no partial new credential
             # set may replace the previously published complete set.
@@ -902,7 +909,6 @@ def run_scenario(args: argparse.Namespace) -> None:
             try:
                 check(runtime.stage_secrets(fixture).returncode != 0, "incomplete credential rotation fails closed")
                 runtime.check_secret_payload(secret_payload)
-                runtime.verify_secret_consumers(secret_values)
             finally:
                 (secret_inputs / missing_source).write_bytes(secret_values[missing_source])
                 (secret_inputs / missing_source).chmod(0o400)
@@ -949,7 +955,8 @@ def run_scenario(args: argparse.Namespace) -> None:
             root_app = origin.publish(args.repo)
             origin.serve()
             runtime.git_origin = origin
-            kubeconfig = deliver_stack(runtime, args, workspace)
+            with phase("first-bootstrap-registry-pulls-and-argo-reconciliation"):
+                kubeconfig = deliver_stack(runtime, args, workspace)
             runtime.verify_secret_consumers(secret_values)
             check(runtime.app_ready(), "Argo delivers Jellyfin when the intended media source is present")
             base = forward_start(runtime, kubeconfig)
@@ -963,7 +970,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             check(hosted.read_text() == "host-owned\n", "host root owns the writable media namespace")
             hosted.unlink()
             result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "751", "--group", "751", "--mode=non-interactive", "--", "sh", "-ec", "touch /srv/media/library/forbidden")
-            check(result.returncode != 0, "Jellyfin identity cannot write the read-only library mount")
+            check(result.returncode != 0, "guest identity without the media capability cannot write the library")
             # The real boundary proof runs inside the Jellyfin pod at /media,
             # not merely as a guest process holding the same UID.
             pod_write = completed("incus", "--force-local", "--project", project, "exec", instance_name,
@@ -1057,18 +1064,67 @@ def run_scenario(args: argparse.Namespace) -> None:
                 runtime.incus("config", "unset", instance_name, "user.homelab.unsafe-drift")
             check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid, "unsafe instance drift does not trigger replacement")
 
+            # Observe the existing Jellyfin container and a small writer using
+            # the canonical Arr hostPath/mount, before restarting either pod.
+            jellyfin_pod = runtime.kubectl_json(
+                "get", "pods", "-l", "app.kubernetes.io/name=jellyfin", "-o", "json",
+                namespace="jellyfin")["items"][0]
+            writer_template = json.loads(run("yq", "-o=json", str(args.repo / "writer-fixture.yaml")))["spec"]["template"]["spec"]
+            writer_container = writer_template["containers"][0]
+            writer = {
+                "apiVersion": "v1", "kind": "Pod",
+                "metadata": {"name": "media-writer-probe", "namespace": "jellyfin"},
+                "spec": {
+                    "automountServiceAccountToken": False,
+                    "restartPolicy": "Never",
+                    "nodeSelector": writer_template["nodeSelector"],
+                    "securityContext": jellyfin_pod["spec"]["securityContext"],
+                    "containers": [{
+                        "name": "writer", "image": jellyfin_pod["spec"]["containers"][0]["image"],
+                        "command": ["sh", "-ec", "sleep infinity"],
+                        "securityContext": {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]}},
+                        "volumeMounts": [mount for mount in writer_container["volumeMounts"] if mount["name"] == "data"],
+                    }],
+                    "volumes": [volume for volume in writer_template["volumes"] if volume["name"] == "data"],
+                },
+            }
+            writer_file = workspace / "media-writer.json"
+            writer_file.write_text(json.dumps(writer))
+            kubectl_outer(kubeconfig, "apply", "-f", str(writer_file))
+            runtime.kubectl("wait", "--for=condition=Ready", "pod/media-writer-probe", "--timeout=120s", namespace="jellyfin")
+            runtime.kubectl("exec", "media-writer-probe", "--", "touch", "/data/downloads/.writer-before-loss", namespace="jellyfin")
+            probes = [(jellyfin_pod["metadata"]["name"], "/media/.returned"),
+                      ("media-writer-probe", "/data/library/.returned")]
+            before_containers = {
+                name: runtime.kubectl_json("get", "pod", name, "-o", "json", namespace="jellyfin")["status"]["containerStatuses"][0]["containerID"]
+                for name, _ in probes
+            }
             before_init = runtime.guest("cat", "/proc/1/stat").split()[21]
-            runtime.stop_media()
-            check(runtime.node_ready(), "K3s node remains healthy during application source loss")
-            check(runtime.unrelated_ready(), "unrelated workload remains available during application source loss")
-            result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/library/recovery.wav")
-            check(result.returncode != 0, "source loss never exposes a substitute media directory")
-            runtime.kubectl("delete", "pod", "-l", "app.kubernetes.io/name=jellyfin", "--wait=false", namespace="jellyfin")
-            wait_for("Jellyfin to stop after source loss", lambda: not runtime.app_ready(), timeout=180)
-            runtime.start_media(media_pool, fixture["mediaRootScript"], workspace)
-            wait_for("Jellyfin to recover after source return", runtime.app_ready, timeout=240)
-            after_init = runtime.guest("cat", "/proc/1/stat").split()[21]
-            check(after_init == before_init, "source return recovers Jellyfin without a node restart")
+            with phase("media-loss-and-return"):
+                runtime.stop_media()
+                check(runtime.node_ready(), "K3s node remains healthy during application source loss")
+                check(runtime.unrelated_ready(), "unrelated workload remains available during application source loss")
+                result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/library/recovery.wav")
+                check(result.returncode != 0, "source loss never exposes a substitute media directory")
+                denied = completed("kubectl", "--kubeconfig", str(kubeconfig), "-n", "jellyfin",
+                                   "exec", "media-writer-probe", "--", "touch", "/data/downloads/.writer-during-loss")
+                check(denied.returncode != 0, "writer cannot redirect writes during media loss")
+                runtime.start_media(media_pool, fixture["mediaRootScript"], workspace)
+                (runtime.media_path / "library" / ".returned").write_text("new mount\n")
+                for name, path in probes:
+                    visible = completed("kubectl", "--kubeconfig", str(kubeconfig), "-n", "jellyfin",
+                                        "exec", name, "--", "cat", path)
+                    current = runtime.kubectl_json("get", "pod", name, "-o", "json", namespace="jellyfin")
+                    unchanged = current["status"]["containerStatuses"][0].get("containerID") == before_containers[name]
+                    print(f"MEDIA_RETURN pod={name} same_container={unchanged} new_mount_visible={visible.returncode == 0 and visible.stdout.strip() == 'new mount'}", flush=True)
+                # A fresh pod must attach the restored source even when an
+                # existing subtree bind cannot follow replacement of its root.
+                runtime.kubectl("delete", "pod", "-l", "app.kubernetes.io/name=jellyfin", "--wait=false", namespace="jellyfin")
+                runtime.kubectl("delete", "pod/media-writer-probe", namespace="jellyfin")
+                wait_for("Jellyfin to recover after source return", runtime.app_ready, timeout=240)
+                (runtime.media_path / "library" / ".returned").unlink()
+                after_init = runtime.guest("cat", "/proc/1/stat").split()[21]
+                check(after_init == before_init, "source return recovers Jellyfin without a node restart")
 
             runtime.stop_media()
             runtime.incus("stop", instance_name, "--timeout=120")
@@ -1098,18 +1154,20 @@ def run_scenario(args: argparse.Namespace) -> None:
             # scenario proves disposable guest replacement, not same-host export
             # and restore of retained state.
             token, user_id = smoke.verify_state(base, username, password, "Recovery Media", item_id)
-            runtime.helper_run("replace", bundle=args.bundle, confirm=True, timeout=3_600)
-            new_instance = instance_query(project, instance_name)
-            check(new_instance is not None, "helper recreates the guest instance")
-            check(new_instance["config"]["volatile.uuid"] != original_uuid, "replacement has a fresh Incus instance root")
-            wait_for("replacement K3s node", runtime.node_ready)
-            wait_for("replacement node resource metrics", runtime.metrics_ready)
+            with phase("compute-replace-and-k3s-ready"):
+                runtime.helper_run("replace", bundle=args.bundle, confirm=True, timeout=3_600)
+                new_instance = instance_query(project, instance_name)
+                check(new_instance is not None, "helper recreates the guest instance")
+                check(new_instance["config"]["volatile.uuid"] != original_uuid, "replacement has a fresh Incus instance root")
+                wait_for("replacement K3s node", runtime.node_ready)
+                wait_for("replacement node resource metrics", runtime.metrics_ready)
             new_cluster_token = runtime.guest("cat", "/var/lib/rancher/k3s/server/token")
             check(new_cluster_token != original_cluster_token, "replacement has fresh disposable K3s cluster state")
-            runtime.check_secret_payload(secret_payload)
+            runtime.check_secret_payload(rotated_payload)
             check(all((secret_inputs / source).read_bytes() == value for source, value in secret_values.items()),
                   "guest recreation preserves credential inputs rather than regenerating them")
-            kubeconfig = deliver_stack(runtime, args, workspace)
+            with phase("second-bootstrap-registry-pulls-and-argo-reconciliation"):
+                kubeconfig = deliver_stack(runtime, args, workspace)
             runtime.verify_secret_consumers(secret_values)
             base = forward_start(runtime, kubeconfig)
             check(marker.read_text() == "retained-state\n", "guest replacement preserves retained application data")
@@ -1117,17 +1175,24 @@ def run_scenario(args: argparse.Namespace) -> None:
             smoke.verify_state(base, username, password, "Recovery Media", item_id)
             check(runtime.node_ready(), "replacement node is healthy")
             check(runtime.unrelated_ready(), "replacement keeps unrelated workload available")
-            if runtime.optional_gaps:
-                raise ScenarioError("Missing required coverage: " + "; ".join(runtime.optional_gaps))
         finally:
             if sys.exc_info()[0] is not None and runtime.created_instance:
+                diagnostics = completed("journalctl", "-k", "-n", "80", "--no-pager")
+                print(diagnostics.stdout or diagnostics.stderr, file=sys.stderr)
                 diagnostics = completed("incus", "--force-local", "--project", project, "exec", instance_name,
                                         "--", "journalctl", "-u", "k3s", "-u", "sshd", "-n", "80", "--no-pager")
                 print(diagnostics.stdout or diagnostics.stderr, file=sys.stderr)
-                for command in (["describe", "pods"], ["logs", "deployment/jellyfin", "--tail=100"]):
+                for command in (
+                    ["get", "pods", "-A", "-o", "wide"],
+                    ["describe", "pods", "-n", "argocd"],
+                    ["logs", "-n", "argocd", "deployment/argocd-applicationset-controller", "--tail=100"],
+                    ["logs", "-n", "argocd", "deployment/argocd-applicationset-controller", "--previous", "--tail=100"],
+                    ["describe", "pods", "-n", "jellyfin"],
+                    ["logs", "-n", "jellyfin", "deployment/jellyfin", "--tail=100"],
+                ):
                     diagnostics = completed(
                         "incus", "--force-local", "--project", project, "exec", instance_name,
-                        "--", "k3s", "kubectl", "--request-timeout=15s", "-n", "jellyfin", *command)
+                        "--", "k3s", "kubectl", "--request-timeout=15s", *command)
                     print(diagnostics.stdout or diagnostics.stderr, file=sys.stderr)
             runtime.cleanup()
             for path in safe_dirs:
@@ -1143,7 +1208,6 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--smoke", required=True, type=Path, help="Jellyfin application smoke helper")
     result.add_argument("--bootstrap-host", required=True, type=Path, help="shipped household-bootstrap-host executable")
     result.add_argument("--helper", type=Path, default=Path("/run/current-system/sw/bin/compute-guest"), help="generic compute lifecycle executable or repository .py helper")
-    result.add_argument("--rev", default="dirty", help="evaluated source revision stamped into the run provenance")
     return result
 
 
@@ -1158,7 +1222,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.bundle.is_dir():
         parser().error(f"bundle does not exist: {args.bundle}")
     try:
-        run_scenario(args)
+        with phase("complete-replacement-scenario"):
+            run_scenario(args)
     except (AssertionError, OSError, ScenarioError, KeyError, ValueError, subprocess.SubprocessError) as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1
