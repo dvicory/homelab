@@ -617,14 +617,13 @@ def forward_start(runtime: Runtime, kubeconfig: Path) -> str:
     return "http://127.0.0.1:8096"
 
 
-def deliver_stack(runtime: Runtime, args: argparse.Namespace, workspace: Path, secret_values: dict[str, bytes]) -> Path:
+def deliver_stack(runtime: Runtime, args: argparse.Namespace, workspace: Path) -> Path:
     """Run the shipped recovery control flow on a fresh cluster.
 
     Returns the guest kubeconfig. The driver orchestrates shipped commands;
     it does not reimplement seed, handoff, or readiness logic. The test-local
     root Application ships inside the seed tree the wrapper is pointed at.
     """
-    stage_cluster_secrets(runtime, secret_values)
     kubeconfig = fetch_kubeconfig(runtime, workspace)
     run_bootstrap_host(args.bootstrap_host, runtime, kubeconfig, args.seed)
     wait_argo_synced(kubeconfig, (ROOT_APP, *CHILD_APPS))
@@ -867,7 +866,6 @@ def run_scenario(args: argparse.Namespace) -> None:
             wait_for("unrelated CoreDNS availability", runtime.unrelated_ready)
             wait_for("node resource metrics", runtime.metrics_ready)
             runtime.check_secret_payload(secret_payload)
-            stage_cluster_secrets(runtime, secret_values)
             # Change one input but remove another: no partial new credential
             # set may replace the previously published complete set.
             sources = list(secret_values)
@@ -926,7 +924,8 @@ def run_scenario(args: argparse.Namespace) -> None:
             root_app = origin.publish(args.repo)
             origin.serve()
             runtime.git_origin = origin
-            kubeconfig = deliver_stack(runtime, args, workspace, secret_values)
+            kubeconfig = deliver_stack(runtime, args, workspace)
+            runtime.verify_secret_consumers(secret_values)
             check(runtime.app_ready(), "Argo delivers Jellyfin when the intended media source is present")
             base = forward_start(runtime, kubeconfig)
             verify_private_endpoints(runtime)
@@ -1083,10 +1082,10 @@ def run_scenario(args: argparse.Namespace) -> None:
             new_cluster_token = runtime.guest("cat", "/var/lib/rancher/k3s/server/token")
             check(new_cluster_token != original_cluster_token, "replacement has fresh disposable K3s cluster state")
             runtime.check_secret_payload(secret_payload)
-            stage_cluster_secrets(runtime, secret_values)
             check(all((secret_inputs / source).read_bytes() == value for source, value in secret_values.items()),
                   "guest recreation preserves credential inputs rather than regenerating them")
-            kubeconfig = deliver_stack(runtime, args, workspace, secret_values)
+            kubeconfig = deliver_stack(runtime, args, workspace)
+            runtime.verify_secret_consumers(secret_values)
             base = forward_start(runtime, kubeconfig)
             check(marker.read_text() == "retained-state\n", "guest replacement preserves retained application data")
             check(marker.stat().st_uid == marker_stat.st_uid and marker.stat().st_gid == marker_stat.st_gid and marker.stat().st_mode == marker_stat.st_mode, "guest replacement preserves retained data ownership and mode")
