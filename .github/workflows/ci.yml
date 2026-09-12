@@ -125,8 +125,18 @@ jobs:
           fi
           echo "building $(echo "$derivations" | wc -l) job(s) from $attr"
           if [ "$GROUP" = checks ] && [ "$SYSTEM" = x86_64-linux ]; then
-            # TEMPORARY: show which derivations the evaluation produced.
-            echo "$derivations"
+            # TEMPORARY: prove whether the test output is already valid
+            # before nix build runs (distinguishes pre-seeded store from
+            # substitution without log lines).
+            mount | grep -c " on /nix " || true
+            df -h /nix | tail -1 || true
+            ls /nix/store | wc -l || true
+            testdrv=$(nix eval --raw ".#checks.$SYSTEM.prod-home-replacement.drvPath")
+            echo "test drv: $testdrv"
+            testout=$(nix derivation show "$testdrv" | jq -r '.[].outputs.out.path')
+            echo "test out: $testout"
+            nix path-info "$testout" || echo "TEST OUTPUT NOT VALID BEFORE BUILD"
+            ls "$testout" 2>/dev/null || echo "TEST OUTPUT CONTENT MISSING"
           fi
           # shellcheck disable=SC2086
           nix build -L --no-link $derivations
