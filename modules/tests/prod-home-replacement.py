@@ -730,9 +730,10 @@ def verify_private_endpoints(runtime: Runtime) -> None:
 
 
 def run_scenario(args: argparse.Namespace) -> None:
-    # Provenance stamp: binds a run to exact scenario content. A green run
-    # without this line in its log never executed this file.
-    print(f"PROVENANCE scenario={hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}", flush=True)
+    # Provenance stamp: binds a run to exact scenario content and the
+    # evaluated revision. A green run without this line in its log never
+    # executed this file; a rev mismatch means stale evaluation.
+    print(f"PROVENANCE scenario={hashlib.sha256(Path(__file__).read_bytes()).hexdigest()} rev={args.rev}", flush=True)
     spec = importlib.util.spec_from_file_location("jellyfin_smoke", args.smoke)
     smoke = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(smoke)
@@ -1142,6 +1143,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--smoke", required=True, type=Path, help="Jellyfin application smoke helper")
     result.add_argument("--bootstrap-host", required=True, type=Path, help="shipped household-bootstrap-host executable")
     result.add_argument("--helper", type=Path, default=Path("/run/current-system/sw/bin/compute-guest"), help="generic compute lifecycle executable or repository .py helper")
+    result.add_argument("--rev", default="dirty", help="evaluated source revision stamped into the run provenance")
     return result
 
 

@@ -216,7 +216,8 @@
                 " --seed ${testSeed}"
                 " --smoke /tmp/jellyfin_smoke.py"
                 " --bootstrap-host ${bootstrapHost}/bin/household-bootstrap-host"
-                " --helper ${computeGuest}/bin/compute-guest < /dev/null",
+                " --helper ${computeGuest}/bin/compute-guest"
+                " --rev ${self.shortRev or "dirty"} < /dev/null",
                 timeout=4 * 60 * 60,
             )
             # Stream the scenario log into the builder log: a silent pass
