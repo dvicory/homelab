@@ -557,6 +557,19 @@
 
               kubectl apply --server-side --field-manager=argocd-controller \
                 -f "$manifests/namespaces.yaml"
+              # The narrowed seed owns only the Argo namespace. Secret delivery
+              # owns the namespaces its Secrets live in: derive them from the
+              # manifest itself so a narrowed seed cannot silently drop secret
+              # targets (server-side apply fails objects in missing namespaces).
+              secret_namespaces=$(incus_cmd exec "$instance" --mode=non-interactive -- \
+                cat /srv/secrets/runtime-secrets.yaml | yq -r '.metadata.namespace' | sort -u) ||
+                die 'unable to list secret namespaces from the staged manifest'
+              while IFS= read -r secret_namespace; do
+                [ -n "$secret_namespace" ] || die 'staged Secret without a namespace'
+                kubectl create namespace "$secret_namespace" --dry-run=client -o yaml |
+                  kubectl apply --server-side --field-manager=homelab-runtime-secrets -f - ||
+                  die "cannot ensure secret namespace $secret_namespace"
+              done <<<"$secret_namespaces"
               incus_cmd exec "$instance" --mode=non-interactive -- \
                 cat /srv/secrets/runtime-secrets.yaml |
                 kubectl apply --server-side --force-conflicts --field-manager=homelab-runtime-secrets -f -
