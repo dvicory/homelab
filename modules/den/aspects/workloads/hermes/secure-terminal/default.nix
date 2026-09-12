@@ -157,7 +157,11 @@ in
         }:
         lib.mkIf gondolin (
           let
-            guestAssets = guestAssetsLib.mkGuestAssets pkgs.stdenv.hostPlatform.system;
+            # Lane selection is independent of asset paths; unused catalogue
+            # images must not enter the policy's runtime closure.
+            guestAssets = lib.filterAttrs (
+              name: _: lib.any (lane: lane.asset == name) (lib.attrValues policy.policyMaterial.worklanes)
+            ) (guestAssetsLib.mkGuestAssets pkgs.stdenv.hostPlatform.system);
             brokerPackage =
               inputs.secure-hermes-nix.packages.${pkgs.stdenv.hostPlatform.system}.gondolin-broker-effect;
             # The broker resolves logical source credential references through
