@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Run the prod-home compute replacement acceptance scenario.
 
-This is intentionally a real-runtime test on x86_64. It never substitutes a
-fake Incus, Kubernetes, Argo, or Jellyfin API. The fixture is produced from
-the evaluated x86_64 hvn-hyp1/compute-1 configuration; execution is
-restricted to the designated disposable fixture-host VMs.
+This is intentionally a real-runtime test on the fixture architecture. It
+never substitutes a fake Incus, Kubernetes, Argo, or Jellyfin API. The fixture
+is produced from the evaluated native hvn-hyp1/compute-1 configuration;
+execution is restricted to the designated disposable fixture-host VMs.
 
 Recovery follows the supported control flow using the shipped implementations:
 compute-guest replaces the guest, host-staged secrets are delivered,
@@ -53,6 +53,7 @@ import wave
 
 
 TEST_HOSTNAME = "lima-homelab-compute-check"
+SUPPORTED_ARCHITECTURES = {"x86_64", "aarch64"}
 COMMAND_TIMEOUT = 180
 WAIT_TIMEOUT = 240
 
@@ -773,6 +774,7 @@ def verify_private_endpoints(runtime: Runtime) -> None:
 
 
 def run_scenario(args: argparse.Namespace) -> None:
+    fixture_architecture = platform.machine()
     spec = importlib.util.spec_from_file_location("jellyfin_smoke", args.smoke)
     smoke = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(smoke)
@@ -784,6 +786,13 @@ def run_scenario(args: argparse.Namespace) -> None:
     check(isinstance(fixture["mediaRootScript"], str) and fixture["mediaRootScript"].strip(), "fixture contains the native media-root script")
     check(all(isinstance(media_pool[key], str) and media_pool[key].strip() for key in ("preStart", "start", "stop", "environment")), "fixture contains native media pool commands")
     ensure_absolute_paths(descriptor)
+    pool_path = Path(descriptor["poolPath"])
+    pool_mount = run("findmnt", "-n", "-o", "FSTYPE,SOURCE,TARGET", "-M", str(pool_path))
+    check(pool_mount.split(maxsplit=1)[:1] == ["zfs"],
+          f"Incus storage pool path is ZFS-backed: {pool_mount}")
+    print(f"FIXTURE ARCHITECTURE: {fixture_architecture}", flush=True)
+    print(f"HOST KERNEL: {run('uname', '-a')}", flush=True)
+    print(f"HOST ZFS:\n{run('zfs', 'version')}", flush=True)
     check(args.bundle.is_dir() and str(args.bundle.resolve()).startswith("/nix/store/"), "bundle is an immutable Nix store output")
     for member in ("metadata.tar.xz", "rootfs.tar.xz", "system"):
         check((args.bundle / member).exists(), f"bundle contains {member}")
@@ -813,6 +822,9 @@ def run_scenario(args: argparse.Namespace) -> None:
     with tempfile.TemporaryDirectory(prefix="homelab-compute-recovery-") as temporary:
         workspace = Path(temporary)
         safe_dirs: list[Path] = []
+        # poolPath is mounted by the Nix testScript; keep it out of
+        # prepare_directory/safe_dirs so cleanup neither unmounts nor clears
+        # the fixture ZFS dataset.
         host_paths = {Path(entry["path"]) for entry in descriptor["requiredPaths"]}
         host_paths.update(Path(device["source"]) for device in descriptor["devices"].values()
                           if device.get("type") == "disk" and "source" in device)
@@ -927,6 +939,11 @@ def run_scenario(args: argparse.Namespace) -> None:
             runtime.created_instance = True
             with phase("compute-create-and-k3s-ready"):
                 runtime.helper_run("create", bundle=args.bundle, timeout=3_600)
+                guest_architecture = runtime.guest("uname", "-m")
+                check(
+                    guest_architecture == fixture_architecture,
+                    f"guest architecture equals fixture architecture: {guest_architecture}",
+                )
                 wait_for("healthy K3s node", runtime.node_ready)
                 wait_for("unrelated CoreDNS availability", runtime.unrelated_ready)
                 wait_for("node resource metrics", runtime.metrics_ready)
@@ -1208,6 +1225,9 @@ def run_scenario(args: argparse.Namespace) -> None:
             smoke.verify_state(base, username, password, "Recovery Media", item_id)
             check(runtime.node_ready(), "replacement node is healthy")
             check(runtime.unrelated_ready(), "replacement keeps unrelated workload available")
+            replacement_pool_mount = run("findmnt", "-n", "-o", "FSTYPE,SOURCE,TARGET", "-M", str(pool_path))
+            check(replacement_pool_mount == pool_mount,
+                  "Incus storage pool remains on the same ZFS dataset through guest replacement")
         finally:
             if sys.exc_info()[0] is not None and runtime.created_instance:
                 diagnostics = completed("journalctl", "-k", "-n", "80", "--no-pager")
@@ -1230,6 +1250,8 @@ def run_scenario(args: argparse.Namespace) -> None:
             runtime.cleanup()
             for path in safe_dirs:
                 clear_directory(path)
+        check(run("findmnt", "-n", "-o", "FSTYPE,SOURCE,TARGET", "-M", str(pool_path)) == pool_mount,
+              "fixture ZFS dataset remains mounted after scenario cleanup")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -1246,8 +1268,11 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
-    if platform.node() not in (TEST_HOSTNAME, "fixture-host"):
-        parser().error("refusing to run outside a designated disposable compute test host")
+    if (
+        platform.node() not in (TEST_HOSTNAME, "fixture-host")
+        or platform.machine() not in SUPPORTED_ARCHITECTURES
+    ):
+        parser().error("refusing to run outside a designated disposable x86_64/aarch64 compute test host")
     if os.geteuid() != 0:
         parser().error("run as root inside the disposable Linux guest")
     if not args.fixture.is_file():
