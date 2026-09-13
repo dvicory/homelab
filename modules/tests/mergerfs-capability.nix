@@ -100,9 +100,9 @@
       };
     in
     {
-      # Run locally on a Linux host; CI provides one.
+      # Run locally on Linux; CI provides one per Linux architecture.
       legacyPackages.mergerfs-capability-test = test;
-      checks = lib.optionalAttrs (system == "x86_64-linux") {
+      checks = lib.optionalAttrs (lib.hasSuffix "-linux" system) {
         mergerfs-capability = test // {
           meta = test.meta // {
             hestia.group = "${system}-mergerfs-runtime";

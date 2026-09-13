@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure the current compute guest on a disposable x86 NixOS/ZFS host.
+"""Measure the current compute guest on a disposable x86_64/aarch64 NixOS/ZFS host.
 
 The scenario deliberately owns every Incus project, pool, network, and guest it
 creates.  Native and overlayfs use separate guests and are run sequentially.
@@ -21,6 +21,7 @@ import subprocess
 import time
 
 ONE_GIB = 1 << 30
+SUPPORTED_ARCHITECTURES = {"x86_64", "aarch64"}
 COMMAND_TIMEOUT = 180
 NODE_TIMEOUT = 300
 OBSERVATION_MINIMUM = 60
@@ -571,8 +572,9 @@ def run_variant(
             raise ScenarioError(f"guest containerd uses {actual_snapshotter}, expected {snapshotter}")
         architecture = command(directory, "guest-architecture", guest_command(incus, project, "uname", "-m")).stdout.strip()
         state["guestArchitecture"] = architecture
-        if architecture not in {"x86_64", "amd64"}:
-            raise ScenarioError(f"guest is not amd64: {architecture}")
+        host_architecture = platform.machine()
+        if architecture != host_architecture:
+            raise ScenarioError(f"guest architecture {architecture} does not match host {host_architecture}")
         command(directory, "guest-kernel", guest_command(incus, project, "uname", "-a"), check=False)
         command(directory, "disk-before-image", guest_command(incus, project, "df", "-B1", "/var/lib/rancher/k3s/agent/containerd"), check=False)
         command(directory, "disk-before-image-du", guest_command(incus, project, "du", "-sx", "--block-size=1", f"/var/lib/rancher/k3s/agent/containerd/io.containerd.snapshotter.v1.{snapshotter}"), check=False)
@@ -673,8 +675,9 @@ def run_variant(
 
 
 def run_scenario(args: argparse.Namespace) -> int:
-    if platform.node() != "fixture-host" or os.geteuid() != 0 or platform.machine() not in {"x86_64", "amd64"}:
-        raise ScenarioError("run as root on the designated x86 fixture-host only")
+    host_architecture = platform.machine()
+    if platform.node() != "fixture-host" or os.geteuid() != 0 or host_architecture not in SUPPORTED_ARCHITECTURES:
+        raise ScenarioError("run as root on the designated x86_64/aarch64 fixture-host only")
     if args.observe_seconds < OBSERVATION_MINIMUM:
         raise ScenarioError(f"at least {OBSERVATION_MINIMUM}s of observation is required")
     if not args.native_bundle.is_dir() or not args.overlay_bundle.is_dir() or not args.manifests.is_dir():

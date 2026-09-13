@@ -41,7 +41,7 @@ To run only this acceptance on GitHub's x86_64 runner, select a branch or tag
 containing the revision to verify:
 
 ```sh
-gh workflow run ci.yml --repo dvicory/homelab --ref "$REF" -f target=replacement
+gh workflow run ci.yml --repo dvicory/homelab --ref "$REF" -f check=prod-home-replacement
 ```
 
 This diagnostic selection does not replace the full release checks. The test
@@ -57,7 +57,7 @@ For a storage-only CI run, select a revision containing the desired manifests
 and check:
 
 ```sh
-gh workflow run ci.yml --repo dvicory/homelab --ref "$REF" -f target=storage
+gh workflow run ci.yml --repo dvicory/homelab --ref "$REF" -f check=compute-storage-zfs
 ```
 
 This dispatch runs exactly one check,
@@ -72,14 +72,15 @@ The focused check is a disposable x86 NixOS/ZFS/Jellyfin storage test using
 the production-declared kernel 6.18.49, ZFS 2.4.4, a real ZFS-backed Incus
 pool, and pinned Jellyfin manifests. Native observations are diagnostic;
 overlayfs must show real Jellyfin `Healthy` responses under the unchanged 1Gi
-limit. Successful runs upload the build log and copied check output. Failed runs
-upload the build log without asserting successful check output. This is
-not the full `prod-home-replacement` acceptance, does not make an Argo or
-recovery claim, and changes no production system.
+limit. Successful check jobs upload their Nix outputs as
+`check-output-x86_64-linux-<run-id>`; build logs, including failures, remain in the
+Actions job logs. This is not the full `prod-home-replacement` acceptance, does
+not make an Argo or recovery claim, and changes no production system.
 
-The workflow resolves the check's `.drvPath` and builds all derivation outputs
-explicitly with `^*`, using the durable/upstream caches instead of Hestia's
-RAM-heavy path for this focused run.
+The workflow builds the selected Nix check directly, using durable/upstream caches
+instead of Hestia's RAM-heavy path for check jobs. Set `-f system=aarch64-linux`
+to exercise the same scenario on a native ARM fixture; that is portability
+coverage, not deployment validation for the existing x86 host.
 
 The repository's selected-actions allowlist must permit the exact
 `actions/upload-artifact` commit pinned in the workflow. Updating that pin
