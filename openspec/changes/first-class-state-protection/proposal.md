@@ -1,25 +1,26 @@
 ## Why
 
-Current Homelab contracts identify durable storage and application recovery boundaries, but they do not define a shared model for a state's stable identity, its protection obligations, the evidence that those obligations were met, or safe restoration. Adding that model now avoids coupling protection to the changing Kubernetes, Incus, host-storage, and backup implementations.
+Current Homelab contracts identify durable storage and application recovery boundaries, but they do not define a shared model for stable state identity, protection obligations, coverage, or recovery evidence. That missing model must not become a second backup engine alongside mature tools that already own snapshot, replication, repository, retention, and application-export lifecycles.
 
 ## What Changes
 
 - Introduce stable logical state identities that remain unchanged when deployment, realization, software version, source path, or protection policy changes.
-- Separate reusable state descriptions from concrete instance policy, live realizations, capture identity, retained representations, and restore destinations.
-- Compile named protection policies and explicit target routes through Den/gen into either a diagnostic plan or a strictly resolved executable manifest. Required missing or ambiguous fulfillment remains visible in a plan and prevents executable enablement.
-- Perform capture, discovery, scratch restore, and verification only through explicit operator commands. One stable capture may feed multiple required routes, while each retained point remains target-qualified and carries compatibility and evidence metadata.
-- Use packaged, versioned executable drivers so deployment platforms and native backup representations remain outside the coordinator. Preserve native ZFS representations in the first executable slice rather than defining a universal archive format.
-- Report configured intent, observed points, partial failure, restoration, and verification as distinct states. Configuration or capture success alone does not establish protection or application-consistent recovery.
-- Add a plan-only inventory derived from the existing `/home` and `/persist` declarations, plus a disposable two-pool ZFS recovery test. These do not enable production capture, scheduling, retention, or restore.
-- Require restore to select an immutable point and a new allowlisted scratch destination. Routine activation never performs restore or destructive provisioning.
+- Separate reusable state-slot semantics from concrete state, instance policy, live realization, protection target, retained point, and scratch restore destination.
+- Compile named policies and explicit target routes through Den/gen into either a diagnostic plan or a strictly resolved executable manifest. Missing or ambiguous realization, coverage, target, or adapter fulfillment remains visible in a plan and prevents executable enablement.
+- Treat zrepl, Restic and its NixOS integration, resticprofile, Borg/borgmatic, and similar established software as lifecycle owners. Homelab configures and wires selected owners; it does not independently implement their scheduling, retention, pruning, incremental transfer, resumability, repository management, snapshot lifecycle, or database dumping.
+- Retain a small versioned, language-independent adapter boundary. An adapter exposes the lifecycle owner's native operation as one capability where appropriate; the protocol does not require every owner to decompose work into Preserve-specific capture, protect, release, or retry stages.
+- Keep `homelab-preserve` limited to inspection, fixed safe dispatch, recovery-point selection, scratch-destination safety, and verification. Unsupported owner operations remain unsupported rather than being recreated in the coordinator.
+- Qualify recovery evidence by logical state, route, target, owner, and native point identity. Each owner may satisfy source-independent recovery through its native catalog or durable metadata; Preserve does not require one universal metadata store.
+- Add a deliberately small direct-ZFS reference adapter for disposable conformance testing only. It may snapshot a synthetic source, perform one full second-pool copy, enumerate points, restore into new scratch, and verify, but it is not a production replication implementation.
+- Add plan-only inventory derived from the existing `/home` and `/persist` declarations, plus independent fast checks and a disposable two-pool ZFS VM recovery test. These do not enable production protection.
 
-Non-goals include production deployment, schedules or pruning, selection of final off-host topology or key custody, destructive in-place restore, whole-cluster recovery, application-specific consistency adapters, a general workflow engine, or changes to existing storage placement and deployment ownership.
+Non-goals include production deployment, schedules or retention policy selection, production repository or receiver provisioning, destructive in-place restore, whole-cluster recovery, a general workflow engine, application-specific consistency implementations, importing another backup framework wholesale, or changing existing storage placement and deployment ownership.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `state-protection`: Stable state identity, instance-owned protection policy, strict obligation resolution, capture fan-out, target-qualified recovery evidence, external driver boundaries, and explicit safe restoration.
+- `state-protection`: Stable state identity, instance-owned protection policy, strict target and lifecycle-owner resolution, coverage validation, target-qualified recovery evidence, bounded external adapters, and explicit safe restoration.
 
 ### Modified Capabilities
 
@@ -27,4 +28,4 @@ None. Existing storage, management, secret, fleet-composition, and active applic
 
 ## Impact
 
-This adds Den/gen state, realization, policy, target, route, and driver declarations; inspectable inventory and executable manifests; a packaged Rust `homelab-preserve` coordinator; executable fixture and ZFS drivers; focused model/protocol checks; an independent NixOS ZFS VM check; and user-facing operation and adapter documentation. It uses the current immutable Den, gen-schema, and gen-scope pins and does not require a broad dependency upgrade or a local-path input.
+This adds Den/gen state-protection declarations and checks, evaluated inventory and executable manifests, a minimal `homelab-preserve` command, thin lifecycle-owner adapter seams, inactive representative zrepl and NixOS Restic configuration projections, a fixture-only direct-ZFS reference adapter, and independent model/protocol/VM CI evidence. M1 does not enable a mature owner for real state, import SelfHostBlocks, modify existing active OpenSpec changes, or require a broad dependency upgrade.
