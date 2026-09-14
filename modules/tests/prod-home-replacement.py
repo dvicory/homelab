@@ -1235,6 +1235,9 @@ def run_scenario(args: argparse.Namespace) -> None:
                 diagnostics = completed("incus", "--force-local", "--project", project, "exec", instance_name,
                                         "--", "journalctl", "-u", "k3s", "-u", "sshd", "-n", "80", "--no-pager")
                 print(diagnostics.stdout or diagnostics.stderr, file=sys.stderr)
+                diagnostics = completed("incus", "--force-local", "--project", project, "exec", instance_name,
+                                        "--", "tail", "-n", "1000", "/var/lib/rancher/k3s/agent/containerd/containerd.log")
+                print(diagnostics.stdout or diagnostics.stderr, file=sys.stderr)
                 for command in (
                     ["get", "pods", "-A", "-o", "wide"],
                     ["describe", "pods", "-n", "argocd"],

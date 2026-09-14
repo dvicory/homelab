@@ -80,7 +80,7 @@ jobs:
           loop_dev=$(sudo losetup --find --show /mnt/nix.img)
           sudo mkfs.btrfs -L nix --nodiscard "$loop_dev"
           sudo mkdir -p /nix
-          sudo mount "$loop_dev" /nix -o noatime,compress=zstd
+          sudo mount "$loop_dev" /nix -o noatime,nobarrier,nodiscard,compress=zstd:1,space_cache=v2,commit=120
           sudo mkdir -p /nix/build
 
       - name: Install Nix on Linux
