@@ -980,7 +980,9 @@ def run_scenario(args: argparse.Namespace) -> None:
             base = forward_start(runtime, kubeconfig)
             runtime.verify_access_boundaries()
 
-            runtime.guest("sh", "-ec", "test -r /srv/media/library/recovery.wav")
+            # Remapped guest root cannot bypass host DAC; visibility probes
+            # must carry the media capability, including during source loss.
+            runtime.guest("sh", "-ec", "test -r /srv/media/library/recovery.wav", user=505)
             # The Incus media attachment itself is writable host storage; the
             # read-only boundary lives at the Jellyfin workload mount.
             hosted = runtime.media_path / "library" / ".compute-recovery-probe"
@@ -1107,7 +1109,7 @@ def run_scenario(args: argparse.Namespace) -> None:
                 runtime.stop_media()
                 check(runtime.node_ready(), "K3s node remains healthy during application source loss")
                 check(runtime.unrelated_ready(), "unrelated workload remains available during application source loss")
-                result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/library/recovery.wav")
+                result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "505", "--group", "505", "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/library/recovery.wav")
                 check(result.returncode != 0, "source loss never exposes a substitute media directory")
                 denied = completed("kubectl", "--kubeconfig", str(kubeconfig), "-n", "jellyfin",
                                    "exec", "media-writer-probe", "--", "touch", "/data/downloads/.writer-during-loss")
@@ -1135,7 +1137,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             wait_for("healthy node boot without application media", runtime.node_ready)
             wait_for("CoreDNS availability without media", runtime.unrelated_ready)
             wait_for("Jellyfin to remain blocked without media", lambda: not runtime.app_ready(), timeout=180)
-            result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/library/recovery.wav")
+            result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "505", "--group", "505", "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/library/recovery.wav")
             check(result.returncode != 0, "node boot without media does not expose a substitute directory")
             runtime.start_media(media_pool, fixture["mediaRootScript"], workspace)
             wait_for("Jellyfin after media restoration", runtime.app_ready)
