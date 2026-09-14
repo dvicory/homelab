@@ -82,6 +82,8 @@ jobs:
           sudo mkdir -p /nix
           sudo mount "$loop_dev" /nix -o noatime,nobarrier,nodiscard,compress=zstd:1,space_cache=v2,commit=120
           sudo mkdir -p /nix/build
+          # Keep Btrfs CoW out of disposable VM/build files, not the store.
+          sudo chattr +C /nix/build
 
       - name: Install Nix on Linux
         if: runner.os == 'Linux'
