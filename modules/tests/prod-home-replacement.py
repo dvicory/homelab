@@ -203,8 +203,7 @@ class Runtime:
         self.instance = descriptor["instance"]
         self.media_path = Path(descriptor["devices"]["media"]["source"])
         self.media_branches: list[Path] = []
-        self.media_environment: dict[str, str] = {}
-        self.media_stop = ""
+        self.media_unit = ""
         self.media_scripts: list[Path] = []
         self.media_started = False
         self.loaded_nft: list[tuple[str, str]] = []
@@ -373,27 +372,31 @@ class Runtime:
             # terabytes and never notice.
             run("mount", "-t", "tmpfs", "-o", "mode=0755,size=5g", "tmpfs", str(branch))
             self.media_branches.append(branch)
-        self.media_environment = environment
-        self.media_stop = pool["stop"]
         root_wrapper = workspace / "compute-media-root.sh"
         root_wrapper.write_text("#!/bin/sh\nset -eu\nexport PATH=" + shlex.quote(os.environ["PATH"]) + "\n" + root_script)
         root_wrapper.chmod(0o700)
         self.media_scripts.append(root_wrapper)
-        for label in ("preStart", "start"):
-            result = subprocess.run(shlex.split(pool[label]), env={**os.environ, **environment}, text=True, capture_output=True, timeout=COMMAND_TIMEOUT, check=False)
-            check(result.returncode == 0, f"production media pool {label} succeeds: {(result.stderr or result.stdout).strip()}")
+        # ExecStop alone only unmounts the host view. The production unit also
+        # terminates its FUSE daemon, including views retained by guest binds.
+        self.media_unit = f"compute-recovery-media-{os.urandom(4).hex()}"
+        run(
+            "systemd-run", "--unit", self.media_unit, "--collect",
+            "--property=Type=oneshot", "--property=RemainAfterExit=yes",
+            f"--property=ExecStartPre={pool['preStart']}",
+            f"--property=ExecStop={pool['stop']}",
+            f"--setenv=PATH={os.environ['PATH']}",
+            *(f"--setenv={name}={value}" for name, value in environment.items()),
+            *shlex.split(pool["start"]),
+        )
+        self.media_started = True
         run(str(root_wrapper))
         check(run("findmnt", "-n", "-o", "FSTYPE", "-M", str(self.media_path)) == "fuse.mergerfs", "media parent is the production pooled filesystem")
-        self.media_started = True
 
     def stop_media(self) -> None:
         if not self.media_started:
             return
-        try:
-            result = subprocess.run(shlex.split(self.media_stop), env={**os.environ, **self.media_environment}, text=True, capture_output=True, timeout=COMMAND_TIMEOUT, check=False)
-            check(result.returncode == 0, f"production media pool stop succeeds: {(result.stderr or result.stdout).strip()}")
-        finally:
-            self.media_started = False
+        run("systemctl", "stop", self.media_unit)
+        self.media_started = False
 
     def app_ready(self) -> bool:
         deployment = self.kubectl_json("get", "deployment/jellyfin", "-o", "json", namespace="jellyfin")
