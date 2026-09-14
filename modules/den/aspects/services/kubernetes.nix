@@ -26,7 +26,7 @@
             "servicelb"
             "traefik"
           ];
-          extraFlags = [ "--snapshotter=native" ];
+          extraFlags = [ "--snapshotter=overlayfs" ];
           extraKubeletConfig = {
             featureGates.KubeletInUserNamespace = true;
           };

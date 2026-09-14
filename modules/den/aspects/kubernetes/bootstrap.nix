@@ -585,7 +585,7 @@
               image_staged=1
               incus_cmd file push "$image" "$instance$remote_image"
               incus_cmd exec "$instance" --mode=non-interactive -- \
-                k3s ctr images import --local --snapshotter native "$remote_image"
+                k3s ctr images import --local --snapshotter overlayfs "$remote_image"
               incus_cmd exec "$instance" --mode=non-interactive -- \
                 rm -f -- "$remote_image"
               image_staged=0

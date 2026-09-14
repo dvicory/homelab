@@ -28,7 +28,7 @@
             (guest.extendModules {
               modules = [
                 {
-                  # Test-only fixture override. Production remains native.
+                  # Compare both backends independently of the deployed choice.
                   services.k3s.extraFlags = lib.mkForce [ "--snapshotter=${snapshotter}" ];
                 }
               ];
