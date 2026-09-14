@@ -119,8 +119,7 @@ def is_played(base: str, token: str, user_id: str, item_id: str) -> bool:
 def verify_state(base: str, username: str, password: str, library: str, item_id: str) -> tuple[str, str]:
     """Verify retained access, library, item, playback state, and media bytes."""
     token, user_id = authenticate(base, username, password)
-    status, _ = api_request(base, "GET", "/Startup/Configuration", expected=tuple(range(400, 600)))
-    assert 400 <= status < 600, "replacement must not re-expose the Jellyfin setup endpoint"
+    api_request(base, "GET", "/Startup/Configuration", expected=tuple(range(400, 500)), read_body=False)
     _, folders = api_request(base, "GET", "/Library/VirtualFolders", token=token, expected=(200,))
     folder = next((f for f in folders if f.get("Name") == library), None)
     assert folder is not None and "/media" in folder.get("Locations", []), "replacement retains the configured Jellyfin library"

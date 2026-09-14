@@ -1126,7 +1126,20 @@ def run_scenario(args: argparse.Namespace) -> None:
                 # existing subtree bind cannot follow replacement of its root.
                 runtime.kubectl("delete", "pod", "-l", "app.kubernetes.io/name=jellyfin", "--wait=false", namespace="jellyfin")
                 runtime.kubectl("delete", "pod/media-writer-probe", namespace="jellyfin")
-                wait_for("Jellyfin to recover after source return", runtime.app_ready, timeout=240)
+                def fresh_media_ready() -> bool:
+                    pods = runtime.kubectl_json("get", "pods", "-l", "app.kubernetes.io/name=jellyfin",
+                                                "-o", "json", namespace="jellyfin")["items"]
+                    for pod in pods:
+                        metadata = pod["metadata"]
+                        if metadata["uid"] == jellyfin_pod["metadata"]["uid"] or metadata.get("deletionTimestamp"):
+                            continue
+                        if any(condition.get("type") == "Ready" and condition.get("status") == "True"
+                               for condition in pod.get("status", {}).get("conditions", [])):
+                            return runtime.kubectl("exec", metadata["name"], "--", "cat", "/media/.returned",
+                                                   namespace="jellyfin") == "new mount"
+                    return False
+
+                wait_for("fresh Jellyfin pod to read restored media", fresh_media_ready, timeout=240)
                 (runtime.media_path / "library" / ".returned").unlink()
                 after_init = runtime.guest("cat", "/proc/1/stat").split()[21]
                 check(after_init == before_init, "source return recovers Jellyfin without a node restart")
@@ -1136,7 +1149,12 @@ def run_scenario(args: argparse.Namespace) -> None:
             runtime.incus("start", instance_name)
             wait_for("healthy node boot without application media", runtime.node_ready)
             wait_for("CoreDNS availability without media", runtime.unrelated_ready)
-            wait_for("Jellyfin to remain blocked without media", lambda: not runtime.app_ready(), timeout=180)
+            blocked_until = time.monotonic() + 180
+            while time.monotonic() < blocked_until:
+                if runtime.app_ready():
+                    raise ScenarioError("Jellyfin became ready without its media source")
+                time.sleep(2)
+            print("PASS: Jellyfin remained blocked throughout the media-absence observation", flush=True)
             result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "505", "--group", "505", "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/library/recovery.wav")
             check(result.returncode != 0, "node boot without media does not expose a substitute directory")
             runtime.start_media(media_pool, fixture["mediaRootScript"], workspace)
