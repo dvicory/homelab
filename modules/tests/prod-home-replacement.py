@@ -166,48 +166,6 @@ def query_incus(path: str, project: str | None = None):
     return items
 
 
-def preseed_conflicts(preseed: dict, descriptor: dict) -> list[str]:
-    """Return absent resources; raise on a conflict before preseed mutation."""
-    project = descriptor["project"]
-    missing: list[str] = []
-    for wanted in preseed.get("projects", []):
-        actual = query_incus(f"/1.0/projects/{quote_path(wanted['name'])}")
-        if actual is None:
-            missing.append(f"project/{wanted['name']}")
-        else:
-            for key, value in wanted.get("config", {}).items():
-                check(actual.get("config", {}).get(key) == value, f"project restriction {key} is conformant")
-    for wanted in preseed.get("storage_pools", []):
-        actual = query_incus(f"/1.0/storage-pools/{quote_path(wanted['name'])}")
-        if actual is None:
-            missing.append(f"storage-pool/{wanted['name']}")
-        else:
-            check(actual.get("driver") == wanted.get("driver"), f"storage pool {wanted['name']} uses declared driver")
-            check(actual.get("config", {}).get("source") == wanted.get("config", {}).get("source"), f"storage pool {wanted['name']} source is conformant")
-    for wanted in preseed.get("networks", []):
-        actual = query_incus(f"/1.0/networks/{quote_path(wanted['name'])}?project=default")
-        if actual is None:
-            missing.append(f"network/{wanted['name']}")
-        else:
-            check(actual.get("type") == wanted.get("type"), f"network {wanted['name']} is a bridge")
-            config = {
-                key: value
-                for key, value in actual.get("config", {}).items()
-                if not key.startswith("volatile.") and key != "bridge.hwaddr"
-            }
-            check(config == wanted.get("config", {}), f"network {wanted['name']} configuration is conformant")
-    for wanted in preseed.get("profiles", []):
-        actual = query_incus(f"/1.0/profiles/{quote_path(wanted['name'])}", project=wanted.get("project", project))
-        if actual is None:
-            missing.append(f"profile/{wanted['name']}")
-        else:
-            check(actual.get("config") == wanted.get("config", {}), f"profile {wanted['name']} configuration is conformant")
-            check(actual.get("devices") == wanted.get("devices", {}), f"profile {wanted['name']} devices are conformant")
-    return missing
-
-
-
-
 def yaml_config_map(name: str, value: str) -> str:
     return "\n".join(
         [
@@ -310,6 +268,27 @@ class Runtime:
                 proc.wait(timeout=30)
             except subprocess.TimeoutExpired:
                 proc.kill()
+
+    def verify_access_boundaries(self) -> None:
+        for kind in ("uid", "gid"):
+            mapping = [tuple(map(int, line.split())) for line in self.guest("cat", f"/proc/self/{kind}_map").splitlines()]
+            # The media capability is an identity-mapped hole in the range.
+            expected = [(row["nsid"], row["hostid"], row["range"]) for row in self.descriptor["idmap"][kind]]
+            check(mapping == expected, f"guest {kind} mapping matches the declared ID plan")
+        verify_private_endpoints(self)
+        result = completed("incus", "--force-local", "--project", self.project, "exec", self.instance,
+                           "--user", "751", "--group", "751", "--mode=non-interactive", "--",
+                           "sh", "-ec", "touch /srv/media/library/forbidden")
+        check(result.returncode != 0, "guest identity without the media capability cannot write the library")
+        # Prove the real workload boundary, not merely a guest UID restriction.
+        pod_write = completed("incus", "--force-local", "--project", self.project, "exec", self.instance,
+                              "--mode=non-interactive", "--", "k3s", "kubectl", "-n", "jellyfin",
+                              "exec", "deployment/jellyfin", "--", "sh", "-ec", "touch /media/.compute-recovery-probe")
+        check(pod_write.returncode != 0, "Jellyfin pod cannot write its /media library mount")
+        pod_mounts = self.kubectl("exec", "deployment/jellyfin", "--", "cat", "/proc/mounts", namespace="jellyfin")
+        media_entries = [fields for line in pod_mounts.splitlines() if len(fields := line.split()) >= 4 and fields[1] == "/media"]
+        check(bool(media_entries) and all("ro" in fields[3].split(",") for fields in media_entries),
+              "Jellyfin pod mounts /media read-only")
 
     def stage_secrets(self, fixture: dict) -> subprocess.CompletedProcess[str]:
         # Capture all output: neither a failed producer nor its manifest may
@@ -780,9 +759,7 @@ def run_scenario(args: argparse.Namespace) -> None:
     spec.loader.exec_module(smoke)
     fixture = json.loads(args.fixture.read_text())
     descriptor = json_copy(fixture["descriptor"])
-    preseed = fixture["preseed"]
     media_pool = fixture["mediaPool"]
-    check("config" not in preseed, "fixture preseed omits top-level Incus host API configuration")
     check(isinstance(fixture["mediaRootScript"], str) and fixture["mediaRootScript"].strip(), "fixture contains the native media-root script")
     check(all(isinstance(media_pool[key], str) and media_pool[key].strip() for key in ("preStart", "start", "stop", "environment")), "fixture contains native media pool commands")
     ensure_absolute_paths(descriptor)
@@ -817,7 +794,6 @@ def run_scenario(args: argparse.Namespace) -> None:
         return True
     wait_for("Incus API", incus_responsive)
     check(instance_query(project, instance_name) is None, "disposable instance is absent before the scenario")
-    missing = preseed_conflicts(preseed, descriptor)
 
     with tempfile.TemporaryDirectory(prefix="homelab-compute-recovery-") as temporary:
         workspace = Path(temporary)
@@ -832,13 +808,9 @@ def run_scenario(args: argparse.Namespace) -> None:
             prepare_directory(path, safe_dirs)
         spec_path = workspace / "compute.json"
         runtime = Runtime(descriptor, spec_path, args.helper, args.bundle)
-        # Native preseed validates recursive bind sources; the production
-        # host prepares retained directories and the media parent first.
-        if missing:
-            run("incus", "--force-local", "admin", "init", "--preseed", input=json.dumps(preseed) + "\n", timeout=600)
-            check(not preseed_conflicts(preseed, descriptor), "native Incus preseed creates all missing declared resources")
-        else:
-            print("PASS: existing Incus project/network/profile/pool are conformant and borrowed", flush=True)
+        # Prepare the bind sources before running the exact locked host command.
+        run("env", f"PATH={fixture['preseedPath']}",
+            *shlex.split(fixture["preseedCommand"]), timeout=600)
         try:
             persist = Path("/persist")
             secret_inputs = Path("/run/agenix")
@@ -966,13 +938,6 @@ def run_scenario(args: argparse.Namespace) -> None:
             secret_values[rotated] = rotated_value
             rotated_payload = secret_manifest.read_bytes()
             check(rotated_payload != secret_payload, "successful rotation changes the published payload")
-            for kind in ("uid", "gid"):
-                mapping = [tuple(map(int, line.split())) for line in runtime.guest("cat", f"/proc/self/{kind}_map").splitlines()]
-                # The media capability is an identity-mapped hole in the
-                # otherwise contiguous range; compare against the declared
-                # plan rather than assuming one contiguous row.
-                expected = [(row["nsid"], row["hostid"], row["range"]) for row in descriptor["idmap"][kind]]
-                check(mapping == expected, f"guest {kind} mapping matches the declared ID plan")
             for name, entry in descriptor["retainedPaths"].items():
                 target = Path(entry["path"])
                 permissions = target.stat()
@@ -1010,7 +975,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             runtime.verify_secret_consumers(secret_values)
             check(runtime.app_ready(), "Argo delivers Jellyfin when the intended media source is present")
             base = forward_start(runtime, kubeconfig)
-            verify_private_endpoints(runtime)
+            runtime.verify_access_boundaries()
 
             runtime.guest("sh", "-ec", "test -r /srv/media/library/recovery.wav")
             # The Incus media attachment itself is writable host storage; the
@@ -1019,21 +984,6 @@ def run_scenario(args: argparse.Namespace) -> None:
             hosted.write_text("host-owned\n")
             check(hosted.read_text() == "host-owned\n", "host root owns the writable media namespace")
             hosted.unlink()
-            result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "751", "--group", "751", "--mode=non-interactive", "--", "sh", "-ec", "touch /srv/media/library/forbidden")
-            check(result.returncode != 0, "guest identity without the media capability cannot write the library")
-            # The real boundary proof runs inside the Jellyfin pod at /media,
-            # not merely as a guest process holding the same UID.
-            pod_write = completed("incus", "--force-local", "--project", project, "exec", instance_name,
-                                  "--mode=non-interactive", "--", "k3s", "kubectl", "-n", "jellyfin",
-                                  "exec", "deployment/jellyfin", "--", "sh", "-ec", "touch /media/.compute-recovery-probe")
-            check(pod_write.returncode != 0, "Jellyfin pod cannot write its /media library mount")
-            pod_mounts = runtime.kubectl("exec", "deployment/jellyfin", "--", "cat", "/proc/mounts", namespace="jellyfin")
-            media_entries = [fields for line in pod_mounts.splitlines() if len(fields := line.split()) >= 4 and fields[1] == "/media"]
-            check(bool(media_entries) and all("ro" in fields[3].split(",") for fields in media_entries),
-                  "Jellyfin pod mounts /media read-only")
-            mounts = runtime.kubectl_json("get", "deployment/jellyfin", "-o", "json", namespace="jellyfin")["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
-            library_mount = next(mount for mount in mounts if mount["name"] == "media")
-            check(library_mount.get("readOnly") is True, "Jellyfin library mount is declared read-only")
             username, password = smoke.setup_first_run(base)
             token, user_id = smoke.authenticate(base, username, password)
             smoke.ensure_music_library(base, token)
@@ -1219,6 +1169,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             with phase("second-bootstrap-registry-pulls-and-argo-reconciliation"):
                 kubeconfig = deliver_stack(runtime, args, workspace)
             runtime.verify_secret_consumers(secret_values)
+            runtime.verify_access_boundaries()
             base = forward_start(runtime, kubeconfig)
             check(marker.read_text() == "retained-state\n", "guest replacement preserves retained application data")
             check(marker.stat().st_uid == marker_stat.st_uid and marker.stat().st_gid == marker_stat.st_gid and marker.stat().st_mode == marker_stat.st_mode, "guest replacement preserves retained data ownership and mode")

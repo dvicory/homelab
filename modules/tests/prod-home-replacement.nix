@@ -28,7 +28,6 @@
             ;
           descriptor = builtins.fromJSON hostConfig.environment.etc."homelab/compute.json".text;
           poolPath = descriptor.poolPath;
-          preseed = removeAttrs hostConfig.virtualisation.incus.preseed [ "config" ];
           bridgeAddress = lib.head (lib.splitString "/" descriptor.networkConfig."ipv4.address");
           nftables =
             lib.mapAttrsToList
@@ -49,10 +48,11 @@
             builtins.toJSON {
               inherit
                 descriptor
-                preseed
                 nftables
                 bridgeAddress
                 ;
+              preseedCommand = hostConfig.systemd.services.incus-preseed.serviceConfig.ExecStart;
+              preseedPath = lib.makeBinPath hostConfig.systemd.services.incus-preseed.path;
               mediaPool = {
                 start = hostConfig.systemd.services."mergerfs-mnt-srv-media".serviceConfig.ExecStart;
                 preStart = hostConfig.systemd.services."mergerfs-mnt-srv-media".serviceConfig.ExecStartPre;
