@@ -14,7 +14,12 @@
   ];
 
   perSystem =
-    { pkgs, lib, ... }:
+    {
+      config,
+      pkgs,
+      lib,
+      ...
+    }:
     let
       callPackage = pkgs.callPackage;
       isLinux = pkgs.stdenv.hostPlatform.isLinux;
@@ -24,7 +29,6 @@
       install = callPackage (self + "/pkgs/by-name/install/package.nix") { };
       linuxPackages = lib.optionalAttrs isLinux {
         prepare-luks-storage = callPackage (self + "/pkgs/by-name/prepare-luks-storage/package.nix") { };
-        compute-guest = callPackage (self + "/pkgs/by-name/compute-guest/package.nix") { };
       };
 
       provision-keys = callPackage (self + "/pkgs/by-name/provision-keys/package.nix") {
@@ -32,7 +36,10 @@
       };
     in
     {
+      checks.compute-runtime = config.packages.compute-runtime;
+
       packages = {
+        compute-runtime = callPackage (self + "/pkgs/by-name/compute-runtime/package.nix") { };
         inherit
           generate-secrets
           rekey

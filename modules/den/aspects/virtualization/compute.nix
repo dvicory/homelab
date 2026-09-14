@@ -531,7 +531,7 @@ in
       in
       {
         environment.systemPackages = [
-          (pkgs.callPackage (inputs.self + "/pkgs/by-name/compute-guest/package.nix") { })
+          (pkgs.callPackage (inputs.self + "/pkgs/by-name/compute-runtime/package.nix") { })
         ];
         # The kernel's setuid helpers refuse to build a map containing host IDs
         # the caller has no subordinate range for, so a crossing capability needs

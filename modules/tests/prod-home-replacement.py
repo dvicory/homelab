@@ -21,7 +21,7 @@ jellyfin_smoke helper; this driver owns only platform orchestration.
     --seed /nix/store/...-prod-home-test-seed \
     --smoke /tmp/jellyfin_smoke.py \
     --bootstrap-host /nix/store/...-household-bootstrap-host/bin/household-bootstrap-host \
-    --helper pkgs/by-name/compute-guest/compute-guest.py
+    --helper /nix/store/...-compute-runtime/bin/compute-guest
 """
 
 from __future__ import annotations
@@ -242,8 +242,7 @@ class Runtime:
         return metrics["metadata"]["name"] == self.instance and {"cpu", "memory"} <= metrics["usage"].keys()
 
     def helper_command(self, operation: str, *, spec: Path | None = None, bundle: Path | None = None, confirm: bool = False) -> list[str]:
-        command = [str(self.helper)] if self.helper.suffix != ".py" else [sys.executable, str(self.helper)]
-        command.extend(["--spec", str(spec or self.spec_path), operation])
+        command = [str(self.helper), "--spec", str(spec or self.spec_path), operation]
         if bundle:
             command.extend(["--bundle", str(bundle)])
         if confirm:
@@ -1242,7 +1241,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--seed", required=True, type=Path, help="bootstrap seed tree; the shipped wrapper is pointed at it")
     result.add_argument("--smoke", required=True, type=Path, help="Jellyfin application smoke helper")
     result.add_argument("--bootstrap-host", required=True, type=Path, help="shipped household-bootstrap-host executable")
-    result.add_argument("--helper", type=Path, default=Path("/run/current-system/sw/bin/compute-guest"), help="generic compute lifecycle executable or repository .py helper")
+    result.add_argument("--helper", type=Path, default=Path("/run/current-system/sw/bin/compute-guest"), help="generic compute lifecycle executable")
     return result
 
 

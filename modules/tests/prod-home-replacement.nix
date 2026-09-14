@@ -66,7 +66,7 @@
           );
           scenario = ./prod-home-replacement.py;
           smoke = ./jellyfin_smoke.py;
-          computeGuest = pkgs.callPackage (inputs.self + "/pkgs/by-name/compute-guest/package.nix") { };
+          computeGuest = pkgs.callPackage (inputs.self + "/pkgs/by-name/compute-runtime/package.nix") { };
           guestBundle = guest.config.system.build.computeBundle;
           canonical = inputs.self + "/generated/manifests/prod-home";
           seedManifests = self.packages.${system}.household-bootstrap-manifests;

@@ -51,6 +51,34 @@ While bootstrap waits, bounded read-only snapshots show Argo pods/events, the
 Redis-init Job log, and active image downloads. Bootstrap has a one-hour
 process-group deadline with a 30-second forced-kill grace.
 
+## Fast runtime checks
+
+Run deterministic lifecycle and bootstrap checks without booting a VM:
+
+```sh
+nix build -L --no-link .#compute-runtime
+```
+
+The package runs all applicable Go tests, including internal packages. For
+quicker iteration with a warm Go cache and no C compiler requirement:
+
+```sh
+nix shell --inputs-from . nixpkgs#go --command \
+  env CGO_ENABLED=0 go -C pkgs/by-name/compute-runtime test ./...
+```
+
+The existing CI selector can run only these Go package checks:
+
+```sh
+gh workflow run ci.yml --repo dvicory/homelab --ref "$REF" \
+  -f check=compute-runtime -f system=x86_64-linux
+```
+
+Go tests cover ID-map validation, readiness decisions, hook retry eligibility,
+and Incus operation outcomes and deadlines. Linux-only guards run on Linux.
+Keep the full replacement acceptance for kernel isolation, mount propagation,
+media loss and recovery, and retained application state after guest destruction.
+
 ## Focused storage check
 
 For a storage-only CI run, select a revision containing the desired manifests
