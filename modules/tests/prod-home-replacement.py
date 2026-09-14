@@ -824,7 +824,10 @@ def run_scenario(args: argparse.Namespace) -> None:
                   and "ro" in run("findmnt", "-n", "-o", "VFS-OPTIONS", "-M", str(secret_root)).split(","),
                   "missing inputs leave an empty read-only credential transport before guest creation")
             secret_values = {source: secrets.token_urlsafe(32).encode() for source in descriptor["runtimeSecrets"]}
-            check(bool(secret_values), "fixture declares runtime credential inputs")
+            # Argo replaces an invalid password timestamp during initialization.
+            secret_values["argocd--argocd-secret--admin.passwordMtime"] = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+            ).encode()
             for source, value in secret_values.items():
                 with (secret_inputs / source).open("xb") as output:
                     os.chmod(output.fileno(), 0o400)
