@@ -162,8 +162,9 @@ in
                     enabled = true;
                     custom = true;
                     spec = {
+                      # /health also succeeds in Jellyfin's temporary startup server.
                       httpGet = {
-                        path = "${prefix}/health";
+                        path = "${prefix}/Users/Public";
                         port = 8096;
                       };
                       periodSeconds = 10;

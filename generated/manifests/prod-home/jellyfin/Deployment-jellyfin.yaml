@@ -44,7 +44,7 @@ spec:
           name: main
           readinessProbe:
             httpGet:
-              path: /health
+              path: /Users/Public
               port: 8096
             periodSeconds: 10
             timeoutSeconds: 5
