@@ -1,0 +1,43 @@
+## 1. Authority and pinned integration seam
+
+- [ ] 1.1 Add ADR-0009 recording the accepted Den/gen compiler, Rust coordinator, external-driver, and native-representation architecture; verify its MADR metadata links this change and relates to ADR-0006 and ADR-0008 without modifying existing ADR decisions or active changes.
+- [ ] 1.2 Add a focused evaluation fixture against the pinned gen-schema and gen-scope APIs used by preserve; verify instance identity keys, typed references, `mkClaim`/`resolveClaims` results, unresolved reporting, provenance, and strict forcing before building the full model.
+
+## 2. Den/gen state-protection model
+
+- [ ] 2.1 Declare the Den `preserve` pipe and typed gen-schema registries for slots, states, realizations, policies, routes, targets, drivers, and scratch destinations; verify a composed Den aspect contributes records that resolve through the collector rather than through an unrelated plain attrset.
+- [ ] 2.2 Implement stable state identity and policy precedence; verify mutation tests change host, realization kind/path, application version, package path, and policy without changing `stateId` or the intended gen identity, while production/QA remain distinct and equal-precedence policy conflicts fail.
+- [ ] 2.3 Implement the `state-protection` to `route-obligation` gen-scope cascade and compatibility glue; verify missing/duplicate realization, invalid reference, absent target, unsupported method, zero/multiple fulfillment, and resource collision report state/route context, while two explicit routes using one driver remain separate obligations.
+- [ ] 2.4 Compile `desired-inventory` and `executable-plan` schema-version-1 documents from the same declarations; verify plan-only gaps serialize without backend access, plan-only states remain non-operational, and deep-forcing the corresponding enabled incomplete declaration fails.
+- [ ] 2.5 Refactor the existing ZFS pool declaration only enough to reuse its dataset map for preserve contributions, then emit plan-only `household/home` and `household/persist`; verify their paths and `rpool/safe/home` and `rpool/safe/persist` bindings come from the evaluated host declaration and expose non-recursive coverage, unresolved targets, and application-consistency caveats without runtime probes or secret reads.
+- [ ] 2.6 Add pure representative fixtures for host filesystem, Incus storage, Kubernetes hostPath/PVC, microVM storage, PostgreSQL access, and a reusable production/QA application; verify unsupported handlers stay unsupported, realization movement preserves identity, and nested dataset or mount boundaries cannot be reported as whole-tree coverage.
+
+## 3. Coordinator and executable-driver protocol
+
+- [ ] 3.1 Add the Cargo package and Nix package for `homelab-preserve` and `homelab-preserve-zfs` with shared manifest, protocol-1.0, point, operation, error, and receipt types; verify Rust unit tests round-trip required fields, tolerate unknown optional provenance, and reject unsupported required schema/format versions.
+- [ ] 3.2 Implement `plan` and `status` with human and JSON output; verify planning has no driver access, disabled inventory cannot execute, configured-but-unobserved differs from an observed empty catalog, and no output invents protection health.
+- [ ] 3.3 Implement fixed executable dispatch with describe/capability validation, concurrent bounded stdout/stderr draining, timeout/cancellation, checked exit status, and structured errors; verify malformed or truncated JSON, incompatible major version, unknown operation/capability, nonzero exit, timeout, and oversized output fail without hanging or executing a provenance path.
+- [ ] 3.4 Implement target-qualified `points` and one-capture/multi-route `capture`; verify one capture ID fans out to each named obligation, copy completion times remain distinct, partial target failure returns nonzero while preserving complete route receipts, and retry does not recapture changed live data under the prior ID.
+- [ ] 3.5 Implement restore preflight/execution and receipt-based `verify`; verify exact point selection, one-time latest resolution if exposed, traversal/existing destination/source or target alias refusal, immediate pre-mutation revalidation, and altered restored data produce failure without a force bypass.
+- [ ] 3.6 Package the independent test-only Python stable-view consumer and protocol fixtures; verify it can be registered through manifest configuration without changing or recompiling coordinator code, consumes a scoped stable-view descriptor, cannot release the capture through the protocol, and never appears as a real recovery point.
+
+## 4. Native ZFS driver
+
+- [ ] 4.1 Implement ZFS configuration validation, namespaced compact point descriptors, native GUID checks, dataset ancestry checks, and safe property handling; verify incompatible locators, out-of-root datasets, hostile mount/share properties, and oversized or incomplete descriptors are refused.
+- [ ] 4.2 Implement single-dataset snapshot capture with a hold, target-qualified local retention, and a read-only stable-view handle; verify a live mutation after capture does not change bytes observed by the independent stable-view consumer and no live-tree fallback occurs.
+- [ ] 4.3 Implement full property-preserving send/receive into a fresh per-point receiver dataset and receiver-side discovery; verify local and replica points share capture identity, incomplete staging is not discoverable, and the replica remains discoverable after source-pool and coordinator-journal loss.
+- [ ] 4.4 Implement restore from either retained route into a new child of the configured scratch root plus native verification; verify the same older point restores twice into distinct destinations, explicit ZFS properties keep mounts constrained, restored snapshot identity matches, and post-restore divergence is detected.
+- [ ] 4.5 Implement bounded operation journaling and owned-staging recovery for failed or interrupted receive; verify safe retry or actionable refusal preserves completed points and the local snapshot, cleans only proven operation-owned staging, and never invokes rollback, `receive -F`, or retained-point pruning.
+
+## 5. Packaging, acceptance, and CI
+
+- [ ] 5.1 Expose inspectable real inventory, executable fixture manifest, coordinator, ZFS driver, fixture driver, and fast model/protocol checks through existing flake modules without editing generated `flake.nix`; verify package/check names evaluate on supported systems and `nix run .#write-flake` leaves the generated flake consistent.
+- [ ] 5.2 Add the Linux two-disk `preserve-zfs` NixOS VM test using shipped packages; verify synthetic regular files, historical versions, directories, symlink, hardlink, UID/GID, modes, representative ACL/xattr, sparse file, two captures, explicit older-point restore, and a second rehearsal through the CLI with an independent oracle.
+- [ ] 5.3 Extend the VM test with receiver failure/interruption, unsafe destinations, nested-dataset scope, altered-scratch verification failure, and source/catalog loss; verify truthful partial status, no incomplete advertised point, preserved local recovery, source-independent replica restore, and explicit filesystem-only consistency/fidelity limits.
+- [ ] 5.4 Give `preserve-zfs` its own Linux `ciJobs` group and GitHub Actions matrix entry, excluding it from duplicate aggregate execution while retaining `fail-fast: false` and direct check dispatch; verify the workflow and CI projection show no dependency on Incus/Kubernetes checks, moving images, credentials, homelab access, or new self-hosted runners.
+
+## 6. Documentation, verification, and handoff
+
+- [ ] 6.1 Document exact plan/status/points/capture/restore/verify commands, manifest and protocol 1.0 fields, harmless fixture use, real plan-only inventory, fidelity limits, and adapter registration; verify the documented external-driver example works and the next Restic/PostgreSQL/SQLite/Incus/Kubernetes adapters require no backend switch in coordinator code.
+- [ ] 6.2 Run formatting plus the narrow model, Rust/protocol, package, generated-flake, and preserve VM checks on supported environments; verify pre-existing Den/storage checks still pass, record exact commands/results and measured VM duration only when observed, and leave any blocked check explicitly incomplete.
+- [ ] 6.3 Complete the preserved packet's handoff template with actual jj changes, revisions, entry points, evidence, limitations, and safety statement; verify it confirms no production deployment, private-data access, capture/restore, schedule, disk, secret, network, router, or existing-active-change modification occurred and names the next separately authorized operator step.
