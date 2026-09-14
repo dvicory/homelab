@@ -99,6 +99,6 @@ spec:
           persistentVolumeClaim:
             claimName: media-sonarr
         - hostPath:
-            path: /srv/media
+            path: /srv/media/data
             type: Directory
           name: data

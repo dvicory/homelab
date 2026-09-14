@@ -148,7 +148,7 @@ spec:
           persistentVolumeClaim:
             claimName: jellyfin-config
         - hostPath:
-            path: /srv/media/library
+            path: /srv/media/data/library
             type: Directory
           name: media
         - configMap:

@@ -19,7 +19,7 @@ prepare or prove that cutover.
   for these HDDs. The minimum change is `luks`; SSD discard policy can be
   explicit if needed later.
 - Select a provider-neutral backing mount name, for example
-  `/mnt/storage/media4`, below the stable `/srv/media` interface. Coordinate
+  `/mnt/storage/media4`, below the stable `/srv/media/data` interface. Coordinate
   converted branch names in the later migration; do not rename the live
   gocryptfs branches during software acceptance.
 - Harden `prepare-luks-storage` before trusting it with disks. It currently
@@ -75,7 +75,7 @@ active mergerfs branch.
 4. Change the pool's declared branch set to replace the source with the
    verified destination. Apply the change with a controlled restart of the
    mergerfs service after all intended providers are mounted; do not attempt a
-   live branch reload. Validate `/srv/media`, authorized writes, hardlinks and
+   live branch reload. Validate `/srv/media/data`, authorized writes, hardlinks and
    Jellyfin reads. Follow the measured pod-remount procedure.
 5. Only after explicit acceptance may the retired source disk be wiped and
    provisioned as the next empty LUKS/XFS destination. The sequence can be

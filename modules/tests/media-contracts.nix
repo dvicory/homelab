@@ -10,7 +10,7 @@
       storage = pkgs.writeText "media-storage-contract.json" (
         builtins.toJSON {
           inherit (compute) instance retainedPaths;
-          media = compute.devices.media.path;
+          media = "${compute.devices.media.path}/data";
           mediaGid = config.den.groups.media.gid;
           mediaInstances = {
             radarr = builtins.attrNames cluster.settings.kubernetes.services.media.radarr;

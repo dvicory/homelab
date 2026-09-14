@@ -21,7 +21,7 @@ jellyfin_smoke helper; this driver owns only platform orchestration.
     --seed /nix/store/...-prod-home-test-seed \
     --smoke /tmp/jellyfin_smoke.py \
     --bootstrap-host /nix/store/...-household-bootstrap-host/bin/household-bootstrap-host \
-    --helper pkgs/by-name/compute-guest/compute-guest.py
+    --helper /nix/store/...-compute-runtime/bin/compute-guest
 """
 
 from __future__ import annotations
@@ -201,7 +201,7 @@ class Runtime:
         self.bundle = bundle
         self.project = descriptor["project"]
         self.instance = descriptor["instance"]
-        self.media_path = Path(descriptor["devices"]["media"]["source"])
+        self.media_path = Path(descriptor["devices"]["media"]["source"]) / "data"
         self.media_branches: list[Path] = []
         self.media_unit = ""
         self.media_scripts: list[Path] = []
@@ -242,8 +242,7 @@ class Runtime:
         return metrics["metadata"]["name"] == self.instance and {"cpu", "memory"} <= metrics["usage"].keys()
 
     def helper_command(self, operation: str, *, spec: Path | None = None, bundle: Path | None = None, confirm: bool = False) -> list[str]:
-        command = [str(self.helper)] if self.helper.suffix != ".py" else [sys.executable, str(self.helper)]
-        command.extend(["--spec", str(spec or self.spec_path), operation])
+        command = [str(self.helper), "--spec", str(spec or self.spec_path), operation]
         if bundle:
             command.extend(["--bundle", str(bundle)])
         if confirm:
@@ -277,7 +276,7 @@ class Runtime:
         verify_private_endpoints(self)
         result = completed("incus", "--force-local", "--project", self.project, "exec", self.instance,
                            "--user", "751", "--group", "751", "--mode=non-interactive", "--",
-                           "sh", "-ec", "touch /srv/media/library/forbidden")
+                           "sh", "-ec", "touch /srv/media/data/library/forbidden")
         check(result.returncode != 0, "guest identity without the media capability cannot write the library")
         # Prove the real workload boundary, not merely a guest UID restriction.
         pod_write = completed("incus", "--force-local", "--project", self.project, "exec", self.instance,
@@ -360,7 +359,7 @@ class Runtime:
             environment[name] = value
         branches = [Path(branch) for branch in environment["BRANCHES"].split(":")]
         check(branches, "media pool declares branches")
-        check(Path(environment["MOUNTPOINT"]) == self.media_path, "media pool targets the declared guest source")
+        check(Path(environment["MOUNTPOINT"]) == self.media_path, "media pool is below the stable guest attachment")
         for branch in branches:
             if branch in self.media_branches:
                 continue
@@ -398,10 +397,24 @@ class Runtime:
         run("systemctl", "stop", self.media_unit)
         self.media_started = False
 
+    def http_ready(self, path: str) -> bool:
+        # Controller and Pod status can survive a guest reboot. Probe the live
+        # endpoint through the API server instead of trusting that cached state.
+        try:
+            self.kubectl("get", "--raw", path, "--request-timeout=5s")
+        except ScenarioError:
+            return False
+        return True
+
+    def app_available(self) -> bool:
+        return self.http_ready("/api/v1/namespaces/jellyfin/services/http:jellyfin:http/proxy/Users/Public")
+
     def app_ready(self) -> bool:
         deployment = self.kubectl_json("get", "deployment/jellyfin", "-o", "json", namespace="jellyfin")
         status = deployment.get("status", {})
-        return status.get("availableReplicas", 0) == 1 and status.get("readyReplicas", 0) == 1
+        return (status.get("availableReplicas", 0) == 1
+                and status.get("readyReplicas", 0) == 1
+                and self.app_available())
 
     def node_ready(self) -> bool:
         nodes = self.kubectl_json("get", "nodes", "-o", "json").get("items", [])
@@ -412,10 +425,15 @@ class Runtime:
 
     def unrelated_ready(self) -> bool:
         pods = self.kubectl_json("get", "pods", "-l", "k8s-app=kube-dns", "-o", "json", namespace="kube-system")
-        return any(
-            any(condition.get("type") == "Ready" and condition.get("status") == "True" for condition in pod.get("status", {}).get("conditions", []))
-            for pod in pods.get("items", [])
-        )
+        for pod in pods.get("items", []):
+            if not any(condition.get("type") == "Ready" and condition.get("status") == "True"
+                       for condition in pod.get("status", {}).get("conditions", [])):
+                continue
+            probe = pod["spec"]["containers"][0]["readinessProbe"]["httpGet"]
+            name = pod["metadata"]["name"]
+            if self.http_ready(f"/api/v1/namespaces/kube-system/pods/http:{name}:{probe['port']}/proxy{probe['path']}"):
+                return True
+        return False
 
     def cleanup(self) -> None:
         self.forward_stop()
@@ -811,6 +829,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             prepare_directory(path, safe_dirs)
         spec_path = workspace / "compute.json"
         runtime = Runtime(descriptor, spec_path, args.helper, args.bundle)
+        runtime.media_path.mkdir(mode=0o000)
         # Prepare the bind sources before running the exact locked host command.
         run("env", f"PATH={fixture['preseedPath']}",
             *shlex.split(fixture["preseedCommand"]), timeout=600)
@@ -985,7 +1004,7 @@ def run_scenario(args: argparse.Namespace) -> None:
 
             # Remapped guest root cannot bypass host DAC; visibility probes
             # must carry the media capability, including during source loss.
-            runtime.guest("sh", "-ec", "test -r /srv/media/library/recovery.wav", user=505)
+            runtime.guest("sh", "-ec", "test -r /srv/media/data/library/recovery.wav", user=505)
             # The Incus media attachment itself is writable host storage; the
             # read-only boundary lives at the Jellyfin workload mount.
             hosted = runtime.media_path / "library" / ".compute-recovery-probe"
@@ -1112,7 +1131,7 @@ def run_scenario(args: argparse.Namespace) -> None:
                 runtime.stop_media()
                 check(runtime.node_ready(), "K3s node remains healthy during application source loss")
                 check(runtime.unrelated_ready(), "unrelated workload remains available during application source loss")
-                result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "505", "--group", "505", "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/library/recovery.wav")
+                result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "505", "--group", "505", "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/data/library/recovery.wav")
                 check(result.returncode != 0, "source loss never exposes a substitute media directory")
                 denied = completed("kubectl", "--kubeconfig", str(kubeconfig), "-n", "jellyfin",
                                    "exec", "media-writer-probe", "--", "touch", "/data/downloads/.writer-during-loss")
@@ -1154,15 +1173,16 @@ def run_scenario(args: argparse.Namespace) -> None:
             wait_for("CoreDNS availability without media", runtime.unrelated_ready)
             blocked_until = time.monotonic() + 180
             while time.monotonic() < blocked_until:
-                if runtime.app_ready():
+                if not runtime.unrelated_ready():
+                    raise ScenarioError("CoreDNS became unavailable during the media-absence observation")
+                if runtime.app_available():
                     raise ScenarioError("Jellyfin became ready without its media source")
                 time.sleep(2)
             print("PASS: Jellyfin remained blocked throughout the media-absence observation", flush=True)
-            result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "505", "--group", "505", "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/library/recovery.wav")
+            result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "505", "--group", "505", "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/data/library/recovery.wav")
             check(result.returncode != 0, "node boot without media does not expose a substitute directory")
             runtime.start_media(media_pool, fixture["mediaRootScript"], workspace)
             wait_for("Jellyfin after media restoration", runtime.app_ready)
-            base = forward_start(runtime, kubeconfig)
 
             unrelated_manifest = "/tmp/compute-recovery-unrelated.yaml"
             runtime.guest("sh", "-ec", f"cat > {shlex.quote(unrelated_manifest)} <<'EOF'\n{yaml_config_map('recovery-unrelated', 'keep-me')}EOF")
@@ -1172,6 +1192,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             # Deployment must converge back to the reconciled desired state.
             runtime.kubectl("delete", "deployment/jellyfin", namespace="jellyfin")
             wait_for("Argo self-heals the Jellyfin deployment", runtime.app_ready, timeout=600)
+            base = forward_start(runtime, kubeconfig)
             unrelated = runtime.kubectl_json("get", "configmap/recovery-unrelated", "-o", "json", namespace="jellyfin")
             check(unrelated["data"]["value"] == "keep-me", "Argo reconciliation preserves unmanaged objects")
             check(marker.read_text() == "retained-state\n", "Argo reconciliation preserves retained application data")
@@ -1242,7 +1263,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--seed", required=True, type=Path, help="bootstrap seed tree; the shipped wrapper is pointed at it")
     result.add_argument("--smoke", required=True, type=Path, help="Jellyfin application smoke helper")
     result.add_argument("--bootstrap-host", required=True, type=Path, help="shipped household-bootstrap-host executable")
-    result.add_argument("--helper", type=Path, default=Path("/run/current-system/sw/bin/compute-guest"), help="generic compute lifecycle executable or repository .py helper")
+    result.add_argument("--helper", type=Path, default=Path("/run/current-system/sw/bin/compute-guest"), help="generic compute lifecycle executable")
     return result
 
 

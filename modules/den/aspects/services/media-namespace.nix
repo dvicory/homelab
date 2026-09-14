@@ -1,6 +1,6 @@
 # The media namespace layout.
 #
-# `/srv/media` is the single host-owned media access root and one mergerfs
+# `/srv/media/data` is the single host-owned media access root and one mergerfs
 # filesystem. The directories beneath it are layout rather than separate
 # storage roots: they share one access policy, so they are created together by
 # one unit instead of becoming four independent roots with four owners.
@@ -17,7 +17,7 @@
 }:
 let
   mergerfs = import ./_mergerfs.nix { inherit lib; };
-  root = "/srv/media";
+  root = "/srv/media/data";
   layout = [
     "library"
     "library/movies"
@@ -42,6 +42,7 @@ in
         poolUnit = mergerfs.unitNameFor root;
       in
       lib.mkIf (pools ? ${root}) {
+        systemd.tmpfiles.rules = [ "d ${builtins.dirOf root} 0755 root root -" ];
         systemd.services.media-namespace = {
           description = "Create the media namespace layout on the merged filesystem";
           wantedBy = [ "multi-user.target" ];

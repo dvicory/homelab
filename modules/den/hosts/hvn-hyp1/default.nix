@@ -71,13 +71,12 @@ in
               media = {
                 path = "/srv/media";
                 propagation = "rslave";
-                # Application-only storage must not gate the compute
-                # environment: Incus skips this device when the source is
-                # absent, and lifecycle preflight does not require it. The
-                # unmounted pool root stays mode 0000, so an absent pool can
-                # never present a writable substitute directory; workload
-                # mounts fail closed until the pool (re)appears, and rslave
-                # propagation carries a restored pool into the running guest.
+                recursive = "true";
+                # Bind the stable parent, not the replaceable filesystem root.
+                # rslave carries data/ mount changes into the running guest;
+                # recursive includes an already-mounted pool at guest startup.
+                # The absent data/ mount stays mode 0000. Its parent contains
+                # no application data and remains available during an outage.
                 required = "false";
                 source = "/srv/media";
                 type = "disk";
@@ -92,7 +91,7 @@ in
             };
           };
         };
-      services.mergerfs.pools."/srv/media" = {
+      services.mergerfs.pools."/srv/media/data" = {
         branches = [
           "/mnt/storage-clear/media1"
           "/mnt/storage-clear/media2"

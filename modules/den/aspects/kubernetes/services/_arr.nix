@@ -191,7 +191,7 @@ let
         };
         data = {
           type = "hostPath";
-          hostPath = compute.devices.media.path;
+          hostPath = "${compute.devices.media.path}/data";
           hostPathType = "Directory";
           globalMounts = [ { path = "/data"; } ];
         };

@@ -109,7 +109,7 @@ application enforces human authorization. Applies to `/srv/photos/library` and
 application's own sharing model.
 
 **Service-owned.** A service account and group own the data, with narrowly
-scoped mounts for consumers. Applies to `/srv/media` and `/srv/surveillance`.
+scoped mounts for consumers. Applies to `/srv/media/data` and `/srv/surveillance`.
 Players get read-only views; only acquisition services get a writable one.
 
 **Client-sealed.** Selected user data may be encrypted before it reaches the
@@ -205,7 +205,7 @@ repository's transitional state are separate:
   migration and a schema change; the repository declaration is not evidence
   that the mirror exists.
 - No protected bulk pool or mount is declared yet.
-- `/srv/media` is declared as one mergerfs namespace over the existing
+- `/srv/media/data` is declared as one mergerfs namespace over the existing
   media1–media3 gocryptfs branches, with no separate hot branch. This is the
   approved transitional state until the software cutover is proven, not the
   LUKS2/XFS target.
@@ -217,7 +217,7 @@ repository's transitional state are separate:
 
 The operator reports that production media remains gocryptfs-backed. This pass
 does not inspect or activate production. Repository desired state and disposable
-acceptance results do not establish the deployed `/srv/media` integration,
+acceptance results do not establish the deployed `/srv/media/data` integration,
 redundancy, or recovery readiness.
 
 The target's replaceable tiers deliberately avoid spending capacity on
@@ -252,7 +252,7 @@ separately approved operation; no physical conversion has been executed.
 
 Media is the case that constrains the design, so it is stated explicitly.
 
-`/srv/media` is presented to consumers as **one filesystem** containing both
+`/srv/media/data` is presented to consumers as **one filesystem** containing both
 `library/` and `downloads/`. The host mounts it as well: operators and
 workloads consume the same paths, and `/mnt/storage` stays implementation
 detail. This is not cosmetic. Acquisition services import
@@ -260,6 +260,12 @@ a completed download into the library using hardlinks or atomic renames, and
 Linux refuses both across mount boundaries even when the two mounts come from
 the same underlying device. A consumer that must link or rename receives the
 common parent; a consumer that only plays media receives `library/` read-only.
+
+`/srv/media` is a stable, root-owned transport parent, not the data filesystem.
+Incus attaches that parent recursively with one-way host-to-guest propagation,
+so replacing the `data/` mount reaches a running guest. The absent mountpoint is
+mode `0000`; no writer can use it as substitute storage. Pods with subtree binds
+must be recreated after restoration, without restarting the compute guest.
 
 Underneath, branches correspond to placements. More than one is possible, and
 the namespace is built for it: creation is restricted to placements declared to

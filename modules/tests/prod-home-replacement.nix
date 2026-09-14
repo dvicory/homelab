@@ -54,10 +54,10 @@
               preseedCommand = hostConfig.systemd.services.incus-preseed.serviceConfig.ExecStart;
               preseedPath = lib.makeBinPath hostConfig.systemd.services.incus-preseed.path;
               mediaPool = {
-                start = hostConfig.systemd.services."mergerfs-mnt-srv-media".serviceConfig.ExecStart;
-                preStart = hostConfig.systemd.services."mergerfs-mnt-srv-media".serviceConfig.ExecStartPre;
-                stop = hostConfig.systemd.services."mergerfs-mnt-srv-media".serviceConfig.ExecStop;
-                environment = hostConfig.environment.etc."mergerfs/srv-media.conf".text;
+                start = hostConfig.systemd.services."mergerfs-mnt-srv-media-data".serviceConfig.ExecStart;
+                preStart = hostConfig.systemd.services."mergerfs-mnt-srv-media-data".serviceConfig.ExecStartPre;
+                stop = hostConfig.systemd.services."mergerfs-mnt-srv-media-data".serviceConfig.ExecStop;
+                environment = hostConfig.environment.etc."mergerfs/srv-media-data.conf".text;
               };
               mediaRootScript = hostConfig.systemd.services.media-namespace.script;
               secretStageScript = hostConfig.systemd.services.compute-stage-secrets.script;
@@ -66,7 +66,7 @@
           );
           scenario = ./prod-home-replacement.py;
           smoke = ./jellyfin_smoke.py;
-          computeGuest = pkgs.callPackage (inputs.self + "/pkgs/by-name/compute-guest/package.nix") { };
+          computeGuest = pkgs.callPackage (inputs.self + "/pkgs/by-name/compute-runtime/package.nix") { };
           guestBundle = guest.config.system.build.computeBundle;
           canonical = inputs.self + "/generated/manifests/prod-home";
           seedManifests = self.packages.${system}.household-bootstrap-manifests;

@@ -160,6 +160,6 @@ spec:
           persistentVolumeClaim:
             claimName: media-sabnzbd
         - hostPath:
-            path: /srv/media
+            path: /srv/media/data
             type: Directory
           name: data

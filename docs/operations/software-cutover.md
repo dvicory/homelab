@@ -51,6 +51,34 @@ While bootstrap waits, bounded read-only snapshots show Argo pods/events, the
 Redis-init Job log, and active image downloads. Bootstrap has a one-hour
 process-group deadline with a 30-second forced-kill grace.
 
+## Fast runtime checks
+
+Run deterministic lifecycle and bootstrap checks without booting a VM:
+
+```sh
+nix build -L --no-link .#compute-runtime
+```
+
+The package runs all applicable Go tests, including internal packages. For
+quicker iteration with a warm Go cache and no C compiler requirement:
+
+```sh
+nix shell --inputs-from . nixpkgs#go --command \
+  env CGO_ENABLED=0 go -C pkgs/by-name/compute-runtime test ./...
+```
+
+The existing CI selector can run only these Go package checks:
+
+```sh
+gh workflow run ci.yml --repo dvicory/homelab --ref "$REF" \
+  -f check=compute-runtime -f system=x86_64-linux
+```
+
+Go tests cover ID-map validation, readiness decisions, hook retry eligibility,
+and Incus operation outcomes and deadlines. Linux-only guards run on Linux.
+Keep the full replacement acceptance for kernel isolation, mount propagation,
+media loss and recovery, and retained application state after guest destruction.
+
 ## Focused storage check
 
 For a storage-only CI run, select a revision containing the desired manifests
@@ -89,7 +117,7 @@ also requires updating the allowlist; retain the SHA-pinning requirement.
 ## Host preparation and activation
 
 1. Inspect the actual storage mounts and Incus inventory. Confirm encrypted
-   backing mounts, gocryptfs branches, `/srv/media`, retained state, and the
+   backing mounts, gocryptfs branches, `/srv/media/data`, retained state, and the
    declared capability mapping. Do not recursively chown media or retained data.
 2. Stage the declared secrets through agenix/rekey. Verify availability without
    printing values. Retain the existing guest SSH identity; do not regenerate it
@@ -130,9 +158,10 @@ also requires updating the allowlist; retain the SHA-pinning requirement.
    read-only `/media` mount, and private endpoint denials. Test the intended
    ingress/TLS/client paths separately; the replacement fixture does not prove
    production DNS, certificates, GPU transcoding or every household application.
-5. Apply the measured media-restoration procedure. Do not assume existing pod
-   bind mounts follow a remounted source; restart affected pods if the acceptance
-   observation establishes that requirement. Unrelated workloads must remain up.
+5. After restoring the pool at `/srv/media/data`, recreate affected media pods
+   to refresh their subtree binds. Incus must retain its recursive `rslave`
+   attachment of the stable `/srv/media` parent; binding the pool root directly
+   cannot follow its replacement. Keep the compute guest and unrelated workloads up.
 
 ## Stop and rollback
 

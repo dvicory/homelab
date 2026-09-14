@@ -229,7 +229,7 @@ in
               };
               media = {
                 type = "hostPath";
-                hostPath = "${compute.devices.media.path}/library";
+                hostPath = "${compute.devices.media.path}/data/library";
                 hostPathType = "Directory";
                 globalMounts = [
                   {

@@ -100,10 +100,15 @@ backup.
 | `seerr` | `/var/lib/homelab/compute-1/state/seerr` | `/srv/state/seerr` | `1000:1000` | `0700` | writable |
 | `sonarr` | `/var/lib/homelab/compute-1/state/sonarr` | `/srv/state/sonarr` | `753:753` | `0700` | writable |
 
-The host-owned media namespace at `/srv/media` is attached to acquisition
+The host-owned media namespace at `/srv/media/data` is attached to acquisition
 workloads at `/data` and to Jellyfin's library subtree at `/media`
 read-only. It is not part of the retained state table or the household
 recovery set.
+Incus recursively attaches the stable `/srv/media` parent with one-way
+host-to-guest propagation. Only its `data/` child is the replaceable
+filesystem; binding that child directly would retain a dead mount after
+source restoration. Recreate affected pods to refresh their library or
+download subtree binds; the compute guest need not restart.
 The `retained-local` capability for ordinary Helm PVCs is documented in
 the [retained-storage notes](../modules/den/aspects/kubernetes/services/retained-storage.md).
 
@@ -221,7 +226,7 @@ Argo reconciles Git -> reattached storage serves applications
 
 The instance root, Kubernetes datastore, container cache, and prior object
 identities are disposable. Host identity, runtime credentials, retained
-application data, the host-owned `/srv/media` media namespace, external
+application data, the host-owned `/srv/media/data` media namespace, external
 providers, and undeclared application data need separate protection and
 reconstruction.
 Same-host retained directories do not survive loss or corruption of that

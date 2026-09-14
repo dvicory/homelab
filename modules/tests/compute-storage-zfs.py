@@ -578,9 +578,9 @@ def run_variant(
         command(directory, "guest-kernel", guest_command(incus, project, "uname", "-a"), check=False)
         command(directory, "disk-before-image", guest_command(incus, project, "df", "-B1", "/var/lib/rancher/k3s/agent/containerd"), check=False)
         command(directory, "disk-before-image-du", guest_command(incus, project, "du", "-sx", "--block-size=1", f"/var/lib/rancher/k3s/agent/containerd/io.containerd.snapshotter.v1.{snapshotter}"), check=False)
-        command(directory, "guest-fixture-dirs", guest_command(incus, project, "mkdir", "-p", "/var/tmp/storage-probe/config", "/srv/media/library"))
+        command(directory, "guest-fixture-dirs", guest_command(incus, project, "mkdir", "-p", "/var/tmp/storage-probe/config", "/srv/media/data/library"))
         command(directory, "guest-fixture-config", guest_command(incus, project, "install", "-d", "-o", "751", "-g", "751", "/var/tmp/storage-probe/config"))
-        command(directory, "guest-fixture-media", guest_command(incus, project, "sh", "-c", "printf fixture > /srv/media/library/readme"))
+        command(directory, "guest-fixture-media", guest_command(incus, project, "sh", "-c", "printf fixture > /srv/media/data/library/readme"))
         for manifest in sorted(args.manifests.glob("*.yaml")):
             command(
                 directory,
