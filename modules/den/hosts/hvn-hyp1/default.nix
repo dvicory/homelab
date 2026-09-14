@@ -18,6 +18,7 @@ in
 
     settings = {
       core.nix.gc.enable = false;
+      disk.zfs.preserveNamespace = "household";
       virtualization.compute =
         { config, ... }:
         {
