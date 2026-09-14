@@ -257,8 +257,8 @@
                 }"
                 fixture_host.succeed(f"echo 'Replacement serial output ready' > {console}")
                 fixture_host.wait_for_console_text("Replacement serial output ready", timeout=10)
-                fixture_host.copy_from_host_via_shell("${scenario}", "/tmp/prod-home-replacement.py")
-                fixture_host.copy_from_host_via_shell("${smoke}", "/tmp/jellyfin_smoke.py")
+                fixture_host.copy_from_host("${scenario}", "/tmp/prod-home-replacement.py")
+                fixture_host.copy_from_host("${smoke}", "/tmp/jellyfin_smoke.py")
                 # The driver streams the VM console while execute waits for exit.
                 (status, _) = fixture_host.execute(
                     "python3 -u /tmp/prod-home-replacement.py"

@@ -92,10 +92,13 @@ jobs:
           extra_nix_config: |
             build-dir = /nix/build
             sandbox = relaxed
+          github_access_token: ${{ github.token }}
 
       - name: Install Nix on macOS
         if: runner.os == 'macOS'
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          github_access_token: ${{ github.token }}
 
       - name: Configure durable cache (read only)
         if: vars.CACHIX_CACHE != ''
@@ -126,7 +129,12 @@ jobs:
           else
             attr=".#ciJobs.$SYSTEM.$GROUP"
           fi
-          nix build -L --out-link "$RUNNER_TEMP/result" --keep-going "$attr"
+          # VM checks need the runner's resources, not a share of parallel builds.
+          build_args=(--keep-going)
+          if [ "$GROUP" = checks ]; then
+            build_args+=(--max-jobs 1)
+          fi
+          nix build -L --out-link "$RUNNER_TEMP/result" "${build_args[@]}" "$attr"
 
       - name: Upload successful check outputs
         if: matrix.group == 'checks'

@@ -28,6 +28,17 @@ let
           --request "$method" --header @auth.json --header 'Content-Type: application/json' \
           --dump-header headers --output response "$KANIDM_URL$path" "$@"
       }
+      api_optional_get() {
+        local path="$1" status
+        status=$(curl --silent --show-error --connect-timeout 10 --max-time 60 \
+          --request GET --header @auth.json --header 'Content-Type: application/json' \
+          --dump-header headers --output response --write-out '%{http_code}' "$KANIDM_URL$path")
+        case "$status" in
+          200) ;;
+          404) printf '%s' 'null' > response ;;
+          *) echo 'Kanidm lookup failed' >&2; return 1 ;;
+        esac
+      }
       : > auth.json
       printf '%s' '{"step":{"init":"idm_admin"}}' > request.json
       api POST /v1/auth --data-binary @request.json
@@ -47,7 +58,7 @@ let
 
       # Revoke before fallible person/client reconciliation. The provisioner
       # updates group membership last; a failure there must not retain grants.
-      api GET "/v1/group/$KANIDM_ADMIN_GROUP"
+      api_optional_get "/v1/group/$KANIDM_ADMIN_GROUP"
       jq -e --arg group "$KANIDM_ADMIN_GROUP" '. == null or .attrs.name == [$group]' response > /dev/null
       if jq -e '. != null' response > /dev/null; then
         printf '%s' '[]' > request.json

@@ -31,7 +31,7 @@ spec:
               value: /trust/ca.crt
             - name: CURL_CA_BUNDLE
               value: /trust/ca.crt
-          image: homelab/kanidm-provision:zh2wqlbrfxm50k46csghr0316n47vwi1
+          image: homelab/kanidm-provision:5qnb2mzwi4z0p5fc9qg4ygq14vdkg8lp
           imagePullPolicy: Never
           name: provision
           resources:

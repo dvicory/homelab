@@ -145,12 +145,13 @@ in
                 securityContext = security;
                 env.JELLYFIN_PublishedServerUrl = "https://${builtins.head route.hostnames}${prefix}";
                 probes = {
+                  # The temporary /health server must not enable liveness during startup.
                   startup = {
                     enabled = true;
                     custom = true;
                     spec = {
                       httpGet = {
-                        path = "${prefix}/health";
+                        path = "${prefix}/Users/Public";
                         port = 8096;
                       };
                       periodSeconds = 10;
@@ -162,7 +163,6 @@ in
                     enabled = true;
                     custom = true;
                     spec = {
-                      # /health also succeeds in Jellyfin's temporary startup server.
                       httpGet = {
                         path = "${prefix}/Users/Public";
                         port = 8096;

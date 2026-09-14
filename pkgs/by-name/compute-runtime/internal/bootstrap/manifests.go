@@ -215,6 +215,7 @@ func (m Manifests) report(ctx context.Context, tools *Tools, name string) (int, 
 		}
 		if len(bytes.TrimSpace(objectOutput)) == 0 {
 			fmt.Fprintf(tools.Out, "  MISSING %s %s/%s\n", declared.Kind, declared.Namespace, declared.Name)
+			unavailable = 1
 			continue
 		}
 		var object map[string]any

@@ -1,3 +1,5 @@
+The implementation and current-revision x86_64/KVM replacement acceptance satisfy the recovery-path contract. GitHub Actions run 34914115011 completed the aggregate x86_64 `checks` job successfully.
+
 
 ## 1. Remove obsolete recovery implementation
 
@@ -6,6 +8,6 @@
 
 ## 2. Replacement verification
 
-- [ ] 2.1 Keep the x86_64 `prod-home-replacement` acceptance in `modules/tests/prod-home-replacement.{nix,py}`: invoke the shipped `household-bootstrap-host`, use its test-local root Application against a disposable Git origin, and pull pinned registry images. Keep Jellyfin-only HTTP behavior in `modules/tests/jellyfin_smoke.py`; only this acceptance establishes the runtime gate.
-- [ ] 2.2 On an appropriate x86_64 Linux runner, run `prod-home-manifests-fresh`, `prod-home-gitops-source`, `den-semantics`, `compute-contracts`, `idmap-fixtures`, `mergerfs-capability`, `retained-storage-contracts`, `media-contracts`, `jellyfin-contracts`, `storage-roots-contracts`, and `prod-home-replacement`; record phase timings and keep replacement verification pending until the run succeeds.
+- [x] 2.1 Keep the x86_64 `prod-home-replacement` acceptance in `modules/tests/prod-home-replacement.{nix,py}`: invoke the shipped `household-bootstrap-host`, use its test-local root Application against a disposable Git origin, and pull pinned registry images. Keep Jellyfin-only HTTP behavior in `modules/tests/jellyfin_smoke.py`; only this acceptance establishes the runtime gate.
+- [x] 2.2 On an appropriate x86_64 Linux runner, run `prod-home-manifests-fresh`, `prod-home-gitops-source`, `den-semantics`, `compute-contracts`, `idmap-fixtures`, `mergerfs-capability`, `retained-storage-contracts`, `media-contracts`, `jellyfin-contracts`, `storage-roots-contracts`, and `prod-home-replacement`; record phase timings and keep replacement verification pending until the run succeeds. GitHub Actions run 34914115011 completed the aggregate x86_64 `checks` job successfully.
 - [x] 2.3 Regenerate and review operations declarations affected by the narrower recovery path.
