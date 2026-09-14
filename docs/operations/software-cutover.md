@@ -1,8 +1,8 @@
 # Household software cutover
 
-Status: preparation only. Production deployment is not authorized. No
-successful `prod-home-replacement` acceptance or measured healthy runtime is
-recorded here; complete the current acceptance before scheduling this cutover.
+Status: preparation only. The disposable x86_64/KVM recovery acceptance passed;
+production inspection and deployment remain separately authorized. The result
+below does not establish that `hvn-hyp1` is ready for this cutover.
 The repository desired state for this cutover keeps media1–media3 on their
 existing gocryptfs providers. That is transitional until the software cutover
 is proven, not the target LUKS2/XFS bulk-media state. This procedure does not
@@ -11,10 +11,10 @@ provision media4, convert filesystems, or migrate media ownership.
 ## Release gate
 
 - Select one immutable revision with current generated manifests and passing
-  checks. This is a gate for a future run, not a current acceptance result.
-  Record the Linux replacement run URL, actual duration, phase timings, and
-  media-return observations. A successful evaluation or a cached `.drv` file
-  is not an executed acceptance test.
+  checks. Record the Linux replacement run URL, actual duration, phase timings, and
+  media-return observations. The recorded acceptance covers its named revision,
+  not future changes. A successful evaluation or a cached `.drv` file is not
+  an executed acceptance test.
 - Review [generated operations](../operations.md) for current paths, routes,
   retained-state ownership and secret references. Review the canonical manifest
   diff before merging: `main` is the production Argo desired-state branch.
@@ -50,6 +50,43 @@ and bootstrap output. Kernel activity alone does not establish progress or pass.
 While bootstrap waits, bounded read-only snapshots show Argo pods/events, the
 Redis-init Job log, and active image downloads. Bootstrap has a one-hour
 process-group deadline with a 30-second forced-kill grace.
+
+### Recorded recovery acceptance
+
+[Run 34827468677](https://github.com/dvicory/homelab/actions/runs/34827468677)
+passed on 2026-09-14 at revision
+`dfda4c03c12f1b0492cb65fee26f4af0267dcfae`. The x86_64/KVM job executed
+`/nix/store/6ijlwnkj1ihvakhq8cnxkcl8ga1bizy1-vm-test-run-prod-home-replacement.drv`.
+
+| Observed interval | Duration |
+| --- | --- |
+| Entire CI job | 35m53s |
+| Build-step preparation before the VM derivation started | 14m27s |
+| Fixture VM startup | 93.16s |
+| Subsequent wait for fixture Incus | 18.07s |
+| Complete replacement scenario, including cleanup | 1127.58s |
+| Initial guest creation and K3s readiness | 117.87s |
+| First bootstrap, registry pulls, and Argo reconciliation | 148.86s |
+| Media loss and return | 37.33s |
+| Guest replacement and K3s readiness | 165.26s |
+| Second bootstrap, registry pulls, and Argo reconciliation | 144.95s |
+
+The bootstrap command itself took 68.81s initially and 65.71s after replacement;
+those intervals are included in the corresponding reconciliation phases.
+Guest root and K3s state were recreated. Authentication, indexed media, recorded
+playback, retained bytes/ownership, credential inputs, unrelated workload
+availability, private endpoint denials, and Jellyfin's read-only mount passed.
+
+Existing Jellyfin and writer-probe containers did not see the remounted media.
+A fresh Jellyfin pod read it without restarting the node. A separate reboot
+without media kept Jellyfin unavailable throughout the 180-second observation
+while CoreDNS answered live probes. Argo self-healing also preserved application
+state; test access was re-established after replacing its target pod.
+
+This uses file-backed ZFS, temporary media branches, disposable credentials,
+and a local Git origin containing canonical Jellyfin manifests. It does not
+prove physical storage unlock, gocryptfs startup, production DNS/TLS/ingress,
+GPU support, every household application, or recovery from host loss.
 
 ## Fast runtime checks
 

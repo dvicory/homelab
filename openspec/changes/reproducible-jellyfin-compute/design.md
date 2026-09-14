@@ -32,9 +32,10 @@ Nix/Den owns concrete configuration. Operational steps live in the
 - Use K3s with SQLite and its bundled Flannel/kube-proxy networking. Root inside
   the outer user namespace is not K3s's separate rootless launcher. Avoid a
   second containerd service or CNI without a demonstrated requirement.
-- Start with the native snapshotter to avoid assuming overlay/FUSE compatibility
-  on the backing filesystem. This costs disk space and unpack speed; it is not
-  a fleet-wide policy or a hard per-instance disk quota.
+- Use the standard overlayfs snapshotter on the ZFS-backed Incus root. Native
+  snapshot copying repeatedly exceeded containerd unpack deadlines in the x86
+  fixture. Keep filesystem compatibility and the unchanged isolation boundary
+  covered by the Linux storage and replacement checks; this is not fleet policy.
 - Use a fixed non-root host ID translation so ownership survives deletion. This
   avoids assuming idmapped-mount support through mergerfs/gocryptfs. Check for
   collisions; do not recursively change existing data ownership.
@@ -102,9 +103,10 @@ The executable replacement acceptance is
 `modules/tests/prod-home-replacement.nix`
 (`checks.prod-home-replacement`), driven by
 `modules/tests/prod-home-replacement.py`; it delegates application behavior to
-`modules/tests/jellyfin_smoke.py`. Its x86_64 Linux runtime has not yet
-established acceptance. The configured four-hour timeout is a safety ceiling,
-not a measured runtime.
+`modules/tests/jellyfin_smoke.py`. The x86_64/KVM acceptance passed at revision
+`dfda4c03c12f1b0492cb65fee26f4af0267dcfae`; the scenario took 1127.58 seconds.
+The [recorded result](../../../docs/operations/software-cutover.md#recorded-recovery-acceptance)
+contains the run URL, phase timings, media-return observations, and fixture limits.
 
 Run it on an appropriate x86_64/KVM runner and record derivation/build
 preparation, fixture-host startup, compute guest creation, registry image
