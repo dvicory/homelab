@@ -2,7 +2,6 @@
   config,
   inputs,
   lib,
-  self,
   ...
 }:
 let
@@ -15,14 +14,21 @@ let
       evaluated = genMerge.evalModuleTree {
         modules = [
           {
+            options.slots = schemaLib.mkInstanceRegistry config.den.schema."preserve-slot" {
+              refs.suggestedPolicy = evaluated.config.policies;
+              extraModules = [ { config._identity.keys = [ "slotId" ]; } ];
+            };
             options.states = schemaLib.mkInstanceRegistry config.den.schema."preserve-state" {
+              refs = {
+                slot = evaluated.config.slots;
+                explicitPolicy = evaluated.config.policies;
+                selectorPolicies = evaluated.config.policies;
+              };
               extraModules = [ { config._identity.keys = [ "stateId" ]; } ];
             };
-            options.targets = schemaLib.mkInstanceRegistry config.den.schema."preserve-target" {
-              extraModules = [ { config._identity.keys = [ "targetId" ]; } ];
-            };
-            options.integrations = schemaLib.mkInstanceRegistry config.den.schema."preserve-integration" {
-              extraModules = [ { config._identity.keys = [ "integrationId" ]; } ];
+            options.policies = schemaLib.mkInstanceRegistry config.den.schema."preserve-policy" {
+              refs.routes = evaluated.config.routes;
+              extraModules = [ { config._identity.keys = [ "policyId" ]; } ];
             };
             options.routes = schemaLib.mkInstanceRegistry config.den.schema."preserve-route" {
               refs = {
@@ -31,17 +37,31 @@ let
               };
               extraModules = [ { config._identity.keys = [ "routeId" ]; } ];
             };
+            options.targets = schemaLib.mkInstanceRegistry config.den.schema."preserve-target" {
+              extraModules = [ { config._identity.keys = [ "targetId" ]; } ];
+            };
+            options.integrations = schemaLib.mkInstanceRegistry config.den.schema."preserve-integration" {
+              extraModules = [ { config._identity.keys = [ "integrationId" ]; } ];
+            };
             config = {
+              slots = declarations.slots or { };
               states = declarations.states or { };
+              policies = declarations.policies or { };
+              routes = declarations.routes or { };
               targets = declarations.targets or { };
               integrations = declarations.integrations or { };
-              routes = declarations.routes or { };
             };
           }
         ];
       };
     in
     evaluated.config;
+
+  emptySource = {
+    subpath = null;
+    include = [ ];
+    exclude = [ ];
+  };
 
   compile =
     declarations: realizationSpecs:
@@ -51,142 +71,140 @@ let
         state = evaluated.states.${spec.state};
         realization = spec.realization;
       }) realizationSpecs;
+      bindings = map (
+        spec:
+        spec
+        // {
+          state = evaluated.states.${spec.state};
+          route = evaluated.routes.${spec.route};
+          integration = if spec ? integration then evaluated.integrations.${spec.integration} else null;
+          source = spec.source or emptySource;
+          nativeOverrides = spec.nativeOverrides or { };
+        }
+      ) (declarations.bindings or [ ]);
+      integrationTargets = map (
+        spec:
+        spec
+        // {
+          integration = evaluated.integrations.${spec.integration};
+          target = evaluated.targets.${spec.target};
+          native = spec.native or { };
+        }
+      ) (declarations.integrationTargets or [ ]);
     in
     config.fleet.preserve.compile {
-      inherit realizations;
+      inherit realizations bindings integrationTargets;
       inherit (evaluated)
         states
+        slots
+        policies
+        routes
         targets
         integrations
-        routes
         ;
-      slots = declarations.slots or { };
-      policies = declarations.policies or { };
       scratchDestinations = declarations.scratchDestinations or { };
+      projectors = declarations.projectors or config.fleet.preserve.projectors;
+      fixtureOnly = declarations.fixtureOnly or true;
     };
 
   throws = value: !(builtins.tryEval (builtins.deepSeq value true)).success;
 
   boundary = {
-    locator = "/srv/app";
     recursive = false;
     requiredChildren = [ ];
     exclusions = [ ];
-    consistency = "filesystem";
   };
 
-  realization = {
-    kind = "host-filesystem";
-    host = "fixture";
-    locator = "/srv/app";
+  zfsRealization = {
+    kind = "zfs-dataset";
+    owner = {
+      kind = "host";
+      id = "fixture";
+    };
+    locator = "source/app";
     path = "/srv/app";
-    package = "/nix/store/application";
-    applicationVersion = "1.0";
-    capabilities = [ "stable-capture" ];
+    capabilities = [
+      "filesystem-read"
+      "zfs-snapshot"
+      "zfs-send"
+    ];
     inherit boundary;
+    access = [ ];
+    physicalBacking = null;
   };
 
   realizationSpec = {
     state = "application";
-    inherit realization;
+    realization = zfsRealization;
   };
 
   slot = {
-    consistency = "filesystem";
-    restoreSemantics = "scratch-only";
-    suggestedPolicy = "protected";
-    caveats = [ "filesystem consistency only" ];
+    slotId = "application-data";
+    dataKind = "application";
+    requiredConsistency = "live";
+    requiredFidelity = [ "posix-filesystem" ];
+    acceptedPayloadFormats = [ ];
   };
 
   state = {
     stateId = "application/prod";
-    slotId = "application-data";
+    slot = "application-data";
     mode = "enabled";
     explicitPolicy = "protected";
     selectorPolicies = [ ];
   };
 
   target = {
-    targetId = "shared-archive";
-    kind = "archive";
-    locator = "/archive/application";
-    ownerData = { };
-  };
-
-  zreplNative = {
-    connect = {
-      type = "local";
-      listener_name = "fixture-sink";
-      client_identity = "fixture-client";
-    };
-    snapshotting = {
-      type = "periodic";
-      prefix = "zrepl_";
-      interval = "1h";
-    };
-    pruning = {
-      keep_sender = [
-        {
-          type = "last_n";
-          count = 12;
-        }
-      ];
-      keep_receiver = [
-        {
-          type = "last_n";
-          count = 24;
-        }
-      ];
+    targetId = "house-backup";
+    failureDomain = {
+      site = "fixture";
+      domain = "one-domain";
     };
   };
 
-  resticNative = {
-    paths = [ "/srv/app" ];
-    exclude = [ "/srv/app/cache" ];
-    repository = "/archive/application";
-    passwordFile = "/run/credentials/restic-password";
-    environmentFile = null;
-    timerConfig = {
-      OnCalendar = "hourly";
-      Persistent = true;
-    };
-    pruneOpts = [ "--keep-daily 7" ];
-    checkOpts = [ "--read-data-subset=1/7" ];
-    runCheck = true;
-    createWrapper = true;
+  mkIntegration =
+    integrationId: owner: extra:
+    {
+      inherit integrationId owner;
+      adapter = "/nix/store/${integrationId}/bin/${integrationId}";
+      fixtureOnly = true;
+      operations = [ "run" ];
+      payloadRepresentation = "posix-filesystem";
+    }
+    // extra;
+
+  zreplIntegration = mkIntegration "zrepl" "zrepl" {
+    dataKinds = [ "application" ];
+    requiredSourceCapabilities = [
+      "zfs-snapshot"
+      "zfs-send"
+    ];
+    guaranteedConsistency = "filesystem";
+    fidelityGuarantees = [
+      "posix-filesystem"
+      "zfs-dataset"
+    ];
+    nativePointRepresentations = [
+      "openzfs.snapshot"
+      "openzfs.send-stream"
+    ];
+    realizationKindConstraints = [ "zfs-dataset" ];
   };
 
-  source = {
-    locator = "/srv/app";
-    recursive = false;
-    includes = [ ];
-    exclusions = [ ];
-  };
-
-  binding = native: {
-    targetId = "shared-archive";
-    inherit source native;
-  };
-
-  integration = integrationId: owner: bindings: {
-    inherit integrationId owner bindings;
-    adapter = "/nix/store/${integrationId}/bin/${integrationId}";
-    fixtureOnly = true;
-    operations = [ "run" ];
-    realizationKinds = [ "host-filesystem" ];
-    targetKinds = [ "archive" ];
+  resticIntegration = mkIntegration "nixos-restic" "restic" {
+    dataKinds = [ "*" ];
+    requiredSourceCapabilities = [ "filesystem-read" ];
+    guaranteedConsistency = "live";
+    fidelityGuarantees = [ "posix-filesystem" ];
+    nativePointRepresentations = [ "restic.snapshot/v1" ];
+    realizationKindConstraints = [ ];
   };
 
   common = {
     slots.application-data = slot;
     states.application = state;
-    targets.shared = target;
-    scratchDestinations.fixture = {
-      nativeParent = "scratch/root";
-      mountRoot = "/scratch";
-    };
     policies.protected = {
-      disposable = false;
+      policyId = "protected";
       routes = [
         "route-zrepl"
         "route-restic"
@@ -199,29 +217,111 @@ let
         integration = "zrepl";
         operation = "run";
         requiredConsistency = "filesystem";
-        requiredFidelity = "filesystem";
+        requiredFidelity = [ "zfs-dataset" ];
       };
       route-restic = {
         routeId = "route-restic";
         target = "shared";
         integration = "restic";
         operation = "run";
-        requiredConsistency = "filesystem";
-        requiredFidelity = "filesystem";
+        requiredConsistency = "live";
+        requiredFidelity = [ "posix-filesystem" ];
       };
     };
+    targets.shared = target;
     integrations = {
-      zrepl = integration "zrepl-fixture" "zrepl" {
-        "application/prod::route-zrepl" = binding zreplNative;
-      };
-      restic = integration "restic-fixture" "nixos-restic" {
-        "application/prod::route-restic" = binding resticNative;
-      };
+      zrepl = zreplIntegration;
+      restic = resticIntegration;
+    };
+    integrationTargets = [
+      {
+        integration = "zrepl";
+        target = "shared";
+        native.zrepl = {
+          connect = {
+            type = "local";
+            listener_name = "fixture-sink";
+            client_identity = "fixture-client";
+          };
+          snapshotting = {
+            type = "periodic";
+            prefix = "zrepl_";
+            interval = "1h";
+          };
+          pruning = {
+            keep_sender = [
+              {
+                type = "last_n";
+                count = 12;
+              }
+            ];
+            keep_receiver = [
+              {
+                type = "last_n";
+                count = 24;
+              }
+            ];
+          };
+        };
+      }
+      {
+        integration = "restic";
+        target = "shared";
+        native.restic = {
+          target = {
+            repository = "/archive/application";
+            passwordFile = "/run/credentials/restic-password";
+          };
+          timerConfig = {
+            OnCalendar = "hourly";
+            Persistent = true;
+          };
+          pruneOpts = [ "--keep-daily 7" ];
+          checkOpts = [ "--read-data-subset=1/7" ];
+          runCheck = true;
+        };
+      }
+    ];
+    scratchDestinations.fixture = {
+      nativeParent = "scratch/root";
+      mountRoot = "/scratch";
     };
   };
 
   resolvedEvaluated = evaluate common;
   resolved = compile common [ realizationSpec ];
+
+  singleRoute =
+    overrides:
+    lib.recursiveUpdate common (
+      {
+        policies.protected.routes = [ "route-zrepl" ];
+      }
+      // overrides
+    );
+
+  # The mutable Restic traversal candidate guarantees only `live` and cannot
+  # satisfy a StateSlot that requires `filesystem`.
+  weakResticDeclarations = lib.recursiveUpdate common {
+    slots.application-data.requiredConsistency = "filesystem";
+    policies.protected.routes = [ "route-restic" ];
+    routes.route-restic.requiredConsistency = "filesystem";
+  };
+  weakRestic = compile weakResticDeclarations [ realizationSpec ];
+
+  # An owner-managed Restic profile that explicitly guarantees `filesystem`
+  # satisfies the same route.
+  strongResticDeclarations = lib.recursiveUpdate weakResticDeclarations {
+    integrations.restic.guaranteedConsistency = "filesystem";
+  };
+  strongRestic = compile strongResticDeclarations [ realizationSpec ];
+
+  weakRouteConsistencyDeclarations = lib.recursiveUpdate common {
+    slots.application-data.requiredConsistency = "filesystem";
+    policies.protected.routes = [ "route-zrepl" ];
+    routes.route-zrepl.requiredConsistency = "live";
+  };
+  weakRouteConsistency = compile weakRouteConsistencyDeclarations [ realizationSpec ];
 
   ambiguousDeclarations = lib.recursiveUpdate common {
     policies.protected.routes = [ "route-auto" ];
@@ -230,19 +330,26 @@ let
       target = "shared";
       integration = null;
       operation = "run";
-      requiredConsistency = "filesystem";
-      requiredFidelity = "filesystem";
-    };
-    integrations = {
-      zrepl.bindings."application/prod::route-auto" = binding zreplNative;
-      restic.bindings."application/prod::route-auto" = binding resticNative;
+      requiredConsistency = "live";
+      requiredFidelity = [ "posix-filesystem" ];
     };
   };
   ambiguous = compile ambiguousDeclarations [ realizationSpec ];
-  selectedAmbiguousDeclarations = lib.recursiveUpdate ambiguousDeclarations {
+  selectedAmbiguous = compile (lib.recursiveUpdate ambiguousDeclarations {
     routes.route-auto.integration = "zrepl";
-  };
-  selectedAmbiguous = compile selectedAmbiguousDeclarations [ realizationSpec ];
+  }) [ realizationSpec ];
+  bindingSelected = compile (
+    ambiguousDeclarations
+    // {
+      bindings = [
+        {
+          state = "application";
+          route = "route-auto";
+          integration = "zrepl";
+        }
+      ];
+    }
+  ) [ realizationSpec ];
 
   oneOwnerDeclarations = lib.recursiveUpdate common {
     policies.protected.routes = [
@@ -256,7 +363,7 @@ let
         integration = "zrepl";
         operation = "run";
         requiredConsistency = "filesystem";
-        requiredFidelity = "filesystem";
+        requiredFidelity = [ "zfs-dataset" ];
       };
       route-b = {
         routeId = "route-b";
@@ -264,115 +371,171 @@ let
         integration = "zrepl";
         operation = "run";
         requiredConsistency = "filesystem";
-        requiredFidelity = "filesystem";
+        requiredFidelity = [ "zfs-dataset" ];
       };
-    };
-    integrations.zrepl.bindings = {
-      "application/prod::route-a" = binding zreplNative;
-      "application/prod::route-b" = binding zreplNative;
     };
   };
   oneOwner = compile oneOwnerDeclarations [ realizationSpec ];
 
-  singleRoute =
-    overrides:
-    lib.recursiveUpdate common (
-      {
-        policies.protected.routes = [ "route-zrepl" ];
-      }
-      // overrides
-    );
-
-  missingTargetDeclarations =
-    (singleRoute {
-      routes.route-zrepl = {
-        target = null;
-        integration = null;
-      };
-    })
-    // {
-      integrations = { };
+  missingTargetDeclarations = singleRoute {
+    routes.route-zrepl = {
+      target = null;
+      integration = null;
     };
+  };
   missingTarget = compile missingTargetDeclarations [ realizationSpec ];
 
-  uncoveredRealization = realization // {
+  uncoveredRealization = zfsRealization // {
     boundary = boundary // {
       requiredChildren = [ "/srv/app/database" ];
     };
   };
-  uncoveredDeclarations = singleRoute {
-    integrations.zrepl.bindings."application/prod::route-zrepl".source = source;
-  };
-  uncovered = compile uncoveredDeclarations [
+  uncovered = compile (singleRoute { }) [
     {
       state = "application";
       realization = uncoveredRealization;
     }
   ];
 
-  excludedDeclarations = singleRoute {
-    integrations.zrepl.bindings."application/prod::route-zrepl".source = source // {
+  coveredRealization = zfsRealization // {
+    boundary = boundary // {
       recursive = true;
-      exclusions = [ "/srv/app/database" ];
+      requiredChildren = [ "/srv/app/database" ];
     };
   };
-  excluded = compile excludedDeclarations [
-    {
-      state = "application";
-      realization = uncoveredRealization;
-    }
-  ];
+  excluded =
+    compile
+      (singleRoute {
+        bindings = [
+          {
+            state = "application";
+            route = "route-zrepl";
+            source.exclude = [ "/srv/app/database" ];
+          }
+        ];
+      })
+      [
+        {
+          state = "application";
+          realization = coveredRealization;
+        }
+      ];
 
-  unsupportedOperationDeclarations = singleRoute {
+  unsupportedOperation = compile (singleRoute {
     routes.route-zrepl.operation = "restore";
-  };
-  unsupportedOperation = compile unsupportedOperationDeclarations [ realizationSpec ];
+  }) [ realizationSpec ];
 
-  unsupportedRealization = compile (singleRoute { }) [
-    {
-      state = "application";
-      realization = realization // {
-        kind = "microvm-storage";
-      };
-    }
-  ];
+  unsupportedCapability = compile (singleRoute {
+    integrations.zrepl.requiredSourceCapabilities = [ "zfs-receive" ];
+  }) [ realizationSpec ];
 
-  zeroOwnerDeclarations =
-    (singleRoute {
-      routes.route-zrepl.integration = null;
-    })
-    // {
-      integrations = { };
-    };
-  zeroOwner = compile zeroOwnerDeclarations [ realizationSpec ];
+  unsupportedKind = compile (singleRoute {
+    integrations.zrepl.realizationKindConstraints = [ "host-path" ];
+  }) [ realizationSpec ];
 
-  targetMismatchDeclarations = singleRoute {
-    integrations.zrepl.bindings."application/prod::route-zrepl".targetId = "different-target";
-  };
-  targetMismatch = compile targetMismatchDeclarations [ realizationSpec ];
+  unsupportedDataKind = compile (singleRoute {
+    integrations.zrepl.dataKinds = [ "database" ];
+  }) [ realizationSpec ];
 
-  missingBindingBase = singleRoute { };
-  missingBindingDeclarations = missingBindingBase // {
-    integrations = missingBindingBase.integrations // {
-      zrepl = missingBindingBase.integrations.zrepl // {
-        bindings = { };
-      };
-    };
-  };
-  missingBinding = compile missingBindingDeclarations [ realizationSpec ];
+  unsupportedFidelity = compile (singleRoute {
+    routes.route-zrepl.requiredFidelity = [ "application-quiesced" ];
+  }) [ realizationSpec ];
 
-  missingRouteDeclarations = lib.recursiveUpdate common {
-    policies.protected.routes = [ "absent-route" ];
-  };
-  missingRoute = compile missingRouteDeclarations [ realizationSpec ];
+  unsupportedPayload = compile (singleRoute {
+    slots.application-data.acceptedPayloadFormats = [ "sql-dump" ];
+    integrations.zrepl.payloadRepresentation = "sql-dump";
+  }) [ realizationSpec ];
+  mismatchedPayload = compile (singleRoute {
+    slots.application-data.acceptedPayloadFormats = [ "sql-dump" ];
+    integrations.zrepl.payloadRepresentation = null;
+  }) [ realizationSpec ];
 
-  missingRealization = compile common [ ];
-  duplicateRealization = compile common [
-    realizationSpec
-    realizationSpec
-  ];
+  zeroOwner = compile (lib.recursiveUpdate (singleRoute {
+    routes.route-zrepl.integration = null;
+  }) { integrationTargets = [ ]; }) [ realizationSpec ];
 
-  collisionDeclarations = lib.recursiveUpdate common {
+  missingWiring = compile (singleRoute {
+    integrationTargets = [
+      {
+        integration = "restic";
+        target = "shared";
+      }
+    ];
+  }) [ realizationSpec ];
+
+  duplicateWiring = compile (singleRoute {
+    integrationTargets = [
+      {
+        integration = "zrepl";
+        target = "shared";
+      }
+      {
+        integration = "zrepl";
+        target = "shared";
+      }
+    ];
+  }) [ realizationSpec ];
+
+  duplicateBinding = compile (singleRoute {
+    bindings = [
+      {
+        state = "application";
+        route = "route-zrepl";
+      }
+      {
+        state = "application";
+        route = "route-zrepl";
+      }
+    ];
+  }) [ realizationSpec ];
+
+  contradictoryBinding = compile (singleRoute {
+    bindings = [
+      {
+        state = "application";
+        route = "route-zrepl";
+        integration = "restic";
+      }
+    ];
+  }) [ realizationSpec ];
+
+  forbiddenOverride = compile (singleRoute {
+    bindings = [
+      {
+        state = "application";
+        route = "route-zrepl";
+        nativeOverrides.paths = [ "/srv/app" ];
+      }
+    ];
+  }) [ realizationSpec ];
+
+  forbiddenSharedNative = compile (singleRoute {
+    integrationTargets = [
+      {
+        integration = "zrepl";
+        target = "shared";
+        native.target = "backup/receive";
+      }
+    ];
+  }) [ realizationSpec ];
+
+  narrowed = compile (singleRoute {
+    policies.protected.routes = [ "route-restic" ];
+    bindings = [
+      {
+        state = "application";
+        route = "route-restic";
+        source = {
+          subpath = "db";
+          include = [ "/srv/app/extra" ];
+          exclude = [ "/srv/app/tmp" ];
+        };
+        nativeOverrides.restic.tags = [ "edge" ];
+      }
+    ];
+  }) [ realizationSpec ];
+
+  collisionDeclarations = singleRoute {
     policies.protected.routes = [
       "route-zrepl"
       "route-zrepl"
@@ -380,14 +543,194 @@ let
   };
   collision = compile collisionDeclarations [ realizationSpec ];
 
-  invalidReferenceDeclarations = lib.recursiveUpdate common {
+  invalidReferenceDeclarations = singleRoute {
     routes.route-zrepl.target = "absent-target";
   };
+
+  invalidSlotFieldDeclarations = {
+    slots.application-data = slot // {
+      nativePointRepresentations = [ "restic.snapshot/v1" ];
+      caveats = [ "removed field" ];
+    };
+  };
+
+  invalidRouteFieldDeclarations = lib.recursiveUpdate common {
+    routes.route-zrepl.requiredNativePointRepresentations = [ "openzfs.snapshot" ];
+  };
+
+  invalidTargetFieldDeclarations = lib.recursiveUpdate common {
+    targets.shared.purpose = "fixture recovery";
+  };
+
+  invalidIntegrationFieldDeclarations = lib.recursiveUpdate common {
+    integrations.zrepl = zreplIntegration // {
+      realizationKinds = [ "zfs-dataset" ];
+      explicitScratch = true;
+      acceptedPayloadFormats = [ "sql-dump" ];
+    };
+  };
+
+  authoritativeBacking = compile common [
+    {
+      state = "application";
+      realization = zfsRealization // {
+        physicalBacking = {
+          authoritative = false;
+          kind = "kubernetes-local-volume";
+        };
+      };
+    }
+  ];
+
+  emptyFailureDomain = compile (
+    common
+    // {
+      targets = common.targets // {
+        shared = target // {
+          failureDomain = { };
+        };
+      };
+    }
+  ) [ realizationSpec ];
+
+  malformedRealization = compile common [
+    {
+      state = "application";
+      realization = removeAttrs zfsRealization [ "access" ];
+    }
+  ];
+
+  malformedOwner = compile common [
+    {
+      state = "application";
+      realization = zfsRealization // {
+        owner = {
+          kind = "host";
+        };
+      };
+    }
+  ];
+
+  foreignEvaluated = evaluate {
+    integrations.alien = mkIntegration "alien" "alien" {
+      dataKinds = [ "*" ];
+      requiredSourceCapabilities = [ ];
+      guaranteedConsistency = "live";
+      fidelityGuarantees = [ ];
+      nativePointRepresentations = [ "alien/v1" ];
+      realizationKindConstraints = [ ];
+    };
+  };
+
+  foreignCompile =
+    bindings: integrationTargets:
+    config.fleet.preserve.compile {
+      inherit (resolvedEvaluated)
+        states
+        slots
+        policies
+        routes
+        targets
+        integrations
+        ;
+      inherit bindings integrationTargets;
+      scratchDestinations = { };
+      realizations = [
+        {
+          state = resolvedEvaluated.states.application;
+          realization = zfsRealization;
+        }
+      ];
+      projectors = { };
+      fixtureOnly = true;
+    };
+
+  foreignWiring =
+    foreignCompile
+      [ ]
+      [
+        {
+          integration = foreignEvaluated.integrations.alien;
+          target = resolvedEvaluated.targets.shared;
+          native = { };
+        }
+      ];
+
+  foreignBinding =
+    foreignCompile
+      [
+        {
+          state = resolvedEvaluated.states.application;
+          route = resolvedEvaluated.routes.route-zrepl;
+          integration = foreignEvaluated.integrations.alien;
+          source = emptySource;
+          nativeOverrides = { };
+        }
+      ]
+      [ ];
+
+  nativelessWiring = compile (singleRoute {
+    integrationTargets = [
+      {
+        integration = "zrepl";
+        target = "shared";
+      }
+    ];
+  }) [ realizationSpec ];
+
+  uncredentialedRestic = compile (singleRoute {
+    policies.protected.routes = [ "route-restic" ];
+    integrationTargets = [
+      {
+        integration = "restic";
+        target = "shared";
+        native.restic = { };
+      }
+    ];
+  }) [ realizationSpec ];
+
+  dualRepositoryRestic = compile (singleRoute {
+    policies.protected.routes = [ "route-restic" ];
+    integrationTargets = [
+      {
+        integration = "restic";
+        target = "shared";
+        native.restic.target = {
+          repository = "/archive/application";
+          repositoryFile = "/run/secrets/restic-repository";
+          passwordFile = "/run/credentials/restic-password";
+        };
+      }
+    ];
+  }) [ realizationSpec ];
+
+  nonFixtureExecutable = compile (
+    common
+    // {
+      fixtureOnly = false;
+    }
+  ) [ realizationSpec ];
 
   planOnlyIncompleteDeclarations = lib.recursiveUpdate missingTargetDeclarations {
     states.application.mode = "plan-only";
   };
   planOnlyIncomplete = compile planOnlyIncompleteDeclarations [ realizationSpec ];
+
+  missingRealization = compile common [ ];
+  duplicateRealization = compile common [
+    realizationSpec
+    realizationSpec
+  ];
+
+  missingPolicyDeclarations = lib.recursiveUpdate common {
+    states.application.explicitPolicy = null;
+  };
+  missingPolicy = compile missingPolicyDeclarations [ realizationSpec ];
+
+  invalidDisposableDeclarations = lib.recursiveUpdate common {
+    policies.protected.disposable = true;
+  };
+  invalidDisposable = compile invalidDisposableDeclarations [ realizationSpec ];
 
   policyDeclarations = {
     slots.application-data = slot // {
@@ -395,18 +738,22 @@ let
     };
     policies = {
       explicit-policy = {
+        policyId = "explicit-policy";
         disposable = true;
         routes = [ ];
       };
       selector-policy = {
+        policyId = "selector-policy";
         disposable = true;
         routes = [ ];
       };
       slot-policy = {
+        policyId = "slot-policy";
         disposable = true;
         routes = [ ];
       };
       other-selector = {
+        policyId = "other-selector";
         disposable = true;
         routes = [ ];
       };
@@ -446,46 +793,170 @@ let
   };
   policySpecs = map (name: {
     state = name;
-    inherit realization;
+    realization = zfsRealization;
   }) (builtins.attrNames policyDeclarations.states);
   policies = compile policyDeclarations policySpecs;
 
-  platformKinds = [
-    "host-filesystem"
-    "incus-storage"
-    "kubernetes-host-path"
-    "kubernetes-pvc"
-    "microvm-storage"
-    "postgresql"
+  platformSpecs = [
+    {
+      state = "container";
+      realization = zfsRealization // {
+        kind = "container-rootfs";
+        access = [
+          {
+            kind = "container";
+            name = "application";
+          }
+        ];
+      };
+    }
+    {
+      state = "incus";
+      realization = zfsRealization // {
+        kind = "incus-local-volume";
+        access = [
+          {
+            kind = "incus";
+            instance = "database";
+            device = "data";
+          }
+        ];
+      };
+    }
+    {
+      state = "kube-pv";
+      realization = zfsRealization // {
+        kind = "kubernetes-local-volume";
+        access = [
+          {
+            kind = "kubernetes-local-pv";
+            hostPath = "/var/lib/application";
+          }
+          {
+            kind = "kubernetes-host-path";
+            hostPath = "/srv/application";
+          }
+        ];
+      };
+    }
+    {
+      state = "kube-pvc";
+      realization = zfsRealization // {
+        kind = "csi-pvc";
+        access = [
+          {
+            kind = "kubernetes-pvc";
+            claim = "data-application";
+          }
+        ];
+      };
+    }
+    {
+      state = "microvm";
+      realization = zfsRealization // {
+        kind = "microvm-share";
+        access = [
+          {
+            kind = "microvm";
+            share = "state";
+          }
+          {
+            kind = "microvm";
+            volume = "state-volume";
+          }
+        ];
+      };
+    }
   ];
   platformDeclarations = {
     slots.application-data = slot // {
       suggestedPolicy = "disposable";
     };
     policies.disposable = {
+      policyId = "disposable";
       disposable = true;
       routes = [ ];
     };
     states = builtins.listToAttrs (
-      map (kind: {
-        name = kind;
+      map (spec: {
+        name = spec.state;
         value = state // {
-          stateId = "platform/${kind}";
+          stateId = "platform/${spec.state}";
           mode = "plan-only";
           explicitPolicy = "disposable";
         };
-      }) platformKinds
+      }) platformSpecs
     );
   };
-  platformSpecs = map (kind: {
-    state = kind;
-    realization = realization // {
-      inherit kind;
-    };
-  }) platformKinds;
   platforms = compile platformDeclarations platformSpecs;
 
+  postgresDeclarations = {
+    slots.database = slot // {
+      slotId = "database";
+      dataKind = "database";
+      requiredFidelity = [ ];
+    };
+    policies.protected = {
+      policyId = "protected";
+      routes = [ "route-probe" ];
+    };
+    routes.route-probe = {
+      routeId = "route-probe";
+      target = "shared";
+      integration = "prober";
+      operation = "run";
+    };
+    targets.shared = target;
+    integrations.prober = mkIntegration "filesystem-prober" "fixture" {
+      dataKinds = [ "database" ];
+      requiredSourceCapabilities = [ "filesystem-read" ];
+      guaranteedConsistency = "live";
+      fidelityGuarantees = [ ];
+      nativePointRepresentations = [ "fixture.probe" ];
+      realizationKindConstraints = [ ];
+    };
+    integrationTargets = [
+      {
+        integration = "prober";
+        target = "shared";
+      }
+    ];
+    states.postgres = state // {
+      stateId = "platform/postgres";
+      slot = "database";
+      mode = "enabled";
+      explicitPolicy = "protected";
+    };
+  };
+  postgresRealization = {
+    kind = "postgresql-cluster";
+    owner = {
+      kind = "kubernetes";
+      id = "database-0";
+    };
+    locator = "postgresql://database-0";
+    path = null;
+    capabilities = [ "postgresql-export" ];
+    inherit boundary;
+    access = [ ];
+    physicalBacking = {
+      kind = "kubernetes-local-volume";
+      hostPath = "/var/lib/postgres/data";
+      capabilities = [
+        "filesystem-read"
+        "zfs-snapshot"
+      ];
+    };
+  };
+  postgres = compile postgresDeclarations [
+    {
+      state = "postgres";
+      realization = postgresRealization;
+    }
+  ];
+
   identityDeclarations = lib.recursiveUpdate common {
+    states.alt = state;
     states.qa = state // {
       stateId = "application/qa";
     };
@@ -496,6 +967,11 @@ let
     (evaluate (
       lib.recursiveUpdate common {
         states.application.explicitPolicy = "other-policy";
+        policies.other-policy = {
+          policyId = "other-policy";
+          disposable = true;
+          routes = [ ];
+        };
       }
     )).states.application.id_hash;
   changedOwnerIdentity =
@@ -520,21 +996,35 @@ let
           result = compile common [
             {
               state = "application";
-              realization = realization // changed;
+              realization = zfsRealization // changed;
             }
           ];
         in
         (builtins.head result.desiredInventory.states).stateIdentity
       )
       [
-        { host = "moved"; }
         {
-          kind = "microvm-storage";
+          owner = {
+            kind = "host";
+            id = "moved";
+          };
+        }
+        {
+          kind = "microvm-share";
           locator = "volume:data";
           path = null;
         }
-        { applicationVersion = "2.0"; }
-        { package = "/nix/store/new-application"; }
+        {
+          access = [
+            {
+              kind = "container";
+              name = "application";
+            }
+          ];
+        }
+        {
+          capabilities = [ "filesystem-read" ];
+        }
       ];
 
   issuesOf =
@@ -553,14 +1043,6 @@ let
       && (issue.routeId == null || lib.hasInfix "route '${issue.routeId}'" issue.message)
     ) (issuesOf result);
 
-  routeResults = (builtins.head resolved.desiredInventory.states).routes;
-  ambiguousRoutes = (builtins.head ambiguous.desiredInventory.states).routes;
-  selectedAmbiguousRoutes = (builtins.head selectedAmbiguous.desiredInventory.states).routes;
-  oneOwnerRoutes = (builtins.head oneOwner.desiredInventory.states).routes;
-  projection = resolved.ownerProjections;
-  zreplJob = builtins.head projection.zrepl.services.zrepl.settings.jobs;
-  resticJob = projection.restic.services.restic.backups."preserve-application-prod--route-restic";
-
   stateById =
     result:
     builtins.listToAttrs (
@@ -569,20 +1051,58 @@ let
         value = entry;
       }) result.states
     );
-  policyStates = stateById policies.desiredInventory;
+  routeById =
+    routes: routeId: builtins.head (builtins.filter (route: route.routeId == routeId) routes);
 
-  hvn = self.nixosConfigurations.hvn-hyp1.config;
-  realInventory = hvn.homelab.preserve.desiredInventory;
-  realStates = stateById realInventory;
-  realHomeDataset = hvn.disko.devices.zpool.rpool.datasets."safe/home";
-  realPersistDataset = hvn.disko.devices.zpool.rpool.datasets."safe/persist";
+  policyStates = stateById policies.desiredInventory;
+  resolvedStates = stateById resolved.desiredInventory;
+  resolvedEntry = resolvedStates."application/prod";
+  zreplRoute = routeById resolvedEntry.routes "route-zrepl";
+  resticRoute = routeById resolvedEntry.routes "route-restic";
+  ambiguousRoutes = (builtins.head ambiguous.desiredInventory.states).routes;
+  selectedAmbiguousRoutes = (builtins.head selectedAmbiguous.desiredInventory.states).routes;
+  bindingSelectedRoutes = (builtins.head bindingSelected.desiredInventory.states).routes;
+  oneOwnerRoutes = (builtins.head oneOwner.desiredInventory.states).routes;
+  narrowedRoute = routeById (builtins.head narrowed.desiredInventory.states).routes "route-restic";
+
+  projections = resolved.ownerProjections;
+  zreplProjection = projections.${zreplRoute.obligationId};
+  resticProjection = projections.${resticRoute.obligationId};
+  zreplJob = builtins.head zreplProjection.config.services.zrepl.settings.jobs;
+  resticBackups = resticProjection.config.services.restic.backups;
+  resticJob = resticBackups.${builtins.head (builtins.attrNames resticBackups)};
+
+  narrowedProjections = narrowed.ownerProjections;
+  narrowedProjection = narrowedProjections.${narrowedRoute.obligationId};
+  narrowedBackups = narrowedProjection.config.services.restic.backups;
+  narrowedJob = narrowedBackups.${builtins.head (builtins.attrNames narrowedBackups)};
+
+  misleadingOwner = compile (lib.recursiveUpdate common {
+    integrations.zrepl.owner = "restic";
+  }) [ realizationSpec ];
+  misleadingZreplRoute = routeById (builtins.head misleadingOwner.desiredInventory.states).routes "route-zrepl";
+  misleadingProjection = misleadingOwner.ownerProjections.${misleadingZreplRoute.obligationId};
+
+  platformStates = stateById platforms.desiredInventory;
+  postgresEntry = (builtins.head postgres.desiredInventory.states);
 
   assertions = {
     schema-versions =
       resolved.desiredInventory.schemaVersion == 1
       && resolved.executablePlan.schemaVersion == 1
       && resolved.desiredInventory.kind == "desired-inventory"
-      && resolved.executablePlan.kind == "executable-plan";
+      && resolved.executablePlan.kind == "executable-plan"
+      && resolved.desiredInventory.fixtureOnly == true
+      && resolved.executablePlan.fixtureOnly == true;
+    typed-identities =
+      builtins.isString stateIdentity
+      && builtins.isString resolvedEvaluated.slots.application-data.id_hash
+      && builtins.isString resolvedEvaluated.policies.protected.id_hash
+      && builtins.isString resolvedEvaluated.targets.shared.id_hash
+      && builtins.isString resolvedEvaluated.integrations.zrepl.id_hash
+      && builtins.isString zreplRoute.routeIdentity
+      && zreplRoute.obligationId != resticRoute.obligationId;
+    placement-independent-identity = identities.states.alt.id_hash == stateIdentity;
     explicit-state-identity =
       stateIdentity == changedPolicyIdentity
       && stateIdentity == changedOwnerIdentity
@@ -590,14 +1110,22 @@ let
       && builtins.all (identity: identity == stateIdentity) changedRealizationIdentities;
     production-qa-distinct = identities.states.application.id_hash != identities.states.qa.id_hash;
     typed-references =
-      resolvedEvaluated.routes.route-zrepl.target.targetId == "shared-archive"
-      && resolvedEvaluated.routes.route-zrepl.integration.integrationId == "zrepl-fixture"
+      resolvedEvaluated.routes.route-zrepl.target.targetId == "house-backup"
+      && resolvedEvaluated.routes.route-zrepl.integration.integrationId == "zrepl"
+      && resolvedEvaluated.states.application.slot.slotId == "application-data"
       && throws (evaluate invalidReferenceDeclarations).routes.route-zrepl.target;
+    strict-schema-fields =
+      throws (evaluate invalidSlotFieldDeclarations).slots.application-data
+      && throws (evaluate invalidRouteFieldDeclarations).routes.route-zrepl
+      && throws (evaluate invalidTargetFieldDeclarations).targets.shared
+      && throws (evaluate invalidIntegrationFieldDeclarations).integrations.zrepl;
     policy-precedence =
       policyStates."policy/explicit".policyId == "explicit-policy"
       && policyStates."policy/selector".policyId == "selector-policy"
       && policyStates."policy/slot".policyId == "slot-policy"
-      && hasIssue "policy-conflict" policies;
+      && hasIssue "policy-conflict" policies
+      && hasIssue "missing-policy" missingPolicy
+      && hasIssue "invalid-disposable-policy" invalidDisposable;
     cascade-evidence =
       resolved.resolutions.inventory.unrun == [ ]
       && resolved.resolutions.inventory.trace.claims != [ ]
@@ -613,47 +1141,143 @@ let
       && hasIssue "duplicate-realization" duplicateRealization
       && throws missingRealization.executablePlan
       && throws duplicateRealization.executablePlan;
-    missing-route = hasIssue "missing-route" missingRoute && allIssueContext missingRoute;
     missing-target = hasIssue "missing-target" missingTarget && allIssueContext missingTarget;
-    uncovered-child = hasIssue "uncovered-child-boundary" uncovered && allIssueContext uncovered;
-    coverage-exclusion = hasIssue "coverage-exclusion" excluded;
-    unsupported-operation =
-      hasIssue "unsupported-operation" unsupportedOperation && allIssueContext unsupportedOperation;
-    unsupported-realization = hasIssue "unsupported-realization" unsupportedRealization;
-    zero-owner = hasIssue "unfulfilled-owner" zeroOwner;
-    target-mismatch = hasIssue "target-mismatch" targetMismatch;
-    missing-binding = hasIssue "missing-binding" missingBinding;
-    resource-collision = throws collision.desiredInventory;
+    coverage =
+      hasIssue "uncovered-child-boundary" uncovered
+      && allIssueContext uncovered
+      && hasIssue "coverage-exclusion" excluded;
+    capability-matrix =
+      hasIssue "unsupported-operation" unsupportedOperation
+      && hasIssue "unsupported-capability" unsupportedCapability
+      && hasIssue "unsupported-realization-kind" unsupportedKind
+      && hasIssue "unsupported-data-kind" unsupportedDataKind
+      && hasIssue "unsupported-fidelity" unsupportedFidelity
+      && hasIssue "unsupported-payload-format" mismatchedPayload;
+    payload-selection =
+      !(hasIssue "unsupported-payload-format" unsupportedPayload)
+      &&
+        (routeById (builtins.head unsupportedPayload.desiredInventory.states).routes "route-zrepl")
+        .payloadRepresentation == "sql-dump";
+    consistency-matrix =
+      hasIssue "unsupported-consistency" weakRestic
+      && hasIssue "weak-route-consistency" weakRouteConsistency
+      && !(hasIssue "unsupported-consistency" strongRestic)
+      &&
+        (routeById (builtins.head strongRestic.desiredInventory.states).routes "route-restic").status
+        == "resolved";
+    binding-rules =
+      hasIssue "duplicate-binding" duplicateBinding
+      && hasIssue "contradictory-binding" contradictoryBinding
+      && hasIssue "contradictory-binding" forbiddenOverride
+      && hasIssue "contradictory-binding" forbiddenSharedNative;
+    wiring-rules =
+      hasIssue "missing-integration-target" missingWiring
+      && hasIssue "duplicate-integration-target" duplicateWiring
+      && hasIssue "unfulfilled-owner" zeroOwner;
     route-identity-independent =
       resolvedEvaluated.routes.route-zrepl.id_hash == changedTargetRouteIdentity
-      && builtins.length routeResults == 2
-      && builtins.length (lib.unique (map (route: route.routeId) routeResults)) == 2
-      && builtins.length (lib.unique (map (route: route.obligationId) routeResults)) == 2
-      && lib.unique (map (route: route.target.targetId) routeResults) == [ "shared-archive" ]
-      && builtins.length (lib.unique (map (route: route.integration.integrationId) routeResults)) == 2;
+      && builtins.length resolvedEntry.routes == 2
+      && builtins.length (lib.unique (map (route: route.routeId) resolvedEntry.routes)) == 2
+      && builtins.length (lib.unique (map (route: route.obligationId) resolvedEntry.routes)) == 2
+      && lib.unique (map (route: route.target.targetId) resolvedEntry.routes) == [ "house-backup" ]
+      &&
+        builtins.length (lib.unique (map (route: route.integration.integrationId) resolvedEntry.routes))
+        == 2;
+    shared-target-not-independent =
+      !(zreplRoute ? failureDomainIndependent)
+      && !(resticRoute ? failureDomainIndependent)
+      && zreplRoute.target.failureDomain == resticRoute.target.failureDomain
+      && zreplRoute.target.failureDomain.domain == "one-domain"
+      && !(zreplRoute.target ? purpose)
+      && !(zreplRoute.target ? locator);
+    resolved-routes =
+      zreplRoute.status == "resolved"
+      && resticRoute.status == "resolved"
+      && zreplRoute.integration.integrationId == "zrepl"
+      && resticRoute.integration.integrationId == "nixos-restic"
+      && zreplRoute.guaranteedConsistency == "filesystem"
+      && resticRoute.guaranteedConsistency == "live"
+      && resticRoute.nativePointRepresentations == [ "restic.snapshot/v1" ]
+      && resticRoute.payloadRepresentation == "posix-filesystem"
+      && !(resticRoute.integration ? explicitScratch)
+      && !(resticRoute ? binding)
+      && !(resticRoute ? bindingApplied)
+      && !(resticRoute.ownerConfig ? bindingApplied)
+      && !(resticRoute ? requiredConsistency)
+      && !(resticRoute ? requiredFidelity)
+      && !(resticRoute ? caveats)
+      && zreplRoute.semanticRequirements.dataKind == "application"
+      && zreplRoute.semanticRequirements.requiredConsistency == "live"
+      && zreplRoute.semanticRequirements.routeRequiredConsistency == "filesystem"
+      &&
+        zreplRoute.semanticRequirements.requiredFidelity == [
+          "posix-filesystem"
+          "zfs-dataset"
+        ]
+      && resticRoute.semanticRequirements.routeRequiredConsistency == "live"
+      && resticRoute.semanticRequirements.acceptedPayloadFormats == [ ]
+      && zreplRoute.ownerConfig.native.zrepl.connect.listener_name == "fixture-sink"
+      && resticRoute.ownerConfig.native.restic.target.repository == "/archive/application"
+      && builtins.length resolved.executablePlan.states == 1;
+    narrowed-binding =
+      narrowedRoute.status == "resolved"
+      && narrowedRoute.ownerConfig != null
+      && narrowedRoute.ownerConfig.source.subpath == "db"
+      && narrowedRoute.ownerConfig.native.restic.tags == [ "edge" ]
+      &&
+        narrowedJob.paths == [
+          "/srv/app/db"
+          "/srv/app/extra"
+        ]
+      && narrowedJob.exclude == [ "/srv/app/tmp" ]
+      && narrowedJob.repository == "/archive/application";
     ambiguous-route-is-one-obligation =
       builtins.length ambiguousRoutes == 1
       && (builtins.head ambiguousRoutes).status == "ambiguous-owner"
       && builtins.length (builtins.head ambiguousRoutes).eligibleIntegrations == 2
       && throws ambiguous.executablePlan
-      && builtins.length selectedAmbiguous.executablePlan.states == 1
       && builtins.length selectedAmbiguousRoutes == 1
       && (builtins.head selectedAmbiguousRoutes).status == "resolved"
-      && (builtins.head selectedAmbiguousRoutes).integration.integrationId == "zrepl-fixture";
+      && (builtins.head selectedAmbiguousRoutes).integration.integrationId == "zrepl"
+      && builtins.length bindingSelectedRoutes == 1
+      && (builtins.head bindingSelectedRoutes).status == "resolved"
+      && (builtins.head bindingSelectedRoutes).integration.integrationId == "zrepl";
     one-owner-keeps-two-routes =
       builtins.length oneOwnerRoutes == 2
       && builtins.length (lib.unique (map (route: route.routeId) oneOwnerRoutes)) == 2
-      && lib.unique (map (route: route.integration.integrationId) oneOwnerRoutes) == [ "zrepl-fixture" ];
-    platform-fixtures =
-      lib.sort builtins.lessThan (map (entry: entry.realization.kind) platforms.desiredInventory.states)
-      == lib.sort builtins.lessThan platformKinds;
+      && builtins.length (lib.unique (map (route: route.obligationId) oneOwnerRoutes)) == 2
+      && lib.unique (map (route: route.integration.integrationId) oneOwnerRoutes) == [ "zrepl" ]
+      && builtins.all (route: route.status == "resolved") oneOwnerRoutes;
+    platform-access-fixtures =
+      builtins.length platforms.desiredInventory.states == 5
+      && builtins.all (
+        entry: entry.realization != null && builtins.isList entry.realization.access
+      ) platforms.desiredInventory.states
+      && platformStates."platform/kube-pv".realization.kind == "kubernetes-local-volume"
+      && builtins.length platformStates."platform/kube-pv".realization.access == 2
+      && builtins.length platformStates."platform/microvm".realization.access == 2;
+    physical-backing =
+      postgresEntry.realization.physicalBacking.hostPath == "/var/lib/postgres/data"
+      && !(postgresEntry.realization.physicalBacking ? authoritative)
+      && hasIssue "unsupported-capability" postgres
+      && throws authoritativeBacking.desiredInventory;
     owner-projections =
-      projection.zrepl.services.zrepl.enable == false
-      && zreplJob.name == "preserve-application-prod--route-zrepl"
-      && zreplJob.filesystems."/srv/app"
+      zreplProjection.integrationId == "zrepl"
+      && zreplProjection.stateId == "application/prod"
+      && zreplProjection.routeId == "route-zrepl"
+      && zreplProjection.targetId == "house-backup"
+      && zreplProjection.entryPoint == "/nix/store/zrepl/bin/zrepl"
+      && lib.hasPrefix "preserve-" (
+        builtins.head (map (job: job.name) zreplProjection.config.services.zrepl.settings.jobs)
+      )
+      && zreplProjection.config.services.zrepl.enable == false
+      && zreplJob.filesystems."source/app"
       && zreplJob.connect.listener_name == "fixture-sink"
       && zreplJob.snapshotting.interval == "1h"
       && (builtins.head zreplJob.pruning.keep_sender).count == 12
+      && resticProjection.integrationId == "nixos-restic"
+      && resticProjection.targetId == "house-backup"
+      && resticProjection.entryPoint == "/nix/store/nixos-restic/bin/nixos-restic"
       && resticJob.paths == [ "/srv/app" ]
       && resticJob.repository == "/archive/application"
       && resticJob.timerConfig.OnCalendar == "hourly"
@@ -666,31 +1290,24 @@ let
         "release"
         "retry"
       ];
-    real-inventory =
-      builtins.attrNames realStates == [
-        "household/home"
-        "household/persist"
-      ]
-      && realStates."household/home".realization.path == realHomeDataset.mountpoint
-      && realStates."household/home".realization.locator == "rpool/safe/home"
-      && realStates."household/persist".realization.path == realPersistDataset.mountpoint
-      && realStates."household/persist".realization.locator == "rpool/safe/persist"
-      && builtins.all (
-        entry:
-        entry.mode == "plan-only"
-        && !entry.operational
-        && !entry.realization.boundary.recursive
-        && builtins.elem "missing-target" (
-          map (issue: issue.code) (issuesOf {
-            desiredInventory.states = [ entry ];
-          })
-        )
-        && builtins.length entry.caveats == 2
-      ) realInventory.states;
-    no-production-enablement =
-      hvn.homelab.preserve.executablePlan.states == [ ]
-      && !hvn.services.zrepl.enable
-      && hvn.services.restic.backups == { };
+    no-owner-switch =
+      misleadingProjection.config ? services
+      && misleadingProjection.config.services ? zrepl
+      && misleadingProjection.config.services.zrepl.settings.jobs != [ ];
+    fixture-only-enforcement =
+      nonFixtureExecutable.desiredInventory.fixtureOnly == false
+      && hasIssue "fixture-only-integration" nonFixtureExecutable
+      && throws nonFixtureExecutable.executablePlan;
+    input-validation =
+      throws emptyFailureDomain.desiredInventory
+      && throws malformedRealization.desiredInventory
+      && throws malformedOwner.desiredInventory
+      && throws foreignWiring.desiredInventory
+      && throws foreignBinding.desiredInventory;
+    projector-requirements =
+      throws nativelessWiring.ownerProjections
+      && throws uncredentialedRestic.ownerProjections
+      && throws dualRepositoryRestic.ownerProjections;
   };
 
   failures = builtins.attrNames (lib.filterAttrs (_: passed: !passed) assertions);

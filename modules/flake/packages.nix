@@ -27,6 +27,10 @@
       generate-secrets = callPackage (self + "/pkgs/by-name/generate-secrets/package.nix") { };
       rekey = callPackage (self + "/pkgs/by-name/rekey/package.nix") { };
       install = callPackage (self + "/pkgs/by-name/install/package.nix") { };
+      homelab-preserve = callPackage (self + "/pkgs/by-name/homelab-preserve/package.nix") { };
+      homelab-preserve-fixture-adapter = callPackage (
+        self + "/pkgs/by-name/homelab-preserve-fixture-adapter/package.nix"
+      ) { };
       linuxPackages = lib.optionalAttrs isLinux {
         prepare-luks-storage = callPackage (self + "/pkgs/by-name/prepare-luks-storage/package.nix") { };
       };
@@ -36,11 +40,16 @@
       };
     in
     {
-      checks.compute-runtime = config.packages.compute-runtime;
+      checks = {
+        compute-runtime = config.packages.compute-runtime;
+        inherit homelab-preserve homelab-preserve-fixture-adapter;
+      };
 
       packages = {
         compute-runtime = callPackage (self + "/pkgs/by-name/compute-runtime/package.nix") { };
         inherit
+          homelab-preserve
+          homelab-preserve-fixture-adapter
           generate-secrets
           rekey
           provision-keys

@@ -16,18 +16,28 @@ let
       + ": ${code}: ${detail}";
   };
 
+  forbiddenNativeKeys = [
+    "source"
+    "path"
+    "paths"
+    "target"
+    "targetId"
+  ];
+
+  idHash = value: if builtins.isAttrs value then value.id_hash or null else null;
+
+  uniqueById = builtins.foldl' (
+    acc: value:
+    if builtins.any (existing: idHash existing == idHash value) acc then acc else acc ++ [ value ]
+  ) [ ];
+
   publicTarget =
     target:
     if target == null then
       null
     else
       {
-        inherit (target)
-          targetId
-          kind
-          locator
-          ownerData
-          ;
+        inherit (target) targetId failureDomain;
       };
 
   publicIntegration =
@@ -40,177 +50,339 @@ let
           integrationId
           owner
           adapter
+          protocolVersion
+          timeoutSeconds
+          maxResponseBytes
           fixtureOnly
+          operations
+          dataKinds
+          requiredSourceCapabilities
+          guaranteedConsistency
+          fidelityGuarantees
+          payloadRepresentation
+          nativePointRepresentations
+          realizationKindConstraints
           ;
       };
 
+  # Satisfaction relation for semantic consistency guarantees. Exact matches
+  # satisfy themselves; any guarantee satisfies `live`; filesystem,
+  # application, and database guarantees may satisfy `crash`. No other
+  # cross-level implication exists.
+  consistencySatisfies =
+    guarantee: required:
+    required == "live"
+    || guarantee == required
+    || (
+      required == "crash"
+      && builtins.elem guarantee [
+        "crash"
+        "filesystem"
+        "application"
+        "database"
+      ]
+    );
+
   policyFor =
-    declarations: state:
+    state:
     let
-      slot = declarations.slots.${state.slotId} or null;
-      selectors = lib.unique state.selectorPolicies;
-      policyId =
+      slot = state.slot;
+      selectorIds = lib.unique (map (policy: policy.id_hash) state.selectorPolicies);
+      selected =
         if state.explicitPolicy != null then
           state.explicitPolicy
-        else if selectors != [ ] then
-          if builtins.length selectors == 1 then builtins.head selectors else null
-        else if slot != null then
-          slot.suggestedPolicy or null
+        else if builtins.length selectorIds == 1 then
+          builtins.head state.selectorPolicies
+        else if selectorIds == [ ] then
+          slot.suggestedPolicy
         else
           null;
-      policy = if policyId == null then null else declarations.policies.${policyId} or null;
       issues =
-        lib.optional (slot == null) (
-          mkIssue state.stateId null "missing-slot" "slot '${state.slotId}' is not declared"
-        )
-        ++ lib.optional (builtins.length selectors > 1 && state.explicitPolicy == null) (
+        lib.optional (builtins.length selectorIds > 1 && state.explicitPolicy == null) (
           mkIssue state.stateId null "policy-conflict" (
-            "equal-precedence selectors choose ${builtins.toJSON selectors}"
+            "equal-precedence selectors choose ${
+              builtins.toJSON (map (policy: policy.policyId) state.selectorPolicies)
+            }"
           )
         )
-        ++ lib.optional (policyId == null && builtins.length selectors <= 1) (
+        ++ lib.optional (selected == null && builtins.length selectorIds <= 1) (
           mkIssue state.stateId null "missing-policy" "no explicit, selector, or slot policy resolved"
         )
-        ++ lib.optional (policyId != null && policy == null) (
-          mkIssue state.stateId null "missing-policy" "policy '${policyId}' is not declared"
-        )
-        ++ lib.optional (policy != null && (policy.disposable or false) && (policy.routes or [ ]) != [ ]) (
+        ++ lib.optional (selected != null && selected.disposable && selected.routes != [ ]) (
           mkIssue state.stateId null "invalid-disposable-policy" (
-            "disposable policy '${policyId}' declares routes"
+            "disposable policy '${selected.policyId}' declares routes"
           )
         );
     in
     {
-      inherit
-        slot
-        policyId
-        policy
-        issues
-        ;
+      inherit slot selected issues;
     };
 
   firstIssueOr =
     strict: issues: value:
     if strict && issues != [ ] then throw (builtins.head issues).message else value;
 
-  indexBy =
-    field: values:
-    lib.foldl' (
-      indexed: value:
-      let
-        key = value.${field};
-      in
-      if indexed ? ${key} then
-        throw "preserve: duplicate ${field} '${key}'"
-      else
-        indexed // { ${key} = value; }
-    ) { } (builtins.attrValues values);
+  realizationsFor =
+    realizations: state:
+    builtins.filter (
+      contribution:
+      builtins.isAttrs (contribution.state or null)
+      && (contribution.state.id_hash or null) == state.id_hash
+    ) realizations;
 
-  coverageIssues =
-    state: routeId: realization: target: integration: binding:
-    let
-      obligationId = "${state.stateId}::${routeId}";
-      boundary = realization.boundary;
-      source = if binding == null then { } else binding.source or { };
-      includes = source.includes or [ ];
-      exclusions = source.exclusions or [ ];
-      childCovered =
-        child:
-        builtins.elem child includes || ((source.recursive or false) && !(builtins.elem child exclusions));
-      missingChildren = builtins.filter (child: !(childCovered child)) boundary.requiredChildren;
-      excludedRequired = builtins.filter (
-        child: builtins.elem child exclusions
-      ) boundary.requiredChildren;
-    in
-    lib.optional (!(integration.bindings ? ${obligationId})) (
-      mkIssue state.stateId routeId "missing-binding" (
-        "integration '${integration.integrationId}' has no binding for '${obligationId}'"
-      )
-    )
-    ++ lib.optional (binding != null && (binding.targetId or null) != target.targetId) (
-      mkIssue state.stateId routeId "target-mismatch" (
-        "integration '${integration.integrationId}' binds a different target"
-      )
-    )
-    ++ lib.optional (binding != null && (source.locator or null) != boundary.locator) (
-      mkIssue state.stateId routeId "coverage-gap" (
-        "owner source '${toString (source.locator or null)}' does not match '${boundary.locator}'"
-      )
-    )
-    ++ lib.optional (binding != null && missingChildren != [ ]) (
-      mkIssue state.stateId routeId "uncovered-child-boundary" (
-        "owner source omits required children ${builtins.toJSON missingChildren}"
-      )
-    )
-    ++ lib.optional (binding != null && excludedRequired != [ ]) (
-      mkIssue state.stateId routeId "coverage-exclusion" (
-        "owner source excludes required children ${builtins.toJSON excludedRequired}"
-      )
+  obligationKey =
+    state: route:
+    "obligation:"
+    + builtins.hashString "sha256" (
+      builtins.toJSON {
+        state = state.id_hash;
+        route = route.id_hash;
+      }
     );
 
-  routeAssessment =
-    state: route: realization: target: integration:
+  coverageFor =
+    realization: source:
     let
-      obligationId = "${state.stateId}::${route.routeId}";
-      binding = integration.bindings.${obligationId} or null;
+      boundary = realization.boundary or { };
+      exclusions = (boundary.exclusions or [ ]) ++ (source.exclude or [ ]);
+      includes = source.include or [ ];
+      childCovered =
+        child:
+        builtins.elem child includes
+        || ((boundary.recursive or false) && !(builtins.elem child exclusions));
+      required = boundary.requiredChildren or [ ];
+    in
+    {
+      missingChildren = builtins.filter (child: !(childCovered child)) required;
+      excludedRequired = builtins.filter (child: builtins.elem child exclusions) required;
+    };
+
+  assessmentFor =
+    state: route: realization: integration:
+    let
+      slot = state.slot;
+      missingCapabilities = builtins.filter (
+        capability: !(builtins.elem capability (realization.capabilities or [ ]))
+      ) integration.requiredSourceCapabilities;
+      requiredFidelity = slot.requiredFidelity ++ route.requiredFidelity;
+      missingFidelity = builtins.filter (
+        fidelity: !(builtins.elem fidelity integration.fidelityGuarantees)
+      ) requiredFidelity;
+      acceptsDataKind =
+        builtins.elem slot.dataKind integration.dataKinds || builtins.elem "*" integration.dataKinds;
+      payloadOk =
+        slot.acceptedPayloadFormats == [ ]
+        || (
+          integration.payloadRepresentation != null
+          && builtins.elem integration.payloadRepresentation slot.acceptedPayloadFormats
+        );
+      consistencyOk =
+        consistencySatisfies integration.guaranteedConsistency slot.requiredConsistency
+        && (
+          route.requiredConsistency == null
+          || consistencySatisfies integration.guaranteedConsistency route.requiredConsistency
+        );
+      kindOk =
+        integration.realizationKindConstraints == [ ]
+        || builtins.elem (realization.kind or null) integration.realizationKindConstraints;
+    in
+    {
+      inherit integration;
       issues =
         lib.optional (!(builtins.elem route.operation integration.operations)) (
           mkIssue state.stateId route.routeId "unsupported-operation" (
             "integration '${integration.integrationId}' does not support '${route.operation}'"
           )
         )
-        ++ lib.optional (!(builtins.elem realization.kind integration.realizationKinds)) (
-          mkIssue state.stateId route.routeId "unsupported-realization" (
-            "integration '${integration.integrationId}' does not support '${realization.kind}'"
+        ++ lib.optional (missingCapabilities != [ ]) (
+          mkIssue state.stateId route.routeId "unsupported-capability" (
+            "integration '${integration.integrationId}' requires missing source capabilities ${builtins.toJSON missingCapabilities}"
           )
         )
-        ++ lib.optional (!(builtins.elem target.kind integration.targetKinds)) (
-          mkIssue state.stateId route.routeId "unsupported-target" (
-            "integration '${integration.integrationId}' does not support '${target.kind}'"
+        ++ lib.optional (!kindOk) (
+          mkIssue state.stateId route.routeId "unsupported-realization-kind" (
+            "integration '${integration.integrationId}' requires kinds ${builtins.toJSON integration.realizationKindConstraints}"
           )
         )
-        ++ coverageIssues state route.routeId realization target integration binding;
-    in
-    {
-      inherit integration binding issues;
+        ++ lib.optional (!acceptsDataKind) (
+          mkIssue state.stateId route.routeId "unsupported-data-kind" (
+            "integration '${integration.integrationId}' does not accept data kind '${slot.dataKind}'"
+          )
+        )
+        ++ lib.optional (!consistencyOk) (
+          mkIssue state.stateId route.routeId "unsupported-consistency" (
+            "integration '${integration.integrationId}' guarantees '${integration.guaranteedConsistency}'"
+          )
+        )
+        ++ lib.optional (missingFidelity != [ ]) (
+          mkIssue state.stateId route.routeId "unsupported-fidelity" (
+            "integration '${integration.integrationId}' lacks fidelity ${builtins.toJSON missingFidelity}"
+          )
+        )
+        ++ lib.optional (!payloadOk) (
+          mkIssue state.stateId route.routeId "unsupported-payload-format" (
+            "integration '${integration.integrationId}' produces payload representation ${builtins.toJSON integration.payloadRepresentation}, not one of ${builtins.toJSON slot.acceptedPayloadFormats}"
+          )
+        );
     };
 
   routeResolver =
     claim: ctx:
     let
       state = claim.subject;
-      routeId = claim.routeId;
-      obligationId = "${state.stateId}::${routeId}";
-      route = ctx.declarations.routes.${routeId} or null;
-      target = if route == null then null else route.target;
-      candidates = builtins.attrValues ctx.declarations.integrations;
+      route = claim.route;
+      routeId = route.routeId;
+      target = route.target;
+      obligationId = obligationKey state route;
+      realization = claim.realization;
+
+      matchingBindings = builtins.filter (
+        binding:
+        idHash (binding.state or null) == state.id_hash && idHash (binding.route or null) == route.id_hash
+      ) ctx.declarations.bindings;
+      binding = if builtins.length matchingBindings == 1 then builtins.head matchingBindings else null;
+      bindingIssues =
+        lib.optional (builtins.length matchingBindings > 1) (
+          mkIssue state.stateId routeId "duplicate-binding" (
+            "${toString (builtins.length matchingBindings)} bindings target this state and route"
+          )
+        )
+        ++ lib.optional (binding != null && route.integration != null && binding.integration != null) (
+          mkIssue state.stateId routeId "contradictory-binding" (
+            "binding selects integration '${binding.integration.integrationId}' although the route fixes '${route.integration.integrationId}'"
+          )
+        )
+        ++
+          lib.optional
+            (
+              binding != null
+              && builtins.any (key: builtins.hasAttr key (binding.nativeOverrides or { })) forbiddenNativeKeys
+            )
+            (
+              mkIssue state.stateId routeId "contradictory-binding" (
+                "binding native overrides repeat source or target keys"
+              )
+            );
+
+      selectedIntegration =
+        if route.integration != null then
+          route.integration
+        else if binding != null && binding.integration != null then
+          binding.integration
+        else
+          null;
+
+      candidates =
+        if selectedIntegration != null then
+          [ selectedIntegration ]
+        else
+          uniqueById (
+            map (wiring: wiring.integration) (
+              builtins.filter (
+                wiring: target != null && idHash (wiring.target or null) == target.id_hash
+              ) ctx.declarations.integrationTargets
+            )
+          );
+
       assessments =
-        if route == null || target == null then
+        if target == null || realization == null then
           [ ]
         else
-          map (routeAssessment state route claim.realization target) candidates;
+          map (assessmentFor state route realization) candidates;
+
       eligible = builtins.filter (assessment: assessment.issues == [ ]) assessments;
-      selectedAssessment =
-        if route == null || target == null || route.integration == null then
-          null
-        else
-          routeAssessment state route claim.realization target route.integration;
       selected =
-        if selectedAssessment != null && selectedAssessment.issues == [ ] then
-          selectedAssessment
-        else if selectedAssessment == null && builtins.length eligible == 1 then
+        if selectedIntegration != null && assessments != [ ] then
+          builtins.head assessments
+        else if builtins.length eligible == 1 then
           builtins.head eligible
         else
           null;
-      ownerIssues =
-        if route == null then
+
+      matchingWiring =
+        if selected == null || target == null then
           [ ]
-        else if target == null then
+        else
+          builtins.filter (
+            wiring:
+            idHash (wiring.integration or null) == selected.integration.id_hash
+            && idHash (wiring.target or null) == target.id_hash
+          ) ctx.declarations.integrationTargets;
+      wiring = if builtins.length matchingWiring == 1 then builtins.head matchingWiring else null;
+      wiringIssues =
+        if selected == null || target == null then
+          [ ]
+        else
+          lib.optional (matchingWiring == [ ]) (
+            mkIssue state.stateId routeId "missing-integration-target" (
+              "no Integration+Target wiring for '${selected.integration.integrationId}' and '${target.targetId}'"
+            )
+          )
+          ++ lib.optional (builtins.length matchingWiring > 1) (
+            mkIssue state.stateId routeId "duplicate-integration-target" (
+              "${toString (builtins.length matchingWiring)} wirings repeat the selected Integration+Target pair"
+            )
+          )
+          ++
+            lib.optional
+              (
+                wiring != null
+                && builtins.any (key: builtins.hasAttr key (wiring.native or { })) forbiddenNativeKeys
+              )
+              (
+                mkIssue state.stateId routeId "contradictory-binding" (
+                  "shared native configuration repeats source or target keys"
+                )
+              );
+
+      source =
+        if binding == null then
+          {
+            subpath = null;
+            include = [ ];
+            exclude = [ ];
+          }
+        else
+          binding.source;
+      coverage =
+        if realization == null then
+          {
+            missingChildren = [ ];
+            excludedRequired = [ ];
+          }
+        else
+          coverageFor realization source;
+      coverageIssues =
+        lib.optional (realization != null && coverage.missingChildren != [ ]) (
+          mkIssue state.stateId routeId "uncovered-child-boundary" (
+            "source omits required children ${builtins.toJSON coverage.missingChildren}"
+          )
+        )
+        ++ lib.optional (realization != null && coverage.excludedRequired != [ ]) (
+          mkIssue state.stateId routeId "coverage-exclusion" (
+            "source excludes required children ${builtins.toJSON coverage.excludedRequired}"
+          )
+        );
+
+      weakConsistency =
+        route.requiredConsistency != null
+        && route.requiredConsistency != state.slot.requiredConsistency
+        && consistencySatisfies state.slot.requiredConsistency route.requiredConsistency;
+      weakIssues = lib.optional weakConsistency (
+        mkIssue state.stateId routeId "weak-route-consistency" (
+          "route requirement '${route.requiredConsistency}' weakens slot requirement '${state.slot.requiredConsistency}'"
+        )
+      );
+
+      ownerIssues =
+        if target == null then
           [
             (mkIssue state.stateId routeId "unfulfilled-owner" "a target is required before owner selection")
           ]
-        else if selectedAssessment != null then
-          selectedAssessment.issues
+        else if realization == null then
+          [ ]
+        else if selectedIntegration != null && assessments != [ ] then
+          (builtins.head assessments).issues
         else if eligible == [ ] then
           lib.concatMap (assessment: assessment.issues) assessments
           ++ [
@@ -219,31 +391,65 @@ let
         else if builtins.length eligible > 1 then
           [
             (mkIssue state.stateId routeId "ambiguous-owner" (
-              "eligible integrations are ${builtins.toJSON (map (x: x.integration.integrationId) eligible)}"
+              "eligible integrations are ${
+                builtins.toJSON (map (assessment: assessment.integration.integrationId) eligible)
+              }"
             ))
           ]
         else
           [ ];
+
+      fixtureIssues =
+        lib.optional (selected != null && (selected.integration.fixtureOnly or false) && !ctx.fixtureOnly)
+          (
+            mkIssue state.stateId routeId "fixture-only-integration" (
+              "selected integration '${selected.integration.integrationId}' is fixture-only"
+            )
+          );
+
       issues =
-        lib.optional (route == null) (
-          mkIssue state.stateId routeId "missing-route" "route '${routeId}' is not declared"
-        )
-        ++ lib.optional (route != null && target == null) (
+        lib.optional (target == null) (
           mkIssue state.stateId routeId "missing-target" "route has no configured target"
         )
+        ++ bindingIssues
+        ++ wiringIssues
+        ++ weakIssues
+        ++ coverageIssues
+        ++ fixtureIssues
         ++ ownerIssues;
+
+      mergedNative = lib.recursiveUpdate (if wiring == null then { } else wiring.native or { }) (
+        if binding == null then { } else binding.nativeOverrides or { }
+      );
+
       value = {
         inherit obligationId routeId issues;
         stateId = state.stateId;
-        routeIdentity = if route == null then null else route.id_hash;
+        routeIdentity = route.id_hash;
         target = publicTarget target;
         integration = if selected == null then null else publicIntegration selected.integration;
         eligibleIntegrations = map (assessment: assessment.integration.integrationId) eligible;
-        operation = if route == null then null else route.operation;
-        requiredConsistency = if route == null then null else route.requiredConsistency;
-        requiredFidelity = if route == null then null else route.requiredFidelity;
-        realization = claim.realization;
-        binding = if selected == null then null else selected.binding;
+        operation = route.operation;
+        semanticRequirements = {
+          inherit (state.slot) dataKind requiredConsistency acceptedPayloadFormats;
+          routeRequiredConsistency = route.requiredConsistency;
+          requiredFidelity = lib.unique (state.slot.requiredFidelity ++ route.requiredFidelity);
+        };
+        guaranteedConsistency =
+          if selected == null then null else selected.integration.guaranteedConsistency;
+        payloadRepresentation =
+          if selected == null then null else selected.integration.payloadRepresentation;
+        nativePointRepresentations =
+          if selected == null then [ ] else selected.integration.nativePointRepresentations;
+        inherit realization;
+        ownerConfig =
+          if selected == null || wiring == null then
+            null
+          else
+            {
+              inherit source;
+              native = mergedNative;
+            };
         status =
           if builtins.any (issue: issue.code == "ambiguous-owner") issues then
             "ambiguous-owner"
@@ -261,19 +467,11 @@ let
       };
     };
 
-  realizationsFor =
-    realizations: state:
-    builtins.filter (
-      contribution:
-      builtins.isAttrs (contribution.state or null)
-      && (contribution.state.id_hash or null) == state.id_hash
-    ) realizations;
-
   stateResolver =
     claim: ctx:
     let
       state = claim.subject;
-      resolvedPolicy = policyFor ctx.declarations state;
+      resolvedPolicy = policyFor state;
       contributions = realizationsFor ctx.realizations state;
       realizationCount = builtins.length contributions;
       realizationIssues =
@@ -286,46 +484,54 @@ let
           )
         );
       issues = resolvedPolicy.issues ++ realizationIssues;
-      routeIds =
-        if resolvedPolicy.policy == null || issues != [ ] then [ ] else resolvedPolicy.policy.routes or [ ];
+      policyRoutes =
+        if resolvedPolicy.selected == null || issues != [ ] then [ ] else resolvedPolicy.selected.routes;
       realization = if realizationCount == 1 then (builtins.head contributions).realization else null;
       value = {
-        inherit routeIds issues realization;
-        inherit (state) stateId slotId mode;
+        inherit issues realization;
+        inherit (state) stateId mode;
         stateIdentity = state.id_hash;
-        policyId = resolvedPolicy.policyId;
-        caveats = if resolvedPolicy.slot == null then [ ] else resolvedPolicy.slot.caveats or [ ];
+        slotId = state.slot.slotId;
+        policyId = if resolvedPolicy.selected == null then null else resolvedPolicy.selected.policyId;
+        obligationKeys = map (route: obligationKey state route) policyRoutes;
       };
     in
     firstIssueOr ctx.strict issues {
       resources.${state.stateId} = value;
       claims = map (
-        routeId:
+        route:
         engine.mkClaim {
           kind = "route-obligation";
           subject = state;
-          inherit routeId realization;
+          inherit route realization;
         }
-      ) routeIds;
+      ) policyRoutes;
     };
 
   kinds = engine.mkKinds [
-    (engine.mkKind {
-      name = "route-obligation";
-      resolve = routeResolver;
-    })
     (engine.mkKind {
       name = "state-protection";
       below = [ "route-obligation" ];
       resolve = stateResolver;
     })
+    (engine.mkKind {
+      name = "route-obligation";
+      resolve = routeResolver;
+    })
   ];
 
   resolutionFor =
-    declarations: realizations: strict: states:
+    declarations: realizations: strict: fixtureOnly: states:
     engine.resolveClaims {
       inherit kinds;
-      ctx = { inherit declarations realizations strict; };
+      ctx = {
+        inherit
+          declarations
+          realizations
+          strict
+          fixtureOnly
+          ;
+      };
       claims = map (
         state:
         engine.mkClaim {
@@ -344,75 +550,58 @@ let
     lib.mapAttrsToList (
       _name: state:
       let
-        routes = map (routeId: routeResources.${"${state.stateId}::${routeId}"}) state.routeIds;
+        routes = map (key: routeResources.${key}) state.obligationKeys;
       in
-      removeAttrs state [ "routeIds" ]
+      removeAttrs state [ "obligationKeys" ]
       // {
         inherit routes;
         operational =
-          state.mode == "enabled" && state.issues == [ ] && builtins.all (r: r.issues == [ ]) routes;
+          state.mode == "enabled" && state.issues == [ ] && builtins.all (route: route.issues == [ ]) routes;
       }
     ) stateResources;
 
-  sanitizeJobId =
-    value:
-    "preserve-"
-    + builtins.concatStringsSep "" (
-      map (character: if builtins.match "[A-Za-z0-9]" character != null then character else "-") (
-        lib.stringToCharacters value
-      )
-    );
-
   projectOwners =
-    executablePlan:
+    executablePlan: projectors:
     let
-      routes = lib.concatMap (state: state.routes) executablePlan.states;
-      byOwner = owner: builtins.filter (route: route.integration.owner == owner) routes;
-      zreplRoutes = byOwner "zrepl";
-      resticRoutes = byOwner "nixos-restic";
+      resolved = lib.concatMap (
+        state:
+        builtins.filter (
+          route: route.status == "resolved" && route.integration != null && route.ownerConfig != null
+        ) state.routes
+      ) executablePlan.states;
     in
-    {
-      zrepl.services.zrepl = {
-        enable = false;
-        settings.jobs = map (
-          route:
-          let
-            native = route.binding.native or { };
-          in
-          {
-            name = sanitizeJobId route.obligationId;
-            type = "push";
-            filesystems.${route.realization.boundary.locator} = true;
-            connect = native.connect or { };
-            snapshotting = native.snapshotting or { };
-            pruning = native.pruning or { };
-          }
-        ) zreplRoutes;
-      };
-      restic.services.restic.backups = builtins.listToAttrs (
-        map (
-          route:
-          let
-            native = route.binding.native or { };
-          in
-          {
-            name = sanitizeJobId route.obligationId;
-            value = {
-              paths = native.paths or (lib.optional (route.realization.path != null) route.realization.path);
-              exclude = native.exclude or (route.binding.source.exclusions or [ ]);
-              repository = native.repository or route.target.locator;
-              passwordFile = native.passwordFile or null;
-              environmentFile = native.environmentFile or null;
-              timerConfig = native.timerConfig or null;
-              pruneOpts = native.pruneOpts or [ ];
-              checkOpts = native.checkOpts or [ ];
-              runCheck = native.runCheck or false;
-              createWrapper = native.createWrapper or true;
-            };
-          }
-        ) resticRoutes
-      );
-    };
+    builtins.listToAttrs (
+      map (
+        route:
+        let
+          projector =
+            projectors.${route.integration.integrationId}
+              or (throw "preserve: no projector registered for integration '${route.integration.integrationId}'");
+          jobId = "preserve-" + builtins.substring 0 16 (builtins.hashString "sha256" route.obligationId);
+          projected = projector {
+            inherit (route)
+              obligationId
+              stateId
+              routeId
+              target
+              integration
+              ownerConfig
+              realization
+              ;
+            inherit jobId;
+          };
+        in
+        {
+          name = route.obligationId;
+          value = {
+            inherit (route) obligationId stateId routeId;
+            inherit (projected) entryPoint config;
+            targetId = route.target.targetId;
+            integrationId = route.integration.integrationId;
+          };
+        }
+      ) resolved
+    );
 
   compile =
     {
@@ -422,51 +611,89 @@ let
       routes ? config.den.preserve.routes,
       targets ? config.den.preserve.targets,
       integrations ? config.den.preserve.integrations,
+      bindings ? config.den.preserve.bindings,
+      integrationTargets ? config.den.preserve.integrationTargets,
       scratchDestinations ? config.den.preserve.scratchDestinations,
       realizations ? [ ],
+      projectors ? config.fleet.preserve.projectors,
+      fixtureOnly ? false,
     }:
     let
-      routesById = indexBy "routeId" routes;
       knownStateHashes = map (state: state.id_hash) (builtins.attrValues states);
+      knownRouteHashes = map (route: route.id_hash) (builtins.attrValues routes);
+      knownTargetHashes = map (target: target.id_hash) (builtins.attrValues targets);
+      knownIntegrationHashes = map (integration: integration.id_hash) (builtins.attrValues integrations);
+      invalidTargets = builtins.filter (
+        target: !(builtins.isAttrs (target.failureDomain or null)) || target.failureDomain == { }
+      ) (builtins.attrValues targets);
       invalidRealizations = builtins.filter (
         contribution:
         !builtins.isAttrs contribution
         || !builtins.isAttrs (contribution.state or null)
-        || !(contribution.state ? id_hash)
+        || !builtins.isString (contribution.state.id_hash or null)
         || !(builtins.elem contribution.state.id_hash knownStateHashes)
         || !builtins.isAttrs (contribution.realization or null)
+        || !builtins.isAttrs (contribution.realization.owner or null)
+        || !builtins.isString (contribution.realization.owner.kind or null)
+        || !builtins.isString (contribution.realization.owner.id or null)
+        || !builtins.isList (contribution.realization.capabilities or null)
         || !builtins.isAttrs (contribution.realization.boundary or null)
+        || !builtins.isList (contribution.realization.access or null)
+        || (
+          let
+            backing = contribution.realization.physicalBacking or null;
+          in
+          backing != null && !(builtins.isAttrs backing && !(backing ? authoritative))
+        )
       ) realizations;
-      validatedRealizations =
-        if invalidRealizations == [ ] then
-          realizations
+      invalidBindings = builtins.filter (
+        binding:
+        !builtins.isAttrs binding
+        || !builtins.isString (idHash (binding.state or null))
+        || !(builtins.elem (idHash (binding.state or null)) knownStateHashes)
+        || !builtins.isString (idHash (binding.route or null))
+        || !(builtins.elem (idHash (binding.route or null)) knownRouteHashes)
+        || (
+          binding.integration != null && !(builtins.elem (idHash binding.integration) knownIntegrationHashes)
+        )
+      ) bindings;
+      invalidWiring = builtins.filter (
+        wiring:
+        !builtins.isAttrs wiring
+        || !(builtins.elem (idHash (wiring.integration or null)) knownIntegrationHashes)
+        || !(builtins.elem (idHash (wiring.target or null)) knownTargetHashes)
+      ) integrationTargets;
+      validated =
+        if invalidTargets != [ ] then
+          throw "preserve: a target must declare a non-empty failureDomain attribute set"
+        else if invalidRealizations != [ ] then
+          throw "preserve: a realization contribution does not reference a declared state or a valid boundary"
+        else if invalidBindings != [ ] then
+          throw "preserve: a binding does not reference declared state and route instances"
+        else if invalidWiring != [ ] then
+          throw "preserve: an Integration+Target wiring does not reference declared instances"
         else
-          throw "preserve: a realization contribution does not reference a declared state or valid boundary";
-      declarations = {
-        inherit
-          states
-          slots
-          policies
-          targets
-          integrations
-          scratchDestinations
-          ;
-        routes = routesById;
-      };
-      inventoryResolution = resolutionFor declarations validatedRealizations false states;
-      enabledStates = lib.filterAttrs (_: state: state.mode == "enabled") states;
-      executableResolution = resolutionFor declarations validatedRealizations true enabledStates;
+          true;
+      declarations = { inherit bindings integrationTargets; };
+      inventoryResolution =
+        assert validated;
+        resolutionFor declarations realizations false fixtureOnly states;
+      executableResolution =
+        assert validated;
+        resolutionFor declarations realizations true fixtureOnly (
+          lib.filterAttrs (_name: state: state.mode == "enabled") states
+        );
       desiredInventory = {
         schemaVersion = 1;
         kind = "desired-inventory";
+        inherit scratchDestinations fixtureOnly;
         states = documentsFor inventoryResolution;
-        inherit scratchDestinations;
       };
       executablePlan = {
         schemaVersion = 1;
         kind = "executable-plan";
+        inherit scratchDestinations fixtureOnly;
         states = documentsFor executableResolution;
-        inherit scratchDestinations;
       };
     in
     {
@@ -475,21 +702,31 @@ let
         inventory = inventoryResolution;
         executable = executableResolution;
       };
-      ownerProjections = projectOwners executablePlan;
+      ownerProjections = projectOwners executablePlan projectors;
     };
 in
 {
-  options.fleet.preserve = mkOption {
-    type = types.raw;
-    readOnly = true;
-    description = "State-protection resolution and owner-projection interface.";
+  options.fleet.preserve = {
+    compile = mkOption {
+      type = types.raw;
+      readOnly = true;
+    };
+    kinds = mkOption {
+      type = types.raw;
+      readOnly = true;
+    };
+    projectOwners = mkOption {
+      type = types.raw;
+      readOnly = true;
+    };
+    projectors = mkOption {
+      type = types.attrsOf (types.functionTo types.raw);
+      default = { };
+      description = "Internal Integration-keyed owner projectors keyed by integrationId.";
+    };
   };
 
   config.fleet.preserve = {
-    inherit
-      compile
-      kinds
-      projectOwners
-      ;
+    inherit compile kinds projectOwners;
   };
 }
