@@ -57,6 +57,16 @@ An enabled configuration SHALL exist only when the state has exactly one authori
 - **WHEN** a policy explicitly requires two named routes that one owner integration can satisfy
 - **THEN** both target obligations remain distinct and are not deduplicated merely because one owner manages them
 
+#### Scenario: Two routes share one target through different owners
+
+- **WHEN** a policy explicitly requires two named routes that select different lifecycle owners but name the same target
+- **THEN** the routes remain distinct obligations because route identity is not derived from target or owner identity
+
+#### Scenario: One route has several eligible owners
+
+- **WHEN** one required route can be fulfilled by more than one eligible lifecycle-owner integration and policy selects none
+- **THEN** that route remains ambiguous rather than becoming several obligations or selecting an owner by declaration order
+
 ### Requirement: Live realization and protection coverage are explicit
 
 Each enabled state SHALL resolve to exactly one authoritative live realization. A realization SHALL describe typed access and capture capabilities rather than infer support from a deployment label. A restored scratch output SHALL NOT become another active realization of the source state.
@@ -98,9 +108,16 @@ State protection SHALL configure, select, inspect, safely dispatch, and test tho
 
 Recovery evidence SHALL qualify a point by logical state, route, target, lifecycle owner, and the owner's immutable native point identity. It SHALL record the capture scope, achieved consistency, relevant timestamps, representation or format compatibility, completion, and available verification evidence without replacing the owner's native catalog or retention identity.
 
+A recovery point MAY carry opaque producer provenance under namespaced keys, including application, database/server, schema, or data-format versions. State protection SHALL retain and display this provenance without requiring generic interpretation. Producer provenance SHALL NOT participate in `stateId`, route identity, or native point identity.
+
 A retained target SHALL carry, or its selected lifecycle owner SHALL natively maintain, enough durable information for a compatible installed integration plus reproducible configuration to discover and restore complete points after loss of the live source and coordinator-local cache. A universal Preserve-owned metadata layout SHALL NOT be required when the owner already provides this property.
 
 If one owner proves that several routes share one stable capture, their evidence SHALL retain that relationship. Independently captured routes SHALL NOT be represented as synchronized or as sharing a capture merely because one policy selected them.
+
+#### Scenario: Producer provenance is retained opaquely
+
+- **WHEN** an application integration records namespaced application, server, schema, or data-format provenance on a recovery point
+- **THEN** inspection retains and displays those values without changing state identity or requiring Preserve to interpret their compatibility
 
 #### Scenario: Source and local cache are lost
 

@@ -57,13 +57,13 @@ The semantic model retains these meanings:
 - StateSlot describes reusable data and consistency semantics.
 - State gives one concrete logical resource its stable `stateId` and instance policy.
 - Realization describes the authoritative live access and capability boundary.
-- ProtectionPolicy selects required Routes; each Route names a Target and optional Driver selection.
+- ProtectionPolicy selects required Routes; each Route has its own stable identity and names a Target and optional Driver selection.
 - Driver describes one externally implemented lifecycle-owner or bounded reference integration.
 - ScratchDestination constrains recovery output.
 
 Do not mechanically create eight registries. Use gen-schema instance identity and references where values have independent identity or are referenced across declarations; use typed nested records where lifecycle and ownership are the same. At minimum State is an identity-bearing registry keyed only by `stateId`, and externally selectable drivers and targets have stable references. A focused pin-level fixture decides the smallest composition that keeps invalid references and identity mutations observable.
 
-Stored recovery evidence carries the public `stateId` directly. Realization, path, package, lifecycle owner, software version, selector result, and policy do not enter state identity.
+Stored recovery evidence carries the public `stateId` directly. Realization, path, package, lifecycle owner, software version, selector result, and policy do not enter state identity. Recovery points may also carry optional opaque producer provenance under namespaced keys, such as application, database/server, schema, or data-format versions. Preserve retains and displays this data but does not interpret it generically or include it in `stateId`.
 
 The ZFS pool aspect will define its dataset map once and use that same value for disko and plan contributions. It will emit plan-only `household/home` and `household/persist` with actual dataset/path bindings, non-recursive scope, desired policy intent, unresolved production targets, and application-consistency caveats. It performs no runtime probe.
 
@@ -77,6 +77,8 @@ Use a small demand cascade rather than a handwritten recursive resolver:
 
 1. A state-protection claim resolves the state policy and authoritative realization and emits one route-obligation claim per named route.
 2. A route-obligation claim resolves its target, validates realization and source coverage, and selects exactly one compatible driver/lifecycle-owner capability unless the route selected one explicitly.
+
+Each route obligation is identified independently of its Target and Driver. Two explicitly required routes remain distinct when they share a target or owner. One route with several eligible owners remains one ambiguous obligation until policy selects an owner.
 
 The route result records owner identity, native operation granularity, native point identity shape, consistency/fidelity claims, and whether safe scratch restore and verification exist. A lifecycle owner's atomic job remains one operation; the cascade does not turn it into runtime stages.
 
