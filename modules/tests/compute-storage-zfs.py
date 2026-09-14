@@ -659,6 +659,8 @@ def run_variant(
             for label, argv in (
                 ("final-incus-info", project_command(incus, project, "info", "probe", "--show-log")),
                 ("final-k3s-journal", guest_command(incus, project, "journalctl", "-u", "k3s", "--no-pager", "-n", "300")),
+                ("final-containerd-log", guest_command(incus, project, "tail", "-n", "1000", "/var/lib/rancher/k3s/agent/containerd/containerd.log")),
+                ("final-runtime-processes", guest_command(incus, project, "ps", "-eo", "pid,ppid,stat,wchan:32,args")),
                 ("final-pods", kube_command(incus, project, "get", "pods", "-A", "-o", "yaml")),
                 ("final-events", kube_command(incus, project, "get", "events", "-A", "-o", "yaml")),
                 ("final-node", kube_command(incus, project, "get", "nodes", "-o", "yaml")),
