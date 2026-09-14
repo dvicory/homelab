@@ -49,40 +49,41 @@ in
       { host, ... }:
       let
         pool = host.zfs.rootPool or null;
-        namespace = host.settings.disk.zfs.preserveNamespace;
         datasets = rootDatasets pool.name;
-        realizationFor =
-          name:
-          let
-            relative = "safe/${name}";
-            locator = "${pool.name}/${relative}";
-          in
-          {
-            state = den.preserve.states."${namespace}/${name}";
-            realization = {
-              kind = "zfs-dataset";
-              host = host.name;
-              inherit locator;
-              path = datasets.${relative}.mountpoint;
-              package = null;
-              applicationVersion = null;
-              capabilities = [ "snapshot" ];
-              boundary = {
-                inherit locator;
-                recursive = false;
-                requiredChildren = [ ];
-                exclusions = [ ];
-                consistency = "filesystem";
+        bindings = host.settings.disk.zfs.preserve.datasets;
+        contributionFor =
+          datasetName: binding:
+          if !(builtins.hasAttr datasetName datasets) then
+            throw "preserve: dataset '${datasetName}' is not declared in the ${pool.name} root dataset map"
+          else if !builtins.isString (binding.state.id_hash or null) then
+            throw "preserve: dataset '${datasetName}' does not reference a typed Preserve State instance"
+          else
+            {
+              state = binding.state;
+              realization = {
+                kind = "zfs-dataset";
+                owner = {
+                  kind = "host";
+                  id = host.name;
+                };
+                locator = "${pool.name}/${datasetName}";
+                path = datasets.${datasetName}.mountpoint;
+                capabilities = [
+                  "filesystem-read"
+                  "zfs-snapshot"
+                  "zfs-send"
+                ];
+                boundary = {
+                  recursive = false;
+                  requiredChildren = binding.requiredChildren;
+                  exclusions = [ ];
+                };
+                access = [ ];
+                physicalBacking = null;
               };
             };
-          };
       in
-      lib.optionals (namespace != null) (
-        map realizationFor [
-          "home"
-          "persist"
-        ]
-      );
+      lib.mapAttrsToList contributionFor bindings;
 
     nixos =
       { host, ... }:

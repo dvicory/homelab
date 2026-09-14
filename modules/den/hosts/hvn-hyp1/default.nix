@@ -18,7 +18,16 @@ in
 
     settings = {
       core.nix.gc.enable = false;
-      disk.zfs.preserveNamespace = "household";
+      disk.zfs.preserve.datasets = {
+        "safe/home" = {
+          state = den.preserve.states."household/home";
+          requiredChildren = [ ];
+        };
+        "safe/persist" = {
+          state = den.preserve.states."household/persist";
+          requiredChildren = [ ];
+        };
+      };
       virtualization.compute =
         { config, ... }:
         {
@@ -300,5 +309,42 @@ in
           passfile = config.age.secrets."gocryptfs-media3".path;
         })
       ];
+  };
+
+  den.preserve = {
+    slots."household/home" = {
+      slotId = "household/home";
+      dataKind = "filesystem";
+      requiredConsistency = "filesystem";
+      requiredFidelity = [ "posix-filesystem" ];
+    };
+    slots."household/host-role-persist" = {
+      slotId = "household/host-role-persist";
+      dataKind = "host-role-state";
+      requiredConsistency = "filesystem";
+      requiredFidelity = [ "posix-filesystem" ];
+    };
+    policies.household-plan = {
+      policyId = "household-plan";
+      routes = [ den.preserve.routes.household-route ];
+    };
+    routes.household-route = {
+      routeId = "household-route";
+      target = null;
+      integration = null;
+      operation = "run";
+    };
+    states."household/home" = {
+      stateId = "household/home";
+      slot = den.preserve.slots."household/home";
+      mode = "plan-only";
+      explicitPolicy = den.preserve.policies.household-plan;
+    };
+    states."household/persist" = {
+      stateId = "household/persist";
+      slot = den.preserve.slots."household/host-role-persist";
+      mode = "plan-only";
+      explicitPolicy = den.preserve.policies.household-plan;
+    };
   };
 }

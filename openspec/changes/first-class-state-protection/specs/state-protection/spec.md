@@ -6,7 +6,7 @@ Define how Homelab identifies durable state, resolves protection through indepen
 
 ### Requirement: Logical state identity is stable across implementation changes
 
-Each protected or planned state SHALL have a stable public identifier for the concrete logical resource. Changing its live host, deployment platform, access path, backing resource, application version, package, lifecycle owner, protection policy, or current realization SHALL NOT change that identifier.
+Each protected or planned state SHALL have a stable public identifier for the concrete logical resource. Changing its declaration module, live host, deployment platform, access path, backing resource, application version, package, lifecycle owner, protection policy, or current realization SHALL NOT change that identifier.
 
 Different concrete instances SHALL have different state identifiers even when they use the same reusable state description or one is populated from the other. Native backup identities, retained-point identities, and restore destinations SHALL remain separate from state identity.
 
@@ -22,7 +22,7 @@ Different concrete instances SHALL have different state identifiers even when th
 
 ### Requirement: Reusable state semantics and instance protection policy are separate
 
-A reusable application or service integration SHALL describe its state slots and consistency or restore semantics without fixing the concrete instance's sensitivity, targets, lifecycle owner, or copy policy. Each concrete state instance SHALL resolve a named policy or an explicit decision to remain disposable.
+A reusable application or service integration SHALL describe its state slots, data kind, required semantic consistency and fidelity, and any genuinely required application payload format without fixing the concrete instance's sensitivity, targets, lifecycle owner, backend-native retained representation, copy policy, or runtime destination authorization. A StateSlot SHALL NOT enumerate backup-engine container formats merely because eligible Integrations may retain its payload in those formats. Each concrete state instance SHALL resolve a named policy or an explicit decision to remain disposable. M1's scratch-only restore authorization SHALL NOT become an intrinsic StateSlot semantic.
 
 Explicit instance policy SHALL take precedence over selector defaults and weak reusable suggestions. Equal-precedence assignments that select different policies SHALL fail rather than depend on declaration order, merge the policies, or silently choose the weaker result.
 
@@ -69,9 +69,13 @@ An enabled configuration SHALL exist only when the state has exactly one authori
 
 ### Requirement: Live realization and protection coverage are explicit
 
-Each enabled state SHALL resolve to exactly one authoritative live realization. A realization SHALL describe typed access and capture capabilities rather than infer support from a deployment label. A restored scratch output SHALL NOT become another active realization of the source state.
+Each enabled state SHALL resolve to exactly one authoritative live realization. A realization SHALL describe typed access and capture capabilities rather than infer support from a deployment label. Runtime-facing Incus, container, Kubernetes, or microVM paths SHALL remain nested access projections when they expose the same capture boundary; they SHALL NOT become additional authoritative realizations. A restored scratch output SHALL NOT become another active realization of the source state.
 
-For each route, compilation SHALL validate that the selected lifecycle owner's configured sources, dataset filters, repository inputs, exclusions, and target mapping cover the intended state boundary. A parent path or dataset SHALL NOT be represented as covering mounted children, child datasets, or excluded resources unless the owner configuration includes and can preserve them.
+Application-native realizations MAY record `physicalBacking` for inventory, but that backing SHALL be explicitly non-authoritative. It SHALL NOT satisfy a protection route or participate in capability matching for that State unless it is modeled as a separate State with its own identity and requirements.
+
+Integration matching SHALL use the Integration's required source capabilities and actual configured semantic consistency/fidelity guarantees as its primary compatibility boundary. A realization-kind restriction MAY be imposed only when a native mechanism genuinely requires that representation or access type; deployment kind SHALL NOT be the ordinary dispatch key. Possessing `filesystem-read` alone SHALL NOT establish a single-point `crash` or atomic `filesystem` guarantee: a mutable traversal that may observe different resources at different moments SHALL report `live` consistency unless its configured lifecycle-owner workflow provides a stronger stable capture. Preserve SHALL NOT orchestrate snapshot stages to strengthen that guarantee. Resolution SHALL expose and reject any selected workflow whose guarantee does not satisfy the StateSlot and genuine Route outcome requirements.
+
+For each route, compilation SHALL derive the base source locator or path from the authoritative realization, apply only explicit source narrowing such as subpath, include, or exclude wiring, and validate that the selected lifecycle owner's resulting configured sources cover the intended state boundary. A parent path or dataset SHALL NOT be represented as covering mounted children, child datasets, or excluded resources unless the owner configuration includes and can preserve them. Derivable source paths SHALL NOT be repeated as independent Binding or owner-native inputs whose disagreement could silently select another source.
 
 #### Scenario: Two active sources claim one state
 
@@ -87,6 +91,45 @@ For each route, compilation SHALL validate that the selected lifecycle owner's c
 
 - **WHEN** a policy requires a stable capture but the realization and selected owner expose no compatible operation
 - **THEN** the route remains unsupported and is not silently downgraded to a weaker live read
+
+#### Scenario: A mutable filesystem read does not imply single-point consistency
+
+- **WHEN** an Integration consumes `filesystem-read` from a live mutable filesystem without an owner-provided stable-view workflow
+- **THEN** it reports `live` rather than `crash` or `filesystem` consistency and cannot satisfy a StateSlot requiring a stronger guarantee
+
+#### Scenario: One ZFS realization serves capability-specific routes
+
+- **WHEN** one ZFS realization provides `filesystem-read`, `zfs-snapshot`, and `zfs-send`, one Route selects a Restic-style Integration whose configured workflow consumes `filesystem-read`, and another selects a native ZFS Integration consuming the ZFS capabilities
+- **THEN** both Routes may resolve from the same authoritative realization without the Restic-style Integration enumerating `zfs-dataset` as a supported deployment kind, while each reports only the consistency its selected lifecycle-owner workflow actually guarantees
+
+### Requirement: Logical targets and owner-native destinations remain separate
+
+A Target SHALL identify the intended logical destination, purpose, or failure domain independently of backend representation. Restic repositories, Borg repositories, ZFS receive datasets, object buckets, remotes, credential references, and native retained-point container formats SHALL belong to the selected Integration's namespaced native configuration and recovery evidence rather than define Target identity or require another public target registry.
+
+Integration-owned native destination and shared owner configuration for one Integration+Target pair MAY be declared once as typed internal wiring and reused by every compatible State/Route obligation. A normal State whose Policy selects a Route and whose Realization satisfies the selected Integration SHALL NOT require a per-State Binding merely to repeat repository location, credentials, Target, Integration, or source path.
+
+A protection Binding is optional and SHALL contain only genuinely irreducible state-specific wiring: optional Integration selection when the Route intentionally leaves it unresolved, source narrowing not derivable from the Realization, and namespaced native overrides. It SHALL reference State and Route when present, and SHALL NOT repeat the Route's logical Target, the Realization's base source locator/path, a selected Integration, or shared Integration+Target configuration merely to reconstruct relationships already fixed elsewhere. Contradictory or duplicate wiring SHALL fail.
+
+Routes SHALL express a logical Target, optional Integration selection, and only semantic outcome constraints genuinely required by policy. Integration normally owns required source capabilities, owner-native destination shape, and native retained-point representation. A Route SHALL NOT require `restic.snapshot`, `borg.archive`, `openzfs.snapshot`, or another owner format merely because it selects that Integration.
+
+Integration projector functions and native configuration renderers SHALL remain typed internal Nix implementation registration. Public Integration data and generated manifests SHALL contain identity, declared capabilities and constraints, packaged adapter references, stable IDs, and resolved values, but SHALL NOT serialize Nix projector functions.
+
+Multiple successful Routes to one Target or failure domain SHALL NOT be reported as independent disaster copies merely because they use different Integrations or native representations. Failure-domain independence comes from distinct Target semantics and evidence, not Route count.
+
+#### Scenario: Two representations satisfy one logical destination
+
+- **WHEN** separate required Routes use Restic and native ZFS Integrations for the same logical Target
+- **THEN** the Routes retain distinct obligations and Integration-owned native destination/retained-point representations without changing Target identity or claiming two independent failure-domain copies
+
+#### Scenario: A normal obligation needs no per-State Binding
+
+- **WHEN** a Policy selects a Route, its logical Target and Integration have shared native wiring, and the State's Realization provides the Integration's required source capabilities without state-specific narrowing
+- **THEN** resolution derives the source from the Realization and native destination from shared Integration+Target wiring without requiring a Binding
+
+#### Scenario: An optional Binding narrows one State
+
+- **WHEN** one State needs a subpath, include/exclude rule, unresolved-Route owner selection, or namespaced native override that cannot be derived from shared declarations
+- **THEN** its Binding carries only that irreducible difference and does not repeat the base source, Target, or shared owner configuration
 
 ### Requirement: Established lifecycle owners retain their native responsibilities
 
@@ -106,7 +149,7 @@ State protection SHALL configure, select, inspect, safely dispatch, and test tho
 
 ### Requirement: Recovery evidence preserves native lifecycle semantics
 
-Recovery evidence SHALL qualify a point by logical state, route, target, lifecycle owner, and the owner's immutable native point identity. It SHALL record the capture scope, achieved consistency, relevant timestamps, representation or format compatibility, completion, and available verification evidence without replacing the owner's native catalog or retention identity.
+Recovery evidence SHALL qualify a point by logical state, Route, Target, lifecycle owner, and the owner's immutable native point identity. It SHALL distinguish any semantic payload representation required by the StateSlot or application integration from the backend-native retained-point representation owned by the Integration. A POSIX filesystem payload may be retained as an OpenZFS snapshot, Restic snapshot, Borg archive, or another native container without changing StateSlot semantics; an application-native payload such as a PostgreSQL logical/custom dump may itself be retained inside a repository representation. Evidence SHALL record capture scope, achieved semantic consistency, relevant timestamps, both applicable representation layers, completion, and available verification evidence without replacing the owner's native catalog or retention identity.
 
 A recovery point MAY carry opaque producer provenance under namespaced keys, including application, database/server, schema, or data-format versions. State protection SHALL retain and display this provenance without requiring generic interpretation. Producer provenance SHALL NOT participate in `stateId`, route identity, or native point identity.
 
@@ -152,7 +195,7 @@ A lifecycle owner MAY run configured capture, replication, retention, or check s
 
 ### Requirement: Restore is constrained to a fresh authorized scratch destination
 
-State protection SHALL restore a selected immutable point only into a new destination within an explicitly configured scratch capability unless a separate future contract authorizes active-state replacement. It SHALL reject an existing or nonempty destination, traversal outside the scratch root, overlap or aliasing with active state or retained targets, hostile native mount or share properties, and unsupported representation or fidelity before mutation.
+For M1, state protection SHALL restore a selected immutable point only into a new destination within an explicitly configured scratch capability. This is coordinator authorization policy, not an intrinsic StateSlot semantic; any future production or active-state restore requires a separate contract and explicit authority. M1 SHALL reject an existing or nonempty destination, traversal outside the scratch root, overlap or aliasing with active state or retained Targets, hostile native mount or share properties, and unsupported payload/native representation or fidelity before mutation.
 
 The integration SHALL use the lifecycle owner's native restore or extraction operation when it can enforce the destination boundary. A thin integration-specific restore helper SHALL remain limited to that missing safe operation and SHALL NOT acquire unrelated lifecycle ownership. Safety and authority checks SHALL be repeated immediately before mutation, and a force option SHALL NOT bypass them.
 
@@ -205,7 +248,7 @@ Configuration, a listening service, a successful adapter exit, or a local native
 
 ### Requirement: Capture scope, consistency, and fidelity are explicit
 
-Each observed point SHALL state the included resource boundary, achieved consistency, and filesystem or data fidelity established by its lifecycle owner and verification. Filesystem point-in-time consistency SHALL NOT be represented as application consistency for databases, compound applications, or independently changing resources.
+Each observed point SHALL state the included resource boundary, achieved consistency, semantic payload representation when applicable, backend-native retained-point representation, and filesystem or data fidelity established by its lifecycle owner and verification. Generic consistency SHALL use a small semantic vocabulary: `live` for a traversal with no single-point guarantee, `crash` for one crash-consistent point, `filesystem` for a filesystem-consistent point, and `application` or `database` only when that stronger semantic distinction is justified. Export methods, backup-engine containers, native snapshot mechanisms, and online-backup APIs SHALL be represented as capabilities, payload/native representations, or namespaced fidelity rather than invented generic consistency levels. `filesystem-read` SHALL NOT by itself imply point-in-time `filesystem` consistency, and filesystem point-in-time consistency SHALL NOT be represented as application or database consistency for databases, compound applications, or independently changing resources.
 
 Unsupported metadata, excluded content, owner-specific restore constraints, or unverified semantic behavior SHALL remain visible rather than being silently omitted under a generic success claim.
 
