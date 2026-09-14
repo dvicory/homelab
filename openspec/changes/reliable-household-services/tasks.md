@@ -1,6 +1,9 @@
-Open tasks cover consolidation and broader acceptance. Local implementation and
-disposable Linux verification are authorized; production inspection, credentials,
-deployment, and destructive production operations require separate authorization.
+Open tasks are acceptance gates, not a from-zero implementation list. Immich,
+media automation, identity, ingress, proxies, and monitoring already render,
+but remain open until their named runtime and negative-path checks pass.
+Local implementation and disposable Linux verification are authorized;
+production inspection, credentials, deployment, and destructive production
+operations require separate authorization.
 
 ## 1. Shared delivery and ownership
 
@@ -15,7 +18,7 @@ deployment, and destructive production operations require separate authorization
 - [x] 2.2 Deliver named Kubernetes Secrets from host-staged runtime files using the existing agenix flow. Prove missing files fail closed, values stay out of rendered artifacts, and replacement consumers receive the declared secrets without regenerating identities.
 - [ ] 2.3 Define each application's capture data and relevant writers from existing declarations. Compare pinned upstream online backup support and actual disposable filesystem snapshot capabilities; document only data-consistency dependencies, not a recursive service dependency graph. Establish a concrete capture method for each stateful application without assuming a new host storage topology.
 - [ ] 2.4 Implement routine application-scoped capture with native tools. Prove matched database/files under representative concurrent writes, unrelated-service availability, safe release of temporary writer/reconciler pauses after success or failure, and truthful completion. Measure interruption; any extended pause or weaker consistency requires operator review, not silent scope expansion.
-- [ ] 2.5 Preserve retained mount roots across the supported guest-replacement recovery, and resume only against consistent state with actual workload/reconciler readiness. Application-consistent restore of database/filesystem state remains outside this task and requires measured capture/restore evidence.
+- [x] 2.5 Preserve retained mount roots across the supported guest-replacement recovery, and resume only against consistent state with actual workload/reconciler readiness. The recorded x86_64/KVM acceptance proves this for the supported Jellyfin recovery path. Application-consistent restore of database/filesystem state remains outside this task and requires measured capture/restore evidence.
 - [ ] 2.6 Consolidate retained paths, container identities, and storage declarations into shared projections for host attachments and manifests. Prove cross-layer agreement without changing existing IDs, paths or claim identities; reject invalid map ranges and duplicate destinations. Exercise preservation of host-owned modes across workload startup.
 - [ ] 2.7 Make host agenix consume the existing canonical master-identity declaration and reconcile runtime secret producer/consumer references. Evaluate agreement and reuse the atomic-rotation regression: incomplete replacement retains the prior complete payload; do not introduce revocation behavior as incidental cleanup.
 

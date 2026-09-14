@@ -8,6 +8,8 @@ let
   host = self.nixosConfigurations.hvn-hyp1.config;
   guest = self.nixosConfigurations.compute-1.config;
   compute = config.den.hosts.x86_64-linux.hvn-hyp1.settings.virtualization.compute;
+  cluster = config.den.clusters.prod-home;
+  gatewayObjects = self.nixidyEnvs.x86_64-linux.prod-home.config.applications.gateway.objects;
   preseed = host.virtualisation.incus.preseed;
   project = (lib.findFirst (p: p.name == compute.project) null preseed.projects).config;
   profile = lib.findFirst (
@@ -137,6 +139,13 @@ let
       && builtins.all (
         key: lib.hasPrefix "${devices.identity.path}/" key.path
       ) guest.services.openssh.hostKeys;
+    guest-opens-declared-gateway-node-port =
+      builtins.elem cluster.ingress.nodePort guest.networking.firewall.allowedTCPPorts;
+    direct-gateway-mode-avoids-deny-all-policy =
+      cluster.ingress.trustedProxyCIDRs == [ ]
+      && builtins.all (
+        object: object.kind != "NetworkPolicy" || object.metadata.name != "private-origin"
+      ) gatewayObjects;
     no-broad-network-trust =
       host.networking.firewall.enable
       && host.networking.nftables.enable

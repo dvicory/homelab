@@ -21,10 +21,15 @@ nix build .#ciJobs.x86_64-linux.nixosConfigurations
 nix build --option sandbox relaxed .#checks.x86_64-linux.prod-home-replacement
 ```
 
-The Linux VM checks run the same scenarios on x86-64 and ARM64. x86 requires KVM;
-ARM prefers KVM but permits QEMU software emulation when it is unavailable.
-Compute fixtures select the `prod-home` cluster's declared host and guest; the
-ARM variants do not change production configuration.
+Linux VM checks remain directly buildable for x86-64 and ARM64. x86 requires
+KVM; ARM prefers KVM but permits QEMU software emulation when it is unavailable.
+The hosted ARM check group omits `compute-storage-zfs` and
+`prod-home-replacement`: measured TCG runs exhausted their scenario deadlines
+without exposing architecture-specific failures. Run those checks directly on
+an ARM builder with KVM. Compute fixtures select the `prod-home` cluster's
+declared host and guest; ARM variants do not change production configuration.
+Check jobs use `--max-jobs 1` so VM tests do not compete with other builds on
+the same runner. Other CI groups retain Nix's normal parallelism.
 
 Manual dispatch builds the full projection by default. Set `system` to build
 only that platform, or set `check` to run one check (defaulting to x86-64 when

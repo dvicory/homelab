@@ -53,7 +53,19 @@ let
       { pkgs, ... }:
       lib.mapAttrs (name: entries: pkgs.linkFarm "ci-${name}" entries) {
         packages = project system "packages" ((self.packages or { }).${system} or { });
-        checks = project system "checks" ((self.checks or { }).${system} or { });
+        checks =
+          let
+            checks = (self.checks or { }).${system} or { };
+          in
+          project system "checks" (
+            if system == "aarch64-linux" then
+              builtins.removeAttrs checks [
+                "compute-storage-zfs"
+                "prod-home-replacement"
+              ]
+            else
+              checks
+          );
         devShells = project system "development" ((self.devShells or { }).${system} or { });
         formatters = project system "development" {
           default = (self.formatter or { }).${system} or null;

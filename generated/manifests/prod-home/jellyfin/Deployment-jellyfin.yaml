@@ -66,7 +66,7 @@ spec:
           startupProbe:
             failureThreshold: 30
             httpGet:
-              path: /health
+              path: /Users/Public
               port: 8096
             periodSeconds: 10
             timeoutSeconds: 5

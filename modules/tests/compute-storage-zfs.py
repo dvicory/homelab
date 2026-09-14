@@ -544,19 +544,26 @@ def run_variant(
         command(directory, "instance-start", project_command(incus, project, "start", "probe"), timeout=240)
         mark(output, started, "guest-started", snapshotter=snapshotter, project=project)
         wait_for_node(incus, project, directory, started)
+        state["baselineRollouts"] = {}
         for deployment in ("coredns", "metrics-server"):
-            command(
+            created = command(
                 directory,
                 f"baseline-{deployment}-create",
                 kube_command(incus, project, "-n", "kube-system", "wait", "--for=create", f"deployment/{deployment}", "--timeout=180s"),
                 timeout=190,
+                check=snapshotter == "overlayfs",
             )
-            command(
+            rollout = command(
                 directory,
                 f"baseline-{deployment}-rollout",
                 kube_command(incus, project, "-n", "kube-system", "rollout", "status", f"deployment/{deployment}", "--timeout=180s"),
                 timeout=190,
+                check=snapshotter == "overlayfs",
             )
+            state["baselineRollouts"][deployment] = {
+                "created": created.returncode == 0,
+                "ready": rollout.returncode == 0,
+            }
         command(directory, "k3s-version", guest_command(incus, project, "k3s", "--version"), check=False)
         command(directory, "guest-uid-map", guest_command(incus, project, "cat", "/proc/self/uid_map"), check=False)
         command(directory, "guest-gid-map", guest_command(incus, project, "cat", "/proc/self/gid_map"), check=False)

@@ -261,20 +261,26 @@
                   xForwardedFor.trustedCIDRs = peers;
                 };
           })
-          (object "networking.k8s.io/v1" "NetworkPolicy" "private-origin" namespace {
+        ]
+        # An empty proxy allowlist selects direct-source mode. Omit the ingress
+        # policy instead of rendering a policy that denies every NodePort client.
+        ++ lib.optional (peers != [ ]) (
+          object "networking.k8s.io/v1" "NetworkPolicy" "private-origin" namespace {
             podSelector = proxySelector;
             policyTypes = [ "Ingress" ];
-            ingress = lib.optional (peers != [ ]) {
-              from = map (cidr: { ipBlock = { inherit cidr; }; }) peers;
-              ports = [
-                {
-                  protocol = "TCP";
-                  port = 8443;
-                }
-              ];
-            };
-          })
-        ]
+            ingress = [
+              {
+                from = map (cidr: { ipBlock = { inherit cidr; }; }) peers;
+                ports = [
+                  {
+                    protocol = "TCP";
+                    port = 8443;
+                  }
+                ];
+              }
+            ];
+          }
+        )
         ++ routes
         ++ backendGrants
         ++ backendTLS
