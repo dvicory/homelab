@@ -199,7 +199,7 @@ jobs:
             attr=".#ciJobs.$SYSTEM.$GROUP"
           fi
           # VM checks need the runner's resources, not a share of parallel builds.
-          build_args=(--keep-going)
+          build_args=(--keep-going --fallback)
           if [ "$GROUP" = checks ]; then
             build_args+=(--max-jobs 1)
           fi
