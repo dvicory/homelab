@@ -26,11 +26,15 @@
   den.schema.user.includes = [
     den.aspects.core.users.resolved-user-emitter
 
-    (den.lib.policy.mkPolicy "user-aspect-auto-include" (
-      { host, user, ... }:
-      lib.optional (den.aspects ? ${host.name} && den.aspects.${host.name} ? ${user.name}) (
-        den.lib.policy.include den.aspects.${host.name}.${user.name}
-      )
-    ))
+    {
+      __isPolicy = true;
+      name = "user-aspect-auto-include";
+      emits = [ "edge" ];
+      fn =
+        { host, user, ... }:
+        lib.optional (den.aspects ? ${host.name} && den.aspects.${host.name} ? ${user.name}) (
+          den.lib.policy.include den.aspects.${host.name}.${user.name}
+        );
+    }
   ];
 }

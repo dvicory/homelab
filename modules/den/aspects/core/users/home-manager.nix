@@ -27,12 +27,9 @@
 
     darwin = {
       home-manager.sharedModules = [
-        (
-          { lib, ... }:
-          {
-            home.stateVersion = lib.trivial.release;
-          }
-        )
+        {
+          home.stateVersion = "25.11";
+        }
       ];
     };
   };

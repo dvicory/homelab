@@ -15,7 +15,7 @@ let
     { host, user }:
     let
       inherit (user) userName;
-      # POSIX group membership is resolved by the scope-engine ACL graph
+      # POSIX group membership is resolved by the gen-scope ACL graph
       # (config.fleet.acl): transitive closure of the user's registry groups
       # over the den.groups membership graph, filtered to posix-scoped groups.
       aclUser = config.fleet.acl.get "host:${host.name}" "resolveUser" userName;
@@ -28,8 +28,13 @@ let
     in
     {
       name = "user-enrich/${userName}@${host.name}";
+      darwin =
+        { pkgs, ... }:
+        lib.mkIf (user.system.shell != null) {
+          users.users.${userName}.shell = pkgs.${user.system.shell};
+        };
 
-      nixos = {
+      nixos = { pkgs, ... }: {
         users.deterministicIds.${userName} = lib.optionalAttrs (uid != null) {
           inherit uid gid;
           subUidRanges = lib.optional (subUidStart != null) {
@@ -49,7 +54,8 @@ let
           extraGroups = aclUser.systemGroups or [ ];
           isNormalUser = true;
           home = "/home/${userName}";
-          useDefaultShell = user.system.useDefaultShell or true;
+          useDefaultShell = user.system.shell == null;
+          shell = lib.mkIf (user.system.shell != null) pkgs.${user.system.shell};
           description = lib.mkDefault (user.identity.displayName or "");
           linger = user.system.linger or false;
         }
