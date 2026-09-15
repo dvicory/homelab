@@ -3,7 +3,7 @@ let
   mkRunner =
     { uid, instance }:
     {
-      aspect = den.aspects.workloads.hermes.account;
+      aspect = den.aspects.workloads.hermes-runner.account;
       groups = [ "workload-access" ];
 
       system = {
@@ -12,7 +12,7 @@ let
         linger = true;
       };
 
-      settings.workloads.hermes = {
+      settings.workloads.hermes-runner = {
         inherit instance;
         config = {
           model.default = "opencode-go/deepseek-v4-flash";
@@ -37,7 +37,7 @@ in
   # Placement remains explicit topology data. Both homes reuse the same
   # workload aspect; their behavior comes from the matching registry account.
   den.homes.x86_64-linux = {
-    "hermes-qa-runner@hvn-hyp1".aspect = den.aspects.workloads.hermes.home;
-    "hermes-prod-runner@hvn-hyp1".aspect = den.aspects.workloads.hermes.home;
+    "hermes-qa-runner@hvn-hyp1".aspect = den.aspects.workloads.hermes-runner.home;
+    "hermes-prod-runner@hvn-hyp1".aspect = den.aspects.workloads.hermes-runner.home;
   };
 }

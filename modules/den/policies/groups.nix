@@ -2,7 +2,7 @@
 #
 # Groups are data-only (no isEntity) — they don't get resolved into the
 # scope tree. Group data is consumed directly by user access policies
-# and scope-engine ACL resolution.
+  # and gen-scope ACL resolution.
 {
   den,
   inputs,
