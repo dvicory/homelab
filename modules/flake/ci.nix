@@ -26,9 +26,18 @@ let
     system: group: attrs:
     lib.filterAttrs (_: value: value != null) (
       lib.mapAttrs (
-        _: value:
+        name: value:
+        let
+          projectedGroup =
+            if group == "checks" && name == "preserve-zfs-reference" then
+              "preserve-zfs-reference"
+            else if group == "checks" && lib.hasPrefix "preserve-" name then
+              "preserve-fast"
+            else
+              group;
+        in
         if lib.isDerivation value then
-          grouped system group value
+          grouped system projectedGroup value
         else if builtins.isAttrs value then
           let
             nested = project system group value;

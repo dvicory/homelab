@@ -1,7 +1,12 @@
 { ... }:
 {
   perSystem =
-    { config, pkgs, ... }:
+    {
+      config,
+      pkgs,
+      system,
+      ...
+    }:
     let
       preserve = config.packages.homelab-preserve;
       fixtureAdapter = config.packages.homelab-preserve-fixture-adapter;
@@ -15,6 +20,7 @@
               fixtureAdapter
               pkgs.jq
             ];
+            meta.hestia.group = "${system}-preserve-fast";
           }
           ''
             set -euo pipefail
