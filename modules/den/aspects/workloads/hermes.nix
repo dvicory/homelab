@@ -5,15 +5,17 @@
   ...
 }:
 let
+  inherit (lib) mkOption types;
+
   imageTagFor = system: "${system}-${inputs.self.shortRev or "dirty"}";
 
   profileFor =
     account:
     let
-      cfg = account.settings.workloads.hermes or { };
+      cfg = account.settings.workloads.hermes-runner or { };
       instance =
         cfg.instance
-          or (throw "Hermes workload account '${account.userName}' has no settings.workloads.hermes.instance");
+          or (throw "Hermes workload account '${account.userName}' has no settings.workloads.hermes-runner.instance");
       serviceName = "hermes-${instance}";
     in
     {
@@ -102,7 +104,34 @@ let
       '';
     };
 in
+
 {
+  den.aspects.workloads.hermes-runner.settings.options = {
+    instance = mkOption {
+      type = types.str;
+      description = "Scope-unique Hermes runner instance name.";
+    };
+    image = mkOption {
+      type = types.str;
+      description = "OCI image used by the runner.";
+    };
+    repository = mkOption {
+      type = types.str;
+      description = "Git repository cloned into the runner workspace.";
+    };
+    restartDrainTimeout = mkOption {
+      type = types.ints.positive;
+      description = "Seconds allowed for the runner to drain before restart.";
+    };
+    config = mkOption {
+      type = types.attrs;
+      description = "Hermes configuration rendered into the runner container.";
+    };
+    tailscale.hostname = mkOption {
+      type = types.str;
+      description = "Tailscale hostname assigned to the runner sidecar.";
+    };
+  };
   # OCI images contain native binaries, so publish them for every Linux system
   # rather than hard-coding one architecture or creating unusable Darwin images.
   perSystem =
@@ -118,7 +147,7 @@ in
 
   # A resolved registry user contributes the static host platform and its own
   # secret requests. The profile data still comes only from the registry entry.
-  den.aspects.workloads.hermes.account =
+  den.aspects.workloads.hermes-runner.account =
     { user, ... }:
     let
       profile = profileFor user;
@@ -169,7 +198,7 @@ in
 
   # The independently instantiated home receives its matching registry account
   # from env-to-homes and emits only Home Manager/Quadlet configuration.
-  den.aspects.workloads.hermes.home =
+  den.aspects.workloads.hermes-runner.home =
     { account, ... }:
     let
       profile = profileFor account;

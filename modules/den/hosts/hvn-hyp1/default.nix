@@ -1,7 +1,7 @@
 { den, inputs, ... }: {
   den.hosts.x86_64-linux.hvn-hyp1 = {
     environment = "prod";
-    system-access-groups = [ "system-access" "workload-access" ];
+    system-access-groups = [ "server-access" "workload-access" ];
 
     settings = {
       core.nix.gc.enable = false;

@@ -6,7 +6,7 @@
 # partitioned by group scope.
 #
 # Evaluated attributes:
-#   effectiveGates — merged env+host system-access-groups (union)
+#   effectiveGates — merged environment and host access capabilities
 #   resolveUser    — paramAttr (hostId) (userName) → access record
 #                    { enable, systemGroups, kanidmGroups, allGroups, ... }
 {
@@ -19,7 +19,7 @@
 let
   inherit (lib) mkOption types;
 
-  engine = inputs.scope-engine { inherit lib; };
+  engine = inputs.gen-scope.lib;
 
   flatHosts = lib.foldl' (acc: system: acc // (den.hosts.${system} or { })) { } (
     builtins.attrNames (den.hosts or { })
@@ -34,8 +34,6 @@ let
   envNames = builtins.attrNames environments;
   hostNames = builtins.attrNames hosts;
 
-  # Group scope is derived from den.groups labels: posix groups land in the
-  # "system" scope (→ NixOS extraGroups), oauth-grant groups in "kanidm".
   scopeOf =
     gname:
     let
@@ -48,22 +46,32 @@ let
     else
       "system";
 
-  roots = engine.buildNodes {
-    # Parent edges: hosts → environments → root.
+  kinds = engine.mkKinds (
+    map (name: engine.mkKind { inherit name; }) [
+      "root"
+      "group"
+      "environment"
+      "host"
+    ]
+  );
+
+  scope = engine.buildRoots {
     parentGraph = engine.overlays (
       [ (engine.star "root" (map (e: "env:${e}") envNames)) ]
-      ++ map (host: engine.edge "host:${host}" "env:${hosts.${host}.environment or "prod"}") hostNames
+      ++ map (host: engine.edge "host:${host}" "env:${hosts.${host}.environment}") hostNames
     );
 
-    # M edges: group-to-group membership. An edge FROM member TO group means
-    # the member inherits the group's privileges (members = [...] on the group).
-    edgeGraphs.M = engine.overlays (
-      (lib.concatMap (
-        gname: map (member: engine.edge "group:${member}" "group:${gname}") (groups.${gname}.members or [ ])
-      ) groupNames)
-      # Ensure every group exists as a vertex even with no membership edges.
-      ++ [ (engine.vertices (map (g: "group:${g}") groupNames)) ]
-    );
+    edgeGraphs = [
+      {
+        label = "M";
+        graph = engine.overlays (
+          (lib.concatMap (
+            gname: map (member: engine.edge "group:${member}" "group:${gname}") (groups.${gname}.members or [ ])
+          ) groupNames)
+          ++ [ (engine.vertices (map (g: "group:${g}") groupNames)) ]
+        );
+      }
+    ];
 
     decls = lib.listToAttrs (
       [
@@ -96,6 +104,7 @@ let
       }) hostNames
     );
 
+    inherit kinds;
     types = lib.listToAttrs (
       [
         {
@@ -118,23 +127,46 @@ let
     );
   };
 
-  # Transitive group closure over M edges: if you're in X, you're in everything
-  # X is a member of.
   transitiveGroups =
     self: groupId:
     let
-      direct = engine.followEdge "M" self groupId;
-      transitive = lib.concatMap (gid: transitiveGroups self gid) direct;
+      walk =
+        seen: id:
+        if builtins.elem id seen then
+          [ ]
+        else
+          [ id ] ++ lib.concatMap (walk (seen ++ [ id ])) (engine.followEdge "M" self id);
     in
-    lib.unique ([ groupId ] ++ direct ++ transitive);
+    lib.unique (walk [ ] groupId);
+
+  resolveAccess =
+    self: hostId: userName: directGroups:
+    let
+      allGroupIds = lib.unique (
+        lib.concatMap (gname: transitiveGroups self "group:${gname}") directGroups
+      );
+      knownGroupIds = builtins.filter (gid: scope.nodes ? ${gid}) allGroupIds;
+      namesForScope =
+        wanted:
+        map (gid: (self.node gid).decls.name) (
+          builtins.filter (gid: ((self.node gid).decls.scope or "") == wanted) knownGroupIds
+        );
+      gates = self.get hostId "effectiveGates";
+      enable = builtins.any (g: builtins.elem "group:${g}" knownGroupIds) gates;
+    in
+    {
+      inherit userName enable directGroups;
+      allGroups = builtins.sort builtins.lessThan (map (gid: (self.node gid).decls.name) knownGroupIds);
+      systemGroups = namesForScope "system";
+      kanidmGroups = namesForScope "kanidm";
+      effectiveGates = gates;
+    };
 
   attributes = {
-    # Structural attributes required by the evaluator / followEdge.
-    children = _self: id: lib.filterAttrs (_: n: n.parent == id) roots;
+    children = _self: id: lib.filterAttrs (_: n: n.parent == id) scope.nodes;
     imports = _self: _id: [ ];
     "edges-M" = _self: id: (_self.node id).decls.__edges.M or [ ];
 
-    # Merged login gates for a host: unique(env ++ host system-access-groups).
     effectiveGates =
       self: id:
       let
@@ -145,38 +177,14 @@ let
       in
       lib.unique (envGates ++ hostGates);
 
-    # Resolve a user's full access on a host. Group membership is sourced from
-    # the user registry (den-v2 single source of truth), expanded transitively
-    # through the membership graph, and partitioned by group scope.
+    resolveGroups = engine.paramAttr (
+      self: hostId: directGroups:
+      resolveAccess self hostId null directGroups
+    );
+
     resolveUser = engine.paramAttr (
       self: hostId: userName:
-      let
-        directGroups = registry.${userName}.groups or [ ];
-
-        allGroupIds = lib.unique (
-          lib.concatMap (gname: transitiveGroups self "group:${gname}") directGroups
-        );
-        allGroupNames = map (gid: (self.node gid).decls.name) (
-          builtins.filter (gid: roots ? ${gid}) allGroupIds
-        );
-
-        byScope = scope: builtins.filter (gid: ((self.node gid).decls.scope or "") == scope) allGroupIds;
-        namesForScope = scope: map (gid: (self.node gid).decls.name) (byScope scope);
-
-        systemGroups = namesForScope "system";
-        kanidmGroups = namesForScope "kanidm";
-
-        gates = self.get hostId "effectiveGates";
-        gateGroupIds = map (g: "group:${g}") gates;
-        gateIntersection = builtins.filter (gid: builtins.elem gid gateGroupIds) (byScope "system");
-        enable = gateIntersection != [ ];
-      in
-      {
-        inherit userName enable directGroups;
-        allGroups = builtins.sort builtins.lessThan allGroupNames;
-        inherit systemGroups kanidmGroups;
-        effectiveGates = gates;
-      }
+      resolveAccess self hostId userName (registry.${userName}.groups or [ ])
     );
   };
 in
@@ -187,5 +195,5 @@ in
     readOnly = true;
   };
 
-  config.fleet.acl = engine.eval { inherit roots attributes; };
+  config.fleet.acl = engine.eval { inherit scope attributes; };
 }

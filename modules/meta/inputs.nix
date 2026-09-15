@@ -9,7 +9,7 @@
     nixpkgs.url = "https://channels.nixos.org/nixos-unstable/nixexprs.tar.xz";
 
     # Secure Boot
-    lanzaboote.url = "github:nix-community/lanzaboote/v0.4.1";
+    lanzaboote.url = "github:nix-community/lanzaboote/v1.1.0";
     lanzaboote.inputs.nixpkgs.follows = "nixpkgs";
 
     # Darwin
@@ -24,17 +24,19 @@
     nixos-anywhere.url = "github:nix-community/nixos-anywhere";
     nixos-anywhere.inputs.nixpkgs.follows = "nixpkgs";
 
-    # Den aspect-oriented framework (sini fork with quirk pipes and dynamic settingsType)
-    den.url = "github:sini/den/feat/entity-gen-schema-port";
+    # Den and the entity/scope libraries used by local fleet schemas.
+    den.url = "github:denful/den/5f78bef87047c5ecd632a5a23c9b3718f1de3301";
 
-    # gen-schema (entity schema library required by den fork)
-    gen-schema.url = "github:sini/gen-schema";
-    gen-schema.inputs.nixpkgs.follows = "nixpkgs";
+    gen-algebra.url = "github:sini/gen-algebra/eb98c3acc4167ba30addb12edbfbb5de9706e095";
 
-    scope-engine.url = "github:sini/scope-engine";
+    gen-schema.url = "github:sini/gen-schema/fd79d909cf5a84be0f902dacf4202044642d44af";
 
-    # Algebraic validators for entity schemas
-    gen-algebra.url = "github:sini/gen-algebra";
+    gen-lsp = {
+      url = "github:sini/gen-lsp/6d5f4cef2676cbfddc0ed7399197d68966c18454";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    gen-scope.url = "github:sini/gen-scope/3bc93dfdb49da9ae06ce84a1d35905a1c138de99";
 
     # agenix + agenix-rekey declared by batteries/agenix.nix (self-contained)
 
@@ -46,7 +48,7 @@
 
     # Remote ZFS unlock
     hoopsnake = {
-      url = "github:boinkor-net/hoopsnake/be96a49b7b212eef04f365bb75c8df947d96d1fd";
+      url = "github:boinkor-net/hoopsnake/106a95e01352db2143f355fba1a328c887e0c807";
       inputs = {
         nixpkgs.follows = "nixpkgs";
         flake-parts.follows = "flake-parts";

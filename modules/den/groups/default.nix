@@ -1,8 +1,7 @@
 # Group definitions for access policy resolution.
 #
-# Transitive membership: members of a group inherit that group's privileges.
-# Example: system-access → workstation-access → wheel
-# means anyone with system-access transitively gets wheel.
+# `members` points from a containing group to member groups. A direct member
+# of the listed group therefore inherits membership in this containing group.
 #
 # GIDs match deterministic-uids.nix registry.
 {
@@ -12,31 +11,31 @@
       description = "Sudo access";
       labels = [ "posix" ];
       gid = 10;
-      members = [ "workstation-access" ];
+      members = [ "admins" ];
     };
 
     # Access control groups (500-509)
     admins = {
-      description = "Full administrative access";
+      description = "Administrative role; privilege only, not machine login";
       labels = [ "posix" ];
       gid = 500;
     };
 
     system-access = {
-      description = "Grants Unix account creation on hosts with matching system-access-groups";
+      description = "Broad login access to ordinary machines";
       labels = [ "posix" ];
       gid = 501;
     };
 
     server-access = {
-      description = "Access to server hosts (implies system-access)";
+      description = "Login access to server hosts";
       labels = [ "posix" ];
       gid = 502;
       members = [ "system-access" ];
     };
 
     workstation-access = {
-      description = "Access to workstation hosts (implies system-access, wheel)";
+      description = "Login access to workstation hosts";
       labels = [ "posix" ];
       gid = 503;
       members = [ "system-access" ];
