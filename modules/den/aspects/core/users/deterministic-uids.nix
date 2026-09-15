@@ -1,11 +1,30 @@
-# Deterministic UIDs/GIDs — consistent IDs across all hosts for NFS and service accounts.
+# Deterministic UIDs/GIDs — default IDs for service accounts across the fleet.
 #
 # Ported from main:modules/_legacy/core/deterministic-uids/
-# The option module defines `users.deterministicIds` which auto-assigns uid/gid
-# to users/groups via mkDefault. The data module provides the central ID registry.
+# The option module defines `users.deterministicIds` which supplies uid/gid via
+# mkDefault. The data module provides the central ID registry.
 #
-# UID/GID Layout:
-#   10        wheel (standard Linux)
+# These entries are FALLBACKS, not a fleet-wide contract:
+#
+#   - They apply only where nothing stronger already defines the identity. A
+#     nixpkgs service module that creates its own account wins, which is why
+#     several entries below resolve to a different number than they declare
+#     (nginx, chrony, audio, video, render, kvm, docker, and others).
+#   - Shadowing an upstream name is therefore expected, not a defect. Do not
+#     rename or renumber an entry to remove a divergence from nixpkgs.
+#   - A group the platform owns outright, such as `wheel`, is not listed here at
+#     all: inventing a number for it would only be wrong.
+#   - What they must guarantee is that nothing is left non-deterministic: every
+#     user and group that exists on a host has an ID, which is asserted below.
+#
+# Groups the fleet owns need more than a fallback: a GID declared on a
+# `den.groups` entry carrying the `posix` label is the exact fleet identity, and
+# the resolved GID must equal it, which fleet-groups.nix asserts. That matters
+# wherever the capability is actually used as one — a shared tree, an export, a
+# container mapping — and costs nothing where it is not.
+#
+# Number layout (a guide for choosing a free number, not a statement about the
+# value that resolves on a host):
 #   500-599   All groups — access control, POSIX, service groups (100 slots)
 #   600-649   Core system daemons (50 slots)
 #   650-699   Infrastructure services (50 slots)
@@ -135,23 +154,40 @@
         };
 
         config.users.deterministicIds = {
-          # ── Standard Linux groups ────────────────────────────────────
-          wheel = { gid = 10; };
-
           # ── All groups (500-599) ────────────────────────────────────
           # Access control groups
-          admins = { gid = 500; };
-          system-access = { gid = 501; };
-          server-access = { gid = 502; };
-          workstation-access = { gid = 503; };
+          admins = {
+            gid = 500;
+          };
+          system-access = {
+            gid = 501;
+          };
+          server-access = {
+            gid = 502;
+          };
+          workstation-access = {
+            gid = 503;
+          };
 
           # POSIX service groups (add as needed)
-          docker = { gid = 510; };
-          kvm = { gid = 511; };
-          audio = { gid = 512; };
-          video = { gid = 513; };
-          render = { gid = 514; };
-          i2c = { gid = 515; };
+          docker = {
+            gid = 510;
+          };
+          kvm = {
+            gid = 511;
+          };
+          audio = {
+            gid = 512;
+          };
+          video = {
+            gid = 513;
+          };
+          render = {
+            gid = 514;
+          };
+          i2c = {
+            gid = 515;
+          };
 
           # ── Core system daemons (600-649) ───────────────────────────
           systemd-oom = uidGid 600;

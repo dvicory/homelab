@@ -2,7 +2,7 @@
   lib,
   inputs,
   den,
-  self,
+  rootPath,
   ...
 }:
 let
@@ -93,79 +93,15 @@ let
     };
   };
 
-  # Dynamic settings type — recursively discovers aspects that declare .settings.
-  # Mirrors the aspect tree: den.aspects.services.mergerfs.settings →
-  # host.settings.services.mergerfs.*
-  settingsType =
-    let
-      inherit (den.lib.aspects.fx.keyClassification) structuralKeysSet;
-      classKeys = den.classes or { };
-      quirkKeys = den.quirks or { };
-      skipKey = k: structuralKeysSet ? ${k} || classKeys ? ${k} || quirkKeys ? ${k};
-
-      reshapeSettings =
-        raw:
-        let
-          imports' = raw.imports or [ ];
-          config' = raw.config or { };
-        in
-        {
-          imports = imports';
-          config = config';
-          options = removeAttrs raw [
-            "imports"
-            "config"
-          ];
-        };
-
-      hasSettingsDeep =
-        node:
-        builtins.isAttrs node
-        && (
-          (node ? settings)
-          || lib.any (k: !(skipKey k) && hasSettingsDeep (node.${k} or null)) (builtins.attrNames node)
-        );
-
-      nodeModule =
-        node:
-        let
-          ownSettings =
-            if node ? settings then
-              reshapeSettings node.settings
-            else
-              {
-                imports = [ ];
-                config = { };
-                options = { };
-              };
-          settingChildren = lib.filterAttrs (
-            k: v: !(skipKey k) && builtins.isAttrs v && hasSettingsDeep v
-          ) node;
-          childOptions = lib.mapAttrs (
-            name: child:
-            mkOption {
-              type = types.submodule (nodeModule child);
-              default = { };
-              description = "Settings under ${name}";
-            }
-          ) settingChildren;
-          ownImports = ownSettings.imports or [ ];
-          ownConfig = ownSettings.config or { };
-        in
-        {
-          imports = ownImports;
-          config = ownConfig;
-          options = (ownSettings.options or { }) // childOptions;
-        };
-    in
-    types.submodule (nodeModule (den.aspects or { }));
+  # Aspect settings are strict modules shared by host and user entity schemas.
+  settingsType = import ./_settings-type.nix { inherit lib den; };
 in
 {
-  den.schema.host = { lib, ... }: {
-    isEntity = true;
-
-    imports = [
-      ({ config, ... }: {
+  den.schema.host.isEntity = true;
+  den.schema.host.imports = [
+    (
+      { config, ... }:
+      {
         options = {
           channel = mkOption {
             type = types.str;
@@ -175,7 +111,6 @@ in
 
           environment = mkOption {
             type = types.str;
-            default = "prod";
             description = "Environment name this host belongs to";
           };
 
@@ -188,7 +123,7 @@ in
           system-access-groups = mkOption {
             type = types.listOf types.str;
             default = [ ];
-            description = "Groups granting Unix account creation on this host";
+            description = "Group capabilities that permit Unix account presence on this host";
           };
 
           ipv4 = mkOption {
@@ -355,10 +290,8 @@ in
         };
 
         config = {
-          secretPath = lib.mkDefault (
-            self + "/.secrets/hosts/${config.name}"
-          );
-          facts = lib.mkDefault (self + "/hosts/${config.name}/facter.json");
+          secretPath = lib.mkDefault (rootPath + "/.secrets/hosts/${config.name}");
+          facts = lib.mkDefault (rootPath + "/hosts/${config.name}/facter.json");
           public_key = lib.mkDefault (
             if config.secretPath != null then config.secretPath + "/runtime_host_key.pub" else null
           );
@@ -367,7 +300,7 @@ in
 
           home-manager.module = lib.mkDefault inputs.home-manager.nixosModules.home-manager;
         };
-      })
-    ];
-  };
+      }
+    )
+  ];
 }

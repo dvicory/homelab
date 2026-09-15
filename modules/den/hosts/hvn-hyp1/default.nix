@@ -1,15 +1,106 @@
-{ den, inputs, ... }: {
+{
+  den,
+  inputs,
+  config,
+  lib,
+  ...
+}:
+let
+  clusterResources = config.flake.clusterResources.prod-home;
+in
+{
   den.hosts.x86_64-linux.hvn-hyp1 = {
     environment = "prod";
-    system-access-groups = [ "system-access" "workload-access" ];
+    system-access-groups = [
+      "server-access"
+      "workload-access"
+    ];
 
     settings = {
       core.nix.gc.enable = false;
-      services.mergerfs.pools."/mnt/storage/media" = {
+      virtualization.compute =
+        { config, ... }:
+        {
+          config = {
+            stateRoot = "/var/lib/homelab/compute-1/state";
+            address = "10.210.0.10";
+            pool = "incus-compute";
+            network = "incus-compute";
+            idmapBase = 1000000;
+            idmapSize = 65536;
+            identityPath = "/var/lib/homelab/compute-1/identity";
+            project = "compute";
+            instance = "compute-1";
+            profile = "compute-1";
+            retainedPaths = lib.mapAttrs (
+              name: entry:
+              entry
+              // {
+                path = "${config.stateRoot}/${name}";
+                guestPath = "/srv/state/${name}";
+              }
+            ) clusterResources.retainedPaths;
+            runtimeSecrets = clusterResources.runtimeSecrets;
+            storageCapabilities = [ "media" ];
+            config = {
+              "boot.autostart" = "true";
+              "limits.cpu" = "4";
+              "limits.memory" = "12GiB";
+              "limits.processes" = "8192";
+              "security.guestapi" = "false";
+              # raw.idmap is derived from storageCapabilities: the ordinary
+              # contiguous shift for everything, with an identity mapping for
+              # each declared capability GID.
+              "security.idmap.isolated" = "true";
+              "security.nesting" = "true";
+              "security.privileged" = "false";
+            };
+            devices = {
+              root = {
+                path = "/";
+                inherit (config) pool;
+                type = "disk";
+              };
+              eth0 = {
+                name = "eth0";
+                inherit (config) network;
+                type = "nic";
+                "ipv4.address" = config.address;
+                host_name = "veth-comp-1";
+              };
+              media = {
+                path = "/srv/media";
+                propagation = "rslave";
+                recursive = "true";
+                # Bind the stable parent, not the replaceable filesystem root.
+                # rslave carries data/ mount changes into the running guest;
+                # recursive includes an already-mounted pool at guest startup.
+                # The absent data/ mount stays mode 0000. Its parent contains
+                # no application data and remains available during an outage.
+                required = "false";
+                source = "/srv/media";
+                type = "disk";
+              };
+              identity = {
+                path = "/srv/identity";
+                readonly = "true";
+                required = "true";
+                source = config.identityPath;
+                type = "disk";
+              };
+            };
+          };
+        };
+      services.mergerfs.pools."/srv/media/data" = {
         branches = [
           "/mnt/storage-clear/media1"
           "/mnt/storage-clear/media2"
           "/mnt/storage-clear/media3"
+        ];
+        depends = [
+          "gocryptfs-media1.service"
+          "gocryptfs-media2.service"
+          "gocryptfs-media3.service"
         ];
       };
       services.hermes.agent = {
@@ -64,6 +155,10 @@
       den.aspects.core.facter
       den.aspects.core.base
       den.aspects.virtualization.incus
+      den.aspects.virtualization.compute
+      den.aspects.services.media-namespace
+      den.aspects.services.storage-roots
+      den.aspects.services.kubernetes-runtime-secrets
       den.aspects.disk.zfs
       den.aspects.disk.zfs.provides.pool
       den.aspects.disk.impermanence
@@ -77,107 +172,132 @@
       den.aspects.workloads.hermes.deploy
     ];
 
-    nixos = { config, pkgs, lib, ... }: let
-      mkGocryptfsMount = { name, device, passfile }: {
-        fileSystems.${device} = {
-          device = "/dev/disk/by-label/${baseNameOf device}";
-          fsType = "btrfs";
-          options = [ "noatime" ];
-        };
-
-        systemd.services."gocryptfs-${baseNameOf name}" = {
-          description = "gocryptfs mount ${name}";
-          wantedBy = [ "multi-user.target" ];
-          reloadIfChanged = true;
-          restartIfChanged = false;
-          stopIfChanged = false;
-
-          serviceConfig = {
-            Type = "oneshot";
-            RemainAfterExit = true;
-            ExecStart = pkgs.writeShellScript "mount-gocryptfs-${baseNameOf name}" ''
-              if mountpoint -q "${name}"; then
-                ${pkgs.fuse3}/bin/fusermount3 -uz "${name}" 2>/dev/null || true
-              fi
-              mkdir -p "${name}"
-              ${pkgs.gocryptfs}/bin/gocryptfs -allow_other -passfile=${passfile} ${device}/crypt "${name}"
-            '';
-            ExecStop = "${pkgs.fuse3}/bin/fusermount3 -uz ${name}";
-            ExecReload = pkgs.writeShellScript "reload-gocryptfs-${baseNameOf name}" ''
-              ${pkgs.fuse3}/bin/fusermount3 -uz "${name}" 2>/dev/null || true
-              ${pkgs.gocryptfs}/bin/gocryptfs -allow_other -passfile=${passfile} ${device}/crypt "${name}"
-            '';
-          };
-        };
-      };
-    in lib.mkMerge [
+    nixos =
       {
-        networking = {
-          hostName = "hvn-hyp1";
-          hostId = "2f618214";
-        };
+        config,
+        pkgs,
+        lib,
+        utils,
+        ...
+      }:
+      let
+        mkGocryptfsMount =
+          {
+            name,
+            device,
+            passfile,
+          }:
+          let
+            backingUnit = "${utils.escapeSystemdPath device}.mount";
+          in
+          {
+            fileSystems.${device} = {
+              device = "/dev/disk/by-label/${baseNameOf device}";
+              fsType = "btrfs";
+              options = [ "noatime" ];
+            };
 
-        secretRequests = {
-          "gocryptfs-media1" = {
-            provider = "agenix";
-            ageFile = inputs.self + "/.secrets/hosts/hvn-hyp1/gocryptfs-media1.age";
-            mode = "0400";
-            restartUnits = [ "gocryptfs-media1" ];
+            # A bare branch mountpoint must never look usable: tmpfiles owns
+            # it root:root 0000, and only a successful gocryptfs mount makes
+            # it accessible. The pool's branch guard then refuses unmounted
+            # branches instead of serving a smaller pool.
+            systemd.tmpfiles.rules = [ "d ${name} 0000 root root -" ];
+
+            systemd.services."gocryptfs-${baseNameOf name}" = {
+              description = "gocryptfs mount ${name}";
+              wantedBy = [ "multi-user.target" ];
+              after = [ backingUnit ];
+              bindsTo = [ backingUnit ];
+              reloadIfChanged = true;
+              restartIfChanged = false;
+              stopIfChanged = false;
+              serviceConfig = {
+                Type = "oneshot";
+                RemainAfterExit = true;
+                ExecStart = pkgs.writeShellScript "mount-gocryptfs-${baseNameOf name}" ''
+                  set -eu
+                  if mountpoint -q "${name}"; then
+                    ${pkgs.fuse3}/bin/fusermount3 -uz "${name}"
+                  fi
+                  install -d -m 0000 -o root -g root "${name}"
+                  ${pkgs.gocryptfs}/bin/gocryptfs -allow_other -passfile=${passfile} ${device}/crypt "${name}"
+                '';
+                ExecStop = "${pkgs.fuse3}/bin/fusermount3 -uz ${name}";
+                ExecReload = pkgs.writeShellScript "reload-gocryptfs-${baseNameOf name}" ''
+                  ${pkgs.fuse3}/bin/fusermount3 -uz "${name}" 2>/dev/null || true
+                  ${pkgs.gocryptfs}/bin/gocryptfs -allow_other -passfile=${passfile} ${device}/crypt "${name}"
+                '';
+              };
+            };
           };
-          "gocryptfs-media2" = {
-            provider = "agenix";
-            ageFile = inputs.self + "/.secrets/hosts/hvn-hyp1/gocryptfs-media2.age";
-            mode = "0400";
-            restartUnits = [ "gocryptfs-media2" ];
+      in
+      lib.mkMerge [
+        {
+          networking = {
+            hostName = "hvn-hyp1";
+            hostId = "2f618214";
           };
-          "gocryptfs-media3" = {
-            provider = "agenix";
-            ageFile = inputs.self + "/.secrets/hosts/hvn-hyp1/gocryptfs-media3.age";
-            mode = "0400";
-            restartUnits = [ "gocryptfs-media3" ];
+
+          secretRequests = {
+            "gocryptfs-media1" = {
+              provider = "agenix";
+              ageFile = inputs.self + "/.secrets/hosts/hvn-hyp1/gocryptfs-media1.age";
+              mode = "0400";
+              restartUnits = [ "gocryptfs-media1" ];
+            };
+            "gocryptfs-media2" = {
+              provider = "agenix";
+              ageFile = inputs.self + "/.secrets/hosts/hvn-hyp1/gocryptfs-media2.age";
+              mode = "0400";
+              restartUnits = [ "gocryptfs-media2" ];
+            };
+            "gocryptfs-media3" = {
+              provider = "agenix";
+              ageFile = inputs.self + "/.secrets/hosts/hvn-hyp1/gocryptfs-media3.age";
+              mode = "0400";
+              restartUnits = [ "gocryptfs-media3" ];
+            };
           };
-        };
 
+          boot.kernelParams = [
+            "console=tty0"
+            "random.trust_cpu=on"
+            "random.trust_bootloader=on"
+          ];
 
-        boot.kernelParams = [
-          "console=tty0"
-          "random.trust_cpu=on"
-          "random.trust_bootloader=on"
-        ];
+          boot.initrd.availableKernelModules = [ ];
+          hardware.enableAllHardware = false;
 
-        boot.initrd.availableKernelModules = [ ];
-        hardware.enableAllHardware = false;
+          systemd.services."getty@tty1".enable = true;
+          systemd.services."serial-getty@ttyS0".enable = true;
 
-        systemd.services."getty@tty1".enable = true;
-        systemd.services."serial-getty@ttyS0".enable = true;
+          environment.systemPackages = [ pkgs.gocryptfs ];
 
-        environment.systemPackages = [ pkgs.gocryptfs ];
+          deployment = {
+            enable = true;
+            target = "172.27.50.17";
+            sshUser = "daniel";
+            knownHostsPath = "modules/den/hosts/hvn-hyp1/known_hosts";
+          };
+        }
 
-        deployment = {
-          enable = true;
-          target = "172.27.50.17";
-          sshUser = "daniel";
-          knownHostsPath = "modules/den/hosts/hvn-hyp1/known_hosts";
-        };
-      }
+        (mkGocryptfsMount {
+          name = "/mnt/storage-clear/media1";
+          device = "/mnt/storage-crypt/media1";
+          passfile = config.age.secrets."gocryptfs-media1".path;
+        })
 
-      (mkGocryptfsMount {
-        name = "/mnt/storage-clear/media1";
-        device = "/mnt/storage-crypt/media1";
-        passfile = config.age.secrets."gocryptfs-media1".path;
-      })
+        (mkGocryptfsMount {
+          name = "/mnt/storage-clear/media2";
+          device = "/mnt/storage-crypt/media2";
+          passfile = config.age.secrets."gocryptfs-media2".path;
+        })
 
-      (mkGocryptfsMount {
-        name = "/mnt/storage-clear/media2";
-        device = "/mnt/storage-crypt/media2";
-        passfile = config.age.secrets."gocryptfs-media2".path;
-      })
-
-      (mkGocryptfsMount {
-        name = "/mnt/storage-clear/media3";
-        device = "/mnt/storage-crypt/media3";
-        passfile = config.age.secrets."gocryptfs-media3".path;
-      })
-    ];
+        (mkGocryptfsMount {
+          name = "/mnt/storage-clear/media3";
+          device = "/mnt/storage-crypt/media3";
+          passfile = config.age.secrets."gocryptfs-media3".path;
+        })
+      ];
   };
 }

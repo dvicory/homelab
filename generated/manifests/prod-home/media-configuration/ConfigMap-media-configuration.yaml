@@ -1,0 +1,169 @@
+apiVersion: v1
+data:
+  config.yml: "# Configarr v1.30.2: the Git URLs intentionally point at detached local\n# repositories seeded from the selected TRaSH revision before each run.\ntrashGuideUrl: \"file:///app/repos/trash-guides\"\ntrashRevision: HEAD\nrecyclarrConfigUrl: \"file:///app/repos/recyclarr-config\"\nrecyclarrRevision: HEAD\nlocalConfigTemplatesPath: \"/app/templates\"\ntelemetry: false\nsonarr:\n  \"sonarr\":\n    base_url: \"http://sonarr.media.svc:8989\"\n    api_key: !env SONARR_API_KEY\n    quality_definition:\n      type: series\n    include:\n      - template: \"media-sonarr-sonarr\"\n    download_clients:\n      update_password: true\n      data:\n        - name: \"SABnzbd (Homelab)\"\n          type: \"Sabnzbd\"\n          enable: true\n          priority: 1\n          remove_completed_downloads: true\n          remove_failed_downloads: true\n          fields:\n            host: \"sabnzbd.media.svc\"\n            port: 8080\n            use_ssl: false\n            url_base: \"\"\n            api_key: !env SABNZBD_API_KEY\n            username: !env SABNZBD_USERNAME\n            password: !env SABNZBD_PASSWORD\n            tv_category: \"tv\"\n  \nradarr:\n  \"radarr\":\n    base_url: \"http://radarr.media.svc:7878\"\n    api_key: !env RADARR_API_KEY\n    quality_definition:\n      type: movie\n    include:\n      - template: \"media-radarr-radarr\"\n    download_clients:\n      update_password: true\n      data:\n        - name: \"SABnzbd (Homelab)\"\n          type: \"Sabnzbd\"\n          enable: true\n          priority: 1\n          remove_completed_downloads: true\n          remove_failed_downloads: true\n          fields:\n            host: \"sabnzbd.media.svc\"\n            port: 8080\n            use_ssl: false\n            url_base: \"\"\n            api_key: !env SABNZBD_API_KEY\n            username: !env SABNZBD_USERNAME\n            password: !env SABNZBD_PASSWORD\n            movie_category: \"movies\"\n  \n"
+  roots.json: '{"arr":{"radarr":{"radarr":{"apiSecretKey":"RADARR_API_KEY","category":"movies","externalUrl":"https://radarr.plus2.danielvicory.dev","profile":"WEB-1080p","root":"/data/library/movies","url":"http://radarr.media.svc:7878"}},"sonarr":{"sonarr":{"apiSecretKey":"SONARR_API_KEY","category":"tv","externalUrl":"https://sonarr.plus2.danielvicory.dev","profile":"WEB-1080p","root":"/data/library/tv","url":"http://sonarr.media.svc:8989"}}}}'
+  roots.mjs: |
+    import { readFileSync } from 'node:fs';
+    const policy = JSON.parse(readFileSync('/configuration/roots.json', 'utf8'));
+    const secret = name => {
+      const value = readFileSync('/secrets/' + name, 'utf8').replace(/\r?\n$/, "");
+      if (!value.trim()) throw new Error('Empty required Secret key: ' + name);
+      return value;
+    };
+    function api(base, headers = {}) {
+      return async (path, method = 'GET', body) => {
+        let response;
+        try {
+          response = await fetch(base + path, {
+            method,
+            headers: { 'Content-Type': 'application/json', ...headers },
+            body: body === undefined ? undefined : JSON.stringify(body),
+            signal: AbortSignal.timeout(20000),
+            redirect: 'error',
+          });
+        } catch {
+          throw new Error(method + ' ' + path + ': dependency unreachable');
+        }
+        if (!response.ok) throw new Error(method + ' ' + path + ': HTTP ' + response.status);
+        const text = await response.text();
+        return text ? JSON.parse(text) : null;
+      };
+    }
+    function one(items, predicate, label) {
+      const matches = items.filter(predicate);
+      if (matches.length > 1) throw new Error('Ambiguous managed ' + label);
+      return matches[0];
+    }
+    for (const [kind, instances] of Object.entries(policy.arr)) {
+      for (const desired of Object.values(instances)) {
+        const request = api(desired.url + '/api/v3', { 'X-Api-Key': secret(desired.apiSecretKey) });
+        const roots = await request('/rootfolder');
+        if (!one(roots, root => root.path === desired.root, 'root')) {
+          await request('/rootfolder', 'POST', { path: desired.root });
+        }
+      }
+    }
+    console.log('media roots: declared roots reconciled');
+  seerr.json: '{"arr":{"radarr":{"apiSecretKey":"RADARR_API_KEY","category":"movies","externalUrl":"https://radarr.plus2.danielvicory.dev","name":"radarr","profile":"WEB-1080p","root":"/data/library/movies","url":"http://radarr.media.svc:7878"},"sonarr":{"apiSecretKey":"SONARR_API_KEY","category":"tv","externalUrl":"https://sonarr.plus2.danielvicory.dev","name":"sonarr","profile":"WEB-1080p","root":"/data/library/tv","url":"http://sonarr.media.svc:8989"}},"jellyfin":{"externalHostname":"https://jellyfin.plus2.danielvicory.dev","ip":"jellyfin.jellyfin.svc","port":8096,"urlBase":"","useSsl":false},"sab":{"host":"sabnzbd.media.svc","port":8080},"seerr":{"applicationUrl":"https://requests.plus2.danielvicory.dev","url":"http://seerr.media.svc:5055"}}'
+  seerr.mjs: |
+    import { readFileSync, existsSync } from 'node:fs';
+    const policy = JSON.parse(readFileSync('/configuration/seerr.json', 'utf8'));
+    const secret = name => {
+      const value = readFileSync('/secrets/' + name, 'utf8').replace(/\r?\n$/, "");
+      if (!value.trim()) throw new Error('Empty required Secret key: ' + name);
+      return value;
+    };
+    function api(base, headers = {}) {
+      const cookies = new Map();
+      return async (path, method = 'GET', body) => {
+        let response;
+        try {
+          response = await fetch(base + path, {
+            method,
+            headers: { 'Content-Type': 'application/json', ...headers,
+              ...(cookies.size ? { Cookie: [...cookies].map(([k, v]) => k + '=' + v).join('; ') } : {}),
+              ...(cookies.has('XSRF-TOKEN') ? { 'X-XSRF-TOKEN': decodeURIComponent(cookies.get('XSRF-TOKEN')) } : {}),
+            },
+            body: body === undefined ? undefined : JSON.stringify(body),
+            signal: AbortSignal.timeout(20000),
+            redirect: 'error',
+          });
+        } catch {
+          throw new Error(method + ' ' + path + ': dependency unreachable');
+        }
+        if (!response.ok) throw new Error(method + ' ' + path + ': HTTP ' + response.status);
+        for (const cookie of response.headers.getSetCookie()) {
+          const pair = cookie.split(';')[0], index = pair.indexOf('=');
+          cookies.set(pair.slice(0, index), pair.slice(index + 1));
+        }
+        const text = await response.text();
+        try { return text ? JSON.parse(text) : null; }
+        catch { throw new Error(method + ' ' + path + ': invalid JSON response'); }
+      };
+    }
+    function one(items, predicate, label) {
+      const matches = items.filter(predicate);
+      if (matches.length > 1) throw new Error('Ambiguous managed ' + label);
+      return matches[0];
+    }
+    async function configure() {
+      const base = policy.seerr.url + '/api/v1';
+      const headers = { Origin: policy.seerr.url };
+      const request = api(base, headers);
+      const publicSettings = await request('/settings/public');
+      if (existsSync('/secrets/SEERR_API_KEY')) {
+        headers['X-Api-Key'] = secret('SEERR_API_KEY');
+      } else {
+        const login = {
+          username: secret('JELLYFIN_OWNER_USERNAME'),
+          password: secret('JELLYFIN_OWNER_PASSWORD'),
+          email: secret('JELLYFIN_OWNER_EMAIL'),
+          serverType: 2,
+        };
+        if (publicSettings.mediaServerType === 4) Object.assign(login, {
+          hostname: policy.jellyfin.ip,
+          port: policy.jellyfin.port,
+          useSsl: policy.jellyfin.useSsl,
+          urlBase: policy.jellyfin.urlBase,
+        });
+        const session = await request('/auth/jellyfin', 'POST', login);
+        if (session.id !== 1) throw new Error('Runtime Jellyfin account is not the Seerr owner (id 1)');
+        headers['X-Api-Key'] = (await request('/settings/main')).apiKey;
+      }
+      const owner = await request('/auth/me');
+      if (owner.id !== 1) throw new Error('Configuration requires Seerr owner');
+      await request('/settings/jellyfin', 'POST', policy.jellyfin);
+      await request('/settings/main', 'POST', { applicationUrl: policy.seerr.applicationUrl });
+      for (const [name, desired] of Object.entries(policy.arr)) {
+        const profiles = await api(desired.url + '/api/v3', { 'X-Api-Key': secret(desired.apiSecretKey) })('/qualityprofile');
+        const profile = one(profiles, item => item.name === desired.profile, 'Seerr quality profile');
+        if (!profile) throw new Error('Run Configarr before Seerr');
+        const path = '/settings/' + name;
+        const connectionName = name === 'radarr' ? 'Radarr' : 'Sonarr';
+        const existing = one(await request(path), item => item.name === connectionName, 'Seerr connection');
+        const url = new URL(desired.url);
+        const server = {
+          tags: [], overrideRule: [], tagRequests: false,
+          ...(existing || {}),
+          name: connectionName,
+          hostname: url.hostname,
+          port: Number(url.port),
+          useSsl: false,
+          baseUrl: url.pathname === '/' ? "" : url.pathname,
+          apiKey: secret(desired.apiSecretKey),
+          activeProfileId: profile.id,
+          activeProfileName: desired.profile,
+          activeDirectory: desired.root,
+          externalUrl: desired.externalUrl,
+          isDefault: true,
+          is4k: false,
+          syncEnabled: true,
+          preventSearch: false,
+          ...(name === 'radarr' ? { minimumAvailability: 'released' } : {
+            seriesType: 'standard',
+            animeSeriesType: 'anime',
+            activeAnimeProfileId: profile.id,
+            activeAnimeProfileName: desired.profile,
+            activeAnimeDirectory: desired.root,
+            enableSeasonFolders: true,
+            monitorNewItems: 'all',
+          }),
+        };
+        delete server.id;
+        await request(path + '/test', 'POST', server);
+        await request(path + (existing ? '/' + existing.id : ""), existing ? 'PUT' : 'POST', server);
+      }
+      await request('/settings/initialize', 'POST');
+    }
+    try {
+      await configure();
+      console.log('seerr: declared Jellyfin and Arr servers reconciled');
+    } catch (error) {
+      console.error(error.message);
+      process.exitCode = 1;
+    }
+  trash-guide-revision: 04e692c8926f6b9736943afcd9b505bad29f5e54
+kind: ConfigMap
+metadata:
+  name: media-configuration
+  namespace: media

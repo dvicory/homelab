@@ -38,36 +38,15 @@ in
   # environment -> hosts: walk den.hosts whose environment matches.
   den.policies.env-to-hosts =
     { environment, ... }:
-    let
-      inherit (config) fleet;
-      envGrant = (fleet.user-access.by-environment.${environment.name} or { groups = [ ]; }).groups;
-      envGate = environment.system-access-groups or [ ];
-    in
     lib.concatMap (
       system:
       lib.concatMap (
         hostName:
         let
           hostCfg = den.hosts.${system}.${hostName};
-          hostGrant = (fleet.user-access.by-host.${hostName} or { groups = [ ]; }).groups;
-          hostGate = hostCfg.system-access-groups;
-          # Effective gate: union of env + host gates (matching main's mergedAccessGroups)
-          effectiveGate = lib.unique (envGate ++ hostGate);
-          # Effective grant: union of env + host grants + host gates
-          # (host system-access-groups is both a gate and an implicit grant)
-          allGrants = lib.unique (envGrant ++ hostGrant ++ hostGate);
-          # Users must match both a grant AND a gate group
-          accessGroups =
-            if effectiveGate == [ ] then
-              allGrants
-            else
-              builtins.filter (g: builtins.elem g effectiveGate) allGrants;
         in
-        lib.optionals ((hostCfg.environment or "prod") == environment.name && hostCfg.intoAttr != [ ]) [
-          (resolve.to "host" {
-            host = hostCfg;
-            inherit accessGroups;
-          })
+        lib.optionals (hostCfg.environment == environment.name && hostCfg.intoAttr != [ ]) [
+          (resolve.to "host" { host = hostCfg; })
           (den.lib.policy.instantiate hostCfg)
         ]
       ) (builtins.attrNames (den.hosts.${system} or { }))
@@ -83,7 +62,7 @@ in
         lib.concatMap (
           hostName:
           let hostCfg = den.hosts.${system}.${hostName} or { };
-          in lib.optional ((hostCfg.environment or "prod") == environment.name) hostName
+          in lib.optional (hostCfg.environment == environment.name) hostName
         ) (builtins.attrNames (den.hosts.${system} or { }))
       ) (builtins.attrNames (den.hosts or { }));
 

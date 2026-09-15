@@ -1,0 +1,8 @@
+apiVersion: v1
+data:
+  members.json: '["daniel"]'
+  state.json: '{"groups":{"homelab-admin":{"members":[],"overwriteMembers":true}},"persons":{"daniel":{"displayName":"Daniel Vicory","mailAddresses":["daniel@danielvicory.dev"]}},"systems":{"oauth2":{"household-admin":{"allowInsecureClientDisablePkce":false,"displayName":"Household administration","originLanding":"https://argocd.plus2.danielvicory.dev/","originUrl":["https://argocd.plus2.danielvicory.dev/oauth2/callback","https://argocd.backup.plus2.danielvicory.dev/oauth2/callback","https://grafana.plus2.danielvicory.dev/oauth2/callback","https://grafana.backup.plus2.danielvicory.dev/oauth2/callback","https://radarr.plus2.danielvicory.dev/oauth2/callback","https://radarr.backup.plus2.danielvicory.dev/oauth2/callback","https://sabnzbd.plus2.danielvicory.dev/oauth2/callback","https://sabnzbd.backup.plus2.danielvicory.dev/oauth2/callback","https://sonarr.plus2.danielvicory.dev/oauth2/callback","https://sonarr.backup.plus2.danielvicory.dev/oauth2/callback"],"preferShortUsername":true,"public":false,"removeOrphanedClaimMaps":true,"scopeMaps":{},"supplementaryScopeMaps":{}}}}}'
+kind: ConfigMap
+metadata:
+  name: kanidm-provision
+  namespace: identity

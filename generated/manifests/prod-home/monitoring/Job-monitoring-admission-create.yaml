@@ -1,0 +1,60 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+  labels:
+    app: kube-prometheus-stack-admission-create
+    app.kubernetes.io/component: prometheus-operator-webhook
+    app.kubernetes.io/instance: monitoring
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: kube-prometheus-stack-prometheus-operator
+    app.kubernetes.io/part-of: kube-prometheus-stack
+    app.kubernetes.io/version: 88.6.2
+    chart: kube-prometheus-stack-88.6.2
+    heritage: Helm
+    release: monitoring
+  name: monitoring-admission-create
+  namespace: monitoring
+spec:
+  template:
+    metadata:
+      labels:
+        app: kube-prometheus-stack-admission-create
+        app.kubernetes.io/component: prometheus-operator-webhook
+        app.kubernetes.io/instance: monitoring
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: kube-prometheus-stack-prometheus-operator
+        app.kubernetes.io/part-of: kube-prometheus-stack
+        app.kubernetes.io/version: 88.6.2
+        chart: kube-prometheus-stack-88.6.2
+        heritage: Helm
+        release: monitoring
+      name: monitoring-admission-create
+    spec:
+      containers:
+        - args:
+            - create
+            - --host=monitoring-operator,monitoring-operator.monitoring.svc
+            - --namespace=monitoring
+            - --secret-name=monitoring-admission
+          image: ghcr.io/jkroepke/kube-webhook-certgen:1.8.8
+          imagePullPolicy: IfNotPresent
+          name: create
+          resources: {}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+      restartPolicy: OnFailure
+      securityContext:
+        runAsGroup: 2000
+        runAsNonRoot: true
+        runAsUser: 2000
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: monitoring-admission
+  ttlSecondsAfterFinished: 60

@@ -1,0 +1,37 @@
+# Ordinary upstream chart values: no Homelab application definition.
+# Uses the prepared monitoring namespace and its host-staged administrator Secret.
+admin:
+  existingSecret: grafana-admin
+
+image:
+  sha: 3600073f45a9895d2e2c4042da0e745819f5b78bf781266952a400c40dcd8d69
+
+persistence:
+  enabled: true
+  storageClassName: retained-local
+  size: 1Gi
+  annotations:
+    helm.sh/resource-policy: keep
+
+service:
+  type: ClusterIP
+
+deploymentStrategy:
+  type: Recreate
+
+# Use the chart's non-root defaults; storage must support its fsGroup.
+initChownData:
+  enabled: false
+rbac:
+  create: false
+automountServiceAccountToken: false
+testFramework:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi

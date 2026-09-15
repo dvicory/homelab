@@ -28,7 +28,8 @@ let
       ...
     }:
     let
-      hasIdentity = (user.identity.sshKeys or [ ]) != [ ];
+      materializeSecrets = host.settings.core.users.secrets.enable or true;
+      hasIdentity = materializeSecrets && (user.identity.sshKeys or [ ]) != [ ];
       identityFile = self + "/.secrets/users/${user.name}/user-identity-${user.name}.age";
       identityPub = self + "/.secrets/users/${user.name}/user-identity-${user.name}.pub";
 
@@ -64,7 +65,7 @@ let
     {
       name = "agenix-identity/${user.name}@${host.name}";
       ${host.class} = _: nixosSecret;
-      homeManager = homeCfg;
+      homeManager = if materializeSecrets then homeCfg else { };
     };
 in
 {
