@@ -6,11 +6,11 @@
 # GIDs match deterministic-uids.nix registry.
 {
   den.groups = {
-    # Standard Linux group (GID 10, conventional)
+    # Standard NixOS group.
     wheel = {
       description = "Sudo access";
       labels = [ "posix" ];
-      gid = 10;
+      gid = 1;
       members = [ "admins" ];
     };
 
@@ -45,6 +45,12 @@
       description = "Service account access for container runners and CI agents";
       labels = [ "posix" ];
       gid = 504;
+    };
+
+    media = {
+      description = "Shared media storage capability";
+      labels = [ "posix" ];
+      gid = 505;
     };
   };
 }
