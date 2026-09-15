@@ -77,6 +77,13 @@ in
     # transitive resolver, so direct and inherited machine grants cannot diverge.
     den.policies.env-users =
       { host, ... }:
-      map (name: resolve.to "user" { user = registry.${name}; }) (matchRegistryUsers host.name);
+      map (
+        name:
+        resolve.to "user" {
+          user = registry.${name} // {
+            userName = registry.${name}.system.accountNames.${host.name} or registry.${name}.userName;
+          };
+        }
+      ) (matchRegistryUsers host.name);
   };
 }

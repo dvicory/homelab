@@ -35,8 +35,8 @@ let
       nixosSecret = lib.optionalAttrs hasIdentity {
         age.secrets."user-identity-${user.name}" = {
           rekeyFile = identityFile;
-          owner = user.name;
-          group = user.name;
+          owner = user.userName;
+          group = if host.class == "darwin" then "staff" else user.userName;
           mode = "600";
           generator.script = "age-identity";
         };
@@ -97,7 +97,7 @@ in
       agenix-rekey = {
         agePackage = pkgs.age;
         nixosConfigurations = inputs.self.outputs.nixosConfigurations;
-        # darwinConfigurations = inputs.self.outputs.darwinConfigurations;
+        darwinConfigurations = inputs.self.outputs.darwinConfigurations;
         collectHomeManagerConfigurations = true;
         extraConfigurations = { };
       };
@@ -110,12 +110,6 @@ in
           {
             inherit (config.agenix-rekey) package;
             help = "Manage agenix secrets (edit, view, generate, rekey)";
-          }
-        ];
-        env = [
-          {
-            name = "AGENIX_REKEY_ADD_TO_GIT";
-            value = "true";
           }
         ];
       };

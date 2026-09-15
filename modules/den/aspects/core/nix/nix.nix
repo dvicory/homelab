@@ -85,9 +85,13 @@
           trusted-users = users;
           allowed-users = users;
         };
-      nix.gc.interval = {
-        Hour = 5;
-        Minute = 0;
+      nix.gc = {
+        automatic = true;
+        interval = {
+          Hour = 5;
+          Minute = 0;
+        };
+        options = "--delete-older-than 30d";
       };
     };
   };
