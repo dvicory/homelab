@@ -28,11 +28,11 @@ check directly. Check jobs use `--max-jobs 1` so VM tests do not compete with
 other builds on the same runner; other CI groups retain Nix's normal
 parallelism.
 
-Hosted CI omits the full ARM64 Darwin system closure. That configuration embeds
-its `aarch64-linux` Virtualization.framework builder image, which a fresh hosted
-macOS runner cannot build before the builder exists. Build
-`darwinConfigurations.daniels-2021-mbp.system` on the workstation as the
-activation gate; the remaining ARM64 Darwin groups still build in CI.
+Hosted CI builds the full ARM64 Darwin configuration. An ARM64 Linux job first
+builds the Linux system closure used by its `nix.linux-builder` VM and passes
+that closure to the macOS job through a one-day workflow artifact. This breaks
+the first-build cycle without weakening the production configuration. The
+workstation builds the same configuration as its activation gate.
 
 Manual dispatch builds the full projection by default. Set `system` to build
 only that platform, or set `check` to run one check (defaulting to x86-64 when
