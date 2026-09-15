@@ -33,6 +33,9 @@
       ) { };
       linuxPackages = lib.optionalAttrs isLinux {
         prepare-luks-storage = callPackage (self + "/pkgs/by-name/prepare-luks-storage/package.nix") { };
+        homelab-preserve-zfs-reference = callPackage (
+          self + "/pkgs/by-name/homelab-preserve-zfs-reference/package.nix"
+        ) { };
       };
 
       provision-keys = callPackage (self + "/pkgs/by-name/provision-keys/package.nix") {
@@ -43,6 +46,9 @@
       checks = {
         compute-runtime = config.packages.compute-runtime;
         inherit homelab-preserve homelab-preserve-fixture-adapter;
+      }
+      // lib.optionalAttrs isLinux {
+        inherit (linuxPackages) homelab-preserve-zfs-reference;
       };
 
       packages = {

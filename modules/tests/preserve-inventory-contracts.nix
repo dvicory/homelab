@@ -52,12 +52,15 @@ let
 in
 {
   perSystem =
-    { pkgs, ... }:
+    { pkgs, system, ... }:
     {
       checks.preserve-inventory-contracts =
         assert lib.assertMsg (
           failures == [ ]
         ) "Preserve inventory contract assertions failed: ${lib.concatStringsSep ", " failures}";
-        pkgs.writeText "preserve-inventory-contracts" "ok\n";
+        pkgs.writeText "preserve-inventory-contracts" "ok\n"
+        // {
+          meta.hestia.group = "${system}-preserve-fast";
+        };
     };
 }
