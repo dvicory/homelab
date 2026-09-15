@@ -31,6 +31,60 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  bootstrap-darwin-builder:
+    name: Bootstrap Darwin Linux builder
+    if: inputs.check == '' && (inputs.system == '' || inputs.system == 'all' || inputs.system == 'aarch64-darwin')
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prepare Nix storage
+        run: |
+          free_space=$(df -m --output=avail /mnt | tail -n 1)
+          disk_size=$((free_space - 4096))
+          test "$disk_size" -gt 1024
+          sudo fallocate -l "${disk_size}M" /mnt/nix.img
+          loop_dev=$(sudo losetup --find --show /mnt/nix.img)
+          sudo mkfs.btrfs -L nix --nodiscard "$loop_dev"
+          sudo mkdir -p /nix
+          sudo mount "$loop_dev" /nix -o noatime,nobarrier,nodiscard,compress=zstd:1,space_cache=v2,commit=120
+          sudo mkdir -p /nix/build
+          sudo chattr +C /nix/build
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            build-dir = /nix/build
+            sandbox = relaxed
+          github_access_token: ${{ github.token }}
+
+      - name: Configure durable cache (read only)
+        if: vars.CACHIX_CACHE != ''
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: ${{ vars.CACHIX_CACHE }}
+          skipPush: true
+
+      - name: Build Darwin Linux builder system
+        run: |
+          sudo mkdir -p /mnt/darwin-builder-cache
+          sudo chown "$USER" /mnt/darwin-builder-cache
+          system_path=$(nix build --no-link --print-out-paths '.#darwinConfigurations.daniels-2021-mbp.config.nix.linux-builder.package.nixosConfig.system.build.toplevel')
+          nix copy --to "file:///mnt/darwin-builder-cache?compression=zstd" "$system_path"
+          printf '%s\n' "$system_path" > /mnt/darwin-builder-cache/system-path
+
+      - name: Upload Darwin Linux builder closure
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: darwin-builder-${{ github.run_id }}
+          path: /mnt/darwin-builder-cache
+          overwrite: true
+          retention-days: 1
+
   # One job per (system, ciJobs group).
   #
   # Evaluation has to happen per system: nixidy reads the chart derivation while
@@ -38,9 +92,11 @@ jobs:
   # platform the runner cannot build. The previous single evaluate job worked
   # only while no nixidy environment was in ciJobs.
   #
-  # Each ciJobs group is a directly buildable derivation; no evaluation job or
-  # cross-job matrix handoff is needed.
+  # Each ciJobs group is directly buildable. The only cross-job handoff is the
+  # Linux system closure needed to bootstrap the full Darwin configuration.
   build:
+    needs: bootstrap-darwin-builder
+    if: always()
     name: ${{ matrix.group }} (${{ matrix.system }})
     runs-on: ${{ matrix.system == 'x86_64-linux' && 'ubuntu-24.04' || matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'macos-14' }}
     environment:
@@ -50,11 +106,6 @@ jobs:
       matrix:
         system: ${{ fromJSON(inputs.system && inputs.system != 'all' && format('["{0}"]', inputs.system) || inputs.check != '' && '["x86_64-linux"]' || '["x86_64-linux","aarch64-linux","aarch64-darwin"]') }}
         group: ${{ fromJSON(inputs.check != '' && '["checks"]' || '["packages","checks","devShells","formatters","nixosConfigurations","darwinConfigurations","homeConfigurations"]') }}
-        exclude:
-          # The laptop closure contains its aarch64-linux builder image. A
-          # GitHub-hosted macOS runner cannot bootstrap that image from scratch.
-          - system: aarch64-darwin
-            group: darwinConfigurations
     steps:
       - name: Monitor cache publication runner
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.CACHIX_CACHE != ''
@@ -121,6 +172,19 @@ jobs:
           version: v3.0.1
           upstream-cache-filter: true
 
+      - name: Download Darwin Linux builder closure
+        if: matrix.system == 'aarch64-darwin' && matrix.group == 'darwinConfigurations'
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: darwin-builder-${{ github.run_id }}
+          path: ${{ runner.temp }}/darwin-builder-cache
+
+      - name: Import Darwin Linux builder closure
+        if: matrix.system == 'aarch64-darwin' && matrix.group == 'darwinConfigurations'
+        run: |
+          system_path=$(cat "$RUNNER_TEMP/darwin-builder-cache/system-path")
+          sudo nix copy --option require-sigs false --from "file://$RUNNER_TEMP/darwin-builder-cache" "$system_path"
+
       - name: Build
         env:
           SYSTEM: ${{ matrix.system }}
@@ -131,6 +195,8 @@ jobs:
           if [ -n "$CHECK" ]; then
             [[ "$CHECK" =~ ^[a-zA-Z0-9_./-]+$ ]] || { echo "invalid check name" >&2; exit 1; }
             attr=".#checks.$SYSTEM.\"$CHECK\""
+          elif [ "$GROUP" = checks ]; then
+            attr=".#hostedCiJobs.$SYSTEM.checks"
           else
             attr=".#ciJobs.$SYSTEM.$GROUP"
           fi
