@@ -18,6 +18,7 @@
     den.aspects.core.users.home-manager
     den.aspects.core.users.root-user
     den.aspects.core.users.deterministic-uids
+    den.aspects.core.users.fleet-groups
     den.aspects.networking.default
     den.aspects.core.network.firewall-collector
     den.aspects.core.secrets.collector
