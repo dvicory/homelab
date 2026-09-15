@@ -1,7 +1,4 @@
-# Environment entity registry.
-#
-# Declares den.environments — the registry consumed by fleet policies
-# and scope-engine for environment entity resolution.
+# Environment entity registry for fleet grouping and shared context.
 {
   den,
   inputs,
@@ -12,6 +9,6 @@ let
 in
 {
   options.den.environments = schemaLib.mkInstanceRegistry den.schema.environment {
-    description = "Environment definitions for fleet topology and service resolution";
+    description = "Environment definitions for fleet grouping and shared context";
   };
 }

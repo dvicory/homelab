@@ -1,6 +1,7 @@
-{ lib, ... }:
+{ den, lib, ... }:
 let
   inherit (lib) mkOption types;
+  settingsType = import ./_settings-type.nix { inherit lib den; };
 
   sshKeyType = types.submodule {
     options = {
@@ -17,46 +18,54 @@ let
   };
 in
 {
-  den.schema.user = { lib, ... }: {
-    config.classes = lib.mkDefault [ "homeManager" ];
+  den.schema.user.imports = [
+    (_: {
+      options = {
+        settings = mkOption {
+          type = settingsType;
+          default = { };
+          description = "Per-aspect typed settings for this user entity";
+        };
 
-    imports = [
-      (_: {
-        options = {
-          identity = mkOption {
-            type = types.submodule {
-              options = {
-                displayName = mkOption {
-                  type = types.str;
-                  default = "";
-                  description = "Display name for the user";
-                };
-                email = mkOption {
-                  type = types.nullOr types.str;
-                  default = null;
-                  description = "Email address for the user";
-                };
-                gpgKey = mkOption {
-                  type = types.nullOr types.str;
-                  default = null;
-                  description = "GPG key ID for the user";
-                };
-                sshKeys = mkOption {
-                  type = types.listOf sshKeyType;
-                  default = [ ];
-                  description = "SSH public keys for the user, each with an optional tag";
-                };
+        identity = mkOption {
+          type = types.submodule {
+            options = {
+              displayName = mkOption {
+                type = types.str;
+                default = "";
+                description = "Display name for the user";
+              };
+              email = mkOption {
+                type = types.nullOr types.str;
+                default = null;
+                description = "Email address for the user";
+              };
+              gpgKey = mkOption {
+                type = types.nullOr types.str;
+                default = null;
+                description = "GPG key ID for the user";
+              };
+              sshKeys = mkOption {
+                type = types.listOf sshKeyType;
+                default = [ ];
+                description = "SSH public keys for the user, each with an optional tag";
               };
             };
-            default = { };
-            description = "User identity information";
           };
+          default = { };
+          description = "User identity information";
+        };
 
-          system = mkOption {
-            type = types.submodule ({ config, ... }: {
+        system = mkOption {
+          type = types.submodule (
+            { config, ... }:
+            {
               options = {
                 kind = mkOption {
-                  type = types.enum [ "interactive" "workload" ];
+                  type = types.enum [
+                    "interactive"
+                    "workload"
+                  ];
                   default = "interactive";
                   description = "Whether this is an interactive human account or a non-interactive workload account";
                 };
@@ -107,12 +116,12 @@ in
                   description = "Per-user feature settings (freeform nested namespace)";
                 };
               };
-            });
-            default = { };
-            description = "Unix account defaults and system configuration";
-          };
+            }
+          );
+          default = { };
+          description = "Unix account defaults and system configuration";
         };
-      })
-    ];
-  };
+      };
+    })
+  ];
 }
