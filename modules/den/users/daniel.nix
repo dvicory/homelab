@@ -1,7 +1,11 @@
 { den, ... }:
 {
   den.users.registry.daniel = {
-    system.uid = 1000;
+    system = {
+      uid = 1000;
+      accountNames.daniels-2021-mbp = "daniel.vicory";
+      shell = "fish";
+    };
     groups = [
       "admins"
       "system-access"

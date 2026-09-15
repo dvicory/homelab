@@ -28,8 +28,13 @@ let
     in
     {
       name = "user-enrich/${userName}@${host.name}";
+      darwin =
+        { pkgs, ... }:
+        lib.mkIf (user.system.shell != null) {
+          users.users.${userName}.shell = pkgs.${user.system.shell};
+        };
 
-      nixos = {
+      nixos = { pkgs, ... }: {
         users.deterministicIds.${userName} = lib.optionalAttrs (uid != null) {
           inherit uid gid;
           subUidRanges = lib.optional (subUidStart != null) {
@@ -49,7 +54,8 @@ let
           extraGroups = aclUser.systemGroups or [ ];
           isNormalUser = true;
           home = "/home/${userName}";
-          useDefaultShell = user.system.useDefaultShell or true;
+          useDefaultShell = user.system.shell == null;
+          shell = lib.mkIf (user.system.shell != null) pkgs.${user.system.shell};
           description = lib.mkDefault (user.identity.displayName or "");
           linger = user.system.linger or false;
         }

@@ -79,16 +79,25 @@ in
                   default = null;
                   description = "Group ID for the Unix account";
                 };
+                accountNames = mkOption {
+                  type = types.attrsOf types.str;
+                  default = { };
+                  description = "Host-specific Unix account names";
+                };
                 linger = mkOption {
                   type = types.bool;
                   default = false;
                   description = "Enable lingering for the user (systemd user services start without login)";
                 };
-                useDefaultShell = mkOption {
-                  type = types.bool;
-                  default = config.kind == "interactive";
-                  defaultText = lib.literalExpression ''config.kind == "interactive"'';
-                  description = "Whether the account receives the host's default interactive shell";
+                shell = mkOption {
+                  type = types.nullOr (
+                    types.enum [
+                      "fish"
+                      "zsh"
+                    ]
+                  );
+                  default = null;
+                  description = "Preferred login shell package name";
                 };
                 enableUnixAccount = mkOption {
                   type = types.bool;

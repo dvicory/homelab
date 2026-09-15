@@ -29,6 +29,8 @@ let
   builderUsers = builderConfig.users.users;
   hvnConfig = self.nixosConfigurations.hvn-hyp1.config;
   hvnUsers = hvnConfig.users.users;
+  darwinConfig = self.darwinConfigurations.daniels-2021-mbp.config;
+  darwinUsers = darwinConfig.home-manager.users;
   registry = config.den.users.registry;
   registryNames = attrNames registry;
   placementMatches =
@@ -44,9 +46,7 @@ let
       && !(elem "wheel" serverUser.systemGroups)
       && !(elem "admins" serverUser.systemGroups);
     narrow-machine-access =
-      !workstationUser.enable
-      && workstationOnWorkstation.enable
-      && !serverOnWorkstation.enable;
+      !workstationUser.enable && workstationOnWorkstation.enable && !serverOnWorkstation.enable;
     broad-system-access =
       systemUser.enable
       && elem "server-access" systemUser.systemGroups
@@ -82,6 +82,19 @@ let
       requests = attrNames hvnConfig.secretRequests;
     in
     requests != [ ] && builtins.all (name: hasAttr name hvnConfig.age.secrets) requests;
+  integrationAssertions.darwin-account =
+    hasAttr "daniel.vicory" darwinUsers
+    && !(hasAttr "daniel" darwinUsers)
+    && darwinUsers."daniel.vicory".home.homeDirectory == "/Users/daniel.vicory"
+    && darwinConfig.age.secrets."user-identity-daniel".owner == "daniel.vicory"
+    && darwinConfig.age.secrets."user-identity-daniel".group == "staff";
+  integrationAssertions.daniel-shell =
+    hvnConfig.users.users.daniel.shell == hvnConfig.programs.fish.package
+    && darwinConfig.users.users."daniel.vicory".shell == darwinConfig.programs.fish.package;
+  integrationAssertions.darwin-maintenance =
+    darwinConfig.nix.gc.automatic
+    && darwinConfig.nix.gc.options == "--delete-older-than 30d"
+    && darwinUsers."daniel.vicory".home.stateVersion == "25.11";
 
   failures = attrNames (
     lib.filterAttrs (_: passed: !passed) (
