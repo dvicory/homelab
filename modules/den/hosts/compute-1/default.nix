@@ -1,4 +1,7 @@
-{ den, ... }:
+{ config, den, ... }:
+let
+  gatewayNodePort = config.den.clusters.prod-home.ingress.nodePort;
+in
 {
   den.hosts.x86_64-linux.compute-1 = {
     environment = "prod";
@@ -38,6 +41,7 @@
         networking.firewall.allowedTCPPorts = [
           22
           6443
+          gatewayNodePort
         ];
         programs.command-not-found.enable = lib.mkForce false;
 
