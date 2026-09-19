@@ -60,10 +60,6 @@ in
       argocd
       cluster-dns
       retained-storage
-      jellyfin
-      immich
-      media
-      monitoring
       gateway
       identity
     ];

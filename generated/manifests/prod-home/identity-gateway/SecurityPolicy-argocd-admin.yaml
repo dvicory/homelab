@@ -1,0 +1,34 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: argocd-admin
+  namespace: gateway
+spec:
+  oidc:
+    clientID: household-admin
+    clientSecret:
+      name: oidc-client
+    forwardAccessToken: false
+    logoutPath: /logout
+    passThroughAuthHeader: false
+    provider:
+      authorizationEndpoint: https://idm.plus2.danielvicory.dev/ui/oauth2
+      backendRefs:
+        - group: gateway.envoyproxy.io
+          kind: Backend
+          name: kanidm-oidc
+          namespace: identity
+          port: 443
+      issuer: https://idm.plus2.danielvicory.dev/oauth2/openid/household-admin
+      tokenEndpoint: https://idm.plus2.danielvicory.dev/oauth2/token
+    redirectURL: https://%REQ(:authority)%/oauth2/callback
+    refreshToken: false
+    scopes:
+      - openid
+      - profile
+      - email
+      - homelab_admin
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: argocd
