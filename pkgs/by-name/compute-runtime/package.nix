@@ -1,7 +1,10 @@
 {
   lib,
+  stdenv,
   buildGoModule,
   makeWrapper,
+  kubectl,
+  yq-go,
   nix,
   openssh,
   util-linux,
@@ -12,7 +15,13 @@ buildGoModule {
   src = lib.cleanSource ./.;
   vendorHash = "sha256-TKtUFKvQPnYAIzFpcGKSSZyXRvRjfhLRd91ibNq6HMI=";
 
-  subPackages = [ "cmd/compute-guest" ];
+  subPackages = [
+    "cmd/household-bootstrap"
+  ]
+  ++ lib.optionals stdenv.hostPlatform.isLinux [
+    "cmd/compute-guest"
+    "cmd/household-bootstrap-host"
+  ];
 
   # subPackages selects installed commands, not the internal safety tests.
   checkPhase = ''
@@ -24,6 +33,15 @@ buildGoModule {
 
   nativeBuildInputs = [ makeWrapper ];
   postInstall = ''
+    wrapProgram "$out/bin/household-bootstrap" \
+      --prefix PATH : ${
+        lib.makeBinPath [
+          kubectl
+          yq-go
+        ]
+      }
+  ''
+  + lib.optionalString stdenv.hostPlatform.isLinux ''
     wrapProgram "$out/bin/compute-guest" \
       --prefix PATH : ${
         lib.makeBinPath [
@@ -32,11 +50,18 @@ buildGoModule {
           util-linux
         ]
       }
+    wrapProgram "$out/bin/household-bootstrap-host" \
+      --prefix PATH : "$out/bin:${
+        lib.makeBinPath [
+          kubectl
+          yq-go
+        ]
+      }"
   '';
 
   meta = {
-    description = "Declared compute guest lifecycle command";
-    mainProgram = "compute-guest";
-    platforms = lib.platforms.linux;
+    description = "Declared compute lifecycle and household bootstrap commands";
+    mainProgram = if stdenv.hostPlatform.isLinux then "compute-guest" else "household-bootstrap";
+    platforms = lib.platforms.linux ++ lib.platforms.darwin;
   };
 }
