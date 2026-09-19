@@ -14,12 +14,18 @@ in
 
     den.schema.environment.imports = [
       (
-        { ... }:
+        { config, ... }:
         {
           options = {
             domain = mkOption {
               type = types.str;
               description = "Shared base DNS namespace for this environment";
+            };
+
+            backupDomain = mkOption {
+              type = types.str;
+              default = "backup.${config.domain}";
+              description = "Recovery DNS namespace for this environment";
             };
 
             timezone = mkOption {
