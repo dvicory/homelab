@@ -1,0 +1,59 @@
+apiVersion: v1
+data:
+  config.json: |-
+    {
+      "nodePathMap": [
+        {
+          "node": "compute-1",
+          "paths": [
+            "/srv/state/kubernetes-volumes"
+          ]
+        }
+      ]
+    }
+  helperPod.yaml: |-
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: helper-pod
+      namespace: local-path-storage
+      labels:
+        app.kubernetes.io/name: local-path-provisioner
+        helm.sh/chart: local-path-provisioner-0.0.34
+        app.kubernetes.io/instance: local-path-provisioner
+        app.kubernetes.io/version: "v0.0.34"
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      priorityClassName: system-node-critical
+      tolerations:
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: helper-pod
+          image: busybox:1.37.0@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+          imagePullPolicy: IfNotPresent
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 16Mi
+  setup: |-
+    set -eu
+    umask 077
+    mkdir -m 0700 -p "$VOL_DIR"
+  teardown: |-
+    set -eu
+    rm -rf "$VOL_DIR"
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/instance: local-path-provisioner
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: local-path-provisioner
+    app.kubernetes.io/version: v0.0.34
+    helm.sh/chart: local-path-provisioner-0.0.34
+  name: local-path-config
+  namespace: local-path-storage
