@@ -60,6 +60,7 @@ in
       argocd
       cluster-dns
       retained-storage
+      jellyfin
       gateway
       identity
     ];
