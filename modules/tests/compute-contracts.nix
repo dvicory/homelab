@@ -77,7 +77,13 @@ let
       # project allowances are exactly the host IDs the generated map uses
       &&
         project."restricted.idmap.gid" == lib.concatStringsSep "," (
-          map (row: if row.range == 1 then toString row.hostid else "${toString row.hostid}-${toString (row.hostid + row.range - 1)}") descriptor.idmap.gid
+          map (
+            row:
+            if row.range == 1 then
+              toString row.hostid
+            else
+              "${toString row.hostid}-${toString (row.hostid + row.range - 1)}"
+          ) descriptor.idmap.gid
         )
       && project."restricted.idmap.uid" == idRange
       # host authorization for each capability is one narrow ID, not a band
@@ -116,9 +122,6 @@ let
             ++ lib.optional (compute.runtimeSecrets != { }) "/run/homelab-compute/secrets"
           )
         )
-      && devices.media.required == "false"
-      && devices.media.source == "/srv/media"
-      && builtins.all (entry: entry.path != "/srv/media") descriptor.requiredPaths
       && builtins.all (kind: project."restricted.devices.${kind}" == "block") [
         "gpu"
         "infiniband"

@@ -161,9 +161,8 @@ func RunHost(ctx context.Context, args []string, out, errOut io.Writer) (result 
 			result = fmt.Errorf("unable to remove temporary files: %w", cleanupErr)
 		}
 	}()
-	rawPath := filepath.Join(tmp, "kubeconfig.raw")
 	kubePath := filepath.Join(tmp, "kubeconfig")
-	if runErr = acquireKubeconfig(ctx, tools, projectServer, descriptor, rawPath, kubePath); runErr != nil {
+	if runErr = acquireKubeconfig(ctx, tools, projectServer, descriptor, kubePath); runErr != nil {
 		return runErr
 	}
 	tools.Env = withEnvironment(tools.Env, map[string]string{"KUBECONFIG": kubePath})
@@ -325,7 +324,7 @@ func runComputeGuestInspect(ctx context.Context, env []string, spec string, lock
 	return nil
 }
 
-func acquireKubeconfig(ctx context.Context, tools *Tools, server incus.InstanceServer, target descriptor, rawPath, kubePath string) error {
+func acquireKubeconfig(ctx context.Context, tools *Tools, server incus.InstanceServer, target descriptor, kubePath string) error {
 	reader, _, err := server.GetInstanceFile(target.Instance, "/etc/rancher/k3s/k3s.yaml")
 	if err != nil {
 		return errors.New("cannot acquire fresh kubeconfig from selected guest")
@@ -334,32 +333,76 @@ func acquireKubeconfig(ctx context.Context, tools *Tools, server incus.InstanceS
 	if err != nil {
 		return errors.New("cannot acquire fresh kubeconfig from selected guest")
 	}
-	if err := writePrivateFile(rawPath, raw); err != nil {
-		return errors.New("cannot store fresh kubeconfig")
-	}
-	validate, cancel := context.WithTimeout(ctx, 30*time.Second)
-	_, err = tools.RunYQ(validate, "-e", "(.clusters | length == 1) and (.users | length >= 1) and (.contexts | length >= 1) and ((.clusters[0].cluster.\"certificate-authority-data\" // \"\") | length > 0) and ((.users[0].user.\"client-certificate-data\" // \"\") | length > 0) and ((.users[0].user.\"client-key-data\" // \"\") | length > 0) and ((.clusters[0].cluster.server // \"\") | length > 0)", rawPath)
+	parse, cancel := context.WithTimeout(ctx, 30*time.Second)
+	encoded, err := tools.RunYQInput(parse, raw, "-o=json", "-N", ".", "-")
 	cancel()
 	if err != nil {
-		return errors.New("guest kubeconfig lacks embedded CA/client identity")
+		return errors.New("guest kubeconfig is invalid")
 	}
-	endpoint := "https://" + target.Address + ":6443"
-	rewrite, cancel := context.WithTimeout(ctx, 30*time.Second)
-	output, err := tools.RunYQEnv(rewrite, map[string]string{"endpoint": endpoint}, "-o=yaml", ".clusters[0].cluster.server = strenv(endpoint)", rawPath)
-	cancel()
+	output, err := buildHostKubeconfig(encoded, "https://"+target.Address+":6443")
 	if err != nil {
-		return errors.New("cannot rewrite kubeconfig endpoint")
+		return err
 	}
 	if err := writePrivateFile(kubePath, output); err != nil {
-		return errors.New("cannot store rewritten kubeconfig")
-	}
-	verify, cancel := context.WithTimeout(ctx, 30*time.Second)
-	_, err = tools.RunYQEnv(verify, map[string]string{"endpoint": endpoint}, "-e", ".clusters[0].cluster.server == strenv(endpoint) and ((.clusters[0].cluster.\"certificate-authority-data\" // \"\") | length > 0) and ((.users[0].user.\"client-certificate-data\" // \"\") | length > 0) and ((.users[0].user.\"client-key-data\" // \"\") | length > 0)", kubePath)
-	cancel()
-	if err != nil {
-		return errors.New("kubeconfig rewrite changed or lost cluster identity")
+		return errors.New("cannot store fresh kubeconfig")
 	}
 	return nil
+}
+
+func buildHostKubeconfig(raw []byte, endpoint string) ([]byte, error) {
+	var input struct {
+		Clusters []struct {
+			Cluster struct {
+				CertificateAuthorityData string `json:"certificate-authority-data"`
+			} `json:"cluster"`
+		} `json:"clusters"`
+		Users []struct {
+			User struct {
+				ClientCertificateData string `json:"client-certificate-data"`
+				ClientKeyData         string `json:"client-key-data"`
+			} `json:"user"`
+		} `json:"users"`
+	}
+	if err := json.Unmarshal(raw, &input); err != nil || len(input.Clusters) != 1 || len(input.Users) != 1 {
+		return nil, errors.New("guest kubeconfig must contain exactly one embedded cluster identity")
+	}
+	ca := input.Clusters[0].Cluster.CertificateAuthorityData
+	certificate := input.Users[0].User.ClientCertificateData
+	key := input.Users[0].User.ClientKeyData
+	if strings.TrimSpace(ca) == "" || strings.TrimSpace(certificate) == "" || strings.TrimSpace(key) == "" {
+		return nil, errors.New("guest kubeconfig lacks embedded CA/client identity")
+	}
+	safe := map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Config",
+		"clusters": []any{map[string]any{
+			"name": "compute",
+			"cluster": map[string]string{
+				"server":                     endpoint,
+				"certificate-authority-data": ca,
+			},
+		}},
+		"users": []any{map[string]any{
+			"name": "compute",
+			"user": map[string]string{
+				"client-certificate-data": certificate,
+				"client-key-data":         key,
+			},
+		}},
+		"contexts": []any{map[string]any{
+			"name": "compute",
+			"context": map[string]string{
+				"cluster": "compute",
+				"user":    "compute",
+			},
+		}},
+		"current-context": "compute",
+	}
+	output, err := json.MarshalIndent(safe, "", "  ")
+	if err != nil {
+		return nil, errors.New("cannot construct host kubeconfig")
+	}
+	return append(output, '\n'), nil
 }
 
 func writePrivateFile(path string, data []byte) error {

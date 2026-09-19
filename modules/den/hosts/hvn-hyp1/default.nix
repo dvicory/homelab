@@ -27,7 +27,7 @@
         profile = "compute-1";
         retainedPaths = { };
         runtimeSecrets = { };
-        storageCapabilities = [ "media" ];
+        storageCapabilities = [ ];
         instanceConfig = {
           "boot.autostart" = "true";
           "limits.cpu" = "4";
@@ -50,14 +50,6 @@
             type = "nic";
             "ipv4.address" = address;
             host_name = "veth-comp-1";
-          };
-          media = {
-            path = "/srv/media";
-            propagation = "rslave";
-            recursive = "true";
-            required = "false";
-            source = "/srv/media";
-            type = "disk";
           };
           identity = {
             path = "/srv/identity";
