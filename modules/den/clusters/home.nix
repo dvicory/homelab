@@ -63,6 +63,7 @@ in
       jellyfin
       immich
       media
+      monitoring
       gateway
       identity
     ];
