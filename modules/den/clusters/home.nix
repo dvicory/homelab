@@ -62,6 +62,7 @@ in
       retained-storage
       jellyfin
       immich
+      media
       gateway
       identity
     ];
