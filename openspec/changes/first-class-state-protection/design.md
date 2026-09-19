@@ -25,7 +25,7 @@ Four active Homelab changes overlap the subject but remain read-only. Preserve m
 **Goals:**
 
 - Make state declarations genuine Den contributions evaluated through gen-backed identity, references, and claims.
-- Keep StateSlot, State, Realization, ProtectionPolicy, Target, Route, Driver, ScratchDestination, and native RecoveryPoint meanings distinct without forcing one registry per noun.
+- Keep StateSlot, State, Realization, ProtectionPolicy, Target, Route, Integration, ScratchDestination, and native RecoveryPoint meanings distinct without forcing one registry per noun.
 - Validate that selected lifecycle-owner configuration actually covers the declared state and targets.
 - Produce a useful non-operational plan for current `/home` and `/persist` plus a fully executable synthetic reference plan.
 - Ship the smallest useful `homelab-preserve` inspector, fixed dispatcher, scratch guard, and verifier with easy external adapter registration.
@@ -113,7 +113,7 @@ M1 records and tests representative owner capability declarations and typed inte
 
 ### Keep the external adapter contract small and owner-oriented
 
-Retain a versioned, language-independent executable boundary so Rust, Go, Python, or generated wrappers can integrate without linking into the coordinator. Protocol version 1 uses a bounded JSON request and response with request ID, typed result, and structured error; diagnostics stay on stderr.
+Retain a versioned, language-independent executable boundary so Rust, Go, Python, or generated wrappers can integrate without linking into the coordinator. Protocol version 1 uses a bounded JSON request and response with request ID, typed result, and structured error. Adapter stderr is bounded diagnostic input and is not copied into default coordinator output. Structured adapter errors contain only operator-safe summaries; raw owner stderr and backend command output remain out of those summaries.
 
 The common operation vocabulary is `describe`, `status`, `points`, `run`, `restore`, and `verify`:
 
@@ -131,7 +131,7 @@ A small separately packaged fixture adapter proves registration without coordina
 
 The coordinator reads two schema-versioned documents generated from one model:
 
-- `desired-inventory` contains planned states, policy intent, realization and coverage, selected or missing lifecycle owner, route status, and caveats.
+- `desired-inventory` contains planned states, policy intent, realization and coverage, selected or missing lifecycle owner, route status, and structured issues.
 - `executable-plan` contains only enabled, strictly resolved states, fixed adapters, targets, owner actions, point identity rules, and scratch capabilities.
 
 The user surface is `plan`, `status`, `points <state>`, `run <state> --route <route>`, `restore <state> --from <route> --point <native-id> --to <scratch>:<new-name>`, and `verify <receipt>`, with human and JSON output. `run` performs no cross-route transaction. Restore defaults to preflight and requires explicit execution.

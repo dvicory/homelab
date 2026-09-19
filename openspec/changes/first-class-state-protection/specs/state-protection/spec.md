@@ -15,11 +15,6 @@ Different concrete instances SHALL have different state identifiers even when th
 - **WHEN** one logical state moves from a host path to a volume or deployment-owned storage resource
 - **THEN** its state identifier remains unchanged while its realization and configuration provenance change
 
-#### Scenario: Production data is rehearsed in QA
-
-- **WHEN** a QA state is populated from a production recovery point
-- **THEN** QA retains its own state identifier and records the production point only as origin provenance
-
 ### Requirement: Reusable state semantics and instance protection policy are separate
 
 A reusable application or service integration SHALL describe its state slots, data kind, required semantic consistency and fidelity, and any genuinely required application payload format without fixing the concrete instance's sensitivity, targets, lifecycle owner, backend-native retained representation, copy policy, or runtime destination authorization. A StateSlot SHALL NOT enumerate backup-engine container formats merely because eligible Integrations may retain its payload in those formats. Each concrete state instance SHALL resolve a named policy or an explicit decision to remain disposable. M1's scratch-only restore authorization SHALL NOT become an intrinsic StateSlot semantic.
@@ -282,7 +277,7 @@ A non-production reference adapter SHALL be clearly identified and SHALL NOT be 
 
 Protection configuration SHALL be capable of separating live-source access, target write, retained-point read, scratch write, and target administration. Granting one operation SHALL NOT implicitly grant retained-point deletion, arbitrary command execution, or access to unrelated state.
 
-Declarative manifests, build artifacts, generated documentation, and default diagnostics SHALL NOT contain credential values, backed-up file contents, or restored contents. Scratch output SHALL be treated as sensitive state and SHALL use restrictive access appropriate to its configured destination.
+Declarative manifests, build artifacts, generated documentation, and default diagnostics SHALL NOT contain credential values, backed-up file contents, or restored contents. Adapter errors intended for default display SHALL use operator-safe structured summaries; raw owner stderr and backend command output SHALL NOT be copied into those summaries. Scratch output SHALL be treated as sensitive state and SHALL use restrictive access appropriate to its configured destination.
 
 #### Scenario: A target writer is configured
 
@@ -291,5 +286,5 @@ Declarative manifests, build artifacts, generated documentation, and default dia
 
 #### Scenario: Diagnostics report a failure
 
-- **WHEN** dispatch or restore fails while handling synthetic secret-looking content or runtime credential references
-- **THEN** diagnostics identify the operation and affected route without printing credentials or data contents
+- **WHEN** dispatch or restore fails while the owner writes synthetic secret-looking stderr or handles runtime credential references
+- **THEN** default diagnostics identify the operation and affected route through an operator-safe summary without copying raw owner stderr, credential values, or data contents
