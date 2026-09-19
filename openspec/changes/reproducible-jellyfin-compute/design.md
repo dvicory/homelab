@@ -8,8 +8,8 @@ contains proposed guarantees; current specs remain authoritative.
 Production inspection, secrets, deployment, and destruction require separate
 authorization.
 
-Nix/Den owns concrete configuration. Operational steps live in the
-[household operations runbook](../../../docs/operations.md), not in this design.
+Nix/Den owns concrete configuration. Operational steps live in the downstream
+`docs/operations.md` runbook, not in this design.
 
 ## Ownership and lifecycle
 
@@ -99,14 +99,14 @@ until explicitly retired. Same-host retention is not independent backup.
 
 ## Verification and deployment gates
 
-The executable replacement acceptance is
+The downstream executable replacement acceptance is
 `modules/tests/prod-home-replacement.nix`
 (`checks.prod-home-replacement`), driven by
 `modules/tests/prod-home-replacement.py`; it delegates application behavior to
-`modules/tests/jellyfin_smoke.py`. The x86_64/KVM acceptance passed at revision
+`modules/tests/jellyfin_smoke.py`. That later acceptance stack passed on an
+x86_64/KVM runner at revision
 `dfda4c03c12f1b0492cb65fee26f4af0267dcfae`; the scenario took 1127.58 seconds.
-The [recorded result](../../../docs/operations/software-cutover.md#recorded-recovery-acceptance)
-contains the run URL, phase timings, media-return observations, and fixture limits.
+Its run record is not part of this compute-boundary PR.
 
 Run it on an appropriate x86_64/KVM runner and record derivation/build
 preparation, fixture-host startup, compute guest creation, registry image

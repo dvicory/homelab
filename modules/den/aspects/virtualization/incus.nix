@@ -1,7 +1,11 @@
 { lib, ... }: {
   den.aspects.virtualization.incus = {
     persist = [
-      { directories = [ "/var/lib/incus" ]; user = "incus"; group = "incus"; }
+      {
+        directories = [ "/var/lib/incus" ];
+        user = "incus";
+        group = "incus";
+      }
     ];
 
     nixos = { pkgs, ... }: {
@@ -21,10 +25,13 @@
             passthru = old.passthru // {
               client = old.passthru.client.overrideAttrs (client: {
                 src = patchedSrc;
-                postInstall = builtins.replaceStrings
-                  [ "$out/bin/incus completion" ]
-                  [ "$out/bin/incus --force-local completion" ]
-                  client.postInstall;
+                # Concurrent completion generators otherwise race to create
+                # config.yml; --force-local skips that first-run write.
+                postInstall =
+                  builtins.replaceStrings
+                    [ "$out/bin/incus completion" ]
+                    [ "$out/bin/incus --force-local completion" ]
+                    client.postInstall;
               });
             };
           }

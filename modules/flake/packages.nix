@@ -14,7 +14,7 @@
   ];
 
   perSystem =
-    { config, pkgs, lib, ... }:
+    { pkgs, lib, ... }:
     let
       callPackage = pkgs.callPackage;
       isLinux = pkgs.stdenv.hostPlatform.isLinux;
@@ -23,7 +23,9 @@
       rekey = callPackage (self + "/pkgs/by-name/rekey/package.nix") { };
       install = callPackage (self + "/pkgs/by-name/install/package.nix") { };
 
-      compute-runtime = callPackage (self + "/pkgs/by-name/compute-runtime/package.nix") { };
+      compute-runtime = lib.optionalAttrs isLinux {
+        compute-runtime = callPackage (self + "/pkgs/by-name/compute-runtime/package.nix") { };
+      };
       prepare-luks-storage = lib.optionalAttrs isLinux {
         prepare-luks-storage = callPackage (self + "/pkgs/by-name/prepare-luks-storage/package.nix") { };
       };
@@ -34,10 +36,17 @@
     in
     {
       packages = {
-        inherit generate-secrets rekey provision-keys install compute-runtime;
-      } // prepare-luks-storage;
+        inherit
+          generate-secrets
+          rekey
+          provision-keys
+          install
+          ;
+      }
+      // compute-runtime
+      // prepare-luks-storage;
 
-      checks.compute-runtime = config.packages.compute-runtime;
+      checks = compute-runtime;
 
       devshells.default = {
         packages = [
@@ -47,29 +56,31 @@
           pkgs.git
         ];
 
-        commands = lib.optionals isLinux [
-          {
-            package = prepare-luks-storage.prepare-luks-storage;
-            help = "One-shot provisioner for a LUKS-encrypted btrfs data disk";
-          }
-        ] ++ [
-          {
-            package = generate-secrets;
-            help = "Generate agenix secrets (boot keys) for a host";
-          }
-          {
-            package = rekey;
-            help = "Rekey all agenix secrets for all hosts";
-          }
-          {
-            package = provision-keys;
-            help = "Full new-host secrets provisioning pipeline";
-          }
-          {
-            package = install;
-            help = "nixos-anywhere install helper";
-          }
-        ];
+        commands =
+          lib.optionals isLinux [
+            {
+              package = prepare-luks-storage.prepare-luks-storage;
+              help = "One-shot provisioner for a LUKS-encrypted btrfs data disk";
+            }
+          ]
+          ++ [
+            {
+              package = generate-secrets;
+              help = "Generate agenix secrets (boot keys) for a host";
+            }
+            {
+              package = rekey;
+              help = "Rekey all agenix secrets for all hosts";
+            }
+            {
+              package = provision-keys;
+              help = "Full new-host secrets provisioning pipeline";
+            }
+            {
+              package = install;
+              help = "nixos-anywhere install helper";
+            }
+          ];
       };
     };
 }

@@ -35,9 +35,7 @@ let
         else
           let
             gid = builtins.head holes;
-            ordinary = lib.optional (gid > cursor) (
-              row cursor (idmapBase + cursor) (gid - cursor)
-            );
+            ordinary = lib.optional (gid > cursor) (row cursor (idmapBase + cursor) (gid - cursor));
             identity = row gid gid 1;
           in
           ordinary ++ [ identity ] ++ walk (gid + 1) (builtins.tail holes);
@@ -49,14 +47,34 @@ let
     if entry.range == 1 then
       "${kind} ${toString entry.hostid} ${toString entry.nsid}"
     else
-      "${kind} ${toString entry.hostid}-${toString (entry.hostid + entry.range - 1)} ${toString entry.nsid}-${toString (entry.nsid + entry.range - 1)}";
+      "${kind} ${toString entry.hostid}-${
+        toString (entry.hostid + entry.range - 1)
+      } ${toString entry.nsid}-${toString (entry.nsid + entry.range - 1)}";
 
   # Incus is given host-side ranges. A singleton uses the bare form:
   # upstream ParseUint32Range accepts "number" or "start-end" but rejects
   # "start-start" (start must be lower than end).
-  spans = entries: lib.concatStringsSep "," (
-    map (entry: if entry.range == 1 then toString entry.hostid else "${toString entry.hostid}-${toString (entry.hostid + entry.range - 1)}") entries
-  );
+  spans =
+    entries:
+    lib.concatStringsSep "," (
+      map (
+        entry:
+        if entry.range == 1 then
+          toString entry.hostid
+        else
+          "${toString entry.hostid}-${toString (entry.hostid + entry.range - 1)}"
+      ) entries
+    );
+
+  hostId =
+    rows: nsid:
+    let
+      entry = lib.findFirst (row: nsid >= row.nsid && nsid < row.nsid + row.range) null rows;
+    in
+    if entry == null then
+      throw "guest ID ${toString nsid} is outside the declared ID map"
+    else
+      entry.hostid + nsid - entry.nsid;
 in
 {
   plan =
@@ -78,17 +96,18 @@ in
       permittedHostUidRanges = spans uid;
       permittedHostGidRanges = spans gid;
       # Host IDs the kernel's setuid helpers must be authorized to map.
-      subordinateGidRanges =
-        [
-          {
-            startGid = idmapBase;
-            count = idmapSize;
-          }
-        ]
-        ++ map (entry: {
-          startGid = entry.hostid;
-          count = 1;
-        }) identityRows;
+      subordinateGidRanges = [
+        {
+          startGid = idmapBase;
+          count = idmapSize;
+        }
+      ]
+      ++ map (entry: {
+        startGid = entry.hostid;
+        count = 1;
+      }) identityRows;
       identityHostIds = map (entry: entry.hostid) identityRows;
+      hostUid = hostId uid;
+      hostGid = hostId gid;
     };
 }

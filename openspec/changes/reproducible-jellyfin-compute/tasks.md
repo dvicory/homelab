@@ -20,12 +20,13 @@
 
 ## 6. Runtime acceptance and production gates
 
-The x86_64/KVM disposable replacement acceptance passed at revision
-`dfda4c03c12f1b0492cb65fee26f4af0267dcfae`; see the
-[recorded result](../../../docs/operations/software-cutover.md#recorded-recovery-acceptance).
+The downstream x86_64/KVM disposable replacement acceptance passed at revision
+`dfda4c03c12f1b0492cb65fee26f4af0267dcfae`. Its run record is not part of this
+compute-boundary PR.
 Production inspection, credential provisioning, deployment, and destructive
 operations remain separately authorized.
 
 - [ ] 6.1 Obtain permission for read-only inspection of hvn-hyp1, then check actual encryption/mounts, free space, kernel/cgroups, Incus resources, subordinate-ID collisions, route collisions, media readability, and independent management access. Record the observed prerequisites; stop before any required storage-permission or isolation expansion rather than inventing a compatibility workaround.
 - [ ] 6.2 Obtain permission for secret provisioning and host/guest deployment; check conflicts before first preseed adoption, create only approved slice-owned resources, deploy, privately complete new-instance Jellyfin setup, and verify real playback plus denied media writes. Check effective unprivileged maps and actual network restrictions, including same-bridge peers and management ports. Prove node boot without application media, media loss/return without node restart, and continued unrelated workload/management access. Keep incompatible-kernel, filesystem, or nesting results as failed gates; no privileged fallback.
 - [ ] 6.3 On an appropriate x86_64 Linux/KVM runner, execute `checks.prod-home-replacement` from `modules/tests/prod-home-replacement.nix` through its `prod-home-replacement.py` driver and `jellyfin_smoke.py` helper. Record derivation/build preparation, fixture-host startup, compute guest creation, registry pulls, first Argo reconciliation, media loss/return, compute replacement, and second Argo reconciliation. Verify the same user, library, recorded playback state, retained data, unrelated workload availability, and Jellyfin's read-only `/media` mount. Only a successful run closes the target guest-rebuild acceptance gate.
+- [ ] 6.4 Before routine replacement begins, add an operator-invoked retirement flow for superseded compute bundle GC roots and matching Incus images. Require an explicit target, preserve at least one verified rollback point, refuse resources referenced by an instance, and check host capacity before deletion. Exercise retirement without affecting the active guest or retained service data.

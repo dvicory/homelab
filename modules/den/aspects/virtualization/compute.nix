@@ -12,6 +12,21 @@ let
   # aspect can resolve a declared capability name to its stable GID.
   fleetGroups = config.den.groups or { };
   idmap = import ./_idmap.nix { inherit lib; };
+  planFor =
+    cfg:
+    idmap.plan {
+      inherit (cfg) idmapBase idmapSize;
+      capabilityGids = map (
+        name:
+        let
+          group = fleetGroups.${name} or null;
+        in
+        if group == null || (group.gid or null) == null then
+          throw "declared storage capability is not a fleet POSIX group: ${name}"
+        else
+          group.gid
+      ) cfg.storageCapabilities;
+    };
   requiredPathType = types.submodule {
     options = {
       uid = mkOption { type = types.ints.unsigned; };
@@ -122,6 +137,7 @@ in
       { host, ... }:
       let
         cfg = host.settings.virtualization.compute;
+        mapPlan = planFor cfg;
       in
       [
         {
@@ -131,15 +147,15 @@ in
         }
         {
           directories = [ cfg.identityPath ];
-          user = toString cfg.idmapBase;
-          group = toString cfg.idmapBase;
+          user = toString (mapPlan.hostUid 0);
+          group = toString (mapPlan.hostGid 0);
           mode = "0700";
         }
       ]
       ++ lib.mapAttrsToList (_: entry: {
         directories = [ entry.path ];
-        user = toString (cfg.idmapBase + entry.uid);
-        group = toString (cfg.idmapBase + entry.gid);
+        user = toString (mapPlan.hostUid entry.uid);
+        group = toString (mapPlan.hostGid entry.gid);
         inherit (entry) mode;
       }) cfg.retainedPaths;
 
@@ -480,14 +496,14 @@ in
         requiredPaths =
           lib.mapAttrsToList (_: entry: {
             inherit (entry) path mode readOnly;
-            uid = cfg.idmapBase + entry.uid;
-            gid = cfg.idmapBase + entry.gid;
+            uid = idmapPlan.hostUid entry.uid;
+            gid = idmapPlan.hostGid entry.gid;
           }) cfg.retainedPaths
           ++ [
             {
               path = cfg.identityPath;
-              uid = cfg.idmapBase;
-              gid = cfg.idmapBase;
+              uid = idmapPlan.hostUid 0;
+              gid = idmapPlan.hostGid 0;
               mode = "0700";
               readOnly = false;
             }

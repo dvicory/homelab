@@ -3,7 +3,11 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/lxc/incus/v7/shared/api"
 )
 
 func TestEffectiveIDMap(t *testing.T) {
@@ -67,6 +71,48 @@ func TestIDMapOverlapIncludesIdentityRows(t *testing.T) {
 	}
 	if !allocationCovers(subordinateAllocation{owner: "root", base: 500, count: 10}, desired[0]) {
 		t.Fatal("covering subordinate allocation was rejected")
+	}
+}
+
+func TestCollisionIDMap(t *testing.T) {
+	current := `[{"Isuid":true,"Isgid":true,"Nsid":0,"Hostid":1000000,"Maprange":65536}]`
+	for _, tc := range []struct {
+		name       string
+		instance   api.Instance
+		comparable bool
+		fails      bool
+	}{
+		{"current map", api.Instance{InstancePut: api.InstancePut{Config: map[string]string{"volatile.idmap.current": current}}}, true, false},
+		{"next map", api.Instance{InstancePut: api.InstancePut{Config: map[string]string{"volatile.idmap.next": current}}}, true, false},
+		{"privileged", api.Instance{ExpandedConfig: map[string]string{"security.privileged": "true"}, Status: "Running"}, false, false},
+		{"never started", api.Instance{Status: "Stopped"}, false, false},
+		{"active without map", api.Instance{Status: "Running"}, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, comparable, err := collisionIDMap(tc.instance)
+			if comparable != tc.comparable || (err != nil) != tc.fails {
+				t.Fatalf("comparable=%v err=%v", comparable, err)
+			}
+		})
+	}
+}
+
+func TestLifecycleLockIsPrivate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "compute.lock")
+	if err := os.WriteFile(path, nil, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := openLifecycleLock(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	info, err := lock.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("lock mode=%#o", info.Mode().Perm())
 	}
 }
 

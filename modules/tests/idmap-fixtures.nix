@@ -11,18 +11,27 @@ let
   base = 1000000;
   size = 65536;
   last = base + size - 1;
-  planFor = capabilityGids: idmap.plan { idmapBase = base; idmapSize = size; inherit capabilityGids; };
+  planFor =
+    capabilityGids:
+    idmap.plan {
+      idmapBase = base;
+      idmapSize = size;
+      inherit capabilityGids;
+    };
   row = nsid: hostid: range: { inherit nsid hostid range; };
 
   none = planFor [ ];
   one = planFor [ 505 ];
-  two = planFor [ 600 505 ];
+  two = planFor [
+    600
+    505
+  ];
 
   fixtures = {
-    "no-capability-rows" =
-      none.uid == [ (row 0 base size) ] && none.gid == [ (row 0 base size) ];
+    "no-capability-rows" = none.uid == [ (row 0 base size) ] && none.gid == [ (row 0 base size) ];
     "no-capability-raw" =
-      none.rawIdmap == "uid ${toString base}-${toString last} 0-${toString (size - 1)}\ngid ${toString base}-${toString last} 0-${toString (size - 1)}";
+      none.rawIdmap
+      == "uid ${toString base}-${toString last} 0-${toString (size - 1)}\ngid ${toString base}-${toString last} 0-${toString (size - 1)}";
     "one-capability-rows" =
       one.gid == [
         (row 0 base 505)
@@ -30,10 +39,17 @@ let
         (row 506 (base + 506) (size - 506))
       ];
     "one-capability-identity" = one.identityHostIds == [ 505 ];
+    "one-capability-host-translation" =
+      one.hostUid 505 == base + 505
+      && one.hostGid 504 == base + 504
+      && one.hostGid 505 == 505
+      && one.hostGid 506 == base + 506;
     "one-capability-raw" =
-      one.rawIdmap == "uid ${toString base}-${toString last} 0-${toString (size - 1)}\ngid ${toString base}-${toString (base + 504)} 0-504\ngid 505 505\ngid ${toString (base + 506)}-${toString last} 506-${toString (size - 1)}";
+      one.rawIdmap
+      == "uid ${toString base}-${toString last} 0-${toString (size - 1)}\ngid ${toString base}-${toString (base + 504)} 0-504\ngid 505 505\ngid ${toString (base + 506)}-${toString last} 506-${toString (size - 1)}";
     "one-capability-project-ranges" =
-      one.permittedHostGidRanges == "${toString base}-${toString (base + 504)},505,${toString (base + 506)}-${toString last}"
+      one.permittedHostGidRanges
+      == "${toString base}-${toString (base + 504)},505,${toString (base + 506)}-${toString last}"
       && one.permittedHostUidRanges == "${toString base}-${toString last}";
     "one-capability-subordinate" =
       one.subordinateGidRanges == [
@@ -54,7 +70,11 @@ let
         (row 600 600 1)
         (row 601 (base + 601) (size - 601))
       ];
-    "holes-are-sorted" = two.gid == (planFor [ 505 600 ]).gid;
+    "holes-are-sorted" =
+      two.gid == (planFor [
+        505
+        600
+      ]).gid;
     "guest-coverage-is-complete" =
       (builtins.foldl' (total: entry: total + entry.range) 0 two.gid) == size;
   };
@@ -65,7 +85,10 @@ in
     { pkgs, ... }:
     {
       checks.idmap-fixtures = pkgs.writeText "idmap-fixtures" (
-        if failures == [ ] then "ok\n" else throw "idmap fixture failures: ${lib.concatStringsSep ", " failures}"
+        if failures == [ ] then
+          "ok\n"
+        else
+          throw "idmap fixture failures: ${lib.concatStringsSep ", " failures}"
       );
     };
 }

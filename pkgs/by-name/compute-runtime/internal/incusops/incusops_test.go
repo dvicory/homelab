@@ -58,7 +58,11 @@ func TestWaitOutcome(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			ctx := context.Background()
+			cancel := func() {}
+			if tc.blocked {
+				ctx, cancel = context.WithTimeout(ctx, 50*time.Millisecond)
+			}
 			defer cancel()
 			result := make(chan error, 1)
 			go func() {

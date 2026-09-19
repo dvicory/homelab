@@ -634,12 +634,12 @@ func checkIDMap(server incus.InstanceServer, spec descriptor, instance *api.Inst
 		if other.Project == spec.Project && other.Name == spec.Instance {
 			continue
 		}
-		raw, present := other.Config["volatile.idmap.current"]
-		if !present {
-			raw, present = other.ExpandedConfig["volatile.idmap.current"]
+		raw, comparable, err := collisionIDMap(other)
+		if err != nil {
+			return fmt.Errorf("inspect effective ID map for %s/%s: %w", other.Project, other.Name, err)
 		}
-		if !present || raw == "" {
-			return fmt.Errorf("inspect effective ID map for %s/%s: missing ID map", other.Project, other.Name)
+		if !comparable {
+			continue
 		}
 		otherUID, otherGID, err := parseEffectiveIDMap(raw)
 		if err != nil {
@@ -657,6 +657,24 @@ func checkIDMap(server incus.InstanceServer, spec descriptor, instance *api.Inst
 		}
 	}
 	return nil
+}
+
+func collisionIDMap(instance api.Instance) (string, bool, error) {
+	if instance.Config["security.privileged"] == "true" || instance.ExpandedConfig["security.privileged"] == "true" {
+		return "", false, nil
+	}
+	for _, key := range []string{"volatile.idmap.current", "volatile.idmap.next"} {
+		if raw := instance.Config[key]; raw != "" {
+			return raw, true, nil
+		}
+		if raw := instance.ExpandedConfig[key]; raw != "" {
+			return raw, true, nil
+		}
+	}
+	if instance.Status == "Stopped" {
+		return "", false, nil
+	}
+	return "", false, errors.New("missing ID map on active unprivileged instance")
 }
 
 func allocationCovers(allocation subordinateAllocation, row idRange) bool {
@@ -821,9 +839,13 @@ func readSubordinateAllocations(path string) ([]subordinateAllocation, error) {
 
 func openLifecycleLock(path string, inheritedFD *int) (*os.File, error) {
 	if inheritedFD == nil {
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o666)
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o600)
 		if err != nil {
 			return nil, fmt.Errorf("open lifecycle lock: %w", err)
+		}
+		if err := file.Chmod(0o600); err != nil {
+			file.Close()
+			return nil, fmt.Errorf("secure lifecycle lock: %w", err)
 		}
 		return file, nil
 	}
@@ -843,7 +865,12 @@ func openLifecycleLock(path string, inheritedFD *int) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid inherited lifecycle lock: %w", err)
 	}
-	return os.NewFile(uintptr(dup), path), nil
+	file := os.NewFile(uintptr(dup), path)
+	if err := file.Chmod(0o600); err != nil {
+		file.Close()
+		return nil, fmt.Errorf("secure inherited lifecycle lock: %w", err)
+	}
+	return file, nil
 }
 
 func validateBundle(path string) (string, error) {
