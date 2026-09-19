@@ -61,6 +61,7 @@ in
       cluster-dns
       retained-storage
       jellyfin
+      immich
       gateway
       identity
     ];
