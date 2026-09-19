@@ -32,6 +32,10 @@
         model.default = "opencode-go/mimo-v2.5-pro";
       };
       services.hermes.dependencyGroups = [ "messaging" ];
+      services.searxng = {
+        enable = true;
+        secretKeyFile = inputs.self + "/.secrets/hosts/hvn-hyp1/searxng-secret-key.age";
+      };
       workloads.hermes.deploy = {
         enable = true;
         # Enable only after required CI and main branch protection are live.
@@ -90,6 +94,7 @@
       den.aspects.services.storage-roots
       den.aspects.services.media-namespace
       den.aspects.secrets.agenix
+      den.aspects.services.searxng
       den.aspects.core.network.tailscale
       den.aspects.services.hermes
       den.aspects.workloads.hermes.deploy
