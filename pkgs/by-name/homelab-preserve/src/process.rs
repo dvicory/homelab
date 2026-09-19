@@ -1,5 +1,8 @@
 use crate::error::{PreserveError, Result};
 use crate::model::{Integration, ProtocolRequest, ProtocolResponse, PROTOCOL_VERSION};
+use command_group::{CommandGroup, GroupChild};
+#[cfg(unix)]
+use command_group::{Signal, UnixChildExt};
 use serde_json::Value;
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
@@ -8,6 +11,22 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_REQUEST_BYTES: usize = 1_048_576;
 const MAX_STDERR_BYTES: usize = 65_536;
+
+fn terminate_group(child: &mut GroupChild) {
+    #[cfg(unix)]
+    {
+        let _ = child.signal(Signal::SIGTERM);
+        let deadline = Instant::now() + Duration::from_millis(250);
+        while Instant::now() < deadline {
+            match child.try_wait() {
+                Ok(Some(_)) | Err(_) => break,
+                Ok(None) => thread::sleep(Duration::from_millis(10)),
+            }
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
 
 fn read_bounded(mut reader: impl Read, limit: usize) -> std::result::Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
@@ -69,29 +88,29 @@ pub fn invoke_adapter(integration: &Integration, request: &ProtocolRequest) -> R
         ));
     }
 
-    let mut child = Command::new(&integration.adapter)
+    let mut command = Command::new(&integration.adapter);
+    command
         .arg("protocol")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            PreserveError::new(
-                "adapter-start",
-                format!(
-                    "could not start configured adapter for integration '{}': {error}",
-                    integration.integration_id
-                ),
-            )
-        })?;
+        .stderr(Stdio::piped());
+    let mut child = command.group_spawn().map_err(|error| {
+        PreserveError::new(
+            "adapter-start",
+            format!(
+                "could not start configured adapter for integration '{}': {error}",
+                integration.integration_id
+            ),
+        )
+    })?;
 
-    let stdout = child.stdout.take().ok_or_else(|| {
+    let stdout = child.inner().stdout.take().ok_or_else(|| {
         PreserveError::new("adapter-pipe", "configured adapter stdout was unavailable")
     })?;
-    let stderr = child.stderr.take().ok_or_else(|| {
+    let stderr = child.inner().stderr.take().ok_or_else(|| {
         PreserveError::new("adapter-pipe", "configured adapter stderr was unavailable")
     })?;
-    let stdin = child.stdin.take().ok_or_else(|| {
+    let stdin = child.inner().stdin.take().ok_or_else(|| {
         PreserveError::new("adapter-pipe", "configured adapter stdin was unavailable")
     })?;
     let response_limit = integration.max_response_bytes;
@@ -113,8 +132,7 @@ pub fn invoke_adapter(integration: &Integration, request: &ProtocolRequest) -> R
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
             Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                terminate_group(&mut child);
                 let _ = stdout_reader.join();
                 let _ = stderr_reader.join();
                 let _ = stdin_writer.join();
@@ -127,8 +145,7 @@ pub fn invoke_adapter(integration: &Integration, request: &ProtocolRequest) -> R
                 ));
             }
             Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                terminate_group(&mut child);
                 let _ = stdout_reader.join();
                 let _ = stderr_reader.join();
                 let _ = stdin_writer.join();
@@ -139,6 +156,8 @@ pub fn invoke_adapter(integration: &Integration, request: &ProtocolRequest) -> R
             }
         }
     };
+
+    let _ = child.kill();
 
     let write_result = stdin_writer
         .join()

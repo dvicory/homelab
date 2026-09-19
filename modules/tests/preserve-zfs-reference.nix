@@ -36,6 +36,19 @@
             timeoutSeconds = 120;
             maxResponseBytes = 1048576;
             fixtureOnly = true;
+            operations = [
+              "describe"
+              "status"
+              "points"
+              "run"
+              "restore"
+              "verify"
+            ];
+            fidelityGuarantees = [
+              "posix-filesystem"
+              "zfs-dataset"
+            ];
+            guaranteedConsistency = "filesystem";
             nativePointRepresentations = [ "openzfs.snapshot" ];
             payloadRepresentation = null;
           };
@@ -474,11 +487,7 @@
           );
         in
         {
-          checks.preserve-zfs-reference = test // {
-            meta = test.meta // {
-              hestia.group = "${system}-preserve-zfs-reference";
-            };
-          };
+          checks.preserve-zfs-reference = test;
         }
       );
 }

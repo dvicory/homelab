@@ -30,6 +30,7 @@ def point(request):
         "retainedAt": "2026-09-14T00:00:01Z",
         "completion": "complete",
         "consistency": "filesystem",
+        "fidelity": ["posix-filesystem"],
         "scope": {"kind": "fixture-tree", "recursive": False},
         "nativeRepresentation": {"kind": "fixture-directory/v1"},
         "payloadRepresentation": None,
@@ -155,7 +156,14 @@ def main():
         response(request_id, result=result)
         return 0
     except Exception as error:
-        response(request_id, error={"code": "fixture-error", "message": str(error)})
+        print(f"fixture adapter error: {error}", file=sys.stderr)
+        response(
+            request_id,
+            error={
+                "code": "fixture-error",
+                "message": "fixture adapter operation failed",
+            },
+        )
         return 0
 
 

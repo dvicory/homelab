@@ -51,9 +51,11 @@ A Target identifies a logical destination or failure domain. Restic repositories
 
 A normal compatible State requires no Binding. Optional Bindings contain only irreducible State-specific subpath/include/exclude narrowing, owner selection for an unresolved Route, or namespaced native overrides.
 
+Policy precedence models concrete assignment, supplied `selectorPolicies` defaults, then slot suggestion. That precedence is implemented and tested with directly supplied selector inputs; fleet selector discovery and application are deferred and not wired.
+
 ## Current inventory
 
-`hvn-hyp1` declares plan-only States `household/home` and `household/persist` next to their operator-natural host configuration. The ZFS aspect explicitly maps them to `rpool/safe/home` and `rpool/safe/persist` from the same evaluated dataset map used by disko.
+`hvn-hyp1` declares plan-only States `household/home` and `household/persist` as explicit typed State declarations colocated with their operator-natural host configuration, plus matching Realizations contributed by the ZFS aspect. This is colocated declaration, not an implemented inline sugar API. The ZFS aspect explicitly maps them to `rpool/safe/home` and `rpool/safe/persist` from the same evaluated dataset map used by disko.
 
 Both Realizations are non-recursive and expose `filesystem-read`, `zfs-snapshot` and `zfs-send`. Their Routes have no production Target or Integration, so they appear as unresolved and cannot operate. `/persist` uses separate logical host-role semantics from `/home`.
 
@@ -86,7 +88,13 @@ Add `--json` for machine-readable output. `plan` never starts an adapter. Data o
 
 The coordinator starts the adapter path fixed by the executable manifest with argument `protocol`. It sends one bounded JSON request on stdin and reads one bounded response envelope on stdout. Protocol operations are `describe`, `status`, `points`, `run`, `restore` and `verify`.
 
-Adapters map the owner's native catalog into target-qualified points. A point records State, Route, Target, owner and immutable native identity; scope; achieved semantic consistency; backend-native retained representation; optional semantic payload representation; completion; verification evidence; and optional opaque namespaced producer provenance.
+Every enabled Integration must provide the baseline inspection operations `describe`, `status` and `points` in both its declared `operations` and its runtime adapter capabilities; `run`, `restore` and `verify` remain optional and are checked before dispatch. An Integration missing baseline inspection stays visible in plan-only inventory but cannot become executable.
+
+The coordinator launches each adapter in its own process group. A timeout or wait failure terminates the whole group (SIGTERM, a short bounded grace, then SIGKILL) before output readers are joined, so a backend child holding an inherited pipe cannot keep the coordinator hanging. After the direct adapter exits, residual descendants in the group are also terminated before readers finish. An adapter that deliberately detaches from its group is outside the adapter contract; legitimate asynchronous work belongs to an external service manager.
+
+Adapters map the owner's native catalog into target-qualified points. A point records State, Route, Target, owner and immutable native identity; scope; achieved semantic consistency; explicit achieved fidelity; backend-native retained representation; optional semantic payload representation; completion; verification evidence; and optional opaque namespaced producer provenance.
+
+Before a point is listed or restored, the coordinator validates its completion, consistency and fidelity against the resolved StateSlot and Route requirements and the selected Integration's configured fidelity guarantees. A point weaker than its resolved plan, or missing evidence, is rejected rather than advertised.
 
 Producer provenance cannot select an executable and does not affect State identity. The currently configured compatible adapter always performs operations.
 
@@ -95,7 +103,7 @@ An adapter must:
 - reject unsupported protocol versions and operations;
 - advertise only exercised capabilities;
 - keep bulk data out of JSON;
-- return structured errors;
+- return structured errors with operator-safe summaries (raw backend output stays on adapter stderr);
 - preserve the owner's native point identity;
 - enforce owner-specific destination and representation constraints before mutation.
 
@@ -108,7 +116,7 @@ den.preserve.integrations.example = {
   integrationId = "example";
   owner = "example-owner";
   adapter = "${pkgs.example-adapter}/bin/example-adapter";
-  operations = [ "run" "status" "points" ];
+  operations = [ "describe" "status" "points" "run" ];
   dataKinds = [ "filesystem" ];
   requiredSourceCapabilities = [ "filesystem-read" ];
   guaranteedConsistency = "live";

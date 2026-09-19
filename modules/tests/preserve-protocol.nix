@@ -20,7 +20,6 @@
               fixtureAdapter
               pkgs.jq
             ];
-            meta.hestia.group = "${system}-preserve-fast";
           }
           ''
             set -euo pipefail
@@ -71,6 +70,9 @@
                         "timeoutSeconds": 5,
                         "maxResponseBytes": 1048576,
                         "fixtureOnly": true,
+                        "operations": ["describe","status","points","run","restore","verify"],
+                        "fidelityGuarantees": ["posix-filesystem"],
+                        "guaranteedConsistency": "live",
                         "nativePointRepresentations": ["fixture-directory/v1"],
                         "payloadRepresentation": null
                       },
@@ -189,6 +191,15 @@
               exit 1
             fi
             test ! -e "$TMPDIR/catalog-no-run"
+
+            jq '.states[0].routes[0].ownerConfig.native.capabilities = ["describe","status"] |
+                .states[0].routes[0].ownerConfig.native.root = "'$TMPDIR'/catalog-no-points"' \
+              "$manifest" > "$TMPDIR/missing-baseline.json"
+            if homelab-preserve --manifest "$TMPDIR/missing-baseline.json" points fixture/state >/dev/null 2>&1; then
+              echo "adapter missing baseline points capability unexpectedly listed points" >&2
+              exit 1
+            fi
+            test ! -e "$TMPDIR/catalog-no-points"
 
             jq '.states[0].routes[0].ownerConfig.native.explicitScratch = false' \
               "$manifest" > "$TMPDIR/unsafe-restore.json"

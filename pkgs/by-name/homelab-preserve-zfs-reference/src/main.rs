@@ -88,6 +88,10 @@ fn valid_new_name(name: &str) -> bool {
     !name.is_empty() && !name.contains('/') && !name.contains('\\') && valid_dataset_component(name)
 }
 
+fn command_failure_message(operation: &str, status: &std::process::ExitStatus) -> String {
+    format!("{operation} failed with {status}")
+}
+
 fn zfs_output(args: &[String]) -> Result<String> {
     let output = Command::new("zfs")
         .args(args)
@@ -97,13 +101,14 @@ fn zfs_output(args: &[String]) -> Result<String> {
             message: format!("could not start zfs: {error}"),
         })?;
     if !output.status.success() {
+        eprintln!(
+            "zfs {} stderr: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
         return fail(
             "zfs-command",
-            format!(
-                "zfs {} failed: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&output.stderr).trim()
-            ),
+            command_failure_message(&format!("zfs {}", args.join(" ")), &output.status),
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
@@ -124,9 +129,10 @@ fn dataset_exists(name: &str) -> Result<bool> {
     if stderr.contains("dataset does not exist") {
         return Ok(false);
     }
+    eprintln!("zfs list {name} stderr: {}", stderr.trim());
     fail(
         "zfs-command",
-        format!("could not inspect '{name}': {}", stderr.trim()),
+        command_failure_message(&format!("zfs list '{name}'"), &output.status),
     )
 }
 
@@ -235,20 +241,25 @@ fn send_receive(snapshot: &str, destination: &str, mountpoint: &str, canmount: &
         message: format!("could not wait for zfs receive: {error}"),
     })?;
     if !send_status.status.success() {
+        eprintln!(
+            "zfs send {snapshot} stderr: {}",
+            String::from_utf8_lossy(&send_status.stderr).trim()
+        );
         return fail(
             "zfs-send",
-            format!(
-                "zfs send {snapshot} failed: {}",
-                String::from_utf8_lossy(&send_status.stderr).trim()
-            ),
+            command_failure_message(&format!("zfs send {snapshot}"), &send_status.status),
         );
     }
     if !receive_status.status.success() {
+        eprintln!(
+            "zfs receive {destination} stderr: {}",
+            String::from_utf8_lossy(&receive_status.stderr).trim()
+        );
         return fail(
             "zfs-receive",
-            format!(
-                "zfs receive {destination} failed: {}",
-                String::from_utf8_lossy(&receive_status.stderr).trim()
+            command_failure_message(
+                &format!("zfs receive {destination}"),
+                &receive_status.status,
             ),
         );
     }
@@ -552,6 +563,7 @@ fn point_from_snapshot(
         "retainedAt": captured_at,
         "completion": "complete",
         "consistency": "filesystem",
+        "fidelity": ["posix-filesystem", "zfs-dataset"],
         "scope": {"kind": "single-zfs-dataset", "recursive": false},
         "nativeRepresentation": {"kind": NATIVE_KIND, "name": snapshot_name},
         "payloadRepresentation": null,
@@ -1302,6 +1314,17 @@ mod tests {
         assert_eq!(clean_absolute_path("relative/root"), None);
         assert_eq!(clean_absolute_path("/restore/../escape"), None);
         assert_eq!(clean_absolute_path(""), None);
+    }
+
+    #[test]
+    fn command_failures_report_operation_and_status_only() {
+        let status = Command::new("false").status().expect("false runs");
+        let message = command_failure_message("zfs list 'receiver/copies'", &status);
+        assert_eq!(
+            message,
+            "zfs list 'receiver/copies' failed with exit status: 1"
+        );
+        assert!(!message.contains("stderr"));
     }
 
     #[test]
