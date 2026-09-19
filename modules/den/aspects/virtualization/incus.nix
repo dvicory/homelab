@@ -7,7 +7,28 @@
     nixos = { pkgs, ... }: {
       virtualisation.incus = {
         enable = true;
-        package = pkgs.incus;
+        # Incus 7.4 rejects adjacent raw ID maps; remove with the upstream fix.
+        package = pkgs.incus.overrideAttrs (
+          old:
+          let
+            patchedSrc = pkgs.applyPatches {
+              inherit (old) src;
+              patches = [ ./incus-adjacent-idmap.patch ];
+            };
+          in
+          {
+            src = patchedSrc;
+            passthru = old.passthru // {
+              client = old.passthru.client.overrideAttrs (client: {
+                src = patchedSrc;
+                postInstall = builtins.replaceStrings
+                  [ "$out/bin/incus completion" ]
+                  [ "$out/bin/incus --force-local completion" ]
+                  client.postInstall;
+              });
+            };
+          }
+        );
         ui.enable = true;
         ui.package = pkgs.incus-ui-canonical;
         preseed.config."core.https_address" = ":8443";
