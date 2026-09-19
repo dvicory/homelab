@@ -65,7 +65,7 @@ The semantic model retains these meanings:
 
 Use gen-schema registries for independently reusable and referenced StateSlot, State, ProtectionPolicy, Route, Target, and Integration values. Keep Realization, nested access projections, non-authoritative `physicalBacking`, Binding, and ScratchDestination as typed nested/list data unless implementation proves another independent identity is required. Typed object references are used inside Nix; generated manifests carry stable public IDs and resolved values. State identity is keyed only by `stateId`; declaration module, Realization, path, package, lifecycle owner, software version, selector result, and policy do not enter it.
 
-Allow host/aspect-local declaration sugar when that is the clearest operator-facing location. The sugar must mint or contribute the same global typed State plus Realization model, reject incompatible duplicate State declarations, and preserve `stateId` if the declaration later moves to another host or module. `/home` and `/persist` may remain colocated with `hvn-hyp1`; `/persist` may use logical host-role semantics even though its physical machine is replaceable.
+M1 keeps explicit State declarations colocated with the natural host or aspect and lets deployment aspects contribute matching Realizations. `/home` and `/persist` remain explicit typed States beside `hvn-hyp1`; this is colocated declaration, not a separate inline sugar API. Future host/aspect-local sugar may mint the same global typed State plus Realization model, but is deferred unless implementation remains trivial. Any such sugar must reject incompatible duplicate States and preserve `stateId` across host or module movement.
 
 Stored recovery evidence carries the public `stateId` directly. Recovery points distinguish any semantic payload representation required by StateSlot/application semantics from the Integration-owned backend-native retained-point representation. A filesystem payload can live in OpenZFS, Restic, or Borg native representations without changing StateSlot; a PostgreSQL logical/custom dump may itself be stored inside a repository representation. Recovery points may also carry optional opaque producer provenance under namespaced keys. Preserve retains and displays this data but does not interpret it generically or include it in `stateId`.
 
@@ -75,7 +75,7 @@ The ZFS pool aspect will define its dataset map once and use that same value for
 
 ### Resolve policy, coverage, and lifecycle-owner capability through gen-scope claims
 
-Policy selection has three precedence levels: concrete state assignment, matching fleet selector defaults, then reusable slot suggestion. A level that yields multiple distinct policies fails. A higher level replaces rather than unions lower choices. A disposable policy is explicit and contains no routes.
+Policy resolution models three precedence inputs: concrete State assignment, supplied selector-policy defaults, then reusable slot suggestion. A level that yields multiple distinct policies fails, and a higher level replaces rather than unions lower choices. M1 tests the precedence semantics by supplying `selectorPolicies` directly; fleet selector discovery and application are not wired and remain deferred. A disposable policy is explicit and contains no routes.
 
 Use a small demand cascade rather than a handwritten recursive resolver:
 
@@ -115,13 +115,17 @@ M1 records and tests representative owner capability declarations and typed inte
 
 Retain a versioned, language-independent executable boundary so Rust, Go, Python, or generated wrappers can integrate without linking into the coordinator. Protocol version 1 uses a bounded JSON request and response with request ID, typed result, and structured error. Adapter stderr is bounded diagnostic input and is not copied into default coordinator output. Structured adapter errors contain only operator-safe summaries; raw owner stderr and backend command output remain out of those summaries.
 
-The common operation vocabulary is `describe`, `status`, `points`, `run`, `restore`, and `verify`:
+The common operation vocabulary is `describe`, `status`, `points`, `run`, `restore`, and `verify`. Every enabled Integration must provide the baseline inspection set `describe`, `status`, and `points`; `run`, `restore`, and `verify` remain optional:
 
 - `run` dispatches one fixed owner-level action, such as starting a configured systemd backup job or waking a replication job.
 - `points` maps the owner's native catalog into target-qualified evidence without replacing native identity.
 - `restore` and `verify` exist only when that adapter can enforce the declared scratch and fidelity boundary.
 
+Nix executable resolution checks the declared baseline operations, and Rust checks the adapter's `describe` response before invoking inspection. Integrations lacking baseline inspection remain visible in plan-only inventory but cannot become executable.
+
 An adapter may add a namespaced owner payload and optional operations. The common protocol does not require `capture`, `protect`, `release`, retry, cleanup, or stream-handle stages. Bulk data never enters JSON. Manifest configuration fixes the executable and allowed operation; retained provenance cannot redirect execution.
+
+Launch each adapter in its own process group. Timeout or coordinator cancellation terminates the full group, waits for exit, and then joins bounded output readers. This covers ordinary Restic, Borg, ZFS, and wrapper descendants instead of killing only the direct adapter PID; a child that deliberately escapes the configured process group is outside the adapter contract.
 
 A small separately packaged fixture adapter proves registration without coordinator changes. Its behavior is test evidence, not a production backup implementation.
 
@@ -134,9 +138,9 @@ The coordinator reads two schema-versioned documents generated from one model:
 - `desired-inventory` contains planned states, policy intent, realization and coverage, selected or missing lifecycle owner, route status, and structured issues.
 - `executable-plan` contains only enabled, strictly resolved states, fixed adapters, targets, owner actions, point identity rules, and scratch capabilities.
 
-The user surface is `plan`, `status`, `points <state>`, `run <state> --route <route>`, `restore <state> --from <route> --point <native-id> --to <scratch>:<new-name>`, and `verify <receipt>`, with human and JSON output. `run` performs no cross-route transaction. Restore defaults to preflight and requires explicit execution.
+The user surface is `plan`, `status`, `points <state>`, `run <state> --route <route>`, `restore <state> --from <route> --point <native-id> --to <scratch>:<new-name>`, and `verify <receipt>`, with human and JSON output. `points` returns one State report containing a result for every resolved Route; each result carries either validated points or a structured Route error, so one unavailable owner cannot hide another owner's usable evidence. `run` performs no cross-route transaction. Restore defaults to preflight and requires explicit execution.
 
-The Rust code validates documents, fixes point selection, dispatches one adapter process with bounded IO and timeout, enforces common scratch constraints, stores a restore receipt, and reports evidence. It contains no scheduler, retention logic, repository catalog, capture journal, retry engine, ZFS replication planner, or database compatibility table.
+The Rust code validates documents, fixes point selection, dispatches one adapter process group with bounded IO and timeout, enforces common scratch constraints, stores a restore receipt, and reports evidence. Native points carry explicit achieved fidelity as well as consistency. Before listing or restore, Rust validates both against the resolved StateSlot and Route requirements and the selected Integration's configured guarantee using the same small consistency relation as Nix. It contains no scheduler, retention logic, repository catalog, capture journal, retry engine, ZFS replication planner, or database compatibility table.
 
 *Alternatives considered:* a coordinator-managed multi-route capture operation would need owner-specific compensation, retry, and lifetime semantics. Nix expressions at runtime would make Nix a restore control plane.
 
@@ -166,11 +170,11 @@ The restore receipt fixes the native point and destination. Adapter verification
 
 ### Keep model/protocol checks separate from the ZFS VM
 
-Fast checks cover gen identity/reference behavior, policy and claim resolution, coverage mismatch, strict plan behavior, lifecycle-owner capability selection, manifest serialization, adapter versioning, process bounds, destination validation, and fixture adapter registration.
+Fast checks cover gen identity/reference behavior, policy and claim resolution, coverage mismatch, strict plan behavior, lifecycle-owner capability selection, manifest serialization, adapter versioning, process-group bounds, point consistency/fidelity, destination validation, and fixture adapter registration. Representative zrepl and Restic projections also evaluate through their pinned NixOS module option schemas with services disabled; raw attrset-shape checks alone are insufficient integration evidence.
 
 The Linux-only VM uses two small virtual disks and synthetic data. It invokes the shipped coordinator and reference adapter, captures two versions, restores the explicitly selected older point twice, removes the source pool and local cache before receiver discovery, exercises unsafe destinations and incomplete receive handling, and uses an independent oracle for fidelity. It imports no production host, Incus, Kubernetes, external repository, or network service.
 
-Give the VM its own CI matrix entry. Keep fast checks independently runnable and do not hide failures with `continue-on-error`.
+Expose the fast Preserve checks and ZFS VM as distinct `ciJobs.<system>` derivations and therefore distinct GitHub Actions matrix entries. Do not rely on derivation metadata that the workflow never reads. Keep unrelated checks in their existing parallel matrix entries, and do not hide failures with `continue-on-error`.
 
 ## Risks / Trade-offs
 

@@ -36,6 +36,19 @@
             timeoutSeconds = 120;
             maxResponseBytes = 1048576;
             fixtureOnly = true;
+            operations = [
+              "describe"
+              "status"
+              "points"
+              "run"
+              "restore"
+              "verify"
+            ];
+            fidelityGuarantees = [
+              "posix-filesystem"
+              "zfs-dataset"
+            ];
+            guaranteedConsistency = "filesystem";
             nativePointRepresentations = [ "openzfs.snapshot" ];
             payloadRepresentation = null;
           };
@@ -196,6 +209,12 @@
                 def sh(command):
                     return machine.succeed(command).strip()
 
+                def report_points(report):
+                    assert report["kind"] == "points", report
+                    assert report["stateId"] == "fixture/state", report
+                    assert all(route["status"] == "ok" for route in report["routes"]), report
+                    return [point for route in report["routes"] for point in route["points"]]
+
                 machine.succeed("zpool create -f -o ashift=12 -O mountpoint=none source /dev/vdb")
                 machine.succeed("zpool create -f -o ashift=12 -O mountpoint=none receiver /dev/vdc")
                 machine.succeed(
@@ -259,8 +278,10 @@
 
                 sh("homelab-preserve --manifest ${manifest} --json run fixture/state --route replica")
 
-                points = json.loads(
-                    sh("homelab-preserve --manifest ${manifest} --json points fixture/state")
+                points = report_points(
+                    json.loads(
+                        sh("homelab-preserve --manifest ${manifest} --json points fixture/state")
+                    )
                 )
                 local = sorted(
                     (point for point in points if point["routeId"] == "local"),
@@ -359,8 +380,10 @@
                     "homelab-preserve --manifest ${failManifest} --json run fixture/state"
                     " --route replica"
                 )
-                after_failure = json.loads(
-                    sh("homelab-preserve --manifest ${manifest} --json points fixture/state")
+                after_failure = report_points(
+                    json.loads(
+                        sh("homelab-preserve --manifest ${manifest} --json points fixture/state")
+                    )
                 )
                 local_after = [p for p in after_failure if p["routeId"] == "local"]
                 replica_after = [p for p in after_failure if p["routeId"] == "replica"]
@@ -446,10 +469,12 @@
                 sh(
                     "jq 'del(.states[0].routes[0])' ${manifest} > /root/replica-only.json"
                 )
-                after_loss = json.loads(
-                    sh(
-                        "homelab-preserve --manifest /root/replica-only.json --json points"
-                        " fixture/state"
+                after_loss = report_points(
+                    json.loads(
+                        sh(
+                            "homelab-preserve --manifest /root/replica-only.json --json points"
+                            " fixture/state"
+                        )
                     )
                 )
                 replica_after_loss = [
@@ -474,11 +499,7 @@
           );
         in
         {
-          checks.preserve-zfs-reference = test // {
-            meta = test.meta // {
-              hestia.group = "${system}-preserve-zfs-reference";
-            };
-          };
+          checks.preserve-zfs-reference = test;
         }
       );
 }

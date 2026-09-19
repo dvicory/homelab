@@ -180,6 +180,58 @@ fn print_plan(value: &Value) {
     }
 }
 
+fn print_points(value: &Value) {
+    if let Some(routes) = value.get("routes").and_then(Value::as_array) {
+        for route in routes {
+            let route_id = route
+                .get("routeId")
+                .and_then(Value::as_str)
+                .unwrap_or("<unknown>");
+            if route.get("status").and_then(Value::as_str) == Some("ok") {
+                if let Some(points) = route.get("points").and_then(Value::as_array) {
+                    for point in points {
+                        println!(
+                            "{} {} {} {}",
+                            point
+                                .get("stateId")
+                                .and_then(Value::as_str)
+                                .unwrap_or("<unknown>"),
+                            route_id,
+                            point
+                                .get("targetId")
+                                .and_then(Value::as_str)
+                                .unwrap_or("<unknown>"),
+                            point
+                                .get("nativeId")
+                                .and_then(Value::as_str)
+                                .unwrap_or("<unknown>")
+                        );
+                        if let Some(provenance) =
+                            point.get("producerProvenance").and_then(Value::as_object)
+                        {
+                            for (key, value) in provenance {
+                                println!("  provenance {key}={value}");
+                            }
+                        }
+                    }
+                }
+            } else {
+                let code = route
+                    .get("error")
+                    .and_then(|error| error.get("code"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("error");
+                let message = route
+                    .get("error")
+                    .and_then(|error| error.get("message"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                println!("{route_id}: error [{code}]: {message}");
+            }
+        }
+    }
+}
+
 fn print_status(value: &Value) {
     if let Some(states) = value.get("states").and_then(Value::as_array) {
         for state in states {
@@ -254,15 +306,7 @@ fn execute(cli: &Cli) -> Result<()> {
             if cli.json {
                 print_json(&result)
             } else {
-                for point in result {
-                    println!(
-                        "{} {} {} {}",
-                        point.state_id, point.route_id, point.target_id, point.native_id
-                    );
-                    for (key, value) in point.producer_provenance {
-                        println!("  provenance {key}={value}");
-                    }
-                }
+                print_points(&result);
                 Ok(())
             }
         }

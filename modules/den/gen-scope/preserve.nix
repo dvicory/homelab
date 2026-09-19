@@ -24,6 +24,12 @@ let
     "targetId"
   ];
 
+  baselineOperations = [
+    "describe"
+    "status"
+    "points"
+  ];
+
   idHash = value: if builtins.isAttrs value then value.id_hash or null else null;
 
   uniqueById = builtins.foldl' (
@@ -164,6 +170,9 @@ let
       missingCapabilities = builtins.filter (
         capability: !(builtins.elem capability (realization.capabilities or [ ]))
       ) integration.requiredSourceCapabilities;
+      missingBaseline = builtins.filter (
+        operation: !(builtins.elem operation integration.operations)
+      ) baselineOperations;
       requiredFidelity = slot.requiredFidelity ++ route.requiredFidelity;
       missingFidelity = builtins.filter (
         fidelity: !(builtins.elem fidelity integration.fidelityGuarantees)
@@ -189,7 +198,12 @@ let
     {
       inherit integration;
       issues =
-        lib.optional (!(builtins.elem route.operation integration.operations)) (
+        lib.optional (missingBaseline != [ ]) (
+          mkIssue state.stateId route.routeId "unsupported-baseline-operation" (
+            "integration '${integration.integrationId}' lacks baseline operations ${builtins.toJSON missingBaseline}"
+          )
+        )
+        ++ lib.optional (!(builtins.elem route.operation integration.operations)) (
           mkIssue state.stateId route.routeId "unsupported-operation" (
             "integration '${integration.integrationId}' does not support '${route.operation}'"
           )

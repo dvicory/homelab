@@ -14,6 +14,25 @@ use std::io::Write;
 use std::path::Path;
 
 const MAX_DOCUMENT_BYTES: usize = 16_777_216;
+const BASELINE_OPERATIONS: [&str; 3] = ["describe", "status", "points"];
+const CONSISTENCIES: [&str; 5] = ["live", "crash", "filesystem", "application", "database"];
+
+fn consistency_satisfies(achieved: &str, required: &str) -> bool {
+    CONSISTENCIES.contains(&achieved)
+        && CONSISTENCIES.contains(&required)
+        && (required == "live"
+            || achieved == required
+            || (required == "crash"
+                && matches!(achieved, "filesystem" | "application" | "database")))
+}
+
+fn missing_baseline(operations: &[String]) -> Vec<&'static str> {
+    BASELINE_OPERATIONS
+        .iter()
+        .filter(|operation| !operations.iter().any(|value| value == *operation))
+        .copied()
+        .collect()
+}
 
 pub fn load_document(path: &Path) -> Result<Document> {
     let bytes = fs::read(path).map_err(|error| {
@@ -116,6 +135,18 @@ pub fn validate_document(document: &Document) -> Result<()> {
                             ),
                         ));
                     }
+                    let missing = missing_baseline(&integration.operations);
+                    if !missing.is_empty() {
+                        return Err(PreserveError::new(
+                            "unsupported-baseline-operation",
+                            format!(
+                                "state '{}' route '{}' integration '{}' does not declare baseline operations {:?}",
+                                state.state_id, route.route_id, integration.integration_id, missing
+                            ),
+                        ));
+                    }
+                    route_semantics(state, route)?;
+                    route_guaranteed_consistency(state, route)?;
                 }
             }
         }
@@ -263,6 +294,17 @@ fn describe(state: &State, route: &Route) -> Result<DescribeResult> {
         )
         .context(&state.state_id, Some(&route.route_id)));
     }
+    let missing = missing_baseline(&result.capabilities);
+    if !missing.is_empty() {
+        return Err(PreserveError::new(
+            "unsupported-baseline-operation",
+            format!(
+                "adapter '{}' does not provide baseline operations {:?}",
+                result.adapter_version.implementation, missing
+            ),
+        )
+        .context(&state.state_id, Some(&route.route_id)));
+    }
     let expected_fixture_only = integration(route)?.fixture_only;
     if result.adapter_version.fixture_only != expected_fixture_only {
         return Err(PreserveError::new(
@@ -305,6 +347,154 @@ fn require_capability(
         .context(&state.state_id, Some(&route.route_id)));
     }
     Ok(description.adapter_version)
+}
+
+struct RouteSemantics<'a> {
+    required_consistency: &'a str,
+    route_required_consistency: Option<&'a str>,
+    required_fidelity: Vec<&'a str>,
+}
+
+fn invalid_semantics(state: &State, route: &Route, detail: String) -> PreserveError {
+    PreserveError::new("invalid-semantic-requirements", detail)
+        .context(&state.state_id, Some(&route.route_id))
+}
+
+fn route_semantics<'a>(state: &State, route: &'a Route) -> Result<RouteSemantics<'a>> {
+    let requirements = route
+        .semantic_requirements
+        .as_ref()
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            invalid_semantics(
+                state,
+                route,
+                format!(
+                    "state '{}' route '{}' does not declare a semanticRequirements object",
+                    state.state_id, route.route_id
+                ),
+            )
+        })?;
+    let required_consistency = requirements
+        .get("requiredConsistency")
+        .and_then(Value::as_str)
+        .filter(|value| CONSISTENCIES.contains(value))
+        .ok_or_else(|| {
+            invalid_semantics(
+                state,
+                route,
+                format!(
+                    "state '{}' route '{}' requiredConsistency is missing or unknown",
+                    state.state_id, route.route_id
+                ),
+            )
+        })?;
+    let route_required_consistency = match requirements.get("routeRequiredConsistency") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .filter(|value| CONSISTENCIES.contains(value))
+                .ok_or_else(|| {
+                    invalid_semantics(
+                        state,
+                        route,
+                        format!(
+                        "state '{}' route '{}' routeRequiredConsistency is not a known consistency",
+                        state.state_id, route.route_id
+                    ),
+                    )
+                })?,
+        ),
+    };
+    let required_fidelity = requirements
+        .get("requiredFidelity")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            invalid_semantics(
+                state,
+                route,
+                format!(
+                    "state '{}' route '{}' requiredFidelity is missing or not an array",
+                    state.state_id, route.route_id
+                ),
+            )
+        })?
+        .iter()
+        .map(|value| {
+            value.as_str().ok_or_else(|| {
+                invalid_semantics(
+                    state,
+                    route,
+                    format!(
+                        "state '{}' route '{}' requiredFidelity contains a non-string value",
+                        state.state_id, route.route_id
+                    ),
+                )
+            })
+        })
+        .collect::<Result<Vec<&'a str>>>()?;
+    Ok(RouteSemantics {
+        required_consistency,
+        route_required_consistency,
+        required_fidelity,
+    })
+}
+
+fn route_guaranteed_consistency<'a>(state: &State, route: &'a Route) -> Result<&'a str> {
+    let route_guarantee = route
+        .guaranteed_consistency
+        .as_deref()
+        .filter(|value| CONSISTENCIES.contains(value))
+        .ok_or_else(|| {
+            invalid_semantics(
+                state,
+                route,
+                format!(
+                    "state '{}' route '{}' does not declare a known guaranteedConsistency",
+                    state.state_id, route.route_id
+                ),
+            )
+        })?;
+    let integration = route.integration.as_ref().ok_or_else(|| {
+        invalid_semantics(
+            state,
+            route,
+            format!(
+                "state '{}' route '{}' has no integration to guarantee consistency",
+                state.state_id, route.route_id
+            ),
+        )
+    })?;
+    let integration_guarantee = integration
+        .guaranteed_consistency
+        .as_deref()
+        .filter(|value| CONSISTENCIES.contains(value))
+        .ok_or_else(|| {
+            invalid_semantics(
+                state,
+                route,
+                format!(
+                    "state '{}' route '{}' integration '{}' does not declare a known guaranteedConsistency",
+                    state.state_id, route.route_id, integration.integration_id
+                ),
+            )
+        })?;
+    if route_guarantee != integration_guarantee {
+        return Err(PreserveError::new(
+            "inconsistent-integration-guarantee",
+            format!(
+                "state '{}' route '{}' guarantees '{}' but integration '{}' guarantees '{}'",
+                state.state_id,
+                route.route_id,
+                route_guarantee,
+                integration.integration_id,
+                integration_guarantee
+            ),
+        )
+        .context(&state.state_id, Some(&route.route_id)));
+    }
+    Ok(route_guarantee)
 }
 
 fn validate_point(state: &State, route: &Route, point: &NativePoint) -> Result<()> {
@@ -369,10 +559,55 @@ fn validate_point(state: &State, route: &Route, point: &NativePoint) -> Result<(
         )
         .context(&state.state_id, Some(&route.route_id)));
     }
+    if point.completion != "complete" {
+        return Err(PreserveError::new(
+            "incomplete-point",
+            format!("native point '{}' is not complete", point.native_id),
+        )
+        .context(&state.state_id, Some(&route.route_id)));
+    }
+    let semantics = route_semantics(state, route)?;
+    let guarantee = route_guaranteed_consistency(state, route)?;
+    let mut required_consistencies = vec![semantics.required_consistency, guarantee];
+    if let Some(required) = semantics.route_required_consistency {
+        required_consistencies.push(required);
+    }
+    if let Some(unsatisfied) = required_consistencies
+        .iter()
+        .find(|required| !consistency_satisfies(&point.consistency, required))
+    {
+        return Err(PreserveError::new(
+            "unsupported-point-consistency",
+            format!(
+                "native point '{}' achieved consistency '{}' does not satisfy '{unsatisfied}'",
+                point.native_id, point.consistency
+            ),
+        )
+        .context(&state.state_id, Some(&route.route_id)));
+    }
+    let required_fidelity: Vec<&str> = semantics
+        .required_fidelity
+        .into_iter()
+        .chain(integration.fidelity_guarantees.iter().map(String::as_str))
+        .collect();
+    if let Some(missing) = required_fidelity
+        .iter()
+        .find(|fidelity| !point.fidelity.iter().any(|achieved| achieved == *fidelity))
+    {
+        return Err(PreserveError::new(
+            "unsupported-point-fidelity",
+            format!(
+                "native point '{}' fidelity evidence lacks '{missing}'",
+                point.native_id
+            ),
+        )
+        .context(&state.state_id, Some(&route.route_id)));
+    }
     Ok(())
 }
 
 fn points_for_route(state: &State, route: &Route) -> Result<Vec<NativePoint>> {
+    require_capability(state, route, "points", false)?;
     let result: PointsResult =
         parse_result(invoke(state, route, "points", None, None, None)?, "points")?;
     for point in &result.points {
@@ -399,16 +634,30 @@ pub fn status(document: &Document, observe: bool) -> Result<Value> {
         for route in &state.routes {
             if observe && document.kind == "executable-plan" && state.operational {
                 let route = executable_route(state, &route.route_id)?;
-                let result: StatusResult =
-                    parse_result(invoke(state, route, "status", None, None, None)?, "status")?;
-                routes.push(json!({
-                    "routeId": route.route_id,
-                    "configured": true,
-                    "observed": result.catalog_observed,
-                    "evidence": result.evidence,
-                    "pointCount": result.point_count,
-                    "details": result.details
-                }));
+                let observed = require_capability(state, route, "status", false).and_then(|_| {
+                    parse_result::<StatusResult>(
+                        invoke(state, route, "status", None, None, None)?,
+                        "status",
+                    )
+                });
+                match observed {
+                    Ok(result) => routes.push(json!({
+                        "routeId": route.route_id,
+                        "configured": true,
+                        "observed": result.catalog_observed,
+                        "evidence": result.evidence,
+                        "pointCount": result.point_count,
+                        "details": result.details
+                    })),
+                    Err(error) => routes.push(json!({
+                        "routeId": route.route_id,
+                        "configured": true,
+                        "observed": false,
+                        "evidence": "failed",
+                        "pointCount": Value::Null,
+                        "error": error.context(&state.state_id, Some(&route.route_id))
+                    })),
+                }
             } else {
                 routes.push(json!({
                     "routeId": route.route_id,
@@ -429,14 +678,30 @@ pub fn status(document: &Document, observe: bool) -> Result<Value> {
     Ok(json!({ "kind": "status", "states": states }))
 }
 
-pub fn points(document: &Document, state_id: &str) -> Result<Vec<NativePoint>> {
+pub fn points(document: &Document, state_id: &str) -> Result<Value> {
     let state = executable_state(document, state_id)?;
-    let mut points = Vec::new();
+    let mut routes = Vec::new();
     for route in &state.routes {
         let route = executable_route(state, &route.route_id)?;
-        points.extend(points_for_route(state, route)?);
+        match points_for_route(state, route) {
+            Ok(points) => routes.push(json!({
+                "routeId": route.route_id,
+                "status": "ok",
+                "points": points
+            })),
+            Err(error) => routes.push(json!({
+                "routeId": route.route_id,
+                "status": "failed",
+                "points": [],
+                "error": error.context(&state.state_id, Some(&route.route_id))
+            })),
+        }
     }
-    Ok(points)
+    Ok(json!({
+        "kind": "points",
+        "stateId": state.state_id,
+        "routes": routes
+    }))
 }
 
 pub fn run(document: &Document, state_id: &str, route_id: &str) -> Result<RunResult> {

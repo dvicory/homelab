@@ -144,7 +144,9 @@ State protection SHALL configure, select, inspect, safely dispatch, and test tho
 
 ### Requirement: Recovery evidence preserves native lifecycle semantics
 
-Recovery evidence SHALL qualify a point by logical state, Route, Target, lifecycle owner, and the owner's immutable native point identity. It SHALL distinguish any semantic payload representation required by the StateSlot or application integration from the backend-native retained-point representation owned by the Integration. A POSIX filesystem payload may be retained as an OpenZFS snapshot, Restic snapshot, Borg archive, or another native container without changing StateSlot semantics; an application-native payload such as a PostgreSQL logical/custom dump may itself be retained inside a repository representation. Evidence SHALL record capture scope, achieved semantic consistency, relevant timestamps, both applicable representation layers, completion, and available verification evidence without replacing the owner's native catalog or retention identity.
+Recovery evidence SHALL qualify a point by logical state, Route, Target, lifecycle owner, and the owner's immutable native point identity. It SHALL distinguish any semantic payload representation required by the StateSlot or application integration from the backend-native retained-point representation owned by the Integration. A POSIX filesystem payload may be retained as an OpenZFS snapshot, Restic snapshot, Borg archive, or another native container without changing StateSlot semantics; an application-native payload such as a PostgreSQL logical/custom dump may itself be retained inside a repository representation. Evidence SHALL record capture scope, achieved semantic consistency and fidelity, relevant timestamps, both applicable representation layers, completion, and available verification evidence without replacing the owner's native catalog or retention identity.
+
+Before a point is accepted for inspection or restore, its achieved consistency and fidelity SHALL satisfy the resolved StateSlot and Route requirements and SHALL NOT contradict the selected Integration's configured guarantees. Integration configuration alone SHALL NOT substitute for point-level achieved evidence.
 
 A recovery point MAY carry opaque producer provenance under namespaced keys, including application, database/server, schema, or data-format versions. State protection SHALL retain and display this provenance without requiring generic interpretation. Producer provenance SHALL NOT participate in `stateId`, route identity, or native point identity.
 
@@ -171,6 +173,11 @@ If one owner proves that several routes share one stable capture, their evidence
 
 - **WHEN** one lifecycle owner creates a stable native point and replicates that same point to another target
 - **THEN** both route records identify the proven shared native capture while retaining separate target completion evidence
+
+#### Scenario: A point is weaker than its resolved plan
+
+- **WHEN** a lifecycle owner reports a point whose achieved consistency or fidelity does not satisfy the resolved StateSlot, Route, or configured Integration guarantee
+- **THEN** the coordinator rejects that point before listing it as usable or passing it to restore
 
 ### Requirement: Configuration does not make restore an activation action
 
@@ -213,7 +220,11 @@ The integration SHALL use the lifecycle owner's native restore or extraction ope
 
 Lifecycle-owner integrations SHALL use a small versioned, language-independent executable contract selected from trusted evaluated configuration. Recovery metadata SHALL NOT select or supply an executable path. Incompatible protocol versions, unsupported required operations, representations, access methods, or fidelity requirements SHALL be rejected before mutation.
 
+Every enabled Integration SHALL provide `describe`, `status`, and `points` as baseline inspection operations. `run`, `restore`, and `verify` remain optional and SHALL be checked before dispatch. Missing baseline inspection capabilities SHALL prevent an executable Integration rather than becoming a runtime failure that hides unrelated Route evidence.
+
 An adapter operation SHALL correspond to a declared owner-level action such as inspect status, enumerate points, start one configured job, restore one point, or verify one result. The protocol SHALL NOT require every implementation to expose a universal internal capture, stable-view, transfer, release, retry, or cleanup workflow. Bulk backup data and restored contents SHALL NOT be embedded in its control messages.
+
+Timeout and cancellation SHALL terminate the adapter's process group or equivalent descendant scope and drain bounded output without hanging. A timed-out adapter SHALL NOT leave backend child processes running merely because the direct adapter process exited or was killed.
 
 #### Scenario: An atomic owner operation is dispatched
 
@@ -225,9 +236,19 @@ An adapter operation SHALL correspond to a declared owner-level action such as i
 - **WHEN** retained provenance contains a historical program or package path
 - **THEN** dispatch uses only the currently configured compatible adapter and never executes the provenance value
 
+#### Scenario: An enabled Integration omits baseline inspection
+
+- **WHEN** an Integration selected for an executable Route does not advertise `describe`, `status`, and `points`
+- **THEN** executable validation rejects it while plan-only inventory may report the missing capability
+
+#### Scenario: A timed-out adapter has a backend child
+
+- **WHEN** an adapter spawns a long-lived backend child and exceeds its configured timeout
+- **THEN** cancellation terminates both adapter and descendant scope and bounded output readers finish without hanging
+
 ### Requirement: Operational evidence does not overstate protection
 
-The system SHALL distinguish configured intent, planned but disabled state, backend observation, native point completion, per-target retention, partial or failed obligations, restoration, owner-native checks, and content verification. Absence of observation SHALL remain distinct from an observed empty healthy catalog, and success for one route SHALL NOT imply success for another.
+The system SHALL distinguish configured intent, planned but disabled state, backend observation, native point completion, per-target retention, partial or failed obligations, restoration, owner-native checks, and content verification. Absence of observation SHALL remain distinct from an observed empty healthy catalog, and success for one route SHALL NOT imply success for another. State-level point queries SHALL preserve each Route's successful points or structured error independently so one unavailable or invalid catalog cannot hide valid recovery points from another Route.
 
 Configuration, a listening service, a successful adapter exit, or a local native point SHALL NOT by itself be reported as independent protection or application-consistent recovery. Owner status and checks SHALL be interpreted according to their documented scope rather than collapsed into one protected flag.
 
@@ -240,6 +261,11 @@ Configuration, a listening service, a successful adapter exit, or a local native
 
 - **WHEN** one required target has a recent verified point and another target is stale or failed
 - **THEN** the second obligation remains visibly unsatisfied
+
+#### Scenario: One point catalog is unavailable
+
+- **WHEN** a State has valid points on one resolved Route while another Route's point operation or point validation fails
+- **THEN** the point query returns the successful Route's points and a structured error for the failed Route rather than failing the whole State query
 
 ### Requirement: Capture scope, consistency, and fidelity are explicit
 

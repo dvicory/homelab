@@ -20,7 +20,6 @@
               fixtureAdapter
               pkgs.jq
             ];
-            meta.hestia.group = "${system}-preserve-fast";
           }
           ''
             set -euo pipefail
@@ -71,6 +70,9 @@
                         "timeoutSeconds": 5,
                         "maxResponseBytes": 1048576,
                         "fixtureOnly": true,
+                        "operations": ["describe","status","points","run","restore","verify"],
+                        "fidelityGuarantees": ["posix-filesystem"],
+                        "guaranteedConsistency": "live",
                         "nativePointRepresentations": ["fixture-directory/v1"],
                         "payloadRepresentation": null
                       },
@@ -150,34 +152,39 @@
               "$TMPDIR/observed-empty.json" >/dev/null
 
             homelab-preserve --manifest "$manifest" --json points fixture/state > "$TMPDIR/empty-points.json"
-            jq -e 'length == 0' "$TMPDIR/empty-points.json" >/dev/null
+            jq -e '.kind == "points" and .stateId == "fixture/state" and
+              .routes[0].status == "ok" and (.routes[0].points | length) == 0' \
+              "$TMPDIR/empty-points.json" >/dev/null
             homelab-preserve --manifest "$manifest" --json run fixture/state --route fixture-route > "$TMPDIR/run.json"
             jq -e '.evidence == "retained" and .details.atomicAction == "fixture-retain"' "$TMPDIR/run.json" >/dev/null
 
             homelab-preserve --manifest "$manifest" --json points fixture/state > "$TMPDIR/points.json"
-            jq -e 'length == 1 and .[0].nativeId == "fixture-point-1"' "$TMPDIR/points.json" >/dev/null
-            jq -e '.[0].producerProvenance["fixture.applicationVersion"] == "1.2.3"' "$TMPDIR/points.json" >/dev/null
-            jq -e '.[0].producerProvenance["postgresql.serverVersion"] == "16"' "$TMPDIR/points.json" >/dev/null
-            jq -e '.[0].producerProvenance["application.schema"].major == 4' "$TMPDIR/points.json" >/dev/null
-            jq -e '.[0].nativeRepresentation.kind == "fixture-directory/v1" and .[0].payloadRepresentation == null' \
+            jq -e '.routes[0].status == "ok" and (.routes[0].points | length) == 1 and
+              .routes[0].points[0].nativeId == "fixture-point-1"' "$TMPDIR/points.json" >/dev/null
+            jq -e '.routes[0].points[0].producerProvenance["fixture.applicationVersion"] == "1.2.3"' "$TMPDIR/points.json" >/dev/null
+            jq -e '.routes[0].points[0].producerProvenance["postgresql.serverVersion"] == "16"' "$TMPDIR/points.json" >/dev/null
+            jq -e '.routes[0].points[0].producerProvenance["application.schema"].major == 4' "$TMPDIR/points.json" >/dev/null
+            jq -e '.routes[0].points[0].nativeRepresentation.kind == "fixture-directory/v1" and .routes[0].points[0].payloadRepresentation == null' \
               "$TMPDIR/points.json" >/dev/null
             homelab-preserve --manifest "$manifest" points fixture/state > "$TMPDIR/points-human.txt"
             test -s "$TMPDIR/points-human.txt"
 
             jq '.states[0].routes[0].integration.nativePointRepresentations = ["other/v1"]' \
               "$manifest" > "$TMPDIR/wrong-representation.json"
-            if homelab-preserve --manifest "$TMPDIR/wrong-representation.json" points fixture/state >/dev/null 2>&1; then
-              echo "unadvertised native representation unexpectedly accepted" >&2
-              exit 1
-            fi
+            homelab-preserve --manifest "$TMPDIR/wrong-representation.json" --json points fixture/state \
+              > "$TMPDIR/wrong-representation-report.json"
+            jq -e '.routes[0].status == "failed" and (.routes[0].points | length) == 0 and
+              .routes[0].error.code == "unsupported-point-representation"' \
+              "$TMPDIR/wrong-representation-report.json" >/dev/null
             jq '.states[0].routes[0].integration.payloadRepresentation = "fixture-payload/v1"' \
               "$manifest" > "$TMPDIR/wrong-payload.json"
-            if homelab-preserve --manifest "$TMPDIR/wrong-payload.json" points fixture/state >/dev/null 2>&1; then
-              echo "mismatched payload representation unexpectedly accepted" >&2
-              exit 1
-            fi
+            homelab-preserve --manifest "$TMPDIR/wrong-payload.json" --json points fixture/state \
+              > "$TMPDIR/wrong-payload-report.json"
+            jq -e '.routes[0].status == "failed" and (.routes[0].points | length) == 0 and
+              .routes[0].error.code == "unsupported-point-payload"' \
+              "$TMPDIR/wrong-payload-report.json" >/dev/null
 
-            jq -e '.[0].ownerProvenance["fixture.executable"] == "/does/not/execute"' \
+            jq -e '.routes[0].points[0].ownerProvenance["fixture.executable"] == "/does/not/execute"' \
               "$TMPDIR/points.json" >/dev/null
 
             jq '.states[0].routes[0].ownerConfig.native.capabilities = ["describe","status","points"] |
@@ -189,6 +196,31 @@
               exit 1
             fi
             test ! -e "$TMPDIR/catalog-no-run"
+
+            jq '.states[0].routes[0].ownerConfig.native.capabilities = ["describe","status"] |
+                .states[0].routes[0].ownerConfig.native.root = "'$TMPDIR'/catalog-no-points"' \
+              "$manifest" > "$TMPDIR/missing-baseline.json"
+            homelab-preserve --manifest "$TMPDIR/missing-baseline.json" --json points fixture/state \
+              > "$TMPDIR/missing-baseline-report.json"
+            jq -e '.routes[0].status == "failed" and (.routes[0].points | length) == 0 and
+              .routes[0].error.code == "unsupported-baseline-operation"' \
+              "$TMPDIR/missing-baseline-report.json" >/dev/null
+            test ! -e "$TMPDIR/catalog-no-points"
+
+            jq '.states[0].routes[0].ownerConfig.native.root = "/dev/null/secret-looking-value"' \
+              "$manifest" > "$TMPDIR/leaky-adapter.json"
+            if homelab-preserve --manifest "$TMPDIR/leaky-adapter.json" --json run fixture/state \
+              --route fixture-route 2>"$TMPDIR/leaky-stderr.txt"; then
+              echo "adapter error unexpectedly allowed run" >&2
+              exit 1
+            fi
+            if grep -q "secret-looking-value" "$TMPDIR/leaky-stderr.txt"; then
+              echo "coordinator diagnostic leaked raw adapter stderr" >&2
+              exit 1
+            fi
+            grep -q "fixture-error" "$TMPDIR/leaky-stderr.txt"
+            test ! -e "/dev/null/secret-looking-value"
+            test -z "$(ls -A "$TMPDIR/scratch")"
 
             jq '.states[0].routes[0].ownerConfig.native.explicitScratch = false' \
               "$manifest" > "$TMPDIR/unsafe-restore.json"

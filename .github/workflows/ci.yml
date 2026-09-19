@@ -49,7 +49,10 @@ jobs:
       fail-fast: false
       matrix:
         system: ${{ fromJSON(inputs.system && inputs.system != 'all' && format('["{0}"]', inputs.system) || inputs.check != '' && '["x86_64-linux"]' || '["x86_64-linux","aarch64-linux","aarch64-darwin"]') }}
-        group: ${{ fromJSON(inputs.check != '' && '["checks"]' || '["packages","checks","devShells","formatters","nixosConfigurations","darwinConfigurations","homeConfigurations"]') }}
+        group: ${{ fromJSON(inputs.check != '' && '["checks"]' || '["packages","checks","preserve-fast","preserve-zfs-reference","devShells","formatters","nixosConfigurations","darwinConfigurations","homeConfigurations"]') }}
+        exclude:
+          - system: aarch64-darwin
+            group: preserve-zfs-reference
     steps:
       - name: Monitor cache publication runner
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.CACHIX_CACHE != ''
@@ -110,7 +113,7 @@ jobs:
       # System builds and VM checks can fetch multi-GiB images. Hestia v3
       # buffers whole NARs in RAM; use durable/upstream caches for these groups.
       - name: Start Hestia cache
-        if: matrix.group != 'nixosConfigurations' && matrix.group != 'checks'
+        if: matrix.group != 'nixosConfigurations' && matrix.group != 'checks' && matrix.group != 'preserve-zfs-reference'
         uses: Mic92/hestia@f1f4df2801140a36398ed423533c8460618539df # v3.0.1
         with:
           version: v3.0.1
@@ -131,16 +134,16 @@ jobs:
           fi
           # VM checks need the runner's resources, not a share of parallel builds.
           build_args=(--keep-going)
-          if [ "$GROUP" = checks ]; then
+          if [ "$GROUP" = preserve-zfs-reference ]; then
             build_args+=(--max-jobs 1)
           fi
           nix build -L --out-link "$RUNNER_TEMP/result" "${build_args[@]}" "$attr"
 
       - name: Upload successful check outputs
-        if: matrix.group == 'checks'
+        if: matrix.group == 'checks' || matrix.group == 'preserve-fast' || matrix.group == 'preserve-zfs-reference'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: check-output-${{ matrix.system }}-${{ github.run_id }}
+          name: check-output-${{ matrix.system }}-${{ matrix.group }}-${{ github.run_id }}
           path: ${{ runner.temp }}/result*
           # Some checks have empty successful outputs; their evidence is the job log.
           if-no-files-found: ignore

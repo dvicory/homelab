@@ -128,6 +128,12 @@ pub struct Integration {
     #[serde(default)]
     pub fixture_only: bool,
     #[serde(default)]
+    pub operations: Vec<String>,
+    #[serde(default)]
+    pub fidelity_guarantees: Vec<String>,
+    #[serde(default)]
+    pub guaranteed_consistency: Option<String>,
+    #[serde(default)]
     pub native_point_representations: Vec<String>,
     #[serde(default)]
     pub payload_representation: Option<String>,
@@ -171,6 +177,7 @@ pub struct NativePoint {
     pub retained_at: Option<String>,
     pub completion: String,
     pub consistency: String,
+    pub fidelity: Vec<String>,
     pub scope: Value,
     pub native_representation: Value,
     #[serde(default)]

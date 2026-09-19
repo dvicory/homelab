@@ -168,7 +168,12 @@ let
       inherit integrationId owner;
       adapter = "/nix/store/${integrationId}/bin/${integrationId}";
       fixtureOnly = true;
-      operations = [ "run" ];
+      operations = [
+        "describe"
+        "status"
+        "points"
+        "run"
+      ];
       payloadRepresentation = "posix-filesystem";
     }
     // extra;
@@ -423,6 +428,10 @@ let
 
   unsupportedOperation = compile (singleRoute {
     routes.route-zrepl.operation = "restore";
+  }) [ realizationSpec ];
+
+  missingBaseline = compile (singleRoute {
+    integrations.zrepl.operations = [ "run" ];
   }) [ realizationSpec ];
 
   unsupportedCapability = compile (singleRoute {
@@ -1072,6 +1081,27 @@ let
   resticBackups = resticProjection.config.services.restic.backups;
   resticJob = resticBackups.${builtins.head (builtins.attrNames resticBackups)};
 
+  moduleFixture = {
+    system.stateVersion = "26.05";
+  };
+  zreplModule = inputs.nixpkgs.lib.nixosSystem {
+    system = "x86_64-linux";
+    modules = [
+      zreplProjection.config
+      moduleFixture
+    ];
+  };
+  resticModule = inputs.nixpkgs.lib.nixosSystem {
+    system = "x86_64-linux";
+    modules = [
+      resticProjection.config
+      moduleFixture
+    ];
+  };
+  zreplModuleJob = builtins.head zreplModule.config.services.zrepl.settings.jobs;
+  resticModuleBackups = resticModule.config.services.restic.backups;
+  resticModuleJob = resticModuleBackups.${builtins.head (builtins.attrNames resticModuleBackups)};
+
   narrowedProjections = narrowed.ownerProjections;
   narrowedProjection = narrowedProjections.${narrowedRoute.obligationId};
   narrowedBackups = narrowedProjection.config.services.restic.backups;
@@ -1148,6 +1178,8 @@ let
       && hasIssue "coverage-exclusion" excluded;
     capability-matrix =
       hasIssue "unsupported-operation" unsupportedOperation
+      && hasIssue "unsupported-baseline-operation" missingBaseline
+      && throws missingBaseline.executablePlan
       && hasIssue "unsupported-capability" unsupportedCapability
       && hasIssue "unsupported-realization-kind" unsupportedKind
       && hasIssue "unsupported-data-kind" unsupportedDataKind
@@ -1290,6 +1322,19 @@ let
         "release"
         "retry"
       ];
+    module-schema-evaluations =
+      zreplModule.config.services.zrepl.enable == false
+      && zreplModuleJob.name == zreplJob.name
+      && zreplModuleJob.filesystems."source/app"
+      && zreplModuleJob.connect.listener_name == "fixture-sink"
+      && zreplModuleJob.snapshotting.interval == "1h"
+      && (builtins.head zreplModuleJob.pruning.keep_sender).count == 12
+      && resticModuleJob.paths == [ "/srv/app" ]
+      && resticModuleJob.repository == "/archive/application"
+      && resticModuleJob.passwordFile == "/run/credentials/restic-password"
+      && resticModuleJob.timerConfig.OnCalendar == "hourly"
+      && resticModuleJob.pruneOpts == [ "--keep-daily 7" ]
+      && resticModuleJob.runCheck;
     no-owner-switch =
       misleadingProjection.config ? services
       && misleadingProjection.config.services ? zrepl

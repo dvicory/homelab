@@ -26,18 +26,9 @@ let
     system: group: attrs:
     lib.filterAttrs (_: value: value != null) (
       lib.mapAttrs (
-        name: value:
-        let
-          projectedGroup =
-            if group == "checks" && name == "preserve-zfs-reference" then
-              "preserve-zfs-reference"
-            else if group == "checks" && lib.hasPrefix "preserve-" name then
-              "preserve-fast"
-            else
-              group;
-        in
+        _name: value:
         if lib.isDerivation value then
-          grouped system projectedGroup value
+          grouped system group value
         else if builtins.isAttrs value then
           let
             nested = project system group value;
@@ -47,6 +38,9 @@ let
           null
       ) attrs
     );
+
+  isPreserveCheck = name: lib.hasPrefix "preserve-" name;
+  isPreserveVmCheck = name: name == "preserve-zfs-reference";
 
   configurationsFor =
     system: output: build:
@@ -60,35 +54,47 @@ let
     system:
     withSystem system (
       { pkgs, ... }:
-      lib.mapAttrs (name: entries: pkgs.linkFarm "ci-${name}" entries) {
-        packages = project system "packages" ((self.packages or { }).${system} or { });
+      let
         checks =
           let
-            checks = (self.checks or { }).${system} or { };
+            all = (self.checks or { }).${system} or { };
           in
-          project system "checks" (
-            if system == "aarch64-linux" then
-              builtins.removeAttrs checks [
-                "compute-storage-zfs"
-                "prod-home-replacement"
-              ]
-            else
-              checks
+          if system == "aarch64-linux" then
+            builtins.removeAttrs all [
+              "compute-storage-zfs"
+              "prod-home-replacement"
+            ]
+          else
+            all;
+        preserveVmChecks = lib.filterAttrs (name: _: isPreserveVmCheck name) checks;
+        preserveFastChecks = lib.filterAttrs (
+          name: _: isPreserveCheck name && !isPreserveVmCheck name
+        ) checks;
+        ordinaryChecks = lib.filterAttrs (name: _: !isPreserveCheck name) checks;
+      in
+      lib.mapAttrs (name: entries: pkgs.linkFarm "ci-${name}" entries) (
+        {
+          packages = project system "packages" ((self.packages or { }).${system} or { });
+          checks = project system "checks" ordinaryChecks;
+          preserve-fast = project system "preserve-fast" preserveFastChecks;
+          devShells = project system "development" ((self.devShells or { }).${system} or { });
+          formatters = project system "development" {
+            default = (self.formatter or { }).${system} or null;
+          };
+          nixosConfigurations = configurationsFor system "nixosConfigurations" (
+            configuration: configuration.config.system.build.toplevel
           );
-        devShells = project system "development" ((self.devShells or { }).${system} or { });
-        formatters = project system "development" {
-          default = (self.formatter or { }).${system} or null;
-        };
-        nixosConfigurations = configurationsFor system "nixosConfigurations" (
-          configuration: configuration.config.system.build.toplevel
-        );
-        darwinConfigurations = configurationsFor system "darwinConfigurations" (
-          configuration: configuration.system
-        );
-        homeConfigurations = configurationsFor system "homeConfigurations" (
-          configuration: configuration.activationPackage
-        );
-      }
+          darwinConfigurations = configurationsFor system "darwinConfigurations" (
+            configuration: configuration.system
+          );
+          homeConfigurations = configurationsFor system "homeConfigurations" (
+            configuration: configuration.activationPackage
+          );
+        }
+        // lib.optionalAttrs (preserveVmChecks != { }) {
+          preserve-zfs-reference = project system "preserve-zfs-reference" preserveVmChecks;
+        }
+      )
     )
   );
 in

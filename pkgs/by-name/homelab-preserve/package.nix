@@ -7,6 +7,7 @@ rustPlatform.buildRustPackage {
   version = "0.1.0";
   src = lib.cleanSource ./.;
   cargoLock.lockFile = ./Cargo.lock;
+  checkFlags = [ "--test-threads=1" ];
 
   meta = {
     description = "State-protection inspection, safe owner dispatch, and recovery verification";

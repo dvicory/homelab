@@ -58,9 +58,6 @@ in
         assert lib.assertMsg (
           failures == [ ]
         ) "Preserve inventory contract assertions failed: ${lib.concatStringsSep ", " failures}";
-        pkgs.writeText "preserve-inventory-contracts" "ok\n"
-        // {
-          meta.hestia.group = "${system}-preserve-fast";
-        };
+        pkgs.writeText "preserve-inventory-contracts" "ok\n";
     };
 }
