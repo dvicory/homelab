@@ -24,7 +24,8 @@ let
       subUidStart = if uid != null then 100000 + ((uid - 1000) * 65536) else null;
 
       passwordPath = self + "/.secrets/users/${userName}/user-${userName}-password.age";
-      hasPasswordFile = builtins.pathExists passwordPath;
+      materializeSecrets = host.settings.core.users.secrets.enable or true;
+      hasPasswordFile = materializeSecrets && builtins.pathExists passwordPath;
     in
     {
       name = "user-enrich/${userName}@${host.name}";
@@ -34,41 +35,45 @@ let
           users.users.${userName}.shell = pkgs.${user.system.shell};
         };
 
-      nixos = { pkgs, ... }: {
-        users.deterministicIds.${userName} = lib.optionalAttrs (uid != null) {
-          inherit uid gid;
-          subUidRanges = lib.optional (subUidStart != null) {
-            startUid = subUidStart;
-            count = 65536;
-          };
-          subGidRanges = lib.optional (subUidStart != null) {
-            startGid = subUidStart;
-            count = 65536;
-          };
-        };
+      nixos =
+        { pkgs, ... }:
+        (
+          {
+            users.deterministicIds.${userName} = lib.optionalAttrs (uid != null) {
+              inherit uid gid;
+              subUidRanges = lib.optional (subUidStart != null) {
+                startUid = subUidStart;
+                count = 65536;
+              };
+              subGidRanges = lib.optional (subUidStart != null) {
+                startGid = subUidStart;
+                count = 65536;
+              };
+            };
 
-        users.groups.${userName} = lib.optionalAttrs (gid != null) { inherit gid; };
+            users.groups.${userName} = lib.optionalAttrs (gid != null) { inherit gid; };
 
-        users.users.${userName} = {
-          openssh.authorizedKeys.keys = map (k: k.key) (user.identity.sshKeys or [ ]);
-          extraGroups = aclUser.systemGroups or [ ];
-          isNormalUser = true;
-          home = "/home/${userName}";
-          useDefaultShell = user.system.shell == null;
-          shell = lib.mkIf (user.system.shell != null) pkgs.${user.system.shell};
-          description = lib.mkDefault (user.identity.displayName or "");
-          linger = user.system.linger or false;
-        }
-        // lib.optionalAttrs (uid != null) { inherit uid; }
-        // lib.optionalAttrs (gid != null) { group = userName; }
-        // lib.optionalAttrs hasPasswordFile {
-          hashedPasswordFile = "/run/agenix/user-${userName}-password";
-        };
+            users.users.${userName} = {
+              openssh.authorizedKeys.keys = map (k: k.key) (user.identity.sshKeys or [ ]);
+              extraGroups = aclUser.systemGroups or [ ];
+              isNormalUser = true;
+              home = "/home/${userName}";
+              useDefaultShell = user.system.shell == null;
+              shell = lib.mkIf (user.system.shell != null) pkgs.${user.system.shell};
+              description = lib.mkDefault (user.identity.displayName or "");
+              linger = user.system.linger or false;
+            }
+            // lib.optionalAttrs (uid != null) { inherit uid; }
+            // lib.optionalAttrs (gid != null) { group = userName; }
+            // lib.optionalAttrs hasPasswordFile {
+              hashedPasswordFile = "/run/agenix/user-${userName}-password";
+            };
 
-        age.secrets = lib.optionalAttrs hasPasswordFile {
-          "user-${userName}-password".rekeyFile = passwordPath;
-        };
-      };
+          }
+          // lib.optionalAttrs hasPasswordFile {
+            age.secrets."user-${userName}-password".rekeyFile = passwordPath;
+          }
+        );
     };
 in
 {
@@ -77,6 +82,11 @@ in
 
   # Host-level mutableUsers setting
   den.aspects.core.users = {
+    settings.secrets.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Deliver per-user private secrets on this host.";
+    };
     nixos = {
       users.mutableUsers = false;
     };

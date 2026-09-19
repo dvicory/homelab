@@ -1,4 +1,10 @@
-{ den, inputs, ... }: {
+{
+  den,
+  inputs,
+  lib,
+  ...
+}:
+{
   den.hosts.x86_64-linux.hvn-hyp1 = {
     environment = "prod";
     system-access-groups = [
@@ -8,6 +14,52 @@
 
     settings = {
       core.nix.gc.enable = false;
+      virtualization.compute = rec {
+        stateRoot = "/var/lib/homelab/compute-1/state";
+        address = "10.210.0.10";
+        pool = "incus-compute";
+        network = "incus-compute";
+        idmapBase = 1000000;
+        idmapSize = 65536;
+        identityPath = "/var/lib/homelab/compute-1/identity";
+        project = "compute";
+        instance = "compute-1";
+        profile = "compute-1";
+        retainedPaths = { };
+        runtimeSecrets = { };
+        storageCapabilities = [ ];
+        instanceConfig = {
+          "boot.autostart" = "true";
+          "limits.cpu" = "4";
+          "limits.memory" = "12GiB";
+          "limits.processes" = "8192";
+          "security.guestapi" = "false";
+          "security.idmap.isolated" = "true";
+          "security.nesting" = "true";
+          "security.privileged" = "false";
+        };
+        devices = {
+          root = {
+            path = "/";
+            inherit pool;
+            type = "disk";
+          };
+          eth0 = {
+            name = "eth0";
+            inherit network;
+            type = "nic";
+            "ipv4.address" = address;
+            host_name = "veth-comp-1";
+          };
+          identity = {
+            path = "/srv/identity";
+            readonly = "true";
+            required = "true";
+            source = identityPath;
+            type = "disk";
+          };
+        };
+      };
       services.storage-roots.roots.media = {
         path = "/srv/media";
         user = "root";
@@ -80,6 +132,7 @@
       den.aspects.core.facter
       den.aspects.core.base
       den.aspects.virtualization.incus
+      den.aspects.virtualization.compute
       den.aspects.disk.zfs
       den.aspects.disk.zfs.provides.pool
       den.aspects.disk.impermanence
@@ -88,6 +141,7 @@
       den.aspects.core."remote-unlock"
       den.aspects.services.mergerfs
       den.aspects.services.storage-roots
+      den.aspects.services.kubernetes-runtime-secrets
       den.aspects.services.media-namespace
       den.aspects.secrets.agenix
       den.aspects.core.network.tailscale

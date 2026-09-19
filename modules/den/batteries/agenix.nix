@@ -28,7 +28,8 @@ let
       ...
     }:
     let
-      hasIdentity = (user.identity.sshKeys or [ ]) != [ ];
+      materializeSecrets = host.settings.core.users.secrets.enable or true;
+      hasIdentity = materializeSecrets && (user.identity.sshKeys or [ ]) != [ ];
       identityFile = self + "/.secrets/users/${user.name}/user-identity-${user.name}.age";
       identityPub = self + "/.secrets/users/${user.name}/user-identity-${user.name}.pub";
 
@@ -42,24 +43,26 @@ let
         };
       };
 
-      homeCfg = { osConfig, ... }: {
-        age = {
-          identityPaths = lib.optionals (osConfig.age.secrets ? "user-identity-${user.name}") [
-            osConfig.age.secrets."user-identity-${user.name}".path
-          ];
-          rekey = {
-            inherit (secretsConfig) masterIdentities;
-            storageMode = "local";
-            hostPubkey =
-              if (osConfig.age.secrets ? "user-identity-${user.name}") then
-                identityPub
-              else
-                osConfig.age.rekey.hostPubkey;
-            generatedSecretsDir = self + "/.secrets/generated/${user.name}/${host.name}";
-            localStorageDir = self + "/.secrets/rekeyed/${user.name}/${host.name}";
+      homeCfg =
+        { osConfig, ... }:
+        lib.optionalAttrs materializeSecrets {
+          age = {
+            identityPaths = lib.optionals (osConfig.age.secrets ? "user-identity-${user.name}") [
+              osConfig.age.secrets."user-identity-${user.name}".path
+            ];
+            rekey = {
+              inherit (secretsConfig) masterIdentities;
+              storageMode = "local";
+              hostPubkey =
+                if (osConfig.age.secrets ? "user-identity-${user.name}") then
+                  identityPub
+                else
+                  osConfig.age.rekey.hostPubkey;
+              generatedSecretsDir = self + "/.secrets/generated/${user.name}/${host.name}";
+              localStorageDir = self + "/.secrets/rekeyed/${user.name}/${host.name}";
+            };
           };
         };
-      };
     in
     {
       name = "agenix-identity/${user.name}@${host.name}";
