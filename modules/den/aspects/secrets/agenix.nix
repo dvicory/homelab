@@ -155,6 +155,44 @@
         };
       };
 
+    darwin =
+      { host, config, lib, ... }:
+      {
+        imports = [
+          inputs.agenix.darwinModules.default
+          inputs.agenix-rekey.darwinModules.default
+          (import ./_generators.nix)
+        ];
+
+        age = {
+          identityPaths = [ "/etc/ssh/ssh_host_ed25519_key" ];
+          rekey = {
+            masterIdentities = [
+              {
+                identity = inputs.self + "/.secrets/keys/master.age";
+                pubkey = inputs.self + "/.secrets/pub/master.pub";
+              }
+            ];
+            storageMode = "local";
+            hostPubkey = builtins.readFile host.public_key;
+            generatedSecretsDir = host.secretPath + "/generated";
+            localStorageDir = host.secretPath + "/rekeyed";
+          };
+        };
+
+        _module.args.secrets = lib.mapAttrs (_: value: value.path) config.age.secrets;
+        home-manager.sharedModules = [
+          inputs.agenix.homeManagerModules.default
+          inputs.agenix-rekey.homeManagerModules.default
+          (
+            { config, lib, ... }:
+            {
+              _module.args.secrets = lib.mapAttrs (_: value: value.path) config.age.secrets;
+            }
+          )
+        ];
+      };
+
     persist = {
       # Agenix-rekey generators state
     };

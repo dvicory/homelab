@@ -18,6 +18,7 @@
     den.aspects.core.users.home-manager
     den.aspects.core.users.root-user
     den.aspects.core.users.deterministic-uids
+    den.aspects.core.users.fleet-groups
     den.aspects.networking.default
     den.aspects.core.network.firewall-collector
     den.aspects.core.secrets.collector
@@ -26,11 +27,15 @@
   den.schema.user.includes = [
     den.aspects.core.users.resolved-user-emitter
 
-    (den.lib.policy.mkPolicy "user-aspect-auto-include" (
-      { host, user, ... }:
-      lib.optional (den.aspects ? ${host.name} && den.aspects.${host.name} ? ${user.name}) (
-        den.lib.policy.include den.aspects.${host.name}.${user.name}
-      )
-    ))
+    {
+      __isPolicy = true;
+      name = "user-aspect-auto-include";
+      emits = [ "edge" ];
+      fn =
+        { host, user, ... }:
+        lib.optional (den.aspects ? ${host.name} && den.aspects.${host.name} ? ${user.name}) (
+          den.lib.policy.include den.aspects.${host.name}.${user.name}
+        );
+    }
   ];
 }

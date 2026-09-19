@@ -1,15 +1,20 @@
 {
   den.aspects.core.users.shell = {
-    os = {
-      programs.zsh = {
-        enable = true;
-        enableCompletion = true;
+    os =
+      { pkgs, ... }:
+      {
+        programs.zsh = {
+          enable = true;
+          enableCompletion = true;
+        };
+
+        programs.fish.enable = true;
+        environment.systemPackages = [
+          pkgs.ncurses
+          (if pkgs.stdenv.hostPlatform.isDarwin then pkgs.ghostty-bin.terminfo else pkgs.ghostty.terminfo)
+        ];
+
       };
-
-      programs.fish.enable = true;
-
-      environment.enableAllTerminfo = true;
-    };
 
     nixos =
       { pkgs, ... }:
