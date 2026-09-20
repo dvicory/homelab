@@ -32,22 +32,22 @@ in
       inherit (identity) uid gid;
       mode = "0700";
     };
-    runtimeSecrets = lib.listToAttrs (
-      map
-        (key: {
-          name = "media--${cluster.settings.kubernetes.services.media.configurationSecret}--${key}";
-          value = {
-            namespace = "media";
-            name = cluster.settings.kubernetes.services.media.configurationSecret;
-            inherit key;
-          };
-        })
-        [
-          "SABNZBD_API_KEY"
-          "SABNZBD_USERNAME"
-          "SABNZBD_PASSWORD"
-        ]
-    );
+    runtimeSecrets =
+      lib.mapAttrs'
+        (
+          key: generator:
+          lib.nameValuePair "media--${cluster.settings.kubernetes.services.media.configurationSecret}--${key}"
+            {
+              namespace = "media";
+              name = cluster.settings.kubernetes.services.media.configurationSecret;
+              inherit key generator;
+            }
+        )
+        {
+          SABNZBD_API_KEY = "api-key";
+          SABNZBD_USERNAME = null;
+          SABNZBD_PASSWORD = "alnum";
+        };
   };
   den.aspects.kubernetes.services.sabnzbd.k8s-manifests =
     {

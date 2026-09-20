@@ -258,6 +258,7 @@ in
               namespace = "media";
               name = settings.configurationSecret;
               key = cfg.apiSecretKey;
+              generator = "api-key";
             };
           }) (builtins.attrValues settings.${kind})
         );

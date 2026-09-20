@@ -8,12 +8,7 @@
 #                  agenix user-identity secret in
 #                  modules/den/batteries/agenix.nix)
 #   luks-key    - 4096 random bytes, used as a LUKS key file
-{
-  config,
-  lib,
-  pkgs,
-  ...
-}:
+{ config, lib, ... }:
 let
   inherit (lib) escapeShellArg removeSuffix;
 in
@@ -48,28 +43,12 @@ in
         )
       '';
 
-    passphrase =
+    # 32 hex characters: the API key form Radarr, Sonarr and SABnzbd
+    # generate for themselves.
+    api-key =
       { pkgs, ... }:
       ''
-        ${pkgs.openssl}/bin/openssl rand -base64 48 | tr -d '\n'
-      '';
-
-    hex =
-      {
-        length ? 64,
-        ...
-      }:
-      ''
-        ${pkgs.openssl}/bin/openssl rand -hex ${toString (length / 2)}
-      '';
-
-    base64 =
-      {
-        length ? 64,
-        ...
-      }:
-      ''
-        ${pkgs.openssl}/bin/openssl rand -base64 ${toString (length * 3 / 4)} | tr -d '\n'
+        ${pkgs.openssl}/bin/openssl rand -hex 16 | tr -d '\n'
       '';
 
     # 4096 bytes of random data, suitable as a LUKS key file. The

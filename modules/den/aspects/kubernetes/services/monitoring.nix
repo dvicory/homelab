@@ -32,6 +32,7 @@
         namespace = "monitoring";
         name = "grafana-admin";
         key = "admin-password";
+        generator = "alnum";
       };
     };
   };

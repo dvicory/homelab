@@ -21,21 +21,20 @@
       name = cluster.settings.kubernetes.services.media.configurationSecret;
     in
     {
-      runtimeSecrets = lib.listToAttrs (
-        map
-          (key: {
-            name = "media--${name}--${key}";
-            value = {
+      runtimeSecrets =
+        lib.mapAttrs'
+          (
+            key: generator:
+            lib.nameValuePair "media--${name}--${key}" {
               namespace = "media";
-              inherit name key;
-            };
-          })
-          [
-            "JELLYFIN_OWNER_USERNAME"
-            "JELLYFIN_OWNER_PASSWORD"
-            "JELLYFIN_OWNER_EMAIL"
-          ]
-      );
+              inherit name key generator;
+            }
+          )
+          {
+            JELLYFIN_OWNER_USERNAME = null;
+            JELLYFIN_OWNER_PASSWORD = "alnum";
+            JELLYFIN_OWNER_EMAIL = null;
+          };
     };
   den.aspects.kubernetes.services.media.configuration.k8s-manifests =
     { cluster, config, ... }:
