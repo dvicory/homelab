@@ -6,12 +6,12 @@
   ...
 }:
 let
-  inherit (config.den.environments.prod) domain backupDomain;
+  cluster = config.den.clusters.prod-home;
+  inherit (config.den.environments.${cluster.environment}) domain backupDomain;
   hosts = name: [
     "${name}.${domain}"
     "${name}.${backupDomain}"
   ];
-  cluster = config.den.clusters.prod-home;
   kubeVersion = builtins.head (
     lib.splitString "+" inputs.nixpkgs.legacyPackages.${cluster.hostSystem}.k3s.version
   );
@@ -45,6 +45,7 @@ in
       immich = route "immich" "immich" "immich-server" 2283 "native";
       radarr = route "radarr" "media" "radarr" 7878 "admin";
       sonarr = route "sonarr" "media" "sonarr" 8989 "admin";
+      prowlarr = route "prowlarr" "media" "prowlarr" 9696 "admin";
       sabnzbd = route "sabnzbd" "media" "sabnzbd" 8080 "admin";
       requests = route "requests" "media" "seerr" 5055 "native";
       grafana = route "grafana" "monitoring" "monitoring-grafana" 80 "admin";
@@ -53,6 +54,10 @@ in
         backendTLS = true;
       };
     };
+    # The existing Arr instances intentionally share the host-owned media
+    # namespace. Private configuration remains on each instance's own claim.
+    settings.kubernetes.services.media.radarr.radarr.sharedWritablePaths = [ "/data" ];
+    settings.kubernetes.services.media.sonarr.sonarr.sharedWritablePaths = [ "/data" ];
   };
 
   den.aspects.prod-home = {

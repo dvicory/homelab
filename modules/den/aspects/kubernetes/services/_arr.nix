@@ -1,18 +1,23 @@
 {
-  kind,
-  port,
-  image,
-  identity,
+  application,
 }:
 { config, lib, ... }:
 let
   fleetGroups = config.den.groups or { };
-  apps.${kind} = {
+  inherit (application)
+    kind
+    port
+    image
+    identity
+    defaultRoot
+    defaultCategory
+    profiles
+    ;
+  app = {
     namespace = "media";
     inherit port;
     memory = "1Gi";
   };
-  images.${kind} = image;
   inherit (lib) mkOption types;
   inherit (import ./_media-lib.nix { inherit lib; })
     retainedEntry
@@ -23,66 +28,66 @@ let
     ;
   mediaGid = fleetGroups.media.gid;
 
-  instanceType =
-    kind:
-    types.submodule (
-      { name, ... }: {
-        options = {
-          state = mkOption {
-            type = types.strMatching "[a-z0-9]([-a-z0-9]*[a-z0-9])?";
-            default = name;
-            description = "compute.retainedPaths key for this instance's private configuration.";
-          };
-          routeKey = mkOption {
-            type = types.nullOr types.str;
-            default = if name == kind then kind else null;
-            description = "Cluster route key for this instance; null keeps it private.";
-          };
-          apiSecretKey = mkOption {
-            type = types.strMatching "[A-Z][A-Z0-9_]*";
-            default = "${lib.toUpper kind}_API_KEY";
-            description = "Runtime Secret key containing this instance's native API key.";
-          };
-          root = mkOption {
-            type = types.addCheck types.str (
-              path:
-              lib.hasPrefix "/data/" path
-              && path != "/data/"
-              && lib.all (part: part != ".." && part != ".") (lib.splitString "/" path)
-            );
-            default = if kind == "radarr" then "/data/library/movies" else "/data/library/tv";
-            description = "Fresh writable library root managed by the native root-folder reconciler.";
-          };
-          category = mkOption {
-            type = types.str;
-            default = if kind == "radarr" then "movies" else "tv";
-            description = "Fresh download category assigned to this instance.";
-          };
-          profile = mkOption {
-            type = types.enum [
-              "WEB-1080p"
-              "WEB-2160p"
-            ];
-            default = "WEB-1080p";
-            description = "Selected configuration profile name.";
-          };
+  instanceType = types.submodule (
+    { name, ... }:
+    {
+      options = {
+        state = mkOption {
+          type = types.strMatching "[a-z0-9]([-a-z0-9]*[a-z0-9])?";
+          default = name;
+          description = "compute.retainedPaths key for this instance's private configuration.";
         };
-      }
-    );
+        routeKey = mkOption {
+          type = types.nullOr types.str;
+          default = if name == kind then kind else null;
+          description = "Cluster route key for this instance; null keeps it private.";
+        };
+        apiSecretKey = mkOption {
+          type = types.strMatching "[A-Z][A-Z0-9_]*";
+          default = "${lib.toUpper kind}_API_KEY";
+          description = "Runtime Secret key containing this instance's native API key.";
+        };
+        root = mkOption {
+          type = types.addCheck types.str (
+            path:
+            lib.hasPrefix "/data/" path
+            && path != "/data/"
+            && lib.all (part: part != ".." && part != ".") (lib.splitString "/" path)
+          );
+          default = defaultRoot;
+          description = "Fresh writable library root managed by the native root-folder reconciler.";
+        };
+        category = mkOption {
+          type = types.str;
+          default = defaultCategory;
+          description = "Fresh download category assigned to this instance.";
+        };
+        profile = mkOption {
+          type = types.enum profiles;
+          default = builtins.head profiles;
+          description = "Selected configuration profile name.";
+        };
+        sharedWritablePaths = mkOption {
+          type = types.listOf (types.enum [ "/data" ]);
+          default = [ ];
+          description = "Shared writable paths explicitly granted to this instance.";
+        };
+      };
+    }
+  );
 
   routeFor =
     {
       cluster,
-      kind,
       instanceName,
       cfg,
     }:
     let
       routeKey = cfg.routeKey;
       expected = {
-        namespace = apps.${kind}.namespace;
+        namespace = app.namespace;
         service = serviceName kind instanceName;
-        port = apps.${kind}.port;
+        inherit port;
       };
     in
     if routeKey == null then
@@ -106,18 +111,14 @@ let
     {
       cluster,
       compute,
-      charts,
-      kind,
       instanceName,
       cfg,
     }:
     let
-      app = apps.${kind};
       state = retainedEntry compute cfg.state;
       route = routeFor {
         inherit
           cluster
-          kind
           instanceName
           cfg
           ;
@@ -126,9 +127,10 @@ let
       service = serviceName kind instanceName;
       secretName = cluster.settings.kubernetes.services.media.configurationSecret;
       apiKeyEnv = "${lib.toUpper kind}__AUTH__APIKEY";
-
     in
     assert lib.assertMsg (!state.readOnly) "Media state ${cfg.state} must be writable.";
+    assert lib.assertMsg (lib.elem "/data" cfg.sharedWritablePaths)
+      "Media instance ${kind}/${instanceName} must explicitly declare shared writable path /data.";
     {
       fullnameOverride = service;
       defaultPodOptions = {
@@ -141,7 +143,7 @@ let
         strategy = "Recreate";
         replicas = 1;
         containers.main = {
-          image = images.${kind};
+          inherit image;
           env = {
             TZ = "UTC";
             PUID = toString identity.uid;
@@ -170,7 +172,7 @@ let
             spec = {
               httpGet = {
                 path = "${prefix}/ping";
-                port = app.port;
+                inherit port;
               };
               periodSeconds = 10;
               timeoutSeconds = 5;
@@ -181,7 +183,7 @@ let
       };
       service.main = {
         controller = "main";
-        ports.http.port = app.port;
+        ports.http.port = port;
       };
       persistence = {
         config = {
@@ -197,9 +199,7 @@ let
         };
       };
     };
-
   mkArrApplications =
-    kind:
     {
       cluster,
       compute,
@@ -211,15 +211,13 @@ let
     lib.mapAttrs' (
       instanceName: cfg:
       lib.nameValuePair (serviceName kind instanceName) {
-        namespace = apps.${kind}.namespace;
+        namespace = app.namespace;
         helm.releases.${serviceName kind instanceName} = {
           chart = charts.bjw-s-labs.app-template;
           values = mkArrValues {
             inherit
               cluster
               compute
-              charts
-              kind
               instanceName
               cfg
               ;
@@ -230,7 +228,7 @@ let
 in
 {
   den.aspects.kubernetes.services.media.settings.${kind} = mkOption {
-    type = types.attrsOf (instanceType kind);
+    type = types.attrsOf instanceType;
     default = {
       ${kind} = { };
     };
@@ -258,6 +256,7 @@ in
               namespace = "media";
               name = settings.configurationSecret;
               key = cfg.apiSecretKey;
+              generator = "api-key";
             };
           }) (builtins.attrValues settings.${kind})
         );
@@ -270,7 +269,7 @@ in
         ...
       }:
       {
-        applications = mkArrApplications kind { inherit cluster compute charts; } // {
+        applications = mkArrApplications { inherit cluster compute charts; } // {
           "${kind}-storage" = {
             namespace = "media";
             retained = true;

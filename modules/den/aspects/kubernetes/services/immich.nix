@@ -18,6 +18,7 @@
         namespace = "immich";
         name = "immich-runtime";
         key = "DB_PASSWORD";
+        generator = "alnum-no-newline";
       };
     };
     settings.oidcConfigurationSecret = lib.mkOption {

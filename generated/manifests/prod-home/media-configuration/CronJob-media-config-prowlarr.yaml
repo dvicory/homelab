@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: media-config-roots
+  name: media-config-prowlarr
   namespace: media
 spec:
   concurrencyPolicy: Forbid
@@ -13,13 +13,13 @@ spec:
       template:
         metadata:
           labels:
-            app.kubernetes.io/name: media-config-roots
+            app.kubernetes.io/name: media-config-prowlarr
         spec:
           automountServiceAccountToken: false
           containers:
             - command:
                 - node
-                - /configuration/roots.mjs
+                - /configuration/prowlarr.mjs
               image: docker.io/library/node:22.14.0-bookworm-slim@sha256:1c18d9ab3af4585870b92e4dbc5cac5a0dc77dd13df1a5905cea89fc720eb05b
               name: configure
               resources:
@@ -64,6 +64,8 @@ spec:
                           path: RADARR_API_KEY
                         - key: SONARR_API_KEY
                           path: SONARR_API_KEY
+                        - key: PROWLARR_API_KEY
+                          path: PROWLARR_API_KEY
                       name: media-runtime
   schedule: 0 4 * * *
   successfulJobsHistoryLimit: 1

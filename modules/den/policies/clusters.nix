@@ -28,6 +28,9 @@ in
         in
         assert lib.assertMsg (builtins.hasAttr cluster.environment config.den.environments)
           "Cluster ${name} references unknown environment ${cluster.environment}";
+        assert lib.assertMsg (builtins.hasAttr cluster.hostName (
+          config.den.hosts.${cluster.hostSystem} or { }
+        )) "Cluster ${name} is placed on unknown host ${cluster.hostSystem}.${cluster.hostName}";
         lib.optionals (cluster.environment == environment.name) [
           (resolve.to "cluster" {
             cluster = cluster // {

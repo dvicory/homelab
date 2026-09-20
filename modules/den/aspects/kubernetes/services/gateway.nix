@@ -24,12 +24,28 @@
     {
       cluster,
       compute,
+      environment,
       charts,
       lib,
       ...
     }:
     let
       namespace = "gateway";
+      inDomain =
+        domain: hostname:
+        hostname == domain || lib.hasSuffix ".${domain}" hostname;
+      invalidHostnames = lib.concatLists (
+        lib.mapAttrsToList (
+          name: route:
+          map (hostname: "${name}=${hostname}") (
+            builtins.filter (
+              hostname:
+              !(inDomain environment.domain hostname)
+              && !(inDomain environment.backupDomain hostname)
+            ) route.hostnames
+          )
+        ) cluster.routes
+      );
       peers = cluster.ingress.trustedProxyCIDRs;
       retained = {
         "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
@@ -147,6 +163,8 @@
           }
         ) namespaces;
     in
+    assert lib.assertMsg (invalidHostnames == [ ])
+      "Cluster ${cluster.name} has route hostnames outside ${environment.domain} or ${environment.backupDomain}: ${lib.concatStringsSep ", " invalidHostnames}";
     {
       applications.gateway-retained = {
         inherit namespace;

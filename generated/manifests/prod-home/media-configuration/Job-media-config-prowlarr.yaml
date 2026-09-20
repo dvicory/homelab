@@ -4,8 +4,8 @@ metadata:
   annotations:
     argocd.argoproj.io/hook: PostSync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
-    argocd.argoproj.io/sync-wave: "2"
-  name: media-config-seerr
+    argocd.argoproj.io/sync-wave: "1"
+  name: media-config-prowlarr
   namespace: media
 spec:
   activeDeadlineSeconds: 900
@@ -13,13 +13,13 @@ spec:
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: media-config-seerr
+        app.kubernetes.io/name: media-config-prowlarr
     spec:
       automountServiceAccountToken: false
       containers:
         - command:
             - node
-            - /configuration/seerr.mjs
+            - /configuration/prowlarr.mjs
           image: docker.io/library/node:22.14.0-bookworm-slim@sha256:1c18d9ab3af4585870b92e4dbc5cac5a0dc77dd13df1a5905cea89fc720eb05b
           name: configure
           resources:
@@ -64,16 +64,6 @@ spec:
                       path: RADARR_API_KEY
                     - key: SONARR_API_KEY
                       path: SONARR_API_KEY
-                    - key: JELLYFIN_OWNER_USERNAME
-                      path: JELLYFIN_OWNER_USERNAME
-                    - key: JELLYFIN_OWNER_PASSWORD
-                      path: JELLYFIN_OWNER_PASSWORD
-                    - key: JELLYFIN_OWNER_EMAIL
-                      path: JELLYFIN_OWNER_EMAIL
+                    - key: PROWLARR_API_KEY
+                      path: PROWLARR_API_KEY
                   name: media-runtime
-              - secret:
-                  items:
-                    - key: SEERR_API_KEY
-                      path: SEERR_API_KEY
-                  name: media-runtime
-                  optional: true

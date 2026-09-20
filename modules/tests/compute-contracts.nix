@@ -134,6 +134,16 @@ let
         "unix-hotplug"
         "usb"
       ];
+    optional-media-device =
+      let
+        media = devices.media or null;
+      in
+      media == null
+      || (
+        (media.required or null) == "false"
+        && (media.source or null) == "/srv/media"
+        && builtins.all (entry: entry.path != "/srv/media") descriptor.requiredPaths
+      );
     runtime-only-private-identity =
       (guest.secretRequests or { }) == { }
       && (guest.age.secrets or { }) == { }

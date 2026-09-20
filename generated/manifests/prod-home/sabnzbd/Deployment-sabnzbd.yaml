@@ -30,9 +30,9 @@ spec:
       containers:
         - env:
             - name: PGID
-              value: "754"
+              value: "757"
             - name: PUID
-              value: "754"
+              value: "757"
             - name: TZ
               value: UTC
             - name: UMASK
@@ -81,6 +81,7 @@ spec:
             - /lsiopy/bin/python
             - -c
             - |
+              import json
               import os
               from configobj import ConfigObj
               os.umask(0o007)
@@ -97,7 +98,7 @@ spec:
                   'download_dir': '/data/downloads/usenet/incomplete',
                   'complete_dir': '/data/downloads/usenet/complete',
               })
-              for key in ('SABNZBD_API_KEY', 'SABNZBD_USERNAME', 'SABNZBD_PASSWORD'):
+              for key in ["SABNZBD_API_KEY","SABNZBD_USERNAME","SABNZBD_PASSWORD"]:
                   if not os.environ[key].strip():
                       raise ValueError('Required runtime secret is empty: ' + key)
               for directory in ('library/movies', 'library/tv', 'downloads/usenet/incomplete', 'downloads/usenet/complete'):
@@ -105,6 +106,24 @@ spec:
               categories = config.setdefault('categories', {})
               for name in ('movies', 'tv'):
                   categories.setdefault(name, {'name': name, 'order': '0', 'priority': '-100', 'pp': '3', 'script': 'Default', 'dir': name, 'newzbin': ""})
+              providers = json.loads("{}")
+              managed = 'managed-by: homelab'
+              servers = config.setdefault('servers', {})
+              for name, provider in providers.items():
+                  env_name = name.replace('-', '_').replace('.', '_').upper()
+                  username_key = 'USENET_' + env_name + '_USERNAME'
+                  password_key = 'USENET_' + env_name + '_PASSWORD'
+                  server = servers.setdefault(name, {})
+                  server.setdefault('displayname', name)
+                  server.update({
+                      'host': provider['host'], 'port': str(provider['port']),
+                      'ssl': '1' if provider['ssl'] else '0',
+                      'connections': str(provider['connections']),
+                      'priority': str(provider['priority']),
+                      'username': os.environ[username_key],
+                      'password': os.environ[password_key],
+                      'enable': '1', 'notes': managed,
+                  })
               config.filename = path + '.tmp'
               config.write()
               os.chmod(config.filename, 0o600)
@@ -139,9 +158,9 @@ spec:
             capabilities:
               drop:
                 - ALL
-            runAsGroup: 754
+            runAsGroup: 757
             runAsNonRoot: true
-            runAsUser: 754
+            runAsUser: 757
             seccompProfile:
               type: RuntimeDefault
           volumeMounts:

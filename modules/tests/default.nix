@@ -116,5 +116,20 @@ in
           failures == [ ]
         ) "Den semantic assertions failed: ${builtins.concatStringsSep ", " failures}";
         pkgs.writeText "den-semantics" "ok\n";
+
+      checks.alnum-no-newline =
+        let
+          generator =
+            self.nixosConfigurations.hvn-hyp1.config.age.generators."alnum-no-newline" { inherit pkgs; };
+        in
+        pkgs.runCommand "alnum-no-newline" { } ''
+          value="$TMPDIR/value"
+          (
+            ${generator}
+          ) > "$value"
+          test "$(${pkgs.coreutils}/bin/wc -c < "$value")" -eq 48
+          test "$(LC_ALL=C ${pkgs.coreutils}/bin/tr -cd '[:alnum:]' < "$value" | ${pkgs.coreutils}/bin/wc -c)" -eq 48
+          : > "$out"
+        '';
     };
 }

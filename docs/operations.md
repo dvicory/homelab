@@ -66,6 +66,7 @@ operation and verification.
 | `idm` | `https://idm.plus2.danielvicory.dev` | `https://idm.backup.plus2.danielvicory.dev` | native application authentication | `identity/kanidm:443` |
 | `immich` | `https://immich.plus2.danielvicory.dev` | `https://immich.backup.plus2.danielvicory.dev` | native application authentication | `immich/immich-server:2283` |
 | `jellyfin` | `https://jellyfin.plus2.danielvicory.dev` | `https://jellyfin.backup.plus2.danielvicory.dev` | native application authentication | `jellyfin/jellyfin:8096` |
+| `prowlarr` | `https://prowlarr.plus2.danielvicory.dev` | `https://prowlarr.backup.plus2.danielvicory.dev` | administrator browser gate; native APIs remain private | `media/prowlarr:9696` |
 | `radarr` | `https://radarr.plus2.danielvicory.dev` | `https://radarr.backup.plus2.danielvicory.dev` | administrator browser gate; native APIs remain private | `media/radarr:7878` |
 | `requests` | `https://requests.plus2.danielvicory.dev` | `https://requests.backup.plus2.danielvicory.dev` | native application authentication | `media/seerr:5055` |
 | `sabnzbd` | `https://sabnzbd.plus2.danielvicory.dev` | `https://sabnzbd.backup.plus2.danielvicory.dev` | administrator browser gate; native APIs remain private | `media/sabnzbd:8080` |
@@ -95,6 +96,7 @@ backup.
 | `monitoring-grafana` | `/var/lib/homelab/compute-1/state/monitoring-grafana` | `/srv/state/monitoring-grafana` | `472:472` | `0750` | writable |
 | `monitoring-loki` | `/var/lib/homelab/compute-1/state/monitoring-loki` | `/srv/state/monitoring-loki` | `10001:10001` | `0750` | writable |
 | `monitoring-prometheus` | `/var/lib/homelab/compute-1/state/monitoring-prometheus` | `/srv/state/monitoring-prometheus` | `65534:65534` | `0750` | writable |
+| `prowlarr` | `/var/lib/homelab/compute-1/state/prowlarr` | `/srv/state/prowlarr` | `755:755` | `0700` | writable |
 | `radarr` | `/var/lib/homelab/compute-1/state/radarr` | `/srv/state/radarr` | `752:752` | `0700` | writable |
 | `sabnzbd` | `/var/lib/homelab/compute-1/state/sabnzbd` | `/srv/state/sabnzbd` | `754:754` | `0700` | writable |
 | `seerr` | `/var/lib/homelab/compute-1/state/seerr` | `/srv/state/seerr` | `1000:1000` | `0700` | writable |
@@ -126,7 +128,7 @@ copy secret values into Git, manifests, images or this document.
 | `identity/kanidm-provision` | `identity--kanidm-provision--idm-admin-password` → `idm-admin-password` | `Opaque` |
 | `identity/kanidm-tls` | `identity--kanidm-tls--ca.crt` → `ca.crt`, `identity--kanidm-tls--tls.crt` → `tls.crt`, `identity--kanidm-tls--tls.key` → `tls.key` | `kubernetes.io/tls` |
 | `immich/immich-runtime` | `immich--immich-runtime--DB_PASSWORD` → `DB_PASSWORD` | `Opaque` |
-| `media/media-runtime` | `media--media-runtime--JELLYFIN_OWNER_EMAIL` → `JELLYFIN_OWNER_EMAIL`, `media--media-runtime--JELLYFIN_OWNER_PASSWORD` → `JELLYFIN_OWNER_PASSWORD`, `media--media-runtime--JELLYFIN_OWNER_USERNAME` → `JELLYFIN_OWNER_USERNAME`, `media--media-runtime--RADARR_API_KEY` → `RADARR_API_KEY`, `media--media-runtime--SABNZBD_API_KEY` → `SABNZBD_API_KEY`, `media--media-runtime--SABNZBD_PASSWORD` → `SABNZBD_PASSWORD`, `media--media-runtime--SABNZBD_USERNAME` → `SABNZBD_USERNAME`, `media--media-runtime--SONARR_API_KEY` → `SONARR_API_KEY` | `Opaque` |
+| `media/media-runtime` | `media--media-runtime--JELLYFIN_OWNER_EMAIL` → `JELLYFIN_OWNER_EMAIL`, `media--media-runtime--JELLYFIN_OWNER_PASSWORD` → `JELLYFIN_OWNER_PASSWORD`, `media--media-runtime--JELLYFIN_OWNER_USERNAME` → `JELLYFIN_OWNER_USERNAME`, `media--media-runtime--PROWLARR_API_KEY` → `PROWLARR_API_KEY`, `media--media-runtime--RADARR_API_KEY` → `RADARR_API_KEY`, `media--media-runtime--SABNZBD_API_KEY` → `SABNZBD_API_KEY`, `media--media-runtime--SABNZBD_PASSWORD` → `SABNZBD_PASSWORD`, `media--media-runtime--SABNZBD_USERNAME` → `SABNZBD_USERNAME`, `media--media-runtime--SONARR_API_KEY` → `SONARR_API_KEY` | `Opaque` |
 | `monitoring/grafana-admin` | `monitoring--grafana-admin--admin-password` → `admin-password`, `monitoring--grafana-admin--admin-user` → `admin-user` | `Opaque` |
 
 ## Deploy

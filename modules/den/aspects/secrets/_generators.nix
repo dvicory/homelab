@@ -1,19 +1,15 @@
 # Custom agenix-rekey secret generators.
 # Plain NixOS module (not flake-parts) — prefix prevents import-tree auto-import.
 #
-# Imported by the agenix battery. Overrides / extends the built-in
-# generators from agenix-rekey with:
-#   ssh-key     - generates ed25519 SSH key pairs
-#   age-identity - generates age x25519 identity (referenced by the
-#                  agenix user-identity secret in
-#                  modules/den/batteries/agenix.nix)
-#   luks-key    - 4096 random bytes, used as a LUKS key file
-{
-  config,
-  lib,
-  pkgs,
-  ...
-}:
+# Imported by the agenix battery. Extends the built-in generators from
+# agenix-rekey with:
+#   alnum-no-newline - 48 alphanumeric bytes without a trailing newline
+#   ssh-key         - generates ed25519 SSH key pairs
+#   age-identity    - generates age x25519 identity (referenced by the
+#                     agenix user-identity secret in
+#                     modules/den/batteries/agenix.nix)
+#   luks-key        - 4096 random bytes, used as a LUKS key file
+{ config, lib, ... }:
 let
   inherit (lib) escapeShellArg removeSuffix;
 in
@@ -48,28 +44,18 @@ in
         )
       '';
 
-    passphrase =
+    # 32 hex characters: the API key form Radarr, Sonarr and SABnzbd
+    # generate for themselves.
+    api-key =
       { pkgs, ... }:
       ''
-        ${pkgs.openssl}/bin/openssl rand -base64 48 | tr -d '\n'
+        ${pkgs.openssl}/bin/openssl rand -hex 16 | ${pkgs.coreutils}/bin/tr -d '\n'
       '';
 
-    hex =
-      {
-        length ? 64,
-        ...
-      }:
+    alnum-no-newline =
+      { pkgs, ... }:
       ''
-        ${pkgs.openssl}/bin/openssl rand -hex ${toString (length / 2)}
-      '';
-
-    base64 =
-      {
-        length ? 64,
-        ...
-      }:
-      ''
-        ${pkgs.openssl}/bin/openssl rand -base64 ${toString (length * 3 / 4)} | tr -d '\n'
+        ${pkgs.pwgen}/bin/pwgen -s 48 1 | ${pkgs.coreutils}/bin/tr -d '\n'
       '';
 
     # 4096 bytes of random data, suitable as a LUKS key file. The

@@ -20,7 +20,7 @@ spec:
         - command:
             - node
             - /configuration/roots.mjs
-          image: ghcr.io/seerr-team/seerr:v3.4.1@sha256:f4768de5f616248d723e05891f3345a1402123775d03bf0890dbfedc0831bda1
+          image: docker.io/library/node:22.14.0-bookworm-slim@sha256:1c18d9ab3af4585870b92e4dbc5cac5a0dc77dd13df1a5905cea89fc720eb05b
           name: configure
           resources:
             limits:

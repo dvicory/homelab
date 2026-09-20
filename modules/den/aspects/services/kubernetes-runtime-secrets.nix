@@ -16,6 +16,11 @@ let
           type = types.strMatching "[A-Za-z0-9./-]+";
           default = "Opaque";
         };
+        generator = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = "Name of an age.generators entry that `agenix generate` uses to bootstrap this value; null means the operator supplies it with `agenix edit`.";
+        };
       };
     }
   );
@@ -54,19 +59,25 @@ in
           "${entry.namespace}/${entry.name}"
         ) secretNames;
         secretAge = name: inputs.self + "/.secrets/hosts/${cfg.instance}/${name}.age";
+        generatorOf = name: cfg.runtimeSecrets.${name}.generator;
+        delivered = name: builtins.pathExists (secretAge name) || generatorOf name != null;
       in
       assert lib.assertMsg (
         lib.unique targetTriples == targetTriples
       ) "Runtime Secret declarations must not duplicate namespace/name/key targets.";
       {
-        secretRequests =
-          lib.genAttrs (lib.filter (name: builtins.pathExists (secretAge name)) secretNames)
-            (name: {
-              provider = "agenix";
-              ageFile = secretAge name;
-              mode = "0400";
-              restartUnits = [ "compute-stage-secrets.service" ];
-            });
+        secretRequests = lib.genAttrs (lib.filter delivered secretNames) (
+          name:
+          {
+            provider = "agenix";
+            ageFile = secretAge name;
+            mode = "0400";
+            restartUnits = [ "compute-stage-secrets.service" ];
+          }
+          // lib.optionalAttrs (generatorOf name != null) {
+            generator.script = generatorOf name;
+          }
+        );
 
         systemd.services.compute-stage-secrets = {
           description = "Stage declared Kubernetes runtime Secrets";
