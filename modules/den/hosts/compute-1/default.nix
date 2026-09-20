@@ -1,4 +1,7 @@
-{ den, ... }:
+{ config, den, ... }:
+let
+  clusterImages = config.flake.clusterResources.prod-home.images;
+in
 {
   den.hosts.x86_64-linux.compute-1 = {
     environment = "prod";
@@ -33,6 +36,7 @@
       {
         boot.isContainer = true;
         hardware.enableAllHardware = false;
+        services.k3s.images = clusterImages;
         networking.hostName = "compute-1";
         networking.useHostResolvConf = false;
         networking.firewall.allowedTCPPorts = [

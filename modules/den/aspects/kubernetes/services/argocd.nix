@@ -36,12 +36,7 @@
         applications.argocd-retained = {
           namespace = "argocd";
           createNamespace = false;
-          finalizer = "non-cascading";
-          syncPolicy.autoSync = {
-            enable = true;
-            prune = false;
-            selfHeal = true;
-          };
+          retained = true;
           objects = [
             {
               apiVersion = "v1";
