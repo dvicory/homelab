@@ -528,9 +528,10 @@ in
             idmapBase
             idmapSize
             retainedPaths
-            runtimeSecrets
             identityPath
             ;
+          # The generator only matters on the workstation that runs `agenix generate`.
+          runtimeSecrets = lib.mapAttrs (_: entry: removeAttrs entry [ "generator" ]) cfg.runtimeSecrets;
           # The profile is rendered from the effective config, so the descriptor
           # must carry that same value or the adoption gate compares the desired
           # envelope against something the same evaluation never produced.
@@ -569,13 +570,14 @@ in
           allowedTCPPorts = [ 53 ];
         };
 
-        secretRequests = lib.optionalAttrs hasIdentity {
-          "${cfg.instance}-host-key" = {
-            provider = "agenix";
-            ageFile = identityAge;
-            mode = "0400";
-            restartUnits = [ "compute-stage-identity.service" ];
-          };
+        # `agenix generate` writes the pair; the ssh-key generator places the
+        # public half at identityPub.
+        secretRequests."${cfg.instance}-host-key" = {
+          provider = "agenix";
+          ageFile = identityAge;
+          mode = "0400";
+          restartUnits = [ "compute-stage-identity.service" ];
+          generator.script = "ssh-key";
         };
         systemd.services.compute-stage-identity = {
           description = "Stage the declared compute SSH identity";

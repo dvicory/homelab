@@ -16,6 +16,7 @@
         namespace = "argocd";
         name = "argocd-secret";
         key = "server.secretkey";
+        generator = "alnum-no-newline";
       };
     };
     k8s-manifests =
