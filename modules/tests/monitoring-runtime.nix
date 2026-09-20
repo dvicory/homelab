@@ -27,7 +27,9 @@
         bridgeAddress = lib.head (lib.splitString "/" descriptor.networkConfig."ipv4.address");
         fixtureDescriptor = descriptor // {
           runtimeSecrets = lib.filterAttrs (
-            name: _: lib.hasPrefix "monitoring--grafana-admin--" name
+            _: entry:
+            (entry.namespace == "argocd" && entry.name == "argocd-secret")
+            || (entry.namespace == "monitoring" && entry.name == "grafana-admin")
           ) descriptor.runtimeSecrets;
         };
         webhookURL = "http://${bridgeAddress}:18080/alertmanager";

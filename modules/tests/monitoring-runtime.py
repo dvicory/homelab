@@ -3,7 +3,7 @@
 
 The scenario uses real Incus, K3s, Argo, Prometheus, Alertmanager, Loki and
 Alloy endpoints. It keeps only the four monitoring Applications in a local Git
-origin and stages only the already-declared Grafana administration Secret.
+origin and stages only the Argo bootstrap and Grafana runtime Secrets.
 """
 
 from __future__ import annotations
@@ -60,6 +60,9 @@ def run(*command: str, timeout: int = COMMAND_TIMEOUT, input: str | None = None)
         details = (result.stderr or result.stdout).strip()
         raise ScenarioError(f"{shlex.join(command)} failed ({result.returncode}): {details}")
     return result.stdout.strip()
+
+def kubectl_outer(kubeconfig: Path, *args: str, input: str | None = None) -> str:
+    return run("kubectl", "--kubeconfig", str(kubeconfig), *args, input=input)
 
 
 def check(condition: bool, message: str) -> None:
@@ -172,27 +175,54 @@ def stage_identity(descriptor: dict, identity: Path) -> str:
     return public
 
 
-def stage_grafana_secret(descriptor: dict, root: Path) -> None:
+def stage_runtime_secrets(descriptor: dict, root: Path) -> None:
     entries = descriptor.get("runtimeSecrets", {})
-    check(entries and all(name.startswith("monitoring--grafana-admin--") for name in entries),
-          "fixture stages only declared Grafana runtime Secret keys")
-    values = {name: secrets.token_urlsafe(32).encode() for name in entries}
-    lines = [
-        "apiVersion: v1",
-        "kind: Secret",
-        "metadata:",
-        "  name: grafana-admin",
-        "  namespace: monitoring",
-        "type: Opaque",
-        "data:",
-    ]
-    for source, value in values.items():
-        key = entries[source]["key"]
-        lines.append(f"  {key}: {base64.b64encode(value).decode()}")
+    allowed_targets = {
+        ("argocd", "argocd-secret"),
+        ("monitoring", "grafana-admin"),
+    }
+    check(
+        entries and all(
+            (entry["namespace"], entry["name"]) in allowed_targets
+            for entry in entries.values()
+        ),
+        "fixture stages only declared Argo bootstrap and Grafana runtime Secret keys",
+    )
+    values = {}
+    for source, entry in entries.items():
+        target = (entry["namespace"], entry["name"], entry["key"])
+        if target == ("argocd", "argocd-secret", "admin.passwordMtime"):
+            value = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()).encode()
+        elif target == ("argocd", "argocd-secret", "admin.password"):
+            # bcrypt("fixture-password"); this disposable fixture is not exposed.
+            value = b"$2a$10$7lKraD.Az3/wo2XdoQ4YU.kAeUWu0bC7khAuqmskfCXKg3fRDSKGa"
+        else:
+            value = secrets.token_urlsafe(32).encode()
+        values[source] = value
+    grouped: dict[tuple[str, str, str], list[tuple[str, bytes]]] = {}
+    for source, entry in entries.items():
+        target = (entry["namespace"], entry["name"], entry.get("type", "Opaque"))
+        grouped.setdefault(target, []).append((entry["key"], values[source]))
+    documents = []
+    for (namespace, name, secret_type), keys in sorted(grouped.items()):
+        lines = [
+            "apiVersion: v1",
+            "kind: Secret",
+            "metadata:",
+            f"  name: {name}",
+            f"  namespace: {namespace}",
+            f"type: {secret_type}",
+            "data:",
+        ]
+        lines.extend(
+            f"  {key}: {base64.b64encode(value).decode()}"
+            for key, value in sorted(keys)
+        )
+        documents.append("\n".join(lines))
     os.chown(root, descriptor["idmapBase"], descriptor["idmapBase"])
     os.chmod(root, 0o700)
     manifest = root / "runtime-secrets.yaml"
-    manifest.write_text("\n".join(lines) + "\n")
+    manifest.write_text("\n---\n".join(documents) + "\n")
     os.chown(manifest, descriptor["idmapBase"], descriptor["idmapBase"])
     os.chmod(manifest, 0o400)
 
@@ -616,10 +646,20 @@ def run_scenario(args: argparse.Namespace) -> None:
     fixture = json.loads(args.fixture.read_text())
     descriptor = fixture["descriptor"]
     ensure_absolute_paths(descriptor)
-    check(set(descriptor.get("runtimeSecrets", {})) == {
-        "monitoring--grafana-admin--admin-user",
-        "monitoring--grafana-admin--admin-password",
-    }, "fixture descriptor contains only the declared Grafana runtime Secret")
+    expected_runtime_secrets = {
+        ("argocd", "argocd-secret", "admin.password"),
+        ("argocd", "argocd-secret", "admin.passwordMtime"),
+        ("argocd", "argocd-secret", "server.secretkey"),
+        ("monitoring", "grafana-admin", "admin-user"),
+        ("monitoring", "grafana-admin", "admin-password"),
+    }
+    check(
+        {
+            (entry["namespace"], entry["name"], entry["key"])
+            for entry in descriptor.get("runtimeSecrets", {}).values()
+        } == expected_runtime_secrets,
+        "fixture descriptor contains only Argo bootstrap and Grafana runtime Secret keys",
+    )
     check(args.bundle.is_dir() and str(args.bundle.resolve()).startswith("/nix/store/"), "guest bundle is an immutable Nix store output")
     check(args.repo.is_dir() and args.seed.is_dir(), "monitoring Git source and bootstrap seed are present")
 
@@ -651,7 +691,7 @@ def run_scenario(args: argparse.Namespace) -> None:
                     prepare_directory(path, safe_dirs)
 
             secret_root = Path(descriptor["devices"]["secrets"]["source"])
-            stage_grafana_secret(descriptor, secret_root)
+            stage_runtime_secrets(descriptor, secret_root)
             safe_dirs.append(secret_root)
 
             persist = Path("/persist")
@@ -845,11 +885,27 @@ def run_scenario(args: argparse.Namespace) -> None:
                       "local receiver captured a resolved MetricsTargetUnavailable webhook")
         except BaseException:
             if runtime is not None:
-                try:
-                    print(runtime.kubectl("get", "applications", "-A", "-o", "wide"), file=sys.stderr)
-                    print(runtime.kubectl("get", "pods", "-A", "-o", "wide"), file=sys.stderr)
-                except (OSError, ScenarioError):
-                    pass
+                for label, command in (
+                    ("applications", ("get", "applications", "-A", "-o", "wide")),
+                    ("pods", ("get", "pods", "-A", "-o", "wide")),
+                    (
+                        "argocd-server describe",
+                        ("describe", "pod", "-n", "argocd", "-l", "app.kubernetes.io/name=argocd-server"),
+                    ),
+                    (
+                        "argocd-server logs",
+                        ("logs", "-n", "argocd", "deployment/argocd-server", "--all-containers", "--tail=100"),
+                    ),
+                    (
+                        "argocd-server previous logs",
+                        ("logs", "-n", "argocd", "deployment/argocd-server", "--all-containers", "--previous", "--tail=100"),
+                    ),
+                ):
+                    print(f"--- {label} ---", file=sys.stderr)
+                    try:
+                        print(runtime.kubectl(*command), file=sys.stderr)
+                    except (OSError, ScenarioError):
+                        pass
             raise
         finally:
             if runtime is not None and nft_table is not None:
