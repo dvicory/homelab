@@ -81,7 +81,9 @@ in
 
             def placement_errors(resources, services, domains):
                 errors = []
-                grants = [obj for _, obj in resources if isinstance(obj, dict) and obj.get("kind") == "ReferenceGrant"]
+                grants = [obj for _, obj in resources if isinstance(obj, dict)
+                          and obj.get("kind") == "ReferenceGrant"
+                          and obj.get("apiVersion", "").split("/")[0] == "gateway.networking.k8s.io"]
                 for path, resource in resources:
                     if not isinstance(resource, dict):
                         errors.append(f"{path}: manifest document is not an object")

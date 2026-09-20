@@ -221,27 +221,40 @@
         (config.den.aspects.kubernetes.services.media."k8s-manifests" {
           cluster = targetCluster;
         });
-      mediaBase = builtins.tryEval (mediaManifests fixtureCluster);
-      mediaNoSharing = builtins.tryEval (
-        mediaManifests (
-          fixtureCluster
-          // {
-            settings = lib.recursiveUpdate fixtureCluster.settings {
-              kubernetes.services.media.radarr.uhd.sharedWritablePaths = [ ];
-            };
-          }
-        )
-      );
-      mediaStateCollision = builtins.tryEval (
-        mediaManifests (
-          fixtureCluster
-          // {
-            settings = lib.recursiveUpdate fixtureCluster.settings {
-              kubernetes.services.media.sonarr.anime.state = "radarr-hd";
-            };
-          }
-        )
-      );
+      mediaWith =
+        overrides:
+        builtins.tryEval (
+          mediaManifests (
+            fixtureCluster
+            // {
+              settings = lib.recursiveUpdate fixtureCluster.settings {
+                kubernetes.services.media = overrides;
+              };
+            }
+          )
+        );
+      mediaBase = mediaWith { };
+      mediaNoSharing = mediaWith { radarr.uhd.sharedWritablePaths = [ ]; };
+      mediaStateCollision = mediaWith { sonarr.anime.state = "radarr-hd"; };
+      mediaSecretCollision = mediaWith { sonarr.anime.apiSecretKey = "RADARR_HD_API_KEY"; };
+      mediaCategoryCollision = mediaWith { sonarr.anime.category = "movies-hd"; };
+      mediaRootCollision = mediaWith { radarr.uhd.root = "/data/library/movies/hd"; };
+      mediaNestedRoot = mediaWith { radarr.uhd.root = "/data/library/movies/hd/remux"; };
+      sharedLibrary = [
+        "/data"
+        "/data/library/movies/hd"
+      ];
+      mediaOneSidedSharing = mediaWith {
+        radarr.radarr.sharedWritablePaths = sharedLibrary;
+        radarr.uhd.root = "/data/library/movies/hd";
+      };
+      mediaSharedRoot = mediaWith {
+        radarr.radarr.sharedWritablePaths = sharedLibrary;
+        radarr.uhd = {
+          root = "/data/library/movies/hd";
+          sharedWritablePaths = sharedLibrary;
+        };
+      };
       fixtureRuntimeSecrets =
         let
           resources =
@@ -273,6 +286,12 @@
           positive = mediaBase.success;
           noSharingRejected = !mediaNoSharing.success;
           stateCollisionRejected = !mediaStateCollision.success;
+          secretCollisionRejected = !mediaSecretCollision.success;
+          categoryCollisionRejected = !mediaCategoryCollision.success;
+          rootCollisionRejected = !mediaRootCollision.success;
+          nestedRootRejected = !mediaNestedRoot.success;
+          oneSidedSharingRejected = !mediaOneSidedSharing.success;
+          explicitRootSharingAccepted = mediaSharedRoot.success;
         }
       );
       python = pkgs.python3.withPackages (ps: [
@@ -341,6 +360,12 @@
             assert fixture["positive"]
             assert fixture["noSharingRejected"]
             assert fixture["stateCollisionRejected"]
+            assert fixture["secretCollisionRejected"]
+            assert fixture["categoryCollisionRejected"]
+            assert fixture["rootCollisionRejected"]
+            assert fixture["nestedRootRejected"]
+            assert fixture["oneSidedSharingRejected"]
+            assert fixture["explicitRootSharingAccepted"]
             assert storage["mediaInstances"] == {"radarr": ["radarr"], "sonarr": ["sonarr"]}
 
             def validate_instance_group(kind, instances):

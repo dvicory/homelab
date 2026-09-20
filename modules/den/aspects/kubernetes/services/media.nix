@@ -24,27 +24,35 @@ in
         ];
         stateKeys = map (cfg: cfg.state) instances;
         secretKeys = map (cfg: cfg.apiSecretKey) instances;
-        roots = map (cfg: cfg.root) instances;
         categories = map (cfg: cfg.category) instances;
-        rootOverlap =
-          paths:
-          if paths == [ ] then
+        unapprovedRootOverlap =
+          owners:
+          if owners == [ ] then
             false
           else
             let
-              path = builtins.head paths;
-              rest = builtins.tail paths;
+              owner = builtins.head owners;
+              rest = builtins.tail owners;
             in
             lib.any (
               other:
-              path == other
-              || lib.hasPrefix "${path}/" other
-              || lib.hasPrefix "${other}/" path
+              (
+                owner.root == other.root
+                || lib.hasPrefix "${owner.root}/" other.root
+                || lib.hasPrefix "${other.root}/" owner.root
+              )
+              && !(lib.any (
+                shared:
+                shared != "/data"
+                && lib.elem shared other.sharedWritablePaths
+                && lib.all (root: root == shared || lib.hasPrefix "${shared}/" root) [
+                  owner.root
+                  other.root
+                ]
+              ) owner.sharedWritablePaths)
             ) rest
-            || rootOverlap rest;
-        sharedDataDeclared = lib.all (
-          cfg: lib.elem "/data" cfg.sharedWritablePaths
-        ) instances;
+            || unapprovedRootOverlap rest;
+        sharedDataDeclared = lib.all (cfg: lib.elem "/data" cfg.sharedWritablePaths) instances;
         reserved = [
           "prowlarr"
           "sabnzbd"
@@ -58,8 +66,8 @@ in
         lib.unique secretKeys == secretKeys
       ) "Media instances must not share private API credentials.";
       assert lib.assertMsg (
-        !rootOverlap roots || sharedDataDeclared
-      ) "Overlapping writable library roots require explicit shared writable path declaration.";
+        !unapprovedRootOverlap instances
+      ) "Overlapping library roots require both instances to grant a common library path below /data.";
       assert lib.assertMsg (
         lib.unique categories == categories
       ) "Media instances must not share writable download categories.";
