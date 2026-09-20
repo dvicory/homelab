@@ -1,12 +1,93 @@
-{ config, ... }:
+{
+  config,
+  inputs,
+  lib,
+  ...
+}:
 {
   perSystem =
-    { pkgs, ... }:
+    { pkgs, system, ... }:
     let
       environment = ../../generated/manifests/prod-home;
       cluster = config.den.clusters.prod-home;
       compute =
         config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
+      fixtureProvider = {
+        host = "news.example.test";
+        port = 563;
+        ssl = true;
+        connections = 8;
+        priority = 0;
+      };
+      fixtureCluster = cluster // {
+        settings = lib.recursiveUpdate cluster.settings {
+          kubernetes.services.media.sabnzbd.providers.fixture = fixtureProvider;
+        };
+      };
+      sabnzbdAspect = config.den.aspects.kubernetes.services.sabnzbd;
+      fixtureInit =
+        (sabnzbdAspect."k8s-manifests" {
+          cluster = fixtureCluster;
+          inherit compute;
+          charts = inputs.nixhelm.chartsDerivations.${system};
+        }).applications.sabnzbd.helm.releases.sabnzbd.values.controllers.main.initContainers.config;
+      removalInit =
+        (sabnzbdAspect."k8s-manifests" {
+          inherit cluster compute;
+          charts = inputs.nixhelm.chartsDerivations.${system};
+        }).applications.sabnzbd.helm.releases.sabnzbd.values.controllers.main.initContainers.config;
+      providerChecks =
+        let
+          collisionCluster = cluster // {
+            settings = lib.recursiveUpdate cluster.settings {
+              kubernetes.services.media.sabnzbd.providers = {
+                "a-b" = fixtureProvider;
+                "a_b" = fixtureProvider;
+              };
+            };
+          };
+          invalidNameCluster = cluster // {
+            settings = lib.recursiveUpdate cluster.settings {
+              kubernetes.services.media.sabnzbd.providers = {
+                "bad name" = fixtureProvider;
+              };
+            };
+          };
+        in
+        {
+          rejectsProviderCollision = !(
+            builtins.tryEval (
+              builtins.deepSeq (
+                (sabnzbdAspect."compute-resources" { cluster = collisionCluster; }).runtimeSecrets
+              ) true
+            )
+          ).success;
+          rejectsInvalidProviderName = !(
+            builtins.tryEval (
+              builtins.deepSeq (
+                (sabnzbdAspect."compute-resources" { cluster = invalidNameCluster; }).runtimeSecrets
+              ) true
+            )
+          ).success;
+        };
+      fixtureRuntimeSecrets =
+        (sabnzbdAspect."compute-resources" { cluster = fixtureCluster; }).runtimeSecrets;
+      fixtureSecretKeys = [
+        "USENET_FIXTURE_USERNAME"
+        "USENET_FIXTURE_PASSWORD"
+      ];
+      providerContract = pkgs.writeText "media-provider-contract.json" (
+        builtins.toJSON {
+          script = builtins.elemAt fixtureInit.command 2;
+          removalScript = builtins.elemAt removalInit.command 2;
+          env = fixtureInit.env;
+          runtimeSecrets = fixtureRuntimeSecrets;
+          secretName = cluster.settings.kubernetes.services.media.configurationSecret;
+          secretKeys = fixtureSecretKeys;
+          providerConfig = fixtureProvider;
+          inherit (providerChecks) rejectsProviderCollision rejectsInvalidProviderName;
+        }
+      );
       storage = pkgs.writeText "media-storage-contract.json" (
         builtins.toJSON {
           inherit (compute) instance retainedPaths;
@@ -18,7 +99,10 @@
           };
         }
       );
-      python = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
+      python = pkgs.python3.withPackages (ps: [
+        ps.configobj
+        ps.pyyaml
+      ]);
     in
     {
       checks.media-contracts =
@@ -31,16 +115,20 @@
             ];
           }
           ''
-            python - ${environment} ${storage} <<'PY'
+            python - ${environment} ${storage} ${providerContract} <<'PY'
+            import ast
             import json
+            import os
             import pathlib
             import subprocess
             import sys
             import tempfile
+            from configobj import ConfigObj
             import yaml
 
             environment = pathlib.Path(sys.argv[1])
             storage = json.loads(pathlib.Path(sys.argv[2]).read_text())
+            provider = json.loads(pathlib.Path(sys.argv[3]).read_text())
             resources = []
             for path in environment.rglob("*.yaml"):
                 resources.extend(
@@ -62,6 +150,7 @@
             }
             media_gid = str(storage["mediaGid"])
             media_root = pathlib.PurePosixPath(storage["media"])
+            sabnzbd_identity = storage["retainedPaths"]["sabnzbd"]
 
             def under_media(path):
                 candidate = pathlib.PurePosixPath(path)
@@ -114,7 +203,126 @@
                     mount = mounts[0]
                     assert mount["mountPath"] == "/data" and not mount.get("readOnly", False), name
 
+            sabnzbd_pod = find("Deployment", "sabnzbd")["spec"]["template"]["spec"]
+            sabnzbd_env = {
+                item["name"]: item["value"]
+                for item in sabnzbd_pod["containers"][0]["env"]
+            }
+            assert sabnzbd_identity["uid"] == sabnzbd_identity["gid"] == 757
+            assert sabnzbd_env["PUID"] == sabnzbd_env["PGID"] == "757"
+            sabnzbd_init_security = sabnzbd_pod["initContainers"][0]["securityContext"]
+            assert sabnzbd_init_security["runAsUser"] == 757
+            assert sabnzbd_init_security["runAsGroup"] == 757
             assert media_gid in jellyfin_pod["securityContext"]["supplementalGroups"]
+
+            script = provider["script"]
+            ast.parse(script)
+            ast.parse(provider["removalScript"])
+            assert set(provider["providerConfig"]) == {
+                "host", "port", "ssl", "connections", "priority"
+            }
+            assert provider["rejectsProviderCollision"]
+            assert provider["rejectsInvalidProviderName"]
+            for field in (
+                "'host'", "'port'", "'ssl'", "'connections'", "'priority'",
+                "'username'", "'password'", "'enable': '1'"
+            ):
+                assert field in script, field
+            assert "news.example.test" in script
+            assert "USENET_" in script and "_USERNAME" in script and "_PASSWORD" in script
+            assert "env_name = name.replace('-', '_').replace('.', '_').upper()" in script
+            assert "config.setdefault('servers', {})" in script
+            assert "usernameSecretKey" not in script
+            assert "passwordSecretKey" not in script
+            assert all(value not in script for value in (
+                "api-key-fixture", "admin-fixture", "admin-password-fixture",
+                "provider-user-fixture", "provider-password-fixture",
+            ))
+            for key in provider["secretKeys"]:
+                assert provider["env"][key] == {
+                    "valueFrom": {
+                        "secretKeyRef": {"name": provider["secretName"], "key": key}
+                    }
+                }, key
+                source = "media--" + provider["secretName"] + "--" + key
+                assert provider["runtimeSecrets"][source] == {
+                    "namespace": "media", "name": provider["secretName"],
+                    "key": key, "type": "Opaque",
+                }, source
+            def run_init(init_script, config_path, data_path, values):
+                translated = init_script.replace(
+                    "path = '/config/sabnzbd.ini'",
+                    "path = " + repr(str(config_path)),
+                ).replace("/data", str(data_path))
+                original = os.environ.copy()
+                os.environ.update(values)
+                try:
+                    exec(compile(translated, "<sabnzbd-init>", "exec"), {"__name__": "__main__"})
+                finally:
+                    os.environ.clear()
+                    os.environ.update(original)
+
+            runtime_values = {
+                "SABNZBD_API_KEY": "api-key-fixture",
+                "SABNZBD_USERNAME": "admin-fixture",
+                "SABNZBD_PASSWORD": "admin-password-fixture",
+                "USENET_FIXTURE_USERNAME": "provider-user-fixture",
+                "USENET_FIXTURE_PASSWORD": "provider-password-fixture",
+            }
+            with tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                config_path = root / "sabnzbd.ini"
+                data_path = root / "data"
+                data_path.mkdir()
+                initial = ConfigObj(encoding="utf-8")
+                initial["misc"] = {}
+                initial["misc"].update({"custom_misc": "keep-misc", "host": "old-host"})
+                initial["servers"] = {}
+                initial["servers"]["fixture"] = {
+                    "displayname": "operator-label",
+                    "host": "old.example.test",
+                    "port": "119",
+                    "ssl": "0",
+                    "connections": "1",
+                    "priority": "9",
+                    "username": "old-user",
+                    "password": "old-password",
+                    "enable": "0",
+                    "notes": "managed-by: homelab",
+                    "custom_server": "keep-server",
+                }
+                initial["servers"]["unmanaged"] = {
+                    "host": "untouched.example.test",
+                    "enable": "1",
+                    "custom_server": "keep-unmanaged",
+                }
+                initial.filename = str(config_path)
+                initial.write()
+
+                run_init(script, config_path, data_path, runtime_values)
+                first = ConfigObj(str(config_path), encoding="utf-8")
+                managed = first["servers"]["fixture"]
+                assert first["misc"]["custom_misc"] == "keep-misc"
+                assert managed["displayname"] == "operator-label"
+                assert managed["host"] == "news.example.test"
+                assert managed["port"] == "563"
+                assert managed["ssl"] == "1"
+                assert managed["connections"] == "8"
+                assert managed["priority"] == "0"
+                assert managed["username"] == "provider-user-fixture"
+                assert managed["password"] == "provider-password-fixture"
+                assert managed["enable"] == "1"
+                assert managed["custom_server"] == "keep-server"
+                assert first["servers"]["unmanaged"]["custom_server"] == "keep-unmanaged"
+                first_bytes = config_path.read_bytes()
+
+                run_init(script, config_path, data_path, runtime_values)
+                assert config_path.read_bytes() == first_bytes
+
+                run_init(provider["removalScript"], config_path, data_path, runtime_values)
+                removed = ConfigObj(str(config_path), encoding="utf-8")
+                assert removed["servers"]["fixture"] == first["servers"]["fixture"]
+                assert removed["servers"]["unmanaged"] == first["servers"]["unmanaged"]
 
             configarr = None
             seed_program = None
