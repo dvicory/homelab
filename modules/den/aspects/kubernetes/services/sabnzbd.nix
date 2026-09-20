@@ -3,8 +3,8 @@ let
   fleetGroups = config.den.groups or { };
   # Container IDs coincide with host service-account numbers by convention only.
   identity = {
-    uid = 754;
-    gid = 754;
+    uid = 757;
+    gid = 757;
   };
   apps.sabnzbd = {
     namespace = "media";
@@ -24,31 +24,114 @@ let
     mkStorage
     ;
   mediaGid = fleetGroups.media.gid;
+  inherit (lib) mkOption types;
+  secretKeyType = types.strMatching "[A-Z][A-Z0-9_]*";
+  ownSecretKeys = [
+    "SABNZBD_API_KEY"
+    "SABNZBD_USERNAME"
+    "SABNZBD_PASSWORD"
+  ];
+  providerType = types.submodule (
+    { name, ... }:
+    let
+      envName = lib.toUpper (builtins.replaceStrings [ "-" ] [ "_" ] name);
+    in
+    {
+      options = {
+        host = mkOption {
+          type = types.strMatching "[a-zA-Z0-9]([-a-zA-Z0-9.]*[a-zA-Z0-9])?";
+          description = "Usenet server hostname.";
+        };
+        port = mkOption {
+          type = types.port;
+          default = 563;
+          description = "Usenet server port.";
+        };
+        ssl = mkOption {
+          type = types.bool;
+          default = true;
+          description = "Whether SABnzbd connects with TLS.";
+        };
+        connections = mkOption {
+          type = types.ints.between 1 100;
+          description = "Maximum concurrent connections SABnzbd opens to this server.";
+        };
+        priority = mkOption {
+          type = types.ints.between 0 99;
+          default = 0;
+          description = "SABnzbd server priority; 0 is the primary tier.";
+        };
+        usernameSecretKey = mkOption {
+          type = secretKeyType;
+          default = "USENET_${envName}_USERNAME";
+          description = "Runtime Secret key holding this provider's username.";
+        };
+        passwordSecretKey = mkOption {
+          type = secretKeyType;
+          default = "USENET_${envName}_PASSWORD";
+          description = "Runtime Secret key holding this provider's password.";
+        };
+      };
+    }
+  );
+  providerSecretKeys =
+    providers:
+    lib.concatMap (cfg: [
+      cfg.usernameSecretKey
+      cfg.passwordSecretKey
+    ]) (builtins.attrValues providers);
+  checkedProviders =
+    providers:
+    let
+      keys = providerSecretKeys providers;
+    in
+    assert lib.assertMsg (
+      lib.unique keys == keys
+    ) "SABnzbd providers must not share runtime Secret keys.";
+    assert lib.assertMsg (lib.all (
+      key: !(builtins.elem key ownSecretKeys)
+    ) keys) "SABnzbd provider credential keys may not reuse SABnzbd's own runtime Secret keys.";
+    providers;
 in
 {
-  den.aspects.kubernetes.services.sabnzbd.compute-resources = { cluster, ... }: {
-    # LinuxServer PUID/PGID are guest-local; media is a supplemental capability.
-    retainedPaths.sabnzbd = {
-      inherit (identity) uid gid;
-      mode = "0700";
+  den.aspects.kubernetes.services.media.settings.sabnzbd = mkOption {
+    type = types.submodule {
+      options.providers = mkOption {
+        type = types.attrsOf providerType;
+        default = { };
+        description = ''
+          Usenet servers written to SABnzbd's [servers] section by the config
+          init container. Credentials come from the media runtime Secret keys
+          named here; the operator supplies them with agenix.
+        '';
+      };
     };
-    runtimeSecrets = lib.listToAttrs (
-      map
-        (key: {
-          name = "media--${cluster.settings.kubernetes.services.media.configurationSecret}--${key}";
+    default = { };
+    description = "SABnzbd-specific declarative configuration.";
+  };
+  den.aspects.kubernetes.services.sabnzbd.compute-resources =
+    { cluster, ... }:
+    let
+      settings = cluster.settings.kubernetes.services.media;
+      providers = checkedProviders settings.sabnzbd.providers;
+    in
+    {
+      # LinuxServer PUID/PGID are guest-local; media is a supplemental capability.
+      retainedPaths.sabnzbd = {
+        inherit (identity) uid gid;
+        mode = "0700";
+      };
+      runtimeSecrets = lib.listToAttrs (
+        map (key: {
+          name = "media--${settings.configurationSecret}--${key}";
           value = {
             namespace = "media";
-            name = cluster.settings.kubernetes.services.media.configurationSecret;
+            name = settings.configurationSecret;
             inherit key;
           };
-        })
-        [
-          "SABNZBD_API_KEY"
-          "SABNZBD_USERNAME"
-          "SABNZBD_PASSWORD"
-        ]
-    );
-  };
+        }) (ownSecretKeys ++ providerSecretKeys providers)
+      );
+    };
   den.aspects.kubernetes.services.sabnzbd.k8s-manifests =
     {
       cluster,
@@ -65,7 +148,10 @@ in
         inherit app;
       };
       secretName = cluster.settings.kubernetes.services.media.configurationSecret;
+      providers = checkedProviders cluster.settings.kubernetes.services.media.sabnzbd.providers;
+      requiredKeys = ownSecretKeys ++ providerSecretKeys providers;
       sabConfig = ''
+        import json
         import os
         from configobj import ConfigObj
         os.umask(0o007)
@@ -92,7 +178,7 @@ in
             'download_dir': '/data/downloads/usenet/incomplete',
             'complete_dir': '/data/downloads/usenet/complete',
         })
-        for key in ('SABNZBD_API_KEY', 'SABNZBD_USERNAME', 'SABNZBD_PASSWORD'):
+        for key in ${builtins.toJSON requiredKeys}:
             if not os.environ[key].strip():
                 raise ValueError('Required runtime secret is empty: ' + key)
         for directory in ('library/movies', 'library/tv', 'downloads/usenet/incomplete', 'downloads/usenet/complete'):
@@ -100,6 +186,24 @@ in
         categories = config.setdefault('categories', {})
         for name in ('movies', 'tv'):
             categories.setdefault(name, {'name': name, 'order': '0', 'priority': '-100', 'pp': '3', 'script': 'Default', 'dir': name, 'newzbin': ""})
+        providers = json.loads(${builtins.toJSON (builtins.toJSON providers)})
+        managed = 'managed-by: homelab'
+        servers = config.setdefault('servers', {})
+        for name, provider in providers.items():
+            server = servers.setdefault(name, {})
+            server.setdefault('displayname', name)
+            server.update({
+                'host': provider['host'], 'port': str(provider['port']),
+                'ssl': '1' if provider['ssl'] else '0',
+                'connections': str(provider['connections']),
+                'priority': str(provider['priority']),
+                'username': os.environ[provider['usernameSecretKey']],
+                'password': os.environ[provider['passwordSecretKey']],
+                'enable': '1', 'notes': managed,
+            })
+        for name, server in servers.items():
+            if name not in providers and server.get('notes') == managed:
+                server['enable'] = '0'
         config.filename = path + '.tmp'
         config.write()
         os.chmod(config.filename, 0o600)
@@ -186,11 +290,7 @@ in
                   "-c"
                   sabConfig
                 ];
-                env = {
-                  SABNZBD_API_KEY = secretRef secretName "SABNZBD_API_KEY";
-                  SABNZBD_USERNAME = secretRef secretName "SABNZBD_USERNAME";
-                  SABNZBD_PASSWORD = secretRef secretName "SABNZBD_PASSWORD";
-                };
+                env = lib.genAttrs requiredKeys (secretRef secretName);
                 securityContext = {
                   runAsUser = identity.uid;
                   runAsGroup = identity.gid;

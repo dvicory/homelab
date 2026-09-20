@@ -1,12 +1,69 @@
-{ config, ... }:
+{
+  config,
+  inputs,
+  lib,
+  ...
+}:
 {
   perSystem =
-    { pkgs, ... }:
+    { pkgs, system, ... }:
     let
       environment = ../../generated/manifests/prod-home;
       cluster = config.den.clusters.prod-home;
       compute =
         config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
+      settingsType = import ../den/schema/_settings-type.nix {
+        inherit lib;
+        den = config.den;
+      };
+      sabnzbdSettings =
+        provider:
+        (lib.evalModules {
+          modules = [
+            {
+              options.settings = lib.mkOption {
+                type = settingsType;
+                default = { };
+              };
+              config.settings.kubernetes.services.media.sabnzbd.providers.fixture = provider;
+            }
+          ];
+        }).config.settings.kubernetes.services.media.sabnzbd;
+      fixtureProvider = {
+        host = "news.example.test";
+        connections = 8;
+      };
+      fixtureCluster = cluster // {
+        settings = lib.recursiveUpdate cluster.settings {
+          kubernetes.services.media.sabnzbd = sabnzbdSettings fixtureProvider;
+        };
+      };
+      sabnzbdAspect = config.den.aspects.kubernetes.services.sabnzbd;
+      fixtureInit =
+        (sabnzbdAspect."k8s-manifests" {
+          cluster = fixtureCluster;
+          inherit compute;
+          charts = inputs.nixhelm.chartsDerivations.${system};
+        }).applications.sabnzbd.helm.releases.sabnzbd.values.controllers.main.initContainers.config;
+      fixtureRuntimeSecrets =
+        (sabnzbdAspect."compute-resources" { cluster = fixtureCluster; }).runtimeSecrets;
+      fixtureSecretKeys = [
+        "USENET_FIXTURE_USERNAME"
+        "USENET_FIXTURE_PASSWORD"
+      ];
+      providerWithoutCredentialKey = builtins.tryEval (
+        builtins.deepSeq (sabnzbdSettings (fixtureProvider // { usernameSecretKey = ""; })) true
+      );
+      providerContract = pkgs.writeText "media-provider-contract.json" (
+        builtins.toJSON {
+          script = builtins.elemAt fixtureInit.command 2;
+          env = fixtureInit.env;
+          runtimeSecrets = fixtureRuntimeSecrets;
+          secretName = cluster.settings.kubernetes.services.media.configurationSecret;
+          secretKeys = fixtureSecretKeys;
+          rejectsMissingCredentialKey = !providerWithoutCredentialKey.success;
+        }
+      );
       storage = pkgs.writeText "media-storage-contract.json" (
         builtins.toJSON {
           inherit (compute) instance retainedPaths;
@@ -31,7 +88,8 @@
             ];
           }
           ''
-            python - ${environment} ${storage} <<'PY'
+            python - ${environment} ${storage} ${providerContract} <<'PY'
+            import ast
             import json
             import pathlib
             import subprocess
@@ -41,6 +99,7 @@
 
             environment = pathlib.Path(sys.argv[1])
             storage = json.loads(pathlib.Path(sys.argv[2]).read_text())
+            provider = json.loads(pathlib.Path(sys.argv[3]).read_text())
             resources = []
             for path in environment.rglob("*.yaml"):
                 resources.extend(
@@ -115,6 +174,21 @@
                     assert mount["mountPath"] == "/data" and not mount.get("readOnly", False), name
 
             assert media_gid in jellyfin_pod["securityContext"]["supplementalGroups"]
+
+            script = provider["script"]
+            ast.parse(script)
+            for field in ("'host'", "'port'", "'ssl'", "'connections'", "'priority'", "'username'", "'password'", "'enable': '1'"):
+                assert field in script, field
+            assert "news.example.test" in script and "USENET_FIXTURE_USERNAME" in script
+            assert "config.setdefault('servers', {})" in script
+            for key in provider["secretKeys"]:
+                assert key in script, key
+                assert provider["env"][key] == {"valueFrom": {"secretKeyRef": {"name": provider["secretName"], "key": key}}}, key
+                source = "media--" + provider["secretName"] + "--" + key
+                assert provider["runtimeSecrets"][source] == {
+                    "namespace": "media", "name": provider["secretName"], "key": key, "type": "Opaque",
+                }, source
+            assert provider["rejectsMissingCredentialKey"]
 
             configarr = None
             seed_program = None
