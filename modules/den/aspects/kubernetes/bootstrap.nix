@@ -1,4 +1,4 @@
-{ lib, ... }:
+{ lib, rootPath, ... }:
 {
   perSystem =
     {
@@ -8,7 +8,16 @@
       ...
     }:
     let
-      environment = ../../../../generated/manifests/prod-home;
+      manifestSource = rootPath + "/generated/manifests/prod-home";
+      environment =
+        if builtins.pathExists manifestSource then
+          manifestSource
+        else
+          throw ''
+            Canonical production manifests are missing. Generate them with:
+              nix run .#sync-prod-home-manifests
+            Then review and track generated/manifests/prod-home before building bootstrap artifacts.
+          '';
       manifests = pkgs.runCommand "household-static-bootstrap" { nativeBuildInputs = [ pkgs.yq-go ]; } ''
         mkdir -p "$out"
         cp ${environment}/argocd-retained/Namespace-argocd.yaml "$out/namespaces.yaml"
@@ -54,28 +63,21 @@
       }
       // lib.optionalAttrs (lib.hasSuffix "-linux" system) (
         let
-          image = (import ./services/_identity-provisioning.nix { inherit pkgs lib; }).image;
           hostBootstrap =
             pkgs.runCommand "household-bootstrap-host" { nativeBuildInputs = [ pkgs.makeWrapper ]; }
               ''
                 mkdir -p "$out/bin"
                 makeWrapper ${runtime}/bin/household-bootstrap-host "$out/bin/household-bootstrap-host" \
                   --set-default HOUSEHOLD_BOOTSTRAP_MANIFESTS ${manifests} \
-                  --set-default HOUSEHOLD_KANIDM_IMAGE ${image} \
                   --set-default HOUSEHOLD_BOOTSTRAP_BIN ${bootstrap}/bin/household-bootstrap
               '';
         in
         {
-          kanidm-provision-image = image;
           household-bootstrap-host = hostBootstrap;
           household-bootstrap-bundle = pkgs.linkFarm "household-bootstrap-bundle" [
             {
               name = "manifests";
               path = manifests;
-            }
-            {
-              name = "images/kanidm-provision.tar";
-              path = image;
             }
             {
               name = "bin/household-bootstrap";

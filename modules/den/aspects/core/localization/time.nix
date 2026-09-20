@@ -7,7 +7,12 @@
       };
 
     nixos =
-      { config, lib, pkgs, ... }:
+      {
+        config,
+        lib,
+        pkgs,
+        ...
+      }:
       let
         logDir = "/var/log/chrony";
         servers = [
@@ -18,54 +23,62 @@
         user = config.users.users.chrony.name;
         group = config.users.groups.chrony.name;
       in
-      {
-        services.timesyncd.enable = lib.mkForce false;
+      lib.mkMerge [
+        {
+          # The host and system containers use the host clock source.
+          services.timesyncd.enable = lib.mkForce false;
+        }
+        (lib.mkIf (!config.boot.isContainer) {
+          services.chrony = {
+            inherit servers;
+            enable = true;
+            enableNTS = true;
+            serverOption = "iburst";
 
-        services.chrony = {
-          inherit servers;
-          enable = true;
-          enableNTS = true;
-          serverOption = "iburst";
+            extraConfig = ''
+              makestep 1 -1
 
-          extraConfig = ''
-            makestep 1 -1
+              logdir ${logDir}
+              log measurements statistics tracking
+            '';
+          };
 
-            logdir ${logDir}
-            log measurements statistics tracking
-          '';
-        };
+          systemd.tmpfiles.rules = [
+            "d ${logDir} 0755 ${user} ${group} -"
+          ];
 
-        systemd.tmpfiles.rules = [
-          "d ${logDir} 0755 ${user} ${group} -"
-        ];
+          services.logrotate.settings."${logDir}/*.log" = {
+            rotate = 4;
+            frequency = "weekly";
+            missingok = true;
+            nocreate = true;
+            sharedscripts = true;
+            postrotate = ''
+              ${pkgs.chrony}/bin/chronyc cyclelogs > /dev/null 2>&1 || true
+            '';
+          };
+        })
+      ];
 
-        services.logrotate.settings."${logDir}/*.log" = {
-          rotate = 4;
-          frequency = "weekly";
-          missingok = true;
-          nocreate = true;
-          sharedscripts = true;
-          postrotate = ''
-            ${pkgs.chrony}/bin/chronyc cyclelogs > /dev/null 2>&1 || true
-          '';
-        };
-      };
-
-    persist = { config, ... }:
+    persist =
+      { config, ... }:
       let
         logDir = "/var/log/chrony";
         user = config.users.users.chrony.name;
         group = config.users.groups.chrony.name;
       in
-      [
-        {
-          directories = [ config.services.chrony.directory ];
-          inherit user group;
-        }
-        {
-          directories = [ logDir ];
-          inherit user group;
-        }
-      ];
+      if config.boot.isContainer then
+        [ ]
+      else
+        [
+          {
+            directories = [ config.services.chrony.directory ];
+            inherit user group;
+          }
+          {
+            directories = [ logDir ];
+            inherit user group;
+          }
+        ];
   };
 }

@@ -6,12 +6,12 @@
   ...
 }:
 let
-  inherit (config.den.environments.prod) domain backupDomain;
+  cluster = config.den.clusters.prod-home;
+  inherit (config.den.environments.${cluster.environment}) domain backupDomain;
   hosts = name: [
     "${name}.${domain}"
     "${name}.${backupDomain}"
   ];
-  cluster = config.den.clusters.prod-home;
   kubeVersion = builtins.head (
     lib.splitString "+" inputs.nixpkgs.legacyPackages.${cluster.hostSystem}.k3s.version
   );

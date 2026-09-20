@@ -28,6 +28,9 @@ in
         in
         assert lib.assertMsg (builtins.hasAttr cluster.environment config.den.environments)
           "Cluster ${name} references unknown environment ${cluster.environment}";
+        assert lib.assertMsg (builtins.hasAttr cluster.hostName (
+          config.den.hosts.${cluster.hostSystem} or { }
+        )) "Cluster ${name} is placed on unknown host ${cluster.hostSystem}.${cluster.hostName}";
         lib.optionals (cluster.environment == environment.name) [
           (resolve.to "cluster" {
             cluster = cluster // {
@@ -71,6 +74,11 @@ in
                     );
                   };
                   options.runtimeSecrets = den.aspects.virtualization.compute.settings.runtimeSecrets;
+                  options.images = lib.mkOption {
+                    type = lib.types.listOf lib.types.package;
+                    default = [ ];
+                    description = "Locally built workload images imported by the compute guest's K3s service.";
+                  };
                 }
               ];
             };

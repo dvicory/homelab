@@ -107,14 +107,20 @@ copy secret values into Git, manifests, images or this document.
 ## Deploy
 
 Guest lifecycle and application delivery are separate. The lifecycle
-command accepts `inspect`, `create` and `replace`; `replace` deletes an
-existing guest only after its explicit confirmation.
+command accepts `adopt`, `inspect`, `create` and `replace`; `replace`
+deletes an existing guest only after its explicit confirmation.
 
 ```sh
+compute-guest adopt
 compute-guest inspect
 compute-guest create --bundle BUNDLE
 compute-guest replace --bundle BUNDLE --confirm compute-1
 ```
+
+`adopt` checks existing project, pool, network and profile definitions
+without changing them. Host preseed runs this check first and holds the
+same lifecycle lock through the native preseed operation. A
+conflicting resource stops preseed before it creates or changes resources.
 
 Use `create` only when the declared guest is absent. Use `replace` only
 when the destructive operation and retained-data prerequisites have
@@ -129,12 +135,16 @@ household-bootstrap-host /etc/homelab/compute.json --confirm compute-1
 ```
 
 It verifies the target guest, fresh kubeconfig, declared node placement,
-absent Argo Applications, staged runtime credentials and the pinned
-provisioning image before mutation. It does not create or delete
-guests, deploy the host OS, publish Git, or generate credentials.
+absent Argo Applications and runtime Secret metadata before mutation.
+It does not create or delete guests, deploy the host OS, publish Git,
+or generate credentials. Locally built workload images are delivered
+through the guest's native K3s image inputs, not by the host wrapper.
 
-The wrapper applies the Argo namespace/controllers, runtime Secrets, waits
-for the Argo seed, then applies the canonical root Application. Argo then
+The wrapper creates declared namespaces and waits for the guest's sole
+runtime Secret writer to supply the declared types and keys. Only the
+readiness result crosses back to the host, not Secret values. It then
+applies the Argo namespace/controllers, waits for the seed, and applies
+the canonical root Application. Argo then
 owns workload reconciliation from Git. Do not statically apply application
 workloads, use environment-wide pruning, or use manual scale/copy
 operations as a substitute.
