@@ -231,7 +231,9 @@ providers, and undeclared application data need separate protection and
 reconstruction.
 Same-host retained directories do not survive loss or corruption of that
 host and are not independent backups. Application-consistent capture and
-off-host backup remain separate future work.
+off-host backup remain separate future work; the operator decisions they
+depend on are collected in the
+[backup policy handoff](operations/backup-policy.md).
 
 ## Remaining gates
 
