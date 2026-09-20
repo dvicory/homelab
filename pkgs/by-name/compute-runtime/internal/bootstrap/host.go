@@ -87,7 +87,10 @@ func RunHost(ctx context.Context, args []string, out, errOut io.Writer) (result 
 		return errors.New("HOUSEHOLD_BOOTSTRAP_BIN is required")
 	}
 	bootstrapInfo, err := os.Stat(bootstrapPath)
-	if err != nil || !bootstrapInfo.Mode().IsRegular() {
+	if err != nil {
+		return fmt.Errorf("bootstrap executable is unavailable: %w", err)
+	}
+	if !bootstrapInfo.Mode().IsRegular() {
 		return fmt.Errorf("bootstrap executable is unavailable: %s", bootstrapPath)
 	}
 
@@ -99,7 +102,7 @@ func RunHost(ctx context.Context, args []string, out, errOut io.Writer) (result 
 	tools.Env = withEnvironment(tools.Env, map[string]string{"INCUS_SOCKET": socket})
 
 	if err := runComputeGuestInspect(ctx, tools.Env, descriptor.Path, lock, errOut); err != nil {
-		return errors.New("unable to validate declared compute envelope; refusing before mutation")
+		return fmt.Errorf("unable to validate declared compute envelope; refusing before mutation: %w", err)
 	}
 	connectionCtx, connectionCancel := context.WithCancel(ctx)
 	server, err := incus.ConnectIncusUnixWithContext(connectionCtx, socket, &incus.ConnectionArgs{
@@ -116,7 +119,7 @@ func RunHost(ctx context.Context, args []string, out, errOut io.Writer) (result 
 
 	instances, err := projectServer.GetInstances(api.InstanceTypeAny)
 	if err != nil {
-		return fmt.Errorf("cannot inspect Incus target %s/%s", descriptor.Project, descriptor.Instance)
+		return fmt.Errorf("cannot inspect Incus target %s/%s: %w", descriptor.Project, descriptor.Instance, err)
 	}
 	matching := 0
 	for _, instance := range instances {
@@ -159,7 +162,6 @@ func RunHost(ctx context.Context, args []string, out, errOut io.Writer) (result 
 		return runErr
 	}
 
-
 	if runErr = tools.ApplyFile(ctx, manifests.file("namespaces.yaml"), fieldManager); runErr != nil {
 		return runErr
 	}
@@ -174,10 +176,10 @@ func RunHost(ctx context.Context, args []string, out, errOut io.Writer) (result 
 		namespaceYAML, createErr := tools.RunKubectl(create, "create", "namespace", namespace, "--dry-run=client", "-o", "yaml")
 		cancel()
 		if createErr != nil {
-			return fmt.Errorf("cannot ensure secret namespace %s", namespace)
+			return fmt.Errorf("cannot ensure secret namespace %s: %w", namespace, createErr)
 		}
 		if runErr = tools.ApplyInput(ctx, namespaceYAML, "homelab-runtime-secrets", false); runErr != nil {
-			return fmt.Errorf("cannot ensure secret namespace %s", namespace)
+			return fmt.Errorf("cannot ensure secret namespace %s: %w", namespace, runErr)
 		}
 	}
 	wait, cancel := context.WithTimeout(ctx, 5*time.Minute)
@@ -204,10 +206,13 @@ func RunHost(ctx context.Context, args []string, out, errOut io.Writer) (result 
 func loadDescriptor(path string) (descriptor, error) {
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		return descriptor{}, fmt.Errorf("cannot resolve descriptor: %s", path)
+		return descriptor{}, fmt.Errorf("cannot resolve descriptor %s: %w", path, err)
 	}
 	info, err := os.Stat(resolved)
-	if err != nil || !info.Mode().IsRegular() {
+	if err != nil {
+		return descriptor{}, fmt.Errorf("cannot stat descriptor: %w", err)
+	}
+	if !info.Mode().IsRegular() {
 		return descriptor{}, errors.New("descriptor is not a regular file")
 	}
 	if stat, ok := info.Sys().(*syscall.Stat_t); !ok || stat.Uid != 0 {
@@ -218,12 +223,15 @@ func loadDescriptor(path string) (descriptor, error) {
 	}
 	file, err := os.Open(resolved)
 	if err != nil {
-		return descriptor{}, errors.New("cannot read descriptor")
+		return descriptor{}, fmt.Errorf("cannot read descriptor: %w", err)
 	}
 	defer file.Close()
 	var object map[string]json.RawMessage
 	decoder := json.NewDecoder(file)
-	if err := decoder.Decode(&object); err != nil || object == nil {
+	if err := decoder.Decode(&object); err != nil {
+		return descriptor{}, fmt.Errorf("descriptor must be a JSON object: %w", err)
+	}
+	if object == nil {
 		return descriptor{}, errors.New("descriptor must be a JSON object")
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
@@ -270,7 +278,7 @@ func verifyPrivateDirectory(path string) error {
 func runComputeGuestInspect(ctx context.Context, env []string, spec string, lock *os.File, errOut io.Writer) error {
 	path, err := exec.LookPath("compute-guest")
 	if err != nil {
-		return err
+		return fmt.Errorf("locate compute-guest: %w", err)
 	}
 	inspect, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -281,9 +289,9 @@ func runComputeGuestInspect(ctx context.Context, env []string, spec string, lock
 	cmd.Stderr = io.Discard
 	if err := cmd.Run(); err != nil {
 		if inspect.Err() != nil {
-			return inspect.Err()
+			return fmt.Errorf("compute-guest inspect: %w", inspect.Err())
 		}
-		return err
+		return fmt.Errorf("compute-guest inspect: %w", err)
 	}
 	return nil
 }
@@ -291,24 +299,24 @@ func runComputeGuestInspect(ctx context.Context, env []string, spec string, lock
 func acquireKubeconfig(ctx context.Context, tools *Tools, server incus.InstanceServer, target descriptor, kubePath string) error {
 	reader, _, err := server.GetInstanceFile(target.Instance, "/etc/rancher/k3s/k3s.yaml")
 	if err != nil {
-		return errors.New("cannot acquire fresh kubeconfig from selected guest")
+		return fmt.Errorf("cannot acquire fresh kubeconfig from selected guest: %w", err)
 	}
 	raw, err := ReadBytes(reader)
 	if err != nil {
-		return errors.New("cannot acquire fresh kubeconfig from selected guest")
+		return fmt.Errorf("cannot acquire fresh kubeconfig from selected guest: %w", err)
 	}
 	parse, cancel := context.WithTimeout(ctx, 30*time.Second)
 	encoded, err := tools.RunYQInput(parse, raw, "-o=json", "-N", ".", "-")
 	cancel()
 	if err != nil {
-		return errors.New("guest kubeconfig is invalid")
+		return fmt.Errorf("guest kubeconfig is invalid: %w", err)
 	}
 	output, err := buildHostKubeconfig(encoded, "https://"+target.Address+":6443")
 	if err != nil {
 		return err
 	}
 	if err := writePrivateFile(kubePath, output); err != nil {
-		return errors.New("cannot store fresh kubeconfig")
+		return fmt.Errorf("cannot store fresh kubeconfig: %w", err)
 	}
 	return nil
 }
@@ -383,7 +391,10 @@ func writePrivateFile(path string, data []byte) error {
 		return closeErr
 	}
 	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0o600 {
+	if err != nil {
+		return fmt.Errorf("cannot inspect temporary file: %w", err)
+	}
+	if info.Mode().Perm() != 0o600 {
 		return errors.New("temporary file is not root-private")
 	}
 	return nil
@@ -394,11 +405,11 @@ func verifyNodePlacement(ctx context.Context, tools *Tools, manifests Manifests,
 	output, err := tools.RunKubectl(inspect, "get", "node", target.Instance, "-o", "json", requestTimeout(25*time.Second))
 	cancel()
 	if err != nil {
-		return fmt.Errorf("Kubernetes target node %s is missing", target.Instance)
+		return fmt.Errorf("Kubernetes target node %s is missing: %w", target.Instance, err)
 	}
 	var node map[string]any
 	if err := jsonDecoder(output).Decode(&node); err != nil {
-		return fmt.Errorf("Kubernetes target node %s is missing", target.Instance)
+		return fmt.Errorf("Kubernetes target node %s is missing: %w", target.Instance, err)
 	}
 	metadata := mapField(node, "metadata")
 	if stringField(metadata, "name") != target.Instance || stringField(mapField(metadata, "labels"), "kubernetes.io/hostname") != target.Instance {
@@ -416,7 +427,6 @@ func verifyNodePlacement(ctx context.Context, tools *Tools, manifests Manifests,
 	return nil
 }
 
-
 func runBootstrap(ctx context.Context, env []string, path, mode string, out, errOut io.Writer) error {
 	phase, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
@@ -428,7 +438,7 @@ func runBootstrap(ctx context.Context, env []string, path, mode string, out, err
 		if phase.Err() != nil {
 			return fmt.Errorf("bootstrap %s timed out: %w", mode, phase.Err())
 		}
-		return fmt.Errorf("bootstrap %s failed", mode)
+		return fmt.Errorf("bootstrap %s failed: %w", mode, err)
 	}
 	return nil
 }

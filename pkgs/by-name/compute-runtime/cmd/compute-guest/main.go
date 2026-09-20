@@ -26,6 +26,7 @@ import (
 	incus "github.com/lxc/incus/v7/client"
 	"github.com/lxc/incus/v7/shared/api"
 
+	"github.com/dvicory/homelab/compute-runtime/internal/adoption"
 	"github.com/dvicory/homelab/compute-runtime/internal/incusops"
 )
 
@@ -44,7 +45,7 @@ var (
 	errHelp   = errors.New("help")
 )
 
-const usage = "usage: compute-guest [--spec PATH] [--bundle PATH] [--confirm NAME] [--lock-fd FD] inspect|create|replace"
+const usage = "usage: compute-guest [--spec PATH] [--bundle PATH] [--confirm NAME] [--lock-fd FD] adopt|inspect|create|replace"
 
 type cliArgs struct {
 	spec      string
@@ -160,6 +161,18 @@ func run(argv []string) error {
 	defer server.Disconnect()
 
 	projectServer := server.UseProject(spec.Project)
+	if args.operation == "adopt" {
+		decision, err := checkAdoption(server, spec)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("declared Incus envelope adoption check: %s", decision.Outcome)
+		if len(decision.Missing) != 0 {
+			fmt.Printf(" (missing %s)", strings.Join(decision.Missing, ", "))
+		}
+		fmt.Println()
+		return nil
+	}
 	instance, err := inspectEnvelope(server, projectServer, spec)
 	if err != nil {
 		return err
@@ -173,7 +186,6 @@ func run(argv []string) error {
 		fmt.Println(string(encoded))
 		return nil
 	}
-
 	if args.bundle == "" {
 		return errors.New("--bundle is required")
 	}
@@ -270,8 +282,8 @@ func parseArgs(argv []string) (cliArgs, error) {
 		}
 		positional = append(positional, arg)
 	}
-	if len(positional) != 1 || (positional[0] != "inspect" && positional[0] != "create" && positional[0] != "replace") {
-		return cliArgs{}, errors.New("operation must be one of inspect, create, replace")
+	if len(positional) != 1 || (positional[0] != "adopt" && positional[0] != "inspect" && positional[0] != "create" && positional[0] != "replace") {
+		return cliArgs{}, errors.New("operation must be one of adopt, inspect, create, replace")
 	}
 	args.operation = positional[0]
 	return args, nil
@@ -345,125 +357,30 @@ func inspectEnvelope(server, projectServer incus.InstanceServer, spec descriptor
 	return instance, nil
 }
 
+func checkAdoption(server incus.InstanceServer, spec descriptor) (adoption.Decision, error) {
+	return adoption.Gate(adoption.NewReader(server), adoption.Envelope{
+		Project:        spec.Project,
+		ProjectConfig:  spec.ProjectConfig,
+		Pool:           spec.Pool,
+		PoolPath:       spec.PoolPath,
+		Network:        spec.Network,
+		NetworkConfig:  spec.NetworkConfig,
+		Profile:        spec.Profile,
+		ProfileConfig:  spec.Config,
+		ProfileDevices: spec.Devices,
+	})
+}
+
 func checkPreseed(server incus.InstanceServer, spec descriptor) ([]string, error) {
-	var missing []string
-	project, missingProject, err := getProject(server, spec.Project)
+	decision, err := checkAdoption(server, spec)
 	if err != nil {
 		return nil, err
 	}
-	if missingProject {
-		missing = append(missing, "project/"+spec.Project)
-	} else {
-		if !projectConfigMatches(project.Config, spec.ProjectConfig) {
-			return nil, fmt.Errorf("existing project %s has incompatible restrictions", spec.Project)
-		}
-	}
-
-	pool, missingPool, err := getStoragePool(server, spec.Pool)
-	if err != nil {
-		return nil, err
-	}
-	if missingPool {
-		missing = append(missing, "storage-pool/"+spec.Pool)
-	} else if pool.Driver != "dir" || pool.Config["source"] != spec.PoolPath {
-		return nil, fmt.Errorf("existing storage pool %s is incompatible", spec.Pool)
-	}
-
-	defaultServer := server.UseProject(api.ProjectDefaultName)
-	network, missingNetwork, err := getNetwork(defaultServer, spec.Network)
-	if err != nil {
-		return nil, err
-	}
-	if missingNetwork {
-		missing = append(missing, "network/default/"+spec.Network)
-	} else {
-		networkConfig := make(api.ConfigMap, len(network.Config))
-		for key, value := range network.Config {
-			if strings.HasPrefix(key, "volatile.") || key == "bridge.hwaddr" {
-				continue
-			}
-			networkConfig[key] = value
-		}
-		if network.Type != "bridge" || !reflect.DeepEqual(networkConfig, spec.NetworkConfig) {
-			return nil, fmt.Errorf("existing network %s is incompatible", spec.Network)
-		}
-	}
-
-	if missingProject {
-		missing = append(missing, "profile/"+spec.Project+"/"+spec.Profile)
-		return missing, nil
-	}
-	projectServer := server.UseProject(spec.Project)
-	profile, missingProfile, err := getProfile(projectServer, spec.Profile)
-	if err != nil {
-		return nil, err
-	}
-	if missingProfile {
-		missing = append(missing, "profile/"+spec.Project+"/"+spec.Profile)
-	} else if !reflect.DeepEqual(profile.Config, spec.Config) || !reflect.DeepEqual(profile.Devices, spec.Devices) {
-		return nil, fmt.Errorf("existing profile %s/%s is incompatible", spec.Project, spec.Profile)
-	}
-	return missing, nil
+	return decision.Missing, nil
 }
 
 func projectConfigMatches(actual, desired api.ConfigMap) bool {
-	for key, expected := range desired {
-		if actual[key] != expected {
-			return false
-		}
-	}
-	for key := range actual {
-		if key == "restricted" || strings.HasPrefix(key, "restricted.") {
-			if _, declared := desired[key]; !declared {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func getProject(server incus.InstanceServer, name string) (*api.Project, bool, error) {
-	project, _, err := server.GetProject(name)
-	if err != nil {
-		if api.StatusErrorCheck(err, http.StatusNotFound) {
-			return nil, true, nil
-		}
-		return nil, false, fmt.Errorf("inspect project %s: %w", name, err)
-	}
-	return project, false, nil
-}
-
-func getStoragePool(server incus.InstanceServer, name string) (*api.StoragePool, bool, error) {
-	pool, _, err := server.GetStoragePool(name)
-	if err != nil {
-		if api.StatusErrorCheck(err, http.StatusNotFound) {
-			return nil, true, nil
-		}
-		return nil, false, fmt.Errorf("inspect storage pool %s: %w", name, err)
-	}
-	return pool, false, nil
-}
-
-func getNetwork(server incus.InstanceServer, name string) (*api.Network, bool, error) {
-	network, _, err := server.GetNetwork(name)
-	if err != nil {
-		if api.StatusErrorCheck(err, http.StatusNotFound) {
-			return nil, true, nil
-		}
-		return nil, false, fmt.Errorf("inspect network %s: %w", name, err)
-	}
-	return network, false, nil
-}
-
-func getProfile(server incus.InstanceServer, name string) (*api.Profile, bool, error) {
-	profile, _, err := server.GetProfile(name)
-	if err != nil {
-		if api.StatusErrorCheck(err, http.StatusNotFound) {
-			return nil, true, nil
-		}
-		return nil, false, fmt.Errorf("inspect profile %s: %w", name, err)
-	}
-	return profile, false, nil
+	return adoption.ProjectConfigMatches(actual, desired)
 }
 
 func currentInstance(server incus.InstanceServer, name string) (*api.Instance, error) {

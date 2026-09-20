@@ -172,14 +172,20 @@ in
         ## Deploy
 
         Guest lifecycle and application delivery are separate. The lifecycle
-        command accepts `inspect`, `create` and `replace`; `replace` deletes an
-        existing guest only after its explicit confirmation.
+        command accepts `adopt`, `inspect`, `create` and `replace`; `replace`
+        deletes an existing guest only after its explicit confirmation.
 
         ```sh
+        compute-guest adopt
         compute-guest inspect
         compute-guest create --bundle BUNDLE
         compute-guest replace --bundle BUNDLE --confirm ${compute.instance}
         ```
+
+        `adopt` checks existing project, pool, network and profile definitions
+        without changing them. Host preseed runs this check first and holds
+        the same lifecycle lock through the native preseed operation. A
+        conflicting resource stops preseed before it creates or changes resources.
 
         Use `create` only when the declared guest is absent. Use `replace` only
         when the destructive operation and retained-data prerequisites have

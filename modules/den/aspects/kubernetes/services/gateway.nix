@@ -31,17 +31,14 @@
     }:
     let
       namespace = "gateway";
-      inDomain =
-        domain: hostname:
-        hostname == domain || lib.hasSuffix ".${domain}" hostname;
+      inDomain = domain: hostname: hostname == domain || lib.hasSuffix ".${domain}" hostname;
       invalidHostnames = lib.concatLists (
         lib.mapAttrsToList (
           name: route:
-          map (hostname: "${name}=${hostname}") (
+          lib.optional (route.hostnames == [ ]) "${name}=<empty>"
+          ++ map (hostname: "${name}=${hostname}") (
             builtins.filter (
-              hostname:
-              !(inDomain environment.domain hostname)
-              && !(inDomain environment.backupDomain hostname)
+              hostname: !(inDomain environment.domain hostname) && !(inDomain environment.backupDomain hostname)
             ) route.hostnames
           )
         ) cluster.routes

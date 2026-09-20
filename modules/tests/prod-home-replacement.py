@@ -871,8 +871,27 @@ def run_scenario(args: argparse.Namespace) -> None:
         runtime = Runtime(descriptor, spec_path, args.helper, args.bundle)
         runtime.media_path.mkdir(mode=0o000)
         # Prepare the bind sources before running the exact locked host command.
-        run("env", f"PATH={fixture['preseedPath']}",
-            *shlex.split(fixture["preseedCommand"]), timeout=600)
+        preseed_command = ("env", f"PATH={fixture['preseedPath']}",
+                           *shlex.split(fixture["preseedCommand"]))
+        envelope_paths = (
+            (f"/1.0/storage-pools/{descriptor['pool']}", None),
+            (f"/1.0/networks/{descriptor['network']}", "default"),
+            (f"/1.0/profiles/{descriptor['profile']}", project),
+        )
+        check(query_incus(f"/1.0/projects/{project}") is None,
+              "adoption conflict fixture starts without the declared project")
+        check(all(query_incus(path, project=owner) is None for path, owner in envelope_paths),
+              "adoption conflict fixture starts without pool, network or profile")
+        run("incus", "--force-local", "project", "create", project, "-c", "restricted=false")
+        conflicting_project = query_incus(f"/1.0/projects/{project}")
+        result = completed(*preseed_command, timeout=600)
+        check(result.returncode != 0,
+              "exact preseed command rejects the conflicting project")
+        check(query_incus(f"/1.0/projects/{project}") == conflicting_project
+              and all(query_incus(path, project=owner) is None for path, owner in envelope_paths),
+              "adoption conflict leaves the project unchanged and creates no envelope resources")
+        run("incus", "--force-local", "project", "delete", project)
+        run(*preseed_command, timeout=600)
         try:
             persist = Path("/persist")
             secret_inputs = Path("/run/agenix")

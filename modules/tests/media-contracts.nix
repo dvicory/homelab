@@ -1,4 +1,9 @@
-{ config, inputs, lib, ... }:
+{
+  config,
+  inputs,
+  lib,
+  ...
+}:
 {
   perSystem =
     { pkgs, system, ... }:
@@ -52,20 +57,17 @@
               };
             in
             {
-              rejectsProviderCollision = !(
-                builtins.tryEval (
-                  builtins.deepSeq (
-                    (sabnzbdAspect."compute-resources" { cluster = collisionCluster; }).runtimeSecrets
+              rejectsProviderCollision =
+                !(builtins.tryEval (
+                  builtins.deepSeq ((sabnzbdAspect."compute-resources" { cluster = collisionCluster; }).runtimeSecrets
                   ) true
-                )
-              ).success;
-              rejectsInvalidProviderName = !(
-                builtins.tryEval (
-                  builtins.deepSeq (
-                    (sabnzbdAspect."compute-resources" { cluster = invalidNameCluster; }).runtimeSecrets
+                )).success;
+              rejectsInvalidProviderName =
+                !(builtins.tryEval (
+                  builtins.deepSeq ((sabnzbdAspect."compute-resources" { cluster = invalidNameCluster; })
+                    .runtimeSecrets
                   ) true
-                )
-              ).success;
+                )).success;
             };
           fixtureRuntimeSecrets =
             (sabnzbdAspect."compute-resources" { cluster = fixtureCluster; }).runtimeSecrets;
@@ -73,7 +75,8 @@
             "USENET_FIXTURE_USERNAME"
             "USENET_FIXTURE_PASSWORD"
           ];
-        in pkgs.writeText "media-provider-contract.json" (
+        in
+        pkgs.writeText "media-provider-contract.json" (
           builtins.toJSON {
             script = builtins.elemAt fixtureInit.command 2;
             removalScript = builtins.elemAt removalInit.command 2;
@@ -144,49 +147,42 @@
           };
         };
       };
-      fixtureMutatedInstances =
-        fixtureInstances
-        // {
-          radarr = fixtureInstances.radarr // {
-            uhd = fixtureInstances.radarr.uhd // {
-              root = "/data/library/movies/uhd-remux";
-              category = "movies-uhd-remux";
-              profile = "WEB-1080p";
-            };
+      fixtureMutatedInstances = fixtureInstances // {
+        radarr = fixtureInstances.radarr // {
+          uhd = fixtureInstances.radarr.uhd // {
+            root = "/data/library/movies/uhd-remux";
+            category = "movies-uhd-remux";
+            profile = "WEB-1080p";
           };
         };
-      fixtureCluster =
-        cluster
-        // {
-          settings = lib.recursiveUpdate cluster.settings {
-            kubernetes.services.media = fixtureInstances;
-          };
+      };
+      fixtureCluster = cluster // {
+        settings = lib.recursiveUpdate cluster.settings {
+          kubernetes.services.media = fixtureInstances;
         };
-      fixtureCompute =
-        compute
-        // {
-          retainedPaths = compute.retainedPaths // (
-            lib.mapAttrs (
-              state: uid: {
-                path = "/var/lib/homelab/compute-1/platform/media/${state}";
-                guestPath = "/srv/platform/media/${state}";
-                inherit uid;
-                gid = uid;
-                mode = "0700";
-                readOnly = false;
-              }
-            ) {
+      };
+      fixtureCompute = compute // {
+        retainedPaths =
+          compute.retainedPaths
+          // (lib.mapAttrs
+            (state: uid: {
+              path = "/var/lib/homelab/compute-1/platform/media/${state}";
+              guestPath = "/srv/platform/media/${state}";
+              inherit uid;
+              gid = uid;
+              mode = "0700";
+              readOnly = false;
+            })
+            {
               radarr-hd = 752;
               radarr-uhd = 752;
               sonarr-hd = 753;
               sonarr-anime = 753;
             }
           );
-        };
+      };
       renderApplications =
-        targetCluster:
-        targetCompute:
-        kind:
+        targetCluster: targetCompute: kind:
         let
           rendered = config.den.aspects.kubernetes.services.${kind}."k8s-manifests" {
             cluster = targetCluster;
@@ -207,23 +203,19 @@
             values = application.helm.releases.${name}.values;
           }
         ) applications;
-      fixtureApplications =
-        projectApplications (
-          renderApplications fixtureCluster fixtureCompute "radarr"
-          // renderApplications fixtureCluster fixtureCompute "sonarr"
-        );
-      fixtureMutatedCluster =
-        cluster
-        // {
-          settings = lib.recursiveUpdate cluster.settings {
-            kubernetes.services.media = fixtureMutatedInstances;
-          };
+      fixtureApplications = projectApplications (
+        renderApplications fixtureCluster fixtureCompute "radarr"
+        // renderApplications fixtureCluster fixtureCompute "sonarr"
+      );
+      fixtureMutatedCluster = cluster // {
+        settings = lib.recursiveUpdate cluster.settings {
+          kubernetes.services.media = fixtureMutatedInstances;
         };
-      fixtureMutatedApplications =
-        projectApplications (
-          renderApplications fixtureMutatedCluster fixtureCompute "radarr"
-          // renderApplications fixtureMutatedCluster fixtureCompute "sonarr"
-        );
+      };
+      fixtureMutatedApplications = projectApplications (
+        renderApplications fixtureMutatedCluster fixtureCompute "radarr"
+        // renderApplications fixtureMutatedCluster fixtureCompute "sonarr"
+      );
       mediaManifests =
         targetCluster:
         (config.den.aspects.kubernetes.services.media."k8s-manifests" {
@@ -283,7 +275,10 @@
           stateCollisionRejected = !mediaStateCollision.success;
         }
       );
-      python = pkgs.python3.withPackages (ps: [ ps.configobj ps.pyyaml ]);
+      python = pkgs.python3.withPackages (ps: [
+        ps.configobj
+        ps.pyyaml
+      ]);
     in
     {
       checks.media-contracts =
@@ -480,6 +475,13 @@
                 "SABNZBD_PASSWORD": "admin-password-fixture",
                 "USENET_FIXTURE_USERNAME": "provider-user-fixture",
                 "USENET_FIXTURE_PASSWORD": "provider-password-fixture",
+            }
+            staged = {}
+            for entry in provider["runtimeSecrets"].values():
+                staged.setdefault((entry["namespace"], entry["name"]), {})[entry["key"]] = runtime_values[entry["key"]]
+            runtime_values = {
+                name: staged[("media", entry["valueFrom"]["secretKeyRef"]["name"])][entry["valueFrom"]["secretKeyRef"]["key"]]
+                for name, entry in provider["env"].items()
             }
             with tempfile.TemporaryDirectory() as directory:
                 root = pathlib.Path(directory)

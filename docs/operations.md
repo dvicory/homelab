@@ -98,7 +98,7 @@ backup.
 | `monitoring-prometheus` | `/var/lib/homelab/compute-1/state/monitoring-prometheus` | `/srv/state/monitoring-prometheus` | `65534:65534` | `0750` | writable |
 | `prowlarr` | `/var/lib/homelab/compute-1/state/prowlarr` | `/srv/state/prowlarr` | `755:755` | `0700` | writable |
 | `radarr` | `/var/lib/homelab/compute-1/state/radarr` | `/srv/state/radarr` | `752:752` | `0700` | writable |
-| `sabnzbd` | `/var/lib/homelab/compute-1/state/sabnzbd` | `/srv/state/sabnzbd` | `754:754` | `0700` | writable |
+| `sabnzbd` | `/var/lib/homelab/compute-1/state/sabnzbd` | `/srv/state/sabnzbd` | `757:757` | `0700` | writable |
 | `seerr` | `/var/lib/homelab/compute-1/state/seerr` | `/srv/state/seerr` | `1000:1000` | `0700` | writable |
 | `sonarr` | `/var/lib/homelab/compute-1/state/sonarr` | `/srv/state/sonarr` | `753:753` | `0700` | writable |
 
@@ -134,14 +134,20 @@ copy secret values into Git, manifests, images or this document.
 ## Deploy
 
 Guest lifecycle and application delivery are separate. The lifecycle
-command accepts `inspect`, `create` and `replace`; `replace` deletes an
-existing guest only after its explicit confirmation.
+command accepts `adopt`, `inspect`, `create` and `replace`; `replace`
+deletes an existing guest only after its explicit confirmation.
 
 ```sh
+compute-guest adopt
 compute-guest inspect
 compute-guest create --bundle BUNDLE
 compute-guest replace --bundle BUNDLE --confirm compute-1
 ```
+
+`adopt` checks existing project, pool, network and profile definitions
+without changing them. Host preseed runs this check first and holds
+the same lifecycle lock through the native preseed operation. A
+conflicting resource stops preseed before it creates or changes resources.
 
 Use `create` only when the declared guest is absent. Use `replace` only
 when the destructive operation and retained-data prerequisites have

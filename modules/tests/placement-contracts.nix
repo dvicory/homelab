@@ -1,22 +1,63 @@
 {
   config,
+  den,
+  inputs,
   lib,
   self,
+  withSystem,
   ...
 }:
 let
   cluster = config.den.clusters.prod-home;
   environment = config.den.environments.${cluster.environment};
-  rendered = self.nixidyEnvs.x86_64-linux.prod-home.config.build.environmentPackage;
+  policiesFor =
+    declared:
+    (import ../den/policies/clusters.nix {
+      inherit
+        den
+        inputs
+        lib
+        withSystem
+        ;
+      config = config // {
+        den = config.den // {
+          clusters.prod-home = declared;
+        };
+      };
+    }).config.den.policies;
+  rejected = value: !(builtins.tryEval (builtins.length value)).success;
+  policy = policiesFor cluster;
+  policyAssertions =
+    !rejected (policy.environment-to-clusters { inherit environment; })
+    && rejected (
+      (policiesFor (cluster // { environment = "missing-placement-environment"; }))
+      .environment-to-clusters
+        { inherit environment; }
+    )
+    && rejected (
+      (policiesFor (cluster // { hostName = "missing-placement-host"; })).environment-to-clusters {
+        inherit environment;
+      }
+    )
+    && rejected (
+      policy.cluster-aspect {
+        cluster = cluster // {
+          name = "missing-placement-aspect";
+        };
+      }
+    );
 in
 {
   perSystem =
-    { pkgs, ... }:
+    { pkgs, system, ... }:
     let
+      rendered = self.nixidyEnvs.${system}.prod-home.config.build.environmentPackage;
       python = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
     in
     {
       checks.placement-contracts =
+        assert lib.assertMsg policyAssertions
+          "Cluster policies must reject undeclared environments, hosts and application aspects";
         pkgs.runCommand "placement-contracts"
           {
             nativeBuildInputs = [ python ];
@@ -26,34 +67,21 @@ in
             from pathlib import Path
             import sys
             import yaml
+            yaml.SafeLoader.add_constructor("tag:yaml.org,2002:value", yaml.SafeLoader.construct_scalar)
 
             rendered = Path(sys.argv[1])
             domains = tuple(sys.argv[2:])
 
-            def reference_errors(cluster, environments, aspects):
-                errors = []
-                if cluster["environment"] not in environments:
-                    errors.append(
-                        f"Cluster {cluster['name']} references unknown environment {cluster['environment']}"
-                    )
-                if cluster["name"] not in aspects:
-                    errors.append(f"Cluster {cluster['name']} has no application aspect")
-                return errors
 
             def port(value):
-                if isinstance(value, bool):
-                    return None
-                if isinstance(value, int):
-                    return value
-                if isinstance(value, str) and value.isdecimal():
-                    return int(value)
-                return None
+                return value if type(value) is int and 1 <= value <= 65535 else None
 
             def in_domain(hostname, domain):
                 return hostname == domain or hostname.endswith("." + domain)
 
             def placement_errors(resources, services, domains):
                 errors = []
+                grants = [obj for _, obj in resources if isinstance(obj, dict) and obj.get("kind") == "ReferenceGrant"]
                 for path, resource in resources:
                     if not isinstance(resource, dict):
                         errors.append(f"{path}: manifest document is not an object")
@@ -116,6 +144,19 @@ in
                             backend_namespace = ref.get("namespace", namespace)
                             backend_name = ref.get("name")
                             backend_port = port(ref.get("port"))
+                            if backend_namespace != namespace and not any(
+                                grant.get("metadata", {}).get("namespace") == backend_namespace
+                                and any(source.get("group") == "gateway.networking.k8s.io"
+                                        and source.get("kind") == "HTTPRoute"
+                                        and source.get("namespace") == namespace
+                                        for source in grant.get("spec", {}).get("from", []))
+                                and any(target.get("group", "") == ""
+                                        and target.get("kind") == "Service"
+                                        and target.get("name", backend_name) == backend_name
+                                        for target in grant.get("spec", {}).get("to", []))
+                                for grant in grants
+                            ):
+                                errors.append(f"{path}: cross-namespace backend {backend_namespace}/{backend_name} has no ReferenceGrant")
                             if (backend_namespace, backend_name, backend_port) not in services:
                                 errors.append(
                                     f"{path}: HTTPRoute {namespace}/{name} backend Service "
@@ -123,59 +164,6 @@ in
                                 )
                 return errors
 
-            # Keep the policy's two trust-boundary failures covered by focused
-            # negative fixtures without inventing a second application registry.
-            valid_cluster = {"name": "prod-home", "environment": "prod"}
-            assert reference_errors(valid_cluster, {"prod": {}}, {"prod-home": {}}) == []
-            assert any(
-                "unknown environment" in error
-                for error in reference_errors(valid_cluster, {}, {"prod-home": {}})
-            )
-            assert any(
-                "no application aspect" in error
-                for error in reference_errors(valid_cluster, {"prod": {}}, {})
-            )
-
-            valid_route = {
-                "kind": "HTTPRoute",
-                "metadata": {"name": "demo", "namespace": "gateway"},
-                "spec": {
-                    "hostnames": ["demo.example.test"],
-                    "rules": [
-                        {
-                            "backendRefs": [
-                                {"name": "demo", "namespace": "app", "port": 80}
-                            ]
-                        }
-                    ],
-                },
-            }
-            assert placement_errors(
-                [("fixture.yaml", valid_route)], {("app", "demo", 80)}, ("example.test",)
-            ) == []
-            missing_service = placement_errors(
-                [("fixture.yaml", valid_route)], set(), ("example.test",)
-            )
-            assert any("backend Service app/demo:80" in error for error in missing_service)
-            wrong_port = {
-                **valid_route,
-                "spec": {
-                    **valid_route["spec"],
-                    "rules": [{"backendRefs": [{"name": "demo", "namespace": "app", "port": 81}]}],
-                },
-            }
-            wrong_port_errors = placement_errors(
-                [("fixture.yaml", wrong_port)], {("app", "demo", 80)}, ("example.test",)
-            )
-            assert any("backend Service app/demo:81" in error for error in wrong_port_errors)
-            outside_domain = {
-                **valid_route,
-                "spec": {**valid_route["spec"], "hostnames": ["demo.other.test"]},
-            }
-            outside_domain_errors = placement_errors(
-                [("fixture.yaml", outside_domain)], {("app", "demo", 80)}, ("example.test",)
-            )
-            assert any("outside the declared domains" in error for error in outside_domain_errors)
 
             resources = []
             services = set()
