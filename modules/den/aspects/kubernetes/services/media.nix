@@ -18,10 +18,32 @@ in
       let
         settings = cluster.settings.kubernetes.services.media;
         instances = lib.concatLists [
-          (lib.mapAttrsToList (_: cfg: cfg) settings.radarr)
-          (lib.mapAttrsToList (_: cfg: cfg) settings.sonarr)
+          (builtins.attrValues settings.radarr)
+          (builtins.attrValues settings.sonarr)
         ];
         stateKeys = map (cfg: cfg.state) instances;
+        secretKeys = map (cfg: cfg.apiSecretKey) instances;
+        roots = map (cfg: cfg.root) instances;
+        categories = map (cfg: cfg.category) instances;
+        rootOverlap =
+          paths:
+          if paths == [ ] then
+            false
+          else
+            let
+              path = builtins.head paths;
+              rest = builtins.tail paths;
+            in
+            lib.any (
+              other:
+              path == other
+              || lib.hasPrefix "${path}/" other
+              || lib.hasPrefix "${other}/" path
+            ) rest
+            || rootOverlap rest;
+        sharedDataDeclared = lib.all (
+          cfg: lib.elem "/data" cfg.sharedWritablePaths
+        ) instances;
         reserved = [
           "sabnzbd"
           "seerr"
@@ -30,9 +52,20 @@ in
       assert lib.assertMsg (
         lib.unique stateKeys == stateKeys
       ) "Media instances must not share private retained state mappings.";
+      assert lib.assertMsg (
+        lib.unique secretKeys == secretKeys
+      ) "Media instances must not share private API credentials.";
+      assert lib.assertMsg (
+        !rootOverlap roots || sharedDataDeclared
+      ) "Overlapping writable library roots require explicit shared writable path declaration.";
+      assert lib.assertMsg (
+        lib.unique categories == categories
+      ) "Media instances must not share writable download categories.";
       assert lib.assertMsg (lib.all (
         key: !(builtins.elem key reserved)
       ) stateKeys) "Media instance state mappings may not reuse shared or fixed media claims.";
+      assert lib.assertMsg sharedDataDeclared
+        "Every media instance must declare its shared writable /data path.";
       {
         applications.media-access = {
           namespace = "media";

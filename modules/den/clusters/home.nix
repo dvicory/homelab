@@ -53,6 +53,10 @@ in
         backendTLS = true;
       };
     };
+    # The existing Arr instances intentionally share the host-owned media
+    # namespace. Private configuration remains on each instance's own claim.
+    settings.kubernetes.services.media.radarr.radarr.sharedWritablePaths = [ "/data" ];
+    settings.kubernetes.services.media.sonarr.sonarr.sharedWritablePaths = [ "/data" ];
   };
 
   den.aspects.prod-home = {

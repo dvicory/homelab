@@ -1,12 +1,187 @@
-{ config, ... }:
+{ config, inputs, lib, ... }:
 {
   perSystem =
-    { pkgs, ... }:
+    { pkgs, system, ... }:
     let
       environment = ../../generated/manifests/prod-home;
       cluster = config.den.clusters.prod-home;
       compute =
         config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
+      charts = inputs.nixhelm.chartsDerivations.${system};
+      instance =
+        {
+          state,
+          routeKey,
+          apiSecretKey,
+          root,
+          category,
+          profile,
+        }:
+        {
+          inherit
+            state
+            routeKey
+            apiSecretKey
+            root
+            category
+            profile
+            ;
+          sharedWritablePaths = [ "/data" ];
+        };
+      fixtureInstances = {
+        radarr = {
+          radarr = instance {
+            state = "radarr-hd";
+            routeKey = "radarr";
+            apiSecretKey = "RADARR_HD_API_KEY";
+            root = "/data/library/movies/hd";
+            category = "movies-hd";
+            profile = "WEB-1080p";
+          };
+          uhd = instance {
+            state = "radarr-uhd";
+            routeKey = null;
+            apiSecretKey = "RADARR_UHD_API_KEY";
+            root = "/data/library/movies/uhd";
+            category = "movies-uhd";
+            profile = "WEB-2160p";
+          };
+        };
+        sonarr = {
+          sonarr = instance {
+            state = "sonarr-hd";
+            routeKey = "sonarr";
+            apiSecretKey = "SONARR_HD_API_KEY";
+            root = "/data/library/tv/hd";
+            category = "tv-hd";
+            profile = "WEB-1080p";
+          };
+          anime = instance {
+            state = "sonarr-anime";
+            routeKey = null;
+            apiSecretKey = "SONARR_ANIME_API_KEY";
+            root = "/data/library/tv/anime";
+            category = "tv-anime";
+            profile = "WEB-2160p";
+          };
+        };
+      };
+      fixtureMutatedInstances =
+        fixtureInstances
+        // {
+          radarr = fixtureInstances.radarr // {
+            uhd = fixtureInstances.radarr.uhd // {
+              root = "/data/library/movies/uhd-remux";
+              category = "movies-uhd-remux";
+              profile = "WEB-1080p";
+            };
+          };
+        };
+      fixtureCluster =
+        cluster
+        // {
+          settings = lib.recursiveUpdate cluster.settings {
+            kubernetes.services.media = fixtureInstances;
+          };
+        };
+      fixtureCompute =
+        compute
+        // {
+          retainedPaths = compute.retainedPaths // (
+            lib.mapAttrs (
+              state: uid: {
+                path = "/var/lib/homelab/compute-1/platform/media/${state}";
+                guestPath = "/srv/platform/media/${state}";
+                inherit uid;
+                gid = uid;
+                mode = "0700";
+                readOnly = false;
+              }
+            ) {
+              radarr-hd = 752;
+              radarr-uhd = 752;
+              sonarr-hd = 753;
+              sonarr-anime = 753;
+            }
+          );
+        };
+      renderApplications =
+        targetCluster:
+        targetCompute:
+        kind:
+        let
+          rendered = config.den.aspects.kubernetes.services.${kind}."k8s-manifests" {
+            cluster = targetCluster;
+            compute = targetCompute;
+            inherit charts;
+          };
+        in
+        rendered.applications;
+      projectApplications =
+        applications:
+        lib.mapAttrs (
+          name: application:
+          {
+            namespace = application.namespace;
+            objects = application.objects or [ ];
+          }
+          // lib.optionalAttrs (application ? helm) {
+            values = application.helm.releases.${name}.values;
+          }
+        ) applications;
+      fixtureApplications =
+        projectApplications (
+          renderApplications fixtureCluster fixtureCompute "radarr"
+          // renderApplications fixtureCluster fixtureCompute "sonarr"
+        );
+      fixtureMutatedCluster =
+        cluster
+        // {
+          settings = lib.recursiveUpdate cluster.settings {
+            kubernetes.services.media = fixtureMutatedInstances;
+          };
+        };
+      fixtureMutatedApplications =
+        projectApplications (
+          renderApplications fixtureMutatedCluster fixtureCompute "radarr"
+          // renderApplications fixtureMutatedCluster fixtureCompute "sonarr"
+        );
+      mediaManifests =
+        targetCluster:
+        (config.den.aspects.kubernetes.services.media."k8s-manifests" {
+          cluster = targetCluster;
+        });
+      mediaBase = builtins.tryEval (mediaManifests fixtureCluster);
+      mediaNoSharing = builtins.tryEval (
+        mediaManifests (
+          fixtureCluster
+          // {
+            settings = lib.recursiveUpdate fixtureCluster.settings {
+              kubernetes.services.media.radarr.uhd.sharedWritablePaths = [ ];
+            };
+          }
+        )
+      );
+      mediaStateCollision = builtins.tryEval (
+        mediaManifests (
+          fixtureCluster
+          // {
+            settings = lib.recursiveUpdate fixtureCluster.settings {
+              kubernetes.services.media.sonarr.anime.state = "radarr-hd";
+            };
+          }
+        )
+      );
+      fixtureRuntimeSecrets =
+        let
+          resources =
+            kind:
+            (config.den.aspects.kubernetes.services.${kind}."compute-resources" {
+              cluster = fixtureCluster;
+              config = config;
+            }).runtimeSecrets;
+        in
+        resources "radarr" // resources "sonarr";
       storage = pkgs.writeText "media-storage-contract.json" (
         builtins.toJSON {
           inherit (compute) instance retainedPaths;
@@ -16,6 +191,18 @@
             radarr = builtins.attrNames cluster.settings.kubernetes.services.media.radarr;
             sonarr = builtins.attrNames cluster.settings.kubernetes.services.media.sonarr;
           };
+        }
+      );
+      fixture = pkgs.writeText "media-instance-fixtures.json" (
+        builtins.toJSON {
+          instances = fixtureInstances;
+          mutatedInstances = fixtureMutatedInstances;
+          applications = fixtureApplications;
+          mutatedApplications = fixtureMutatedApplications;
+          runtimeSecrets = fixtureRuntimeSecrets;
+          positive = mediaBase.success;
+          noSharingRejected = !mediaNoSharing.success;
+          stateCollisionRejected = !mediaStateCollision.success;
         }
       );
       python = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
@@ -31,7 +218,7 @@
             ];
           }
           ''
-            python - ${environment} ${storage} <<'PY'
+            python - ${environment} ${storage} ${fixture} <<'PY'
             import json
             import pathlib
             import subprocess
@@ -41,6 +228,7 @@
 
             environment = pathlib.Path(sys.argv[1])
             storage = json.loads(pathlib.Path(sys.argv[2]).read_text())
+            fixture = json.loads(pathlib.Path(sys.argv[3]).read_text())
             resources = []
             for path in environment.rglob("*.yaml"):
                 resources.extend(
@@ -66,6 +254,66 @@
             def under_media(path):
                 candidate = pathlib.PurePosixPath(path)
                 return candidate == media_root or media_root in candidate.parents
+
+            fixture_instances = fixture["instances"]
+            fixture_apps = fixture["applications"]
+            expected_services = {"radarr", "radarr-uhd", "sonarr", "sonarr-anime"}
+            assert set(fixture_apps) == expected_services | {"radarr-storage", "sonarr-storage"}
+            assert fixture["positive"]
+            assert fixture["noSharingRejected"]
+            assert fixture["stateCollisionRejected"]
+            assert storage["mediaInstances"] == {"radarr": ["radarr"], "sonarr": ["sonarr"]}
+
+            def validate_instance_group(kind, instances):
+                expected_names = {"radarr", "uhd"} if kind == "radarr" else {"sonarr", "anime"}
+                assert set(instances) == expected_names
+                for field in ("state", "apiSecretKey", "root", "category", "profile"):
+                    values = [instance[field] for instance in instances.values()]
+                    assert len(values) == len(set(values)), (kind, field)
+                assert all(instance["sharedWritablePaths"] == ["/data"] for instance in instances.values())
+
+            validate_instance_group("radarr", fixture_instances["radarr"])
+            validate_instance_group("sonarr", fixture_instances["sonarr"])
+            assert len({instance["state"] for instances in fixture_instances.values()
+                        for instance in instances.values()}) == 4
+            assert len({instance["apiSecretKey"] for instances in fixture_instances.values()
+                        for instance in instances.values()}) == 4
+
+            for name in expected_services:
+                kind = "radarr" if name.startswith("radarr") else "sonarr"
+                instance_name = kind if name == kind else name.removeprefix(kind + "-")
+                cfg = fixture_instances[kind][instance_name]
+                values = fixture_apps[name]["values"]
+                assert values["fullnameOverride"] == name
+                assert values["persistence"]["config"]["existingClaim"] == "media-" + cfg["state"]
+                assert values["persistence"]["data"] == {
+                    "type": "hostPath",
+                    "hostPath": storage["media"],
+                    "hostPathType": "Directory",
+                    "globalMounts": [{"path": "/data"}],
+                }
+                container = values["controllers"]["main"]["containers"]["main"]
+                assert set(container["image"]) == {"repository", "tag", "digest"}
+                secret_ref = container["env"][f"{kind.upper()}__AUTH__APIKEY"]
+                assert secret_ref["valueFrom"]["secretKeyRef"]["key"] == cfg["apiSecretKey"]
+
+            runtime_keys = {
+                value["key"]
+                for value in fixture["runtimeSecrets"].values()
+            }
+            assert runtime_keys == {
+                instance["apiSecretKey"]
+                for instances in fixture_instances.values()
+                for instance in instances.values()
+            }
+            base_apps = fixture["applications"]
+            mutated_apps = fixture["mutatedApplications"]
+            for name in expected_services - {"radarr-uhd"}:
+                assert base_apps[name] == mutated_apps[name], name
+            assert (
+                fixture["instances"]["radarr"]["uhd"]
+                != fixture["mutatedInstances"]["radarr"]["uhd"]
+            )
 
             # Private retained state is distinct from the host-owned media namespace.
             for resource in local_pvs.values():
