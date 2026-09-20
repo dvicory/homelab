@@ -193,34 +193,14 @@
                 exit "$status"
               fi
               [ -n "$currentUID" ] && [ "$currentUID" = "$uid" ] || continue
-              if secretType="$(kubectl get secret "$name" --namespace "$namespace" \
-                -o jsonpath='{.type}')"; then
-                :
-              else
-                status=$?
-                echo "Runtime Secret type inspection failed (exit $status); native output suppressed." >&2
-                exit "$status"
-              fi
-              [ -n "$secretType" ] || secretType=Opaque
-              if kubectl create secret generic "$name" \
-                --namespace "$namespace" \
-                --type "$secretType" \
-                --dry-run=client -o json |
-                kubectl label --local -f - homelab.danielvicory/runtime-secret=true -o json |
+              if printf '{"apiVersion":"v1","kind":"Secret","metadata":{"name":"%s","namespace":"%s","uid":"%s"},"type":"Opaque"}\n' \
+                "$name" "$namespace" "$uid" |
                 kubectl apply --server-side --force-conflicts \
                   --field-manager=homelab-runtime-secrets -f - >/dev/null 2>&1; then
                 :
               else
                 status=$?
                 echo "Runtime Secret retirement failed (exit $status); native output suppressed." >&2
-                exit "$status"
-              fi
-              if kubectl label secret "$name" --namespace "$namespace" \
-                homelab.danielvicory/runtime-secret- >/dev/null 2>&1; then
-                :
-              else
-                status=$?
-                echo "Runtime Secret ownership release failed (exit $status); native output suppressed." >&2
                 exit "$status"
               fi
             done < "$owned"

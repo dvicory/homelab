@@ -80,6 +80,7 @@ operation and verification.
 | Service | Primary | Backup | Authentication | Declared backend |
 | --- | --- | --- | --- | --- |
 | `argocd` | `https://argocd.plus2.danielvicory.dev` | `https://argocd.backup.plus2.danielvicory.dev` | administrator browser gate; native APIs remain private | `argocd/argocd-server:80` |
+| `idm` | `https://idm.plus2.danielvicory.dev` | `https://idm.backup.plus2.danielvicory.dev` | native application authentication | `identity/kanidm:443` |
 
 `native` routes retain application-native authentication for supported
 clients. `admin` routes use an administrator browser gate while native
@@ -96,6 +97,7 @@ backup.
 
 | Retained key | Host path | Guest path | Guest UID:GID | Mode | Access |
 | --- | --- | --- | --- | --- | --- |
+| `identity-kanidm` | `/var/lib/homelab/compute-1/state/identity-kanidm` | `/srv/state/identity-kanidm` | `1000:1000` | `0700` | writable |
 | `kubernetes-volumes` | `/var/lib/homelab/compute-1/state/kubernetes-volumes` | `/srv/state/kubernetes-volumes` | `0:0` | `0700` | writable |
 
 The host-owned media namespace is attached at the stable `/srv/media`
@@ -120,6 +122,9 @@ copy secret values into Git, manifests, images or this document.
 | Kubernetes Secret | Agenix source → key | Type |
 | --- | --- | --- |
 | `argocd/argocd-secret` | `argocd--argocd-secret--admin.password` → `admin.password`, `argocd--argocd-secret--admin.passwordMtime` → `admin.passwordMtime`, `argocd--argocd-secret--server.secretkey` → `server.secretkey` | `Opaque` |
+| `gateway/gateway-tls` | `gateway--gateway-tls--ca.crt` → `ca.crt`, `gateway--gateway-tls--tls.crt` → `tls.crt`, `gateway--gateway-tls--tls.key` → `tls.key` | `kubernetes.io/tls` |
+| `identity/kanidm-provision` | `identity--kanidm-provision--idm-admin-password` → `idm-admin-password` | `Opaque` |
+| `identity/kanidm-tls` | `identity--kanidm-tls--ca.crt` → `ca.crt`, `identity--kanidm-tls--tls.crt` → `tls.crt`, `identity--kanidm-tls--tls.key` → `tls.key` | `kubernetes.io/tls` |
 
 ## Deploy
 

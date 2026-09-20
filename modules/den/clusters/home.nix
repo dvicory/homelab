@@ -42,6 +42,9 @@ in
     };
     routes = {
       argocd = route "argocd" "argocd" "argocd-server" 80 "admin";
+      idm = (route "idm" "identity" "kanidm" 443 "native") // {
+        backendTLS = true;
+      };
     };
   };
 
@@ -50,6 +53,8 @@ in
       argocd
       cluster-dns
       retained-storage
+      gateway
+      identity
     ];
   };
 }

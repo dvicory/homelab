@@ -1,0 +1,27 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: household
+  namespace: gateway
+spec:
+  provider:
+    kubernetes:
+      envoyDeployment:
+        pod:
+          nodeSelector:
+            kubernetes.io/hostname: compute-1
+        replicas: 1
+      envoyService:
+        externalTrafficPolicy: Local
+        name: household-origin
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              ports:
+                - name: https
+                  nodePort: 30443
+                  port: 443
+                  targetPort: 8443
+        type: NodePort
+    type: Kubernetes

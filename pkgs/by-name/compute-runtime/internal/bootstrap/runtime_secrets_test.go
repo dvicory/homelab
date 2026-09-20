@@ -21,10 +21,15 @@ func TestRuntimeSecretInventoryAndReadiness(t *testing.T) {
 	if err != nil || len(secrets) != 1 {
 		t.Fatalf("grouping inventory: %v, %v", secrets, err)
 	}
+	tls := `{"certificate":{"namespace":"gateway","name":"gateway-tls","key":"tls.crt","type":"kubernetes.io/tls"},"key":{"namespace":"gateway","name":"gateway-tls","key":"tls.key","type":"kubernetes.io/tls"}}`
+	tlsSecrets, err := declaredRuntimeSecrets([]byte(tls))
+	if err != nil || len(tlsSecrets) != 1 || tlsSecrets[0].Type != "kubernetes.io/tls" {
+		t.Fatalf("TLS inventory: %v, %v", tlsSecrets, err)
+	}
 	for _, invalid := range []string{
 		`null`, `[]`,
 		strings.Replace(valid, `"PASSWORD"`, `"USER"`, 1),
-		strings.Replace(valid, `"Opaque"`, `"kubernetes.io/tls"`, 1),
+		strings.Replace(valid, `"type":"Opaque"`, `"type":"kubernetes.io/tls"`, 1),
 		strings.Replace(valid, `"media"`, `"media/other"`, 1),
 		strings.Replace(valid, `"PASSWORD"`, `""`, 1),
 	} {

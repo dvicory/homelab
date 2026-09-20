@@ -16,7 +16,10 @@ let
         name = mkOption { type = types.strMatching "[a-z0-9]([-a-z0-9.]*[a-z0-9])?"; };
         key = mkOption { type = types.strMatching "[a-zA-Z0-9._-]+"; };
         type = mkOption {
-          type = types.enum [ "Opaque" ];
+          type = types.enum [
+            "Opaque"
+            "kubernetes.io/tls"
+          ];
           default = "Opaque";
         };
         generator = mkOption {

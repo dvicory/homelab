@@ -345,6 +345,60 @@ in
               machine.succeed(
                   f"test \"$({kubectl} get secret replaced --namespace media -o jsonpath='{{.data.REPLACED}}')\" = bmV3"
               )
+              machine.succeed(
+                  """cat > /srv/secrets/runtime-secrets.yaml <<'EOF'
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: tls
+                namespace: media
+                labels:
+                  homelab.danielvicory/runtime-secret: "true"
+              type: kubernetes.io/tls
+              data:
+                tls.crt: Y2VydA==
+                tls.key: a2V5
+              EOF
+              printf 'media\ttls\n' > /srv/secrets/runtime-secrets.names
+              yaml_checksum=$(sha256sum /srv/secrets/runtime-secrets.yaml | cut -d ' ' -f 1)
+              names_checksum=$(sha256sum /srv/secrets/runtime-secrets.names | cut -d ' ' -f 1)
+              generation=$(printf '%s\n%s\n' "$yaml_checksum" "$names_checksum" | sha256sum | cut -d ' ' -f 1)
+              printf 'generation=%s yaml-sha256=%s names-sha256=%s\n' "$generation" "$yaml_checksum" "$names_checksum" > /srv/secrets/runtime-secrets.commit
+              """
+              )
+              machine.succeed("systemctl restart kubernetes-runtime-secrets.service")
+              machine.succeed(
+                  "set -o pipefail; "
+                  f"{kubectl} create secret generic tls --namespace media --type=kubernetes.io/tls "
+                  "--from-literal=application=app --dry-run=client -o yaml | "
+                  f"{kubectl} apply --server-side --force-conflicts "
+                  "--field-manager=application -f -"
+              )
+              machine.succeed(
+                  f"test \"$({kubectl} get secret tls --namespace media -o jsonpath='{{.type}}')\" = kubernetes.io/tls"
+              )
+              machine.succeed(
+                  """ : > /srv/secrets/runtime-secrets.yaml
+              : > /srv/secrets/runtime-secrets.names
+              yaml_checksum=$(sha256sum /srv/secrets/runtime-secrets.yaml | cut -d ' ' -f 1)
+              names_checksum=$(sha256sum /srv/secrets/runtime-secrets.names | cut -d ' ' -f 1)
+              generation=$(printf '%s\n%s\n' "$yaml_checksum" "$names_checksum" | sha256sum | cut -d ' ' -f 1)
+              printf 'generation=%s yaml-sha256=%s names-sha256=%s\n' "$generation" "$yaml_checksum" "$names_checksum" > /srv/secrets/runtime-secrets.commit
+              """
+              )
+              machine.succeed("systemctl restart kubernetes-runtime-secrets.service")
+              machine.succeed(
+                  f"test \"$({kubectl} get secret tls --namespace media -o jsonpath='{{.type}}')\" = Opaque"
+              )
+              machine.succeed(
+                  f"test -z \"$({kubectl} get secret tls --namespace media -o jsonpath='{{.data.tls\\.crt}}')\""
+              )
+              machine.succeed(
+                  f"test -z \"$({kubectl} get secret tls --namespace media -o jsonpath='{{.data.tls\\.key}}')\""
+              )
+              machine.succeed(
+                  f"test \"$({kubectl} get secret tls --namespace media -o jsonpath='{{.data.application}}')\" = YXBw"
+              )
             '';
           };
         in
