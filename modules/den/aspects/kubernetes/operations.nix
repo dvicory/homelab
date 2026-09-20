@@ -85,8 +85,9 @@ in
         Nix declarations; they do not inspect a live host or cluster.
 
         **Stack:** `${cluster.environment}` / `prod-home` on `${compute.instance}`
-        (`${cluster.hostName}`), with Gateway API through private NodePort
-        `${toString cluster.ingress.nodePort}`.
+        (`${cluster.hostName}`), with private ingress reserved at NodePort
+        `${toString cluster.ingress.nodePort}`. Included service aspects own the
+        Gateway API objects that make declared routes reachable.
 
         Application-owned users, first-run owners, passkeys, libraries, media,
         requests, history, dashboards and other records not named by a
@@ -146,17 +147,17 @@ in
         | --- | --- | --- | --- | --- | --- |
         ${lib.concatStringsSep "\n" stateRows}
 
-        The host-owned media namespace at `/srv/media/data` is attached to acquisition
-        workloads at `/data` and to Jellyfin's library subtree at `/media`
-        read-only. It is not part of the retained state table or the household
-        recovery set.
-        Incus recursively attaches the stable `/srv/media` parent with one-way
-        host-to-guest propagation. Only its `data/` child is the replaceable
-        filesystem; binding that child directly would retain a dead mount after
-        source restoration. Recreate affected pods to refresh their library or
-        download subtree binds; the compute guest need not restart.
-        The `retained-local` capability for ordinary Helm PVCs is documented in
-        the [retained-storage notes](../modules/den/aspects/kubernetes/services/retained-storage.md).
+        The host-owned media namespace is attached at the stable `/srv/media`
+        parent and remains outside the retained state table and household
+        recovery set. Included application aspects own any workload-specific
+        library or download mounts; this declaration does not imply consumers
+        are deployed.
+        Incus uses one-way host-to-guest mount propagation. Only the `data/`
+        child is the replaceable filesystem; binding that child directly would
+        retain a dead mount after source restoration. Recreate affected pods to
+        refresh workload subtree binds; the compute guest need not restart.
+        Ordinary Helm PVCs use the `retained-local` storage class; their
+        application-specific declarations enter with their owning aspects.
 
         ## Runtime-secret references
 

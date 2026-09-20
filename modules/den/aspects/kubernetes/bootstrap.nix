@@ -1,4 +1,4 @@
-{ self, lib, ... }:
+{ lib, ... }:
 {
   perSystem =
     {
@@ -54,7 +54,7 @@
       }
       // lib.optionalAttrs (lib.hasSuffix "-linux" system) (
         let
-          image = self.packages.${system}.kanidm-provision-image;
+          image = (import ./services/_identity-provisioning.nix { inherit pkgs lib; }).image;
           hostBootstrap =
             pkgs.runCommand "household-bootstrap-host" { nativeBuildInputs = [ pkgs.makeWrapper ]; }
               ''
@@ -66,6 +66,7 @@
               '';
         in
         {
+          kanidm-provision-image = image;
           household-bootstrap-host = hostBootstrap;
           household-bootstrap-bundle = pkgs.linkFarm "household-bootstrap-bundle" [
             {
