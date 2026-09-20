@@ -76,9 +76,9 @@ let
       names = builtins.attrNames providers;
       keys = providerSecretKeys providers;
     in
-    assert lib.assertMsg (
-      lib.all (name: builtins.match "[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?" name != null) names
-    ) "SABnzbd provider names must contain only letters, numbers, '.', '-' or '_'.";
+    assert lib.assertMsg (lib.all (
+      name: builtins.match "[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?" name != null
+    ) names) "SABnzbd provider names must contain only letters, numbers, '.', '-' or '_'.";
     assert lib.assertMsg (
       lib.unique keys == keys
     ) "SABnzbd provider names must not collide after runtime Secret key normalization.";
@@ -147,6 +147,18 @@ in
       secretName = cluster.settings.kubernetes.services.media.configurationSecret;
       providers = checkedProviders cluster.settings.kubernetes.services.media.sabnzbd.providers;
       requiredKeys = ownSecretKeys ++ providerSecretKeys providers;
+      downloadCategories =
+        lib.concatMap
+          (
+            kind:
+            map (instance: instance.category) (
+              lib.attrValues (cluster.settings.kubernetes.services.media.${kind} or { })
+            )
+          )
+          [
+            "radarr"
+            "sonarr"
+          ];
       sabConfig = ''
         import json
         import os
@@ -181,7 +193,7 @@ in
         for directory in ('library/movies', 'library/tv', 'downloads/usenet/incomplete', 'downloads/usenet/complete'):
             os.makedirs('/data/' + directory, mode=0o2770, exist_ok=True)
         categories = config.setdefault('categories', {})
-        for name in ('movies', 'tv'):
+        for name in ${builtins.toJSON downloadCategories}:
             categories.setdefault(name, {'name': name, 'order': '0', 'priority': '-100', 'pp': '3', 'script': 'Default', 'dir': name, 'newzbin': ""})
         providers = json.loads(${builtins.toJSON (builtins.toJSON providers)})
         managed = 'managed-by: homelab'

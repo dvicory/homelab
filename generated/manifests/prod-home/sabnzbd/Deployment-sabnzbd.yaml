@@ -104,7 +104,7 @@ spec:
               for directory in ('library/movies', 'library/tv', 'downloads/usenet/incomplete', 'downloads/usenet/complete'):
                   os.makedirs('/data/' + directory, mode=0o2770, exist_ok=True)
               categories = config.setdefault('categories', {})
-              for name in ('movies', 'tv'):
+              for name in ["movies","tv"]:
                   categories.setdefault(name, {'name': name, 'order': '0', 'priority': '-100', 'pp': '3', 'script': 'Default', 'dir': name, 'newzbin': ""})
               providers = json.loads("{}")
               managed = 'managed-by: homelab'

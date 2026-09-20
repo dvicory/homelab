@@ -24,6 +24,10 @@ spec:
                   value: /app/config/config.yml
                 - name: CUSTOM_REPO_ROOT
                   value: /app/repos
+                - name: LOG_LEVEL
+                  value: warn
+                - name: STOP_ON_ERROR
+                  value: "true"
                 - name: RADARR_API_KEY
                   valueFrom:
                     secretKeyRef:

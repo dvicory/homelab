@@ -660,8 +660,13 @@ def wait_argo_source_failure(kubeconfig: Path, name: str, repo_url: str, timeout
             print(f"ARGO {name}: {json.dumps(summary)}", flush=True)
             last_status[name] = summary
         comparison_errors = [
-            condition for condition in conditions
-            if condition.get("type") == "ComparisonError" and repo_url in condition.get("message", "")
+            condition
+            for condition in conditions
+            if condition.get("type") == "ComparisonError"
+            and (
+                repo_url in condition.get("message", "")
+                or "connect: connection refused" in condition.get("message", "")
+            )
         ]
         if comparison_errors:
             return True

@@ -28,6 +28,14 @@ let
     ;
   mediaGid = fleetGroups.media.gid;
 
+  dataPathType = types.addCheck types.str (
+    path:
+    (path == "/data" || lib.hasPrefix "/data/" path)
+    && lib.all (part: part != "" && part != ".." && part != ".") (
+      builtins.tail (lib.splitString "/" path)
+    )
+  );
+
   instanceType = types.submodule (
     { name, ... }:
     {
@@ -48,12 +56,7 @@ let
           description = "Runtime Secret key containing this instance's native API key.";
         };
         root = mkOption {
-          type = types.addCheck types.str (
-            path:
-            lib.hasPrefix "/data/" path
-            && path != "/data/"
-            && lib.all (part: part != ".." && part != ".") (lib.splitString "/" path)
-          );
+          type = types.addCheck dataPathType (path: path != "/data");
           default = defaultRoot;
           description = "Fresh writable library root managed by the native root-folder reconciler.";
         };
@@ -68,9 +71,9 @@ let
           description = "Selected configuration profile name.";
         };
         sharedWritablePaths = mkOption {
-          type = types.listOf (types.enum [ "/data" ]);
+          type = types.listOf dataPathType;
           default = [ ];
-          description = "Shared writable paths explicitly granted to this instance.";
+          description = "Grant /data for the shared mount. Overlapping library roots additionally require both instances to grant a common containing path below /data.";
         };
       };
     }

@@ -40,17 +40,21 @@
     { cluster, config, ... }:
     let
       policy = import ./_media-policy.nix;
-      apps = lib.mapAttrs (
-        name: application:
-        let
-          values = application.helm.releases.${name}.values;
-        in
-        {
-          namespace = application.namespace;
-          service = values.fullnameOverride or name;
-          port = values.service.main.ports.http.port;
-        }
-      ) config.applications // { prowlarr = config.media.prowlarr; };
+      apps =
+        lib.mapAttrs (
+          name: application:
+          let
+            values = application.helm.releases.${name}.values;
+          in
+          {
+            namespace = application.namespace;
+            service = values.fullnameOverride or name;
+            port = values.service.main.ports.http.port;
+          }
+        ) config.applications
+        // {
+          prowlarr = config.media.prowlarr;
+        };
       images = builtins.mapAttrs (_: image: "${image.repository}:${image.tag}@${image.digest}") {
         inherit (policy.images) configarr node;
       };
@@ -754,6 +758,14 @@
                   {
                     name = "CUSTOM_REPO_ROOT";
                     value = "/app/repos";
+                  }
+                  {
+                    name = "LOG_LEVEL";
+                    value = "warn";
+                  }
+                  {
+                    name = "STOP_ON_ERROR";
+                    value = "true";
                   }
                 ]
                 ++ map (secretEnv secretName) (

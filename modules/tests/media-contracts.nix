@@ -203,6 +203,8 @@
             values = application.helm.releases.${name}.values;
           }
         ) applications;
+      fixtureSabnzbd = renderApplications fixtureCluster fixtureCompute "sabnzbd";
+      fixtureSabnzbdInit = builtins.elemAt (fixtureSabnzbd.sabnzbd.helm.releases.sabnzbd.values.controllers.main.initContainers.config.command) 2;
       fixtureApplications = projectApplications (
         renderApplications fixtureCluster fixtureCompute "radarr"
         // renderApplications fixtureCluster fixtureCompute "sonarr"
@@ -221,27 +223,40 @@
         (config.den.aspects.kubernetes.services.media."k8s-manifests" {
           cluster = targetCluster;
         });
-      mediaBase = builtins.tryEval (mediaManifests fixtureCluster);
-      mediaNoSharing = builtins.tryEval (
-        mediaManifests (
-          fixtureCluster
-          // {
-            settings = lib.recursiveUpdate fixtureCluster.settings {
-              kubernetes.services.media.radarr.uhd.sharedWritablePaths = [ ];
-            };
-          }
-        )
-      );
-      mediaStateCollision = builtins.tryEval (
-        mediaManifests (
-          fixtureCluster
-          // {
-            settings = lib.recursiveUpdate fixtureCluster.settings {
-              kubernetes.services.media.sonarr.anime.state = "radarr-hd";
-            };
-          }
-        )
-      );
+      mediaWith =
+        overrides:
+        builtins.tryEval (
+          mediaManifests (
+            fixtureCluster
+            // {
+              settings = lib.recursiveUpdate fixtureCluster.settings {
+                kubernetes.services.media = overrides;
+              };
+            }
+          )
+        );
+      mediaBase = mediaWith { };
+      mediaNoSharing = mediaWith { radarr.uhd.sharedWritablePaths = [ ]; };
+      mediaStateCollision = mediaWith { sonarr.anime.state = "radarr-hd"; };
+      mediaSecretCollision = mediaWith { sonarr.anime.apiSecretKey = "RADARR_HD_API_KEY"; };
+      mediaCategoryCollision = mediaWith { sonarr.anime.category = "movies-hd"; };
+      mediaRootCollision = mediaWith { radarr.uhd.root = "/data/library/movies/hd"; };
+      mediaNestedRoot = mediaWith { radarr.uhd.root = "/data/library/movies/hd/remux"; };
+      sharedLibrary = [
+        "/data"
+        "/data/library/movies/hd"
+      ];
+      mediaOneSidedSharing = mediaWith {
+        radarr.radarr.sharedWritablePaths = sharedLibrary;
+        radarr.uhd.root = "/data/library/movies/hd";
+      };
+      mediaSharedRoot = mediaWith {
+        radarr.radarr.sharedWritablePaths = sharedLibrary;
+        radarr.uhd = {
+          root = "/data/library/movies/hd";
+          sharedWritablePaths = sharedLibrary;
+        };
+      };
       fixtureRuntimeSecrets =
         let
           resources =
@@ -270,9 +285,16 @@
           applications = fixtureApplications;
           mutatedApplications = fixtureMutatedApplications;
           runtimeSecrets = fixtureRuntimeSecrets;
+          sabnzbdInit = fixtureSabnzbdInit;
           positive = mediaBase.success;
           noSharingRejected = !mediaNoSharing.success;
           stateCollisionRejected = !mediaStateCollision.success;
+          secretCollisionRejected = !mediaSecretCollision.success;
+          categoryCollisionRejected = !mediaCategoryCollision.success;
+          rootCollisionRejected = !mediaRootCollision.success;
+          nestedRootRejected = !mediaNestedRoot.success;
+          oneSidedSharingRejected = !mediaOneSidedSharing.success;
+          explicitRootSharingAccepted = mediaSharedRoot.success;
         }
       );
       python = pkgs.python3.withPackages (ps: [
@@ -341,6 +363,12 @@
             assert fixture["positive"]
             assert fixture["noSharingRejected"]
             assert fixture["stateCollisionRejected"]
+            assert fixture["secretCollisionRejected"]
+            assert fixture["categoryCollisionRejected"]
+            assert fixture["rootCollisionRejected"]
+            assert fixture["nestedRootRejected"]
+            assert fixture["oneSidedSharingRejected"]
+            assert fixture["explicitRootSharingAccepted"]
             assert storage["mediaInstances"] == {"radarr": ["radarr"], "sonarr": ["sonarr"]}
 
             def validate_instance_group(kind, instances):
@@ -469,6 +497,23 @@
                     os.environ.clear()
                     os.environ.update(original)
 
+            with tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                config_path = root / "sabnzbd.ini"
+                data_path = root / "data"
+                data_path.mkdir()
+                run_init(fixture["sabnzbdInit"], config_path, data_path, {
+                    "SABNZBD_API_KEY": "api-key-fixture",
+                    "SABNZBD_USERNAME": "admin-fixture",
+                    "SABNZBD_PASSWORD": "admin-password-fixture",
+                })
+                categories = ConfigObj(str(config_path), encoding="utf-8")["categories"]
+                assert set(categories) == {
+                    instance["category"]
+                    for instances in fixture_instances.values()
+                    for instance in instances.values()
+                }
+
             runtime_values = {
                 "SABNZBD_API_KEY": "api-key-fixture",
                 "SABNZBD_USERNAME": "admin-fixture",
@@ -539,6 +584,7 @@
                 assert removed["servers"]["unmanaged"] == first["servers"]["unmanaged"]
 
             configarr = None
+            configarr_env = None
             prowlarr_script = None
             seed_program = None
             seed_files = None
@@ -561,6 +607,11 @@
                             assert isinstance(container.get("env", []), list), resource["metadata"]["name"]
                         if resource["kind"] == "Job" and resource["metadata"]["name"] == "media-configarr":
                             seed_program = next(c for c in pod["initContainers"] if c["name"] == "seed-policy")["command"][-1]
+                            configarr_container = next(c for c in pod["containers"] if c["name"] == "configarr")
+                            configarr_env = {
+                                entry["name"]: entry.get("value")
+                                for entry in configarr_container["env"]
+                            }
                     if resource and resource["kind"] == "ConfigMap" and resource["metadata"]["name"] == "media-configarr-inputs":
                         seed_files = resource["data"]
                     if (resource and resource["kind"] == "ConfigMap"
@@ -572,6 +623,8 @@
                             assert all(isinstance(instance, dict) and "base_url" in instance
                                        for instance in configarr[kind].values())
             assert configarr is not None and prowlarr_script is not None, "Missing media configuration"
+            assert configarr_env["LOG_LEVEL"] == "warn"
+            assert configarr_env["STOP_ON_ERROR"] == "true"
             # Exercise the actual seed script with POSIX sh: brace expansion silently
             # creates the wrong directories, and an empty template repo still needs HEAD.
             assert seed_program is not None and seed_files is not None

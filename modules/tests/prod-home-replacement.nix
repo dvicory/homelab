@@ -168,6 +168,8 @@
                     };
                   };
 
+                  environment.etc."homelab/compute.json".text = builtins.toJSON descriptor;
+
                   environment.systemPackages = [
                     pkgs.bash
                     pkgs.coreutils
