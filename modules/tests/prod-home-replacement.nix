@@ -28,6 +28,12 @@
             ;
           descriptor = builtins.fromJSON hostConfig.environment.etc."homelab/compute.json".text;
           poolPath = descriptor.poolPath;
+          mergerfs = import ../den/aspects/services/_mergerfs.nix { inherit lib; };
+          cluster = config.den.clusters.prod-home;
+          mediaPoolPath = "${descriptor.devices.media.source}/data";
+          mediaPoolUnit = hostConfig.systemd.services.${mergerfs.serviceNameFor mediaPoolPath};
+          mediaPoolBranches =
+            config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.services.mergerfs.pools.${mediaPoolPath}.branches;
           bridgeAddress = lib.head (lib.splitString "/" descriptor.networkConfig."ipv4.address");
           nftables =
             lib.mapAttrsToList
@@ -54,10 +60,10 @@
               preseedCommand = hostConfig.systemd.services.incus-preseed.serviceConfig.ExecStart;
               preseedPath = lib.makeBinPath hostConfig.systemd.services.incus-preseed.path;
               mediaPool = {
-                start = hostConfig.systemd.services."mergerfs-mnt-srv-media-data".serviceConfig.ExecStart;
-                preStart = hostConfig.systemd.services."mergerfs-mnt-srv-media-data".serviceConfig.ExecStartPre;
-                stop = hostConfig.systemd.services."mergerfs-mnt-srv-media-data".serviceConfig.ExecStop;
-                environment = hostConfig.environment.etc."mergerfs/srv-media-data.conf".text;
+                path = mediaPoolPath;
+                branches = map (branch: branch.path) mediaPoolBranches;
+                start = mediaPoolUnit.serviceConfig.ExecStart;
+                stop = mediaPoolUnit.serviceConfig.ExecStop;
               };
               mediaRootScript = hostConfig.systemd.services.media-namespace.script;
               secretStageScript = hostConfig.systemd.services.compute-stage-secrets.script;

@@ -352,14 +352,9 @@ class Runtime:
         wait_for("staged Secrets at their declared consumers", delivered)
 
     def start_media(self, pool: dict, root_script: str, workspace: Path) -> None:
-        environment = {}
-        for line in pool["environment"].splitlines():
-            name, separator, value = line.partition("=")
-            check(separator and name.isupper(), "media pool environment is explicit")
-            environment[name] = value
-        branches = [Path(branch) for branch in environment["BRANCHES"].split(":")]
+        branches = [Path(branch) for branch in pool["branches"]]
         check(branches, "media pool declares branches")
-        check(Path(environment["MOUNTPOINT"]) == self.media_path, "media pool is below the stable guest attachment")
+        check(Path(pool["path"]) == self.media_path, "media pool is below the stable guest attachment")
         for branch in branches:
             if branch in self.media_branches:
                 continue
@@ -381,10 +376,8 @@ class Runtime:
         run(
             "systemd-run", "--unit", self.media_unit, "--collect",
             "--property=Type=oneshot", "--property=RemainAfterExit=yes",
-            f"--property=ExecStartPre={pool['preStart']}",
             f"--property=ExecStop={pool['stop']}",
             f"--setenv=PATH={os.environ['PATH']}",
-            *(f"--setenv={name}={value}" for name, value in environment.items()),
             *shlex.split(pool["start"]),
         )
         self.media_started = True
@@ -827,7 +820,10 @@ def run_scenario(args: argparse.Namespace) -> None:
     descriptor = json_copy(fixture["descriptor"])
     media_pool = fixture["mediaPool"]
     check(isinstance(fixture["mediaRootScript"], str) and fixture["mediaRootScript"].strip(), "fixture contains the native media-root script")
-    check(all(isinstance(media_pool[key], str) and media_pool[key].strip() for key in ("preStart", "start", "stop", "environment")), "fixture contains native media pool commands")
+    check(all(isinstance(media_pool[key], str) and media_pool[key].strip() for key in ("path", "start", "stop")), "fixture contains native media pool commands")
+    check(isinstance(media_pool["branches"], list) and media_pool["branches"]
+          and all(isinstance(branch, str) and branch.startswith("/") for branch in media_pool["branches"]),
+          "fixture contains native media pool branches")
     ensure_absolute_paths(descriptor)
     pool_path = Path(descriptor["poolPath"])
     pool_mount = run("findmnt", "-n", "-o", "FSTYPE,SOURCE,TARGET", "-M", str(pool_path))
