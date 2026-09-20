@@ -56,6 +56,8 @@
         inherit (policy.images) configarr;
         seerr = config.applications.seerr.helm.releases.seerr.values.controllers.main.containers.main.image;
       };
+      prowlarrSecretKey =
+        config.applications.prowlarr.helm.releases.prowlarr.values.controllers.main.containers.main.env.PROWLARR__AUTH__APIKEY.valueFrom.secretKeyRef.key;
       retained = {
         "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
       };
@@ -321,9 +323,56 @@
             name = "sabnzbd";
             app = apps.sabnzbd;
           };
+          prowlarrRoute = fixedRoute {
+            inherit cluster;
+            name = "prowlarr";
+            app = apps.prowlarr;
+          };
+          prowlarrUrl = endpoint {
+            route = prowlarrRoute;
+            service = apps.prowlarr.service;
+            namespace = apps.prowlarr.namespace;
+            port = apps.prowlarr.port;
+          };
         in
         {
           roots = builtins.toJSON (rootsPolicy cluster);
+          prowlarr = builtins.toJSON {
+            prowlarr = {
+              url = prowlarrUrl;
+              apiSecretKey = prowlarrSecretKey;
+            };
+            applications =
+              lib.concatMap
+                (
+                  kind:
+                  lib.mapAttrsToList (
+                    instanceName: cfg:
+                    let
+                      desired = instancePolicy {
+                        inherit
+                          cluster
+                          kind
+                          instanceName
+                          cfg
+                          ;
+                      };
+                    in
+                    {
+                      name = serviceName kind instanceName;
+                      implementation = if kind == "radarr" then "Radarr" else "Sonarr";
+                      baseUrl = desired.url;
+                      apiSecretKey = cfg.apiSecretKey;
+                      syncLevel = "fullSync";
+                      inherit prowlarrUrl;
+                    }
+                  ) settings.${kind}
+                )
+                [
+                  "radarr"
+                  "sonarr"
+                ];
+          };
           seerr = builtins.toJSON {
             arr = {
               radarr = firstPolicy cluster "radarr" settings.radarr;
@@ -540,6 +589,7 @@
       configurationData = {
         "config.yml" = configarrConfig cluster;
         "roots.json" = generatedPolicy.roots;
+        "prowlarr.json" = generatedPolicy.prowlarr;
         "seerr.json" = generatedPolicy.seerr;
         "trash-guide-revision" = generatedPolicy.trashRevision;
       };
@@ -553,6 +603,36 @@
         ];
         secretName = secretName;
         secretKeys = arrSecretKeys;
+        mounts = [
+          {
+            name = "configuration";
+            mountPath = "/configuration";
+            readOnly = true;
+          }
+          {
+            name = "secrets";
+            mountPath = "/secrets";
+            readOnly = true;
+          }
+        ];
+        volumes = [
+          {
+            name = "configuration";
+            configMap = {
+              name = "media-configuration";
+            };
+          }
+        ];
+      };
+      prowlarrJob = baseJob {
+        name = "media-config-prowlarr";
+        image = images.seerr;
+        command = [
+          "node"
+          "/configuration/prowlarr.mjs"
+        ];
+        secretName = secretName;
+        secretKeys = arrSecretKeys ++ [ prowlarrSecretKey ];
         mounts = [
           {
             name = "configuration";
@@ -768,6 +848,7 @@
           };
           data = configurationData // {
             "roots.mjs" = rootsScript;
+            "prowlarr.mjs" = prowlarrScript;
             "seerr.mjs" = seerrScript;
           };
         }
@@ -832,6 +913,75 @@
           }
         }
         console.log('media roots: declared roots reconciled');
+      '';
+      prowlarrScript = ''
+        import { readFileSync } from 'node:fs';
+        const policy = JSON.parse(readFileSync('/configuration/prowlarr.json', 'utf8'));
+        const secret = name => {
+          const value = readFileSync('/secrets/' + name, 'utf8').replace(/\r?\n$/, "");
+          if (!value.trim()) throw new Error('Empty required Secret key: ' + name);
+          return value;
+        };
+        function api(base, headers = {}) {
+          return async (path, method = 'GET', body) => {
+            let response;
+            try {
+              response = await fetch(base + path, {
+                method,
+                headers: { 'Content-Type': 'application/json', ...headers },
+                body: body === undefined ? undefined : JSON.stringify(body),
+                signal: AbortSignal.timeout(20000),
+                redirect: 'error',
+              });
+            } catch {
+              throw new Error(method + ' ' + path + ': dependency unreachable');
+            }
+            if (!response.ok) throw new Error(method + ' ' + path + ': HTTP ' + response.status);
+            const text = await response.text();
+            try { return text ? JSON.parse(text) : null; }
+            catch { throw new Error(method + ' ' + path + ': invalid JSON response'); }
+          };
+        }
+        function one(items, predicate, label) {
+          const matches = items.filter(predicate);
+          if (matches.length > 1) throw new Error('Ambiguous managed ' + label);
+          return matches[0];
+        }
+        async function configure() {
+          const request = api(policy.prowlarr.url + '/api/v1', { 'X-Api-Key': secret(policy.prowlarr.apiSecretKey) });
+          const applications = await request('/applications');
+          for (const desired of policy.applications) {
+            const existing = one(applications, item => item.name === desired.name, 'Prowlarr application');
+            if (existing && existing.implementation !== desired.implementation) {
+              throw new Error('Prowlarr application ' + desired.name + ' is not a ' + desired.implementation);
+            }
+            const managed = {
+              prowlarrUrl: desired.prowlarrUrl,
+              baseUrl: desired.baseUrl,
+              apiKey: secret(desired.apiSecretKey),
+            };
+            const fields = (existing ? existing.fields : [])
+              .filter(field => !(field.name in managed))
+              .concat(Object.entries(managed).map(([name, value]) => ({ name, value })));
+            const application = {
+              tags: [],
+              ...(existing || {}),
+              name: desired.name,
+              implementation: desired.implementation,
+              configContract: desired.implementation + 'Settings',
+              syncLevel: desired.syncLevel,
+              fields,
+            };
+            await request('/applications' + (existing ? '/' + existing.id : ""), existing ? 'PUT' : 'POST', application);
+          }
+        }
+        try {
+          await configure();
+          console.log('prowlarr: declared Arr applications reconciled');
+        } catch (error) {
+          console.error(error.message);
+          process.exitCode = 1;
+        }
       '';
       seerrScript = ''
         import { readFileSync, existsSync } from 'node:fs';
@@ -959,6 +1109,8 @@
           (cron "media-config-roots" rootJob)
           (hook "media-configarr" 1 configarrJob)
           (cron "media-configarr" configarrJob)
+          (hook "media-config-prowlarr" 1 prowlarrJob)
+          (cron "media-config-prowlarr" prowlarrJob)
           (hook "media-config-seerr" 2 seerrJob)
           (cron "media-config-seerr" seerrJob)
         ];

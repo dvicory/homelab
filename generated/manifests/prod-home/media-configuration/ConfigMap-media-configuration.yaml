@@ -1,6 +1,75 @@
 apiVersion: v1
 data:
   config.yml: "# Configarr v1.30.2: the Git URLs intentionally point at detached local\n# repositories seeded from the selected TRaSH revision before each run.\ntrashGuideUrl: \"file:///app/repos/trash-guides\"\ntrashRevision: HEAD\nrecyclarrConfigUrl: \"file:///app/repos/recyclarr-config\"\nrecyclarrRevision: HEAD\nlocalConfigTemplatesPath: \"/app/templates\"\ntelemetry: false\nsonarr:\n  \"sonarr\":\n    base_url: \"http://sonarr.media.svc:8989\"\n    api_key: !env SONARR_API_KEY\n    quality_definition:\n      type: series\n    include:\n      - template: \"media-sonarr-sonarr\"\n    download_clients:\n      update_password: true\n      data:\n        - name: \"SABnzbd (Homelab)\"\n          type: \"Sabnzbd\"\n          enable: true\n          priority: 1\n          remove_completed_downloads: true\n          remove_failed_downloads: true\n          fields:\n            host: \"sabnzbd.media.svc\"\n            port: 8080\n            use_ssl: false\n            url_base: \"\"\n            api_key: !env SABNZBD_API_KEY\n            username: !env SABNZBD_USERNAME\n            password: !env SABNZBD_PASSWORD\n            tv_category: \"tv\"\n  \nradarr:\n  \"radarr\":\n    base_url: \"http://radarr.media.svc:7878\"\n    api_key: !env RADARR_API_KEY\n    quality_definition:\n      type: movie\n    include:\n      - template: \"media-radarr-radarr\"\n    download_clients:\n      update_password: true\n      data:\n        - name: \"SABnzbd (Homelab)\"\n          type: \"Sabnzbd\"\n          enable: true\n          priority: 1\n          remove_completed_downloads: true\n          remove_failed_downloads: true\n          fields:\n            host: \"sabnzbd.media.svc\"\n            port: 8080\n            use_ssl: false\n            url_base: \"\"\n            api_key: !env SABNZBD_API_KEY\n            username: !env SABNZBD_USERNAME\n            password: !env SABNZBD_PASSWORD\n            movie_category: \"movies\"\n  \n"
+  prowlarr.json: '{"applications":[{"apiSecretKey":"RADARR_API_KEY","baseUrl":"http://radarr.media.svc:7878","implementation":"Radarr","name":"radarr","prowlarrUrl":"http://prowlarr.media.svc:9696","syncLevel":"fullSync"},{"apiSecretKey":"SONARR_API_KEY","baseUrl":"http://sonarr.media.svc:8989","implementation":"Sonarr","name":"sonarr","prowlarrUrl":"http://prowlarr.media.svc:9696","syncLevel":"fullSync"}],"prowlarr":{"apiSecretKey":"PROWLARR_API_KEY","url":"http://prowlarr.media.svc:9696"}}'
+  prowlarr.mjs: |
+    import { readFileSync } from 'node:fs';
+    const policy = JSON.parse(readFileSync('/configuration/prowlarr.json', 'utf8'));
+    const secret = name => {
+      const value = readFileSync('/secrets/' + name, 'utf8').replace(/\r?\n$/, "");
+      if (!value.trim()) throw new Error('Empty required Secret key: ' + name);
+      return value;
+    };
+    function api(base, headers = {}) {
+      return async (path, method = 'GET', body) => {
+        let response;
+        try {
+          response = await fetch(base + path, {
+            method,
+            headers: { 'Content-Type': 'application/json', ...headers },
+            body: body === undefined ? undefined : JSON.stringify(body),
+            signal: AbortSignal.timeout(20000),
+            redirect: 'error',
+          });
+        } catch {
+          throw new Error(method + ' ' + path + ': dependency unreachable');
+        }
+        if (!response.ok) throw new Error(method + ' ' + path + ': HTTP ' + response.status);
+        const text = await response.text();
+        try { return text ? JSON.parse(text) : null; }
+        catch { throw new Error(method + ' ' + path + ': invalid JSON response'); }
+      };
+    }
+    function one(items, predicate, label) {
+      const matches = items.filter(predicate);
+      if (matches.length > 1) throw new Error('Ambiguous managed ' + label);
+      return matches[0];
+    }
+    async function configure() {
+      const request = api(policy.prowlarr.url + '/api/v1', { 'X-Api-Key': secret(policy.prowlarr.apiSecretKey) });
+      const applications = await request('/applications');
+      for (const desired of policy.applications) {
+        const existing = one(applications, item => item.name === desired.name, 'Prowlarr application');
+        if (existing && existing.implementation !== desired.implementation) {
+          throw new Error('Prowlarr application ' + desired.name + ' is not a ' + desired.implementation);
+        }
+        const managed = {
+          prowlarrUrl: desired.prowlarrUrl,
+          baseUrl: desired.baseUrl,
+          apiKey: secret(desired.apiSecretKey),
+        };
+        const fields = (existing ? existing.fields : [])
+          .filter(field => !(field.name in managed))
+          .concat(Object.entries(managed).map(([name, value]) => ({ name, value })));
+        const application = {
+          tags: [],
+          ...(existing || {}),
+          name: desired.name,
+          implementation: desired.implementation,
+          configContract: desired.implementation + 'Settings',
+          syncLevel: desired.syncLevel,
+          fields,
+        };
+        await request('/applications' + (existing ? '/' + existing.id : ""), existing ? 'PUT' : 'POST', application);
+      }
+    }
+    try {
+      await configure();
+      console.log('prowlarr: declared Arr applications reconciled');
+    } catch (error) {
+      console.error(error.message);
+      process.exitCode = 1;
+    }
   roots.json: '{"arr":{"radarr":{"radarr":{"apiSecretKey":"RADARR_API_KEY","category":"movies","externalUrl":"https://radarr.plus2.danielvicory.dev","profile":"WEB-1080p","root":"/data/library/movies","url":"http://radarr.media.svc:7878"}},"sonarr":{"sonarr":{"apiSecretKey":"SONARR_API_KEY","category":"tv","externalUrl":"https://sonarr.plus2.danielvicory.dev","profile":"WEB-1080p","root":"/data/library/tv","url":"http://sonarr.media.svc:8989"}}}}'
   roots.mjs: |
     import { readFileSync } from 'node:fs';
