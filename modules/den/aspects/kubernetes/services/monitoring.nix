@@ -131,6 +131,7 @@
       applications = {
         monitoring-retained = {
           namespace = "monitoring";
+          retained = true;
           objects = [
             {
               apiVersion = "v1";

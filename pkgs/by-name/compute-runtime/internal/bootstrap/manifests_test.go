@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 )
@@ -38,17 +37,5 @@ func TestReportTreatsMissingResourceAsUnavailable(t *testing.T) {
 	}
 	if unavailable != 1 || !strings.Contains(output.String(), "MISSING Deployment system/controller") {
 		t.Fatalf("unavailable=%d output=%q", unavailable, output.String())
-	}
-}
-
-func TestSecretNamespacesRejectsAnyMissingNamespace(t *testing.T) {
-	valid := []byte("{\"kind\":\"Secret\",\"metadata\":{\"namespace\":\"jellyfin\"}}\n{\"kind\":\"Secret\",\"metadata\":{\"namespace\":\"identity\"}}\n")
-	namespaces, err := secretNamespacesFromJSON(valid)
-	if err != nil || !reflect.DeepEqual(namespaces, []string{"identity", "jellyfin"}) {
-		t.Fatalf("namespaces=%v err=%v", namespaces, err)
-	}
-	missing := []byte("{\"kind\":\"Secret\",\"metadata\":{\"namespace\":\"jellyfin\"}}\n{\"kind\":\"Secret\",\"metadata\":{}}\n")
-	if _, err := secretNamespacesFromJSON(missing); err == nil {
-		t.Fatal("accepted a staged Secret without an explicit namespace")
 	}
 }

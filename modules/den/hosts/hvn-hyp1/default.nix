@@ -7,6 +7,7 @@
 }:
 let
   clusterResources = config.flake.clusterResources.prod-home;
+  mediaRoot = "/srv/media";
 in
 {
   den.hosts.x86_64-linux.hvn-hyp1 = {
@@ -63,11 +64,11 @@ in
             host_name = "veth-comp-1";
           };
           media = {
-            path = "/srv/media";
+            path = mediaRoot;
             propagation = "rslave";
             recursive = "true";
             required = "false";
-            source = "/srv/media";
+            source = mediaRoot;
             type = "disk";
           };
           identity = {
@@ -80,12 +81,12 @@ in
         };
       };
       services.storage-roots.roots.media = {
-        path = "/srv/media";
+        path = mediaRoot;
         user = "root";
         group = "media";
         mode = "2770";
       };
-      services.mergerfs.pools."/srv/media/data".branches = [
+      services.mergerfs.pools."${mediaRoot}/data".branches = [
         {
           path = "/mnt/storage-clear/media1";
           unit = "gocryptfs-media1.service";

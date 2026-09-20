@@ -56,6 +56,7 @@ in
     {
       applications.jellyfin-retained = {
         namespace = "jellyfin";
+        retained = true;
         resources = {
           namespaces.jellyfin.metadata.annotations = retain;
           persistentVolumes.jellyfin-config = {

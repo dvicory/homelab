@@ -109,6 +109,7 @@ in
     {
       applications.sabnzbd-storage = {
         namespace = app.namespace;
+        retained = true;
         objects = mkStorage compute "sabnzbd" "5Gi";
       };
       applications.sabnzbd = {

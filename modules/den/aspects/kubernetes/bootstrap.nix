@@ -1,4 +1,4 @@
-{ self, lib, ... }:
+{ lib, ... }:
 {
   perSystem =
     {
@@ -54,14 +54,12 @@
       }
       // lib.optionalAttrs (lib.hasSuffix "-linux" system) (
         let
-          image = self.packages.${system}.kanidm-provision-image;
           hostBootstrap =
             pkgs.runCommand "household-bootstrap-host" { nativeBuildInputs = [ pkgs.makeWrapper ]; }
               ''
                 mkdir -p "$out/bin"
                 makeWrapper ${runtime}/bin/household-bootstrap-host "$out/bin/household-bootstrap-host" \
                   --set-default HOUSEHOLD_BOOTSTRAP_MANIFESTS ${manifests} \
-                  --set-default HOUSEHOLD_KANIDM_IMAGE ${image} \
                   --set-default HOUSEHOLD_BOOTSTRAP_BIN ${bootstrap}/bin/household-bootstrap
               '';
         in
@@ -71,10 +69,6 @@
             {
               name = "manifests";
               path = manifests;
-            }
-            {
-              name = "images/kanidm-provision.tar";
-              path = image;
             }
             {
               name = "bin/household-bootstrap";

@@ -58,9 +58,15 @@
           script = ''
             # Reconcile source-owned keys after application bootstrap edits;
             # server-side apply preserves undeclared application-owned keys.
-            ${config.services.k3s.package}/bin/k3s kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml \
+            if ${config.services.k3s.package}/bin/k3s kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml \
               apply --server-side --force-conflicts --field-manager=homelab-runtime-secrets \
-              -f /srv/secrets/runtime-secrets.yaml
+              -f /srv/secrets/runtime-secrets.yaml >/dev/null 2>&1; then
+              echo "Declared runtime Secrets reconciled."
+            else
+              status=$?
+              echo "Runtime Secret reconciliation failed (exit $status); native output suppressed." >&2
+              exit "$status"
+            fi
           '';
         };
         systemd.paths.kubernetes-runtime-secrets = {

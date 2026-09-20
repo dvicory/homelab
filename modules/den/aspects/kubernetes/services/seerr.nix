@@ -39,6 +39,7 @@ in
     {
       applications.seerr-storage = {
         namespace = app.namespace;
+        retained = true;
         objects = mkStorage compute "seerr" "5Gi";
       };
       applications.seerr = {

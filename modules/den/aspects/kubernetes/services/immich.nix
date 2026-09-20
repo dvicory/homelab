@@ -137,6 +137,7 @@
       {
         applications.immich-storage = {
           inherit namespace;
+          retained = true;
           objects = [
             {
               apiVersion = "v1";

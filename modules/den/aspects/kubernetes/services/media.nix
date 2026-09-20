@@ -64,6 +64,7 @@ in
         };
         applications.media-storage = {
           namespace = "media";
+          retained = true;
           objects = [
             {
               apiVersion = "v1";

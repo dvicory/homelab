@@ -289,45 +289,6 @@ func selectedJob(ctx context.Context, tools *Tools, manifests Manifests, namespa
 	return tools.RunYQEnv(ctx, map[string]string{"namespace": namespace, "name": name}, "-o=yaml", "-N", "select(.kind == \"Job\" and (.metadata.namespace // \"default\") == strenv(namespace) and .metadata.name == strenv(name))", manifests.file("jobs.yaml"))
 }
 
-func SecretNamespaces(ctx context.Context, tools *Tools, input []byte) ([]string, error) {
-	output, err := tools.RunYQInput(ctx, input, "-o=json", "-N", ".", "-")
-	if err != nil {
-		return nil, errors.New("unable to inspect staged Secrets")
-	}
-	return secretNamespacesFromJSON(output)
-}
-
-func secretNamespacesFromJSON(input []byte) ([]string, error) {
-	decoder := jsonDecoder(input)
-	seen := make(map[string]struct{})
-	count := 0
-	for {
-		var object map[string]any
-		err := decoder.Decode(&object)
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil || object == nil || stringField(object, "kind") != "Secret" {
-			return nil, errors.New("staged runtime manifest contains a non-Secret object")
-		}
-		namespace := strings.TrimSpace(stringField(mapField(object, "metadata"), "namespace"))
-		if namespace == "" {
-			return nil, errors.New("staged Secret without a namespace")
-		}
-		seen[namespace] = struct{}{}
-		count++
-	}
-	if count == 0 {
-		return nil, errors.New("staged runtime manifest contains no Secrets")
-	}
-	namespaces := make([]string, 0, len(seen))
-	for namespace := range seen {
-		namespaces = append(namespaces, namespace)
-	}
-	sort.Strings(namespaces)
-	return namespaces, nil
-}
-
 func DeclaredNodes(ctx context.Context, tools *Tools, manifests Manifests) ([]string, error) {
 	var values []string
 	for _, expression := range []string{

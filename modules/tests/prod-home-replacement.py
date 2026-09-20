@@ -352,14 +352,9 @@ class Runtime:
         wait_for("staged Secrets at their declared consumers", delivered)
 
     def start_media(self, pool: dict, root_script: str, workspace: Path) -> None:
-        environment = {}
-        for line in pool["environment"].splitlines():
-            name, separator, value = line.partition("=")
-            check(separator and name.isupper(), "media pool environment is explicit")
-            environment[name] = value
-        branches = [Path(branch) for branch in environment["BRANCHES"].split(":")]
+        branches = [Path(branch) for branch in pool["branches"]]
         check(branches, "media pool declares branches")
-        check(Path(environment["MOUNTPOINT"]) == self.media_path, "media pool is below the stable guest attachment")
+        check(Path(pool["path"]) == self.media_path, "media pool is below the stable guest attachment")
         for branch in branches:
             if branch in self.media_branches:
                 continue
@@ -381,10 +376,8 @@ class Runtime:
         run(
             "systemd-run", "--unit", self.media_unit, "--collect",
             "--property=Type=oneshot", "--property=RemainAfterExit=yes",
-            f"--property=ExecStartPre={pool['preStart']}",
             f"--property=ExecStop={pool['stop']}",
             f"--setenv=PATH={os.environ['PATH']}",
-            *(f"--setenv={name}={value}" for name, value in environment.items()),
             *shlex.split(pool["start"]),
         )
         self.media_started = True
@@ -482,6 +475,7 @@ def load_nftables(runtime: Runtime, tables: list[dict]) -> None:
 ROOT_APP = "recovery-test-apps"
 CHILD_APPS = ("jellyfin", "jellyfin-retained")
 SYNC_TIMEOUT = 1500
+ROOT_FAILURE_TIMEOUT = 600
 
 
 def rewrite_text(path: Path, replacements: dict[str, str]) -> None:
@@ -496,8 +490,9 @@ class GitOrigin:
     """Disposable Git origin fixture standing in for the canonical Git remote.
 
     The repository holds verbatim canonical manifests; only the child
-    Application repository URLs/paths and the test-local root Application are
-    written at runtime. Argo speaks the real Git protocol to this origin.
+    Application repository URLs/paths are rewritten at runtime. The root
+    Application lives in the static seed, as in production, and is not
+    managed from Git. Argo speaks the real Git protocol to this origin.
     """
 
     def __init__(self, parent: Path, address: str):
@@ -507,7 +502,7 @@ class GitOrigin:
         self.process: subprocess.Popen | None = None
         self.work: Path | None = None
         self.bare: Path | None = None
-    def publish(self, repo: Path) -> Path:
+    def publish(self, repo: Path) -> None:
         work = self.parent / "work"
         if work.exists():
             shutil.rmtree(work)
@@ -517,28 +512,6 @@ class GitOrigin:
                 "repoURL: https://github.com/dvicory/homelab.git": f"repoURL: {self.url}",
                 f"path: ./generated/manifests/prod-home/{child}": f"path: ./{child}",
             })
-        (work / "apps" / f"Application-{ROOT_APP}.yaml").write_text(
-            "apiVersion: argoproj.io/v1alpha1\n"
-            "kind: Application\n"
-            "metadata:\n"
-            f"  name: {ROOT_APP}\n"
-            "  namespace: argocd\n"
-            "spec:\n"
-            "  destination:\n"
-            "    namespace: argocd\n"
-            "    server: https://kubernetes.default.svc\n"
-            "  project: default\n"
-            "  source:\n"
-            f"    repoURL: {self.url}\n"
-            "    targetRevision: main\n"
-            "    path: ./apps\n"
-            "  syncPolicy:\n"
-            "    automated:\n"
-            "      prune: true\n"
-            "      selfHeal: true\n"
-            "    syncOptions:\n"
-            "      - ServerSideApply=true\n"
-        )
         git = ["git", "-C", str(work)]
         run(*git, "init", "-b", "main")
         run(*git, "-c", "user.email=recovery@test", "-c", "user.name=recovery", "add", "-A")
@@ -549,7 +522,13 @@ class GitOrigin:
         run("git", "clone", "--bare", "--", str(work), str(bare))
         self.work = work
         self.bare = bare
-        return work / "apps" / f"Application-{ROOT_APP}.yaml"
+
+    def reachable(self) -> bool:
+        try:
+            with socket.create_connection((self.address, 9418), timeout=2):
+                return True
+        except OSError:
+            return False
 
     def serve(self) -> None:
         check(self.process is None or self.process.poll() is not None, "git origin is not already serving")
@@ -662,6 +641,40 @@ def wait_argo_synced(kubeconfig: Path, names: tuple[str, ...], timeout: int = SY
     wait_for(f"Argo reconciliation of {', '.join(names)}", synced, timeout=timeout)
 
 
+def wait_argo_source_failure(kubeconfig: Path, name: str, repo_url: str, timeout: int = ROOT_FAILURE_TIMEOUT) -> None:
+    """Wait until Argo has observed and failed a reconciliation of `name` against `repo_url`."""
+    def application() -> dict:
+        return json.loads(kubectl_outer(kubeconfig, "get", "application", name, "-n", "argocd", "-o", "json"))
+    check(application()["spec"]["source"]["repoURL"] == repo_url, f"{name} points at the fixture Git origin {repo_url}")
+    last_status = {}
+    def failed() -> bool:
+        status = application().get("status", {})
+        conditions = status.get("conditions", [])
+        summary = {
+            "sync": status.get("sync", {}).get("status", "Unknown"),
+            "reconciledAt": status.get("reconciledAt", ""),
+            "operation": status.get("operationState", {}).get("message", ""),
+            "conditions": conditions,
+        }
+        if last_status.get(name) != summary:
+            print(f"ARGO {name}: {json.dumps(summary)}", flush=True)
+            last_status[name] = summary
+        comparison_errors = [
+            condition for condition in conditions
+            if condition.get("type") == "ComparisonError" and repo_url in condition.get("message", "")
+        ]
+        if comparison_errors:
+            return True
+        operation = status.get("operationState", {})
+        return (
+            summary["sync"] == "Unknown"
+            and bool(summary["reconciledAt"])
+            and operation.get("phase") in ("Error", "Failed")
+            and repo_url in operation.get("message", "")
+        )
+    wait_for(f"observed failed Argo reconciliation of {name} against {repo_url}", failed, timeout=timeout)
+
+
 def forward_start(runtime: Runtime, kubeconfig: Path) -> str:
     """Forward the canonical ClusterIP service to fixture-host loopback.
 
@@ -698,13 +711,12 @@ def seed_and_handoff(runtime: Runtime, args: argparse.Namespace, workspace: Path
     """
     kubeconfig = fetch_kubeconfig(runtime, workspace)
     run_bootstrap_host(args.bootstrap_host, runtime, kubeconfig, args.seed)
-    # Bisect point: if these are absent here, the shipped secret apply is
-    # broken; if present here but gone later, something in Argo sync removes
-    # them. Bounded to Secret identities so it stays readable on failure.
+    # The host handoff must wait for the guest's runtime Secret writer.
+    # Report only identities here; synthetic value checks run separately.
     seeding = runtime.kubectl_json("get", "secrets", "-A", "-o", "json")["items"]
     want = {(entry["namespace"], entry["name"]) for entry in runtime.descriptor["runtimeSecrets"].values()}
     have = {(item["metadata"]["namespace"], item["metadata"]["name"]) for item in seeding}
-    check(want <= have, f"shipped bootstrap applies all staged Secrets (missing: {sorted(want - have)})")
+    check(want <= have, f"shipped bootstrap waits for all declared Secrets (missing: {sorted(want - have)})")
     return kubeconfig
 
 
@@ -807,7 +819,10 @@ def run_scenario(args: argparse.Namespace) -> None:
     descriptor = json_copy(fixture["descriptor"])
     media_pool = fixture["mediaPool"]
     check(isinstance(fixture["mediaRootScript"], str) and fixture["mediaRootScript"].strip(), "fixture contains the native media-root script")
-    check(all(isinstance(media_pool[key], str) and media_pool[key].strip() for key in ("preStart", "start", "stop", "environment")), "fixture contains native media pool commands")
+    check(all(isinstance(media_pool[key], str) and media_pool[key].strip() for key in ("path", "start", "stop")), "fixture contains native media pool commands")
+    check(isinstance(media_pool["branches"], list) and media_pool["branches"]
+          and all(isinstance(branch, str) and branch.startswith("/") for branch in media_pool["branches"]),
+          "fixture contains native media pool branches")
     ensure_absolute_paths(descriptor)
     pool_path = Path(descriptor["poolPath"])
     pool_mount = run("findmnt", "-n", "-o", "FSTYPE,SOURCE,TARGET", "-M", str(pool_path))
@@ -1017,15 +1032,19 @@ def run_scenario(args: argparse.Namespace) -> None:
                           f"{name} retains data with the declared mapped owner")
                     written.unlink()
             origin = GitOrigin(workspace / "origin", fixture["bridgeAddress"])
-            root_app = origin.publish(args.repo)
+            origin.publish(args.repo)
             runtime.git_origin = origin
             with phase("static-bootstrap-and-root-handoff-without-git"):
+                check(not origin.reachable(), f"fixture Git origin {origin.address}:9418 refuses connections before it is served")
                 kubeconfig = seed_and_handoff(runtime, args, workspace)
                 check(not kubectl_absent(kubeconfig, "application", ROOT_APP, "argocd"), "root Application is applied after the static seed")
-                check(all(kubectl_absent(kubeconfig, "application", name, "argocd") for name in CHILD_APPS), "static seed does not apply child Applications without Git")
+                wait_argo_source_failure(kubeconfig, ROOT_APP, origin.url)
+                check(not origin.reachable(), f"fixture Git origin {origin.address}:9418 still refuses connections after the failed reconciliation")
+                check(all(kubectl_absent(kubeconfig, "application", name, "argocd") for name in CHILD_APPS), "root Application produces no child Applications while Git is unreachable")
             origin.serve()
             with phase("first-git-reconciliation"):
                 wait_stack(runtime, kubeconfig)
+                check(not any(kubectl_absent(kubeconfig, "application", name, "argocd") for name in CHILD_APPS), "the same root Application produces the child Applications once Git is served")
             runtime.verify_secret_consumers(secret_values)
             check(runtime.app_ready(), "Argo delivers Jellyfin when the intended media source is present")
             base = forward_start(runtime, kubeconfig)
@@ -1120,28 +1139,29 @@ def run_scenario(args: argparse.Namespace) -> None:
                 runtime.incus("config", "unset", instance_name, "user.homelab.unsafe-drift")
             check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid, "unsafe instance drift does not trigger replacement")
 
-            # Observe the existing Jellyfin container and a small writer using
-            # the canonical Arr hostPath/mount, before restarting either pod.
+            # Exercise the declared guest media boundary with a disposable writer;
+            # recovery of the Jellyfin slice must not require an Arr deployment.
             jellyfin_pod = runtime.kubectl_json(
                 "get", "pods", "-l", "app.kubernetes.io/name=jellyfin", "-o", "json",
                 namespace="jellyfin")["items"][0]
-            writer_template = json.loads(run("yq", "-o=json", str(args.repo / "writer-fixture.yaml")))["spec"]["template"]["spec"]
-            writer_container = writer_template["containers"][0]
             writer = {
                 "apiVersion": "v1", "kind": "Pod",
                 "metadata": {"name": "media-writer-probe", "namespace": "jellyfin"},
                 "spec": {
                     "automountServiceAccountToken": False,
                     "restartPolicy": "Never",
-                    "nodeSelector": writer_template["nodeSelector"],
+                    "nodeSelector": jellyfin_pod["spec"]["nodeSelector"],
                     "securityContext": jellyfin_pod["spec"]["securityContext"],
                     "containers": [{
                         "name": "writer", "image": jellyfin_pod["spec"]["containers"][0]["image"],
                         "command": ["sh", "-ec", "sleep infinity"],
                         "securityContext": {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]}},
-                        "volumeMounts": [mount for mount in writer_container["volumeMounts"] if mount["name"] == "data"],
+                        "volumeMounts": [{"name": "data", "mountPath": "/data"}],
                     }],
-                    "volumes": [volume for volume in writer_template["volumes"] if volume["name"] == "data"],
+                    "volumes": [{"name": "data", "hostPath": {
+                        "path": str(Path(descriptor["devices"]["media"]["path"]) / "data"),
+                        "type": "Directory",
+                    }}],
                 },
             }
             writer_file = workspace / "media-writer.json"
@@ -1270,10 +1290,15 @@ def run_scenario(args: argparse.Namespace) -> None:
                     lambda: kubectl_absent(kubeconfig, "deployment", "jellyfin", "jellyfin"),
                     timeout=600,
                 )
-                check(not kubectl_absent(kubeconfig, "namespace", "jellyfin", ""), "retained namespace survives application retirement")
-                check(not kubectl_absent(kubeconfig, "persistentvolume", "jellyfin-config", ""), "retained PV survives application retirement")
-                check(not kubectl_absent(kubeconfig, "persistentvolumeclaim", "jellyfin-config", "jellyfin"), "retained PVC survives application retirement")
-                check(marker.read_text() == "retained-state\n", "retained application data survives resource retirement")
+                # This proves Argo honored Delete=false on the retained
+                # objects and that the host retained path kept its data. It
+                # does not exercise PV reclaim: the marker is read from the
+                # host path and would survive even if the PV object were gone,
+                # so the object existence checks below are the Argo evidence.
+                check(not kubectl_absent(kubeconfig, "namespace", "jellyfin", ""), "Argo Delete=false leaves the retained Namespace object in place after application retirement")
+                check(not kubectl_absent(kubeconfig, "persistentvolume", "jellyfin-config", ""), "Argo Delete=false leaves the retained PersistentVolume object in place after application retirement")
+                check(not kubectl_absent(kubeconfig, "persistentvolumeclaim", "jellyfin-config", "jellyfin"), "Argo Delete=false leaves the retained PersistentVolumeClaim object in place after application retirement")
+                check(marker.read_text() == "retained-state\n", "host retained path keeps Jellyfin data through application retirement")
         finally:
             if sys.exc_info()[0] is not None and runtime.created_instance:
                 diagnostics = completed("journalctl", "-k", "-n", "80", "--no-pager")

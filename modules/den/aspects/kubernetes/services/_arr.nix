@@ -273,6 +273,7 @@ in
         applications = mkArrApplications kind { inherit cluster compute charts; } // {
           "${kind}-storage" = {
             namespace = "media";
+            retained = true;
             objects = lib.concatMap (cfg: mkStorage compute cfg.state "5Gi") (
               builtins.attrValues cluster.settings.kubernetes.services.media.${kind}
             );

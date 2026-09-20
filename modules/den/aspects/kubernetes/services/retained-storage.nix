@@ -64,12 +64,7 @@ in
       applications.retained-storage = {
         inherit namespace;
         createNamespace = false;
-        finalizer = "non-cascading";
-        syncPolicy.autoSync = {
-          enable = true;
-          prune = false;
-          selfHeal = true;
-        };
+        retained = true;
         objects = [
           {
             apiVersion = "v1";

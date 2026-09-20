@@ -104,6 +104,9 @@
             import os
             import yaml
 
+            # CRD enums may contain bare "="; PyYAML tags it but supplies no scalar constructor.
+            yaml.SafeLoader.add_constructor("tag:yaml.org,2002:value", yaml.SafeLoader.construct_scalar)
+
             def check(condition, path, message):
                 if not condition:
                     print(f"{path}: {message}")
@@ -118,6 +121,7 @@
             files = sorted((root / "apps").glob("Application-*.yaml"))
             check(bool(files), root, "no generated Argo applications found")
             seen = set()
+            owners = {}
             for path in files:
                 with path.open() as handle:
                     resource = yaml.safe_load(handle)
@@ -127,7 +131,10 @@
                 check(source["targetRevision"] == expected_revision, path, f"unexpected revision {source['targetRevision']}")
                 check(source["path"].startswith(expected_prefix), path, f"unexpected path {source['path']}")
                 relative = source["path"][len(expected_prefix):]
-                check(bool(relative) and ".." not in Path(relative).parts, path, f"unsafe path {source['path']}")
+                check(bool(relative) and not Path(relative).is_absolute()
+                      and ".." not in Path(relative).parts and relative != "."
+                      and Path(relative).as_posix() == relative, path, f"unsafe path {source['path']}")
+                check(relative not in seen, path, f"multiple Applications own source directory {relative}")
                 check((root / relative).is_dir(), path, f"missing directory {relative}")
                 finalizers = resource.get("metadata", {}).get("finalizers", [])
                 prune = resource["spec"]["syncPolicy"]["automated"]["prune"]
@@ -135,11 +142,22 @@
                     check(finalizers == ["resources-finalizer.argocd.argoproj.io"], path, f"unexpected finalizers {finalizers}")
                 else:
                     check(prune is False, path, "non-cascading application must disable pruning")
-                    for manifest in sorted((root / relative).glob("*.yaml")):
-                        for obj in yaml.safe_load_all(manifest.read_text()):
-                            annotations = (obj or {}).get("metadata", {}).get("annotations", {})
-                            options = annotations.get("argocd.argoproj.io/sync-options", "")
-                            check("Delete=false" in options.split(","), manifest, "non-cascading resource must be protected from deletion")
+                for manifest in sorted((root / relative).glob("*.yaml")):
+                    for obj in yaml.safe_load_all(manifest.read_text()):
+                        if obj is None:
+                            continue
+                        check(isinstance(obj, dict), manifest, "expected a Kubernetes object")
+                        metadata = obj.get("metadata", {})
+                        identity = (obj.get("apiVersion"), obj.get("kind"), metadata.get("namespace", ""), metadata.get("name"))
+                        check(all(isinstance(part, str) and part for part in (identity[0], identity[1], identity[3])),
+                              manifest, "object lacks apiVersion, kind or metadata.name")
+                        check(identity not in owners, manifest, f"duplicate object {identity}; already owned by {owners.get(identity)}")
+                        owners[identity] = path.name
+                        options = metadata.get("annotations", {}).get("argocd.argoproj.io/sync-options", "").split(",")
+                        if "Delete=false" in options:
+                            check(not finalizers and prune is False, manifest, "Delete=false resource requires a retained Application")
+                        if not finalizers:
+                            check("Delete=false" in options, manifest, "non-cascading resource must be protected from deletion")
                 seen.add(relative)
 
             bootstrap = yaml.safe_load((root / "bootstrap.yaml").read_text())

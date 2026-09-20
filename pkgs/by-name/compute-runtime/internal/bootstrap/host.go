@@ -31,10 +31,11 @@ The command never creates/deletes guests, publishes Git, changes host configurat
 var safeName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 type descriptor struct {
-	Project  string
-	Instance string
-	Address  string
-	Path     string
+	Project        string
+	Instance       string
+	Address        string
+	Path           string
+	RuntimeSecrets []runtimeSecret
 }
 
 func RunHost(ctx context.Context, args []string, out, errOut io.Writer) (result error) {
@@ -80,14 +81,6 @@ func RunHost(ctx context.Context, args []string, out, errOut io.Writer) (result 
 	}
 	if err := manifests.require("namespaces.yaml", "controllers.yaml", "root.yaml"); err != nil {
 		return err
-	}
-	imagePath := strings.TrimSpace(os.Getenv("HOUSEHOLD_KANIDM_IMAGE"))
-	if imagePath == "" {
-		return errors.New("HOUSEHOLD_KANIDM_IMAGE is required")
-	}
-	imageInfo, err := os.Stat(imagePath)
-	if err != nil || !imageInfo.Mode().IsRegular() {
-		return fmt.Errorf("pinned Kanidm image is unavailable: %s", imagePath)
 	}
 	bootstrapPath := strings.TrimSpace(os.Getenv("HOUSEHOLD_BOOTSTRAP_BIN"))
 	if bootstrapPath == "" {
@@ -148,18 +141,8 @@ func RunHost(ctx context.Context, args []string, out, errOut io.Writer) (result 
 		return err
 	}
 
-	remoteImage := fmt.Sprintf("/tmp/household-kanidm-provision-%d.tar", os.Getpid())
-	imageStaged := false
 	var runErr error
 	defer func() {
-		if imageStaged {
-			cleanupErr := projectServer.DeleteInstanceFile(descriptor.Instance, remoteImage)
-			if cleanupErr != nil && result == nil {
-				result = fmt.Errorf("unable to remove temporary guest image: %w", cleanupErr)
-			} else if cleanupErr != nil {
-				fmt.Fprintf(errOut, "household-bootstrap-host: warning: unable to remove temporary guest image: %v\n", cleanupErr)
-			}
-		}
 		if cleanupErr := os.RemoveAll(tmp); cleanupErr != nil && result == nil {
 			result = fmt.Errorf("unable to remove temporary files: %w", cleanupErr)
 		}
@@ -175,52 +158,18 @@ func RunHost(ctx context.Context, args []string, out, errOut io.Writer) (result 
 	if runErr = tools.CheckArgo(ctx); runErr != nil {
 		return runErr
 	}
-	if runErr = ensureStagedSecrets(ctx, projectServer, descriptor); runErr != nil {
-		return runErr
-	}
 
-	fmt.Fprintf(out, "Importing the pinned Kanidm provisioning image into %s/%s.\n", descriptor.Project, descriptor.Instance)
-	image, openErr := os.Open(imagePath)
-	if openErr != nil {
-		return fmt.Errorf("cannot open pinned Kanidm image: %w", openErr)
-	}
-	imageStaged = true
-	// Hide Close from net/http; this function owns the file.
-	fileErr := projectServer.CreateInstanceFile(descriptor.Instance, remoteImage, incus.InstanceFileArgs{
-		Content:   struct{ io.ReadSeeker }{image},
-		UID:       -1,
-		GID:       -1,
-		Mode:      -1,
-		Type:      "file",
-		WriteMode: "overwrite",
-	})
-	closeErr := image.Close()
-	if fileErr != nil {
-		return fmt.Errorf("cannot stage pinned Kanidm image in guest: %w", fileErr)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("cannot close pinned Kanidm image: %w", closeErr)
-	}
-	if runErr = execGuestImport(ctx, projectServer, descriptor.Instance, remoteImage, out, errOut); runErr != nil {
-		return runErr
-	}
-	if runErr = projectServer.DeleteInstanceFile(descriptor.Instance, remoteImage); runErr != nil {
-		return fmt.Errorf("cannot remove temporary guest image: %w", runErr)
-	}
-	imageStaged = false
 
-	secretBytes, err := readGuestFile(projectServer, descriptor.Instance, "/srv/secrets/runtime-secrets.yaml")
-	if err != nil {
-		return errors.New("unable to read staged runtime secrets from guest")
-	}
-	namespaces, err := SecretNamespaces(ctx, tools, secretBytes)
-	if err != nil {
-		return err
-	}
 	if runErr = tools.ApplyFile(ctx, manifests.file("namespaces.yaml"), fieldManager); runErr != nil {
 		return runErr
 	}
-	for _, namespace := range namespaces {
+	seenNamespaces := make(map[string]bool)
+	for _, secret := range descriptor.RuntimeSecrets {
+		namespace := secret.Namespace
+		if seenNamespaces[namespace] {
+			continue
+		}
+		seenNamespaces[namespace] = true
 		create, cancel := context.WithTimeout(ctx, 60*time.Second)
 		namespaceYAML, createErr := tools.RunKubectl(create, "create", "namespace", namespace, "--dry-run=client", "-o", "yaml")
 		cancel()
@@ -231,8 +180,13 @@ func RunHost(ctx context.Context, args []string, out, errOut io.Writer) (result 
 			return fmt.Errorf("cannot ensure secret namespace %s", namespace)
 		}
 	}
-	if runErr = tools.ApplyInput(ctx, secretBytes, "homelab-runtime-secrets", true); runErr != nil {
-		return errors.New("cannot apply staged runtime secrets")
+	wait, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	runErr = waitRuntimeSecrets(wait, descriptor.RuntimeSecrets, func(probe context.Context, secret runtimeSecret) error {
+		return incusops.Exec(probe, projectServer, descriptor.Instance, secretReadyCommand(secret), nil, io.Discard, io.Discard)
+	})
+	cancel()
+	if runErr != nil {
+		return runErr
 	}
 	if runErr = runBootstrap(ctx, tools.Env, bootstrapPath, "--fresh-cluster", out, errOut); runErr != nil {
 		return runErr
@@ -267,14 +221,17 @@ func loadDescriptor(path string) (descriptor, error) {
 		return descriptor{}, errors.New("cannot read descriptor")
 	}
 	defer file.Close()
-	var object map[string]any
+	var object map[string]json.RawMessage
 	decoder := json.NewDecoder(file)
 	if err := decoder.Decode(&object); err != nil || object == nil {
 		return descriptor{}, errors.New("descriptor must be a JSON object")
 	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return descriptor{}, errors.New("descriptor contains trailing JSON")
+	}
 	get := func(key string) (string, error) {
-		value, ok := object[key].(string)
-		if !ok || strings.TrimSpace(value) == "" {
+		var value string
+		if err := json.Unmarshal(object[key], &value); err != nil || strings.TrimSpace(value) == "" {
 			return "", fmt.Errorf("descriptor has no %s", key)
 		}
 		return value, nil
@@ -291,7 +248,11 @@ func loadDescriptor(path string) (descriptor, error) {
 	if err != nil {
 		return descriptor{}, err
 	}
-	return descriptor{Project: project, Instance: instance, Address: address, Path: resolved}, nil
+	secrets, err := declaredRuntimeSecrets(object["runtimeSecrets"])
+	if err != nil {
+		return descriptor{}, err
+	}
+	return descriptor{Project: project, Instance: instance, Address: address, Path: resolved, RuntimeSecrets: secrets}, nil
 }
 
 func verifyPrivateDirectory(path string) error {
@@ -455,31 +416,6 @@ func verifyNodePlacement(ctx context.Context, tools *Tools, manifests Manifests,
 	return nil
 }
 
-func ensureStagedSecrets(ctx context.Context, server incus.InstanceServer, target descriptor) error {
-	check, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-	if err := incusops.Exec(check, server, target.Instance, []string{"test", "-s", "/srv/secrets/runtime-secrets.yaml"}, nil, io.Discard, io.Discard); err != nil {
-		return errors.New("existing staged runtime secrets are missing from the guest")
-	}
-	return nil
-}
-
-func readGuestFile(server incus.InstanceServer, instance, path string) ([]byte, error) {
-	reader, _, err := server.GetInstanceFile(instance, path)
-	if err != nil {
-		return nil, err
-	}
-	return ReadBytes(reader)
-}
-
-func execGuestImport(ctx context.Context, server incus.InstanceServer, instance, image string, out, errOut io.Writer) error {
-	importCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
-	defer cancel()
-	if err := incusops.Exec(importCtx, server, instance, []string{"k3s", "ctr", "images", "import", "--local", "--snapshotter", "overlayfs", image}, nil, out, errOut); err != nil {
-		return errors.New("cannot import pinned Kanidm provisioning image")
-	}
-	return nil
-}
 
 func runBootstrap(ctx context.Context, env []string, path, mode string, out, errOut io.Writer) error {
 	phase, cancel := context.WithTimeout(ctx, 30*time.Minute)

@@ -142,6 +142,12 @@ let
       && builtins.all (
         key: lib.hasPrefix "${devices.identity.path}/" key.path
       ) guest.services.openssh.hostKeys;
+    container-does-not-discipline-host-clock =
+      guest.boot.isContainer
+      && !guest.services.chrony.enable
+      && !guest.services.timesyncd.enable
+      && host.services.chrony.enable
+      && !host.services.timesyncd.enable;
     guest-opens-declared-gateway-node-port = builtins.elem cluster.ingress.nodePort guest.networking.firewall.allowedTCPPorts;
     direct-gateway-mode-avoids-deny-all-policy =
       cluster.ingress.trustedProxyCIDRs == [ ]

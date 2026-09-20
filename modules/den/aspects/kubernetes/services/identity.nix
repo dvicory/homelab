@@ -5,7 +5,14 @@
   ...
 }:
 {
-  den.aspects.kubernetes.services.identity.compute-resources = {
+  den.aspects.kubernetes.services.identity.compute-resources =
+    { cluster, ... }:
+    let
+      compute = config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
+      guestSystem = inputs.self.nixosConfigurations.${compute.instance}.pkgs.stdenv.hostPlatform.system;
+    in
+    {
+    images = [ inputs.self.packages.${guestSystem}.kanidm-provision-image ];
     retainedPaths.identity-kanidm = {
       uid = 1000;
       gid = 1000;
@@ -219,6 +226,7 @@
       };
       applications.identity-retained = {
         inherit namespace;
+        retained = true;
         objects = [
           {
             apiVersion = "v1";

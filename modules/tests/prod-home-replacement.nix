@@ -28,6 +28,12 @@
             ;
           descriptor = builtins.fromJSON hostConfig.environment.etc."homelab/compute.json".text;
           poolPath = descriptor.poolPath;
+          mergerfs = import ../den/aspects/services/_mergerfs.nix { inherit lib; };
+          cluster = config.den.clusters.prod-home;
+          mediaPoolPath = "${descriptor.devices.media.source}/data";
+          mediaPoolUnit = hostConfig.systemd.services.${mergerfs.serviceNameFor mediaPoolPath};
+          mediaPoolBranches =
+            config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.services.mergerfs.pools.${mediaPoolPath}.branches;
           bridgeAddress = lib.head (lib.splitString "/" descriptor.networkConfig."ipv4.address");
           nftables =
             lib.mapAttrsToList
@@ -54,10 +60,10 @@
               preseedCommand = hostConfig.systemd.services.incus-preseed.serviceConfig.ExecStart;
               preseedPath = lib.makeBinPath hostConfig.systemd.services.incus-preseed.path;
               mediaPool = {
-                start = hostConfig.systemd.services."mergerfs-mnt-srv-media-data".serviceConfig.ExecStart;
-                preStart = hostConfig.systemd.services."mergerfs-mnt-srv-media-data".serviceConfig.ExecStartPre;
-                stop = hostConfig.systemd.services."mergerfs-mnt-srv-media-data".serviceConfig.ExecStop;
-                environment = hostConfig.environment.etc."mergerfs/srv-media-data.conf".text;
+                path = mediaPoolPath;
+                branches = map (branch: branch.path) mediaPoolBranches;
+                start = mediaPoolUnit.serviceConfig.ExecStart;
+                stop = mediaPoolUnit.serviceConfig.ExecStop;
               };
               mediaRootScript = hostConfig.systemd.services.media-namespace.script;
               secretStageScript = hostConfig.systemd.services.compute-stage-secrets.script;
@@ -80,38 +86,20 @@
             cp ${canonical}/jellyfin/*.yaml "$out/jellyfin/"
             cp ${canonical}/jellyfin-retained/*.yaml "$out/jellyfin-retained/"
             cp ${canonical}/bootstrap.yaml "$out/canonical-bootstrap.yaml"
-            cp ${canonical}/radarr/Deployment-radarr.yaml "$out/writer-fixture.yaml"
           '';
           # The shipped seed tree with only the root Application swapped for the
           # fixture origin. This is the dependency-injection seam: the same
           # household-bootstrap-host implementation runs against fixture
           # manifests without a recovery-specific code path.
-          testSeed = pkgs.runCommand "prod-home-test-seed" { } ''
+          testSeed = pkgs.runCommand "prod-home-test-seed" { nativeBuildInputs = [ pkgs.yq-go ]; } ''
             mkdir -p "$out"
             cp ${seedManifests}/* "$out/"
             chmod -R u+w "$out"
-            cat > "$out/root.yaml" <<EOF
-            apiVersion: argoproj.io/v1alpha1
-            kind: Application
-            metadata:
-              name: recovery-test-apps
-              namespace: argocd
-            spec:
-              destination:
-                namespace: argocd
-                server: https://kubernetes.default.svc
-              project: default
-              source:
-                repoURL: git://${bridgeAddress}/recovery.git
-                targetRevision: main
-                path: ./apps
-              syncPolicy:
-                automated:
-                  prune: true
-                  selfHeal: true
-                syncOptions:
-                  - ServerSideApply=true
-            EOF
+            yq -i '
+              .metadata.name = "recovery-test-apps"
+              | .spec.source.repoURL = "git://${bridgeAddress}/recovery.git"
+              | .spec.source.path = "./apps"
+            ' "$out/root.yaml"
           '';
           bootstrapHost = self.packages.${system}.household-bootstrap-host;
           test =

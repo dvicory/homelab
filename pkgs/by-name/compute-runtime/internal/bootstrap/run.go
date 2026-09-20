@@ -299,5 +299,13 @@ func jsonDecoder(data []byte) *json.Decoder {
 
 func ReadBytes(reader io.ReadCloser) ([]byte, error) {
 	defer reader.Close()
-	return io.ReadAll(reader)
+	const maxGuestFile = 1 << 20
+	data, err := io.ReadAll(io.LimitReader(reader, maxGuestFile+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxGuestFile {
+		return nil, errors.New("guest kubeconfig exceeds 1 MiB")
+	}
+	return data, nil
 }

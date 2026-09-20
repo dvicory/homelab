@@ -150,6 +150,7 @@
     {
       applications.gateway-retained = {
         inherit namespace;
+        retained = true;
         objects = [
           {
             apiVersion = "v1";
@@ -181,6 +182,7 @@
           chart = charts.envoyproxy.gateway-helm;
           includeCRDs = false;
           values = {
+            crds.enabled = false;
             deployment.replicas = 1;
             config.envoyGateway = {
               provider.kubernetes.deploy.type = "GatewayNamespace";
