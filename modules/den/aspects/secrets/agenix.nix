@@ -16,6 +16,7 @@
     nixos =
       {
         host,
+        secretsConfig,
         config,
         lib,
         ...
@@ -132,12 +133,7 @@
             identityPaths = [ "${persistPrefix}/etc/ssh/ssh_host_ed25519_key" ];
 
             rekey = {
-              masterIdentities = [
-                {
-                  identity = inputs.self + "/.secrets/keys/master.age";
-                  pubkey = inputs.self + "/.secrets/pub/master.pub";
-                }
-              ];
+              inherit (secretsConfig) masterIdentities;
               storageMode = "local";
               hostPubkey = builtins.readFile host.public_key;
               generatedSecretsDir = host.secretPath + "/generated";
@@ -187,6 +183,7 @@
     darwin =
       {
         host,
+        secretsConfig,
         config,
         lib,
         ...
@@ -201,12 +198,7 @@
         age = {
           identityPaths = [ "/etc/ssh/ssh_host_ed25519_key" ];
           rekey = {
-            masterIdentities = [
-              {
-                identity = inputs.self + "/.secrets/keys/master.age";
-                pubkey = inputs.self + "/.secrets/pub/master.pub";
-              }
-            ];
+            inherit (secretsConfig) masterIdentities;
             storageMode = "local";
             hostPubkey = builtins.readFile host.public_key;
             generatedSecretsDir = host.secretPath + "/generated";
