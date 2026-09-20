@@ -86,32 +86,15 @@
           # fixture origin. This is the dependency-injection seam: the same
           # household-bootstrap-host implementation runs against fixture
           # manifests without a recovery-specific code path.
-          testSeed = pkgs.runCommand "prod-home-test-seed" { } ''
+          testSeed = pkgs.runCommand "prod-home-test-seed" { nativeBuildInputs = [ pkgs.yq-go ]; } ''
             mkdir -p "$out"
             cp ${seedManifests}/* "$out/"
             chmod -R u+w "$out"
-            cat > "$out/root.yaml" <<EOF
-            apiVersion: argoproj.io/v1alpha1
-            kind: Application
-            metadata:
-              name: recovery-test-apps
-              namespace: argocd
-            spec:
-              destination:
-                namespace: argocd
-                server: https://kubernetes.default.svc
-              project: default
-              source:
-                repoURL: git://${bridgeAddress}/recovery.git
-                targetRevision: main
-                path: ./apps
-              syncPolicy:
-                automated:
-                  prune: true
-                  selfHeal: true
-                syncOptions:
-                  - ServerSideApply=true
-            EOF
+            yq -i '
+              .metadata.name = "recovery-test-apps"
+              | .spec.source.repoURL = "git://${bridgeAddress}/recovery.git"
+              | .spec.source.path = "./apps"
+            ' "$out/root.yaml"
           '';
           bootstrapHost = self.packages.${system}.household-bootstrap-host;
           test =

@@ -21,7 +21,17 @@
               cluster.kubeVersion
             ];
             applicationImports = [
-              ({ lib, ... }: { syncPolicy.syncOptions.serverSideApply = lib.mkDefault true; })
+              (
+                { lib, config, ... }:
+                {
+                  options.retained = lib.mkEnableOption "keeping this Application's resources when it is deleted or pruned";
+                  config = {
+                    syncPolicy.syncOptions.serverSideApply = lib.mkDefault true;
+                    finalizer = lib.mkIf config.retained "non-cascading";
+                    syncPolicy.autoSync.prune = lib.mkIf config.retained false;
+                  };
+                }
+              )
             ];
             defaults.syncPolicy.autoSync = {
               enable = true;
