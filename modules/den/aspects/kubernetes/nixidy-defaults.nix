@@ -25,6 +25,7 @@
               prune = true;
               selfHeal = true;
             };
+            defaults.finalizer = "foreground";
           };
         };
     }
