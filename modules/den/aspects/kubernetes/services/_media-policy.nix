@@ -5,6 +5,11 @@
       tag = "1.30.2";
       digest = "sha256:ec585b6d2530f6090ee26fdcc9701f279666c24dc96c9087208e88ec867c2416";
     };
+    node = {
+      repository = "docker.io/library/node";
+      tag = "22.14.0-bookworm-slim";
+      digest = "sha256:1c18d9ab3af4585870b92e4dbc5cac5a0dc77dd13df1a5905cea89fc720eb05b";
+    };
   };
 
   # Configarr v1.30.2 consumes these files from the pinned TRaSH-Guides

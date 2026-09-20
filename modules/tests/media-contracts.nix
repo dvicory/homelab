@@ -28,10 +28,11 @@
               python
               pkgs.git
               pkgs.dash
+              pkgs.nodejs
             ];
           }
           ''
-            python - ${environment} ${storage} <<'PY'
+            python - ${environment} ${storage} ${./prowlarr-reconciliation.mjs} <<'PY'
             import json
             import pathlib
             import subprocess
@@ -41,6 +42,7 @@
 
             environment = pathlib.Path(sys.argv[1])
             storage = json.loads(pathlib.Path(sys.argv[2]).read_text())
+            fixture = pathlib.Path(sys.argv[3])
             resources = []
             for path in environment.rglob("*.yaml"):
                 resources.extend(
@@ -117,6 +119,7 @@
             assert media_gid in jellyfin_pod["securityContext"]["supplementalGroups"]
 
             configarr = None
+            prowlarr_script = None
             seed_program = None
             seed_files = None
             # Configarr consumes nested instance maps, not top-level instance keys.
@@ -142,12 +145,13 @@
                         seed_files = resource["data"]
                     if (resource and resource["kind"] == "ConfigMap"
                             and resource["metadata"]["name"] == "media-configuration"):
+                        prowlarr_script = resource["data"]["prowlarr.mjs"]
                         configarr = yaml.load(resource["data"]["config.yml"], Loader=ConfigarrLoader)
                         for kind, names in storage["mediaInstances"].items():
                             assert set(configarr[kind]) == set(names), (kind, configarr[kind])
                             assert all(isinstance(instance, dict) and "base_url" in instance
                                        for instance in configarr[kind].values())
-            assert configarr is not None, "Missing Configarr configuration"
+            assert configarr is not None and prowlarr_script is not None, "Missing media configuration"
             # Exercise the actual seed script with POSIX sh: brace expansion silently
             # creates the wrong directories, and an empty template repo still needs HEAD.
             assert seed_program is not None and seed_files is not None
@@ -162,6 +166,10 @@
                 for repo in ("trash-guides", "recyclarr-config"):
                     subprocess.run(["git", "-C", str(root / "repos" / repo), "rev-parse", "--verify", "HEAD"],
                                    check=True, stdout=subprocess.DEVNULL)
+            with tempfile.TemporaryDirectory() as directory:
+                rendered_script = pathlib.Path(directory) / "prowlarr.mjs"
+                rendered_script.write_text(prowlarr_script)
+                subprocess.run(["node", str(fixture), str(rendered_script)], check=True)
             PY
             touch "$out"
           '';

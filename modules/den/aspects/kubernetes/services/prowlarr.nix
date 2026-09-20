@@ -13,7 +13,7 @@ let
   };
   images.prowlarr = {
     repository = "ghcr.io/linuxserver/prowlarr";
-    tag = "latest";
+    tag = "2.5.2.5491-ls159";
     digest = "sha256:c7502a75b021d964481c129c84590b9cbc40f83aadd4e553f173871bc0deaa3c";
   };
   inherit (import ./_media-lib.nix { inherit lib; })
@@ -36,6 +36,7 @@ in
         namespace = "media";
         name = cluster.settings.kubernetes.services.media.configurationSecret;
         key = apiSecretKey;
+        generator = "api-key";
       };
   };
   den.aspects.kubernetes.services.prowlarr.k8s-manifests =
@@ -58,11 +59,28 @@ in
     in
     assert lib.assertMsg (!state.readOnly) "Media state prowlarr must be writable.";
     {
-      applications.prowlarr-storage = {
+      # Media consumers use these facts, not the chart's internal value layout.
+      options.media.prowlarr = lib.mkOption {
+        readOnly = true;
+        type = lib.types.submodule {
+          options = {
+            namespace = lib.mkOption { type = lib.types.str; };
+            service = lib.mkOption { type = lib.types.str; };
+            port = lib.mkOption { type = lib.types.port; };
+            apiSecretKey = lib.mkOption { type = lib.types.str; };
+          };
+        };
+        default = {
+          inherit (app) namespace service port;
+          inherit apiSecretKey;
+        };
+      };
+      config.applications.prowlarr-storage = {
         namespace = app.namespace;
+        retained = true;
         objects = mkStorage compute "prowlarr" "5Gi";
       };
-      applications.prowlarr = {
+      config.applications.prowlarr = {
         namespace = app.namespace;
         helm.releases.prowlarr = {
           chart = charts.bjw-s-labs.app-template;

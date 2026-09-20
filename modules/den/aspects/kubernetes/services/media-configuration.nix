@@ -51,11 +51,11 @@
           service = values.fullnameOverride or name;
           port = values.service.main.ports.http.port;
         }
-      ) config.applications;
+      ) config.applications // { prowlarr = config.media.prowlarr; };
       images = builtins.mapAttrs (_: image: "${image.repository}:${image.tag}@${image.digest}") {
-        inherit (policy.images) configarr;
-        seerr = config.applications.seerr.helm.releases.seerr.values.controllers.main.containers.main.image;
+        inherit (policy.images) configarr node;
       };
+      prowlarrSecretKey = config.media.prowlarr.apiSecretKey;
       retained = {
         "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
       };
@@ -63,7 +63,7 @@
       yaml = builtins.toJSON;
 
       inherit (import ./_media-lib.nix { inherit lib; }) serviceName;
-
+      # Reserved names are the reconciler's ownership boundary; other UI names survive.
       routePrefix =
         route:
         if route == null || route.pathPrefix == "/" then "" else lib.removeSuffix "/" route.pathPrefix;
@@ -321,9 +321,56 @@
             name = "sabnzbd";
             app = apps.sabnzbd;
           };
+          prowlarrRoute = fixedRoute {
+            inherit cluster;
+            name = "prowlarr";
+            app = apps.prowlarr;
+          };
+          prowlarrUrl = endpoint {
+            route = prowlarrRoute;
+            service = apps.prowlarr.service;
+            namespace = apps.prowlarr.namespace;
+            port = apps.prowlarr.port;
+          };
         in
         {
           roots = builtins.toJSON (rootsPolicy cluster);
+          prowlarr = builtins.toJSON {
+            prowlarr = {
+              url = prowlarrUrl;
+              apiSecretKey = prowlarrSecretKey;
+            };
+            applications =
+              lib.concatMap
+                (
+                  kind:
+                  lib.mapAttrsToList (
+                    instanceName: cfg:
+                    let
+                      desired = instancePolicy {
+                        inherit
+                          cluster
+                          kind
+                          instanceName
+                          cfg
+                          ;
+                      };
+                    in
+                    {
+                      name = "homelab-${serviceName kind instanceName}";
+                      implementation = if kind == "radarr" then "Radarr" else "Sonarr";
+                      baseUrl = desired.url;
+                      apiSecretKey = cfg.apiSecretKey;
+                      syncLevel = "fullSync";
+                      inherit prowlarrUrl;
+                    }
+                  ) settings.${kind}
+                )
+                [
+                  "radarr"
+                  "sonarr"
+                ];
+          };
           seerr = builtins.toJSON {
             arr = {
               radarr = firstPolicy cluster "radarr" settings.radarr;
@@ -540,13 +587,14 @@
       configurationData = {
         "config.yml" = configarrConfig cluster;
         "roots.json" = generatedPolicy.roots;
+        "prowlarr.json" = generatedPolicy.prowlarr;
         "seerr.json" = generatedPolicy.seerr;
         "trash-guide-revision" = generatedPolicy.trashRevision;
       };
       templateFiles = templates cluster;
       rootJob = baseJob {
         name = "media-config-roots";
-        image = images.seerr;
+        image = images.node;
         command = [
           "node"
           "/configuration/roots.mjs"
@@ -574,9 +622,39 @@
           }
         ];
       };
+      prowlarrJob = baseJob {
+        name = "media-config-prowlarr";
+        image = images.node;
+        command = [
+          "node"
+          "/configuration/prowlarr.mjs"
+        ];
+        secretName = secretName;
+        secretKeys = arrSecretKeys ++ [ prowlarrSecretKey ];
+        mounts = [
+          {
+            name = "configuration";
+            mountPath = "/configuration";
+            readOnly = true;
+          }
+          {
+            name = "secrets";
+            mountPath = "/secrets";
+            readOnly = true;
+          }
+        ];
+        volumes = [
+          {
+            name = "configuration";
+            configMap = {
+              name = "media-configuration";
+            };
+          }
+        ];
+      };
       seerrJob = baseJob {
         name = "media-config-seerr";
-        image = images.seerr;
+        image = images.node;
         command = [
           "node"
           "/configuration/seerr.mjs"
@@ -768,6 +846,7 @@
           };
           data = configurationData // {
             "roots.mjs" = rootsScript;
+            "prowlarr.mjs" = prowlarrScript;
             "seerr.mjs" = seerrScript;
           };
         }
@@ -833,6 +912,7 @@
         }
         console.log('media roots: declared roots reconciled');
       '';
+      prowlarrScript = builtins.readFile ./prowlarr.mjs;
       seerrScript = ''
         import { readFileSync, existsSync } from 'node:fs';
         const policy = JSON.parse(readFileSync('/configuration/seerr.json', 'utf8'));
@@ -959,6 +1039,8 @@
           (cron "media-config-roots" rootJob)
           (hook "media-configarr" 1 configarrJob)
           (cron "media-configarr" configarrJob)
+          (hook "media-config-prowlarr" 1 prowlarrJob)
+          (cron "media-config-prowlarr" prowlarrJob)
           (hook "media-config-seerr" 2 seerrJob)
           (cron "media-config-seerr" seerrJob)
         ];
