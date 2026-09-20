@@ -502,17 +502,29 @@
                 config_path = root / "sabnzbd.ini"
                 data_path = root / "data"
                 data_path.mkdir()
+                initial = ConfigObj(encoding="utf-8")
+                initial["categories"] = {
+                    "operator": {
+                        "name": "operator",
+                        "dir": "operator",
+                        "custom": "keep-unmanaged",
+                    }
+                }
+                initial.filename = str(config_path)
+                initial.write()
                 run_init(fixture["sabnzbdInit"], config_path, data_path, {
                     "SABNZBD_API_KEY": "api-key-fixture",
                     "SABNZBD_USERNAME": "admin-fixture",
                     "SABNZBD_PASSWORD": "admin-password-fixture",
                 })
                 categories = ConfigObj(str(config_path), encoding="utf-8")["categories"]
-                assert set(categories) == {
+                managed_categories = {
                     instance["category"]
                     for instances in fixture_instances.values()
                     for instance in instances.values()
                 }
+                assert set(categories) == managed_categories | {"operator"}
+                assert categories["operator"]["custom"] == "keep-unmanaged"
 
             runtime_values = {
                 "SABNZBD_API_KEY": "api-key-fixture",
