@@ -11,6 +11,12 @@
       gid = 1000;
       mode = "0700";
     };
+    stateBoundary.identity-kanidm = {
+      dataKind = "filesystem";
+      requiredConsistency = "application";
+      acceptedPayloadFormats = [ "kanidm.backup-json" ];
+      capabilities = [ "kanidm.online-backup" ];
+    };
     runtimeSecrets = {
       "identity--kanidm-provision--idm-admin-password" = {
         namespace = "identity";

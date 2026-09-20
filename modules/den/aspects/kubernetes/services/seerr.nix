@@ -14,10 +14,17 @@ let
   inherit (import ./_media-lib.nix { inherit lib; }) retainedEntry fixedRoute mkStorage;
 in
 {
-  den.aspects.kubernetes.services.seerr.compute-resources.retainedPaths.seerr = {
-    uid = 1000;
-    gid = 1000;
-    mode = "0700";
+  den.aspects.kubernetes.services.seerr.compute-resources = {
+    retainedPaths.seerr = {
+      uid = 1000;
+      gid = 1000;
+      mode = "0700";
+    };
+    stateBoundary.seerr = {
+      dataKind = "filesystem";
+      requiredConsistency = "application";
+      capabilities = [ "sqlite-online-backup" ];
+    };
   };
   den.aspects.kubernetes.services.seerr.k8s-manifests =
     {

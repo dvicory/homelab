@@ -53,6 +53,52 @@ in
               specialArgs = { inherit cluster; };
               modules = modules ++ [
                 (inputs.nixpkgs + "/nixos/modules/misc/assertions.nix")
+                (
+                  { config, ... }:
+                  {
+                    # Consumed by Preserve; shape follows first-class-state-protection
+                    # modules/den/schema/preserve.nix:133-140 (StateSlot semantics) and
+                    # modules/den/gen-scope/preserve.nix:643-662 (Realization capabilities).
+                    options.stateBoundary = lib.mkOption {
+                      default = { };
+                      type = lib.types.attrsOf (
+                        lib.types.submodule {
+                          options = {
+                            dataKind = lib.mkOption { type = lib.types.str; };
+                            requiredConsistency = lib.mkOption {
+                              type = lib.types.enum [
+                                "live"
+                                "crash"
+                                "filesystem"
+                                "application"
+                                "database"
+                              ];
+                            };
+                            requiredFidelity = lib.mkOption {
+                              type = lib.types.listOf lib.types.str;
+                              default = [ "posix-filesystem" ];
+                            };
+                            acceptedPayloadFormats = lib.mkOption {
+                              type = lib.types.listOf lib.types.str;
+                              default = [ ];
+                            };
+                            capabilities = lib.mkOption {
+                              type = lib.types.listOf lib.types.str;
+                              default = [ ];
+                            };
+                          };
+                        }
+                      );
+                    };
+                    config.assertions = [
+                      {
+                        assertion =
+                          builtins.attrNames config.retainedPaths == builtins.attrNames config.stateBoundary;
+                        message = "compute-resources: retainedPaths and stateBoundary must declare the same keys for cluster ${cluster.name}";
+                      }
+                    ];
+                  }
+                )
                 {
                   options.retainedPaths = lib.mkOption {
                     default = { };

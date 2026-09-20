@@ -22,9 +22,17 @@ let
   mediaGid = (config.den.groups or { }).media.gid;
 in
 {
-  den.aspects.kubernetes.services.jellyfin.compute-resources.retainedPaths.jellyfin-config = {
-    inherit (identity) uid gid;
-    mode = "0750";
+  den.aspects.kubernetes.services.jellyfin.compute-resources = {
+    retainedPaths.jellyfin-config = {
+      inherit (identity) uid gid;
+      mode = "0750";
+    };
+    stateBoundary.jellyfin-config = {
+      dataKind = "filesystem";
+      requiredConsistency = "application";
+      acceptedPayloadFormats = [ "jellyfin.backup-archive" ];
+      capabilities = [ "jellyfin.backup-api" ];
+    };
   };
   den.aspects.kubernetes.services.jellyfin.k8s-manifests =
     {

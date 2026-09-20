@@ -32,6 +32,12 @@ in
       inherit (identity) uid gid;
       mode = "0700";
     };
+    stateBoundary.sabnzbd = {
+      dataKind = "filesystem";
+      requiredConsistency = "application";
+      acceptedPayloadFormats = [ "sabnzbd.backup-zip" ];
+      capabilities = [ "sabnzbd.create-backup" ];
+    };
     runtimeSecrets = lib.listToAttrs (
       map
         (key: {
