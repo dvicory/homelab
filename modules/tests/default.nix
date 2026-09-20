@@ -95,6 +95,11 @@ let
     darwinConfig.nix.gc.automatic
     && darwinConfig.nix.gc.options == "--delete-older-than 30d"
     && darwinUsers."daniel.vicory".home.stateVersion == "25.11";
+  integrationAssertions.hermes-secure-terminal =
+    hasAttr "hermes-qa-broker" hvnConfig.systemd.services
+    && hasAttr "hermes-qa-broker-execution" hvnConfig.systemd.sockets
+    && hasAttr "hermes-qa-broker-control" hvnConfig.systemd.sockets
+    && !(hasAttr "hermes-prod-broker" hvnConfig.systemd.services);
 
   failures = attrNames (
     lib.filterAttrs (_: passed: !passed) (

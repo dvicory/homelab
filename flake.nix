@@ -57,8 +57,12 @@
     };
     gen-schema.url = "github:sini/gen-schema/fd79d909cf5a84be0f902dacf4202044642d44af";
     gen-scope.url = "github:sini/gen-scope/3bc93dfdb49da9ae06ce84a1d35905a1c138de99";
+    gondolin-nix = {
+      url = "github:dvicory/gondolin-nix/secure-terminal-v3";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     hermes-agent = {
-      url = "github:NousResearch/hermes-agent/v2026.6.19";
+      url = "github:NousResearch/hermes-agent/v2026.7.20";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     home-manager = {
@@ -78,6 +82,7 @@
       url = "github:nix-community/lanzaboote/v1.1.0";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    llm-agents.url = "github:numtide/llm-agents.nix/c4fe91eee512d8278f2593fc8f544829c76c84f8";
     nix-darwin = {
       url = "github:LnL7/nix-darwin";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -89,6 +94,15 @@
     nixos-facter-modules.url = "github:nix-community/nixos-facter-modules";
     nixpkgs.url = "https://channels.nixos.org/nixos-unstable/nixexprs.tar.xz";
     quadlet-nix.url = "github:SEIAROTg/quadlet-nix";
+    secure-hermes-nix = {
+      url = "github:dvicory/secure-hermes-nix";
+      inputs = {
+        gondolin-nix.follows = "gondolin-nix";
+        hermes-agent.follows = "hermes-agent";
+        llm-agents.follows = "llm-agents";
+        nixpkgs.follows = "nixpkgs";
+      };
+    };
     systems.url = "github:nix-systems/triplet";
   };
 }

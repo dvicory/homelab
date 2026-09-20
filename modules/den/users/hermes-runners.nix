@@ -17,9 +17,261 @@ let
         config = {
           model.default = "opencode-go/deepseek-v4-flash";
           agent.restart_drain_timeout = 120;
-        };
+        }
+        // (
+          if instance == "qa" then
+            {
+              curator.enabled = false;
+              skills = {
+                creation_nudge_interval = 0;
+                write_approval = true;
+              };
+              memory = {
+                nudge_interval = 0;
+                write_approval = true;
+              };
+            }
+          else
+            { }
+        );
         tailscale.hostname = "hermes-${instance}";
-      };
+        workerLanes = {
+          research = {
+            description = "bounded research and analysis in a private broker workspace";
+            runtime = "hermes";
+            profile = "default";
+            agent = {
+              model = "opencode-go/deepseek-v4-flash";
+              role = "research";
+              toolsets = [
+                "file"
+                "terminal"
+              ];
+            };
+            workspace = {
+              projectMode = "none";
+              scratchProvider = "broker-scratch";
+              inputs = {
+                maxInputs = 8;
+                maxInputBytes = 104857600;
+                maxInputEntries = 20000;
+                maxInputPathBytes = 4096;
+              };
+            };
+            policy = {
+              worklane = "default";
+              approvalPolicy = "never";
+            };
+            execution = {
+              timeoutSeconds = 3600;
+              maxTurns = 40;
+              cpus = 4;
+              memoryMiB = 8192;
+              diskMiB = 32768;
+            };
+          };
+        }
+        // (
+          if instance == "qa" then
+            {
+              codex-plan = {
+                description = "read-only software architecture, investigation, planning, and review";
+                runtime = "external";
+                plugin = "codex-cli";
+                workspace = {
+                  projectMode = "required";
+                  projectProvider = "broker-project";
+                  maximumPermission = "read-only";
+                  supportedSourceKinds = [ "git" ];
+                  inputs = {
+                    maxInputs = 8;
+                    maxInputBytes = 104857600;
+                    maxInputEntries = 20000;
+                    maxInputPathBytes = 4096;
+                  };
+                };
+                policy = {
+                  worklane = "codex";
+                  approvalPolicy = "never";
+                  approvalReviewer = "user";
+                  networkAccess = true;
+                };
+              };
+              codex = {
+                description = "software implementation, debugging, refactoring, and verification";
+                runtime = "external";
+                plugin = "codex-cli";
+                workspace = {
+                  projectMode = "required";
+                  projectProvider = "broker-project";
+                  maximumPermission = "workspace-write";
+                  supportedSourceKinds = [ "git" ];
+                  inputs = {
+                    maxInputs = 8;
+                    maxInputBytes = 104857600;
+                    maxInputEntries = 20000;
+                    maxInputPathBytes = 4096;
+                  };
+                };
+                policy = {
+                  worklane = "codex";
+                  approvalPolicy = "never";
+                  approvalReviewer = "user";
+                  networkAccess = true;
+                };
+              };
+            }
+          else
+            { }
+        );
+        boards.homelab = {
+          allowedLanes = [
+            "research"
+          ]
+          ++ (
+            if instance == "qa" then
+              [
+                "codex-plan"
+                "codex"
+              ]
+            else
+              [ ]
+          );
+          allowedProjects = [ "homelab" ];
+          defaultProject = "homelab";
+        };
+        projects.homelab = {
+          title = "Homelab";
+          source = {
+            type = "git";
+            repositoryId = "homelab";
+            defaultRef = "main";
+          };
+          laneAccess =
+            if instance == "qa" then
+              {
+                codex-plan = "read-only";
+                codex = "workspace-write";
+              }
+            else
+              { };
+        };
+        # Nix-authoritative source acquisition for the homelab Project. The
+        # broker's git adapter acquires private generations with the trusted
+        # GitHub token; the credential never enters the guest or the model.
+        projectSources.homelab = {
+          type = "git";
+          upstream = "https://github.com/dvicory/homelab.git";
+          defaultRef = "main";
+          credential = {
+            adapter = "github-token";
+            secretRef = "hermes-terminal-github";
+          };
+        };
+      }
+      // (
+        if instance == "qa" then
+          {
+            # The sidecar is opt-in so prod remains unchanged until the browser
+            # workflow has been exercised.
+            fortress.enable = true;
+
+            # QA exercises the Effect/HTTP Gondolin integration. The companion
+            # sandbox account is derived inside the Hermes account aspect; this
+            # registry entry selects the feature and its resource policy. This
+            # is an integration-stage selection, not a production parity claim;
+            # the V3 acceptance gates still govern promotion.
+            secureTerminal = {
+              enable = true;
+              network = true;
+              backend = "gondolin";
+              workspaceHandoff = {
+                enable = true;
+                handoffLimits = {
+                  maxLogicalBytes = 67108864;
+                  maxEntries = 8192;
+                  maxFileBytes = 16777216;
+                  maxPathBytes = 1024;
+                };
+              };
+
+              defaultTemplate = "project";
+              allowedPairs = [
+                {
+                  asset = "general";
+                  template = "project";
+                }
+                {
+                  asset = "general";
+                  template = "research";
+                }
+                {
+                  asset = "general";
+                  template = "offline";
+                }
+                {
+                  asset = "minimal";
+                  template = "offline";
+                }
+              ];
+              maximum = {
+                networkBundles = [
+                  "git-public"
+                  "npm-public"
+                  "pypi-public"
+                  "nix-cache-public"
+                ];
+                credentialCapabilities = [
+                  "github-private-read"
+                  "github-push"
+                ];
+                resources = {
+                  cpus = 4;
+                  memoryMiB = 8192;
+                  diskMiB = 32768;
+                };
+                grantScopes = [
+                  "once"
+                  "task"
+                ];
+              };
+              worklanes.codex = {
+                allowedPairs = [
+                  {
+                    asset = "general";
+                    template = "project";
+                  }
+                  {
+                    asset = "minimal";
+                    template = "offline";
+                  }
+                ];
+                maximum.networkBundles = [
+                  "git-public"
+                  "npm-public"
+                  "pypi-public"
+                ];
+              };
+            };
+
+            # Codex is a distinct coding-only Kanban worker. Its ChatGPT login and
+            # threads persist in a dedicated rootless Podman volume.
+            codex = {
+              enable = true;
+              allowedModels = [
+                "gpt-5.6-luna"
+                "gpt-5.6-terra"
+              ];
+              allowedReasoningEfforts = [
+                "low"
+                "medium"
+                "high"
+              ];
+            };
+          }
+        else
+          { }
+      );
     };
 in
 {
