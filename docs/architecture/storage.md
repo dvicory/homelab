@@ -243,10 +243,13 @@ remain on their existing gocryptfs providers. Media4 remains unprovisioned and
 is not a mergerfs branch. The repository therefore does not claim that any
 media branch has already reached the LUKS2/XFS target.
 
-**Separate physical conversion.** After software acceptance, content moves to
-the spare 12 TB device, the vacated device is re-created as LUKS2/XFS, and the
-process repeats. Consumer-visible media paths do not change. This is a later,
-separately approved operation; no physical conversion has been executed.
+**Separate physical realization.** Media4 is the first empty LUKS2/XFS
+destination. After it is formatted, mounted directly, capacity-checked, and
+seeded from the intact media1 source, the running mergerfs branch set replaces
+media1 with media4 atomically; both duplicate trees are never active together.
+Media1 remains unchanged as rollback until a later separately approved
+operation removes its gocryptfs ownership and formats it. No physical
+conversion has been executed.
 
 ## Media: one filesystem for ingest and library
 

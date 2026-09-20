@@ -63,7 +63,7 @@
           lib.optionals isLinux [
             {
               package = prepare-luks-storage.prepare-luks-storage;
-              help = "One-shot provisioner for a LUKS-encrypted btrfs data disk";
+              help = "Read-only declared-disk preflight and explicitly approved LUKS2 formatter";
             }
           ]
           ++ [

@@ -109,21 +109,18 @@ in
         polling.enable = false;
       };
       disk.luks-storage.disks.media4 = {
-        # Provisioning sequence (two deploys):
-        #   1. On the workstation, with this config committed at
-        #      provisioned = false, run:
-        #        agenix generate
-        #        agenix rekey
-        #        git add .secrets/ && git commit
-        #      Deploy. The agenix secret materializes at
-        #      /run/agenix/luks-media4-key on the host.
-        #   2. On the host, after attaching the disk:
-        #        nix run .#prepare-luks-storage -- wwn-0x5000cca27061f6b4
-        #      Then follow the recipe printed by the script (creates
-        #      the filesystem, adds the agenix key as a LUKS keyslot).
-        #   3. Flip provisioned = true, commit, redeploy. The crypttab
-        #      row and fileSystems entry appear; the disk mounts at
-        #      every subsequent boot.
+        # Media4 remains pending: this declaration is not proof that any
+        # physical work ran. First deploy keeps provisioned = false and does
+        # not activate formatting or mounting. On the host, run the
+        # read-only `prepare-luks-storage preflight --disk media4
+        # --declared-device <evaluated-device>` against this declaration and
+        # record its exact identity and gates.
+        # Separately approve the native LUKS2/XFS format only after the
+        # existing agenix key path, recovery passphrase, and LUKS header
+        # recovery copy are accounted for; never put key material in commands
+        # or evidence. Mount, seed, and verify the direct filesystem before
+        # any mergerfs branch cutover. Second deploy is the later, accepted
+        # declaration change to the realized XFS contract and branch mapping.
         device = "/dev/disk/by-id/wwn-0x5000cca27061f6b4-part1";
         mountpoint = "/mnt/storage-clear/media4";
         fsType = "btrfs";

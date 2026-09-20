@@ -5,11 +5,12 @@
   cryptsetup,
   gptfdisk,
   util-linux,
+  udev,
 }:
 writeShellApplication {
   name = "prepare-luks-storage";
   meta = {
-    description = "One-shot provisioner that creates a LUKS container on a fresh disk";
+    description = "Read-only declared-disk preflight and explicitly approved LUKS2 formatter";
     platforms = lib.platforms.linux;
   };
   runtimeInputs = [
@@ -17,6 +18,7 @@ writeShellApplication {
     cryptsetup
     gptfdisk
     util-linux
+    udev
   ];
   text = builtins.readFile ./prepare-luks-storage.sh;
 }
