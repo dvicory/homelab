@@ -45,6 +45,7 @@ in
       immich = route "immich" "immich" "immich-server" 2283 "native";
       radarr = route "radarr" "media" "radarr" 7878 "admin";
       sonarr = route "sonarr" "media" "sonarr" 8989 "admin";
+      prowlarr = route "prowlarr" "media" "prowlarr" 9696 "admin";
       sabnzbd = route "sabnzbd" "media" "sabnzbd" 8080 "admin";
       requests = route "requests" "media" "seerr" 5055 "native";
       grafana = route "grafana" "monitoring" "monitoring-grafana" 80 "admin";

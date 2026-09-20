@@ -3,7 +3,7 @@ kind: Application
 metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
-  name: media-access
+  name: prowlarr-storage
   namespace: argocd
 spec:
   destination:
@@ -11,7 +11,7 @@ spec:
     server: https://kubernetes.default.svc
   project: default
   source:
-    path: ./generated/manifests/prod-home/media-access
+    path: ./generated/manifests/prod-home/prowlarr-storage
     repoURL: https://github.com/dvicory/homelab.git
     targetRevision: main
   syncPolicy:

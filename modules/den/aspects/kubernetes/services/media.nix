@@ -10,6 +10,7 @@ in
     includes = [
       den.aspects.kubernetes.services.radarr
       den.aspects.kubernetes.services.sonarr
+      den.aspects.kubernetes.services.prowlarr
       den.aspects.kubernetes.services.sabnzbd
       den.aspects.kubernetes.services.seerr
     ];
@@ -23,6 +24,7 @@ in
         ];
         stateKeys = map (cfg: cfg.state) instances;
         reserved = [
+          "prowlarr"
           "sabnzbd"
           "seerr"
         ];
