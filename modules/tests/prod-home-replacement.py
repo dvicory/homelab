@@ -216,10 +216,17 @@ class Runtime:
     def incus(self, *args: str, timeout: int = COMMAND_TIMEOUT, input: str | None = None) -> str:
         return run("incus", "--force-local", "--project", self.project, *args, timeout=timeout, input=input)
 
-    def guest(self, *args: str, timeout: int = COMMAND_TIMEOUT, user: int | None = None, check_result: bool = True) -> str:
+    def guest(
+        self,
+        *args: str,
+        timeout: int = COMMAND_TIMEOUT,
+        user: int | None = None,
+        group: int | None = None,
+        check_result: bool = True,
+    ) -> str:
         command = ["incus", "--force-local", "--project", self.project, "exec", self.instance]
         if user is not None:
-            command.extend(["--user", str(user), "--group", str(user)])
+            command.extend(["--user", str(user), "--group", str(user if group is None else group)])
         command.extend(["--mode=non-interactive", "--", *args])
         result = completed(*command, timeout=timeout)
         if check_result and result.returncode:
@@ -405,6 +412,19 @@ class Runtime:
             == (0, media_gid, 0o640),
             "media pool exposes the seeded library and recovery media with stable ownership and modes before workload startup",
         )
+
+    def verify_guest_media(self, media_gid: int) -> None:
+        propagation = run("findmnt", "-n", "-o", "PROPAGATION", "-M", "/")
+        check(propagation.startswith("shared"), "fixture host mount tree is shared for Incus propagation")
+        pooled_media = self.media_path / "library" / "recovery.wav"
+        guest_fstype = self.guest("findmnt", "-n", "-o", "FSTYPE", "-M", str(self.media_path))
+        check(guest_fstype == "fuse.mergerfs", "guest /srv/media/data is the evaluated mergerfs mount")
+        host_digest = run("sha256sum", str(pooled_media)).split()[0]
+        guest_digest = self.guest("sha256sum", str(pooled_media), user=0, group=media_gid).split()[0]
+        check(guest_digest == host_digest, "guest reads the host pool's deterministic recovery media")
+        guest_group_mode = self.guest("stat", "-c", "%g:%a", str(pooled_media), user=0, group=media_gid)
+        check(guest_group_mode == f"{media_gid}:640", "guest observes the media GID and recovery file mode")
+
 
     def stop_media(self) -> None:
         if not self.media_started:
@@ -1023,6 +1043,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             runtime.created_instance = True
             with phase("compute-create-and-k3s-ready"):
                 runtime.helper_run("create", bundle=args.bundle, timeout=3_600)
+                runtime.verify_guest_media(media_gid)
                 guest_architecture = runtime.guest("uname", "-m")
                 check(
                     guest_architecture == fixture_architecture,

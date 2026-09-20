@@ -223,6 +223,13 @@
               testScript = ''
                 start_all()
                 fixture_host.wait_for_unit("incus.service", timeout=600)
+                # The Incus daemon and its guest mounts need to inherit the
+                # host mount tree. Mark the disposable VM root shared before
+                # the evaluated media pool is mounted, then restart Incus so
+                # its mount namespace receives that propagation boundary.
+                fixture_host.succeed("mount --make-rshared /")
+                fixture_host.succeed("systemctl restart incus.service")
+                fixture_host.wait_for_unit("incus.service", timeout=600)
                 fixture_host.succeed("modprobe zfs")
                 fixture_host.succeed("mkdir -p ${poolPath}")
                 fixture_host.succeed("truncate -s 28G /var/lib/incus-storage-pools.vdev")
