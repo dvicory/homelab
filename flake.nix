@@ -47,6 +47,7 @@
         nixpkgs.follows = "nixpkgs";
       };
     };
+    files.url = "github:sini/files";
     flake-file.url = "github:vic/flake-file";
     flake-parts.url = "github:hercules-ci/flake-parts";
     flake-root.url = "github:srid/flake-root";

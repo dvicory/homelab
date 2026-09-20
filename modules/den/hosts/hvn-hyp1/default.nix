@@ -90,24 +90,22 @@
         polling.enable = false;
       };
       disk.luks-storage.disks.media4 = {
-        # Provisioning sequence (two deploys):
-        #   1. On the workstation, with this config committed at
-        #      provisioned = false, run:
-        #        agenix generate
-        #        agenix rekey
-        #        git add .secrets/ && git commit
-        #      Deploy. The agenix secret materializes at
-        #      /run/agenix/luks-media4-key on the host.
-        #   2. On the host, after attaching the disk:
-        #        nix run .#prepare-luks-storage -- wwn-0x5000cca27061f6b4
-        #      Then follow the recipe printed by the script (creates
-        #      the filesystem, adds the agenix key as a LUKS keyslot).
-        #   3. Flip provisioned = true, commit, redeploy. The crypttab
-        #      row and fileSystems entry appear; the disk mounts at
-        #      every subsequent boot.
+        # Media4 is the empty new LUKS2/XFS destination. This declaration is
+        # not evidence that physical work ran. Keep provisioned = false while
+        # the wrapper's read-only preflight records direct media1 provenance,
+        # source bytes, target capacity, stable by-id identity, and target
+        # emptiness. Any MANUAL, failed, or conflicting probe stops.
+        # Separately approve format, XFS/key/header recovery, and the direct
+        # mount. Then quiesce writers, create source-bound quiescence evidence,
+        # and separately approve the verified copy from the direct media1 tree
+        # while media4 remains outside mergerfs. Never evacuate or wipe a
+        # media4 partition and never put key material in commands or evidence.
+        # Revision A later sets provisioned = true; Revision B changes only
+        # the mergerfs branch from media1 to media4. Keep media1 mounted and
+        # unchanged for rollback until a later explicit media1-format approval.
         device = "/dev/disk/by-id/wwn-0x5000cca27061f6b4-part1";
         mountpoint = "/mnt/storage-clear/media4";
-        fsType = "btrfs";
+        fsType = "xfs";
         provisioned = false;
       };
     };
