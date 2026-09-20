@@ -41,17 +41,7 @@ in
       trustedProxyCIDRs = [ ];
     };
     routes = {
-      jellyfin = route "jellyfin" "jellyfin" "jellyfin" 8096 "native";
-      immich = route "immich" "immich" "immich-server" 2283 "native";
-      radarr = route "radarr" "media" "radarr" 7878 "admin";
-      sonarr = route "sonarr" "media" "sonarr" 8989 "admin";
-      sabnzbd = route "sabnzbd" "media" "sabnzbd" 8080 "admin";
-      requests = route "requests" "media" "seerr" 5055 "native";
-      grafana = route "grafana" "monitoring" "monitoring-grafana" 80 "admin";
       argocd = route "argocd" "argocd" "argocd-server" 80 "admin";
-      idm = (route "idm" "identity" "kanidm" 443 "native") // {
-        backendTLS = true;
-      };
     };
   };
 
@@ -60,12 +50,6 @@ in
       argocd
       cluster-dns
       retained-storage
-      jellyfin
-      immich
-      media
-      monitoring
-      gateway
-      identity
     ];
   };
 }
