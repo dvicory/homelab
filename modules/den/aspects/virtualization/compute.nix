@@ -169,6 +169,8 @@ in
       }:
       let
         cfg = host.settings.virtualization.compute;
+        computeRuntime = pkgs.callPackage (inputs.self + "/pkgs/by-name/compute-runtime/package.nix") { };
+        lifecycleLock = "/run/lock/compute-${cfg.project}-${cfg.instance}.lock";
         runtimeSecrets = cfg.runtimeSecrets or { };
         secretPath = "/run/homelab-compute/secrets";
         secretNames = builtins.attrNames runtimeSecrets;
@@ -377,118 +379,13 @@ in
             }
           ];
         };
-        preseedFile = pkgs.writeText "compute-incus-preseed.json" (builtins.toJSON preseed);
-        preseedGate = pkgs.writeShellScript "compute-incus-preseed-gate" ''
-          set -eu
-          export INCUS_SOCKET=/var/lib/incus/unix.socket
-          incus=${config.virtualisation.incus.package}/bin/incus
-          jq=${pkgs.jq}/bin/jq
-          desired=${lib.escapeShellArg preseedFile}
-          missing=0
-          project_exists=0
-
-          conflict() {
-            echo "compute Incus preseed conflict: $1" >&2
-            exit 1
-          }
-
-          query() {
-            "$incus" --force-local query "$1"
-          }
-
-          check_project() {
-            wanted=$("$jq" -c '.projects[0]' "$desired")
-            name=$(printf '%s\n' "$wanted" | "$jq" -r '.name')
-            project="$name"
-            current=$(query "/1.0/projects?recursion=1")
-            actual=$(printf '%s\n' "$current" |
-              "$jq" -c --arg name "$name" '[.[] | select(.name == $name)] | .[0] // empty')
-            if [ -z "$actual" ]; then
-              missing=1
-              return
-            fi
-            if ! "$jq" -n -e --argjson wanted "$wanted" --argjson actual "$actual" '
-              all($wanted.config | to_entries[]; $actual.config[.key] == .value)
-            ' >/dev/null; then
-              conflict "project/$name"
-            fi
-            project_exists=1
-          }
-
-          check_pool() {
-            wanted=$("$jq" -c '.storage_pools[0]' "$desired")
-            name=$(printf '%s\n' "$wanted" | "$jq" -r '.name')
-            current=$(query "/1.0/storage-pools?recursion=1")
-            actual=$(printf '%s\n' "$current" |
-              "$jq" -c --arg name "$name" '[.[] | select(.name == $name)] | .[0] // empty')
-            if [ -z "$actual" ]; then
-              missing=1
-              return
-            fi
-            if ! "$jq" -n -e --argjson wanted "$wanted" --argjson actual "$actual" '
-              $actual.driver == $wanted.driver
-              and $actual.config.source == $wanted.config.source
-            ' >/dev/null; then
-              conflict "storage-pool/$name"
-            fi
-          }
-
-          check_network() {
-            wanted=$("$jq" -c '.networks[0]' "$desired")
-            name=$(printf '%s\n' "$wanted" | "$jq" -r '.name')
-            current=$(query "/1.0/networks?recursion=1&project=default")
-            actual=$(printf '%s\n' "$current" |
-              "$jq" -c --arg name "$name" '[.[] | select(.name == $name)] | .[0] // empty')
-            if [ -z "$actual" ]; then
-              missing=1
-              return
-            fi
-            if ! "$jq" -n -e --argjson wanted "$wanted" --argjson actual "$actual" '
-              $actual.type == $wanted.type
-              and (($actual.config // {}) | with_entries(
-                select(.key != "bridge.hwaddr" and ((.key | startswith("volatile.")) | not))
-              )) == ($wanted.config // {})
-            ' >/dev/null; then
-              conflict "network/default/$name"
-            fi
-          }
-
-          check_profile() {
-            wanted=$("$jq" -c '.profiles[0]' "$desired")
-            name=$(printf '%s\n' "$wanted" | "$jq" -r '.name')
-            if [ "$project_exists" -eq 0 ]; then
-              missing=1
-              return
-            fi
-            project_query=$("$jq" -nr --arg project "$project" '$project | @uri')
-            current=$(query "/1.0/profiles?recursion=1&project=$project_query")
-            actual=$(printf '%s\n' "$current" |
-              "$jq" -c --arg name "$name" '[.[] | select(.name == $name)] | .[0] // empty')
-            if [ -z "$actual" ]; then
-              missing=1
-              return
-            fi
-            if ! "$jq" -n -e --argjson wanted "$wanted" --argjson actual "$actual" '
-              $actual.config == $wanted.config and $actual.devices == $wanted.devices
-            ' >/dev/null; then
-              conflict "profile/$project/$name"
-            fi
-          }
-
-          check_project
-          check_pool
-          check_network
-          check_profile
-
-          if [ "$missing" -eq 1 ]; then
-            echo missing
-          else
-            echo matching
-          fi
-        '';
         lockedPreseed = pkgs.writeShellScript "locked-compute-preseed" ''
           set -eu
-          result="$(${preseedGate})"
+          umask 077
+          export INCUS_SOCKET=/var/lib/incus/unix.socket
+          exec 9>${lib.escapeShellArg lifecycleLock}
+          ${pkgs.util-linux}/bin/flock -n 9
+          result="${computeRuntime}/bin/compute-guest --spec /etc/homelab/compute.json --lock-fd 9 adopt"
           echo "compute Incus envelope adoption check: $result; applying native preseed."
           ${config.systemd.services.incus-preseed.script}
         '';
@@ -543,18 +440,14 @@ in
         };
       in
       {
-        environment.systemPackages = [
-          (pkgs.callPackage (inputs.self + "/pkgs/by-name/compute-runtime/package.nix") { })
-        ];
+        environment.systemPackages = [ computeRuntime ];
         # The kernel's setuid helpers refuse to build a map containing host IDs
         # the caller has no subordinate range for, so a crossing capability needs
         # its own line here — narrow, one ID per capability, not a band.
         users.users.root.subGidRanges = capabilitySubGidRanges;
-        virtualisation.incus.preseed = preseed;
         # Keep the read-only adoption check and any native preseed in one
         # lifecycle lock; a conflict therefore aborts before preseed mutation.
-        systemd.services.incus-preseed.serviceConfig.ExecStart =
-          lib.mkForce "${pkgs.util-linux}/bin/flock -n /run/lock/compute-${cfg.project}-${cfg.instance}.lock ${lockedPreseed}";
+        systemd.services.incus-preseed.serviceConfig.ExecStart = lib.mkForce lockedPreseed;
 
         environment.etc."homelab/compute.json" = {
           mode = "0444";
