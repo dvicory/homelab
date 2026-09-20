@@ -61,6 +61,7 @@
               preseedPath = lib.makeBinPath hostConfig.systemd.services.incus-preseed.path;
               mediaPool = {
                 path = mediaPoolPath;
+                gid = hostConfig.users.groups.media.gid;
                 branches = map (branch: branch.path) mediaPoolBranches;
                 start = mediaPoolUnit.serviceConfig.ExecStart;
                 stop = mediaPoolUnit.serviceConfig.ExecStop;

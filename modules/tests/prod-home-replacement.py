@@ -353,6 +353,7 @@ class Runtime:
 
     def start_media(self, pool: dict, root_script: str, workspace: Path) -> None:
         branches = [Path(branch) for branch in pool["branches"]]
+        media_gid = int(pool["gid"])
         check(branches, "media pool declares branches")
         check(Path(pool["path"]) == self.media_path, "media pool is below the stable guest attachment")
         for branch in branches:
@@ -366,6 +367,16 @@ class Runtime:
             # terabytes and never notice.
             run("mount", "-t", "tmpfs", "-o", "mode=0755,size=5g", "tmpfs", str(branch))
             self.media_branches.append(branch)
+        library = branches[0] / "library"
+        library.mkdir(mode=0o2770, exist_ok=True)
+        os.chown(library, 0, media_gid)
+        os.chmod(library, 0o2770)
+        media = library / "recovery.wav"
+        if not media.exists():
+            write_test_wav(media)
+        os.chown(media, 0, media_gid)
+        os.chmod(media, 0o640)
+        check(library.is_dir() and media.is_file(), "media branch contains the recovery library before pool startup")
         root_wrapper = workspace / "compute-media-root.sh"
         root_wrapper.write_text("#!/bin/sh\nset -eu\nexport PATH=" + shlex.quote(os.environ["PATH"]) + "\n" + root_script)
         root_wrapper.chmod(0o700)
@@ -383,6 +394,17 @@ class Runtime:
         self.media_started = True
         run(str(root_wrapper))
         check(run("findmnt", "-n", "-o", "FSTYPE", "-M", str(self.media_path)) == "fuse.mergerfs", "media parent is the production pooled filesystem")
+        pooled_library = self.media_path / "library"
+        pooled_media = pooled_library / "recovery.wav"
+        check(
+            pooled_library.is_dir()
+            and pooled_media.is_file()
+            and (pooled_library.stat().st_uid, pooled_library.stat().st_gid, pooled_library.stat().st_mode & 0o7777)
+            == (0, media_gid, 0o2770)
+            and (pooled_media.stat().st_uid, pooled_media.stat().st_gid, pooled_media.stat().st_mode & 0o7777)
+            == (0, media_gid, 0o640),
+            "media pool exposes the seeded library and recovery media with stable ownership and modes before workload startup",
+        )
 
     def stop_media(self) -> None:
         if not self.media_started:
@@ -825,6 +847,8 @@ def run_scenario(args: argparse.Namespace) -> None:
     media_pool = fixture["mediaPool"]
     check(isinstance(fixture["mediaRootScript"], str) and fixture["mediaRootScript"].strip(), "fixture contains the native media-root script")
     check(all(isinstance(media_pool[key], str) and media_pool[key].strip() for key in ("path", "start", "stop")), "fixture contains native media pool commands")
+    check(isinstance(media_pool.get("gid"), int), "fixture contains the media capability gid")
+    media_gid = int(media_pool["gid"])
     check(isinstance(media_pool["branches"], list) and media_pool["branches"]
           and all(isinstance(branch, str) and branch.startswith("/") for branch in media_pool["branches"]),
           "fixture contains native media pool branches")
@@ -948,7 +972,6 @@ def run_scenario(args: argparse.Namespace) -> None:
         try:
             load_nftables(runtime, fixture["nftables"])
             runtime.start_media(media_pool, fixture["mediaRootScript"], workspace)
-            write_test_wav(runtime.media_path / "library" / "recovery.wav")
             check(public_key == descriptor["publicKey"], "descriptor public identity is the disposable staged key")
             # Lima reserves a very large range for its login user. Carve the
             # fixture's range out temporarily; never weaken the helper's check.
@@ -1076,7 +1099,7 @@ def run_scenario(args: argparse.Namespace) -> None:
 
             # Remapped guest root cannot bypass host DAC; visibility probes
             # must carry the media capability, including during source loss.
-            runtime.guest("sh", "-ec", "test -r /srv/media/data/library/recovery.wav", user=505)
+            runtime.guest("sh", "-ec", "test -r /srv/media/data/library/recovery.wav", user=media_gid)
             # The Incus media attachment itself is writable host storage; the
             # read-only boundary lives at the Jellyfin workload mount.
             hosted = runtime.media_path / "library" / ".compute-recovery-probe"
@@ -1204,7 +1227,7 @@ def run_scenario(args: argparse.Namespace) -> None:
                 runtime.stop_media()
                 check(runtime.node_ready(), "K3s node remains healthy during application source loss")
                 check(runtime.unrelated_ready(), "unrelated workload remains available during application source loss")
-                result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "505", "--group", "505", "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/data/library/recovery.wav")
+                result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", str(media_gid), "--group", str(media_gid), "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/data/library/recovery.wav")
                 check(result.returncode != 0, "source loss never exposes a substitute media directory")
                 denied = completed("kubectl", "--kubeconfig", str(kubeconfig), "-n", "jellyfin",
                                    "exec", "media-writer-probe", "--", "touch", "/data/downloads/.writer-during-loss")
@@ -1252,7 +1275,7 @@ def run_scenario(args: argparse.Namespace) -> None:
                     raise ScenarioError("Jellyfin became ready without its media source")
                 time.sleep(2)
             print("PASS: Jellyfin remained blocked throughout the media-absence observation", flush=True)
-            result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "505", "--group", "505", "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/data/library/recovery.wav")
+            result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", str(media_gid), "--group", str(media_gid), "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/data/library/recovery.wav")
             check(result.returncode != 0, "node boot without media does not expose a substitute directory")
             runtime.start_media(media_pool, fixture["mediaRootScript"], workspace)
             wait_for("Jellyfin after media restoration", runtime.app_ready)
