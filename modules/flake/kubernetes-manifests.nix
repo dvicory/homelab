@@ -129,6 +129,17 @@
                 relative = source["path"][len(expected_prefix):]
                 check(bool(relative) and ".." not in Path(relative).parts, path, f"unsafe path {source['path']}")
                 check((root / relative).is_dir(), path, f"missing directory {relative}")
+                finalizers = resource.get("metadata", {}).get("finalizers", [])
+                prune = resource["spec"]["syncPolicy"]["automated"]["prune"]
+                if finalizers:
+                    check(finalizers == ["resources-finalizer.argocd.argoproj.io"], path, f"unexpected finalizers {finalizers}")
+                else:
+                    check(prune is False, path, "non-cascading application must disable pruning")
+                    for manifest in sorted((root / relative).glob("*.yaml")):
+                        for obj in yaml.safe_load_all(manifest.read_text()):
+                            annotations = (obj or {}).get("metadata", {}).get("annotations", {})
+                            options = annotations.get("argocd.argoproj.io/sync-options", "")
+                            check("Delete=false" in options.split(","), manifest, "non-cascading resource must be protected from deletion")
                 seen.add(relative)
 
             bootstrap = yaml.safe_load((root / "bootstrap.yaml").read_text())

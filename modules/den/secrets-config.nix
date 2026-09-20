@@ -18,7 +18,10 @@ let
         description = "Path to the local age identity file (or encrypted envelope).";
       };
       pubkey = mkOption {
-        type = types.oneOf [ types.str types.path ];
+        type = types.oneOf [
+          types.str
+          types.path
+        ];
         description = "Path to the corresponding public key file.";
       };
     };
@@ -27,11 +30,13 @@ in
 {
   options.den.secretsConfig = {
     masterIdentities = mkOption {
-      type = types.listOf (types.oneOf [
-        types.str
-        types.path
-        identitySetType
-      ]);
+      type = types.listOf (
+        types.oneOf [
+          types.str
+          types.path
+          identitySetType
+        ]
+      );
       description = "Age master identity public key paths or configuration objects for agenix-rekey.";
     };
   };

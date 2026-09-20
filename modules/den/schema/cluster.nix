@@ -1,4 +1,9 @@
-{ lib, inputs, den, ... }:
+{
+  lib,
+  inputs,
+  den,
+  ...
+}:
 let
   inherit (lib) mkOption types;
   settingsType = import ./_settings-type.nix { inherit lib den; };
@@ -8,9 +13,20 @@ let
       service = mkOption { type = types.str; };
       port = mkOption { type = types.port; };
       hostnames = mkOption { type = types.listOf types.str; };
-      pathPrefix = mkOption { type = types.strMatching "/.*"; default = "/"; };
-      auth = mkOption { type = types.enum [ "native" "admin" ]; };
-      backendTLS = mkOption { type = types.bool; default = false; };
+      pathPrefix = mkOption {
+        type = types.strMatching "/.*";
+        default = "/";
+      };
+      auth = mkOption {
+        type = types.enum [
+          "native"
+          "admin"
+        ];
+      };
+      backendTLS = mkOption {
+        type = types.bool;
+        default = false;
+      };
     };
   };
 in
@@ -48,18 +64,31 @@ in
           ingress = mkOption {
             type = types.submodule {
               options = {
-                nodePort = mkOption { type = types.port; default = 30443; };
-                trustedProxyCIDRs = mkOption { type = types.listOf types.str; default = [ ]; };
+                nodePort = mkOption {
+                  type = types.port;
+                  default = 30443;
+                };
+                trustedProxyCIDRs = mkOption {
+                  type = types.listOf types.str;
+                  default = [ ];
+                };
               };
             };
             default = { };
           };
-          routes = mkOption { type = types.attrsOf routeType; default = { }; };
-          settings = (mkOption {
-            type = settingsType;
+          routes = mkOption {
+            type = types.attrsOf routeType;
             default = { };
-            description = "Typed per-aspect cluster settings";
-          }) // { identity = false; };
+          };
+          settings =
+            (mkOption {
+              type = settingsType;
+              default = { };
+              description = "Typed per-aspect cluster settings";
+            })
+            // {
+              identity = false;
+            };
         };
       }
     ];

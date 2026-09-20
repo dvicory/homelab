@@ -142,8 +142,7 @@ let
       && builtins.all (
         key: lib.hasPrefix "${devices.identity.path}/" key.path
       ) guest.services.openssh.hostKeys;
-    guest-opens-declared-gateway-node-port =
-      builtins.elem cluster.ingress.nodePort guest.networking.firewall.allowedTCPPorts;
+    guest-opens-declared-gateway-node-port = builtins.elem cluster.ingress.nodePort guest.networking.firewall.allowedTCPPorts;
     direct-gateway-mode-avoids-deny-all-policy =
       cluster.ingress.trustedProxyCIDRs == [ ]
       && builtins.all (

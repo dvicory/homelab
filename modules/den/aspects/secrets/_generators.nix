@@ -8,14 +8,24 @@
 #                  agenix user-identity secret in
 #                  modules/den/batteries/agenix.nix)
 #   luks-key    - 4096 random bytes, used as a LUKS key file
-{ config, lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 let
   inherit (lib) escapeShellArg removeSuffix;
 in
 {
   age.generators = {
     ssh-key =
-      { pkgs, file, name, ... }:
+      {
+        pkgs,
+        file,
+        name,
+        ...
+      }:
       let
         target = config.networking.hostName or "host";
       in
@@ -45,13 +55,19 @@ in
       '';
 
     hex =
-      { length ? 64, ... }:
+      {
+        length ? 64,
+        ...
+      }:
       ''
         ${pkgs.openssl}/bin/openssl rand -hex ${toString (length / 2)}
       '';
 
     base64 =
-      { length ? 64, ... }:
+      {
+        length ? 64,
+        ...
+      }:
       ''
         ${pkgs.openssl}/bin/openssl rand -base64 ${toString (length * 3 / 4)} | tr -d '\n'
       '';

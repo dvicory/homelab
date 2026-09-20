@@ -505,6 +505,8 @@ class GitOrigin:
         self.address = address
         self.url = f"git://{address}/recovery.git"
         self.process: subprocess.Popen | None = None
+        self.work: Path | None = None
+        self.bare: Path | None = None
     def publish(self, repo: Path) -> Path:
         work = self.parent / "work"
         if work.exists():
@@ -545,6 +547,8 @@ class GitOrigin:
         if bare.exists():
             shutil.rmtree(bare)
         run("git", "clone", "--bare", "--", str(work), str(bare))
+        self.work = work
+        self.bare = bare
         return work / "apps" / f"Application-{ROOT_APP}.yaml"
 
     def serve(self) -> None:
@@ -554,6 +558,17 @@ class GitOrigin:
              f"--listen={self.address}", "--port=9418", str(self.parent)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+
+    def retire(self, names: tuple[str, ...]) -> None:
+        check(self.work is not None and self.bare is not None, "Git origin was published before retirement")
+        for name in names:
+            path = self.work / "apps" / f"Application-{name}.yaml"
+            check(path.is_file(), f"retirement input exists for {name}")
+            path.unlink()
+        git = ["git", "-C", str(self.work)]
+        run(*git, "-c", "user.email=recovery@test", "-c", "user.name=recovery", "add", "-A")
+        run(*git, "-c", "user.email=recovery@test", "-c", "user.name=recovery", "commit", "-m", "retire fixture applications")
+        run(*git, "push", str(self.bare), "main:main")
 
     def stop(self) -> None:
         proc, self.process = self.process, None
@@ -569,6 +584,13 @@ class GitOrigin:
 
 def kubectl_outer(kubeconfig: Path, *args: str, timeout: int = COMMAND_TIMEOUT) -> str:
     return run("kubectl", "--kubeconfig", str(kubeconfig), *args, timeout=timeout)
+
+
+def kubectl_absent(kubeconfig: Path, kind: str, name: str, namespace: str) -> bool:
+    args = ["get", kind, name, "--ignore-not-found", "-o", "name"]
+    if namespace:
+        args.extend(["--namespace", namespace])
+    return not kubectl_outer(kubeconfig, *args).strip()
 
 
 def fetch_kubeconfig(runtime: Runtime, workspace: Path) -> Path:
@@ -667,7 +689,7 @@ def forward_start(runtime: Runtime, kubeconfig: Path) -> str:
     wait_for("Jellyfin port-forward", reachable, timeout=180)
     return "http://127.0.0.1:8096"
 
-def deliver_stack(runtime: Runtime, args: argparse.Namespace, workspace: Path) -> Path:
+def seed_and_handoff(runtime: Runtime, args: argparse.Namespace, workspace: Path) -> Path:
     """Run the shipped recovery control flow on a fresh cluster.
 
     Returns the guest kubeconfig. The driver orchestrates shipped commands;
@@ -683,6 +705,10 @@ def deliver_stack(runtime: Runtime, args: argparse.Namespace, workspace: Path) -
     want = {(entry["namespace"], entry["name"]) for entry in runtime.descriptor["runtimeSecrets"].values()}
     have = {(item["metadata"]["namespace"], item["metadata"]["name"]) for item in seeding}
     check(want <= have, f"shipped bootstrap applies all staged Secrets (missing: {sorted(want - have)})")
+    return kubeconfig
+
+
+def wait_stack(runtime: Runtime, kubeconfig: Path) -> None:
     wait_argo_synced(kubeconfig, (ROOT_APP, *CHILD_APPS))
     # Post-sync snapshot, stashed for the later verify failure message:
     # only the final exception text is guaranteed visible, so temporal
@@ -692,7 +718,6 @@ def deliver_stack(runtime: Runtime, args: argparse.Namespace, workspace: Path) -
         f"{item['metadata']['namespace']}/{item['metadata']['name']}"
         for item in synced
     )
-    return kubeconfig
 
 
 def prepare_directory(path: Path, safe_dirs: list[Path]) -> None:
@@ -993,10 +1018,14 @@ def run_scenario(args: argparse.Namespace) -> None:
                     written.unlink()
             origin = GitOrigin(workspace / "origin", fixture["bridgeAddress"])
             root_app = origin.publish(args.repo)
-            origin.serve()
             runtime.git_origin = origin
-            with phase("first-bootstrap-registry-pulls-and-argo-reconciliation"):
-                kubeconfig = deliver_stack(runtime, args, workspace)
+            with phase("static-bootstrap-and-root-handoff-without-git"):
+                kubeconfig = seed_and_handoff(runtime, args, workspace)
+                check(not kubectl_absent(kubeconfig, "application", ROOT_APP, "argocd"), "root Application is applied after the static seed")
+                check(all(kubectl_absent(kubeconfig, "application", name, "argocd") for name in CHILD_APPS), "static seed does not apply child Applications without Git")
+            origin.serve()
+            with phase("first-git-reconciliation"):
+                wait_stack(runtime, kubeconfig)
             runtime.verify_secret_consumers(secret_values)
             check(runtime.app_ready(), "Argo delivers Jellyfin when the intended media source is present")
             base = forward_start(runtime, kubeconfig)
@@ -1214,7 +1243,8 @@ def run_scenario(args: argparse.Namespace) -> None:
             check(all((secret_inputs / source).read_bytes() == value for source, value in secret_values.items()),
                   "guest recreation preserves credential inputs rather than regenerating them")
             with phase("second-bootstrap-registry-pulls-and-argo-reconciliation"):
-                kubeconfig = deliver_stack(runtime, args, workspace)
+                kubeconfig = seed_and_handoff(runtime, args, workspace)
+                wait_stack(runtime, kubeconfig)
             runtime.verify_secret_consumers(secret_values)
             runtime.verify_access_boundaries()
             base = forward_start(runtime, kubeconfig)
@@ -1226,6 +1256,24 @@ def run_scenario(args: argparse.Namespace) -> None:
             replacement_pool_mount = run("findmnt", "-n", "-o", "FSTYPE,SOURCE,TARGET", "-M", str(pool_path))
             check(replacement_pool_mount == pool_mount,
                   "Incus storage pool remains on the same ZFS dataset through guest replacement")
+            runtime.forward_stop()
+            with phase("argo-resource-retirement"):
+                origin.retire(CHILD_APPS)
+                wait_argo_synced(kubeconfig, (ROOT_APP,))
+                wait_for(
+                    "retired child Applications",
+                    lambda: all(kubectl_absent(kubeconfig, "application", name, "argocd") for name in CHILD_APPS),
+                    timeout=600,
+                )
+                wait_for(
+                    "retired Jellyfin workload",
+                    lambda: kubectl_absent(kubeconfig, "deployment", "jellyfin", "jellyfin"),
+                    timeout=600,
+                )
+                check(not kubectl_absent(kubeconfig, "namespace", "jellyfin", ""), "retained namespace survives application retirement")
+                check(not kubectl_absent(kubeconfig, "persistentvolume", "jellyfin-config", ""), "retained PV survives application retirement")
+                check(not kubectl_absent(kubeconfig, "persistentvolumeclaim", "jellyfin-config", "jellyfin"), "retained PVC survives application retirement")
+                check(marker.read_text() == "retained-state\n", "retained application data survives resource retirement")
         finally:
             if sys.exc_info()[0] is not None and runtime.created_instance:
                 diagnostics = completed("journalctl", "-k", "-n", "80", "--no-pager")

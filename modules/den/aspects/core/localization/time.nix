@@ -7,7 +7,12 @@
       };
 
     nixos =
-      { config, lib, pkgs, ... }:
+      {
+        config,
+        lib,
+        pkgs,
+        ...
+      }:
       let
         logDir = "/var/log/chrony";
         servers = [
@@ -51,7 +56,8 @@
         };
       };
 
-    persist = { config, ... }:
+    persist =
+      { config, ... }:
       let
         logDir = "/var/log/chrony";
         user = config.users.users.chrony.name;

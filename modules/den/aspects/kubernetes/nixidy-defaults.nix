@@ -16,7 +16,10 @@
               rootPath = lib.mkDefault "./generated/manifests/${cluster.name}";
             };
             bootstrapManifest.enable = true;
-            defaults.helm.extraOpts = [ "--kube-version" cluster.kubeVersion ];
+            defaults.helm.extraOpts = [
+              "--kube-version"
+              cluster.kubeVersion
+            ];
             applicationImports = [
               ({ lib, ... }: { syncPolicy.syncOptions.serverSideApply = lib.mkDefault true; })
             ];
@@ -25,6 +28,7 @@
               prune = true;
               selfHeal = true;
             };
+            defaults.finalizer = "foreground";
           };
         };
     }
