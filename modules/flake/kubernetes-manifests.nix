@@ -144,6 +144,7 @@
             }
 
             application_destinations = set()
+            network_policies = []
 
             def check_application(resource, path, allow_retained):
                 check(resource.get("kind") == "Application", path, "expected an Application")
@@ -326,6 +327,8 @@
                             f"duplicate object {identity}; already owned by {owners.get(identity)}",
                         )
                         owners[identity] = path.name
+                        if identity[1] == "NetworkPolicy":
+                            network_policies.append((manifest, obj))
                         options = metadata.get("annotations", {}).get(
                             "argocd.argoproj.io/sync-options", ""
                         ).split(",")
@@ -401,6 +404,19 @@
             check(len(seed_apps) == 1, seed_root, "bootstrap package must contain exactly one root Application")
             bootstrap_path = root / "bootstrap.yaml"
             check(seed_apps[0].read_bytes() == bootstrap_path.read_bytes(), bootstrap_path, "bootstrap Application differs from its seed")
+
+            argocd_server_selector = {
+                "app.kubernetes.io/instance": "argocd",
+                "app.kubernetes.io/name": "argocd-server",
+            }
+            for path, policy in network_policies:
+                metadata = policy["metadata"]
+                spec = policy.get("spec", {})
+                if (
+                    metadata.get("namespace") == "argocd"
+                    and spec.get("podSelector", {}).get("matchLabels") == argocd_server_selector
+                ):
+                    check({} not in spec.get("ingress", []), path, "Argo server policy allows every ingress source")
 
             bootstrap = yaml.safe_load((root / "bootstrap.yaml").read_text())
             bootstrapSource, _, _ = check_application(bootstrap, root / "bootstrap.yaml", allow_retained=False)

@@ -24,6 +24,8 @@ let
       inherit lib;
     };
   edge = sourceFor testCluster;
+  gateway =
+    (import ../den/aspects/kubernetes/services/gateway.nix { }).den.aspects.kubernetes.services.gateway;
   remoteAspect = edge.den.aspects.services.remote-edge;
   homeAspect = edge.den.aspects.services.home-edge;
   tls = {
@@ -66,6 +68,94 @@ let
     variant: map (route: builtins.elemAt route.hostnames variant) (builtins.attrValues routes);
   sorted = values: lib.sort builtins.lessThan values;
   allAssertions = module: lib.all (assertion: assertion.assertion) module.assertions;
+  gatewayObjects =
+    inventory:
+    gateway.k8s-manifests {
+      cluster = inventory;
+      compute.instance = "compute-1";
+      charts = { };
+      inherit lib;
+    };
+  backendPolicies =
+    inventory:
+    lib.filter (object: lib.hasSuffix "-backend-ingress" object.metadata.name) (
+      (gatewayObjects inventory).applications.gateway.objects
+    );
+  policyFor =
+    inventory: name:
+    builtins.head (
+      lib.filter (policy: policy.metadata.name == "gateway-${name}-backend-ingress") (
+        backendPolicies inventory
+      )
+    );
+  backendPolicyContract =
+    inventory:
+    let
+      routeNames = builtins.attrNames inventory.routes;
+      objects = backendPolicies inventory;
+      proxySelector = {
+        namespaceSelector.matchLabels."kubernetes.io/metadata.name" = "gateway";
+        podSelector.matchLabels = {
+          "gateway.envoyproxy.io/owning-gateway-namespace" = "gateway";
+          "gateway.envoyproxy.io/owning-gateway-name" = "household";
+        };
+      };
+    in
+    sorted (map (policy: policy.metadata.name) objects)
+    == sorted (map (name: "gateway-${name}-backend-ingress") routeNames)
+    && lib.all (
+      name:
+      let
+        route = inventory.routes.${name};
+        policy = policyFor inventory name;
+      in
+      policy.metadata.namespace == route.namespace
+      && policy.spec.podSelector.matchLabels == route.backendPodSelector
+      && policy.spec.policyTypes == [ "Ingress" ]
+      &&
+        policy.spec.ingress == [
+          {
+            from = [
+              {
+                namespaceSelector.matchLabels."kubernetes.io/metadata.name" = route.namespace;
+              }
+            ];
+          }
+          {
+            from = [ proxySelector ];
+          }
+        ]
+    ) routeNames;
+  sameNamespaceCluster = testCluster // {
+    routes = routes // {
+      idm = routes.idm // {
+        namespace = routes.argocd.namespace;
+      };
+    };
+  };
+  sameNamespaceBackendPolicyContract =
+    let
+      argocd = policyFor sameNamespaceCluster "argocd";
+      idm = policyFor sameNamespaceCluster "idm";
+    in
+    builtins.length (backendPolicies sameNamespaceCluster) == 2
+    && argocd.metadata.namespace == idm.metadata.namespace
+    && argocd.metadata.name != idm.metadata.name
+    && argocd.spec.podSelector.matchLabels != idm.spec.podSelector.matchLabels;
+  gatewayRenderSucceeds =
+    inventory: (builtins.tryEval ((gatewayObjects inventory).applications.gateway.objects)).success;
+  emptySelectorCluster = testCluster // {
+    routes = routes // {
+      argocd = routes.argocd // {
+        backendPodSelector = { };
+      };
+    };
+  };
+  missingSelectorCluster = testCluster // {
+    routes = routes // {
+      argocd = builtins.removeAttrs routes.argocd [ "backendPodSelector" ];
+    };
+  };
   proxyContract =
     {
       module,
@@ -174,6 +264,10 @@ let
     incomplete-tls-rejected = !allAssertions badTLSModule;
     unsupported-prefix-rejected = !allAssertions badPathModule;
     non-private-trusted-peer-rejected = !allAssertions badTrustedModule;
+    backend-policy-selectors = backendPolicyContract testCluster;
+    same-namespace-backend-policies = sameNamespaceBackendPolicyContract;
+    empty-backend-selector-rejected = !gatewayRenderSucceeds emptySelectorCluster;
+    missing-backend-selector-rejected = !gatewayRenderSucceeds missingSelectorCluster;
   };
 in
 {

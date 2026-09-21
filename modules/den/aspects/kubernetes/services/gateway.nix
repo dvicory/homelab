@@ -124,29 +124,29 @@
           };
         }
       ) (lib.filterAttrs (_: r: r.backendTLS) cluster.routes);
-      backendIsolation =
-        let
-          namespaces = lib.unique (map (route: route.namespace) (builtins.attrValues cluster.routes));
-        in
-        map (
-          ns:
-          object "networking.k8s.io/v1" "NetworkPolicy" "gateway-backend-ingress" ns {
-            podSelector = { };
-            policyTypes = [ "Ingress" ];
-            ingress = [
-              { from = [ { namespaceSelector.matchLabels."kubernetes.io/metadata.name" = ns; } ]; }
-              {
-                from = [
-                  {
-                    namespaceSelector.matchLabels."kubernetes.io/metadata.name" = namespace;
-                    podSelector = proxySelector;
-                  }
-                ];
-              }
-            ];
-          }
-        ) namespaces;
+      backendSelectorsValid = lib.all (
+        route: route ? backendPodSelector && route.backendPodSelector != { }
+      ) (builtins.attrValues cluster.routes);
+      backendIsolation = lib.mapAttrsToList (
+        name: route:
+        object "networking.k8s.io/v1" "NetworkPolicy" "gateway-${name}-backend-ingress" route.namespace {
+          podSelector.matchLabels = route.backendPodSelector;
+          policyTypes = [ "Ingress" ];
+          ingress = [
+            { from = [ { namespaceSelector.matchLabels."kubernetes.io/metadata.name" = route.namespace; } ]; }
+            {
+              from = [
+                {
+                  namespaceSelector.matchLabels."kubernetes.io/metadata.name" = namespace;
+                  podSelector = proxySelector;
+                }
+              ];
+            }
+          ];
+        }
+      ) cluster.routes;
     in
+    assert lib.assertMsg backendSelectorsValid "Gateway routes require a non-empty backendPodSelector";
     {
       applications.gateway-retained = {
         inherit namespace;

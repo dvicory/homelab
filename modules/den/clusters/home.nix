@@ -15,12 +15,13 @@ let
   kubeVersion = builtins.head (
     lib.splitString "+" inputs.nixpkgs.legacyPackages.${cluster.hostSystem}.k3s.version
   );
-  route = key: namespace: service: port: auth: {
+  route = key: namespace: service: port: auth: backendPodSelector: {
     inherit
       namespace
       service
       port
       auth
+      backendPodSelector
       ;
     hostnames = hosts key;
     pathPrefix = "/";
@@ -41,10 +42,17 @@ in
       trustedProxyCIDRs = [ ];
     };
     routes = {
-      argocd = route "argocd" "argocd" "argocd-server" 80 "admin";
-      idm = (route "idm" "identity" "kanidm" 443 "native") // {
-        backendTLS = true;
+      argocd = route "argocd" "argocd" "argocd-server" 80 "admin" {
+        "app.kubernetes.io/instance" = "argocd";
+        "app.kubernetes.io/name" = "argocd-server";
       };
+      idm =
+        (route "idm" "identity" "kanidm" 443 "native" {
+          "app.kubernetes.io/name" = "kanidm";
+        })
+        // {
+          backendTLS = true;
+        };
     };
   };
 
