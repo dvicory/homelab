@@ -5,42 +5,45 @@
   ...
 }:
 {
-  den.aspects.kubernetes.services.identity.compute-resources = {
-    retainedPaths.identity-kanidm = {
-      uid = 1000;
-      gid = 1000;
-      mode = "0700";
-    };
-    runtimeSecrets = {
-      "identity--kanidm-provision--idm-admin-password" = {
-        namespace = "identity";
-        name = "kanidm-provision";
-        key = "idm-admin-password";
+  den.aspects.kubernetes.services.identity.compute-resources =
+    { cluster, ... }:
+    let
+      compute =
+        config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
+      guestSystem = inputs.self.nixosConfigurations.${compute.instance}.pkgs.stdenv.hostPlatform.system;
+    in
+    {
+      images = [ inputs.self.packages.${guestSystem}.kanidm-provision-image ];
+      retainedPaths.identity-kanidm = {
+        uid = 1000;
+        gid = 1000;
+        mode = "0700";
       };
-      "identity--kanidm-tls--tls.crt" = {
-        namespace = "identity";
-        name = "kanidm-tls";
-        key = "tls.crt";
-        type = "kubernetes.io/tls";
+      runtimeSecrets = {
+        "identity--kanidm-provision--idm-admin-password" = {
+          namespace = "identity";
+          name = "kanidm-provision";
+          key = "idm-admin-password";
+        };
+        "identity--kanidm-tls--tls.crt" = {
+          namespace = "identity";
+          name = "kanidm-tls";
+          key = "tls.crt";
+          type = "kubernetes.io/tls";
+        };
+        "identity--kanidm-tls--tls.key" = {
+          namespace = "identity";
+          name = "kanidm-tls";
+          key = "tls.key";
+          type = "kubernetes.io/tls";
+        };
+        "identity--kanidm-tls--ca.crt" = {
+          namespace = "identity";
+          name = "kanidm-tls";
+          key = "ca.crt";
+          type = "kubernetes.io/tls";
+        };
       };
-      "identity--kanidm-tls--tls.key" = {
-        namespace = "identity";
-        name = "kanidm-tls";
-        key = "tls.key";
-        type = "kubernetes.io/tls";
-      };
-      "identity--kanidm-tls--ca.crt" = {
-        namespace = "identity";
-        name = "kanidm-tls";
-        key = "ca.crt";
-        type = "kubernetes.io/tls";
-      };
-    };
-  };
-  perSystem =
-    { pkgs, system, ... }:
-    lib.optionalAttrs (lib.hasSuffix "-linux" system) {
-      packages.kanidm-provision-image = (import ./_identity-provisioning.nix { inherit pkgs lib; }).image;
     };
   den.aspects.kubernetes.services.identity.k8s-manifests =
     {

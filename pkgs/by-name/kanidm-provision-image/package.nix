@@ -1,15 +1,22 @@
-{ pkgs, lib }:
+{
+  writeShellApplication,
+  kanidm-provision,
+  curl,
+  jq,
+  coreutils,
+  kubectl,
+  dockerTools,
+  cacert,
+}:
 let
-  # nixpkgs pins oddlama/kanidm-provision v1.3.0. Only its supported,
-  # unpatched REST API is used; recovery credentials are never reset here.
-  runner = pkgs.writeShellApplication {
+  runner = writeShellApplication {
     name = "provision-identity";
     runtimeInputs = [
-      pkgs.kanidm-provision
-      pkgs.curl
-      pkgs.jq
-      pkgs.coreutils
-      pkgs.kubectl
+      kanidm-provision
+      curl
+      jq
+      coreutils
+      kubectl
     ];
     text = ''
       umask 077
@@ -113,26 +120,23 @@ let
       echo 'Kanidm household administrator policy applied'
     '';
   };
-  image = pkgs.dockerTools.buildLayeredImage {
+  image = dockerTools.buildLayeredImage {
     name = "homelab/kanidm-provision";
     compressor = "none";
     contents = [
       runner
-      pkgs.cacert
+      cacert
     ];
     config = {
       Entrypoint = [ "${runner}/bin/provision-identity" ];
-      Env = [ "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt" ];
+      Env = [ "SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt" ];
       User = "1000:1000";
     };
   };
   imageRef = "${image.imageName}:${image.imageTag}";
 in
-{
-  inherit imageRef;
-  image = image.overrideAttrs (old: {
-    passthru = (old.passthru or { }) // {
-      imageReference = imageRef;
-    };
-  });
-}
+image.overrideAttrs (old: {
+  passthru = (old.passthru or { }) // {
+    imageReference = imageRef;
+  };
+})
