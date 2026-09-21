@@ -31,6 +31,11 @@ the tracked ref changes production desired state.
 | `argocd` | `public` | `https://argocd.plus2.danielvicory.dev` | `https://argocd.backup.plus2.danielvicory.dev` | `argocd/argocd-server:80` |
 | `idm` | `public` | `https://idm.plus2.danielvicory.dev` | `https://idm.backup.plus2.danielvicory.dev` | `identity/kanidm:443` |
 | `jellyfin` | `private` | `https://jellyfin.plus2.danielvicory.dev` | `https://jellyfin.backup.plus2.danielvicory.dev` | `jellyfin/jellyfin:8096` |
+| `prowlarr` | `public` | `https://prowlarr.plus2.danielvicory.dev` | `https://prowlarr.backup.plus2.danielvicory.dev` | `media/prowlarr:9696` |
+| `radarr` | `public` | `https://radarr.plus2.danielvicory.dev` | `https://radarr.backup.plus2.danielvicory.dev` | `media/radarr:7878` |
+| `requests` | `public` | `https://requests.plus2.danielvicory.dev` | `https://requests.backup.plus2.danielvicory.dev` | `media/seerr:5055` |
+| `sabnzbd` | `public` | `https://sabnzbd.plus2.danielvicory.dev` | `https://sabnzbd.backup.plus2.danielvicory.dev` | `media/sabnzbd:8080` |
+| `sonarr` | `public` | `https://sonarr.plus2.danielvicory.dev` | `https://sonarr.backup.plus2.danielvicory.dev` | `media/sonarr:8989` |
 
 Public edges publish only `public` routes. The `idm` canonical hostname
 remains the identity issuer across direct and secondary-edge access;
@@ -74,6 +79,11 @@ or restore policy.
 | `identity-kanidm` | `/var/lib/homelab/compute-1/state/identity-kanidm` | `/srv/state/identity-kanidm` | `1000:1000` | `0700` | writable |
 | `jellyfin-config` | `/var/lib/homelab/compute-1/state/jellyfin-config` | `/srv/state/jellyfin-config` | `751:751` | `0750` | writable |
 | `kubernetes-volumes` | `/var/lib/homelab/compute-1/state/kubernetes-volumes` | `/srv/state/kubernetes-volumes` | `0:0` | `0700` | writable |
+| `prowlarr` | `/var/lib/homelab/compute-1/state/prowlarr` | `/srv/state/prowlarr` | `755:755` | `0700` | writable |
+| `radarr` | `/var/lib/homelab/compute-1/state/radarr` | `/srv/state/radarr` | `752:752` | `0700` | writable |
+| `sabnzbd` | `/var/lib/homelab/compute-1/state/sabnzbd` | `/srv/state/sabnzbd` | `757:757` | `0700` | writable |
+| `seerr` | `/var/lib/homelab/compute-1/state/seerr` | `/srv/state/seerr` | `1000:1000` | `0700` | writable |
+| `sonarr` | `/var/lib/homelab/compute-1/state/sonarr` | `/srv/state/sonarr` | `753:753` | `0700` | writable |
 
 A retained path is not a backup. Incus propagates host mounts one way;
 after restoring a source, recreate affected pods to refresh child
@@ -110,6 +120,7 @@ in Git, the Nix store, manifests, images, or this document.
 | `gateway/gateway-tls` | `gateway--gateway-tls--ca.crt` → `ca.crt`, `gateway--gateway-tls--tls.crt` → `tls.crt`, `gateway--gateway-tls--tls.key` → `tls.key` | `kubernetes.io/tls` |
 | `identity/kanidm-tls` | `identity--kanidm-tls--tls.crt` → `tls.crt`, `identity--kanidm-tls--tls.key` → `tls.key` | `kubernetes.io/tls` |
 | `jellyfin/jellyfin-admin` | `jellyfin--jellyfin-admin--password` → `password` | `Opaque` |
+| `media/media-runtime` | `media--media-runtime--JELLYFIN_OWNER_PASSWORD` → `JELLYFIN_OWNER_PASSWORD`, `media--media-runtime--JELLYFIN_OWNER_USERNAME` → `JELLYFIN_OWNER_USERNAME`, `media--media-runtime--PROWLARR_API_KEY` → `PROWLARR_API_KEY`, `media--media-runtime--RADARR_API_KEY` → `RADARR_API_KEY`, `media--media-runtime--SABNZBD_API_KEY` → `SABNZBD_API_KEY`, `media--media-runtime--SABNZBD_PASSWORD` → `SABNZBD_PASSWORD`, `media--media-runtime--SABNZBD_USERNAME` → `SABNZBD_USERNAME`, `media--media-runtime--SONARR_API_KEY` → `SONARR_API_KEY` | `Opaque` |
 
 ## Lifecycle and bootstrap
 

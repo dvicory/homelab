@@ -39,6 +39,7 @@
               den = {
                 clusters."prod-home" = {
                   environment = "prod";
+                  settings.kubernetes.services.identity.phase = "normal";
                   ingress.mode = "trustedEdges";
                   ingress.trustedProxyCIDRs = [
                     "10.0.0.11/32"

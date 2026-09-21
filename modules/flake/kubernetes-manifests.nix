@@ -134,6 +134,19 @@
                 "jellyfin-retained",
                 "jellyfin",
                 "jellyfin-configuration",
+                "media-access",
+                "media-configuration",
+                "media-storage",
+                "prowlarr",
+                "prowlarr-storage",
+                "radarr",
+                "radarr-storage",
+                "sabnzbd",
+                "sabnzbd-storage",
+                "seerr",
+                "seerr-storage",
+                "sonarr",
+                "sonarr-storage",
             }
 
             application_destinations = set()
