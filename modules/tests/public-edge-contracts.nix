@@ -74,7 +74,7 @@ let
     inventory:
     gateway.k8s-manifests {
       cluster = inventory;
-      compute.instance = "compute-1";
+      computeResources.instance = "compute-1";
       charts = { };
       inherit lib;
     };

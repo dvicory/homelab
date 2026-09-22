@@ -23,7 +23,7 @@
   den.aspects.kubernetes.services.gateway.k8s-manifests =
     {
       cluster,
-      compute,
+      computeResources,
       charts,
       lib,
       ...
@@ -229,7 +229,7 @@
                 envoyDeployment = {
                   replicas = 1;
                   container.image = proxyImage;
-                  pod.nodeSelector."kubernetes.io/hostname" = compute.instance;
+                  pod.nodeSelector."kubernetes.io/hostname" = computeResources.instance;
                 };
                 envoyService = {
                   name = "household-origin";

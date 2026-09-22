@@ -6,8 +6,7 @@
 }:
 let
   cluster = config.den.clusters.prod-home;
-  compute =
-    config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
+  computeResources = config.clusterResources.prod-home;
   identity =
     (import ../den/aspects/kubernetes/services/identity.nix {
       inherit config inputs lib;
@@ -16,7 +15,7 @@ let
     inventory:
     identity.k8s-manifests {
       cluster = inventory;
-      inherit compute lib;
+      inherit computeResources lib;
     };
   normalCluster = lib.recursiveUpdate cluster {
     settings.kubernetes.services.identity.phase = "normal";

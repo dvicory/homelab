@@ -64,7 +64,7 @@
   den.aspects.kubernetes.services.identity.k8s-manifests =
     {
       cluster,
-      compute,
+      computeResources,
       lib,
       ...
     }:
@@ -129,7 +129,8 @@
         };
       }) (lib.filterAttrs (_: route: route.auth == "admin") cluster.routes);
       # The image runs on the selected compute node, not on the renderer.
-      linuxSystem = inputs.self.nixosConfigurations.${compute.instance}.pkgs.stdenv.hostPlatform.system;
+      linuxSystem =
+        inputs.self.nixosConfigurations.${computeResources.instance}.pkgs.stdenv.hostPlatform.system;
       provisioning = inputs.self.packages.${linuxSystem}.kanidm-provision-image;
       registry = config.den.users.registry;
       administrators = lib.filterAttrs (
@@ -305,7 +306,7 @@
               capacity.storage = "10Gi";
               accessModes = [ "ReadWriteOnce" ];
               storageClassName = "";
-              local.path = compute.retainedPaths.identity-kanidm.guestPath;
+              local.path = computeResources.retainedPaths.identity-kanidm.guestPath;
               claimRef = {
                 inherit namespace;
                 name = "identity-kanidm";
@@ -316,7 +317,7 @@
                     {
                       key = "kubernetes.io/hostname";
                       operator = "In";
-                      values = [ compute.instance ];
+                      values = [ computeResources.instance ];
                     }
                   ];
                 }
@@ -365,11 +366,11 @@
                 metadata.labels = labels;
                 spec = {
                   automountServiceAccountToken = false;
-                  nodeSelector."kubernetes.io/hostname" = compute.instance;
+                  nodeSelector."kubernetes.io/hostname" = computeResources.instance;
                   securityContext = {
                     runAsNonRoot = true;
-                    runAsUser = compute.retainedPaths.identity-kanidm.uid;
-                    runAsGroup = compute.retainedPaths.identity-kanidm.gid;
+                    runAsUser = computeResources.retainedPaths.identity-kanidm.uid;
+                    runAsGroup = computeResources.retainedPaths.identity-kanidm.gid;
                     seccompProfile.type = "RuntimeDefault";
                   };
                   containers = [
@@ -593,7 +594,7 @@
                   restartPolicy = "OnFailure";
                   serviceAccountName = "kanidm-provision";
                   automountServiceAccountToken = true;
-                  nodeSelector."kubernetes.io/hostname" = compute.instance;
+                  nodeSelector."kubernetes.io/hostname" = computeResources.instance;
                   securityContext = {
                     runAsNonRoot = true;
                     runAsUser = 1000;
