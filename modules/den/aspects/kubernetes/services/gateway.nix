@@ -31,6 +31,8 @@
     let
       namespace = "gateway";
       peers = cluster.ingress.trustedProxyCIDRs;
+      gatewayImage = "docker.io/envoyproxy/gateway:v1.9.1@sha256:0049bcb384c591c6a6dd043fe5c9929ef6e74f230e12dd678d2d3701df9b301e";
+      proxyImage = "docker.io/envoyproxy/envoy:distroless-v1.39.1@sha256:eb2c01c13125d1629637cb4e4cce7207009fb7cc2c8027f9742758549d15b6f4";
       originModeValid =
         (cluster.ingress.mode == "direct" && peers == [ ])
         || (cluster.ingress.mode == "trustedEdges" && peers != [ ]);
@@ -197,9 +199,14 @@
           includeCRDs = false;
           values = {
             crds.enabled = false;
+            global.images = {
+              envoyGateway.image = gatewayImage;
+              envoyProxy.image = proxyImage;
+            };
             deployment.replicas = 1;
             config.envoyGateway = {
               provider.kubernetes.deploy.type = "GatewayNamespace";
+              provider.kubernetes.shutdownManager.image = gatewayImage;
               extensionApis.enableBackend = true;
             };
           };
@@ -221,6 +228,7 @@
               kubernetes = {
                 envoyDeployment = {
                   replicas = 1;
+                  container.image = proxyImage;
                   pod.nodeSelector."kubernetes.io/hostname" = compute.instance;
                 };
                 envoyService = {

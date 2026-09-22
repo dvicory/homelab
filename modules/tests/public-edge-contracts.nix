@@ -85,6 +85,15 @@ let
   envoyProxy = builtins.head (
     lib.filter (object: object.kind == "EnvoyProxy") renderedGateway.applications.gateway.objects
   );
+  gatewayImage = "docker.io/envoyproxy/gateway:v1.9.1@sha256:0049bcb384c591c6a6dd043fe5c9929ef6e74f230e12dd678d2d3701df9b301e";
+  proxyImage = "docker.io/envoyproxy/envoy:distroless-v1.39.1@sha256:eb2c01c13125d1629637cb4e4cce7207009fb7cc2c8027f9742758549d15b6f4";
+  controllerValues =
+    renderedGateway.applications.gateway-controller.helm.releases.envoy-gateway.values;
+  pinnedImages =
+    controllerValues.global.images.envoyGateway.image == gatewayImage
+    && controllerValues.global.images.envoyProxy.image == proxyImage
+    && controllerValues.config.envoyGateway.provider.kubernetes.shutdownManager.image == gatewayImage
+    && envoyProxy.spec.provider.kubernetes.envoyDeployment.container.image == proxyImage;
   timeoutContract = lib.all (
     route:
     (builtins.head route.spec.rules).timeouts == {
@@ -302,6 +311,7 @@ let
     bounded-route-timeouts = timeoutContract;
     queryless-envoy-logs = querylessEnvoyLogs;
     queryless-nginx-logs = querylessNginxLogs;
+    envoy-images-pinned = pinnedImages;
     non-private-trusted-peer-rejected = !allAssertions badTrustedModule;
     backend-policy-selectors = backendPolicyContract testCluster;
     same-namespace-backend-policies = sameNamespaceBackendPolicyContract;
