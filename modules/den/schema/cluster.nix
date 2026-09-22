@@ -1,7 +1,64 @@
-{ lib, inputs, den, ... }:
+{
+  lib,
+  inputs,
+  den,
+  ...
+}:
 let
   inherit (lib) mkOption types;
   settingsType = import ./_settings-type.nix { inherit lib den; };
+  routeType = types.submodule {
+    options = {
+      namespace = mkOption { type = types.str; };
+      service = mkOption { type = types.str; };
+      backendPodSelector = mkOption {
+        type = types.addCheck (types.attrsOf types.str) (value: value != { });
+        description = "Non-empty pod labels selecting the routed backend workload.";
+      };
+      port = mkOption { type = types.port; };
+      hostnames = mkOption {
+        type = types.addCheck (types.listOf types.str) (
+          value: value != [ ] && lib.all (hostname: hostname != "") value
+        );
+      };
+      pathPrefix = mkOption {
+        type = types.strMatching "/.*";
+        default = "/";
+      };
+      auth = mkOption {
+        type = types.enum [
+          "native"
+          "admin"
+        ];
+      };
+      exposure = mkOption {
+        type = types.enum [
+          "private"
+          "public"
+        ];
+      };
+      timeouts = mkOption {
+        type = types.nullOr (
+          types.submodule {
+            options = {
+              request = mkOption { type = types.str; };
+              backendRequest = mkOption { type = types.str; };
+            };
+          }
+        );
+        default = null;
+      };
+      backendTLS = mkOption {
+        type = types.bool;
+        default = false;
+      };
+      backendHostname = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "DNS name required when verifying a TLS backend certificate.";
+      };
+    };
+  };
 in
 {
   options.den.clusters = inputs.gen-schema.lib.mkInstanceRegistry den.schema.cluster {
@@ -34,11 +91,40 @@ in
             type = types.str;
             description = "Git ref or branch containing the generated production manifests Argo CD tracks.";
           };
-          settings = (mkOption {
-            type = settingsType;
+          ingress = mkOption {
+            type = types.submodule {
+              options = {
+                nodePort = mkOption {
+                  type = types.port;
+                  default = 30443;
+                };
+                mode = mkOption {
+                  type = types.enum [
+                    "direct"
+                    "trustedEdges"
+                  ];
+                };
+                trustedProxyCIDRs = mkOption {
+                  type = types.listOf types.str;
+                  default = [ ];
+                };
+              };
+            };
             default = { };
-            description = "Typed per-aspect cluster settings";
-          }) // { identity = false; };
+          };
+          routes = mkOption {
+            type = types.attrsOf routeType;
+            default = { };
+          };
+          settings =
+            (mkOption {
+              type = settingsType;
+              default = { };
+              description = "Typed per-aspect cluster settings";
+            })
+            // {
+              identity = false;
+            };
         };
       }
     ];

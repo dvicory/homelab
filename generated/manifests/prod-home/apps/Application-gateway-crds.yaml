@@ -1,0 +1,31 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  name: gateway-crds
+  namespace: argocd
+spec:
+  destination:
+    namespace: gateway
+    server: https://kubernetes.default.svc
+  project: prod-home
+  source:
+    path: ./generated/manifests/prod-home/gateway-crds
+    repoURL: https://github.com/dvicory/homelab.git
+    targetRevision: main
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 1m
+      limit: 5
+    syncOptions:
+      - FailOnSharedResource=true
+      - ServerSideApply=true

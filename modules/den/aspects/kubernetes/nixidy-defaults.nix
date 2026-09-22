@@ -30,6 +30,8 @@
                     "argocd"
                     "kube-system"
                     "local-path-storage"
+                    "gateway"
+                    "identity"
                   ];
               clusterResourceWhitelist = [
                 {
@@ -37,8 +39,24 @@
                   kind = "Namespace";
                 }
                 {
+                  group = "";
+                  kind = "PersistentVolume";
+                }
+                {
                   group = "apiextensions.k8s.io";
                   kind = "CustomResourceDefinition";
+                }
+                {
+                  group = "admissionregistration.k8s.io";
+                  kind = "MutatingWebhookConfiguration";
+                }
+                {
+                  group = "admissionregistration.k8s.io";
+                  kind = "ValidatingAdmissionPolicy";
+                }
+                {
+                  group = "admissionregistration.k8s.io";
+                  kind = "ValidatingAdmissionPolicyBinding";
                 }
                 {
                   group = "rbac.authorization.k8s.io";
@@ -51,6 +69,10 @@
                 {
                   group = "storage.k8s.io";
                   kind = "StorageClass";
+                }
+                {
+                  group = "gateway.networking.k8s.io";
+                  kind = "GatewayClass";
                 }
               ];
             };
