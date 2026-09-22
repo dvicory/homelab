@@ -27,6 +27,8 @@
                     "argocd"
                     "kube-system"
                     "local-path-storage"
+                    "gateway"
+                    "identity"
                   ];
               clusterResourceWhitelist = [
                 {

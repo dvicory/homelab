@@ -24,5 +24,9 @@ spec:
       server: https://kubernetes.default.svc
     - namespace: local-path-storage
       server: https://kubernetes.default.svc
+    - namespace: gateway
+      server: https://kubernetes.default.svc
+    - namespace: identity
+      server: https://kubernetes.default.svc
   sourceRepos:
     - https://github.com/dvicory/homelab.git
