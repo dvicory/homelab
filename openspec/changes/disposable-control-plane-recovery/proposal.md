@@ -1,14 +1,24 @@
 ## Why
 
-Cold whole-stack export/restore machinery preserves a disposable Kubernetes control plane instead of replacing it. The operator only requires same-evening recovery when the host and durable storage survive, with online access to Git and registries.
+Cold whole-stack export/restore machinery preserves a disposable Kubernetes
+control plane instead of replacing it. The operator requires same-evening
+recovery when the host and durable storage survive, with online access to Git
+and registries.
 
 ## What Changes
 
-- Treat `compute-1`/K3s database, container cache, and object identities as disposable.
-- Recover by recreating the Incus guest, seeding Argo CD from canonical manifests, staging host-owned secrets, and letting Argo reconcile Git.
-- Reattach host-owned retained storage through declared local volumes; do not capture/restore the whole retained set as cold tar archives.
-- **BREAKING**: Remove `household-recovery` export/restore/resume, its inventory/journal/metrics protocol, offline Jellyfin image fixtures, and the manual offline sandbox as recovery mechanisms.
-- Retain `compute-guest create/replace`, host-owned storage bindings, runtime secret staging, canonical manifests, and the x86_64 `prod-home-replacement` acceptance test with its application-only `jellyfin_smoke.py` helper.
+- Treat the compute instance, Kubernetes datastore, container cache, and prior
+  object identities as disposable.
+- Recover by recreating the Incus guest, seeding Argo CD from canonical
+  manifests, staging host-owned secrets, and letting Argo reconcile the
+  tracked Git ref.
+- Reattach host-owned retained storage through declared local volumes; do not
+  restore disposable cluster state as a recovery mechanism.
+- **BREAKING:** remove `household-recovery` export/restore/resume, its
+  inventory/journal/metrics protocol, offline image fixtures, and the manual
+  offline sandbox as supported recovery mechanisms.
+- Retain `compute-guest create/replace`, host-owned storage bindings, runtime
+  secret staging, canonical manifests, and the Argo root-Application handoff.
 
 ## Capabilities
 
@@ -18,11 +28,15 @@ None.
 
 ### Modified Capabilities
 
-- `storage-foundations`: durable workload state must remain recoverable without restoring disposable compute/cluster state.
+- `storage-foundations`: durable workload state must remain recoverable without
+  restoring disposable compute or cluster state.
 
 ## Impact
 
-- Removes `modules/den/aspects/kubernetes/recovery.nix`, `modules/den/aspects/kubernetes/_recovery.sh`, offline `jellyfin-image` fixtures, and `modules/flake/jellyfin-sandbox.nix`/`docs/jellyfin-sandbox.md`.
-- Narrows `household-bootstrap` to Argo seeding plus explicit root-application handoff.
-- Replaces the offline VM recovery scenario with the x86_64 `prod-home-replacement` acceptance test, which exercises the shipped bootstrap path, disposable Git origin, real registry pulls, and retained application state.
-- Updates recovery monitoring and operations documentation for the supported path.
+- Removes obsolete whole-stack recovery orchestration, offline fixtures, and
+  sandbox artifacts.
+- Narrows `household-bootstrap` to Argo seeding plus explicit root-Application
+  handoff.
+- Keeps the replacement boundary and tracked-source reconciliation available
+  to later workload cuts; this platform revision does not claim application
+  runtime acceptance.

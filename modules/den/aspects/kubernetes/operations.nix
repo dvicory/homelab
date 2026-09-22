@@ -5,8 +5,11 @@
 }:
 let
   cluster = config.den.clusters.prod-home;
-  compute =
-    config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
+  computeInstance =
+    config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute.instance;
+  retainedPaths =
+    config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute.retainedPaths;
+  runtimeSecrets = config.flake.clusterResources.prod-home.runtimeSecrets;
   routeUrl =
     route: hostname:
     "https://${hostname}${
@@ -36,25 +39,25 @@ let
       access = if entry.readOnly then "read-only" else "writable";
     in
     "| `${name}` | `${entry.path}` | `${entry.guestPath}` | `${toString entry.uid}:${toString entry.gid}` | `${entry.mode}` | ${access} |"
-  ) compute.retainedPaths;
+  ) retainedPaths;
   secretGroups = lib.groupBy (
     source:
     let
-      entry = compute.runtimeSecrets.${source};
+      entry = runtimeSecrets.${source};
     in
     "${entry.namespace}/${entry.name}"
-  ) (builtins.attrNames compute.runtimeSecrets);
+  ) (builtins.attrNames runtimeSecrets);
   secretRows = lib.mapAttrsToList (
     target: sources:
     let
       refs = map (
         source:
         let
-          entry = compute.runtimeSecrets.${source};
+          entry = runtimeSecrets.${source};
         in
         "`${source}` → `${entry.key}`"
       ) sources;
-      entry = compute.runtimeSecrets.${builtins.head sources};
+      entry = runtimeSecrets.${builtins.head sources};
     in
     "| `${target}` | ${lib.concatStringsSep ", " refs} | `${entry.type}` |"
   ) secretGroups;
@@ -64,6 +67,7 @@ in
     { ... }:
     {
       files.file."docs/operations.md".text = ''
+        <!-- provenance: generated from evaluated Den/Nix declarations by modules/den/aspects/kubernetes/operations.nix; keep the committed copy in sync. -->
         # Household operations
 
         > This runbook is generated from the evaluated `prod-home` route, compute and runtime-secret declarations. It is a declaration reference, not a readiness result or production authorization.
@@ -79,15 +83,15 @@ in
         ## Scope
 
         This runbook covers the declared household guest, Kubernetes bootstrap
-        boundary, private service routes, retained state and runtime-secret
-        references. It separates guest lifecycle, static application delivery,
-        normal reconciliation and recovery. The tables below are generated from
-        Nix declarations; they do not inspect a live host or cluster.
+        boundary, route inventory, retained state and runtime-secret
+        references. It separates guest lifecycle, static bootstrap, normal
+        reconciliation and recovery. The tables below are generated from Nix
+        declarations; they do not inspect a live host or cluster.
 
-        **Stack:** `${cluster.environment}` / `prod-home` on `${compute.instance}`
-        (`${cluster.hostName}`), with private ingress reserved at NodePort
-        `${toString cluster.ingress.nodePort}`. Included service aspects own the
-        Gateway API objects that make declared routes reachable.
+        **Stack:** `${cluster.environment}` / `prod-home` on `${computeInstance}`
+        (`${cluster.hostName}`), with the declared ingress NodePort
+        `${toString cluster.ingress.nodePort}`. Route declarations are inventory
+        only; edge objects and public reachability belong to later cuts.
 
         Application-owned users, first-run owners, passkeys, libraries, media,
         requests, history, dashboards and other records not named by a
@@ -100,7 +104,23 @@ in
         ## Prerequisites
 
         Before a mutating operation, obtain separate authorization for the
-        target environment and confirm the selected immutable flake revision.
+        target environment and identify the tracked deployment branch or ref.
+        Once that ref is active, a merge to it changes production desired state;
+        review approval alone does not change production state.
+
+        ## Deployment flow
+
+        The evaluated delivery path is:
+
+        ```text
+        Nix/Den -> rendered manifests -> pull request review ->
+        merge tracked deployment branch -> Argo reconciliation
+        ```
+
+        Nix/Den declarations render the committed manifests. Review happens in
+        the pull request, and the active tracked branch/ref is the source Argo
+        reconciles. Do not substitute an approved commit or local checkout for
+        the tracked deployment ref.
 
         - Review this file and the matching guest descriptor at
           `/etc/homelab/compute.json`.
@@ -180,7 +200,7 @@ in
         compute-guest adopt
         compute-guest inspect
         compute-guest create --bundle BUNDLE
-        compute-guest replace --bundle BUNDLE --confirm ${compute.instance}
+        compute-guest replace --bundle BUNDLE --confirm ${computeInstance}
         ```
 
         `adopt` checks existing project, pool, network and profile definitions
@@ -197,7 +217,7 @@ in
         non-destructive adoption and static delivery checks:
 
         ```sh
-        household-bootstrap-host /etc/homelab/compute.json --confirm ${compute.instance}
+        household-bootstrap-host /etc/homelab/compute.json --confirm ${computeInstance}
         ```
 
         It verifies the target guest, fresh kubeconfig, declared node placement,
@@ -226,21 +246,18 @@ in
 
         `--status` reports Argo seed controllers and bootstrap Jobs without
         mutation. `--check-ready` waits for the replacement node and Argo seed.
-        It does not prove child synchronization, application acceptance,
-        native first-run enrollment, authenticated clients, provider delivery,
-        GPU/transcoding behavior or backup success.
+        Neither command proves child synchronization, workload acceptance,
+        application enrollment, client authentication, provider delivery,
+        GPU/transcoding behavior or production approval.
 
-        Inspect each service through its supported private route or native API.
-        Confirm that managed routes, mounts and Secret references match the
-        generated tables. Verify service connections against the selected
-        service declarations, and that application-owned records remain
-        present after a restart or reconciliation. Do not record a successful
-        apply as readiness.
+        This platform cut has no application service acceptance to inspect.
+        Later workload and edge cuts own service routes, native APIs, first-run
+        enrollment, and application-owned records. Do not record a successful
+        bootstrap apply as workload readiness.
 
-        Complete each service's native first-enrollment prerequisites before
-        expecting its configuration Jobs to succeed. Keep service-specific
-        requirements with the service declaration. Escrow generated credentials
-        through agenix/rekey and never put them in this runbook.
+        Keep service-specific requirements with their owning declaration.
+        Escrow generated credentials through agenix/rekey and never put them in
+        this runbook.
 
         ## Failure handling
 
@@ -275,22 +292,18 @@ in
         Argo reconciles Git -> reattached storage serves applications
         ```
 
-        The instance root, Kubernetes datastore, container cache, and prior object
+        The instance root, Kubernetes datastore, container cache, and prior
         identities are disposable. Host identity, runtime credentials, retained
-        application data, the host-owned `/srv/media/data` media namespace, external
-        providers, and undeclared application data need separate protection and
-        reconstruction.
-        Same-host retained directories do not survive loss or corruption of that
-        host and are not independent backups. Application-consistent capture and
-        off-host backup remain separate future work.
+        application state and any external provider inputs need separate
+        protection and reconstruction by their owning cuts.
 
         ## Remaining gates
 
         The declarations and commands above do not establish physical mount,
         encryption, capacity, subordinate-ID or GPU evidence; production
-        credentials, DNS/router/provider changes; authenticated primary/backup
-        client access; routine application-consistent capture or off-host backup
-        results; independent off-host backup; or production approval.
+        credentials, DNS/router/provider changes; workload acceptance; or
+        production approval.
+
       '';
     };
 }

@@ -17,9 +17,9 @@ in
       mode = "0700";
     };
   den.aspects.kubernetes.services.retained-storage.k8s-manifests =
-    { compute, lib, ... }:
+    { computeResources, lib, ... }:
     let
-      retained = compute.retainedPaths."kubernetes-volumes";
+      retained = computeResources.retainedPaths."kubernetes-volumes";
       chart = lib.helm.downloadHelmChart {
         repo = "oci://ghcr.io/rancher/local-path-provisioner/charts";
         chart = "local-path-provisioner";
@@ -31,7 +31,7 @@ in
           matchLabelExpressions = [
             {
               key = "kubernetes.io/hostname";
-              values = [ compute.instance ];
+              values = [ computeResources.instance ];
             }
           ];
         }
@@ -58,11 +58,21 @@ in
       };
     in
     assert lib.assertMsg (
-      retained.uid == 0 && retained.gid == 0 && retained.mode == "0700" && !retained.readOnly
-    ) "compute.retainedPaths.kubernetes-volumes must be a writable root-owned parent with mode 0700";
+      lib.sort builtins.lessThan (builtins.attrNames computeResources) == [
+        "images"
+        "instance"
+        "retainedPaths"
+        "runtimeSecrets"
+        "storageCapabilities"
+      ]
+    ) "computeResources must expose only selected cluster resource facts";
+    assert lib.assertMsg
+      (retained.uid == 0 && retained.gid == 0 && retained.mode == "0700" && !retained.readOnly)
+      "computeResources.retainedPaths.kubernetes-volumes must be a writable root-owned parent with mode 0700";
     {
       applications.retained-storage = {
         inherit namespace;
+        annotations."argocd.argoproj.io/sync-wave" = "-2";
         createNamespace = false;
         retained = true;
         objects = [
@@ -80,7 +90,6 @@ in
             metadata = {
               name = storageClassName;
               annotations = protect // {
-                "storageclass.kubernetes.io/is-default-class" = "true";
                 defaultVolumeType = "local";
               };
             };
@@ -95,6 +104,7 @@ in
 
       applications.local-path-provisioner = {
         inherit namespace;
+        annotations."argocd.argoproj.io/sync-wave" = "-1";
         createNamespace = false;
         helm.releases.local-path-provisioner = {
           inherit chart;
@@ -117,11 +127,11 @@ in
             # fail closed instead of receiving a substitute backing path.
             nodePathMap = [
               {
-                node = compute.instance;
+                node = computeResources.instance;
                 paths = [ retained.guestPath ];
               }
             ];
-            nodeSelector."kubernetes.io/hostname" = compute.instance;
+            nodeSelector."kubernetes.io/hostname" = computeResources.instance;
             podSecurityContext = {
               runAsNonRoot = true;
               runAsUser = 65534;

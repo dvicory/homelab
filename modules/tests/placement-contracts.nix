@@ -10,6 +10,49 @@
 let
   cluster = config.den.clusters.prod-home;
   environment = config.den.environments.${cluster.environment};
+  retainedStorageRenderer =
+    (import ../den/aspects/kubernetes/services/retained-storage.nix { })
+    .den.aspects.kubernetes.services.retained-storage.k8s-manifests;
+  rendererFixture = {
+    instance = "compute-1";
+    retainedPaths.kubernetes-volumes = {
+      path = "/host-only/state/kubernetes-volumes";
+      guestPath = "/srv/state/kubernetes-volumes";
+      uid = 0;
+      gid = 0;
+      mode = "0700";
+      readOnly = false;
+    };
+    storageCapabilities = [ "media" ];
+    runtimeSecrets = { };
+    images = [ "guest-image" ];
+  };
+  rendererBoundaryAssertions =
+    let
+      accepted = builtins.tryEval (retainedStorageRenderer {
+        computeResources = rendererFixture;
+        inherit lib;
+      });
+      rejected = builtins.tryEval (retainedStorageRenderer {
+        computeResources = rendererFixture // {
+          project = "host-only";
+          pool = "host-only";
+          network = "host-only";
+          stateRoot = "/host-only/state";
+          idmapBase = 1000000;
+          instanceConfig = {
+            "security.nesting" = "true";
+          };
+          devices.identity = {
+            type = "disk";
+            source = "/host-only/identity";
+            path = "/srv/identity";
+          };
+        };
+        inherit lib;
+      });
+    in
+    accepted.success && !rejected.success;
   policiesFor =
     declared:
     (import ../den/policies/clusters.nix {
@@ -56,6 +99,8 @@ in
     in
     {
       checks.placement-contracts =
+        assert lib.assertMsg rendererBoundaryAssertions
+          "Kubernetes renderers must reject unrelated physical compute settings";
         assert lib.assertMsg policyAssertions
           "Cluster policies must reject undeclared environments, hosts and application aspects";
         pkgs.runCommand "placement-contracts"
