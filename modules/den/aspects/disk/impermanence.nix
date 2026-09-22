@@ -1,51 +1,78 @@
-{ den, lib, inputs, ... }: {
+{
+  den,
+  lib,
+  inputs,
+  ...
+}:
+{
   den.aspects.disk.impermanence = {
     includes = [
       den.aspects.core."persist-collector"
     ];
 
     persist = [
-      { directories = [ "/var/log" "/var/lib/nixos" "/var/lib/systemd" ]; }
-      { files = [
-        "/etc/ssh/ssh_host_ed25519_key"
-        "/etc/ssh/ssh_host_ed25519_key.pub"
-      ]; }
+      {
+        directories = [
+          "/var/log"
+          "/var/lib/nixos"
+          "/var/lib/systemd"
+        ];
+      }
+      {
+        files = [
+          "/etc/ssh/ssh_host_ed25519_key"
+          "/etc/ssh/ssh_host_ed25519_key.pub"
+        ];
+      }
     ];
 
-    nixos = { host, config, pkgs, ... }: let
-      poolName = host.zfs.rootPool.name or null;
-    in {
-      imports = [ inputs.impermanence.nixosModules.impermanence ];
+    nixos =
+      {
+        host,
+        config,
+        pkgs,
+        ...
+      }:
+      let
+        poolName = host.zfs.rootPool.name or null;
+      in
+      {
+        imports = [ inputs.impermanence.nixosModules.impermanence ];
 
-      config = {
-        fileSystems."/persist".neededForBoot = true;
+        config = {
+          fileSystems."/persist".neededForBoot = true;
 
-        environment.persistence."/persist".files = [
-          "/etc/machine-id"
-        ];
+          environment.persistence."/persist".files = [
+            "/etc/machine-id"
+          ];
 
-      }
-      // lib.optionalAttrs (host.hasAspect den.aspects.disk.zfs) {
-        boot.initrd = lib.mkIf config.boot.initrd.systemd.enable {
-          systemd.storePaths = [ inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.initrdZfsRollback ];
+        }
+        // lib.optionalAttrs (host.hasAspect den.aspects.disk.zfs) {
+          boot.initrd = lib.mkIf config.boot.initrd.systemd.enable {
+            systemd.storePaths = [ inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.initrdZfsRollback ];
 
-          systemd.services.initrd-zfs-rollback = {
-            description = "ZFS rollback for impermanence";
-            after = [ "zfs-import-${poolName}.service" ];
-            before = [ "sysroot.mount" "initrd-switch-root.target" ];
-            wantedBy = [ "initrd.target" ];
+            systemd.services.initrd-zfs-rollback = {
+              description = "ZFS rollback for impermanence";
+              after = [ "zfs-import-${poolName}.service" ];
+              before = [
+                "sysroot.mount"
+                "initrd-switch-root.target"
+              ];
+              wantedBy = [ "initrd.target" ];
 
-            serviceConfig = {
-              Type = "oneshot";
-              RemainAfterExit = true;
-              ExecStart = "${inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.initrdZfsRollback}/bin/initrd-zfs-rollback";
-              StandardOutput = "journal+console";
+              serviceConfig = {
+                Type = "oneshot";
+                RemainAfterExit = true;
+                ExecStart = "${
+                  inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.initrdZfsRollback
+                }/bin/initrd-zfs-rollback";
+                StandardOutput = "journal+console";
+              };
+
+              environment.INITRD_POOL_NAME = poolName;
             };
-
-            environment.INITRD_POOL_NAME = poolName;
           };
         };
       };
-    };
   };
 }

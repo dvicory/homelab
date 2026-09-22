@@ -61,17 +61,25 @@ in
         system:
         lib.concatMap (
           hostName:
-          let hostCfg = den.hosts.${system}.${hostName} or { };
-          in lib.optional (hostCfg.environment == environment.name) hostName
+          let
+            hostCfg = den.hosts.${system}.${hostName} or { };
+          in
+          lib.optional (hostCfg.environment == environment.name) hostName
         ) (builtins.attrNames (den.hosts.${system} or { }))
       ) (builtins.attrNames (den.hosts or { }));
 
-      envHostSet = builtins.listToAttrs (map (n: { name = n; value = true; }) envHostNames);
+      envHostSet = builtins.listToAttrs (
+        map (n: {
+          name = n;
+          value = true;
+        }) envHostNames
+      );
 
       envHomes = lib.concatMap (
         system:
-        lib.filter (home: home.hostName != null && envHostSet ? ${home.hostName})
-          (builtins.attrValues (den.homes.${system} or { }))
+        lib.filter (home: home.hostName != null && envHostSet ? ${home.hostName}) (
+          builtins.attrValues (den.homes.${system} or { })
+        )
       ) (builtins.attrNames (den.homes or { }));
     in
     lib.concatMap (
