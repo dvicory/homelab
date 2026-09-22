@@ -46,12 +46,6 @@
           key = "tls.key";
           type = "kubernetes.io/tls";
         };
-        "identity--kanidm-tls--ca.crt" = {
-          namespace = "identity";
-          name = "kanidm-tls";
-          key = "ca.crt";
-          type = "kubernetes.io/tls";
-        };
       }
       // lib.optionalAttrs normal {
         "identity--kanidm-provision--idm-admin-password" = {
@@ -640,14 +634,6 @@
                           name = "HOME";
                           value = "/work";
                         }
-                        {
-                          name = "SSL_CERT_FILE";
-                          value = "/trust/ca.crt";
-                        }
-                        {
-                          name = "CURL_CA_BUNDLE";
-                          value = "/trust/ca.crt";
-                        }
                       ];
                       securityContext = provisionSecurity;
                       volumeMounts = [
@@ -665,11 +651,6 @@
                           mountPath = "/credentials";
                           readOnly = true;
                         }
-                        {
-                          name = "trust";
-                          mountPath = "/trust";
-                          readOnly = true;
-                        }
                       ];
                     }
                   ];
@@ -684,18 +665,6 @@
                     {
                       name = "desired";
                       configMap.name = "kanidm-provision";
-                    }
-                    {
-                      name = "trust";
-                      secret = {
-                        secretName = "kanidm-tls";
-                        items = [
-                          {
-                            key = "ca.crt";
-                            path = "ca.crt";
-                          }
-                        ];
-                      };
                     }
                     {
                       name = "credentials";
