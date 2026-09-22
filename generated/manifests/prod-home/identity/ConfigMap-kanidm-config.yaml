@@ -8,9 +8,7 @@ data:
     tls_key = "/etc/kanidm/tls/tls.key"
     domain = "idm.plus2.danielvicory.dev"
     origin = "https://idm.plus2.danielvicory.dev"
-    [online_backup]
-    path = "/data/backups/"
-    schedule = "00 22 * * *"
+    # Preserve owns backup cadence, capture, retention, and recovery.
 kind: ConfigMap
 metadata:
   name: kanidm-config

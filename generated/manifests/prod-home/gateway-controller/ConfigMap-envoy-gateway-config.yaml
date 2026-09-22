@@ -3,6 +3,13 @@ data:
   envoy-gateway.yaml: |
     apiVersion: gateway.envoyproxy.io/v1alpha1
     kind: EnvoyGateway
+    envoyProxy:
+      provider:
+        kubernetes:
+          envoyDeployment:
+            container:
+              image: docker.io/envoyproxy/envoy:distroless-v1.39.1@sha256:eb2c01c13125d1629637cb4e4cce7207009fb7cc2c8027f9742758549d15b6f4
+        type: Kubernetes
     extensionApis:
       enableBackend: true
     gateway:
@@ -27,7 +34,7 @@ data:
                     - imagePullPolicy: IfNotPresent
                       name: envoy-ratelimit
         shutdownManager:
-          image: docker.io/envoyproxy/gateway:v1.9.1
+          image: docker.io/envoyproxy/gateway:v1.9.1@sha256:0049bcb384c591c6a6dd043fe5c9929ef6e74f230e12dd678d2d3701df9b301e
       type: Kubernetes
 kind: ConfigMap
 metadata:

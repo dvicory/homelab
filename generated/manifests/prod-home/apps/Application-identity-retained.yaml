@@ -1,13 +1,15 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
   name: identity-retained
   namespace: argocd
 spec:
   destination:
     namespace: identity
     server: https://kubernetes.default.svc
-  project: default
+  project: prod-home
   source:
     path: ./generated/manifests/prod-home/identity-retained
     repoURL: https://github.com/dvicory/homelab.git
@@ -16,5 +18,12 @@ spec:
     automated:
       prune: false
       selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 1m
+      limit: 5
     syncOptions:
+      - FailOnSharedResource=true
       - ServerSideApply=true

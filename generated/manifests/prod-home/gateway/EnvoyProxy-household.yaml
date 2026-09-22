@@ -7,6 +7,8 @@ spec:
   provider:
     kubernetes:
       envoyDeployment:
+        container:
+          image: docker.io/envoyproxy/envoy:distroless-v1.39.1@sha256:eb2c01c13125d1629637cb4e4cce7207009fb7cc2c8027f9742758549d15b6f4
         pod:
           nodeSelector:
             kubernetes.io/hostname: compute-1
@@ -25,3 +27,22 @@ spec:
                   targetPort: 8443
         type: NodePort
     type: Kubernetes
+  telemetry:
+    accessLog:
+      settings:
+        - format:
+            json:
+              client: '%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%'
+              duration_ms: '%DURATION%'
+              host: '%REQ(:AUTHORITY)%'
+              method: '%REQ(:METHOD)%'
+              path: '%PATH(NQ)%'
+              request_id: '%REQ(X-REQUEST-ID)%'
+              response_flags: '%RESPONSE_FLAGS%'
+              status: '%RESPONSE_CODE%'
+              timestamp: '%START_TIME%'
+              upstream: '%UPSTREAM_HOST%'
+            type: JSON
+          sinks:
+            - file:
+                path: /dev/stdout
