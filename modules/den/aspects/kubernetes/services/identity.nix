@@ -240,6 +240,49 @@
               ];
             };
           }
+          {
+            apiVersion = "rbac.authorization.k8s.io/v1";
+            kind = "Role";
+            metadata = {
+              name = "kanidm-client-secret";
+              namespace = "gateway";
+            };
+            rules = [
+              # Kubernetes cannot constrain create by resourceNames. Updates
+              # are limited to this one Secret; no read/list/delete permissions.
+              {
+                apiGroups = [ "" ];
+                resources = [ "secrets" ];
+                verbs = [ "create" ];
+              }
+              {
+                apiGroups = [ "" ];
+                resources = [ "secrets" ];
+                resourceNames = [ clientSecretName ];
+                verbs = [ "patch" ];
+              }
+            ];
+          }
+          {
+            apiVersion = "rbac.authorization.k8s.io/v1";
+            kind = "RoleBinding";
+            metadata = {
+              name = "kanidm-client-secret";
+              namespace = "gateway";
+            };
+            roleRef = {
+              apiGroup = "rbac.authorization.k8s.io";
+              kind = "Role";
+              name = "kanidm-client-secret";
+            };
+            subjects = [
+              {
+                kind = "ServiceAccount";
+                name = "kanidm-provision";
+                inherit namespace;
+              }
+            ];
+          }
         ];
       };
       applications.identity-retained = {
@@ -528,49 +571,6 @@
               inherit namespace;
             };
             automountServiceAccountToken = false;
-          }
-          {
-            apiVersion = "rbac.authorization.k8s.io/v1";
-            kind = "Role";
-            metadata = {
-              name = "kanidm-client-secret";
-              namespace = "gateway";
-            };
-            rules = [
-              # Kubernetes cannot constrain create by resourceNames. Updates
-              # are limited to this one Secret; no read/list/delete permissions.
-              {
-                apiGroups = [ "" ];
-                resources = [ "secrets" ];
-                verbs = [ "create" ];
-              }
-              {
-                apiGroups = [ "" ];
-                resources = [ "secrets" ];
-                resourceNames = [ clientSecretName ];
-                verbs = [ "patch" ];
-              }
-            ];
-          }
-          {
-            apiVersion = "rbac.authorization.k8s.io/v1";
-            kind = "RoleBinding";
-            metadata = {
-              name = "kanidm-client-secret";
-              namespace = "gateway";
-            };
-            roleRef = {
-              apiGroup = "rbac.authorization.k8s.io";
-              kind = "Role";
-              name = "kanidm-client-secret";
-            };
-            subjects = [
-              {
-                kind = "ServiceAccount";
-                name = "kanidm-provision";
-                inherit namespace;
-              }
-            ];
           }
           {
             apiVersion = "batch/v1";

@@ -25,6 +25,7 @@ let
   normal = render normalCluster;
   initialObjects = initial.applications.identity.objects;
   normalObjects = normal.applications.identity.objects;
+  normalGatewayObjects = normal.applications.identity-gateway.content.objects;
   hasObject =
     objects: kind: name:
     lib.any (object: object.kind == kind && object.metadata.name == name) objects;
@@ -45,6 +46,11 @@ let
     normal-provision-job-present = hasObject normalObjects "Job" "kanidm-provision";
     normal-oidc-backend-present = hasObject normalObjects "Backend" "kanidm-oidc";
     normal-gateway-integration-present = normal.applications.identity-gateway.condition;
+    gateway-rbac-owned-by-integration =
+      hasObject normalGatewayObjects "Role" "kanidm-client-secret"
+      && hasObject normalGatewayObjects "RoleBinding" "kanidm-client-secret"
+      && !(hasObject normalObjects "Role" "kanidm-client-secret")
+      && !(hasObject normalObjects "RoleBinding" "kanidm-client-secret");
     backup-cadence-unowned = !(lib.hasInfix "[online_backup]" serverConfig);
   };
 in
