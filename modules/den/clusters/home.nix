@@ -41,6 +41,7 @@ in
       nodePort = 30443;
       trustedProxyCIDRs = [ ];
     };
+    settings.kubernetes.services.identity.phase = "initial";
     routes = {
       argocd = route "argocd" "argocd" "argocd-server" 80 "admin" {
         "app.kubernetes.io/instance" = "argocd";

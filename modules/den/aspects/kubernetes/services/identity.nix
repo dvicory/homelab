@@ -5,13 +5,27 @@
   ...
 }:
 {
+  den.aspects.kubernetes.services.identity.settings.phase = lib.mkOption {
+    type = lib.types.enum [
+      "initial"
+      "normal"
+    ];
+    description = "Explicit Kanidm lifecycle phase; normal requires the recovered idm_admin credential.";
+  };
   den.aspects.kubernetes.services.identity.compute-resources =
     { cluster, ... }:
     let
       compute =
         config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
       guestSystem = inputs.self.nixosConfigurations.${compute.instance}.pkgs.stdenv.hostPlatform.system;
+      normal = cluster.settings.kubernetes.services.identity.phase == "normal";
+      idmAdminAge =
+        inputs.self
+        + "/.secrets/hosts/${compute.instance}/identity--kanidm-provision--idm-admin-password.age";
     in
+    assert lib.assertMsg (
+      !normal || builtins.pathExists idmAdminAge
+    ) "Identity phase normal requires ${toString idmAdminAge}";
     {
       images = [ inputs.self.packages.${guestSystem}.kanidm-provision-image ];
       retainedPaths.identity-kanidm = {
@@ -20,11 +34,6 @@
         mode = "0700";
       };
       runtimeSecrets = {
-        "identity--kanidm-provision--idm-admin-password" = {
-          namespace = "identity";
-          name = "kanidm-provision";
-          key = "idm-admin-password";
-        };
         "identity--kanidm-tls--tls.crt" = {
           namespace = "identity";
           name = "kanidm-tls";
@@ -43,6 +52,13 @@
           key = "ca.crt";
           type = "kubernetes.io/tls";
         };
+      }
+      // lib.optionalAttrs normal {
+        "identity--kanidm-provision--idm-admin-password" = {
+          namespace = "identity";
+          name = "kanidm-provision";
+          key = "idm-admin-password";
+        };
       };
     };
   den.aspects.kubernetes.services.identity.k8s-manifests =
@@ -54,6 +70,13 @@
     }:
     let
       namespace = "identity";
+      normal = cluster.settings.kubernetes.services.identity.phase == "normal";
+      normalObjectNames = [
+        "kanidm-oidc"
+        "kanidm-oidc-tls"
+        "kanidm-provision"
+        "kanidm-client-secret"
+      ];
       domain = builtins.head cluster.routes.idm.hostnames;
       adminGroup = "homelab-admin";
       clientName = "household-admin";
@@ -174,9 +197,7 @@
         tls_key = "/etc/kanidm/tls/tls.key"
         domain = "${domain}"
         origin = "https://${domain}"
-        [online_backup]
-        path = "/data/backups/"
-        schedule = "00 22 * * *"
+        # Preserve owns backup cadence, capture, retention, and recovery.
       '';
     in
     assert lib.assertMsg (
@@ -191,7 +212,7 @@
       applications.cluster-dns.resources.configMaps.coredns-custom.data."kanidm.override" = ''
         rewrite name exact ${domain} kanidm.identity.svc.cluster.local
       '';
-      applications.identity-gateway = {
+      applications.identity-gateway = lib.mkIf normal {
         namespace = "gateway";
         finalizer = "foreground";
         objects = adminPolicies ++ [
@@ -275,7 +296,7 @@
         inherit namespace;
         finalizer = "foreground";
         annotations."argocd.argoproj.io/sync-wave" = "0";
-        objects = [
+        objects = lib.filter (object: normal || !(builtins.elem object.metadata.name normalObjectNames)) [
           {
             apiVersion = "v1";
             kind = "ConfigMap";
