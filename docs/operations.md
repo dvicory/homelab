@@ -20,9 +20,11 @@ reconciliation and recovery. The tables below are generated from Nix
 declarations; they do not inspect a live host or cluster.
 
 **Stack:** `prod` / `prod-home` on `compute-1`
-(`hvn-hyp1`), with the declared ingress NodePort
-`30443`. Route declarations are inventory
-only; edge objects and public reachability belong to later cuts.
+(`hvn-hyp1`), with ingress mode `direct` and
+the declared NodePort `30443`. Public
+edges publish only routes whose exposure is `public`; `private` routes
+remain available through authenticated operator paths inside the
+cluster boundary.
 
 Application-owned users, first-run owners, passkeys, libraries, media,
 requests, history, dashboards and other records not named by a
@@ -77,16 +79,46 @@ hostname is primary; the second is the declared backup address. Backup
 access, canonical identity failover and DNS changes require separate
 operation and verification.
 
-| Service | Primary | Backup | Authentication | Declared backend |
-| --- | --- | --- | --- | --- |
-| `argocd` | `https://argocd.plus2.danielvicory.dev` | `https://argocd.backup.plus2.danielvicory.dev` | administrator browser gate; native APIs remain private | `argocd/argocd-server:80` |
-| `idm` | `https://idm.plus2.danielvicory.dev` | `https://idm.backup.plus2.danielvicory.dev` | native application authentication | `identity/kanidm:443` |
+| Service | Exposure | Primary | Backup | Authentication | Declared backend |
+| --- | --- | --- | --- | --- | --- |
+| `argocd` | `public` | `https://argocd.plus2.danielvicory.dev` | `https://argocd.backup.plus2.danielvicory.dev` | administrator browser gate; native APIs remain private | `argocd/argocd-server:80` |
+| `idm` | `private` | `https://idm.plus2.danielvicory.dev` | `https://idm.backup.plus2.danielvicory.dev` | native application authentication | `identity/kanidm:443` |
 
 `native` routes retain application-native authentication for supported
 clients. `admin` routes use an administrator browser gate while native
 API access remains private. Neither label proves a deployed TLS
 certificate or successful login. The declared trusted proxy CIDRs are
 `[]`.
+The current Kanidm lifecycle phase is `initial`.
+
+## Kanidm bootstrap lifecycle
+
+The checked-in `initial` phase deploys the retained Kanidm database,
+TLS material, Deployment and private Service. It deliberately omits
+the `idm_admin` runtime Secret, provisioning Job, OIDC backend and
+Gateway administrator policies, so a fresh empty database cannot wait
+on a credential that only that database can create.
+
+Complete the transition through an authorized private Kubernetes path:
+
+1. Recover the stock `admin` and `idm_admin` accounts with Kanidm's
+   server CLI. Escrow both generated passwords outside the cluster.
+2. Add only the `idm_admin` password as
+   `.secrets/hosts/compute-1/identity--kanidm-provision--idm-admin-password.age`
+   through the operator-owned agenix/rekey flow.
+3. Enroll the named human administrator and passkey, then verify native
+   login over the private route.
+4. Change `settings.kubernetes.services.identity.phase` to `normal`.
+   Promote the `idm` route exposure separately only after login and
+   certificate validation succeed.
+5. Regenerate manifests and this runbook, review the diff, then merge
+   the tracked deployment branch.
+
+The `normal` phase refuses evaluation while the encrypted `idm_admin`
+source is absent. It enables the repeatable provisioning Job and OIDC
+integration but never resets recovery accounts or creates human
+passwords. Preserve, not this PR, owns Kanidm backup cadence,
+retention and recovery.
 
 ## Declared retained state
 
@@ -123,7 +155,6 @@ copy secret values into Git, manifests, images or this document.
 | --- | --- | --- |
 | `argocd/argocd-secret` | `argocd--argocd-secret--admin.password` → `admin.password`, `argocd--argocd-secret--admin.passwordMtime` → `admin.passwordMtime`, `argocd--argocd-secret--server.secretkey` → `server.secretkey` | `Opaque` |
 | `gateway/gateway-tls` | `gateway--gateway-tls--ca.crt` → `ca.crt`, `gateway--gateway-tls--tls.crt` → `tls.crt`, `gateway--gateway-tls--tls.key` → `tls.key` | `kubernetes.io/tls` |
-| `identity/kanidm-provision` | `identity--kanidm-provision--idm-admin-password` → `idm-admin-password` | `Opaque` |
 | `identity/kanidm-tls` | `identity--kanidm-tls--ca.crt` → `ca.crt`, `identity--kanidm-tls--tls.crt` → `tls.crt`, `identity--kanidm-tls--tls.key` → `tls.key` | `kubernetes.io/tls` |
 
 ## Deploy

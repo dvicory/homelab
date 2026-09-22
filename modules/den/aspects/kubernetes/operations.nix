@@ -5,6 +5,7 @@
 }:
 let
   cluster = config.den.clusters.prod-home;
+  identityPhase = cluster.settings.kubernetes.services.identity.phase;
   computeInstance =
     config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute.instance;
   retainedPaths =
@@ -31,7 +32,7 @@ let
         else
           "not declared";
     in
-    "| `${name}` | `${primary}` | `${backup}` | ${routeAuth route} | `${route.namespace}/${route.service}:${toString route.port}` |"
+    "| `${name}` | `${route.exposure}` | `${primary}` | `${backup}` | ${routeAuth route} | `${route.namespace}/${route.service}:${toString route.port}` |"
   ) cluster.routes;
   stateRows = lib.mapAttrsToList (
     name: entry:
@@ -89,9 +90,11 @@ in
         declarations; they do not inspect a live host or cluster.
 
         **Stack:** `${cluster.environment}` / `prod-home` on `${computeInstance}`
-        (`${cluster.hostName}`), with the declared ingress NodePort
-        `${toString cluster.ingress.nodePort}`. Route declarations are inventory
-        only; edge objects and public reachability belong to later cuts.
+        (`${cluster.hostName}`), with ingress mode `${cluster.ingress.mode}` and
+        the declared NodePort `${toString cluster.ingress.nodePort}`. Public
+        edges publish only routes whose exposure is `public`; `private` routes
+        remain available through authenticated operator paths inside the
+        cluster boundary.
 
         Application-owned users, first-run owners, passkeys, libraries, media,
         requests, history, dashboards and other records not named by a
@@ -146,8 +149,8 @@ in
         access, canonical identity failover and DNS changes require separate
         operation and verification.
 
-        | Service | Primary | Backup | Authentication | Declared backend |
-        | --- | --- | --- | --- | --- |
+        | Service | Exposure | Primary | Backup | Authentication | Declared backend |
+        | --- | --- | --- | --- | --- | --- |
         ${lib.concatStringsSep "\n" routeRows}
 
         `native` routes retain application-native authentication for supported
@@ -155,6 +158,36 @@ in
         API access remains private. Neither label proves a deployed TLS
         certificate or successful login. The declared trusted proxy CIDRs are
         `${builtins.toJSON cluster.ingress.trustedProxyCIDRs}`.
+        The current Kanidm lifecycle phase is `${identityPhase}`.
+
+        ## Kanidm bootstrap lifecycle
+
+        The checked-in `initial` phase deploys the retained Kanidm database,
+        TLS material, Deployment and private Service. It deliberately omits
+        the `idm_admin` runtime Secret, provisioning Job, OIDC backend and
+        Gateway administrator policies, so a fresh empty database cannot wait
+        on a credential that only that database can create.
+
+        Complete the transition through an authorized private Kubernetes path:
+
+        1. Recover the stock `admin` and `idm_admin` accounts with Kanidm's
+           server CLI. Escrow both generated passwords outside the cluster.
+        2. Add only the `idm_admin` password as
+           `.secrets/hosts/${computeInstance}/identity--kanidm-provision--idm-admin-password.age`
+           through the operator-owned agenix/rekey flow.
+        3. Enroll the named human administrator and passkey, then verify native
+           login over the private route.
+        4. Change `settings.kubernetes.services.identity.phase` to `normal`.
+           Promote the `idm` route exposure separately only after login and
+           certificate validation succeed.
+        5. Regenerate manifests and this runbook, review the diff, then merge
+           the tracked deployment branch.
+
+        The `normal` phase refuses evaluation while the encrypted `idm_admin`
+        source is absent. It enables the repeatable provisioning Job and OIDC
+        integration but never resets recovery accounts or creates human
+        passwords. Preserve, not this PR, owns Kanidm backup cadence,
+        retention and recovery.
 
         ## Declared retained state
 
