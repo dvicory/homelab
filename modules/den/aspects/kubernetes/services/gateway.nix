@@ -164,6 +164,7 @@
     {
       applications.gateway-retained = {
         inherit namespace;
+        annotations."argocd.argoproj.io/sync-wave" = "-2";
         retained = true;
         objects = [
           {
@@ -178,6 +179,7 @@
       };
       applications.gateway-crds = {
         inherit namespace;
+        annotations."argocd.argoproj.io/sync-wave" = "0";
         finalizer = "foreground";
         helm.releases.gateway-crds = {
           chart = charts.envoyproxy.gateway-crds-helm;
@@ -193,6 +195,7 @@
       };
       applications.gateway-controller = {
         inherit namespace;
+        annotations."argocd.argoproj.io/sync-wave" = "1";
         finalizer = "foreground";
         helm.releases.envoy-gateway = {
           chart = charts.envoyproxy.gateway-helm;
@@ -214,6 +217,7 @@
       };
       applications.gateway = {
         inherit namespace;
+        annotations."argocd.argoproj.io/sync-wave" = "3";
         finalizer = "foreground";
         objects = [
           {

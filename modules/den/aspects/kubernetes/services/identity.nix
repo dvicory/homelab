@@ -215,6 +215,7 @@
       '';
       applications.identity-gateway = lib.mkIf normal {
         namespace = "gateway";
+        annotations."argocd.argoproj.io/sync-wave" = "4";
         finalizer = "foreground";
         objects = adminPolicies ++ [
           {
@@ -288,6 +289,7 @@
       };
       applications.identity-retained = {
         inherit namespace;
+        annotations."argocd.argoproj.io/sync-wave" = "-2";
         retained = true;
         objects = [
           {
@@ -339,7 +341,7 @@
       applications.identity = {
         inherit namespace;
         finalizer = "foreground";
-        annotations."argocd.argoproj.io/sync-wave" = "0";
+        annotations."argocd.argoproj.io/sync-wave" = "2";
         objects = lib.filter (object: normal || !(builtins.elem object.metadata.name normalObjectNames)) [
           {
             apiVersion = "v1";
