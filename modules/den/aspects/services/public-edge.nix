@@ -136,6 +136,7 @@ let
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Forwarded-Port 443;
         proxy_set_header Forwarded "";
+        proxy_set_header X-Request-ID $request_id;
         proxy_set_header X-Forwarded-User "";
         proxy_set_header X-Forwarded-Email "";
         proxy_set_header X-Auth-Request-User "";
@@ -159,7 +160,7 @@ let
           cfg = host.settings.services.${aspectName};
           cluster = config.den.clusters."prod-home";
           environment = config.den.environments.${cluster.environment};
-          routes = cluster.routes;
+          routes = lib.filterAttrs (_: route: route.exposure == "public") cluster.routes;
           tlsConfig = cfg.tls;
           selectedTLS = if variant == 0 then tlsConfig.primary else tlsConfig.backup;
           selectedDomain = if variant == 0 then environment.domain else environment.backupDomain;
@@ -215,6 +216,7 @@ let
             && cfg.peerAddress != cfg.originHost;
           peerCIDR = if cfg.peerAddress == null then "" else "${cfg.peerAddress}/32";
           peerIsDeclared = peerCIDR != "" && builtins.elem peerCIDR cluster.ingress.trustedProxyCIDRs;
+          edgeModeValid = cluster.ingress.mode == "trustedEdges";
           origin = {
             inherit (cfg)
               originHost
@@ -304,6 +306,10 @@ let
               message = "${aspectName} peerAddress must be declared as an exact trusted Gateway peer";
             }
             {
+              assertion = edgeModeValid;
+              message = "${aspectName} requires ingress mode trustedEdges";
+            }
+            {
               assertion = lib.all privatePeerCIDR cluster.ingress.trustedProxyCIDRs;
               message = "Gateway trusted proxy entries must be private /32 edge peers";
             }
@@ -313,6 +319,20 @@ let
             enable = true;
             recommendedOptimisation = true;
             recommendedProxySettings = false;
+            commonHttpConfig = ''
+              log_format homelab_safe escape=json
+                '{"timestamp":"$time_iso8601",'
+                '"client":"$remote_addr",'
+                '"method":"$request_method",'
+                '"path":"$uri",'
+                '"host":"$host",'
+                '"status":$status,'
+                '"duration_s":$request_time,'
+                '"request_id":"$request_id",'
+                '"upstream_status":"$upstream_status",'
+                '"bytes_sent":$bytes_sent}';
+              access_log /var/log/nginx/access.log homelab_safe;
+            '';
             recommendedTlsSettings = true;
             virtualHosts = virtualHosts;
           };

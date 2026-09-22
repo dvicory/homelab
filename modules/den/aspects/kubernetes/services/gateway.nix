@@ -31,6 +31,13 @@
     let
       namespace = "gateway";
       peers = cluster.ingress.trustedProxyCIDRs;
+      originModeValid =
+        (cluster.ingress.mode == "direct" && peers == [ ])
+        || (cluster.ingress.mode == "trustedEdges" && peers != [ ]);
+      defaultTimeouts = {
+        request = "15s";
+        backendRequest = "15s";
+      };
       retained = {
         "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
       };
@@ -52,6 +59,9 @@
       };
       routes = lib.mapAttrsToList (
         name: route:
+        let
+          timeouts = if route.timeouts == null then defaultTimeouts else route.timeouts;
+        in
         object "gateway.networking.k8s.io/v1" "HTTPRoute" name namespace {
           parentRefs = [ { name = "household"; } ];
           inherit (route) hostnames;
@@ -65,6 +75,7 @@
                   };
                 }
               ];
+              inherit timeouts;
               filters = [
                 {
                   type = "RequestHeaderModifier";
@@ -147,6 +158,7 @@
       ) cluster.routes;
     in
     assert lib.assertMsg backendSelectorsValid "Gateway routes require a non-empty backendPodSelector";
+    assert lib.assertMsg originModeValid "Gateway ingress mode and trusted edge CIDRs disagree";
     {
       applications.gateway-retained = {
         inherit namespace;
@@ -229,6 +241,26 @@
                 };
               };
             };
+            telemetry.accessLog.settings = [
+              {
+                format = {
+                  type = "JSON";
+                  json = {
+                    timestamp = "%START_TIME%";
+                    client = "%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%";
+                    method = "%REQ(:METHOD)%";
+                    path = "%PATH(NQ)%";
+                    host = "%REQ(:AUTHORITY)%";
+                    status = "%RESPONSE_CODE%";
+                    duration_ms = "%DURATION%";
+                    request_id = "%REQ(X-REQUEST-ID)%";
+                    response_flags = "%RESPONSE_FLAGS%";
+                    upstream = "%UPSTREAM_HOST%";
+                  };
+                };
+                sinks = [ { file.path = "/dev/stdout"; } ];
+              }
+            ];
           })
           (object "gateway.networking.k8s.io/v1" "Gateway" "household" namespace {
             gatewayClassName = "envoy";
@@ -259,7 +291,7 @@
           (object "gateway.envoyproxy.io/v1alpha1" "ClientTrafficPolicy" "trusted-edges" namespace {
             targetRefs = gatewayTarget;
             clientIPDetection =
-              if peers == [ ] then
+              if cluster.ingress.mode == "direct" then
                 { directSourceIP = { }; }
               else
                 {

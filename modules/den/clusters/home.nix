@@ -15,12 +15,13 @@ let
   kubeVersion = builtins.head (
     lib.splitString "+" inputs.nixpkgs.legacyPackages.${cluster.hostSystem}.k3s.version
   );
-  route = key: namespace: service: port: auth: backendPodSelector: {
+  route = key: namespace: service: port: auth: exposure: backendPodSelector: {
     inherit
       namespace
       service
       port
       auth
+      exposure
       backendPodSelector
       ;
     hostnames = hosts key;
@@ -38,17 +39,18 @@ in
     repository = "https://github.com/dvicory/homelab.git";
     branch = "main";
     ingress = {
+      mode = "direct";
       nodePort = 30443;
       trustedProxyCIDRs = [ ];
     };
     settings.kubernetes.services.identity.phase = "initial";
     routes = {
-      argocd = route "argocd" "argocd" "argocd-server" 80 "admin" {
+      argocd = route "argocd" "argocd" "argocd-server" 80 "admin" "public" {
         "app.kubernetes.io/instance" = "argocd";
         "app.kubernetes.io/name" = "argocd-server";
       };
       idm =
-        (route "idm" "identity" "kanidm" 443 "native" {
+        (route "idm" "identity" "kanidm" 443 "native" "private" {
           "app.kubernetes.io/name" = "kanidm";
         })
         // {

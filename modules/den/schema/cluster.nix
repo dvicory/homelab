@@ -16,7 +16,11 @@ let
         description = "Non-empty pod labels selecting the routed backend workload.";
       };
       port = mkOption { type = types.port; };
-      hostnames = mkOption { type = types.listOf types.str; };
+      hostnames = mkOption {
+        type = types.addCheck (types.listOf types.str) (
+          value: value != [ ] && lib.all (hostname: hostname != "") value
+        );
+      };
       pathPrefix = mkOption {
         type = types.strMatching "/.*";
         default = "/";
@@ -26,6 +30,23 @@ let
           "native"
           "admin"
         ];
+      };
+      exposure = mkOption {
+        type = types.enum [
+          "private"
+          "public"
+        ];
+      };
+      timeouts = mkOption {
+        type = types.nullOr (
+          types.submodule {
+            options = {
+              request = mkOption { type = types.str; };
+              backendRequest = mkOption { type = types.str; };
+            };
+          }
+        );
+        default = null;
       };
       backendTLS = mkOption {
         type = types.bool;
@@ -71,6 +92,12 @@ in
                 nodePort = mkOption {
                   type = types.port;
                   default = 30443;
+                };
+                mode = mkOption {
+                  type = types.enum [
+                    "direct"
+                    "trustedEdges"
+                  ];
                 };
                 trustedProxyCIDRs = mkOption {
                   type = types.listOf types.str;

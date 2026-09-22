@@ -9,6 +9,7 @@ let
   ];
   testCluster = cluster // {
     ingress = cluster.ingress // {
+      mode = "trustedEdges";
       trustedProxyCIDRs = peerCIDRs;
     };
   };
@@ -64,8 +65,9 @@ let
   roleModule = aspect: host: unwrap (aspect.nixos { inherit host; });
   remoteModule = roleModule remoteAspect (mkHost "remote-edge" remoteSettings);
   homeModule = roleModule homeAspect (mkHost "home-edge" homeSettings);
+  publicRoutes = lib.filterAttrs (_: route: route.exposure == "public") routes;
   routeHosts =
-    variant: map (route: builtins.elemAt route.hostnames variant) (builtins.attrValues routes);
+    variant: map (route: builtins.elemAt route.hostnames variant) (builtins.attrValues publicRoutes);
   sorted = values: lib.sort builtins.lessThan values;
   allAssertions = module: lib.all (assertion: assertion.assertion) module.assertions;
   gatewayObjects =
@@ -76,6 +78,30 @@ let
       charts = { };
       inherit lib;
     };
+  renderedGateway = gatewayObjects testCluster;
+  gatewayRoutes = lib.filter (
+    object: object.kind == "HTTPRoute"
+  ) renderedGateway.applications.gateway.objects;
+  envoyProxy = builtins.head (
+    lib.filter (object: object.kind == "EnvoyProxy") renderedGateway.applications.gateway.objects
+  );
+  timeoutContract = lib.all (
+    route:
+    (builtins.head route.spec.rules).timeouts == {
+      request = "15s";
+      backendRequest = "15s";
+    }
+  ) gatewayRoutes;
+  envoyLogFormat = builtins.head envoyProxy.spec.telemetry.accessLog.settings;
+  querylessEnvoyLogs =
+    envoyLogFormat.format.type == "JSON"
+    && envoyLogFormat.format.json.path == "%PATH(NQ)%"
+    && envoyLogFormat.sinks == [ { file.path = "/dev/stdout"; } ];
+  nginxLogConfig = remoteModule.services.nginx.commonHttpConfig;
+  querylessNginxLogs =
+    lib.hasInfix "\"path\":\"$uri\"" nginxLogConfig
+    && !(lib.hasInfix "$request_uri" nginxLogConfig)
+    && !(lib.hasInfix "$args" nginxLogConfig);
   backendPolicies =
     inventory:
     lib.filter (object: lib.hasSuffix "-backend-ingress" object.metadata.name) (
@@ -194,6 +220,7 @@ let
       && lib.hasInfix "proxy_set_header X-Auth-Request-User \"\";" location.extraConfig
       && lib.hasInfix "proxy_set_header X-Auth-Request-Email \"\";" location.extraConfig
       && lib.hasInfix "proxy_set_header Remote-User \"\";" location.extraConfig
+      && lib.hasInfix "proxy_set_header X-Request-ID $request_id;" location.extraConfig
     ) locations
     && lib.all (
       hostname:
@@ -223,6 +250,14 @@ let
   );
   badPeerModule = roleModule remoteAspect (
     mkHost "remote-edge" (remoteSettings // { peerAddress = "10.0.0.99"; })
+  );
+  badModeCluster = testCluster // {
+    ingress = testCluster.ingress // {
+      mode = "direct";
+    };
+  };
+  badModeModule = roleModule ((sourceFor badModeCluster).den.aspects.services.remote-edge) (
+    mkHost "remote-edge" remoteSettings
   );
   badTLSModule = roleModule remoteAspect (
     mkHost "remote-edge" (
@@ -263,6 +298,10 @@ let
     undeclared-peer-rejected = !allAssertions badPeerModule;
     incomplete-tls-rejected = !allAssertions badTLSModule;
     unsupported-prefix-rejected = !allAssertions badPathModule;
+    direct-mode-edge-rejected = !allAssertions badModeModule;
+    bounded-route-timeouts = timeoutContract;
+    queryless-envoy-logs = querylessEnvoyLogs;
+    queryless-nginx-logs = querylessNginxLogs;
     non-private-trusted-peer-rejected = !allAssertions badTrustedModule;
     backend-policy-selectors = backendPolicyContract testCluster;
     same-namespace-backend-policies = sameNamespaceBackendPolicyContract;

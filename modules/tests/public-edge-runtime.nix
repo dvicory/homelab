@@ -39,6 +39,7 @@
               den = {
                 clusters."prod-home" = {
                   environment = "prod";
+                  ingress.mode = "trustedEdges";
                   ingress.trustedProxyCIDRs = [
                     "10.0.0.11/32"
                     "10.0.0.12/32"
@@ -48,6 +49,7 @@
                       "service.primary.test"
                       "service.backup.test"
                     ];
+                    exposure = "public";
                     pathPrefix = "/";
                   };
                 };
