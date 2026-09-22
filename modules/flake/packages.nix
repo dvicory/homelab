@@ -37,6 +37,14 @@
           self + "/pkgs/by-name/kanidm-provision-image/package.nix"
         ) { };
       };
+      jellyfin-provisioner-image = lib.optionalAttrs isLinux {
+        jellyfin-provisioner-image = callPackage (
+          self + "/pkgs/by-name/jellyfin-provisioner-image/package.nix"
+        ) { };
+      };
+      jellarr-image = lib.optionalAttrs isLinux {
+        jellarr-image = callPackage (self + "/pkgs/by-name/jellarr-image/package.nix") { };
+      };
 
       provision-keys = callPackage (self + "/pkgs/by-name/provision-keys/package.nix") {
         inherit generate-secrets rekey;
@@ -53,7 +61,9 @@
           ;
       }
       // prepare-luks-storage
-      // kanidm-provision-image;
+      // kanidm-provision-image
+      // jellyfin-provisioner-image
+      // jellarr-image;
 
       checks.compute-runtime = config.packages.compute-runtime;
 
