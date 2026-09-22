@@ -200,9 +200,10 @@ let
               [ ];
           routeHosts = map (entry: entry.hostname) routeEntries;
           routeHostsUnique = builtins.length (lib.unique routeHosts) == builtins.length routeHosts;
-          bareRouteValid = cfg.bareRoute != null && builtins.hasAttr cfg.bareRoute routes && routesValid;
+          bareRouteValid = cfg.bareRoute != null && builtins.hasAttr cfg.bareRoute cluster.routes && routesValid;
+          bareRoutePublishable = bareRouteValid && builtins.hasAttr cfg.bareRoute routes;
           bareTarget =
-            if bareRouteValid then builtins.elemAt routes.${cfg.bareRoute}.hostnames variant else "";
+            if bareRoutePublishable then builtins.elemAt routes.${cfg.bareRoute}.hostnames variant else "";
           primaryTLS = tlsConfig.primary;
           backupTLS = tlsConfig.backup;
           tlsPairValid =
@@ -258,6 +259,8 @@ let
                     return = "404";
                   };
                 };
+              }
+              // lib.optionalAttrs bareRoutePublishable {
                 ${selectedDomain} = {
                   forceSSL = true;
                   sslCertificate = selectedTLS.certificate;

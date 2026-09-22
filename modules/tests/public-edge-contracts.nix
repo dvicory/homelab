@@ -73,9 +73,9 @@ let
   initialRemoteModule = roleModule initialEdge.den.aspects.services.remote-edge (
     mkHost "remote-edge" remoteSettings
   );
-  initialPublicEdgeFailsClosed =
-    !(allAssertions initialRemoteModule)
-    && builtins.attrNames initialRemoteModule.services.nginx.virtualHosts == [ "_" ];
+  initialHomeModule = roleModule initialEdge.den.aspects.services.home-edge (
+    mkHost "home-edge" homeSettings
+  );
   provisioningCluster = lib.recursiveUpdate testCluster {
     settings.kubernetes.services.identity.phase = "provisioning";
   };
@@ -83,9 +83,28 @@ let
   provisioningRemoteModule = roleModule provisioningEdge.den.aspects.services.remote-edge (
     mkHost "remote-edge" remoteSettings
   );
-  provisioningPublicEdgeFailsClosed =
-    !(allAssertions provisioningRemoteModule)
-    && builtins.attrNames provisioningRemoteModule.services.nginx.virtualHosts == [ "_" ];
+  provisioningHomeModule = roleModule provisioningEdge.den.aspects.services.home-edge (
+    mkHost "home-edge" homeSettings
+  );
+  initialIdmHomeModule = roleModule initialEdge.den.aspects.services.home-edge (
+    mkHost "home-edge" (homeSettings // { bareRoute = "idm"; })
+  );
+  provisioningIdmRemoteModule = roleModule provisioningEdge.den.aspects.services.remote-edge (
+    mkHost "remote-edge" (remoteSettings // { bareRoute = "idm"; })
+  );
+  privatePhaseEdge =
+    module:
+    let
+      virtualHosts = module.services.nginx.virtualHosts;
+    in
+    allAssertions module
+    && builtins.attrNames virtualHosts == [ "_" ]
+    && virtualHosts."_".default
+    && virtualHosts."_".rejectSSL
+    && virtualHosts."_".locations."/".return == "404";
+  invalidBareRouteModule = roleModule initialEdge.den.aspects.services.remote-edge (
+    mkHost "remote-edge" (remoteSettings // { bareRoute = "not-in-inventory"; })
+  );
   publicRoutes = lib.filterAttrs (_: route: route.exposure == "public") routes;
   routeHosts =
     variant: map (route: builtins.elemAt route.hostnames variant) (builtins.attrValues publicRoutes);
@@ -418,8 +437,12 @@ let
     route-proxy-bijection = routeProxyBijection;
     route-inventory-nonempty = routes != { };
     valid-origin-and-peer-configuration = allAssertions remoteModule && allAssertions homeModule;
-    initial-public-admin-edge-fails-closed = initialPublicEdgeFailsClosed;
-    provisioning-public-admin-edge-fails-closed = provisioningPublicEdgeFailsClosed;
+    initial-private-edge-rejects-unmatched = privatePhaseEdge initialRemoteModule && privatePhaseEdge initialHomeModule;
+    provisioning-private-edge-rejects-unmatched =
+      privatePhaseEdge provisioningRemoteModule && privatePhaseEdge provisioningHomeModule;
+    gated-identity-bare-route-rejects-unmatched =
+      privatePhaseEdge initialIdmHomeModule && privatePhaseEdge provisioningIdmRemoteModule;
+    invalid-bare-route-inventory-key-rejected = !allAssertions invalidBareRouteModule;
     initial-admin-gateway-publication-absent = initialAdminPublicationAbsent;
     public-origin-rejected = !allAssertions badOriginModule;
     undeclared-peer-rejected = !allAssertions badPeerModule;
