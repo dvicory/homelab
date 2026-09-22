@@ -2,17 +2,6 @@
 let
   inherit (lib) mkOption types;
   settingsType = import ./_settings-type.nix { inherit lib den; };
-  routeType = types.submodule {
-    options = {
-      namespace = mkOption { type = types.str; };
-      service = mkOption { type = types.str; };
-      port = mkOption { type = types.port; };
-      hostnames = mkOption { type = types.listOf types.str; };
-      pathPrefix = mkOption { type = types.strMatching "/.*"; default = "/"; };
-      auth = mkOption { type = types.enum [ "native" "admin" ]; };
-      backendTLS = mkOption { type = types.bool; default = false; };
-    };
-  };
 in
 {
   options.den.clusters = inputs.gen-schema.lib.mkInstanceRegistry den.schema.cluster {
@@ -43,18 +32,8 @@ in
           };
           branch = mkOption {
             type = types.str;
-            description = "Approved Git revision whose checked-in production manifests Argo CD reconciles.";
+            description = "Git ref or branch containing the generated production manifests Argo CD tracks.";
           };
-          ingress = mkOption {
-            type = types.submodule {
-              options = {
-                nodePort = mkOption { type = types.port; default = 30443; };
-                trustedProxyCIDRs = mkOption { type = types.listOf types.str; default = [ ]; };
-              };
-            };
-            default = { };
-          };
-          routes = mkOption { type = types.attrsOf routeType; default = { }; };
           settings = (mkOption {
             type = settingsType;
             default = { };

@@ -40,10 +40,11 @@ type descriptor struct {
 	RuntimeSecrets []runtimeSecret
 }
 
-func stageCurrentRuntimeSecrets(ctx context.Context) (string, error) {
+func stageCurrentRuntimeSecrets(ctx context.Context, secrets []runtimeSecret) (string, error) {
 	stage, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	command := exec.CommandContext(stage, "systemctl", "restart", "--wait", "compute-stage-secrets-current.service")
+	unit := "compute-stage-secrets-current@" + runtimeSecretInventoryHash(secrets) + ".service"
+	command := exec.CommandContext(stage, "systemctl", "restart", "--wait", unit)
 	command.Stdout = io.Discard
 	command.Stderr = io.Discard
 	if err := command.Run(); err != nil {
@@ -54,6 +55,13 @@ func stageCurrentRuntimeSecrets(ctx context.Context) (string, error) {
 	}
 	generation, err := readRuntimeGeneration(runtimeSecretStagePath)
 	if err != nil {
+		return "", fmt.Errorf("verify staged runtime Secrets: %w", err)
+	}
+	staged, err := os.ReadFile(filepath.Join(runtimeSecretStagePath, "runtime-secrets.names"))
+	if err != nil {
+		return "", fmt.Errorf("verify staged runtime Secrets: read inventory: %w", err)
+	}
+	if err := verifyRuntimeSecretInventory(secrets, staged); err != nil {
 		return "", fmt.Errorf("verify staged runtime Secrets: %w", err)
 	}
 	return generation, nil
@@ -94,10 +102,6 @@ func RunHost(ctx context.Context, args []string, out, errOut io.Writer) (result 
 	}
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		return errors.New("another compute lifecycle operation is running")
-	}
-	runtimeGeneration, err := stageCurrentRuntimeSecrets(ctx)
-	if err != nil {
-		return err
 	}
 
 	manifests, err := OpenManifests(os.Getenv("HOUSEHOLD_BOOTSTRAP_MANIFESTS"))
@@ -186,6 +190,10 @@ func RunHost(ctx context.Context, args []string, out, errOut io.Writer) (result 
 	if runErr = tools.CheckArgo(ctx); runErr != nil {
 		return runErr
 	}
+	runtimeGeneration, err := stageCurrentRuntimeSecrets(ctx, descriptor.RuntimeSecrets)
+	if err != nil {
+		return err
+	}
 
 	if runErr = tools.ApplyFile(ctx, manifests.file("namespaces.yaml"), fieldManager); runErr != nil {
 		return runErr
@@ -207,15 +215,18 @@ func RunHost(ctx context.Context, args []string, out, errOut io.Writer) (result 
 			return fmt.Errorf("cannot ensure secret namespace %s: %w", namespace, runErr)
 		}
 	}
-	if runErr = incusops.Exec(
-		ctx,
+	restart, restartCancel := context.WithTimeout(ctx, 2*time.Minute)
+	runErr = incusops.Exec(
+		restart,
 		projectServer,
 		descriptor.Instance,
 		[]string{"systemctl", "restart", "kubernetes-runtime-secrets.service"},
 		nil,
 		io.Discard,
 		io.Discard,
-	); runErr != nil {
+	)
+	restartCancel()
+	if runErr != nil {
 		return fmt.Errorf("cannot reconcile staged runtime Secrets: %w", runErr)
 	}
 	wait, cancel := context.WithTimeout(ctx, 5*time.Minute)

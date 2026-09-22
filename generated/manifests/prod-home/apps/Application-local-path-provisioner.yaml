@@ -1,6 +1,8 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
   finalizers:
     - resources-finalizer.argocd.argoproj.io
   name: local-path-provisioner
@@ -9,7 +11,7 @@ spec:
   destination:
     namespace: local-path-storage
     server: https://kubernetes.default.svc
-  project: default
+  project: prod-home
   source:
     path: ./generated/manifests/prod-home/local-path-provisioner
     repoURL: https://github.com/dvicory/homelab.git
@@ -18,5 +20,12 @@ spec:
     automated:
       prune: true
       selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 1m
+      limit: 5
     syncOptions:
+      - FailOnSharedResource=true
       - ServerSideApply=true

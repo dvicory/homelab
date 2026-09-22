@@ -66,9 +66,57 @@ func TestRuntimeSecretInventoryAndReadiness(t *testing.T) {
 	}
 }
 
+func TestRuntimeSecretInventoryBinding(t *testing.T) {
+	expected := []runtimeSecret{
+		{Namespace: "media", Name: "credentials", Type: "Opaque", Keys: []string{"PASSWORD", "USER"}},
+		{Namespace: "ops", Name: "tokens", Type: "Opaque", Keys: []string{"TOKEN"}},
+	}
+	copySecrets := func(secrets []runtimeSecret) []runtimeSecret {
+		return append([]runtimeSecret(nil), secrets...)
+	}
+	cases := []struct {
+		name     string
+		expected []runtimeSecret
+		actual   []runtimeSecret
+		wantErr  bool
+	}{
+		{"exact match", expected, expected, false},
+		{"extra Secret", expected, append(copySecrets(expected), runtimeSecret{
+			Namespace: "ops",
+			Name:      "extra",
+			Type:      "Opaque",
+			Keys:      []string{"TOKEN"},
+		}), true},
+		{"missing Secret", expected, expected[:1], true},
+		{"key mismatch", expected, []runtimeSecret{
+			{Namespace: "media", Name: "credentials", Type: "Opaque", Keys: []string{"PASSWORD", "TOKEN"}},
+			expected[1],
+		}, true},
+		{"type mismatch", expected, []runtimeSecret{
+			{Namespace: "media", Name: "credentials", Type: "kubernetes.io/tls", Keys: []string{"PASSWORD", "USER"}},
+			expected[1],
+		}, true},
+		{"stale declaration", append(copySecrets(expected), runtimeSecret{
+			Namespace: "media",
+			Name:      "stale",
+			Type:      "Opaque",
+			Keys:      []string{"TOKEN"},
+		}), expected, true},
+		{"empty inventory", nil, nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := verifyRuntimeSecretInventory(tc.expected, runtimeSecretInventory(tc.actual))
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("inventory verification error = %v, want error %t", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestRuntimeGenerationBindingAndEmptyAcknowledgment(t *testing.T) {
 	yaml := []byte("apiVersion: v1\n")
-	names := []byte("media\tshared\n")
+	names := []byte("media\tshared\tOpaque\tPASSWORD,USER\n")
 	yamlDigest := sha256.Sum256(yaml)
 	namesDigest := sha256.Sum256(names)
 	marker := []byte(fmt.Sprintf(
@@ -80,7 +128,7 @@ func TestRuntimeGenerationBindingAndEmptyAcknowledgment(t *testing.T) {
 	if generation, err := verifyRuntimeGeneration(marker, yaml, names); err != nil || generation != runtimeGenerationID(yaml, names) {
 		t.Fatalf("valid generation rejected: %q, %v", generation, err)
 	}
-	if _, err := verifyRuntimeGeneration(marker, yaml, []byte("media\tother\n")); err == nil {
+	if _, err := verifyRuntimeGeneration(marker, yaml, []byte("media\tother\tOpaque\tPASSWORD,USER\n")); err == nil {
 		t.Fatal("accepted a generation with a modified desired inventory")
 	}
 	root := t.TempDir()

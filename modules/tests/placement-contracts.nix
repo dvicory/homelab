@@ -10,6 +10,33 @@
 let
   cluster = config.den.clusters.prod-home;
   environment = config.den.environments.${cluster.environment};
+  retainedStorageRenderer =
+    (import ../den/aspects/kubernetes/services/retained-storage.nix { })
+    .den.aspects.kubernetes.services.retained-storage.k8s-manifests;
+  rendererFixture = {
+    instance = "compute-1";
+    retainedPaths.kubernetes-volumes = {
+      path = "/host-only/state/kubernetes-volumes";
+      guestPath = "/srv/state/kubernetes-volumes";
+      uid = 0;
+      gid = 0;
+      mode = "0700";
+      readOnly = false;
+    };
+    storageCapabilities = [ "media" ];
+    runtimeSecrets = { };
+    images = [ "guest-image" ];
+  };
+  rendererBoundaryAssertions =
+    let
+      rendered = builtins.tryEval (retainedStorageRenderer {
+        computeResources = rendererFixture // {
+          unrelatedProjectedCapability = "ignored";
+        };
+        inherit lib;
+      });
+    in
+    rendered.success;
   policiesFor =
     declared:
     (import ../den/policies/clusters.nix {
@@ -56,6 +83,8 @@ in
     in
     {
       checks.placement-contracts =
+        assert lib.assertMsg rendererBoundaryAssertions
+          "Kubernetes consumers must tolerate unrelated projected capabilities";
         assert lib.assertMsg policyAssertions
           "Cluster policies must reject undeclared environments, hosts and application aspects";
         pkgs.runCommand "placement-contracts"

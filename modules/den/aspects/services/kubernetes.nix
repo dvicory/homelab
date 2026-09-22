@@ -46,6 +46,7 @@
         systemd.services.kubernetes-runtime-secrets = {
           path = [
             pkgs.coreutils
+            pkgs.diffutils
             pkgs.gawk
             pkgs.gnugrep
           ];
@@ -64,6 +65,7 @@
           };
           script = ''
             set -euo pipefail
+            export LC_ALL=C
             kubectl() {
               ${config.services.k3s.package}/bin/k3s kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml "$@"
             }
@@ -133,10 +135,25 @@
               exit 1
             fi
             if ! ${pkgs.gawk}/bin/awk -F '\t' '
-              NF != 2 ||
+              NF != 4 ||
               length($1) > 63 || length($2) > 253 ||
               $1 !~ /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/ ||
-              $2 !~ /^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/ { invalid = 1 }
+              $2 !~ /^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/ ||
+              $3 !~ /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/ ||
+              $4 == "" { invalid = 1 }
+              NF == 4 {
+                keyCount = split($4, keys, ",")
+                id = $1 "\t" $2
+                if (seen[id]++) {
+                  invalid = 1
+                }
+                for (i = 1; i <= keyCount; i++) {
+                  if (keys[i] !~ /^[A-Za-z0-9._-]+$/ ||
+                    (i > 1 && ("x" keys[i - 1]) >= ("x" keys[i]))) {
+                    invalid = 1
+                  }
+                }
+              }
               END { exit invalid }
             ' "$desired"; then
               echo "Runtime Secret desired inventory is malformed; refusing reconciliation." >&2
@@ -177,7 +194,7 @@
             fi
             while IFS="$(printf '\t')" read -r namespace name uid extra; do
               found=false
-              while IFS="$(printf '\t')" read -r desiredNamespace desiredName; do
+              while IFS="$(printf '\t')" read -r desiredNamespace desiredName desiredType desiredKeys extra; do
                 if [ "$namespace" = "$desiredNamespace" ] && [ "$name" = "$desiredName" ]; then
                   found=true
                   break
@@ -225,7 +242,7 @@
               fi
             done < "$owned"
             : > "$inventoryNew"
-            while IFS="$(printf '\t')" read -r namespace name extra; do
+            while IFS="$(printf '\t')" read -r namespace name desiredType desiredKeys extra; do
               if uid="$(kubectl get secret "$name" --namespace "$namespace" \
                 -o jsonpath='{.metadata.uid}')"; then
                 :

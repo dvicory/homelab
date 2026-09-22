@@ -10,7 +10,6 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
     defaultVolumeType: local
-    storageclass.kubernetes.io/is-default-class: "true"
   name: retained-local
 provisioner: rancher.io/local-path
 reclaimPolicy: Retain

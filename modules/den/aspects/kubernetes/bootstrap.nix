@@ -1,4 +1,9 @@
-{ lib, rootPath, ... }:
+{
+  lib,
+  rootPath,
+  self,
+  ...
+}:
 {
   perSystem =
     {
@@ -18,6 +23,7 @@
               nix run .#sync-prod-home-manifests
             Then review and track generated/manifests/prod-home before building bootstrap artifacts.
           '';
+      seed = self.nixidyEnvs.${system}.prod-home.config.build.bootstrapPackage;
       manifests = pkgs.runCommand "household-static-bootstrap" { nativeBuildInputs = [ pkgs.yq-go ]; } ''
         mkdir -p "$out"
         cp ${environment}/argocd-retained/Namespace-argocd.yaml "$out/namespaces.yaml"
@@ -33,7 +39,30 @@
               ;;
           esac
         done
-        cp ${environment}/bootstrap.yaml "$out/root.yaml"
+
+        set -- ${environment}/apps/AppProject-*.yaml
+        if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+          echo "expected one managed AppProject in the generated apps tree" >&2
+          exit 1
+        fi
+        managed_project="$1"
+        set -- ${seed}/AppProject-*.yaml
+        if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+          echo "expected one seeded AppProject in the nixidy bootstrap package" >&2
+          exit 1
+        fi
+        seed_project="$1"
+        cmp "$managed_project" "$seed_project"
+
+        set -- ${seed}/Application-*.yaml
+        if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+          echo "expected one seeded root Application in the nixidy bootstrap package" >&2
+          exit 1
+        fi
+        cmp "$1" ${environment}/bootstrap.yaml
+        cat "$seed_project" > "$out/root.yaml"
+        printf '\n---\n' >> "$out/root.yaml"
+        cat "$1" >> "$out/root.yaml"
         yq 'select(.kind == "Deployment" or .kind == "StatefulSet" or .kind == "DaemonSet")' "$out/controllers.yaml" > "$out/readiness.yaml"
         yq 'select(.kind == "Prometheus" or .kind == "Alertmanager")' "$out/controllers.yaml" > "$out/operator-readiness.yaml"
         yq 'select(.kind == "Job")' "$out/controllers.yaml" > "$out/jobs.yaml"

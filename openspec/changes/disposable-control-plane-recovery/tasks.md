@@ -1,13 +1,25 @@
-The implementation and current-revision x86_64/KVM replacement acceptance satisfy the recovery-path contract. GitHub Actions run 34914115011 completed the aggregate x86_64 `checks` job successfully.
-
+The platform bootstrap boundary is implemented locally. Target-runtime
+replacement and application acceptance are owned by later workload cuts and
+are not claimed here.
 
 ## 1. Remove obsolete recovery implementation
 
-- [x] 1.1 Delete `household-recovery`, its inventory/script, recovery freshness alerts, capture-check plumbing, offline Jellyfin fixtures, and sandbox artifacts.
-- [x] 1.2 Narrow static bootstrap to the Argo namespace/CRDs/controllers, staged secrets, and explicit root-application handoff, then verify bootstrap manifests evaluate and the host wrapper rejects incomplete artifacts.
+- [x] 1.1 Delete `household-recovery`, its inventory/script, obsolete recovery
+  freshness alerts, capture-check plumbing, offline fixtures, and sandbox
+  artifacts.
+- [x] 1.2 Narrow static bootstrap to the Argo namespace/CRDs/controllers,
+  staged Secrets, and explicit root-Application handoff; verify that the host
+  wrapper rejects incomplete artifacts.
 
-## 2. Replacement verification
+## 2. Replacement boundary
 
-- [x] 2.1 Keep the x86_64 `prod-home-replacement` acceptance in `modules/tests/prod-home-replacement.{nix,py}`: invoke the shipped `household-bootstrap-host`, use its test-local root Application against a disposable Git origin, and pull pinned registry images. Keep Jellyfin-only HTTP behavior in `modules/tests/jellyfin_smoke.py`; only this acceptance establishes the runtime gate.
-- [x] 2.2 On an appropriate x86_64 Linux runner, run `prod-home-manifests-fresh`, `prod-home-gitops-source`, `den-semantics`, `compute-contracts`, `idmap-fixtures`, `mergerfs-capability`, `retained-storage-contracts`, `media-contracts`, `jellyfin-contracts`, `storage-roots-contracts`, and `prod-home-replacement`; record phase timings and keep replacement verification pending until the run succeeds. GitHub Actions run 34914115011 completed the aggregate x86_64 `checks` job successfully.
-- [x] 2.3 Regenerate and review operations declarations affected by the narrower recovery path.
+- [ ] 2.1 Keep the later workload cut's target-runtime replacement scenario
+  outside this platform change. It must invoke the shipped bootstrap boundary,
+  use a test-local root Application against a disposable Git origin, and
+  verify its own application state.
+- [ ] 2.2 On an appropriate Linux runner, exercise the platform's bootstrap
+  and reconciliation handoff with the tracked-source contract. Record local
+  evaluation separately from target-runtime evidence; no workload acceptance is
+  implied by this task.
+- [ ] 2.3 Regenerate and review the operations declaration after the bootstrap
+  and tracked-ref wording settles.

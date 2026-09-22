@@ -23,10 +23,11 @@ type runtimeSecret struct {
 }
 
 var (
-	secretNamespace = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-	secretName      = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
-	secretKey       = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
-	secretType      = regexp.MustCompile(`^Opaque$`)
+	secretNamespace     = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+	secretName          = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
+	secretKey           = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+	secretType          = regexp.MustCompile(`^Opaque$`)
+	inventorySecretType = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
 )
 
 func declaredRuntimeSecrets(raw json.RawMessage) ([]runtimeSecret, error) {
@@ -68,9 +69,105 @@ func declaredRuntimeSecrets(raw json.RawMessage) ([]runtimeSecret, error) {
 		result = append(result, *group)
 	}
 	sort.Slice(result, func(i, j int) bool {
-		return result[i].Namespace+"/"+result[i].Name < result[j].Namespace+"/"+result[j].Name
+		if result[i].Namespace != result[j].Namespace {
+			return result[i].Namespace < result[j].Namespace
+		}
+		return result[i].Name < result[j].Name
 	})
 	return result, nil
+}
+
+func runtimeSecretInventory(secrets []runtimeSecret) []byte {
+	if len(secrets) == 0 {
+		return nil
+	}
+	ordered := append([]runtimeSecret(nil), secrets...)
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].Namespace != ordered[j].Namespace {
+			return ordered[i].Namespace < ordered[j].Namespace
+		}
+		return ordered[i].Name < ordered[j].Name
+	})
+	lines := make([]string, len(ordered))
+	for i, secret := range ordered {
+		keys := append([]string(nil), secret.Keys...)
+		sort.Strings(keys)
+		lines[i] = strings.Join([]string{
+			secret.Namespace,
+			secret.Name,
+			secret.Type,
+			strings.Join(keys, ","),
+		}, "\t")
+	}
+	return []byte(strings.Join(lines, "\n") + "\n")
+}
+
+func runtimeSecretInventoryHash(secrets []runtimeSecret) string {
+	digest := sha256.Sum256(runtimeSecretInventory(secrets))
+	return hex.EncodeToString(digest[:])
+}
+
+func parseRuntimeSecretInventory(raw []byte) ([]runtimeSecret, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	text := string(raw)
+	if !strings.HasSuffix(text, "\n") {
+		return nil, errors.New("runtime Secret inventory is not newline-terminated")
+	}
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	result := make([]runtimeSecret, 0, len(lines))
+	seenSecrets := make(map[string]struct{}, len(lines))
+	for _, line := range lines {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 4 {
+			return nil, errors.New("runtime Secret inventory has invalid metadata")
+		}
+		namespace, name, typeName := fields[0], fields[1], fields[2]
+		if len(namespace) > 63 || !secretNamespace.MatchString(namespace) ||
+			len(name) > 253 || !secretName.MatchString(name) ||
+			!inventorySecretType.MatchString(typeName) {
+			return nil, errors.New("runtime Secret inventory has invalid metadata")
+		}
+		id := namespace + "/" + name
+		if _, ok := seenSecrets[id]; ok {
+			return nil, errors.New("runtime Secret inventory has duplicate Secrets")
+		}
+		seenSecrets[id] = struct{}{}
+		keys := strings.Split(fields[3], ",")
+		seen := make(map[string]struct{}, len(keys))
+		for i, key := range keys {
+			if len(key) > 253 || !secretKey.MatchString(key) ||
+				(i > 0 && keys[i-1] >= key) {
+				return nil, errors.New("runtime Secret inventory has invalid keys")
+			}
+			if _, ok := seen[key]; ok {
+				return nil, errors.New("runtime Secret inventory has duplicate keys")
+			}
+			seen[key] = struct{}{}
+		}
+		result = append(result, runtimeSecret{
+			Namespace: namespace,
+			Name:      name,
+			Type:      typeName,
+			Keys:      keys,
+		})
+	}
+	if string(runtimeSecretInventory(result)) != text {
+		return nil, errors.New("runtime Secret inventory is not canonical")
+	}
+	return result, nil
+}
+
+func verifyRuntimeSecretInventory(expected []runtimeSecret, staged []byte) error {
+	actual, err := parseRuntimeSecretInventory(staged)
+	if err != nil {
+		return err
+	}
+	if string(runtimeSecretInventory(expected)) != string(runtimeSecretInventory(actual)) {
+		return errors.New("staged runtime Secret inventory does not match descriptor")
+	}
+	return nil
 }
 
 // Evaluate the readiness predicate inside the guest. Neither Secret values nor

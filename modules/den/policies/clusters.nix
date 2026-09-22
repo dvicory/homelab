@@ -88,6 +88,27 @@ in
 
     den.policies.cluster-to-nixidy =
       { cluster, environment, ... }:
+      let
+        hostCompute =
+          config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
+        resources = config.flake.clusterResources.${cluster.name};
+        computeResources = {
+          instance = hostCompute.instance;
+          retainedPaths = hostCompute.retainedPaths;
+          storageCapabilities = hostCompute.storageCapabilities;
+          runtimeSecrets = resources.runtimeSecrets;
+          images = resources.images;
+        };
+      in
+      assert lib.assertMsg (
+        lib.sort builtins.lessThan (builtins.attrNames computeResources) == [
+          "images"
+          "instance"
+          "retainedPaths"
+          "runtimeSecrets"
+          "storageCapabilities"
+        ]
+      ) "Cluster projection must expose only selected compute resource facts";
       # Every entry is a renderer/build-platform snapshot of the same deployment
       # cluster. `system` names the Nix toolchain used to realize this output; it
       # is not the target workload architecture or a separate cluster identity.
@@ -120,8 +141,7 @@ in
                     cluster
                     environment
                     ;
-                  compute =
-                    config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
+                  inherit computeResources;
                 };
               }
             );

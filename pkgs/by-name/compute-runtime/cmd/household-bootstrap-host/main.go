@@ -8,12 +8,13 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"syscall"
 
 	"github.com/dvicory/homelab/compute-runtime/internal/bootstrap"
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
 	if err := bootstrap.RunHost(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		var usage *bootstrap.UsageError

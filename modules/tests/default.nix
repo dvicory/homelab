@@ -189,6 +189,10 @@ in
             nodes.machine =
               { pkgs, ... }:
               {
+                systemd.tmpfiles.rules = [
+                  "d /srv/secrets 0755 root root -"
+                  "d /var/lib/homelab-runtime-secrets 0700 root root -"
+                ];
                 services.k3s = {
                   enable = true;
                   role = "server";
@@ -199,6 +203,7 @@ in
                 systemd.services.kubernetes-runtime-secrets = {
                   path = [
                     pkgs.coreutils
+                    pkgs.diffutils
                     pkgs.gawk
                     pkgs.gnugrep
                   ];
@@ -266,7 +271,7 @@ in
               assert replaced_uid != replacement_uid
               machine.succeed(
                   f"shared_uid=$({kubectl} get secret shared --namespace media -o jsonpath='{{.metadata.uid}}'); "
-                  f"printf 'media\\\\tshared\\\\t%s\\\\nmedia\\\\treplaced\\\\t%s\\\\n' "
+                  f"printf 'media\\tshared\\t%s\\nmedia\\treplaced\\t%s\\n' "
                   f"\"$shared_uid\" \"{replaced_uid}\" > /var/lib/homelab-runtime-secrets/owned"
               )
               machine.succeed(
@@ -282,7 +287,7 @@ in
               data:
                 source-one: b25l
               EOF
-              printf 'media\\tshared\\n' > /srv/secrets/runtime-secrets.names
+              printf 'media\\tshared\\tOpaque\\tsource-one\\n' > /srv/secrets/runtime-secrets.names
               yaml_checksum=$(sha256sum /srv/secrets/runtime-secrets.yaml | cut -d ' ' -f 1)
               names_checksum=$(sha256sum /srv/secrets/runtime-secrets.names | cut -d ' ' -f 1)
               generation=$(printf '%s\\n%s\\n' "$yaml_checksum" "$names_checksum" | sha256sum | cut -d ' ' -f 1)
@@ -309,7 +314,7 @@ in
                   f"test \"$({kubectl} get secret replaced --namespace media -o jsonpath='{{.data.REPLACED}}')\" = bmV3"
               )
               machine.succeed(
-                  """printf 'media\tshared\tmalformed\n' > /srv/secrets/runtime-secrets.names
+                  """printf 'media\tshared\tOpaque\tmalformed key\n' > /srv/secrets/runtime-secrets.names
               yaml_checksum=$(sha256sum /srv/secrets/runtime-secrets.yaml | cut -d ' ' -f 1)
               names_checksum=$(sha256sum /srv/secrets/runtime-secrets.names | cut -d ' ' -f 1)
               generation=$(printf '%s\n%s\n' "$yaml_checksum" "$names_checksum" | sha256sum | cut -d ' ' -f 1)

@@ -5,6 +5,19 @@ data:
   application.resourceTrackingMethod: annotation
   application.sync.impersonation.enabled: "false"
   exec.enabled: "false"
+  resource.customizations.health.argoproj.io_Application: |
+    hs = {}
+    hs.status = "Progressing"
+    hs.message = ""
+    if obj.status ~= nil then
+      if obj.status.health ~= nil then
+        hs.status = obj.status.health.status
+        if obj.status.health.message ~= nil then
+          hs.message = obj.status.health.message
+        end
+      end
+    end
+    return hs
   resource.customizations.ignoreResourceUpdates.ConfigMap: |
     jqPathExpressions:
       # Ignore the cluster-autoscaler status
@@ -111,7 +124,7 @@ metadata:
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/name: argocd-cm
     app.kubernetes.io/part-of: argocd
-    app.kubernetes.io/version: v3.5.2
+    app.kubernetes.io/version: v3.5.2-sha256-e2aadfae709d904e87f46ba4aa49601d827b3022db22cd4d0
     helm.sh/chart: argo-cd-10.6.0
   name: argocd-cm
   namespace: argocd

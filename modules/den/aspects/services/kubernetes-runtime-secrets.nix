@@ -62,8 +62,9 @@ in
             _: sources:
             let
               entry = cfg.runtimeSecrets.${builtins.head sources};
+              keys = lib.sort builtins.lessThan (map (source: cfg.runtimeSecrets.${source}.key) sources);
             in
-            "${entry.namespace}\t${entry.name}"
+            "${entry.namespace}\t${entry.name}\t${entry.type}\t${lib.concatStringsSep "," keys}"
           ) secretGroups
         );
         targetTriples = map (
@@ -126,6 +127,9 @@ in
         ) secretNames;
         stageRuntimeSecrets = pkgs.writeShellScript "stage-kubernetes-runtime-secrets" ''
           set -eu
+          exec 8>/run/lock/compute-${cfg.project}-${cfg.instance}-secrets.lock
+          ${pkgs.util-linux}/bin/flock 8
+          expectedNamesChecksum="''${1:-}"
           export LC_ALL=C
           umask 077
           root=${lib.escapeShellArg secretPath}
@@ -188,6 +192,10 @@ in
           ''}
           yamlChecksum="$(${pkgs.coreutils}/bin/sha256sum "$root/runtime-secrets.yaml.new" | ${pkgs.coreutils}/bin/cut -d ' ' -f 1)"
           namesChecksum="$(${pkgs.coreutils}/bin/sha256sum "$root/runtime-secrets.names.new" | ${pkgs.coreutils}/bin/cut -d ' ' -f 1)"
+          if [ -n "$expectedNamesChecksum" ] && [ "$namesChecksum" != "$expectedNamesChecksum" ]; then
+            echo "Runtime Secret inventory does not match selected descriptor; refusing publication." >&2
+            exit 1
+          fi
           generationID="$(printf '%s\n%s\n' "$yamlChecksum" "$namesChecksum" | ${pkgs.coreutils}/bin/sha256sum | ${pkgs.coreutils}/bin/cut -d ' ' -f 1)"
           printf 'generation=%s yaml-sha256=%s names-sha256=%s\n' \
             "$generationID" "$yamlChecksum" "$namesChecksum" > "$root/runtime-secrets.commit.new"
@@ -243,15 +251,17 @@ in
             '';
           };
 
-          compute-stage-secrets-current = {
+          "compute-stage-secrets-current@" = {
             description = "Stage the current declared Kubernetes runtime Secrets";
             path = [
               pkgs.coreutils
               pkgs.util-linux
               pkgs.kubectl
             ];
-            serviceConfig.Type = "oneshot";
-            script = "exec ${stageRuntimeSecrets}";
+            serviceConfig = {
+              Type = "oneshot";
+              ExecStart = "${stageRuntimeSecrets} %i";
+            };
           };
         };
       };

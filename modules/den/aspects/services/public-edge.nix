@@ -96,6 +96,7 @@
             virtualHosts = {
               "_" = {
                 default = true;
+                rejectSSL = true;
                 locations."/" = { return = "404"; };
               };
             } // virtualHosts;

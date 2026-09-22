@@ -21,20 +21,12 @@
     k8s-manifests =
       {
         charts,
-        cluster,
-        lib,
         ...
       }:
-      assert lib.assertMsg (
-        cluster.routes.argocd.namespace == "argocd"
-        && cluster.routes.argocd.service == "argocd-server"
-        && cluster.routes.argocd.port == 80
-        && !cluster.routes.argocd.backendTLS
-        && cluster.routes.argocd.pathPrefix == "/"
-      ) "Argo route must target the hostname-root HTTP Service argocd/argocd-server:80";
       {
         applications.argocd-retained = {
           namespace = "argocd";
+          annotations."argocd.argoproj.io/sync-wave" = "-3";
           createNamespace = false;
           retained = true;
           objects = [
@@ -52,9 +44,12 @@
         applications.argocd = {
           namespace = "argocd";
           createNamespace = false;
+          annotations."argocd.argoproj.io/sync-wave" = "-2";
           helm.releases.argocd = {
             chart = charts.argoproj.argo-cd;
             values = {
+              global.image.tag = "v3.5.2@sha256:e2aadfae709d904e87f46ba4aa49601d827b3022db22cd4d03aae816a2e7097b";
+              redis.image.tag = "8.6.4-alpine@sha256:2cc044fc5a07c9b701f8f1255a309ae9ad7856e694ac03513bf3648c01e40763";
               nameOverride = "argocd";
               crds = {
                 install = true;
@@ -62,6 +57,20 @@
               };
               configs = {
                 cm."application.resourceTrackingMethod" = "annotation";
+                cm."resource.customizations.health.argoproj.io_Application" = ''
+                  hs = {}
+                  hs.status = "Progressing"
+                  hs.message = ""
+                  if obj.status ~= nil then
+                    if obj.status.health ~= nil then
+                      hs.status = obj.status.health.status
+                      if obj.status.health.message ~= nil then
+                        hs.message = obj.status.health.message
+                      end
+                    end
+                  end
+                  return hs
+                '';
                 # Credentials are provisioned at runtime from host-staged files;
                 # never generate or embed administrator values during evaluation.
                 secret.createSecret = false;
