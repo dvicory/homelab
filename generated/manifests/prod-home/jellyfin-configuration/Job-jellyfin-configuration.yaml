@@ -1,0 +1,116 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    homelab.danielvicory/jellarr-config: 3a079cbde29e20174ec0ee977fad8b3856ed0a090e43e9f868ebcf53bf5016f2
+  labels:
+    app.kubernetes.io/instance: jellyfin-configuration
+    app.kubernetes.io/name: jellarr
+  name: jellyfin-configuration
+  namespace: jellyfin
+spec:
+  activeDeadlineSeconds: 600
+  backoffLimit: 4
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: jellyfin-configuration
+        app.kubernetes.io/name: jellarr
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - image: homelab/jellarr:0.1.0
+          imagePullPolicy: Never
+          name: jellarr
+          resources:
+            limits:
+              cpu: 500m
+              ephemeral-storage: 128Mi
+              memory: 256Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            runAsGroup: 751
+            runAsNonRoot: true
+            runAsUser: 751
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - mountPath: /config
+              name: configuration
+              readOnly: true
+            - mountPath: /run/jellarr
+              name: api-key
+              readOnly: true
+      enableServiceLinks: false
+      initContainers:
+        - args:
+            - /config/bootstrap.mjs
+          command:
+            - node
+          env:
+            - name: JELLYFIN_URL
+              value: http://jellyfin.jellyfin.svc.cluster.local:8096
+          image: homelab/jellarr:0.1.0
+          imagePullPolicy: Never
+          name: bootstrap
+          resources:
+            limits:
+              cpu: 250m
+              ephemeral-storage: 64Mi
+              memory: 128Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            runAsGroup: 751
+            runAsNonRoot: true
+            runAsUser: 751
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - mountPath: /config
+              name: configuration
+              readOnly: true
+            - mountPath: /run/secrets/password
+              name: admin-password
+              readOnly: true
+              subPath: password
+            - mountPath: /run/jellarr
+              name: api-key
+      nodeSelector:
+        kubernetes.io/hostname: compute-1
+      restartPolicy: Never
+      securityContext:
+        runAsGroup: 751
+        runAsNonRoot: true
+        runAsUser: 751
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - configMap:
+            defaultMode: 292
+            name: jellarr-configuration
+          name: configuration
+        - name: admin-password
+          secret:
+            defaultMode: 256
+            items:
+              - key: password
+                path: password
+            secretName: jellyfin-admin
+        - emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+          name: api-key

@@ -30,6 +30,7 @@ the tracked ref changes production desired state.
 | --- | --- | --- | --- | --- |
 | `argocd` | `public` | `https://argocd.plus2.danielvicory.dev` | `https://argocd.backup.plus2.danielvicory.dev` | `argocd/argocd-server:80` |
 | `idm` | `public` | `https://idm.plus2.danielvicory.dev` | `https://idm.backup.plus2.danielvicory.dev` | `identity/kanidm:443` |
+| `jellyfin` | `private` | `https://jellyfin.plus2.danielvicory.dev` | `https://jellyfin.backup.plus2.danielvicory.dev` | `jellyfin/jellyfin:8096` |
 
 Public edges publish only `public` routes. The `idm` canonical hostname
 remains the identity issuer across direct and secondary-edge access;
@@ -71,11 +72,29 @@ or restore policy.
 | Retained key | Host path | Guest path | Guest UID:GID | Mode | Access |
 | --- | --- | --- | --- | --- | --- |
 | `identity-kanidm` | `/var/lib/homelab/compute-1/state/identity-kanidm` | `/srv/state/identity-kanidm` | `1000:1000` | `0700` | writable |
+| `jellyfin-config` | `/var/lib/homelab/compute-1/state/jellyfin-config` | `/srv/state/jellyfin-config` | `751:751` | `0750` | writable |
 | `kubernetes-volumes` | `/var/lib/homelab/compute-1/state/kubernetes-volumes` | `/srv/state/kubernetes-volumes` | `0:0` | `0700` | writable |
 
 A retained path is not a backup. Incus propagates host mounts one way;
 after restoring a source, recreate affected pods to refresh child
 mounts.
+
+## Jellyfin storage and startup
+
+The stable compute attachment is `/srv/media`; its replaceable merged
+filesystem is `/srv/media/data`. Jellyfin consumes only the semantic
+`/srv/media/data/library` directory, mounted read-only as `/media`.
+`/config` is the statically bound retained volume. `/cache` is a
+disposable 4 GiB `emptyDir` under a 5 GiB container ephemeral-storage
+limit.
+
+Before deployment, encrypt and rekey
+`jellyfin--jellyfin-admin--password` for `compute-1`. Missing input
+fails closed. The patched initContainer creates the initial
+administrator through its internal `SetupServer`. No stock-runtime
+backend is externally routable until provisioning succeeds. The
+subsequent one-shot Jellarr Job owns the `Movies` library at `/media`
+and selected supported API settings.
 
 ## Runtime-secret references
 
@@ -87,6 +106,7 @@ in Git, the Nix store, manifests, images, or this document.
 | `argocd/argocd-secret` | `argocd--argocd-secret--admin.password` → `admin.password`, `argocd--argocd-secret--admin.passwordMtime` → `admin.passwordMtime`, `argocd--argocd-secret--server.secretkey` → `server.secretkey` | `Opaque` |
 | `gateway/gateway-tls` | `gateway--gateway-tls--ca.crt` → `ca.crt`, `gateway--gateway-tls--tls.crt` → `tls.crt`, `gateway--gateway-tls--tls.key` → `tls.key` | `kubernetes.io/tls` |
 | `identity/kanidm-tls` | `identity--kanidm-tls--tls.crt` → `tls.crt`, `identity--kanidm-tls--tls.key` → `tls.key` | `kubernetes.io/tls` |
+| `jellyfin/jellyfin-admin` | `jellyfin--jellyfin-admin--password` → `password` | `Opaque` |
 
 ## Lifecycle and bootstrap
 

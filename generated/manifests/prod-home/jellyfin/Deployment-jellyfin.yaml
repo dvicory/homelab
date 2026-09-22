@@ -1,0 +1,148 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/controller: main
+    app.kubernetes.io/instance: jellyfin
+    app.kubernetes.io/name: jellyfin
+  name: jellyfin
+  namespace: jellyfin
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/controller: main
+      app.kubernetes.io/instance: jellyfin
+      app.kubernetes.io/name: jellyfin
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/controller: main
+        app.kubernetes.io/instance: jellyfin
+        app.kubernetes.io/name: jellyfin
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - image: docker.io/jellyfin/jellyfin:12.1@sha256:78d3ea1207d1322471fcac39a614f004f2ccf7e878f95ab2977d752f07e4dd7e
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8096
+            periodSeconds: 30
+            timeoutSeconds: 5
+          name: jellyfin
+          readinessProbe:
+            httpGet:
+              path: /Users/Public
+              port: 8096
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            limits:
+              cpu: "2"
+              ephemeral-storage: 5Gi
+              memory: 2Gi
+            requests:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            runAsGroup: 751
+            runAsNonRoot: true
+            runAsUser: 751
+            seccompProfile:
+              type: RuntimeDefault
+          startupProbe:
+            failureThreshold: 30
+            httpGet:
+              path: /Users/Public
+              port: 8096
+            periodSeconds: 10
+            timeoutSeconds: 5
+          volumeMounts:
+            - mountPath: /config
+              name: config
+            - mountPath: /cache
+              name: cache
+            - mountPath: /media
+              mountPropagation: HostToContainer
+              name: media
+              readOnly: true
+      enableServiceLinks: false
+      initContainers:
+        - command:
+            - /bin/jellyfin-provision
+          image: homelab/jellyfin-provisioner:12.1
+          imagePullPolicy: Never
+          name: provision
+          resources:
+            limits:
+              cpu: "1"
+              ephemeral-storage: 128Mi
+              memory: 512Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            runAsGroup: 751
+            runAsNonRoot: true
+            runAsUser: 751
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - mountPath: /config
+              name: config
+            - mountPath: /cache
+              name: cache
+            - mountPath: /media
+              mountPropagation: HostToContainer
+              name: media
+              readOnly: true
+            - mountPath: /run/provision
+              name: provision
+            - mountPath: /run/secrets/password
+              name: admin-password
+              readOnly: true
+              subPath: password
+      nodeSelector:
+        kubernetes.io/hostname: compute-1
+      securityContext:
+        runAsGroup: 751
+        runAsNonRoot: true
+        runAsUser: 751
+        seccompProfile:
+          type: RuntimeDefault
+        supplementalGroups:
+          - 505
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: jellyfin-config
+        - emptyDir:
+            sizeLimit: 4Gi
+          name: cache
+        - hostPath:
+            path: /srv/media/data/library
+            type: Directory
+          name: media
+        - emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+          name: provision
+        - name: admin-password
+          secret:
+            defaultMode: 256
+            items:
+              - key: password
+                path: password
+            secretName: jellyfin-admin

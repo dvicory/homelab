@@ -193,10 +193,18 @@ let
     && envoyProxy.spec.provider.kubernetes.envoyDeployment.container.image == proxyImage;
   timeoutContract = lib.all (
     route:
-    (builtins.head route.spec.rules).timeouts == {
-      request = "15s";
-      backendRequest = "15s";
-    }
+    (builtins.head route.spec.rules).timeouts == (
+      if route.metadata.name == "jellyfin" then
+        {
+          request = "0s";
+          backendRequest = "0s";
+        }
+      else
+        {
+          request = "15s";
+          backendRequest = "15s";
+        }
+    )
   ) gatewayRoutes;
   backendTLSContract = lib.all (
     object:
@@ -280,7 +288,8 @@ let
       argocd = policyFor sameNamespaceCluster "argocd";
       idm = policyFor sameNamespaceCluster "idm";
     in
-    builtins.length (backendPolicies sameNamespaceCluster) == 2
+    builtins.length (backendPolicies sameNamespaceCluster)
+    == builtins.length (builtins.attrNames routes)
     && argocd.metadata.namespace == idm.metadata.namespace
     && argocd.metadata.name != idm.metadata.name
     && argocd.spec.podSelector.matchLabels != idm.spec.podSelector.matchLabels;

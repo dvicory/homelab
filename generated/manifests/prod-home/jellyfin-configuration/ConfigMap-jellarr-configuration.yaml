@@ -1,0 +1,88 @@
+apiVersion: v1
+data:
+  bootstrap.mjs: |
+    import fs from "node:fs";
+
+    const baseUrl = process.env.JELLYFIN_URL;
+    const password = fs.readFileSync("/run/secrets/password", "utf8").replace(/\r?\n$/, "");
+    const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+    async function request(path, options = {}) {
+      const response = await fetch(baseUrl + path, options);
+      const body = await response.text();
+      if (!response.ok) {
+        throw new Error("Jellyfin API request failed: " + response.status);
+      }
+      return body.trim() === "" ? null : JSON.parse(body);
+    }
+
+    let healthy = false;
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      try {
+        const response = await fetch(baseUrl + "/health");
+        if (response.ok) {
+          healthy = true;
+          break;
+        }
+      } catch (_) {
+        // The stock Service can exist before its Pod is ready.
+      }
+      await sleep(2000);
+    }
+    if (!healthy) {
+      throw new Error("Jellyfin did not become healthy before the deadline");
+    }
+
+    const authentication = await request("/Users/AuthenticateByName", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: 'MediaBrowser Client="homelab-jellarr-bootstrap", Device="Kubernetes Job", DeviceId="jellarr-bootstrap", Version="1"',
+      },
+      body: JSON.stringify({ Username: "admin", Pw: password }),
+    });
+    const administratorToken = authentication.AccessToken || authentication.accessToken;
+    if (!administratorToken) {
+      throw new Error("Jellyfin administrator authentication returned no token");
+    }
+    const headers = {
+      "Content-Type": "application/json",
+      "X-Emby-Token": administratorToken,
+    };
+    const keyName = "Jellarr";
+    const namedKey = (response) =>
+      (response.Items || response.items || []).filter(
+        (key) => (key.AppName || key.appName) === keyName
+      );
+    let keys = namedKey(await request("/Auth/Keys", { headers }));
+    if (keys.length > 1) {
+      throw new Error("More than one Jellarr API key exists");
+    }
+    if (keys.length === 0) {
+      await request("/Auth/Keys?app=Jellarr", { method: "POST", headers });
+      keys = namedKey(await request("/Auth/Keys", { headers }));
+    }
+    if (keys.length !== 1) {
+      throw new Error("Jellarr API key was not available after creation");
+    }
+    const apiKey = keys[0].AccessToken || keys[0].accessToken;
+    if (!apiKey) {
+      throw new Error("Jellarr API key response contained no token");
+    }
+    fs.writeFileSync("/run/jellarr/api-key", apiKey + "\n", { mode: 0o400 });
+  config.yml: |
+    version: 1
+    base_url: http://jellyfin.jellyfin.svc.cluster.local:8096
+    system:
+      enableMetrics: true
+    library:
+      virtualFolders:
+        - name: Movies
+          collectionType: movies
+          libraryOptions:
+            pathInfos:
+              - path: /media
+kind: ConfigMap
+metadata:
+  name: jellarr-configuration
+  namespace: jellyfin

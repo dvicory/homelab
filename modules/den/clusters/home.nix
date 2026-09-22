@@ -49,6 +49,18 @@ in
         "app.kubernetes.io/instance" = "argocd";
         "app.kubernetes.io/name" = "argocd-server";
       };
+      jellyfin =
+        (route "jellyfin" "jellyfin" "jellyfin" 8096 "native" "private" {
+          "app.kubernetes.io/controller" = "main";
+          "app.kubernetes.io/instance" = "jellyfin";
+          "app.kubernetes.io/name" = "jellyfin";
+        })
+        // {
+          timeouts = {
+            request = "0s";
+            backendRequest = "0s";
+          };
+        };
       idm =
         (route "idm" "identity" "kanidm" 443 "native" "public" {
           "app.kubernetes.io/name" = "kanidm";
@@ -65,6 +77,7 @@ in
       argocd
       cluster-dns
       retained-storage
+      jellyfin
       gateway
       identity
     ];

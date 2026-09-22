@@ -131,6 +131,9 @@
                 "gateway",
                 "identity-retained",
                 "identity",
+                "jellyfin-retained",
+                "jellyfin",
+                "jellyfin-configuration",
             }
 
             application_destinations = set()
@@ -355,7 +358,9 @@
                 and application_waves["gateway-retained"] < application_waves["gateway-crds"]
                 and application_waves["gateway-crds"] < application_waves["gateway-controller"]
                 and application_waves["gateway-controller"] < application_waves["gateway"]
-                and application_waves["identity-retained"] < application_waves["identity"],
+                and application_waves["identity-retained"] < application_waves["identity"]
+                and application_waves["jellyfin-retained"] < application_waves["jellyfin"]
+                and application_waves["jellyfin"] < application_waves["jellyfin-configuration"],
                 apps_root,
                 "Application waves violate declared lifecycle dependencies",
             )
