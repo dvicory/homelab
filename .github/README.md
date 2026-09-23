@@ -2,9 +2,10 @@
 
 ## CI
 
-`.github/workflows/ci.yml` runs for pushes to `main` or `ci/**`, pull requests,
-and manual dispatches. Push a temporary `ci/<name>` branch to send a revision
-to the GitHub-hosted build farm without merging it.
+`.github/workflows/ci.yml` runs for pushes to `main`, pull requests, and
+manual dispatches. To test a temporary `ci/<name>` branch without a PR,
+dispatch the workflow with that ref using the command below. Branch pushes
+alone do not start Nix CI.
 
 `modules/flake/ci.nix` automatically projects packages, checks, development
 shells, formatters, NixOS and Darwin systems, and Home Manager activation
