@@ -105,16 +105,15 @@ in
         when the guest is absent. `replace` is destructive and requires the
         exact `--confirm ${computeInstance}` acknowledgement.
 
-        For an existing Running guest, run:
+        For a newly created or replacement Running guest before Argo handoff, run:
 
         ```sh
         household-bootstrap-host /etc/homelab/compute.json --confirm ${computeInstance}
         ```
 
         The host command validates the descriptor, guest, kubeconfig, node
-        placement, Argo state, and runtime-secret inputs before it mutates
-        namespaces, stages runtime Secrets, seeds Argo, and applies the
-        canonical root Application.
+        placement, Argo state, and runtime-secret inputs, then establishes
+        namespaces, runtime Secrets, Argo, and the canonical root Application.
 
         ## Verify
 

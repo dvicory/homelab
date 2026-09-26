@@ -9,7 +9,7 @@ spec:
   destination:
     namespace: argocd
     server: https://kubernetes.default.svc
-  project: prod-home
+  project: default
   source:
     path: ./generated/manifests/prod-home/apps
     repoURL: https://github.com/dvicory/homelab.git

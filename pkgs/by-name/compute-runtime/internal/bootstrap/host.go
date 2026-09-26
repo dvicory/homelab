@@ -256,7 +256,8 @@ func RunHost(ctx context.Context, args []string, out, errOut io.Writer) (result 
 	if runErr = runBootstrap(ctx, tools.Env, bootstrapPath, "--check-ready", out, errOut); runErr != nil {
 		return runErr
 	}
-	if runErr = tools.ApplyFile(ctx, manifests.file("root.yaml"), fieldManager); runErr != nil {
+	// Argo creates the default AppProject before the bootstrap restricts it.
+	if runErr = tools.RunKubectlPrint(ctx, "apply", "--server-side", "--force-conflicts", "--field-manager="+fieldManager, "-f", manifests.file("root.yaml")); runErr != nil {
 		return runErr
 	}
 	fmt.Fprintln(out, "Argo seed is ready and the canonical root Application was applied. Verify child synchronization before application acceptance.")

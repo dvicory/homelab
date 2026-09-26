@@ -42,17 +42,18 @@
 
         set -- ${environment}/apps/AppProject-*.yaml
         if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
-          echo "expected one managed AppProject in the generated apps tree" >&2
+          echo "expected one root-owned AppProject in the generated apps tree" >&2
           exit 1
         fi
         managed_project="$1"
         set -- ${seed}/AppProject-*.yaml
         if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
-          echo "expected one seeded AppProject in the nixidy bootstrap package" >&2
+          echo "expected one default AppProject in the nixidy bootstrap package" >&2
           exit 1
         fi
         seed_project="$1"
-        cmp "$managed_project" "$seed_project"
+        yq -e '.metadata.name == "prod-home"' "$managed_project" > /dev/null
+        yq -e '.metadata.name == "default"' "$seed_project" > /dev/null
 
         set -- ${seed}/Application-*.yaml
         if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then

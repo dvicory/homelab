@@ -7,13 +7,16 @@
         { cluster, ... }:
         { lib, config, ... }:
         let
-          project = {
+          managedProject = {
             apiVersion = "argoproj.io/v1alpha1";
             kind = "AppProject";
             metadata = {
-              name = config.nixidy.appOfApps.project;
+              name = cluster.name;
               namespace = "argocd";
-              annotations."argocd.argoproj.io/sync-wave" = "-1";
+              annotations = {
+                "argocd.argoproj.io/sync-wave" = "-4";
+                "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
+              };
             };
             spec = {
               sourceRepos = [ cluster.repository ];
@@ -52,6 +55,34 @@
               ];
             };
           };
+          bootstrapProject = {
+            apiVersion = "argoproj.io/v1alpha1";
+            kind = "AppProject";
+            metadata = {
+              name = "default";
+              namespace = "argocd";
+            };
+            spec = {
+              sourceRepos = [ cluster.repository ];
+              destinations = [
+                {
+                  namespace = "argocd";
+                  server = config.nixidy.defaults.destination.server;
+                }
+              ];
+              clusterResourceWhitelist = [ ];
+              namespaceResourceWhitelist = [
+                {
+                  group = "argoproj.io";
+                  kind = "Application";
+                }
+                {
+                  group = "argoproj.io";
+                  kind = "AppProject";
+                }
+              ];
+            };
+          };
         in
         {
           nixidy = {
@@ -62,7 +93,7 @@
               branch = lib.mkDefault cluster.branch;
               rootPath = lib.mkDefault "./generated/manifests/${cluster.name}";
             };
-            appOfApps.project = lib.mkDefault cluster.name;
+            appOfApps.project = "default";
             bootstrapManifest.enable = true;
             defaults.helm.extraOpts = [
               "--kube-version"
@@ -74,7 +105,7 @@
                 {
                   options.retained = lib.mkEnableOption "keeping this Application's resources when it is deleted or pruned";
                   config = {
-                    project = lib.mkDefault project.metadata.name;
+                    project = lib.mkDefault managedProject.metadata.name;
                     syncPolicy.retry = {
                       limit = lib.mkDefault 5;
                       backoff = {
@@ -101,8 +132,8 @@
             defaults.finalizer = "foreground";
           };
 
-          applications.apps.objects = [ project ];
-          applications.__bootstrap.objects = [ project ];
+          applications.apps.objects = [ managedProject ];
+          applications.__bootstrap.objects = [ bootstrapProject ];
         };
     }
   ];

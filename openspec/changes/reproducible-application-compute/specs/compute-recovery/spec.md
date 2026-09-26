@@ -28,6 +28,16 @@ A compute domain designated as unprivileged SHALL keep guest root distinct from 
 - **WHEN** a lifecycle operation encounters an existing instance with host-root mappings or an undeclared privileged mount or device
 - **THEN** the operation refuses to treat that instance as conformant and does not start or replace it automatically
 
+### Requirement: Compute management access is independent of network proximity
+
+Management endpoints SHALL admit only declared operator-private access. Sharing
+a virtual bridge or a routed network with the compute guest SHALL NOT grant a
+peer access to host or guest management services.
+
+#### Scenario: An untrusted peer shares the compute bridge
+- **WHEN** an unauthorized peer on the same bridge connects to a management port
+- **THEN** access is denied while the declared operator path remains available
+
 ### Requirement: Recovery inputs are explicit and independent of compute state
 
 Each recoverable compute domain SHALL identify its desired configuration, durable application data, secret and identity recovery inputs, required artifact sources, and lower-layer prerequisites. Losing its instance root, Kubernetes database, and container cache SHALL NOT require reconstructing essential configuration through undocumented manual actions. Recovery tooling and its administrative access SHALL remain usable while Kubernetes and the workload are unavailable.
@@ -43,6 +53,10 @@ Guest images, build outputs, and generated resource manifests SHALL NOT contain 
 #### Scenario: An image is built without secret decryption
 - **WHEN** an authorized maintainer evaluates or builds the guest artifact without runtime secret keys
 - **THEN** the artifact can be produced without embedding private credentials
+
+#### Scenario: Managed runtime identity matches its declared public identity
+- **WHEN** a matching private identity is delivered with the required ownership
+- **THEN** identity-dependent services can use it without generating another key
 
 #### Scenario: Runtime identity is unavailable
 - **WHEN** the required guest identity cannot be delivered or does not match its declared public identity
@@ -109,4 +123,17 @@ Routine desired-state reconciliation SHALL preserve retained data and SHALL NOT 
 - **WHEN** destructive replacement is requested without a required retained input or replacement artifact
 - **THEN** the operation refuses before deleting the existing instance
 
+### Requirement: Retiring compute artifacts preserves a recovery option
 
+Superseded compute bundles and instance images SHALL be retired only by an
+explicit operator-targeted operation. Retirement SHALL refuse artifacts
+referenced by an active instance or needed as the last verified rollback point,
+and SHALL NOT alter retained application data.
+
+#### Scenario: An artifact is still in use
+- **WHEN** retirement targets an image referenced by an active instance
+- **THEN** the image remains available and the active instance is unchanged
+
+#### Scenario: A rollback artifact has no verified replacement
+- **WHEN** retirement targets the last verified rollback bundle or image
+- **THEN** retirement refuses deletion until another rollback point is verified

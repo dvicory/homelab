@@ -11,16 +11,18 @@
 - [x] 2.2 Add the standalone secret-free guest image and K3s configuration
   against the unchanged pinned nixpkgs: current user-namespace runtime
   settings, overlayfs snapshotter, bundled networking, and disabled unused
-  ingress/dynamic storage components. Verify generated guest configuration
-  parses under the pinned tools and that the guest artifact contains no
-  runtime private key. Record builder limitations rather than claiming an
+  ingress/dynamic storage components. Verify kubelet, kube-proxy, and
+  containerd configuration parses under the pinned tools, the guest
+  derivation evaluates without decryption, and the built artifact contains
+  no runtime private key. Record builder limitations rather than claiming an
   unbuilt image passed.
 - [x] 2.3 Integrate host-managed runtime guest identity using existing
   secretRequests/agenix-rekey conventions, atomic staging, translated
   ownership, read-only attachment, and separate pinned host/guest SSH trust.
   Support re-staging and explicit identity rotation under the lifecycle lock.
-  Missing or mismatched private/public identity blocks the identity-dependent
-  path without substituting a generated key.
+  Verify a matching staged identity starts the dependent path, while missing
+  or mismatched keys block it without generating a replacement. Use disposable
+  test keys locally; production generation and rekeying require authorization.
 
 ## 3. Downstream workload integration
 
@@ -64,17 +66,21 @@ application recovery.
 - [ ] 6.1 Obtain permission for read-only host inspection, then check actual
   encryption/mounts, free space, kernel/cgroups, Incus resources,
   subordinate-ID collisions, route collisions, and independent management
-  access. Stop before any required storage-permission or isolation expansion.
+  access. Record observed prerequisites; stop before any required storage-
+  permission or isolation expansion rather than inventing a workaround.
 - [ ] 6.2 Obtain permission for secret provisioning and host/guest deployment;
   check conflicts before first preseed adoption, create only approved
-  resources, and verify effective unprivileged maps and actual network
-  restrictions. Prove node boot with application-only storage unavailable.
-- [ ] 6.3 Execute the later cut's target-runtime replacement scenario on an
-  appropriate Linux/KVM runner. Record artifact preparation, guest creation,
-  registry pulls, first reconciliation, source-loss behavior, replacement,
-  and second reconciliation. Only successful target evidence closes that
-  later acceptance gate.
+  resources, and verify effective unprivileged maps and management restrictions
+  against routed and same-bridge peers. Prove node boot without application-
+  only storage. Incompatible kernel, filesystem, or nesting support fails the
+  gate; do not enable privileged fallback.
+- [ ] 6.3 Execute a later cut's target-runtime replacement scenario on an
+  appropriate Linux/KVM runner. Record artifact preparation, fixture-host
+  startup, guest creation, registry pulls, and both reconciliations. Verify
+  source loss and return without node restart or loss of unrelated workload
+  and management access. Only successful target evidence closes that gate.
 - [ ] 6.4 Before routine replacement begins, add an operator-invoked retirement
   flow for superseded compute bundle GC roots and matching Incus images.
   Require an explicit target, preserve a verified rollback point, refuse
   resources referenced by an instance, and check host capacity before deletion.
+  Exercise retirement without affecting the active guest or retained data.

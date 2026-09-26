@@ -115,7 +115,7 @@
                     print(f"{path}: {message}")
                     raise SystemExit(f"unexpected {path}")
             expected_application_namespace = "argocd"
-            expected_project = ${builtins.toJSON nixidy.appOfApps.project}
+            expected_project = ${builtins.toJSON nixidy.env}
             expected_destination = ${builtins.toJSON nixidy.defaults.destination.server}
             application_ids = set()
             application_waves = {}
@@ -129,7 +129,7 @@
 
             application_destinations = set()
 
-            def check_application(resource, path, allow_retained):
+            def check_application(resource, path, allow_retained, project_name):
                 check(resource.get("kind") == "Application", path, "expected an Application")
                 metadata = resource.get("metadata", {})
                 check(isinstance(metadata, dict), path, "Application metadata must be a mapping")
@@ -155,7 +155,7 @@
                 check(destination.get("server") == expected_destination, path, f"unexpected destination server {destination.get('server')}")
                 check(isinstance(destination.get("namespace"), str) and destination["namespace"], path, "Application lacks destination namespace")
                 application_destinations.add((destination["server"], destination["namespace"]))
-                check(spec.get("project") == expected_project, path, f"unexpected Argo project {spec.get('project')}")
+                check(spec.get("project") == project_name, path, f"unexpected Argo project {spec.get('project')}")
                 finalizers = metadata.get("finalizers", [])
                 check(isinstance(finalizers, list), path, "Application finalizers must be a list")
                 sync_policy = spec.get("syncPolicy", {})
@@ -245,7 +245,7 @@
             for path in files:
                 with path.open() as handle:
                     resource = yaml.safe_load(handle)
-                source, finalizers, prune = check_application(resource, path, allow_retained=True)
+                source, finalizers, prune = check_application(resource, path, allow_retained=True, project_name=expected_project)
                 rendered_application_names.add(resource["metadata"]["name"])
 
                 for marker in ("helm", "kustomize", "jsonnet", "plugin"):
@@ -356,6 +356,20 @@
             check(isinstance(project_metadata, dict), project_path, "AppProject metadata must be a mapping")
             check(project_metadata.get("name") == expected_project, project_path, "AppProject name does not match the evaluated project")
             check(project_metadata.get("namespace") == expected_application_namespace, project_path, "AppProject must be owned in the Argo namespace")
+            project_annotations = project_metadata.get("annotations", {})
+            check(isinstance(project_annotations, dict), project_path, "AppProject annotations must be a mapping")
+            check(
+                set(project_annotations.get("argocd.argoproj.io/sync-options", "").split(",")) == {"Prune=false", "Delete=false"},
+                project_path,
+                "root-owned AppProject must resist pruning and deletion",
+            )
+            project_wave = project_annotations.get("argocd.argoproj.io/sync-wave")
+            check(
+                isinstance(project_wave, str) and project_wave.removeprefix("-").isdigit()
+                and int(project_wave) < min(application_waves.values()),
+                project_path,
+                "root-owned AppProject must reconcile before every child Application",
+            )
             project_spec = project.get("spec", {})
             check(isinstance(project_spec, dict), project_path, "AppProject spec must be a mapping")
             check(project_spec.get("sourceRepos") == [expected_repository], project_path, "AppProject must allow only the evaluated repository")
@@ -389,15 +403,31 @@
 
             seed_root = Path(os.environ["BOOTSTRAP_ROOT"])
             seed_projects = sorted(seed_root.glob("AppProject-*.yaml"))
-            check(len(seed_projects) == 1, seed_root, "bootstrap package must contain exactly one AppProject seed")
-            check(seed_projects[0].read_bytes() == project_path.read_bytes(), seed_projects[0], "seed and managed AppProject differ")
+            check(len(seed_projects) == 1, seed_root, "bootstrap package must contain exactly one default AppProject seed")
+            seed_project = yaml.safe_load(seed_projects[0].read_text())
+            check(seed_projects[0].name == "AppProject-default.yaml", seed_projects[0], "static bootstrap must not own prod-home")
+            check(seed_project.get("apiVersion") == "argoproj.io/v1alpha1" and seed_project.get("kind") == "AppProject", seed_projects[0], "expected bootstrap AppProject")
+            check(seed_project.get("metadata", {}).get("name") == "default" and seed_project["metadata"].get("namespace") == expected_application_namespace, seed_projects[0], "bootstrap AppProject identity differs")
+            seed_spec = seed_project.get("spec", {})
+            check(
+                set(seed_spec) == {"sourceRepos", "destinations", "clusterResourceWhitelist", "namespaceResourceWhitelist"}
+                and seed_spec.get("sourceRepos") == [expected_repository]
+                and seed_spec.get("destinations") == [{"namespace": "argocd", "server": expected_destination}]
+                and seed_spec.get("clusterResourceWhitelist") == []
+                and seed_spec.get("namespaceResourceWhitelist") == [
+                    {"group": "argoproj.io", "kind": "Application"},
+                    {"group": "argoproj.io", "kind": "AppProject"},
+                ],
+                seed_projects[0],
+                "default AppProject must authorize only root GitOps resources in argocd",
+            )
             seed_apps = sorted(seed_root.glob("Application-*.yaml"))
             check(len(seed_apps) == 1, seed_root, "bootstrap package must contain exactly one root Application")
             bootstrap_path = root / "bootstrap.yaml"
             check(seed_apps[0].read_bytes() == bootstrap_path.read_bytes(), bootstrap_path, "bootstrap Application differs from its seed")
 
             bootstrap = yaml.safe_load((root / "bootstrap.yaml").read_text())
-            bootstrapSource, _, _ = check_application(bootstrap, root / "bootstrap.yaml", allow_retained=False)
+            bootstrapSource, _, _ = check_application(bootstrap, root / "bootstrap.yaml", allow_retained=False, project_name="default")
             for marker in ("helm", "kustomize", "jsonnet", "plugin"):
                 check(marker not in bootstrapSource, root / "bootstrap.yaml", f"unsupported source renderer {marker}")
             bootstrapDirectory = bootstrapSource.get("directory") or {}
