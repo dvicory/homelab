@@ -88,12 +88,15 @@ filesystem is `/srv/media/data`. Jellyfin consumes only the semantic
 disposable 4 GiB `emptyDir` under a 5 GiB container ephemeral-storage
 limit.
 
-Before deployment, encrypt and rekey
-`jellyfin--jellyfin-admin--password` for `compute-1`. Missing input
-fails closed. The patched initContainer creates the initial
-administrator through its internal `SetupServer`. No stock-runtime
-backend is externally routable until provisioning succeeds. The
-subsequent one-shot Jellarr Job owns the `Movies` library at `/media`
+Before deployment, encrypt and rekey a strong, unique password for
+Jellyfin administrator `daniel` as
+`jellyfin--jellyfin-admin--password` for `compute-1`. Use the existing
+password instead if restoring already initialized state; this secret
+does not reset it. Missing input fails closed. The patched
+initContainer creates the initial administrator through its internal
+`SetupServer`. No stock-runtime backend is externally routable until
+provisioning succeeds. The subsequent one-shot Jellarr Job owns the
+`Movies` library at `/media`
 and selected supported API settings.
 
 ## Runtime-secret references

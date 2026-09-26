@@ -78,7 +78,7 @@ let
       test -s /run/secrets/password
       trap 'rm -f /run/provision/provision.json /run/provision/provision.json.tmp' EXIT
       jq -n --rawfile password /run/secrets/password '{
-        Administrator: { Name: "admin", Password: ($password | rtrimstr("\n")) }
+        Administrator: { Name: "daniel", Password: ($password | rtrimstr("\n")) }
       }' > /run/provision/provision.json.tmp
       mv /run/provision/provision.json.tmp /run/provision/provision.json
       jellyfin --nowebclient --mode Provision --provision-file /run/provision/provision.json

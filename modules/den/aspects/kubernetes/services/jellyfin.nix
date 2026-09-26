@@ -132,7 +132,7 @@ in
             "Content-Type": "application/json",
             Authorization: 'MediaBrowser Client="homelab-jellarr-bootstrap", Device="Kubernetes Job", DeviceId="jellarr-bootstrap", Version="1"',
           },
-          body: JSON.stringify({ Username: "admin", Pw: password }),
+          body: JSON.stringify({ Username: "daniel", Pw: password }),
         });
         const administratorToken = authentication.AccessToken || authentication.accessToken;
         if (!administratorToken) {

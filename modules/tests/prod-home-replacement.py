@@ -1206,7 +1206,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             ]
             check(admin_sources == ["jellyfin--jellyfin-admin--password"],
                   "the declared Jellyfin administrator credential is the sole smoke input")
-            username = "admin"
+            username = "daniel"
             password = secret_values[admin_sources[0]].decode()
             smoke.verify_setup_closed(base)
             token, user_id = smoke.authenticate(base, username, password)
