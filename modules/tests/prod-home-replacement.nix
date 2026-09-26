@@ -66,6 +66,17 @@
         );
         scenario = ./prod-home-replacement.py;
         smoke = ./jellyfin_smoke.py;
+        # The fixture media is built by Nix so the acceptance never depends on
+        # runtime waveform generation; a real H.264/AAC track exercises the
+        # same Jellarr-owned Movies library path as production.
+        fixtureMedia =
+          pkgs.runCommand "recovery.mkv"
+            {
+              nativeBuildInputs = [ pkgs.ffmpeg-headless ];
+            }
+            ''
+              ffmpeg -hide_banner -loglevel error                 -f lavfi -i color=c=black:s=64x64:d=1                 -f lavfi -i anullsrc=r=8000:cl=mono                 -t 1 -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest                 "$out"
+            '';
         computeGuest = pkgs.callPackage (inputs.self + "/pkgs/by-name/compute-runtime/package.nix") { };
         guestBundle = guest.config.system.build.computeBundle;
         canonical = inputs.self + "/generated/manifests/prod-home";
@@ -211,7 +222,8 @@
                 systemd.services."compute-stage-secrets-current@" = {
                   path = hostConfig.systemd.services."compute-stage-secrets-current@".path;
                   serviceConfig.Type = "oneshot";
-                  serviceConfig.ExecStart = hostConfig.systemd.services."compute-stage-secrets-current@".serviceConfig.ExecStart;
+                  serviceConfig.ExecStart =
+                    hostConfig.systemd.services."compute-stage-secrets-current@".serviceConfig.ExecStart;
                 };
 
                 systemd.tmpfiles.rules = [
@@ -256,6 +268,7 @@
               fixture_host.wait_for_console_text("Replacement serial output ready", timeout=10)
               fixture_host.copy_from_host("${scenario}", "/tmp/prod-home-replacement.py")
               fixture_host.copy_from_host("${smoke}", "/tmp/jellyfin_smoke.py")
+              fixture_host.copy_from_host("${fixtureMedia}", "/tmp/recovery.mkv")
               # The driver streams the VM console while execute waits for exit.
               (status, _) = fixture_host.execute(
                   "python3 -u /tmp/prod-home-replacement.py"
@@ -264,6 +277,7 @@
                   " --repo ${testRepo}"
                   " --seed ${testSeed}"
                   " --smoke /tmp/jellyfin_smoke.py"
+                  " --fixture-media /tmp/recovery.mkv"
                   " --bootstrap-host ${bootstrapHost}/bin/household-bootstrap-host"
                   " --helper ${computeGuest}/bin/compute-guest"
                   f" < /dev/null > {console} 2>&1",

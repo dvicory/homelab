@@ -35,7 +35,6 @@ import hashlib
 import importlib.util
 import ipaddress
 import json
-import math
 import os
 from pathlib import Path
 import platform
@@ -43,13 +42,11 @@ import secrets
 import shlex
 import shutil
 import socket
-import struct
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.parse
-import wave
 
 
 TEST_HOSTNAME = "lima-homelab-compute-check"
@@ -204,18 +201,6 @@ def yaml_config_map(name: str, value: str) -> str:
             "",
         ]
     )
-
-
-def write_test_wav(path: Path) -> None:
-    with wave.open(str(path), "wb") as output:
-        output.setnchannels(1)
-        output.setsampwidth(2)
-        output.setframerate(8_000)
-        frames = bytearray()
-        for index in range(8_000):
-            sample = int(8_000 * math.sin(2 * math.pi * 440 * index / 8_000))
-            frames.extend(struct.pack("<h", sample))
-        output.writeframes(frames)
 
 
 class Runtime:
@@ -1041,7 +1026,9 @@ def run_scenario(args: argparse.Namespace) -> None:
         try:
             load_nftables(runtime, fixture["nftables"])
             runtime.start_media(media_pool, fixture["mediaRootScript"], workspace)
-            write_test_wav(runtime.media_path / "library" / "recovery.wav")
+            fixture_media = runtime.media_path / "library" / "recovery.mkv"
+            shutil.copyfile(args.fixture_media, fixture_media)
+            fixture_media.chmod(0o644)
             check(public_key == descriptor["publicKey"], "descriptor public identity is the disposable staged key")
             # Lima reserves a very large range for its login user. Carve the
             # fixture's range out temporarily; never weaken the helper's check.
@@ -1103,7 +1090,7 @@ def run_scenario(args: argparse.Namespace) -> None:
                     == "fuse.mergerfs",
                     "mapped media user sees the live guest mergerfs mount",
                 )
-                runtime.guest("test", "-r", "/srv/media/data/library/recovery.wav", user=505)
+                runtime.guest("test", "-r", "/srv/media/data/library/recovery.mkv", user=505)
                 wait_for("healthy K3s node", runtime.node_ready)
                 k3s_pid = runtime.guest("systemctl", "show", "--value", "-p", "MainPID", "k3s")
                 k3s_groups = [
@@ -1214,8 +1201,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             smoke.verify_setup_closed(base)
             token, user_id = smoke.authenticate(base, username, password)
             smoke.verify_library(base, token, "Movies", "/media")
-            smoke.ensure_test_library(base, token)
-            item = wait_for("indexed real media", lambda: smoke.find_audio(base, token, user_id))
+            item = wait_for("indexed real media", lambda: smoke.find_media(base, token, user_id))
             check(item is not None, "Jellyfin indexes the disposable media fixture")
             item_id = item["Id"]
             smoke.set_played(base, token, user_id, item_id, True)
@@ -1334,7 +1320,7 @@ def run_scenario(args: argparse.Namespace) -> None:
                 runtime.stop_media()
                 check(runtime.node_ready(), "K3s node remains healthy during application source loss")
                 check(runtime.unrelated_ready(), "unrelated workload remains available during application source loss")
-                result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "505", "--group", "505", "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/data/library/recovery.wav")
+                result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "505", "--group", "505", "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/data/library/recovery.mkv")
                 check(result.returncode != 0, "source loss never exposes a substitute media directory")
                 denied = completed("kubectl", "--kubeconfig", str(kubeconfig), "-n", "jellyfin",
                                    "exec", "media-writer-probe", "--", "touch", "/data/downloads/.writer-during-loss")
@@ -1382,7 +1368,7 @@ def run_scenario(args: argparse.Namespace) -> None:
                     raise ScenarioError("Jellyfin became ready without its media source")
                 time.sleep(2)
             print("PASS: Jellyfin remained blocked throughout the media-absence observation", flush=True)
-            result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "505", "--group", "505", "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/data/library/recovery.wav")
+            result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "505", "--group", "505", "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/data/library/recovery.mkv")
             check(result.returncode != 0, "node boot without media does not expose a substitute directory")
             runtime.start_media(media_pool, fixture["mediaRootScript"], workspace)
             wait_for("Jellyfin after media restoration", runtime.app_ready)
@@ -1518,6 +1504,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--repo", required=True, type=Path, help="canonical recovery inputs: Jellyfin manifests")
     result.add_argument("--seed", required=True, type=Path, help="bootstrap seed tree; the shipped wrapper is pointed at it")
     result.add_argument("--smoke", required=True, type=Path, help="Jellyfin application smoke helper")
+    result.add_argument("--fixture-media", required=True, type=Path, help="Nix-built media fixture placed in the Jellyfin library")
     result.add_argument("--bootstrap-host", required=True, type=Path, help="shipped household-bootstrap-host executable")
     result.add_argument("--helper", type=Path, default=Path("/run/current-system/sw/bin/compute-guest"), help="generic compute lifecycle executable")
     return result

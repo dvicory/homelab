@@ -78,21 +78,9 @@ def verify_library(base: str, token: str, name: str = "Movies", path: str = "/me
     folder = next((folder for folder in folders if folder.get("Name") == name), None)
     assert folder is not None and path in folder.get("Locations", []), f"Jellyfin retains the {name} library at {path}"
 
-def ensure_test_library(base: str, token: str, name: str = "Recovery Media", path: str = "/media") -> None:
-    """Add a disposable API-owned library so the smoke can exercise media state."""
-    query = urllib.parse.urlencode({"name": name, "collectionType": "music", "refreshLibrary": "true"})
-    api_request(
-        base,
-        "POST",
-        f"/Library/VirtualFolders?{query}",
-        token=token,
-        payload={"LibraryOptions": {"PathInfos": [{"Path": path}]}},
-        expected=(204, 200),
-    )
-
-
-def find_audio(base: str, token: str, user_id: str, suffix: str = "recovery.wav") -> dict | None:
-    query = urllib.parse.urlencode({"Recursive": "true", "IncludeItemTypes": "Audio", "Fields": "Path,MediaSources,UserData"})
+def find_media(base: str, token: str, user_id: str, suffix: str = "recovery.mkv") -> dict | None:
+    """Locate the fixture media indexed under the Jellarr-owned library."""
+    query = urllib.parse.urlencode({"Recursive": "true", "IncludeItemTypes": "Movie", "Fields": "Path,MediaSources,UserData"})
     _, result = api_request(base, "GET", f"/Users/{user_id}/Items?{query}", token=token, expected=(200,))
     return next((item for item in result.get("Items", []) if item.get("Path", "").endswith(suffix)), None)
 
@@ -113,8 +101,8 @@ def verify_state(base: str, username: str, password: str, library: str, item_id:
     token, user_id = authenticate(base, username, password)
     verify_library(base, token, library)
     _, item = api_request(base, "GET", f"/Users/{user_id}/Items/{item_id}?Fields=Path,UserData", token=token, expected=(200,))
-    assert item.get("Path", "").endswith("recovery.wav"), "replacement retains the indexed media item"
+    assert item.get("Path", "").endswith("recovery.mkv"), "replacement retains the indexed media item"
     assert item.get("UserData", {}).get("Played") is True, "replacement retains the recorded playback state"
-    body = api_bytes(base, f"/Audio/{item_id}/stream?static=true", token)
-    assert body.startswith(b"RIFF") and body[8:12] == b"WAVE", "authorized client consumes the retained media bytes"
+    body = api_bytes(base, f"/Videos/{item_id}/stream?static=true", token)
+    assert body.startswith(b"\x1a\x45\xdf\xa3"), "authorized client consumes the retained media bytes"
     return token, user_id
