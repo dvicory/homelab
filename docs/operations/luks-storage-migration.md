@@ -22,7 +22,7 @@ mountpoint, filesystem type, and agenix key path
 
 | Host | Disk | Wrapper | Declared device | Mountpoint | Mapper | Filesystem | Provisioned |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `hvn-hyp1` | `media4` | `prepare-luks-storage-media4` | `/dev/disk/by-id/wwn-0x5000cca27061f6b4-part1` | `/mnt/storage-clear/media4` | `crypt-media4` | `xfs` | no |
+| `hvn-hyp1` | `media4` | `prepare-luks-storage-media4` | `/dev/disk/by-id/wwn-0x5000cca27061f6b4-part1` | `/mnt/storage-clear/media4` | `crypt-media4` | `xfs` | yes |
 
 `Provisioned = no` means the host has only the agenix key. `yes` adds
 the crypttab row and the direct mount. Neither value proves that
