@@ -109,6 +109,9 @@ in
            token), a direct XFS destination mount, and `--approve-copy`. It
            copies the source into a new `.seed` tree at the destination root,
            then verifies it.
+        5. `normalize` reshapes the verified staging tree into the target
+           layout with same-filesystem renames only, after
+           `--approve-normalize`. It never copies data.
 
         Evidence is bound to the descriptor and rechecked; it is not a
         free-form confirmation string. Any missing, conflicting, changed, or
@@ -277,7 +280,8 @@ in
         ## 5. Seeded disks: record quiescence and copy
 
         Writers and reconciliation must stay stopped from the source
-        inventory through copy verification, any pool change, and acceptance.
+        inventory through copy verification, normalization, any pool change,
+        and acceptance.
 
         A host activation can restart a FUSE source, which then remounts with
         a new anonymous device number and filesystem UUID. Do not hand-write
@@ -328,7 +332,74 @@ in
         verification failure, leave the staging tree for inspection, keep the
         source untouched, and do not retry with `--delete`.
 
-        ## 6. Put the disk into service
+        ## 6. Seeded disks: normalize the staged tree without a second copy
+
+        The staging tree is a complete copy of the source root. `normalize`
+        reshapes it with same-filesystem renames. Select the layout profile
+        that names the shape of the source tree; the tool refuses unknown
+        profiles. The known profile is:
+
+        `legacy-medialibrary`: the source root holds exactly one
+        `medialibrary/` directory with five children.
+
+        | Staged path (`SEED_ROOT/`) | Final path (`$MOUNTPOINT/`) |
+        | --- | --- |
+        | `medialibrary/movies` | `library/movies` |
+        | `medialibrary/tv` | `library/tv` |
+        | `medialibrary/downloads` | `downloads` |
+        | `medialibrary/dewey-incoming` | `legacy/dewey-incoming` |
+        | `medialibrary/staging` | `legacy/staging` |
+
+        After the copy receipt passes, run:
+
+        ```sh
+        prepare-luks-storage-$DISK normalize \
+          --evidence "$EVIDENCE" \
+          --receipt "$RECEIPT" \
+          --layout legacy-medialibrary \
+          --approve-normalize
+        ```
+
+        Before it changes anything, the command:
+
+        - rechecks the preflight target identity and reports each drifted
+          field, and refuses `SOURCE=none` evidence;
+        - requires the exact direct XFS mount with no nested mount;
+        - reads the copy receipt strictly (unknown or duplicate fields fail)
+          and requires `COPY_VERIFIED=PASS`. A version 2 receipt must carry
+          the SHA-256 of this evidence file and descriptor. A version 1
+          receipt, written before receipts carried digests, must record this
+          evidence's source path, the descriptor mountpoint, and the mounted
+          filesystem UUID. A changed device number is reported, not fatal,
+          because a dm-crypt mapping can get a new number after a reboot;
+        - takes the staging root from the receipt's `SEED_ROOT`, which must
+          be a direct child of the descriptor mountpoint. Copies made before
+          staging moved to `.seed` recorded a different name there;
+        - requires the mountpoint to contain only the staging root, and the
+          staging root to match the selected profile exactly. Each entry must
+          be a real directory (not a symlink) on the destination filesystem.
+          Any other layout fails with a listing of what was found; it does not
+          guess a mapping.
+
+        It then creates the profile's new directories (mode 0755, owned by
+        root), renames each entry with `mv -T --no-copy --update=none-fail`,
+        and removes the emptied directories and the staging root with
+        `rmdir`. `--no-copy` makes a cross-filesystem rename fail instead of
+        falling back to copy and delete; `--update=none-fail` refuses to
+        replace an existing path. Renames keep ownership, modes, content,
+        hardlinks, and sparse extents, so the copy receipt remains the content
+        proof.
+
+        On success it prints the final layout and writes `$RECEIPT.normalized`
+        (mode 0600) with `NORMALIZED=PASS`, the layout, the staging root, and
+        the resulting root, `library/`, and `legacy/` entries.
+
+        A second run refuses: the normalize receipt exists and the root no
+        longer holds only the staging root. If a run stops partway, the
+        command refuses without changes and lists the root entries. Inspect
+        and finish the renames by hand; do not copy.
+
+        ## 7. Put the disk into service
 
         A later, separately approved host revision adds the direct mount to
         its consumer, for example as a mergerfs branch that depends on the
@@ -346,7 +417,7 @@ in
         source is historical rather than a lossless rollback; reconciling
         later changes back to it needs its own approval.
 
-        ## 7. Acceptance and restoration
+        ## 8. Acceptance and restoration
 
         Recreate every consumer that binds a subtree of the changed namespace
         while writers remain stopped. Verify that readers see the expected
@@ -366,8 +437,8 @@ in
            header backup and recovery evidence are complete.
         3. Preflight output and evidence are reviewed against the physical
            target and, for a seeded disk, the direct source.
-        4. Format, the direct-mount revision, copy, and the pool revision are
-           separate decisions.
+        4. Format, the direct-mount revision, copy, normalization, and the
+           pool revision are separate decisions.
         5. Quiescence or independent consistency evidence stays valid through
            the copy and cutover.
         6. Consumer refresh and acceptance pass before writers and

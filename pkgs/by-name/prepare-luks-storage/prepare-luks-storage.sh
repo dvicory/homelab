@@ -26,10 +26,22 @@ usage:
     --evidence /run/NAME-preflight \
     --quiescence-evidence /run/NAME-quiescence \
     --receipt /run/NAME-copy-receipt --approve-copy
+  prepare-luks-storage normalize --descriptor /etc/homelab/storage/NAME \
+    --evidence /run/NAME-preflight \
+    --receipt /run/NAME-copy-receipt --layout LAYOUT --approve-normalize
 
 Without --source, preflight checks only target identity and emptiness and
 records SOURCE=none. Such evidence allows format; quiesce and copy refuse it.
 copy stages the source under MOUNTPOINT/.seed.
+
+normalize reshapes the staging tree named by the copy receipt's SEED_ROOT
+into the target layout with same-filesystem renames, then writes
+RECEIPT.normalized. It never copies. Layouts:
+
+  legacy-medialibrary
+    medialibrary/{movies,tv}            -> library/{movies,tv}
+    medialibrary/downloads              -> downloads
+    medialibrary/{dewey-incoming,staging} -> legacy/{dewey-incoming,staging}
 
 The host-specific wrapper supplies --descriptor from the evaluated Den
 disk.luks-storage declaration. Do not pass a second descriptor.
@@ -67,6 +79,8 @@ RECEIPT_PATH=
 CONFIRM_TARGET=
 APPROVE_FORMAT=false
 APPROVE_COPY=false
+APPROVE_NORMALIZE=false
+LAYOUT=
 WRITERS_STOPPED=false
 INDEPENDENT_CONSISTENCY=false
 
@@ -148,6 +162,16 @@ parse_args() {
         ;;
       --approve-copy)
         APPROVE_COPY=true
+        shift
+        ;;
+      --layout)
+        (($# >= 2)) || die "$command: --layout needs a value"
+        [[ -z $LAYOUT ]] || die "$command: --layout may be supplied only once"
+        LAYOUT=$2
+        shift 2
+        ;;
+      --approve-normalize)
+        APPROVE_NORMALIZE=true
         shift
         ;;
       --writers-stopped)
@@ -637,6 +661,10 @@ check_capacity() {
 
 descriptor_sha256() {
   sha256sum -- "$DESCRIPTOR" | cut -d' ' -f1
+}
+
+evidence_sha256() {
+  sha256sum -- "$EVIDENCE_PATH" | cut -d' ' -f1
 }
 
 evidence_path_safe() {
@@ -1210,7 +1238,9 @@ copy_disk() {
   umask 077
   tmp=$(mktemp "${RECEIPT_PATH}.tmp.XXXXXX") || die "could not create copy receipt"
   cat > "$tmp" <<EOF
-COPY_RECEIPT_VERSION=1
+COPY_RECEIPT_VERSION=2
+EVIDENCE_SHA256=$(evidence_sha256)
+DESCRIPTOR_SHA256=$(descriptor_sha256)
 SOURCE_PATH=$SOURCE_PATH
 SOURCE_TOKEN=$SOURCE_TOKEN
 TARGET_MOUNTPOINT=$MOUNTPOINT
@@ -1224,6 +1254,244 @@ EOF
   printf 'COPY_VERIFIED=PASS\n'
   printf 'COPY_RECEIPT=%s\n' "$RECEIPT_PATH"
   printf 'SEED_ROOT=%s\n' "$SEED_ROOT"
+}
+
+# Read a copy receipt strictly. Version 2 binds the receipt to the evidence
+# and descriptor digests. Version 1 (written by earlier copies) has no digest,
+# so it is bound by its recorded source path, target mountpoint, seed root,
+# and filesystem UUID instead.
+read_copy_receipt() {
+  [[ -f $RECEIPT_PATH && ! -L $RECEIPT_PATH && -r $RECEIPT_PATH ]] ||
+    die "copy receipt is not a regular readable file: $RECEIPT_PATH"
+  local key value
+  declare -A seen=()
+  RECEIPT_VERSION=
+  RECEIPT_EVIDENCE_SHA256=
+  RECEIPT_DESCRIPTOR_SHA256=
+  RECEIPT_SOURCE_PATH=
+  RECEIPT_SOURCE_TOKEN=
+  RECEIPT_TARGET_MOUNTPOINT=
+  RECEIPT_TARGET_UUID=
+  RECEIPT_TARGET_ST_DEV=
+  RECEIPT_SEED_ROOT=
+  RECEIPT_COPY_VERIFIED=
+  while IFS='=' read -r key value; do
+    [[ -n $key ]] || continue
+    [[ -z ${seen[$key]+x} ]] || die "duplicate copy receipt field: $key"
+    seen[$key]=1
+    case $key in
+      COPY_RECEIPT_VERSION) RECEIPT_VERSION=$value ;;
+      EVIDENCE_SHA256) RECEIPT_EVIDENCE_SHA256=$value ;;
+      DESCRIPTOR_SHA256) RECEIPT_DESCRIPTOR_SHA256=$value ;;
+      SOURCE_PATH) RECEIPT_SOURCE_PATH=$value ;;
+      SOURCE_TOKEN) RECEIPT_SOURCE_TOKEN=$value ;;
+      TARGET_MOUNTPOINT) RECEIPT_TARGET_MOUNTPOINT=$value ;;
+      TARGET_UUID) RECEIPT_TARGET_UUID=$value ;;
+      TARGET_ST_DEV) RECEIPT_TARGET_ST_DEV=$value ;;
+      SEED_ROOT) RECEIPT_SEED_ROOT=$value ;;
+      COPY_VERIFIED) RECEIPT_COPY_VERIFIED=$value ;;
+      *) die "unknown copy receipt field: $key" ;;
+    esac
+  done < "$RECEIPT_PATH"
+
+  case $RECEIPT_VERSION in
+    1)
+      [[ -z ${seen[EVIDENCE_SHA256]+x} && -z ${seen[DESCRIPTOR_SHA256]+x} ]] ||
+        die "version 1 copy receipt must not carry digest fields"
+      ;;
+    2)
+      [[ $RECEIPT_EVIDENCE_SHA256 == "$(evidence_sha256)" ]] ||
+        die "copy receipt is bound to different preflight evidence"
+      [[ $RECEIPT_DESCRIPTOR_SHA256 == "$(descriptor_sha256)" ]] ||
+        die "copy receipt is bound to a different descriptor"
+      ;;
+    *) die "unsupported or missing copy receipt version: $RECEIPT_VERSION" ;;
+  esac
+  [[ $RECEIPT_COPY_VERIFIED == PASS ]] || die "copy receipt does not record COPY_VERIFIED=PASS"
+  [[ $RECEIPT_SOURCE_PATH == "$EVIDENCE_SOURCE_PATH" ]] ||
+    die "copy receipt source path does not match preflight evidence: $RECEIPT_SOURCE_PATH"
+  [[ $RECEIPT_SOURCE_TOKEN =~ ^[0-9a-f]{64}$ ]] || die "copy receipt has no valid source token"
+  [[ $RECEIPT_TARGET_MOUNTPOINT == "$MOUNTPOINT" ]] ||
+    die "copy receipt names a different target mountpoint: $RECEIPT_TARGET_MOUNTPOINT"
+  # The staging root comes from the receipt: copies before .seed staged under
+  # other names. It must still be a direct child of the descriptor mountpoint.
+  local seed_name=${RECEIPT_SEED_ROOT##*/}
+  [[ ${RECEIPT_SEED_ROOT%/*} == "$MOUNTPOINT" && -n $seed_name &&
+    $seed_name != . && $seed_name != .. ]] ||
+    die "copy receipt seed root is not a direct child of $MOUNTPOINT: $RECEIPT_SEED_ROOT"
+  [[ $RECEIPT_TARGET_UUID == "$DESTINATION_UUID" ]] ||
+    die "copy receipt target UUID $RECEIPT_TARGET_UUID does not match mounted UUID $DESTINATION_UUID"
+  # The device number of a dm-crypt mapping can change across reboots; the
+  # filesystem UUID above is the stable identity. Report drift only.
+  [[ $RECEIPT_TARGET_ST_DEV == "$DESTINATION_ST_DEV" ]] ||
+    printf 'TARGET_ST_DEV receipt=%s current=%s\n' "$RECEIPT_TARGET_ST_DEV" "$DESTINATION_ST_DEV"
+}
+
+# Print the names in a directory (including dot entries), sorted and joined
+# with commas.
+dir_entries() {
+  local dir=$1 entry
+  local -a names=()
+  shopt -s nullglob dotglob
+  local entries=("$dir"/*)
+  shopt -u nullglob dotglob
+  for entry in "${entries[@]}"; do
+    names+=("${entry##*/}")
+  done
+  ((${#names[@]})) || return 0
+  printf '%s\n' "${names[@]}" | LC_ALL=C sort | paste -sd, -
+}
+
+assert_real_directory_on_destination() {
+  local path=$1 dev
+  [[ ! -L $path ]] || die "unexpected symlink: $path"
+  [[ -d $path ]] || die "expected a directory: $path"
+  dev=$(stat -c '%d' -- "$path") || die "device-number probe failed: $path"
+  [[ $dev == "$DESTINATION_ST_DEV" ]] ||
+    die "path is on a different device ($dev, mountpoint $DESTINATION_ST_DEV): $path"
+}
+
+assert_absent() {
+  local path=$1
+  [[ ! -e $path && ! -L $path ]] || die "destination already exists: $path"
+}
+
+# rename(2) only: --no-copy fails instead of falling back to copy and remove,
+# and --update=none-fail refuses to replace an existing destination.
+rename_no_copy() {
+  mv -T --no-copy --update=none-fail -- "$1" "$2" ||
+    die "rename failed: $1 -> $2"
+}
+
+# normalize layout profiles. Each names the shape of the copied source tree,
+# not a disk. The staged tree must be exactly the selected layout; any other
+# layout fails with a listing instead of a guessed mapping.
+select_layout() {
+  case $1 in
+    legacy-medialibrary)
+      # The old media pool: one medialibrary/ directory with five children.
+      NORMALIZE_LEGACY_ROOT=medialibrary
+      # Entries of $NORMALIZE_LEGACY_ROOT, by destination:
+      NORMALIZE_TO_LIBRARY=(movies tv)             # -> library/NAME
+      NORMALIZE_TO_ROOT=(downloads)                # -> NAME at the mountpoint root
+      NORMALIZE_TO_LEGACY=(dewey-incoming staging) # -> legacy/NAME
+      # Directories normalize creates (root-owned, mode 0755).
+      NORMALIZE_NEW_DIRS=(library legacy)
+      ;;
+    '') die "normalize requires --layout (known layouts: legacy-medialibrary)" ;;
+    *) die "unknown layout: $1 (known layouts: legacy-medialibrary)" ;;
+  esac
+}
+
+# Join arguments sorted with commas, matching dir_entries output.
+sorted_list() {
+  (($#)) || return 0
+  printf '%s\n' "$@" | LC_ALL=C sort | paste -sd, -
+}
+
+normalize_disk() {
+  parse_args normalize "$@"
+  read_descriptor
+  [[ $APPROVE_NORMALIZE == true ]] || die "normalize requires --approve-normalize"
+  [[ -n $EVIDENCE_PATH ]] || die "normalize requires --evidence"
+  [[ -n $RECEIPT_PATH ]] || die "normalize requires --receipt"
+  select_layout "$LAYOUT"
+  local normalized_receipt=$RECEIPT_PATH.normalized
+  [[ ! -e $normalized_receipt && ! -L $normalized_receipt ]] ||
+    die "normalize receipt already exists: $normalized_receipt"
+  read_evidence
+  require_source_evidence normalize
+  resolve_declared_device || die "could not resolve the evaluated target"
+  if [[ $(identity_token) != "$EVIDENCE_TARGET_TOKEN" ]]; then
+    report_target_evidence_diff
+    die "target identity no longer matches preflight evidence"
+  fi
+  inspect_destination_mount
+  read_copy_receipt
+  SOURCE_REALPATH=$EVIDENCE_SOURCE_REALPATH
+  evidence_path_safe "$normalized_receipt"
+
+  local stage=$RECEIPT_SEED_ROOT
+  local seed_name=${RECEIPT_SEED_ROOT##*/}
+  local old_root=$stage/$NORMALIZE_LEGACY_ROOT
+  local library=$MOUNTPOINT/library
+  local legacy=$MOUNTPOINT/legacy
+  local expected_old_root expected_final_root name found
+  expected_old_root=$(sorted_list "${NORMALIZE_TO_LIBRARY[@]}" "${NORMALIZE_TO_ROOT[@]}" "${NORMALIZE_TO_LEGACY[@]}")
+  expected_final_root=$(sorted_list "${NORMALIZE_NEW_DIRS[@]}" "${NORMALIZE_TO_ROOT[@]}")
+
+  # Refuse before any change unless the root holds only the untouched seed.
+  # A partially completed earlier run leaves library/, legacy/, or downloads/
+  # beside the seed and stops here.
+  found=$(dir_entries "$MOUNTPOINT")
+  [[ $found == "$seed_name" ]] ||
+    die "destination root must contain only $seed_name; found: ${found:-<empty>} (an earlier normalize may have stopped partway; inspect by hand)"
+  for name in "${NORMALIZE_NEW_DIRS[@]}" "${NORMALIZE_TO_ROOT[@]}"; do
+    assert_absent "$MOUNTPOINT/$name"
+  done
+  assert_real_directory_on_destination "$stage"
+  found=$(dir_entries "$stage")
+  [[ $found == "$NORMALIZE_LEGACY_ROOT" ]] ||
+    die "unexpected copied source root for layout $LAYOUT; expected $NORMALIZE_LEGACY_ROOT, found: ${found:-<empty>}"
+  assert_real_directory_on_destination "$old_root"
+  found=$(dir_entries "$old_root")
+  [[ $found == "$expected_old_root" ]] ||
+    die "unexpected $NORMALIZE_LEGACY_ROOT layout; expected $expected_old_root, found: ${found:-<empty>}"
+  for name in "${NORMALIZE_TO_LIBRARY[@]}" "${NORMALIZE_TO_ROOT[@]}" "${NORMALIZE_TO_LEGACY[@]}"; do
+    assert_real_directory_on_destination "$old_root/$name"
+  done
+
+  for name in "${NORMALIZE_NEW_DIRS[@]}"; do
+    mkdir -m 0755 -- "$MOUNTPOINT/$name"
+    assert_real_directory_on_destination "$MOUNTPOINT/$name"
+  done
+  for name in "${NORMALIZE_TO_LIBRARY[@]}"; do
+    rename_no_copy "$old_root/$name" "$library/$name"
+  done
+  for name in "${NORMALIZE_TO_ROOT[@]}"; do
+    rename_no_copy "$old_root/$name" "$MOUNTPOINT/$name"
+  done
+  for name in "${NORMALIZE_TO_LEGACY[@]}"; do
+    rename_no_copy "$old_root/$name" "$legacy/$name"
+  done
+  rmdir -- "$old_root" || die "legacy root was not fully consumed: $old_root"
+  rmdir -- "$stage" || die "staging tree was not fully consumed: $stage"
+
+  local root_entries library_entries legacy_entries
+  root_entries=$(dir_entries "$MOUNTPOINT")
+  library_entries=$(dir_entries "$library")
+  legacy_entries=$(dir_entries "$legacy")
+  [[ $root_entries == "$expected_final_root" &&
+    $library_entries == "$(sorted_list "${NORMALIZE_TO_LIBRARY[@]}")" &&
+    $legacy_entries == "$(sorted_list "${NORMALIZE_TO_LEGACY[@]}")" ]] ||
+    die "normalized layout is unexpected: root=$root_entries library=$library_entries legacy=$legacy_entries"
+
+  local tmp
+  umask 077
+  tmp=$(mktemp "${normalized_receipt}.tmp.XXXXXX") || die "could not create normalize receipt"
+  cat > "$tmp" <<EOF
+NORMALIZE_RECEIPT_VERSION=1
+LAYOUT=$LAYOUT
+SEED_ROOT=$RECEIPT_SEED_ROOT
+COPY_RECEIPT=$RECEIPT_PATH
+COPY_RECEIPT_SHA256=$(sha256sum -- "$RECEIPT_PATH" | cut -d' ' -f1)
+EVIDENCE_SHA256=$(evidence_sha256)
+DESCRIPTOR_SHA256=$(descriptor_sha256)
+TARGET_MOUNTPOINT=$MOUNTPOINT
+TARGET_UUID=$DESTINATION_UUID
+TARGET_ST_DEV=$DESTINATION_ST_DEV
+ROOT_ENTRIES=$root_entries
+LIBRARY_ENTRIES=$library_entries
+LEGACY_ENTRIES=$legacy_entries
+NORMALIZED=PASS
+EOF
+  chmod 0600 "$tmp"
+  mv -f -- "$tmp" "$normalized_receipt"
+  printf 'ROOT_ENTRIES=%s\n' "$root_entries"
+  printf 'LIBRARY_ENTRIES=%s\n' "$library_entries"
+  printf 'LEGACY_ENTRIES=%s\n' "$legacy_entries"
+  printf 'NORMALIZED=PASS\n'
+  printf 'NORMALIZE_RECEIPT=%s\n' "$normalized_receipt"
 }
 
 find_partition() {
@@ -1305,6 +1573,7 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
     quiesce) quiesce_source "$@" ;;
     format) format_disk "$@" ;;
     copy) copy_disk "$@" ;;
+    normalize) normalize_disk "$@" ;;
     -h|--help|"") usage ;;
     *) die "unknown command: $command" ;;
   esac
