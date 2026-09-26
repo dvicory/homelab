@@ -95,6 +95,36 @@ let
     darwinConfig.nix.gc.automatic
     && darwinConfig.nix.gc.options == "--delete-older-than 30d"
     && darwinUsers."daniel.vicory".home.stateVersion == "25.11";
+  integrationAssertions.media-pool-revision-b =
+    let
+      poolPath = "/srv/media/data";
+      mediaPath = "/mnt/storage-clear/media4";
+      branches =
+        config.den.hosts.x86_64-linux.hvn-hyp1.settings.services.mergerfs.pools.${poolPath}.branches;
+      head = builtins.head branches;
+      mergerfs = import ../den/aspects/services/_mergerfs.nix { inherit lib; };
+      pool = hvnConfig.systemd.services.${mergerfs.serviceNameFor poolPath};
+      # The unit systemd's fstab generator creates for the mountpoint, computed
+      # here with the NixOS escaping helper rather than copied from the host.
+      mediaMountUnit = "${self.nixosConfigurations.hvn-hyp1._module.args.utils.escapeSystemdPath mediaPath}.mount";
+    in
+    map (branch: branch.path) branches == [
+      mediaPath
+      "/mnt/storage-clear/media2"
+      "/mnt/storage-clear/media3"
+    ]
+    && head.required
+    && head.create
+    && hasAttr mediaPath hvnConfig.fileSystems
+    && hvnConfig.fileSystems.${mediaPath}.device == "/dev/mapper/crypt-media4"
+    &&
+      pool.requires == [
+        mediaMountUnit
+        "gocryptfs-media2.service"
+        "gocryptfs-media3.service"
+      ]
+    && elem mediaMountUnit pool.bindsTo
+    && hasAttr "gocryptfs-media1" hvnConfig.systemd.services;
   integrationAssertions.hermes-secure-terminal =
     hasAttr "hermes-qa-broker" hvnConfig.systemd.services
     && hasAttr "hermes-qa-broker-execution" hvnConfig.systemd.sockets
