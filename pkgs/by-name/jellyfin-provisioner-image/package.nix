@@ -23,8 +23,7 @@ let
   ];
 
   provisioner = (jellyfinMultiverse.version "jellyfin" version).overrideAttrs {
-    pname = "jellyfin-provisioner";
-
+    # Keep pname = "jellyfin": upstream postFixup reads $out/lib/jellyfin.
     src = fetchFromGitHub {
       owner = "jellyfin";
       repo = "jellyfin";
