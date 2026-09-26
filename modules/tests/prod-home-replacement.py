@@ -50,7 +50,7 @@ import urllib.parse
 
 
 TEST_HOSTNAME = "lima-homelab-compute-check"
-SUPPORTED_ARCHITECTURES = {"x86_64", "aarch64"}
+SUPPORTED_ARCHITECTURES = {"x86_64"}
 COMMAND_TIMEOUT = 180
 WAIT_TIMEOUT = 240
 
@@ -62,7 +62,9 @@ class ScenarioError(RuntimeError):
     """A failed runtime assertion or an unavailable disposable prerequisite."""
 
 
-def completed(*command: str, timeout: int = COMMAND_TIMEOUT, input: str | None = None) -> subprocess.CompletedProcess[str]:
+def completed(
+    *command: str, timeout: int = COMMAND_TIMEOUT, input: str | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
         input=input,
@@ -77,7 +79,9 @@ def run(*command: str, timeout: int = COMMAND_TIMEOUT, input: str | None = None)
     result = completed(*command, timeout=timeout, input=input)
     if result.returncode:
         details = (result.stderr or result.stdout).strip()
-        raise ScenarioError(f"{shlex.join(command)} failed ({result.returncode}): {details}")
+        raise ScenarioError(
+            f"{shlex.join(command)} failed ({result.returncode}): {details}"
+        )
     return result.stdout.strip()
 
 
@@ -96,7 +100,14 @@ def wait_for(label: str, predicate, timeout: int = WAIT_TIMEOUT):
             value = predicate()
             if value:
                 return value
-        except (OSError, ScenarioError, AssertionError, KeyError, IndexError, json.JSONDecodeError) as error:
+        except (
+            OSError,
+            ScenarioError,
+            AssertionError,
+            KeyError,
+            IndexError,
+            json.JSONDecodeError,
+        ) as error:
             last_error = error
         time.sleep(2)
     suffix = f": {last_error}" if last_error else ""
@@ -142,10 +153,11 @@ def assert_secret_absent(values: dict[str, bytes], *payloads: bytes | str, conte
         )
 
 
-
 def descriptor_paths(descriptor: dict) -> list[Path]:
     paths = [Path(entry["path"]) for entry in descriptor["requiredPaths"]]
-    paths.extend(Path(entry["guestPath"]) for entry in descriptor["retainedPaths"].values())
+    paths.extend(
+        Path(entry["guestPath"]) for entry in descriptor["retainedPaths"].values()
+    )
     for key in ("recoveryPath", "identityPath", "poolPath"):
         value = descriptor.get(key)
         if isinstance(value, str):
@@ -163,7 +175,6 @@ def ensure_absolute_paths(descriptor: dict) -> None:
         check(path.is_absolute(), f"fixture path is absolute: {path}")
 
 
-
 def instance_query(project: str, name: str) -> dict | None:
     instances = query_incus("/1.0/instances?recursion=1", project=project)
     return next((instance for instance in instances if instance["name"] == name), None)
@@ -174,7 +185,9 @@ def query_incus(path: str, project: str | None = None):
     parts = parsed.path.strip("/").split("/")
     named = len(parts) == 3
     if project is not None:
-        projects = json.loads(run("incus", "--force-local", "query", "/1.0/projects?recursion=1"))
+        projects = json.loads(
+            run("incus", "--force-local", "query", "/1.0/projects?recursion=1")
+        )
         if not any(item["name"] == project for item in projects):
             return None if named else []
     params = dict(urllib.parse.parse_qsl(parsed.query))
@@ -182,9 +195,19 @@ def query_incus(path: str, project: str | None = None):
     if project is not None:
         params["project"] = project
     collection = "/" + "/".join(parts[:2])
-    items = json.loads(run("incus", "--force-local", "query", collection + "?" + urllib.parse.urlencode(params)))
+    items = json.loads(
+        run(
+            "incus",
+            "--force-local",
+            "query",
+            collection + "?" + urllib.parse.urlencode(params),
+        )
+    )
     if named:
-        return next((item for item in items if item["name"] == urllib.parse.unquote(parts[2])), None)
+        return next(
+            (item for item in items if item["name"] == urllib.parse.unquote(parts[2])),
+            None,
+        )
     return items
 
 
@@ -223,21 +246,48 @@ class Runtime:
         self.forward_proc: subprocess.Popen | None = None
         self.git_origin: GitOrigin | None = None
 
-    def incus(self, *args: str, timeout: int = COMMAND_TIMEOUT, input: str | None = None) -> str:
-        return run("incus", "--force-local", "--project", self.project, *args, timeout=timeout, input=input)
+    def incus(
+        self, *args: str, timeout: int = COMMAND_TIMEOUT, input: str | None = None
+    ) -> str:
+        return run(
+            "incus",
+            "--force-local",
+            "--project",
+            self.project,
+            *args,
+            timeout=timeout,
+            input=input,
+        )
 
-    def guest(self, *args: str, timeout: int = COMMAND_TIMEOUT, user: int | None = None, check_result: bool = True) -> str:
-        command = ["incus", "--force-local", "--project", self.project, "exec", self.instance]
+    def guest(
+        self,
+        *args: str,
+        timeout: int = COMMAND_TIMEOUT,
+        user: int | None = None,
+        check_result: bool = True,
+    ) -> str:
+        command = [
+            "incus",
+            "--force-local",
+            "--project",
+            self.project,
+            "exec",
+            self.instance,
+        ]
         if user is not None:
             command.extend(["--user", str(user), "--group", str(user)])
         command.extend(["--mode=non-interactive", "--", *args])
         result = completed(*command, timeout=timeout)
         if check_result and result.returncode:
             details = (result.stderr or result.stdout).strip()
-            raise ScenarioError(f"{shlex.join(command)} failed ({result.returncode}): {details}")
+            raise ScenarioError(
+                f"{shlex.join(command)} failed ({result.returncode}): {details}"
+            )
         return result.stdout.strip()
 
-    def kubectl(self, *args: str, namespace: str | None = None, timeout: int = COMMAND_TIMEOUT) -> str:
+    def kubectl(
+        self, *args: str, namespace: str | None = None, timeout: int = COMMAND_TIMEOUT
+    ) -> str:
         command = ["k3s", "kubectl"]
         if namespace:
             command.extend(["-n", namespace])
@@ -248,10 +298,22 @@ class Runtime:
         return json.loads(self.kubectl(*args, namespace=namespace))
 
     def metrics_ready(self) -> bool:
-        metrics = self.kubectl_json("get", "--raw", f"/apis/metrics.k8s.io/v1beta1/nodes/{self.instance}")
-        return metrics["metadata"]["name"] == self.instance and {"cpu", "memory"} <= metrics["usage"].keys()
+        metrics = self.kubectl_json(
+            "get", "--raw", f"/apis/metrics.k8s.io/v1beta1/nodes/{self.instance}"
+        )
+        return (
+            metrics["metadata"]["name"] == self.instance
+            and {"cpu", "memory"} <= metrics["usage"].keys()
+        )
 
-    def helper_command(self, operation: str, *, spec: Path | None = None, bundle: Path | None = None, confirm: bool = False) -> list[str]:
+    def helper_command(
+        self,
+        operation: str,
+        *,
+        spec: Path | None = None,
+        bundle: Path | None = None,
+        confirm: bool = False,
+    ) -> list[str]:
         command = [str(self.helper), "--spec", str(spec or self.spec_path), operation]
         if bundle:
             command.extend(["--bundle", str(bundle)])
@@ -259,11 +321,29 @@ class Runtime:
             command.extend(["--confirm", self.instance])
         return command
 
-    def helper_run(self, operation: str, *, spec: Path | None = None, bundle: Path | None = None, confirm: bool = False, timeout: int = 3_600) -> str:
-        return run(*self.helper_command(operation, spec=spec, bundle=bundle, confirm=confirm), timeout=timeout)
+    def helper_run(
+        self,
+        operation: str,
+        *,
+        spec: Path | None = None,
+        bundle: Path | None = None,
+        confirm: bool = False,
+        timeout: int = 3_600,
+    ) -> str:
+        return run(
+            *self.helper_command(operation, spec=spec, bundle=bundle, confirm=confirm),
+            timeout=timeout,
+        )
 
-    def helper_expect_failure(self, operation: str, expected: str, *, spec: Path | None = None) -> None:
-        result = completed(*self.helper_command(operation, spec=spec, bundle=self.bundle, confirm=True), timeout=3_600)
+    def helper_expect_failure(
+        self, operation: str, expected: str, *, spec: Path | None = None
+    ) -> None:
+        result = completed(
+            *self.helper_command(
+                operation, spec=spec, bundle=self.bundle, confirm=True
+            ),
+            timeout=3_600,
+        )
         check(result.returncode != 0, f"helper refuses {expected}")
 
     def forward_stop(self) -> None:
@@ -279,24 +359,84 @@ class Runtime:
 
     def verify_access_boundaries(self) -> None:
         for kind in ("uid", "gid"):
-            mapping = [tuple(map(int, line.split())) for line in self.guest("cat", f"/proc/self/{kind}_map").splitlines()]
+            mapping = [
+                tuple(map(int, line.split()))
+                for line in self.guest("cat", f"/proc/self/{kind}_map").splitlines()
+            ]
             # The media capability is an identity-mapped hole in the range.
-            expected = [(row["nsid"], row["hostid"], row["range"]) for row in self.descriptor["idmap"][kind]]
-            check(mapping == expected, f"guest {kind} mapping matches the declared ID plan")
+            expected = [
+                (row["nsid"], row["hostid"], row["range"])
+                for row in self.descriptor["idmap"][kind]
+            ]
+            check(
+                mapping == expected,
+                f"guest {kind} mapping matches the declared ID plan",
+            )
         verify_private_endpoints(self)
-        result = completed("incus", "--force-local", "--project", self.project, "exec", self.instance,
-                           "--user", "751", "--group", "751", "--mode=non-interactive", "--",
-                           "sh", "-ec", "touch /srv/media/data/library/forbidden")
-        check(result.returncode != 0, "guest identity without the media capability cannot write the library")
+        result = completed(
+            "incus",
+            "--force-local",
+            "--project",
+            self.project,
+            "exec",
+            self.instance,
+            "--user",
+            "751",
+            "--group",
+            "751",
+            "--mode=non-interactive",
+            "--",
+            "sh",
+            "-ec",
+            "touch /srv/media/data/library/forbidden",
+        )
+        check(
+            result.returncode != 0,
+            "guest identity without the media capability cannot write the library",
+        )
         # Prove the real workload boundary, not merely a guest UID restriction.
-        pod_write = completed("incus", "--force-local", "--project", self.project, "exec", self.instance,
-                              "--mode=non-interactive", "--", "k3s", "kubectl", "-n", "jellyfin",
-                              "exec", "deployment/jellyfin", "--", "sh", "-ec", "touch /media/.compute-recovery-probe")
-        check(pod_write.returncode != 0, "Jellyfin pod cannot write its /media library mount")
-        pod_mounts = self.kubectl("exec", "deployment/jellyfin", "--", "cat", "/proc/mounts", namespace="jellyfin")
-        media_entries = [fields for line in pod_mounts.splitlines() if len(fields := line.split()) >= 4 and fields[1] == "/media"]
-        check(bool(media_entries) and all("ro" in fields[3].split(",") for fields in media_entries),
-              "Jellyfin pod mounts /media read-only")
+        pod_write = completed(
+            "incus",
+            "--force-local",
+            "--project",
+            self.project,
+            "exec",
+            self.instance,
+            "--mode=non-interactive",
+            "--",
+            "k3s",
+            "kubectl",
+            "-n",
+            "jellyfin",
+            "exec",
+            "deployment/jellyfin",
+            "--",
+            "sh",
+            "-ec",
+            "touch /media/.compute-recovery-probe",
+        )
+        check(
+            pod_write.returncode != 0,
+            "Jellyfin pod cannot write its /media library mount",
+        )
+        pod_mounts = self.kubectl(
+            "exec",
+            "deployment/jellyfin",
+            "--",
+            "cat",
+            "/proc/mounts",
+            namespace="jellyfin",
+        )
+        media_entries = [
+            fields
+            for line in pod_mounts.splitlines()
+            if len(fields := line.split()) >= 4 and fields[1] == "/media"
+        ]
+        check(
+            bool(media_entries)
+            and all("ro" in fields[3].split(",") for fields in media_entries),
+            "Jellyfin pod mounts /media read-only",
+        )
 
     def stage_secrets(self, fixture: dict) -> subprocess.CompletedProcess[str]:
         # Capture all output: neither a failed producer nor its manifest may
@@ -306,10 +446,16 @@ class Runtime:
             return subprocess.run(
                 ["/bin/sh", "-c", fixture["secretStageScript"]],
                 env={**os.environ, "PATH": fixture["secretStagePath"]},
-                capture_output=True, text=True, timeout=COMMAND_TIMEOUT, check=False,
+                capture_output=True,
+                text=True,
+                timeout=COMMAND_TIMEOUT,
+                check=False,
             )
         finally:
-            if root not in self.retained_mounts and completed("findmnt", "--mountpoint", str(root)).returncode == 0:
+            if (
+                root not in self.retained_mounts
+                and completed("findmnt", "--mountpoint", str(root)).returncode == 0
+            ):
                 self.retained_mounts.append(root)
 
     def check_secret_payload(self, expected: bytes) -> None:
@@ -317,40 +463,81 @@ class Runtime:
         root = Path(device["source"])
         manifest = root / "runtime-secrets.yaml"
         permissions = manifest.stat()
-        check(run("findmnt", "-n", "-o", "FSTYPE", "-M", str(root)) == "tmpfs"
-              and "ro" in run("findmnt", "-n", "-o", "VFS-OPTIONS", "-M", str(root)).split(","),
-              "published credential transport remains a read-only tmpfs")
-        check(permissions.st_uid == self.descriptor["idmapBase"]
-              and permissions.st_gid == self.descriptor["idmapBase"]
-              and permissions.st_mode & 0o7777 == 0o400,
-              "published credentials are readable only by mapped guest root")
+        check(
+            run("findmnt", "-n", "-o", "FSTYPE", "-M", str(root)) == "tmpfs"
+            and "ro"
+            in run("findmnt", "-n", "-o", "VFS-OPTIONS", "-M", str(root)).split(","),
+            "published credential transport remains a read-only tmpfs",
+        )
+        check(
+            permissions.st_uid == self.descriptor["idmapBase"]
+            and permissions.st_gid == self.descriptor["idmapBase"]
+            and permissions.st_mode & 0o7777 == 0o400,
+            "published credentials are readable only by mapped guest root",
+        )
         check(
             manifest.read_bytes() == expected
             and sorted(path.name for path in root.iterdir())
-            == ["runtime-secrets.commit", "runtime-secrets.names", "runtime-secrets.yaml"],
+            == [
+                "runtime-secrets.commit",
+                "runtime-secrets.names",
+                "runtime-secrets.yaml",
+            ],
             "publication preserves the committed payload and inventory without temporary files",
         )
-        check(self.guest("sha256sum", device["path"] + "/runtime-secrets.yaml").split()[0]
-              == hashlib.sha256(expected).hexdigest(),
-              "guest attachment exposes the exact published credential bytes")
-        check(self.guest("sh", "-ec", "test ! -r " + shlex.quote(device["path"] + "/runtime-secrets.yaml"),
-                         user=751) == "",
-              "unprivileged guest identity cannot read staged credentials")
-        result = completed("incus", "--force-local", "--project", self.project, "exec", self.instance,
-                           "--", "touch", device["path"] + "/forbidden")
-        check(result.returncode != 0, "guest root cannot write through the credential attachment")
+        check(
+            self.guest("sha256sum", device["path"] + "/runtime-secrets.yaml").split()[0]
+            == hashlib.sha256(expected).hexdigest(),
+            "guest attachment exposes the exact published credential bytes",
+        )
+        check(
+            self.guest(
+                "sh",
+                "-ec",
+                "test ! -r " + shlex.quote(device["path"] + "/runtime-secrets.yaml"),
+                user=751,
+            )
+            == "",
+            "unprivileged guest identity cannot read staged credentials",
+        )
+        result = completed(
+            "incus",
+            "--force-local",
+            "--project",
+            self.project,
+            "exec",
+            self.instance,
+            "--",
+            "touch",
+            device["path"] + "/forbidden",
+        )
+        check(
+            result.returncode != 0,
+            "guest root cannot write through the credential attachment",
+        )
 
     def verify_secret_consumers(self, values: dict[str, bytes]) -> None:
         def delivered() -> bool:
             items = self.kubectl_json("get", "secrets", "-A", "-o", "json")["items"]
-            found = {(item["metadata"]["namespace"], item["metadata"]["name"]): item for item in items}
+            found = {
+                (item["metadata"]["namespace"], item["metadata"]["name"]): item
+                for item in items
+            }
             bad = []
             for source, entry in self.descriptor["runtimeSecrets"].items():
-                got = found.get((entry["namespace"], entry["name"]), {}).get("data", {}).get(entry["key"], "")
+                got = (
+                    found.get((entry["namespace"], entry["name"]), {})
+                    .get("data", {})
+                    .get(entry["key"], "")
+                )
                 if not got:
-                    bad.append(f"{entry['namespace']}/{entry['name']}:{entry['key']} (absent)")
+                    bad.append(
+                        f"{entry['namespace']}/{entry['name']}:{entry['key']} (absent)"
+                    )
                 elif base64.b64decode(got) != values[source]:
-                    bad.append(f"{entry['namespace']}/{entry['name']}:{entry['key']} (stale)")
+                    bad.append(
+                        f"{entry['namespace']}/{entry['name']}:{entry['key']} (stale)"
+                    )
             # wait_for carries the last error into its timeout message, so a
             # timeout names the unmet consumers instead of staying silent.
             # Temporal evidence must travel in the message: earlier prints may
@@ -368,7 +555,10 @@ class Runtime:
     def start_media(self, pool: dict, root_script: str, workspace: Path) -> None:
         branches = [Path(branch) for branch in pool["branches"]]
         check(branches, "media pool declares branches")
-        check(Path(pool["path"]) == self.media_path, "media pool is below the stable guest attachment")
+        check(
+            Path(pool["path"]) == self.media_path,
+            "media pool is below the stable guest attachment",
+        )
         for branch in branches:
             if branch in self.media_branches:
                 continue
@@ -381,22 +571,35 @@ class Runtime:
             run("mount", "-t", "tmpfs", "-o", "mode=0755,size=5g", "tmpfs", str(branch))
             self.media_branches.append(branch)
         root_wrapper = workspace / "compute-media-root.sh"
-        root_wrapper.write_text("#!/bin/sh\nset -eu\nexport PATH=" + shlex.quote(os.environ["PATH"]) + "\n" + root_script)
+        root_wrapper.write_text(
+            "#!/bin/sh\nset -eu\nexport PATH="
+            + shlex.quote(os.environ["PATH"])
+            + "\n"
+            + root_script
+        )
         root_wrapper.chmod(0o700)
         self.media_scripts.append(root_wrapper)
         # ExecStop alone only unmounts the host view. The production unit also
         # terminates its FUSE daemon, including views retained by guest binds.
         self.media_unit = f"compute-recovery-media-{os.urandom(4).hex()}"
         run(
-            "systemd-run", "--unit", self.media_unit, "--collect",
-            "--property=Type=oneshot", "--property=RemainAfterExit=yes",
+            "systemd-run",
+            "--unit",
+            self.media_unit,
+            "--collect",
+            "--property=Type=oneshot",
+            "--property=RemainAfterExit=yes",
             f"--property=ExecStop={pool['stop']}",
             f"--setenv=PATH={os.environ['PATH']}",
             *shlex.split(pool["start"]),
         )
         self.media_started = True
         run(str(root_wrapper))
-        check(run("findmnt", "-n", "-o", "FSTYPE", "-M", str(self.media_path)) == "fuse.mergerfs", "media parent is the production pooled filesystem")
+        check(
+            run("findmnt", "-n", "-o", "FSTYPE", "-M", str(self.media_path))
+            == "fuse.mergerfs",
+            "media parent is the production pooled filesystem",
+        )
 
     def stop_media(self) -> None:
         if not self.media_started:
@@ -414,14 +617,20 @@ class Runtime:
         return True
 
     def app_available(self) -> bool:
-        return self.http_ready("/api/v1/namespaces/jellyfin/services/http:jellyfin:http/proxy/Users/Public")
+        return self.http_ready(
+            "/api/v1/namespaces/jellyfin/services/http:jellyfin:http/proxy/Users/Public"
+        )
 
     def app_ready(self) -> bool:
-        deployment = self.kubectl_json("get", "deployment/jellyfin", "-o", "json", namespace="jellyfin")
+        deployment = self.kubectl_json(
+            "get", "deployment/jellyfin", "-o", "json", namespace="jellyfin"
+        )
         status = deployment.get("status", {})
-        return (status.get("availableReplicas", 0) == 1
-                and status.get("readyReplicas", 0) == 1
-                and self.app_available())
+        return (
+            status.get("availableReplicas", 0) == 1
+            and status.get("readyReplicas", 0) == 1
+            and self.app_available()
+        )
 
     def verify_stock_runtime(self) -> None:
         expected = f"{STOCK_RUNTIME_IMAGE}@{STOCK_RUNTIME_DIGEST}"
@@ -470,19 +679,34 @@ class Runtime:
     def node_ready(self) -> bool:
         nodes = self.kubectl_json("get", "nodes", "-o", "json").get("items", [])
         return bool(nodes) and all(
-            any(condition.get("type") == "Ready" and condition.get("status") == "True" for condition in node.get("status", {}).get("conditions", []))
+            any(
+                condition.get("type") == "Ready" and condition.get("status") == "True"
+                for condition in node.get("status", {}).get("conditions", [])
+            )
             for node in nodes
         )
 
     def unrelated_ready(self) -> bool:
-        pods = self.kubectl_json("get", "pods", "-l", "k8s-app=kube-dns", "-o", "json", namespace="kube-system")
+        pods = self.kubectl_json(
+            "get",
+            "pods",
+            "-l",
+            "k8s-app=kube-dns",
+            "-o",
+            "json",
+            namespace="kube-system",
+        )
         for pod in pods.get("items", []):
-            if not any(condition.get("type") == "Ready" and condition.get("status") == "True"
-                       for condition in pod.get("status", {}).get("conditions", [])):
+            if not any(
+                condition.get("type") == "Ready" and condition.get("status") == "True"
+                for condition in pod.get("status", {}).get("conditions", [])
+            ):
                 continue
             probe = pod["spec"]["containers"][0]["readinessProbe"]["httpGet"]
             name = pod["metadata"]["name"]
-            if self.http_ready(f"/api/v1/namespaces/kube-system/pods/http:{name}:{probe['port']}/proxy{probe['path']}"):
+            if self.http_ready(
+                f"/api/v1/namespaces/kube-system/pods/http:{name}:{probe['port']}/proxy{probe['path']}"
+            ):
                 return True
         return False
 
@@ -491,12 +715,41 @@ class Runtime:
         if self.git_origin is not None:
             self.git_origin.stop()
         if self.created_instance:
-            result = completed("incus", "--force-local", "--project", self.project, "stop", self.instance, "--timeout=120", timeout=180)
-            if result.returncode and "not found" not in (result.stderr or result.stdout).lower():
-                print(f"WARN: instance stop: {(result.stderr or result.stdout).strip()}", file=sys.stderr)
-            result = completed("incus", "--force-local", "--project", self.project, "delete", self.instance, timeout=600)
-            if result.returncode and "not found" not in (result.stderr or result.stdout).lower():
-                print(f"WARN: instance delete: {(result.stderr or result.stdout).strip()}", file=sys.stderr)
+            result = completed(
+                "incus",
+                "--force-local",
+                "--project",
+                self.project,
+                "stop",
+                self.instance,
+                "--timeout=120",
+                timeout=180,
+            )
+            if (
+                result.returncode
+                and "not found" not in (result.stderr or result.stdout).lower()
+            ):
+                print(
+                    f"WARN: instance stop: {(result.stderr or result.stdout).strip()}",
+                    file=sys.stderr,
+                )
+            result = completed(
+                "incus",
+                "--force-local",
+                "--project",
+                self.project,
+                "delete",
+                self.instance,
+                timeout=600,
+            )
+            if (
+                result.returncode
+                and "not found" not in (result.stderr or result.stdout).lower()
+            ):
+                print(
+                    f"WARN: instance delete: {(result.stderr or result.stdout).strip()}",
+                    file=sys.stderr,
+                )
         try:
             self.stop_media()
         except (OSError, ScenarioError):
@@ -522,13 +775,20 @@ def load_nftables(runtime: Runtime, tables: list[dict]) -> None:
     for table in tables:
         family, name = table["family"], table["name"]
         existing = completed("nft", "list", "table", family, name)
-        check(existing.returncode != 0, f"nftables table {family}/{name} is absent before the disposable run")
+        check(
+            existing.returncode != 0,
+            f"nftables table {family}/{name} is absent before the disposable run",
+        )
         content = table["content"].strip()
         if not content.startswith("table "):
             content = f"table {family} {name} {{\n{content}\n}}"
         run("nft", "-f", "-", input=content)
         runtime.loaded_nft.append((family, name))
-        check(completed("nft", "list", "table", family, name).returncode == 0, f"nftables table {family}/{name} loaded from the fixture")
+        check(
+            completed("nft", "list", "table", family, name).returncode == 0,
+            f"nftables table {family}/{name} loaded from the fixture",
+        )
+
 
 ROOT_APP = "recovery-test-apps"
 CHILD_APPS = ("jellyfin", "jellyfin-retained", "jellyfin-configuration")
@@ -560,23 +820,47 @@ class GitOrigin:
         self.process: subprocess.Popen | None = None
         self.work: Path | None = None
         self.bare: Path | None = None
+
     def publish(self, repo: Path) -> None:
         work = self.parent / "work"
         if work.exists():
             shutil.rmtree(work)
         shutil.copytree(repo, work, symlinks=True)
         for child in CHILD_APPS:
-            rewrite_text(work / "apps" / f"Application-{child}.yaml", {
-                "repoURL: https://github.com/dvicory/homelab.git": f"repoURL: {self.url}",
-                f"path: ./generated/manifests/prod-home/{child}": f"path: ./{child}",
-            })
-        rewrite_text(work / "apps" / "AppProject-prod-home.yaml", {
-            "- https://github.com/dvicory/homelab.git": f"- {self.url}",
-        })
+            rewrite_text(
+                work / "apps" / f"Application-{child}.yaml",
+                {
+                    "repoURL: https://github.com/dvicory/homelab.git": f"repoURL: {self.url}",
+                    f"path: ./generated/manifests/prod-home/{child}": f"path: ./{child}",
+                },
+            )
+        rewrite_text(
+            work / "apps" / "AppProject-prod-home.yaml",
+            {
+                "- https://github.com/dvicory/homelab.git": f"- {self.url}",
+            },
+        )
         git = ["git", "-C", str(work)]
         run(*git, "init", "-b", "main")
-        run(*git, "-c", "user.email=recovery@test", "-c", "user.name=recovery", "add", "-A")
-        run(*git, "-c", "user.email=recovery@test", "-c", "user.name=recovery", "commit", "-m", "recovery fixture")
+        run(
+            *git,
+            "-c",
+            "user.email=recovery@test",
+            "-c",
+            "user.name=recovery",
+            "add",
+            "-A",
+        )
+        run(
+            *git,
+            "-c",
+            "user.email=recovery@test",
+            "-c",
+            "user.name=recovery",
+            "commit",
+            "-m",
+            "recovery fixture",
+        )
         bare = self.parent / "recovery.git"
         if bare.exists():
             shutil.rmtree(bare)
@@ -592,22 +876,53 @@ class GitOrigin:
             return False
 
     def serve(self) -> None:
-        check(self.process is None or self.process.poll() is not None, "git origin is not already serving")
+        check(
+            self.process is None or self.process.poll() is not None,
+            "git origin is not already serving",
+        )
         self.process = subprocess.Popen(
-            ["git", "daemon", "--export-all", f"--base-path={self.parent}",
-             f"--listen={self.address}", "--port=9418", str(self.parent)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            [
+                "git",
+                "daemon",
+                "--export-all",
+                f"--base-path={self.parent}",
+                f"--listen={self.address}",
+                "--port=9418",
+                str(self.parent),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
 
     def retire(self, names: tuple[str, ...]) -> None:
-        check(self.work is not None and self.bare is not None, "Git origin was published before retirement")
+        check(
+            self.work is not None and self.bare is not None,
+            "Git origin was published before retirement",
+        )
         for name in names:
             path = self.work / "apps" / f"Application-{name}.yaml"
             check(path.is_file(), f"retirement input exists for {name}")
             path.unlink()
         git = ["git", "-C", str(self.work)]
-        run(*git, "-c", "user.email=recovery@test", "-c", "user.name=recovery", "add", "-A")
-        run(*git, "-c", "user.email=recovery@test", "-c", "user.name=recovery", "commit", "-m", "retire fixture applications")
+        run(
+            *git,
+            "-c",
+            "user.email=recovery@test",
+            "-c",
+            "user.name=recovery",
+            "add",
+            "-A",
+        )
+        run(
+            *git,
+            "-c",
+            "user.email=recovery@test",
+            "-c",
+            "user.name=recovery",
+            "commit",
+            "-m",
+            "retire fixture applications",
+        )
         run(*git, "push", str(self.bare), "main:main")
 
     def stop(self) -> None:
@@ -636,23 +951,46 @@ def kubectl_absent(kubeconfig: Path, kind: str, name: str, namespace: str) -> bo
 def fetch_kubeconfig(runtime: Runtime, workspace: Path) -> Path:
     """Pull the guest K3s admin kubeconfig and point it at the guest address."""
     raw = workspace / "k3s.yaml"
-    runtime.incus("file", "pull", f"{runtime.instance}/etc/rancher/k3s/k3s.yaml", str(raw), timeout=120)
+    runtime.incus(
+        "file",
+        "pull",
+        f"{runtime.instance}/etc/rancher/k3s/k3s.yaml",
+        str(raw),
+        timeout=120,
+    )
     text = raw.read_text()
     check("https://127.0.0.1:6443" in text, "guest kubeconfig uses the loopback server")
     kubeconfig = workspace / "kubeconfig"
-    kubeconfig.write_text(text.replace("https://127.0.0.1:6443", f"https://{runtime.descriptor['address']}:6443"))
+    kubeconfig.write_text(
+        text.replace(
+            "https://127.0.0.1:6443", f"https://{runtime.descriptor['address']}:6443"
+        )
+    )
     kubeconfig.chmod(0o600)
     return kubeconfig
 
 
-def run_bootstrap_host(bootstrap_host: Path, runtime: Runtime, kubeconfig: Path, seed: Path) -> None:
+def run_bootstrap_host(
+    bootstrap_host: Path, runtime: Runtime, kubeconfig: Path, seed: Path
+) -> None:
     """Invoke the shipped household-bootstrap-host against the fresh guest."""
-    env = {**os.environ, "KUBECONFIG": str(kubeconfig), "HOUSEHOLD_BOOTSTRAP_MANIFESTS": str(seed)}
+    env = {
+        **os.environ,
+        "KUBECONFIG": str(kubeconfig),
+        "HOUSEHOLD_BOOTSTRAP_MANIFESTS": str(seed),
+    }
     with phase("household-bootstrap-host (timeout: 3600s)"):
         # GNU timeout bounds the bootstrap process group, including its children.
         with subprocess.Popen(
-            ["timeout", "--kill-after=30s", "3600s", str(bootstrap_host),
-             str(runtime.spec_path), "--confirm", runtime.instance],
+            [
+                "timeout",
+                "--kill-after=30s",
+                "3600s",
+                str(bootstrap_host),
+                str(runtime.spec_path),
+                "--confirm",
+                runtime.instance,
+            ],
             env=env,
         ) as process:
             while True:
@@ -660,13 +998,55 @@ def run_bootstrap_host(bootstrap_host: Path, runtime: Runtime, kubeconfig: Path,
                     status = process.wait(timeout=60)
                     break
                 except subprocess.TimeoutExpired:
-                    print("BOOTSTRAP WAIT: collecting read-only Argo diagnostics", flush=True)
+                    print(
+                        "BOOTSTRAP WAIT: collecting read-only Argo diagnostics",
+                        flush=True,
+                    )
                     for command in (
-                        ["kubectl", "--request-timeout=10s", "-n", "argocd", "get", "pods", "-o", "wide"],
-                        ["kubectl", "--request-timeout=10s", "-n", "argocd", "get", "events", "--sort-by=.metadata.creationTimestamp"],
-                        ["kubectl", "--request-timeout=10s", "-n", "argocd", "logs", "job/argocd-redis-secret-init", "--tail=40", "--pod-running-timeout=1s"],
-                        ["incus", "--force-local", "--project", runtime.project, "exec", runtime.instance,
-                         "--", "k3s", "ctr", "-n", "k8s.io", "content", "active"],
+                        [
+                            "kubectl",
+                            "--request-timeout=10s",
+                            "-n",
+                            "argocd",
+                            "get",
+                            "pods",
+                            "-o",
+                            "wide",
+                        ],
+                        [
+                            "kubectl",
+                            "--request-timeout=10s",
+                            "-n",
+                            "argocd",
+                            "get",
+                            "events",
+                            "--sort-by=.metadata.creationTimestamp",
+                        ],
+                        [
+                            "kubectl",
+                            "--request-timeout=10s",
+                            "-n",
+                            "argocd",
+                            "logs",
+                            "job/argocd-redis-secret-init",
+                            "--tail=40",
+                            "--pod-running-timeout=1s",
+                        ],
+                        [
+                            "incus",
+                            "--force-local",
+                            "--project",
+                            runtime.project,
+                            "exec",
+                            runtime.instance,
+                            "--",
+                            "k3s",
+                            "ctr",
+                            "-n",
+                            "k8s.io",
+                            "content",
+                            "active",
+                        ],
                     ):
                         if process.poll() is not None:
                             break
@@ -674,24 +1054,28 @@ def run_bootstrap_host(bootstrap_host: Path, runtime: Runtime, kubeconfig: Path,
                         try:
                             subprocess.run(command, env=env, timeout=15, check=False)
                         except subprocess.TimeoutExpired:
-                            print("DIAGNOSTIC: command exceeded 15s; bootstrap deadline unchanged", flush=True)
+                            print(
+                                "DIAGNOSTIC: command exceeded 15s; bootstrap deadline unchanged",
+                                flush=True,
+                            )
     if status != 0:
-        # The root Application has no credentials; a server dry-run can report
-        # its admission error without exposing the staged Secret manifest.
-        diagnosis = completed(
-            "kubectl", "--kubeconfig", str(kubeconfig), "apply", "--server-side",
-            "--field-manager=argocd-controller", "--dry-run=server", "-f", str(seed / "root.yaml"),
-            timeout=30,
+        raise ScenarioError(
+            f"household-bootstrap-host failed ({status}); see streamed output above"
         )
-        print(f"DIAGNOSTIC: root Application dry-run ({diagnosis.returncode}): {diagnosis.stderr.strip()}", flush=True)
-        raise ScenarioError(f"household-bootstrap-host failed ({status}); see streamed output above")
 
 
-def wait_argo_synced(kubeconfig: Path, names: tuple[str, ...], timeout: int = SYNC_TIMEOUT) -> None:
+def wait_argo_synced(
+    kubeconfig: Path, names: tuple[str, ...], timeout: int = SYNC_TIMEOUT
+) -> None:
     last_status = {}
+
     def synced() -> bool:
         for name in names:
-            app = json.loads(kubectl_outer(kubeconfig, "get", "application", name, "-n", "argocd", "-o", "json"))
+            app = json.loads(
+                kubectl_outer(
+                    kubeconfig, "get", "application", name, "-n", "argocd", "-o", "json"
+                )
+            )
             status = app.get("status", {})
             summary = {
                 "sync": status.get("sync", {}).get("status", "Unknown"),
@@ -707,15 +1091,28 @@ def wait_argo_synced(kubeconfig: Path, names: tuple[str, ...], timeout: int = SY
             if status.get("health", {}).get("status") != "Healthy":
                 return False
         return True
+
     wait_for(f"Argo reconciliation of {', '.join(names)}", synced, timeout=timeout)
 
 
-def wait_argo_source_failure(kubeconfig: Path, name: str, repo_url: str, timeout: int = ROOT_FAILURE_TIMEOUT) -> None:
+def wait_argo_source_failure(
+    kubeconfig: Path, name: str, repo_url: str, timeout: int = ROOT_FAILURE_TIMEOUT
+) -> None:
     """Wait until Argo has observed and failed a reconciliation of `name` against `repo_url`."""
+
     def application() -> dict:
-        return json.loads(kubectl_outer(kubeconfig, "get", "application", name, "-n", "argocd", "-o", "json"))
-    check(application()["spec"]["source"]["repoURL"] == repo_url, f"{name} points at the fixture Git origin {repo_url}")
+        return json.loads(
+            kubectl_outer(
+                kubeconfig, "get", "application", name, "-n", "argocd", "-o", "json"
+            )
+        )
+
+    check(
+        application()["spec"]["source"]["repoURL"] == repo_url,
+        f"{name} points at the fixture Git origin {repo_url}",
+    )
     last_status = {}
+
     def failed() -> bool:
         status = application().get("status", {})
         conditions = status.get("conditions", [])
@@ -746,7 +1143,12 @@ def wait_argo_source_failure(kubeconfig: Path, name: str, repo_url: str, timeout
             and operation.get("phase") in ("Error", "Failed")
             and repo_url in operation.get("message", "")
         )
-    wait_for(f"observed failed Argo reconciliation of {name} against {repo_url}", failed, timeout=timeout)
+
+    wait_for(
+        f"observed failed Argo reconciliation of {name} against {repo_url}",
+        failed,
+        timeout=timeout,
+    )
 
 
 def forward_start(runtime: Runtime, kubeconfig: Path) -> str:
@@ -758,9 +1160,18 @@ def forward_start(runtime: Runtime, kubeconfig: Path) -> str:
     if runtime.forward_proc is not None:
         runtime.forward_stop()
     proc = subprocess.Popen(
-        ["kubectl", "--kubeconfig", str(kubeconfig), "-n", "jellyfin",
-         "port-forward", "svc/jellyfin", "8096:8096"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        [
+            "kubectl",
+            "--kubeconfig",
+            str(kubeconfig),
+            "-n",
+            "jellyfin",
+            "port-forward",
+            "svc/jellyfin",
+            "8096:8096",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     runtime.forward_proc = proc
 
@@ -770,13 +1181,18 @@ def forward_start(runtime: Runtime, kubeconfig: Path) -> str:
                 return True
         except OSError:
             if proc.poll() is not None:
-                raise ScenarioError("Jellyfin port-forward exited before becoming reachable")
+                raise ScenarioError(
+                    "Jellyfin port-forward exited before becoming reachable"
+                )
             return False
 
     wait_for("Jellyfin port-forward", reachable, timeout=180)
     return "http://127.0.0.1:8096"
 
-def seed_and_handoff(runtime: Runtime, args: argparse.Namespace, workspace: Path) -> Path:
+
+def seed_and_handoff(
+    runtime: Runtime, args: argparse.Namespace, workspace: Path
+) -> Path:
     """Run the shipped recovery control flow on a fresh cluster.
 
     Returns the guest kubeconfig. The driver orchestrates shipped commands;
@@ -788,9 +1204,17 @@ def seed_and_handoff(runtime: Runtime, args: argparse.Namespace, workspace: Path
     # The host handoff must wait for the guest's runtime Secret writer.
     # Report only identities here; synthetic value checks run separately.
     seeding = runtime.kubectl_json("get", "secrets", "-A", "-o", "json")["items"]
-    want = {(entry["namespace"], entry["name"]) for entry in runtime.descriptor["runtimeSecrets"].values()}
-    have = {(item["metadata"]["namespace"], item["metadata"]["name"]) for item in seeding}
-    check(want <= have, f"shipped bootstrap waits for all declared Secrets (missing: {sorted(want - have)})")
+    want = {
+        (entry["namespace"], entry["name"])
+        for entry in runtime.descriptor["runtimeSecrets"].values()
+    }
+    have = {
+        (item["metadata"]["namespace"], item["metadata"]["name"]) for item in seeding
+    }
+    check(
+        want <= have,
+        f"shipped bootstrap waits for all declared Secrets (missing: {sorted(want - have)})",
+    )
     return kubeconfig
 
 
@@ -801,15 +1225,20 @@ def wait_stack(runtime: Runtime, kubeconfig: Path) -> None:
     # evidence must travel in the message, not in earlier prints.
     synced = runtime.kubectl_json("get", "secrets", "-A", "-o", "json")["items"]
     runtime.post_sync_secrets = sorted(
-        f"{item['metadata']['namespace']}/{item['metadata']['name']}"
-        for item in synced
+        f"{item['metadata']['namespace']}/{item['metadata']['name']}" for item in synced
     )
 
 
 def prepare_directory(path: Path, safe_dirs: list[Path]) -> None:
-    check(completed("findmnt", "--mountpoint", str(path)).returncode != 0, f"disposable path is not already mounted: {path}")
+    check(
+        completed("findmnt", "--mountpoint", str(path)).returncode != 0,
+        f"disposable path is not already mounted: {path}",
+    )
     if path.exists():
-        check(path.is_dir() and not path.is_symlink(), f"disposable path is a directory: {path}")
+        check(
+            path.is_dir() and not path.is_symlink(),
+            f"disposable path is a directory: {path}",
+        )
         check(not any(path.iterdir()), f"disposable path starts empty: {path}")
     else:
         path.mkdir(parents=True)
@@ -834,7 +1263,11 @@ def stage_identity(descriptor: dict, identity: Path) -> str:
     os.chmod(identity, 0o700)
     os.chown(private, descriptor["idmapBase"], descriptor["idmapBase"])
     os.chmod(private, 0o400)
-    os.chown(identity / "ssh_host_ed25519_key.pub", descriptor["idmapBase"], descriptor["idmapBase"])
+    os.chown(
+        identity / "ssh_host_ed25519_key.pub",
+        descriptor["idmapBase"],
+        descriptor["idmapBase"],
+    )
     os.chmod(identity / "ssh_host_ed25519_key.pub", 0o444)
     descriptor["publicKey"] = public
     return public
@@ -848,15 +1281,37 @@ def verify_private_endpoints(runtime: Runtime) -> None:
             with socket.create_connection((address, port), timeout=3):
                 pass
         except OSError as error:
-            diagnostics = runtime.guest("journalctl", "-u", "sshd", "-u", "compute-ssh-host-key-check", "--no-pager")
-            raise ScenarioError(f"Host cannot reach {address}:{port}: {error}\n{diagnostics}") from error
+            diagnostics = runtime.guest(
+                "journalctl",
+                "-u",
+                "sshd",
+                "-u",
+                "compute-ssh-host-key-check",
+                "--no-pager",
+            )
+            raise ScenarioError(
+                f"Host cannot reach {address}:{port}: {error}\n{diagnostics}"
+            ) from error
         print(f"PASS: host can reach private endpoint {port}", flush=True)
-    namespace, host_link, peer_link = "compute-test-peer", "compute-test-h", "compute-test-p"
-    check(not os.path.lexists(f"/run/netns/{namespace}"), "network test namespace is unused")
-    check(completed("ip", "link", "show", host_link).returncode != 0, "network test interface is unused")
+    namespace, host_link, peer_link = (
+        "compute-test-peer",
+        "compute-test-h",
+        "compute-test-p",
+    )
+    check(
+        not os.path.lexists(f"/run/netns/{namespace}"),
+        "network test namespace is unused",
+    )
+    check(
+        completed("ip", "link", "show", host_link).returncode != 0,
+        "network test interface is unused",
+    )
     bridge = ipaddress.ip_interface(runtime.descriptor["networkConfig"]["ipv4.address"])
     peer_address = str(bridge.network[-2])
-    check(peer_address not in (address, str(bridge.ip)), "network probe address is distinct")
+    check(
+        peer_address not in (address, str(bridge.ip)),
+        "network probe address is distinct",
+    )
     probe = "import socket,sys; socket.create_connection((sys.argv[1],int(sys.argv[2])),2).close()"
     run("ip", "netns", "add", namespace)
     try:
@@ -866,19 +1321,59 @@ def verify_private_endpoints(runtime: Runtime) -> None:
         run("ip", "link", "set", host_link, "up")
         run("ip", "-n", namespace, "link", "set", "lo", "up")
         run("ip", "-n", namespace, "link", "set", peer_link, "up")
-        run("ip", "-n", namespace, "address", "add", f"{peer_address}/{bridge.network.prefixlen}", "dev", peer_link)
+        run(
+            "ip",
+            "-n",
+            namespace,
+            "address",
+            "add",
+            f"{peer_address}/{bridge.network.prefixlen}",
+            "dev",
+            peer_link,
+        )
         for origin in ("same-bridge", "routed"):
             gateway = str(bridge.ip) if origin == "same-bridge" else "198.18.0.1"
             run("ip", "netns", "exec", namespace, "ping", "-c", "1", "-W", "2", gateway)
             for port in (*ports, 10250):
-                result = completed("ip", "netns", "exec", namespace, "python3", "-c", probe, address, str(port))
-                check(result.returncode != 0, f"{origin} peer cannot reach private endpoint {port}")
+                result = completed(
+                    "ip",
+                    "netns",
+                    "exec",
+                    namespace,
+                    "python3",
+                    "-c",
+                    probe,
+                    address,
+                    str(port),
+                )
+                check(
+                    result.returncode != 0,
+                    f"{origin} peer cannot reach private endpoint {port}",
+                )
             if origin == "same-bridge":
                 run("ip", "link", "set", host_link, "nomaster")
                 run("ip", "address", "add", "198.18.0.1/30", "dev", host_link)
                 run("ip", "-n", namespace, "address", "flush", "dev", peer_link)
-                run("ip", "-n", namespace, "address", "add", "198.18.0.2/30", "dev", peer_link)
-                run("ip", "-n", namespace, "route", "add", str(bridge.network), "via", "198.18.0.1")
+                run(
+                    "ip",
+                    "-n",
+                    namespace,
+                    "address",
+                    "add",
+                    "198.18.0.2/30",
+                    "dev",
+                    peer_link,
+                )
+                run(
+                    "ip",
+                    "-n",
+                    namespace,
+                    "route",
+                    "add",
+                    str(bridge.network),
+                    "via",
+                    "198.18.0.1",
+                )
     finally:
         completed("ip", "link", "delete", host_link)
         completed("ip", "netns", "delete", namespace)
@@ -892,26 +1387,59 @@ def run_scenario(args: argparse.Namespace) -> None:
     fixture = json.loads(args.fixture.read_text())
     descriptor = json_copy(fixture["descriptor"])
     media_pool = fixture["mediaPool"]
-    check(isinstance(fixture["mediaRootScript"], str) and fixture["mediaRootScript"].strip(), "fixture contains the native media-root script")
-    check(all(isinstance(media_pool[key], str) and media_pool[key].strip() for key in ("path", "start", "stop")), "fixture contains native media pool commands")
-    check(isinstance(media_pool["branches"], list) and media_pool["branches"]
-          and all(isinstance(branch, str) and branch.startswith("/") for branch in media_pool["branches"]),
-          "fixture contains native media pool branches")
+    check(
+        isinstance(fixture["mediaRootScript"], str)
+        and fixture["mediaRootScript"].strip(),
+        "fixture contains the native media-root script",
+    )
+    check(
+        all(
+            isinstance(media_pool[key], str) and media_pool[key].strip()
+            for key in ("path", "start", "stop")
+        ),
+        "fixture contains native media pool commands",
+    )
+    check(
+        isinstance(media_pool["branches"], list)
+        and media_pool["branches"]
+        and all(
+            isinstance(branch, str) and branch.startswith("/")
+            for branch in media_pool["branches"]
+        ),
+        "fixture contains native media pool branches",
+    )
     ensure_absolute_paths(descriptor)
     pool_path = Path(descriptor["poolPath"])
-    pool_mount = run("findmnt", "-n", "-o", "FSTYPE,SOURCE,TARGET", "-M", str(pool_path))
-    check(pool_mount.split(maxsplit=1)[:1] == ["zfs"],
-          f"Incus storage pool path is ZFS-backed: {pool_mount}")
+    pool_mount = run(
+        "findmnt", "-n", "-o", "FSTYPE,SOURCE,TARGET", "-M", str(pool_path)
+    )
+    check(
+        pool_mount.split(maxsplit=1)[:1] == ["zfs"],
+        f"Incus storage pool path is ZFS-backed: {pool_mount}",
+    )
     print(f"FIXTURE ARCHITECTURE: {fixture_architecture}", flush=True)
     print(f"HOST KERNEL: {run('uname', '-a')}", flush=True)
     print(f"HOST ZFS:\n{run('zfs', 'version')}", flush=True)
-    check(args.bundle.is_dir() and str(args.bundle.resolve()).startswith("/nix/store/"), "bundle is an immutable Nix store output")
+    check(
+        args.bundle.is_dir() and str(args.bundle.resolve()).startswith("/nix/store/"),
+        "bundle is an immutable Nix store output",
+    )
     for member in ("metadata.tar.xz", "rootfs.tar.xz", "system"):
         check((args.bundle / member).exists(), f"bundle contains {member}")
-    rootfs_members = run("tar", "-tJf", str(args.bundle / "rootfs.tar.xz"), timeout=600).splitlines()
-    deployed_identity_paths = {"etc/ssh/ssh_host_ed25519_key", "srv/identity/ssh_host_ed25519_key"}
-    check(not any(member.removeprefix("./").lstrip("/") in deployed_identity_paths for member in rootfs_members),
-          "guest root artifact contains no preinstalled runtime host identity")
+    rootfs_members = run(
+        "tar", "-tJf", str(args.bundle / "rootfs.tar.xz"), timeout=600
+    ).splitlines()
+    deployed_identity_paths = {
+        "etc/ssh/ssh_host_ed25519_key",
+        "srv/identity/ssh_host_ed25519_key",
+    }
+    check(
+        not any(
+            member.removeprefix("./").lstrip("/") in deployed_identity_paths
+            for member in rootfs_members
+        ),
+        "guest root artifact contains no preinstalled runtime host identity",
+    )
     check(args.helper.is_file(), "compute helper exists")
     for member in (
         "apps/Application-jellyfin.yaml",
@@ -922,9 +1450,12 @@ def run_scenario(args: argparse.Namespace) -> None:
         "jellyfin-configuration",
         "canonical-bootstrap.yaml",
     ):
-        check((args.repo / member).exists(), f"canonical recovery input contains {member}")
+        check(
+            (args.repo / member).exists(), f"canonical recovery input contains {member}"
+        )
     project = descriptor["project"]
     instance_name = descriptor["instance"]
+
     # The fixture host only waits for the Incus unit; the API socket
     # needs its own readiness gate before the first query.
     def incus_responsive() -> bool:
@@ -933,8 +1464,12 @@ def run_scenario(args: argparse.Namespace) -> None:
         except Exception:
             return False
         return True
+
     wait_for("Incus API", incus_responsive)
-    check(instance_query(project, instance_name) is None, "disposable instance is absent before the scenario")
+    check(
+        instance_query(project, instance_name) is None,
+        "disposable instance is absent before the scenario",
+    )
 
     with tempfile.TemporaryDirectory(prefix="homelab-compute-recovery-") as temporary:
         workspace = Path(temporary)
@@ -943,40 +1478,76 @@ def run_scenario(args: argparse.Namespace) -> None:
         # prepare_directory/safe_dirs so cleanup neither unmounts nor clears
         # the fixture ZFS dataset.
         host_paths = {Path(entry["path"]) for entry in descriptor["requiredPaths"]}
-        host_paths.update(Path(device["source"]) for device in descriptor["devices"].values()
-                          if device.get("type") == "disk" and "source" in device)
+        host_paths.update(
+            Path(device["source"])
+            for device in descriptor["devices"].values()
+            if device.get("type") == "disk" and "source" in device
+        )
         for path in sorted(host_paths):
             prepare_directory(path, safe_dirs)
         spec_path = workspace / "compute.json"
         runtime = Runtime(descriptor, spec_path, args.helper, args.bundle)
         runtime.media_path.mkdir(mode=0o000)
         # Prepare the bind sources before running the exact locked host command.
-        preseed_command = ("env", f"PATH={fixture['preseedPath']}",
-                           *shlex.split(fixture["preseedCommand"]))
+        preseed_command = (
+            "env",
+            f"PATH={fixture['preseedPath']}",
+            *shlex.split(fixture["preseedCommand"]),
+        )
         envelope_paths = (
             (f"/1.0/storage-pools/{descriptor['pool']}", None),
             (f"/1.0/networks/{descriptor['network']}", "default"),
             (f"/1.0/profiles/{descriptor['profile']}", project),
         )
-        check(query_incus(f"/1.0/projects/{project}") is None,
-              "adoption conflict fixture starts without the declared project")
-        check(all(query_incus(path, project=owner) is None for path, owner in envelope_paths),
-              "adoption conflict fixture starts without pool, network or profile")
-        run("incus", "--force-local", "project", "create", project, "-c", "restricted=false")
+        check(
+            query_incus(f"/1.0/projects/{project}") is None,
+            "adoption conflict fixture starts without the declared project",
+        )
+        check(
+            all(
+                query_incus(path, project=owner) is None
+                for path, owner in envelope_paths
+            ),
+            "adoption conflict fixture starts without pool, network or profile",
+        )
+        run(
+            "incus",
+            "--force-local",
+            "project",
+            "create",
+            project,
+            "-c",
+            "restricted=false",
+        )
         conflicting_project = query_incus(f"/1.0/projects/{project}")
         result = completed(*preseed_command, timeout=600)
-        check(result.returncode != 0,
-              "exact preseed command rejects the conflicting project")
-        check(query_incus(f"/1.0/projects/{project}") == conflicting_project
-              and all(query_incus(path, project=owner) is None for path, owner in envelope_paths),
-              "adoption conflict leaves the project unchanged and creates no envelope resources")
+        check(
+            result.returncode != 0,
+            "exact preseed command rejects the conflicting project",
+        )
+        check(
+            query_incus(f"/1.0/projects/{project}") == conflicting_project
+            and all(
+                query_incus(path, project=owner) is None
+                for path, owner in envelope_paths
+            ),
+            "adoption conflict leaves the project unchanged and creates no envelope resources",
+        )
         run("incus", "--force-local", "project", "delete", project)
         run(*preseed_command, timeout=600)
         try:
             persist = Path("/persist")
             secret_inputs = Path("/run/agenix")
             prepare_directory(secret_inputs, safe_dirs)
-            run("mount", "-t", "tmpfs", "-o", "mode=0700,size=1m", "tmpfs", str(secret_inputs))
+            run(
+                "mount",
+                "-t",
+                "tmpfs",
+                "-o",
+                "mode=0700,size=1m",
+                "tmpfs",
+                str(secret_inputs),
+            )
             runtime.retained_mounts.append(secret_inputs)
             secret_root = Path(descriptor["devices"]["secrets"]["source"])
             secret_manifest = secret_root / "runtime-secrets.yaml"
@@ -985,18 +1556,39 @@ def run_scenario(args: argparse.Namespace) -> None:
                 for source, entry in descriptor["runtimeSecrets"].items()
             }
             missing_stage = runtime.stage_secrets(fixture)
-            check(missing_stage.returncode != 0, "initial missing credential inputs fail closed")
-            assert_secret_absent(secret_values, missing_stage.stdout, missing_stage.stderr, context="staging output")
-            check(not any(secret_root.iterdir())
-                  and "ro" in run("findmnt", "-n", "-o", "VFS-OPTIONS", "-M", str(secret_root)).split(","),
-                  "missing inputs leave an empty read-only credential transport before guest creation")
+            check(
+                missing_stage.returncode != 0,
+                "initial missing credential inputs fail closed",
+            )
+            assert_secret_absent(
+                secret_values,
+                missing_stage.stdout,
+                missing_stage.stderr,
+                context="staging output",
+            )
+            check(
+                not any(secret_root.iterdir())
+                and "ro"
+                in run(
+                    "findmnt", "-n", "-o", "VFS-OPTIONS", "-M", str(secret_root)
+                ).split(","),
+                "missing inputs leave an empty read-only credential transport before guest creation",
+            )
             for source, value in secret_values.items():
                 with (secret_inputs / source).open("xb") as output:
                     os.chmod(output.fileno(), 0o400)
                     output.write(value)
             published_stage = runtime.stage_secrets(fixture)
-            check(published_stage.returncode == 0, "complete disposable credentials publish before guest creation")
-            assert_secret_absent(secret_values, published_stage.stdout, published_stage.stderr, context="staging output")
+            check(
+                published_stage.returncode == 0,
+                "complete disposable credentials publish before guest creation",
+            )
+            assert_secret_absent(
+                secret_values,
+                published_stage.stdout,
+                published_stage.stderr,
+                context="staging output",
+            )
             secret_payload = secret_manifest.read_bytes()
             prepare_directory(persist, safe_dirs)
             durable = workspace / "durable"
@@ -1029,7 +1621,10 @@ def run_scenario(args: argparse.Namespace) -> None:
             fixture_media = runtime.media_path / "library" / "recovery.mkv"
             shutil.copyfile(args.fixture_media, fixture_media)
             fixture_media.chmod(0o644)
-            check(public_key == descriptor["publicKey"], "descriptor public identity is the disposable staged key")
+            check(
+                public_key == descriptor["publicKey"],
+                "descriptor public identity is the disposable staged key",
+            )
             # Lima reserves a very large range for its login user. Carve the
             # fixture's range out temporarily; never weaken the helper's check.
             start = descriptor["idmapBase"]
@@ -1037,7 +1632,11 @@ def run_scenario(args: argparse.Namespace) -> None:
             for kind in ("uid", "gid"):
                 path = Path("/etc/sub" + kind)
                 original = path.read_text()
-                rows = [line.split(":") for line in original.splitlines() if line and not line.startswith("#")]
+                rows = [
+                    line.split(":")
+                    for line in original.splitlines()
+                    if line and not line.startswith("#")
+                ]
                 if not any(owner == "lima" for owner, _, _ in rows):
                     continue
                 runtime.subid_files[path] = original
@@ -1053,16 +1652,22 @@ def run_scenario(args: argparse.Namespace) -> None:
                             staged.append(f"lima:{end}:{upper - end}")
                     else:
                         staged.append(f"{owner}:{base}:{count}")
-                if not any(owner == "root" and int(base) <= start and int(base) + int(count) >= end
-                           for owner, base, count in rows):
+                if not any(
+                    owner == "root"
+                    and int(base) <= start
+                    and int(base) + int(count) >= end
+                    for owner, base, count in rows
+                ):
                     staged.append(f"root:{start}:{end - start}")
                 if kind == "gid":
                     # The helper also requires root coverage for every
                     # identity-mapped capability GID, not just the range.
                     for row in descriptor["idmap"]["gid"]:
                         if row["nsid"] == row["hostid"] and not any(
-                                owner == "root" and int(base) <= row["hostid"] < int(base) + int(count)
-                                for owner, base, count in rows):
+                            owner == "root"
+                            and int(base) <= row["hostid"] < int(base) + int(count)
+                            for owner, base, count in rows
+                        ):
                             staged.append(f"root:{row['hostid']}:1")
                 path.write_text("\n".join(staged) + "\n")
 
@@ -1070,13 +1675,23 @@ def run_scenario(args: argparse.Namespace) -> None:
             retained_path = Path(retained["path"])
             run("umount", str(retained_path))
             try:
-                os.chown(retained_path, descriptor["idmapBase"] + retained["uid"],
-                         descriptor["idmapBase"] + retained["gid"])
+                os.chown(
+                    retained_path,
+                    descriptor["idmapBase"] + retained["uid"],
+                    descriptor["idmapBase"] + retained["gid"],
+                )
                 runtime.helper_expect_failure("create", "unmounted retained storage")
-                check(instance_query(project, instance_name) is None,
-                      "missing retained mount cannot create a guest on substitute storage")
+                check(
+                    instance_query(project, instance_name) is None,
+                    "missing retained mount cannot create a guest on substitute storage",
+                )
             finally:
-                run("mount", "--bind", str(persist / str(retained_path).lstrip("/")), str(retained_path))
+                run(
+                    "mount",
+                    "--bind",
+                    str(persist / str(retained_path).lstrip("/")),
+                    str(retained_path),
+                )
             runtime.created_instance = True
             with phase("compute-create-and-k3s-ready"):
                 runtime.helper_run("create", bundle=args.bundle, timeout=3_600)
@@ -1111,70 +1726,132 @@ def run_scenario(args: argparse.Namespace) -> None:
                 for source in sources
                 if descriptor["runtimeSecrets"][source]["key"] == "server.secretkey"
             )
-            missing_source = next(source for source in reversed(sources) if source != rotated)
+            missing_source = next(
+                source for source in reversed(sources) if source != rotated
+            )
             rotated_value = fixture_secret_value(descriptor["runtimeSecrets"][rotated])
             (secret_inputs / rotated).write_bytes(rotated_value)
             (secret_inputs / missing_source).unlink()
             try:
                 incomplete_stage = runtime.stage_secrets(fixture)
-                check(incomplete_stage.returncode != 0, "incomplete credential rotation fails closed")
-                assert_secret_absent(secret_values, incomplete_stage.stdout, incomplete_stage.stderr, context="staging output")
+                check(
+                    incomplete_stage.returncode != 0,
+                    "incomplete credential rotation fails closed",
+                )
+                assert_secret_absent(
+                    secret_values | {rotated: rotated_value},
+                    incomplete_stage.stdout,
+                    incomplete_stage.stderr,
+                    context="staging output",
+                )
                 runtime.check_secret_payload(secret_payload)
             finally:
-                (secret_inputs / missing_source).write_bytes(secret_values[missing_source])
+                (secret_inputs / missing_source).write_bytes(
+                    secret_values[missing_source]
+                )
                 (secret_inputs / missing_source).chmod(0o400)
             secret_values[rotated] = rotated_value
             complete_stage = runtime.stage_secrets(fixture)
             check(complete_stage.returncode == 0, "complete credential rotation publishes successfully")
             assert_secret_absent(secret_values, complete_stage.stdout, complete_stage.stderr, context="staging output")
             rotated_payload = secret_manifest.read_bytes()
-            check(rotated_payload != secret_payload, "successful rotation changes the published payload")
+            check(
+                rotated_payload != secret_payload,
+                "successful rotation changes the published payload",
+            )
             for name, entry in descriptor["retainedPaths"].items():
                 target = Path(entry["path"])
                 permissions = target.stat()
-                check(permissions.st_mode & 0o7777 == int(entry["mode"], 8),
-                      f"{name} has its declared retained directory permissions")
+                check(
+                    permissions.st_mode & 0o7777 == int(entry["mode"], 8),
+                    f"{name} has its declared retained directory permissions",
+                )
                 if name == "jellyfin-config":
                     expected_mode = int(entry["mode"], 8)
                     os.chmod(target, expected_mode ^ 0o001)
                     try:
-                        runtime.helper_expect_failure("inspect", "required path mode drift")
+                        runtime.helper_expect_failure(
+                            "inspect", "required path mode drift"
+                        )
                     finally:
                         os.chmod(target, expected_mode)
                 probe = entry["guestPath"] + "/.retained-permission-probe"
                 result = completed(
-                    "incus", "--force-local", "--project", project, "exec", instance_name,
-                    "--user", str(entry["uid"]), "--group", str(entry["gid"]),
-                    "--mode=non-interactive", "--", "sh", "-ec",
-                    "printf retained > " + shlex.quote(probe))
+                    "incus",
+                    "--force-local",
+                    "--project",
+                    project,
+                    "exec",
+                    instance_name,
+                    "--user",
+                    str(entry["uid"]),
+                    "--group",
+                    str(entry["gid"]),
+                    "--mode=non-interactive",
+                    "--",
+                    "sh",
+                    "-ec",
+                    "printf retained > " + shlex.quote(probe),
+                )
                 if entry["readOnly"]:
-                    check(result.returncode != 0, f"{name} denies writes through its declared read-only attachment")
+                    check(
+                        result.returncode != 0,
+                        f"{name} denies writes through its declared read-only attachment",
+                    )
                 else:
                     written = Path(entry["path"]) / ".retained-permission-probe"
-                    check(written.read_text() == "retained"
-                          and written.stat().st_uid == descriptor["idmapBase"] + entry["uid"]
-                          and written.stat().st_gid == descriptor["idmapBase"] + entry["gid"],
-                          f"{name} retains data with the declared mapped owner")
+                    check(
+                        written.read_text() == "retained"
+                        and written.stat().st_uid
+                        == descriptor["idmapBase"] + entry["uid"]
+                        and written.stat().st_gid
+                        == descriptor["idmapBase"] + entry["gid"],
+                        f"{name} retains data with the declared mapped owner",
+                    )
                     written.unlink()
             origin = GitOrigin(workspace / "origin", fixture["bridgeAddress"])
             origin.publish(args.repo)
             runtime.git_origin = origin
             with phase("static-bootstrap-and-root-handoff-without-git"):
-                check(not origin.reachable(), f"fixture Git origin {origin.address}:9418 refuses connections before it is served")
+                check(
+                    not origin.reachable(),
+                    f"fixture Git origin {origin.address}:9418 refuses connections before it is served",
+                )
                 kubeconfig = seed_and_handoff(runtime, args, workspace)
-                check(not kubectl_absent(kubeconfig, "application", ROOT_APP, "argocd"), "root Application is applied after the static seed")
+                check(
+                    not kubectl_absent(kubeconfig, "application", ROOT_APP, "argocd"),
+                    "root Application is applied after the static seed",
+                )
                 wait_argo_source_failure(kubeconfig, ROOT_APP, origin.url)
-                check(not origin.reachable(), f"fixture Git origin {origin.address}:9418 still refuses connections after the failed reconciliation")
-                check(all(kubectl_absent(kubeconfig, "application", name, "argocd") for name in CHILD_APPS), "root Application produces no child Applications while Git is unreachable")
+                check(
+                    not origin.reachable(),
+                    f"fixture Git origin {origin.address}:9418 still refuses connections after the failed reconciliation",
+                )
+                check(
+                    all(
+                        kubectl_absent(kubeconfig, "application", name, "argocd")
+                        for name in CHILD_APPS
+                    ),
+                    "root Application produces no child Applications while Git is unreachable",
+                )
             origin.serve()
             with phase("first-git-reconciliation"):
                 wait_stack(runtime, kubeconfig)
-                check(not any(kubectl_absent(kubeconfig, "application", name, "argocd") for name in CHILD_APPS), "the same root Application produces the child Applications once Git is served")
+                check(
+                    not any(
+                        kubectl_absent(kubeconfig, "application", name, "argocd")
+                        for name in CHILD_APPS
+                    ),
+                    "the same root Application produces the child Applications once Git is served",
+                )
             wait_for("Jellarr post-health reconciliation", runtime.jellarr_ready, timeout=600)
             runtime.verify_no_jellarr_secret()
             runtime.verify_secret_boundary(secret_values)
             runtime.verify_secret_consumers(secret_values)
-            check(runtime.app_ready(), "Argo delivers Jellyfin when the intended media source is present")
+            check(
+                runtime.app_ready(),
+                "Argo delivers Jellyfin when the intended media source is present",
+            )
             runtime.verify_stock_runtime()
             base = forward_start(runtime, kubeconfig)
             runtime.verify_access_boundaries()
@@ -1185,7 +1862,10 @@ def run_scenario(args: argparse.Namespace) -> None:
             # read-only boundary lives at the Jellyfin workload mount.
             hosted = runtime.media_path / "library" / ".compute-recovery-probe"
             hosted.write_text("host-owned\n")
-            check(hosted.read_text() == "host-owned\n", "host root owns the writable media namespace")
+            check(
+                hosted.read_text() == "host-owned\n",
+                "host root owns the writable media namespace",
+            )
             hosted.unlink()
             admin_sources = [
                 source
@@ -1201,49 +1881,123 @@ def run_scenario(args: argparse.Namespace) -> None:
             smoke.verify_setup_closed(base)
             token, user_id = smoke.authenticate(base, username, password)
             smoke.verify_library(base, token, "Movies", "/media")
-            item = wait_for("indexed real media", lambda: smoke.find_media(base, token, user_id))
+            item = wait_for(
+                "indexed real media", lambda: smoke.find_media(base, token, user_id)
+            )
             check(item is not None, "Jellyfin indexes the disposable media fixture")
             item_id = item["Id"]
             smoke.set_played(base, token, user_id, item_id, True)
-            check(smoke.is_played(base, token, user_id, item_id), "Jellyfin records meaningful playback state")
-            marker = Path(descriptor["retainedPaths"]["jellyfin-config"]["path"]) / ".compute-recovery-marker"
-            runtime.kubectl("exec", "deployment/jellyfin", "--",
-                            "sh", "-ec", "printf 'retained-state\\n' > /config/.compute-recovery-marker",
-                            namespace="jellyfin")
+            check(
+                smoke.is_played(base, token, user_id, item_id),
+                "Jellyfin records meaningful playback state",
+            )
+            marker = (
+                Path(descriptor["retainedPaths"]["jellyfin-config"]["path"])
+                / ".compute-recovery-marker"
+            )
+            runtime.kubectl(
+                "exec",
+                "deployment/jellyfin",
+                "--",
+                "sh",
+                "-ec",
+                "printf 'retained-state\\n' > /config/.compute-recovery-marker",
+                namespace="jellyfin",
+            )
             marker_stat = marker.stat()
-            check(marker.read_text() == "retained-state\n" and marker_stat.st_uid == descriptor["idmapBase"] + 751,
-                  "Jellyfin writes retained application data as its declared mapped identity")
+            check(
+                marker.read_text() == "retained-state\n"
+                and marker_stat.st_uid == descriptor["idmapBase"] + 751,
+                "Jellyfin writes retained application data as its declared mapped identity",
+            )
 
-            original_uuid = query_incus(f"/1.0/instances/{quote_path(instance_name)}", project=project)["config"]["volatile.uuid"]
-            original_cluster_token = runtime.guest("cat", "/var/lib/rancher/k3s/server/token")
+            original_uuid = query_incus(
+                f"/1.0/instances/{quote_path(instance_name)}", project=project
+            )["config"]["volatile.uuid"]
+            original_cluster_token = runtime.guest(
+                "cat", "/var/lib/rancher/k3s/server/token"
+            )
             runtime.helper_run("create", bundle=args.bundle)
-            check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid,
-                  "repeated creation preserves the existing guest")
-            with Path(f"/run/lock/compute-{project}-{instance_name}.lock").open("a") as lock:
+            check(
+                instance_query(project, instance_name)["config"]["volatile.uuid"]
+                == original_uuid,
+                "repeated creation preserves the existing guest",
+            )
+            with Path(f"/run/lock/compute-{project}-{instance_name}.lock").open(
+                "a"
+            ) as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 runtime.helper_expect_failure("replace", "concurrent maintenance")
-                command = runtime.helper_command("inspect") + ["--lock-fd", str(lock.fileno())]
-                inspected = subprocess.run(command, pass_fds=(lock.fileno(),), capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
-                check(inspected.returncode == 0, "inspection reuses the selected held lifecycle lock")
+                command = runtime.helper_command("inspect") + [
+                    "--lock-fd",
+                    str(lock.fileno()),
+                ]
+                inspected = subprocess.run(
+                    command,
+                    pass_fds=(lock.fileno(),),
+                    capture_output=True,
+                    text=True,
+                    timeout=COMMAND_TIMEOUT,
+                )
+                check(
+                    inspected.returncode == 0,
+                    "inspection reuses the selected held lifecycle lock",
+                )
                 with runtime.spec_path.open("r") as wrong_lock:
-                    command = runtime.helper_command("inspect") + ["--lock-fd", str(wrong_lock.fileno())]
-                    rejected = subprocess.run(command, pass_fds=(wrong_lock.fileno(),), capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
-                    check(rejected.returncode != 0, "an unrelated inherited descriptor cannot bypass lifecycle serialization")
-            check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid,
-                  "concurrent maintenance cannot replace the guest")
-            runtime.guest("nix-env", "--profile", "/nix/var/nix/profiles/system", "--set", str((args.bundle / "system").resolve()))
-            runtime.guest(str((args.bundle / "system").resolve() / "bin/switch-to-configuration"), "switch", timeout=600)
+                    command = runtime.helper_command("inspect") + [
+                        "--lock-fd",
+                        str(wrong_lock.fileno()),
+                    ]
+                    rejected = subprocess.run(
+                        command,
+                        pass_fds=(wrong_lock.fileno(),),
+                        capture_output=True,
+                        text=True,
+                        timeout=COMMAND_TIMEOUT,
+                    )
+                    check(
+                        rejected.returncode != 0,
+                        "an unrelated inherited descriptor cannot bypass lifecycle serialization",
+                    )
+            check(
+                instance_query(project, instance_name)["config"]["volatile.uuid"]
+                == original_uuid,
+                "concurrent maintenance cannot replace the guest",
+            )
+            runtime.guest(
+                "nix-env",
+                "--profile",
+                "/nix/var/nix/profiles/system",
+                "--set",
+                str((args.bundle / "system").resolve()),
+            )
+            runtime.guest(
+                str((args.bundle / "system").resolve() / "bin/switch-to-configuration"),
+                "switch",
+                timeout=600,
+            )
             wait_for("Jellyfin after independent OS activation", runtime.app_ready)
-            check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid,
-                  "in-place system activation preserves the guest instance")
+            check(
+                instance_query(project, instance_name)["config"]["volatile.uuid"]
+                == original_uuid,
+                "in-place system activation preserves the guest instance",
+            )
             smoke.verify_state(base, username, password, "Movies", item_id)
             bad_descriptor = json_copy(descriptor)
-            bad_descriptor["publicKey"] = public_key.replace("ssh-ed25519", "ssh-ed25519-bad", 1)
+            bad_descriptor["publicKey"] = public_key.replace(
+                "ssh-ed25519", "ssh-ed25519-bad", 1
+            )
             bad_spec = workspace / "bad-public.json"
             bad_spec.write_text(json.dumps(bad_descriptor) + "\n")
             bad_spec.chmod(0o400)
-            runtime.helper_expect_failure("replace", "declared public identity", spec=bad_spec)
-            check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid, "mismatched identity does not mutate the instance")
+            runtime.helper_expect_failure(
+                "replace", "declared public identity", spec=bad_spec
+            )
+            check(
+                instance_query(project, instance_name)["config"]["volatile.uuid"]
+                == original_uuid,
+                "mismatched identity does not mutate the instance",
+            )
             public_path = Path(descriptor["identityPath"]) / "ssh_host_ed25519_key.pub"
             trusted_public = public_path.read_text()
             other_key = workspace / "other-identity"
@@ -1251,9 +2005,15 @@ def run_scenario(args: argparse.Namespace) -> None:
             runtime.guest("systemctl", "stop", "sshd.service")
             public_path.write_text(other_key.with_suffix(".pub").read_text())
             try:
-                runtime.guest("sh", "-ec",
-                              "if systemctl start sshd.service; then exit 1; fi; ! systemctl is-active --quiet sshd.service")
-                check(runtime.node_ready(), "mismatched staged identity blocks SSH without stopping Kubernetes")
+                runtime.guest(
+                    "sh",
+                    "-ec",
+                    "if systemctl start sshd.service; then exit 1; fi; ! systemctl is-active --quiet sshd.service",
+                )
+                check(
+                    runtime.node_ready(),
+                    "mismatched staged identity blocks SSH without stopping Kubernetes",
+                )
             finally:
                 public_path.write_text(trusted_public)
                 runtime.guest("systemctl", "start", "sshd.service")
@@ -1263,97 +2023,250 @@ def run_scenario(args: argparse.Namespace) -> None:
             private.rename(missing_private)
             try:
                 runtime.helper_expect_failure("replace", "No such file")
-                runtime.guest("sh", "-ec",
-                              "if systemctl start sshd.service; then exit 1; fi; ! systemctl is-active --quiet sshd.service")
-                check(not private.exists() and runtime.node_ready(),
-                      "missing identity blocks SSH without generating a key or stopping Kubernetes")
+                runtime.guest(
+                    "sh",
+                    "-ec",
+                    "if systemctl start sshd.service; then exit 1; fi; ! systemctl is-active --quiet sshd.service",
+                )
+                check(
+                    not private.exists() and runtime.node_ready(),
+                    "missing identity blocks SSH without generating a key or stopping Kubernetes",
+                )
             finally:
                 missing_private.rename(private)
                 runtime.guest("systemctl", "start", "sshd.service")
-            check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid, "missing identity does not mutate the instance")
-            runtime.incus("config", "set", instance_name, "user.homelab.unsafe-drift", "true")
+            check(
+                instance_query(project, instance_name)["config"]["volatile.uuid"]
+                == original_uuid,
+                "missing identity does not mutate the instance",
+            )
+            runtime.incus(
+                "config", "set", instance_name, "user.homelab.unsafe-drift", "true"
+            )
             try:
-                runtime.helper_expect_failure("inspect", "unsafe effective configuration")
-                runtime.helper_expect_failure("replace", "incompatible effective configuration")
+                runtime.helper_expect_failure(
+                    "inspect", "unsafe effective configuration"
+                )
+                runtime.helper_expect_failure(
+                    "replace", "incompatible effective configuration"
+                )
             finally:
-                runtime.incus("config", "unset", instance_name, "user.homelab.unsafe-drift")
-            check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid, "unsafe instance drift does not trigger replacement")
+                runtime.incus(
+                    "config", "unset", instance_name, "user.homelab.unsafe-drift"
+                )
+            check(
+                instance_query(project, instance_name)["config"]["volatile.uuid"]
+                == original_uuid,
+                "unsafe instance drift does not trigger replacement",
+            )
 
             # Exercise the declared guest media boundary with a disposable writer;
             # recovery of the Jellyfin slice must not require an Arr deployment.
             jellyfin_pod = runtime.kubectl_json(
-                "get", "pods", "-l", "app.kubernetes.io/name=jellyfin", "-o", "json",
-                namespace="jellyfin")["items"][0]
+                "get",
+                "pods",
+                "-l",
+                "app.kubernetes.io/name=jellyfin",
+                "-o",
+                "json",
+                namespace="jellyfin",
+            )["items"][0]
             writer = {
-                "apiVersion": "v1", "kind": "Pod",
+                "apiVersion": "v1",
+                "kind": "Pod",
                 "metadata": {"name": "media-writer-probe", "namespace": "jellyfin"},
                 "spec": {
                     "automountServiceAccountToken": False,
                     "restartPolicy": "Never",
                     "nodeSelector": jellyfin_pod["spec"]["nodeSelector"],
                     "securityContext": jellyfin_pod["spec"]["securityContext"],
-                    "containers": [{
-                        "name": "writer", "image": jellyfin_pod["spec"]["containers"][0]["image"],
-                        "command": ["sh", "-ec", "sleep infinity"],
-                        "securityContext": {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]}},
-                        "volumeMounts": [{"name": "data", "mountPath": "/data"}],
-                    }],
-                    "volumes": [{"name": "data", "hostPath": {
-                        "path": str(Path(descriptor["devices"]["media"]["path"]) / "data"),
-                        "type": "Directory",
-                    }}],
+                    "containers": [
+                        {
+                            "name": "writer",
+                            "image": jellyfin_pod["spec"]["containers"][0]["image"],
+                            "command": ["sh", "-ec", "sleep infinity"],
+                            "securityContext": {
+                                "allowPrivilegeEscalation": False,
+                                "capabilities": {"drop": ["ALL"]},
+                            },
+                            "volumeMounts": [{"name": "data", "mountPath": "/data"}],
+                        }
+                    ],
+                    "volumes": [
+                        {
+                            "name": "data",
+                            "hostPath": {
+                                "path": str(
+                                    Path(descriptor["devices"]["media"]["path"])
+                                    / "data"
+                                ),
+                                "type": "Directory",
+                            },
+                        }
+                    ],
                 },
             }
             writer_file = workspace / "media-writer.json"
             writer_file.write_text(json.dumps(writer))
             kubectl_outer(kubeconfig, "apply", "-f", str(writer_file))
-            runtime.kubectl("wait", "--for=condition=Ready", "pod/media-writer-probe", "--timeout=120s", namespace="jellyfin")
-            runtime.kubectl("exec", "media-writer-probe", "--", "touch", "/data/downloads/.writer-before-loss", namespace="jellyfin")
-            probes = [(jellyfin_pod["metadata"]["name"], "/media/.returned"),
-                      ("media-writer-probe", "/data/library/.returned")]
+            runtime.kubectl(
+                "wait",
+                "--for=condition=Ready",
+                "pod/media-writer-probe",
+                "--timeout=120s",
+                namespace="jellyfin",
+            )
+            runtime.kubectl(
+                "exec",
+                "media-writer-probe",
+                "--",
+                "touch",
+                "/data/downloads/.writer-before-loss",
+                namespace="jellyfin",
+            )
+            probes = [
+                (jellyfin_pod["metadata"]["name"], "/media/.returned"),
+                ("media-writer-probe", "/data/library/.returned"),
+            ]
             before_containers = {
-                name: runtime.kubectl_json("get", "pod", name, "-o", "json", namespace="jellyfin")["status"]["containerStatuses"][0]["containerID"]
+                name: runtime.kubectl_json(
+                    "get", "pod", name, "-o", "json", namespace="jellyfin"
+                )["status"]["containerStatuses"][0]["containerID"]
                 for name, _ in probes
             }
             before_init = runtime.guest("cat", "/proc/1/stat").split()[21]
             with phase("media-loss-and-return"):
                 runtime.stop_media()
-                check(runtime.node_ready(), "K3s node remains healthy during application source loss")
-                check(runtime.unrelated_ready(), "unrelated workload remains available during application source loss")
-                result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "505", "--group", "505", "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/data/library/recovery.mkv")
-                check(result.returncode != 0, "source loss never exposes a substitute media directory")
-                denied = completed("kubectl", "--kubeconfig", str(kubeconfig), "-n", "jellyfin",
-                                   "exec", "media-writer-probe", "--", "touch", "/data/downloads/.writer-during-loss")
-                check(denied.returncode != 0, "writer cannot redirect writes during media loss")
+                check(
+                    runtime.node_ready(),
+                    "K3s node remains healthy during application source loss",
+                )
+                check(
+                    runtime.unrelated_ready(),
+                    "unrelated workload remains available during application source loss",
+                )
+                result = completed(
+                    "incus",
+                    "--force-local",
+                    "--project",
+                    project,
+                    "exec",
+                    instance_name,
+                    "--user",
+                    "505",
+                    "--group",
+                    "505",
+                    "--mode=non-interactive",
+                    "--",
+                    "sh",
+                    "-ec",
+                    "test -e /srv/media/data/library/recovery.mkv",
+                )
+                check(
+                    result.returncode != 0,
+                    "source loss never exposes a substitute media directory",
+                )
+                denied = completed(
+                    "kubectl",
+                    "--kubeconfig",
+                    str(kubeconfig),
+                    "-n",
+                    "jellyfin",
+                    "exec",
+                    "media-writer-probe",
+                    "--",
+                    "touch",
+                    "/data/downloads/.writer-during-loss",
+                )
+                check(
+                    denied.returncode != 0,
+                    "writer cannot redirect writes during media loss",
+                )
                 runtime.start_media(media_pool, fixture["mediaRootScript"], workspace)
                 (runtime.media_path / "library" / ".returned").write_text("new mount\n")
                 for name, path in probes:
-                    visible = completed("kubectl", "--kubeconfig", str(kubeconfig), "-n", "jellyfin",
-                                        "exec", name, "--", "cat", path)
-                    current = runtime.kubectl_json("get", "pod", name, "-o", "json", namespace="jellyfin")
-                    unchanged = current["status"]["containerStatuses"][0].get("containerID") == before_containers[name]
-                    print(f"MEDIA_RETURN pod={name} same_container={unchanged} new_mount_visible={visible.returncode == 0 and visible.stdout.strip() == 'new mount'}", flush=True)
+                    visible = completed(
+                        "kubectl",
+                        "--kubeconfig",
+                        str(kubeconfig),
+                        "-n",
+                        "jellyfin",
+                        "exec",
+                        name,
+                        "--",
+                        "cat",
+                        path,
+                    )
+                    current = runtime.kubectl_json(
+                        "get", "pod", name, "-o", "json", namespace="jellyfin"
+                    )
+                    unchanged = (
+                        current["status"]["containerStatuses"][0].get("containerID")
+                        == before_containers[name]
+                    )
+                    print(
+                        f"MEDIA_RETURN pod={name} same_container={unchanged} new_mount_visible={visible.returncode == 0 and visible.stdout.strip() == 'new mount'}",
+                        flush=True,
+                    )
                 # A fresh pod must attach the restored source even when an
                 # existing subtree bind cannot follow replacement of its root.
-                runtime.kubectl("delete", "pod", "-l", "app.kubernetes.io/name=jellyfin", "--wait=false", namespace="jellyfin")
-                runtime.kubectl("delete", "pod/media-writer-probe", namespace="jellyfin")
+                runtime.kubectl(
+                    "delete",
+                    "pod",
+                    "-l",
+                    "app.kubernetes.io/name=jellyfin",
+                    "--wait=false",
+                    namespace="jellyfin",
+                )
+                runtime.kubectl(
+                    "delete", "pod/media-writer-probe", namespace="jellyfin"
+                )
+
                 def fresh_media_ready() -> bool:
-                    pods = runtime.kubectl_json("get", "pods", "-l", "app.kubernetes.io/name=jellyfin",
-                                                "-o", "json", namespace="jellyfin")["items"]
+                    pods = runtime.kubectl_json(
+                        "get",
+                        "pods",
+                        "-l",
+                        "app.kubernetes.io/name=jellyfin",
+                        "-o",
+                        "json",
+                        namespace="jellyfin",
+                    )["items"]
                     for pod in pods:
                         metadata = pod["metadata"]
-                        if metadata["uid"] == jellyfin_pod["metadata"]["uid"] or metadata.get("deletionTimestamp"):
+                        if metadata["uid"] == jellyfin_pod["metadata"][
+                            "uid"
+                        ] or metadata.get("deletionTimestamp"):
                             continue
-                        if any(condition.get("type") == "Ready" and condition.get("status") == "True"
-                               for condition in pod.get("status", {}).get("conditions", [])):
-                            return runtime.kubectl("exec", metadata["name"], "--", "cat", "/media/.returned",
-                                                   namespace="jellyfin") == "new mount"
+                        if any(
+                            condition.get("type") == "Ready"
+                            and condition.get("status") == "True"
+                            for condition in pod.get("status", {}).get("conditions", [])
+                        ):
+                            return (
+                                runtime.kubectl(
+                                    "exec",
+                                    metadata["name"],
+                                    "--",
+                                    "cat",
+                                    "/media/.returned",
+                                    namespace="jellyfin",
+                                )
+                                == "new mount"
+                            )
                     return False
 
-                wait_for("fresh Jellyfin pod to read restored media", fresh_media_ready, timeout=240)
+                wait_for(
+                    "fresh Jellyfin pod to read restored media",
+                    fresh_media_ready,
+                    timeout=240,
+                )
                 (runtime.media_path / "library" / ".returned").unlink()
                 after_init = runtime.guest("cat", "/proc/1/stat").split()[21]
-                check(after_init == before_init, "source return recovers Jellyfin without a node restart")
+                check(
+                    after_init == before_init,
+                    "source return recovers Jellyfin without a node restart",
+                )
 
             runtime.stop_media()
             runtime.incus("stop", instance_name, "--timeout=120")
@@ -1363,47 +2276,110 @@ def run_scenario(args: argparse.Namespace) -> None:
             blocked_until = time.monotonic() + 180
             while time.monotonic() < blocked_until:
                 if not runtime.unrelated_ready():
-                    raise ScenarioError("CoreDNS became unavailable during the media-absence observation")
+                    raise ScenarioError(
+                        "CoreDNS became unavailable during the media-absence observation"
+                    )
                 if runtime.app_available():
-                    raise ScenarioError("Jellyfin became ready without its media source")
+                    raise ScenarioError(
+                        "Jellyfin became ready without its media source"
+                    )
                 time.sleep(2)
-            print("PASS: Jellyfin remained blocked throughout the media-absence observation", flush=True)
-            result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "505", "--group", "505", "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/data/library/recovery.mkv")
-            check(result.returncode != 0, "node boot without media does not expose a substitute directory")
+            print(
+                "PASS: Jellyfin remained blocked throughout the media-absence observation",
+                flush=True,
+            )
+            result = completed(
+                "incus",
+                "--force-local",
+                "--project",
+                project,
+                "exec",
+                instance_name,
+                "--user",
+                "505",
+                "--group",
+                "505",
+                "--mode=non-interactive",
+                "--",
+                "sh",
+                "-ec",
+                "test -e /srv/media/data/library/recovery.mkv",
+            )
+            check(
+                result.returncode != 0,
+                "node boot without media does not expose a substitute directory",
+            )
             runtime.start_media(media_pool, fixture["mediaRootScript"], workspace)
             wait_for("Jellyfin after media restoration", runtime.app_ready)
             runtime.verify_stock_runtime()
 
             unrelated_manifest = "/tmp/compute-recovery-unrelated.yaml"
-            runtime.guest("sh", "-ec", f"cat > {shlex.quote(unrelated_manifest)} <<'EOF'\n{yaml_config_map('recovery-unrelated', 'keep-me')}EOF")
+            runtime.guest(
+                "sh",
+                "-ec",
+                f"cat > {shlex.quote(unrelated_manifest)} <<'EOF'\n{yaml_config_map('recovery-unrelated', 'keep-me')}EOF",
+            )
             runtime.kubectl("apply", "-f", unrelated_manifest)
             runtime.guest("rm", unrelated_manifest)
             # Argo, not the test driver, owns the workload: deleting the
             # Deployment must converge back to the reconciled desired state.
             runtime.kubectl("delete", "deployment/jellyfin", namespace="jellyfin")
-            wait_for("Argo self-heals the Jellyfin deployment", runtime.app_ready, timeout=600)
+            wait_for(
+                "Argo self-heals the Jellyfin deployment",
+                runtime.app_ready,
+                timeout=600,
+            )
             runtime.verify_stock_runtime()
             base = forward_start(runtime, kubeconfig)
-            unrelated = runtime.kubectl_json("get", "configmap/recovery-unrelated", "-o", "json", namespace="jellyfin")
-            check(unrelated["data"]["value"] == "keep-me", "Argo reconciliation preserves unmanaged objects")
-            check(marker.read_text() == "retained-state\n", "Argo reconciliation preserves retained application data")
+            unrelated = runtime.kubectl_json(
+                "get",
+                "configmap/recovery-unrelated",
+                "-o",
+                "json",
+                namespace="jellyfin",
+            )
+            check(
+                unrelated["data"]["value"] == "keep-me",
+                "Argo reconciliation preserves unmanaged objects",
+            )
+            check(
+                marker.read_text() == "retained-state\n",
+                "Argo reconciliation preserves retained application data",
+            )
 
             # Application-consistent backup/restore is separate future work. This
             # scenario proves disposable guest replacement, not same-host export
             # and restore of retained state.
-            token, user_id = smoke.verify_state(base, username, password, "Movies", item_id)
+            token, user_id = smoke.verify_state(
+                base, username, password, "Movies", item_id
+            )
             with phase("compute-replace-and-k3s-ready"):
-                runtime.helper_run("replace", bundle=args.bundle, confirm=True, timeout=3_600)
+                runtime.helper_run(
+                    "replace", bundle=args.bundle, confirm=True, timeout=3_600
+                )
                 new_instance = instance_query(project, instance_name)
                 check(new_instance is not None, "helper recreates the guest instance")
-                check(new_instance["config"]["volatile.uuid"] != original_uuid, "replacement has a fresh Incus instance root")
+                check(
+                    new_instance["config"]["volatile.uuid"] != original_uuid,
+                    "replacement has a fresh Incus instance root",
+                )
                 wait_for("replacement K3s node", runtime.node_ready)
                 wait_for("replacement node resource metrics", runtime.metrics_ready)
-            new_cluster_token = runtime.guest("cat", "/var/lib/rancher/k3s/server/token")
-            check(new_cluster_token != original_cluster_token, "replacement has fresh disposable K3s cluster state")
+            new_cluster_token = runtime.guest(
+                "cat", "/var/lib/rancher/k3s/server/token"
+            )
+            check(
+                new_cluster_token != original_cluster_token,
+                "replacement has fresh disposable K3s cluster state",
+            )
             runtime.check_secret_payload(rotated_payload)
-            check(all((secret_inputs / source).read_bytes() == value for source, value in secret_values.items()),
-                  "guest recreation preserves credential inputs rather than regenerating them")
+            check(
+                all(
+                    (secret_inputs / source).read_bytes() == value
+                    for source, value in secret_values.items()
+                ),
+                "guest recreation preserves credential inputs rather than regenerating them",
+            )
             with phase("second-bootstrap-registry-pulls-and-argo-reconciliation"):
                 kubeconfig = seed_and_handoff(runtime, args, workspace)
                 wait_stack(runtime, kubeconfig)
@@ -1413,26 +2389,46 @@ def run_scenario(args: argparse.Namespace) -> None:
             runtime.verify_stock_runtime()
             base = forward_start(runtime, kubeconfig)
             runtime.verify_access_boundaries()
-            check(marker.read_text() == "retained-state\n", "guest replacement preserves retained application data")
-            check(marker.stat().st_uid == marker_stat.st_uid and marker.stat().st_gid == marker_stat.st_gid and marker.stat().st_mode == marker_stat.st_mode, "guest replacement preserves retained data ownership and mode")
+            check(
+                marker.read_text() == "retained-state\n",
+                "guest replacement preserves retained application data",
+            )
+            check(
+                marker.stat().st_uid == marker_stat.st_uid
+                and marker.stat().st_gid == marker_stat.st_gid
+                and marker.stat().st_mode == marker_stat.st_mode,
+                "guest replacement preserves retained data ownership and mode",
+            )
             smoke.verify_state(base, username, password, "Movies", item_id)
             check(runtime.node_ready(), "replacement node is healthy")
-            check(runtime.unrelated_ready(), "replacement keeps unrelated workload available")
-            replacement_pool_mount = run("findmnt", "-n", "-o", "FSTYPE,SOURCE,TARGET", "-M", str(pool_path))
-            check(replacement_pool_mount == pool_mount,
-                  "Incus storage pool remains on the same ZFS dataset through guest replacement")
+            check(
+                runtime.unrelated_ready(),
+                "replacement keeps unrelated workload available",
+            )
+            replacement_pool_mount = run(
+                "findmnt", "-n", "-o", "FSTYPE,SOURCE,TARGET", "-M", str(pool_path)
+            )
+            check(
+                replacement_pool_mount == pool_mount,
+                "Incus storage pool remains on the same ZFS dataset through guest replacement",
+            )
             runtime.forward_stop()
             with phase("argo-resource-retirement"):
                 origin.retire(CHILD_APPS)
                 wait_argo_synced(kubeconfig, (ROOT_APP,))
                 wait_for(
                     "retired child Applications",
-                    lambda: all(kubectl_absent(kubeconfig, "application", name, "argocd") for name in CHILD_APPS),
+                    lambda: all(
+                        kubectl_absent(kubeconfig, "application", name, "argocd")
+                        for name in CHILD_APPS
+                    ),
                     timeout=600,
                 )
                 wait_for(
                     "retired Jellyfin workload",
-                    lambda: kubectl_absent(kubeconfig, "deployment", "jellyfin", "jellyfin"),
+                    lambda: kubectl_absent(
+                        kubeconfig, "deployment", "jellyfin", "jellyfin"
+                    ),
                     timeout=600,
                 )
                 # This proves Argo honored Delete=false on the retained
@@ -1440,32 +2436,104 @@ def run_scenario(args: argparse.Namespace) -> None:
                 # does not exercise PV reclaim: the marker is read from the
                 # host path and would survive even if the PV object were gone,
                 # so the object existence checks below are the Argo evidence.
-                check(not kubectl_absent(kubeconfig, "namespace", "jellyfin", ""), "Argo Delete=false leaves the retained Namespace object in place after application retirement")
-                check(not kubectl_absent(kubeconfig, "persistentvolume", "jellyfin-config", ""), "Argo Delete=false leaves the retained PersistentVolume object in place after application retirement")
-                check(not kubectl_absent(kubeconfig, "persistentvolumeclaim", "jellyfin-config", "jellyfin"), "Argo Delete=false leaves the retained PersistentVolumeClaim object in place after application retirement")
-                check(marker.read_text() == "retained-state\n", "host retained path keeps Jellyfin data through application retirement")
+                check(
+                    not kubectl_absent(kubeconfig, "namespace", "jellyfin", ""),
+                    "Argo Delete=false leaves the retained Namespace object in place after application retirement",
+                )
+                check(
+                    not kubectl_absent(
+                        kubeconfig, "persistentvolume", "jellyfin-config", ""
+                    ),
+                    "Argo Delete=false leaves the retained PersistentVolume object in place after application retirement",
+                )
+                check(
+                    not kubectl_absent(
+                        kubeconfig,
+                        "persistentvolumeclaim",
+                        "jellyfin-config",
+                        "jellyfin",
+                    ),
+                    "Argo Delete=false leaves the retained PersistentVolumeClaim object in place after application retirement",
+                )
+                check(
+                    marker.read_text() == "retained-state\n",
+                    "host retained path keeps Jellyfin data through application retirement",
+                )
         finally:
             if sys.exc_info()[0] is not None and runtime.created_instance:
                 diagnostics = completed("journalctl", "-k", "-n", "80", "--no-pager")
                 print(diagnostics.stdout or diagnostics.stderr, file=sys.stderr)
-                diagnostics = completed("incus", "--force-local", "--project", project, "exec", instance_name,
-                                        "--", "journalctl", "-u", "k3s", "-u", "sshd", "-n", "80", "--no-pager")
+                diagnostics = completed(
+                    "incus",
+                    "--force-local",
+                    "--project",
+                    project,
+                    "exec",
+                    instance_name,
+                    "--",
+                    "journalctl",
+                    "-u",
+                    "k3s",
+                    "-u",
+                    "sshd",
+                    "-n",
+                    "80",
+                    "--no-pager",
+                )
                 print(diagnostics.stdout or diagnostics.stderr, file=sys.stderr)
-                diagnostics = completed("incus", "--force-local", "--project", project, "exec", instance_name,
-                                        "--", "tail", "-n", "1000", "/var/lib/rancher/k3s/agent/containerd/containerd.log")
+                diagnostics = completed(
+                    "incus",
+                    "--force-local",
+                    "--project",
+                    project,
+                    "exec",
+                    instance_name,
+                    "--",
+                    "tail",
+                    "-n",
+                    "1000",
+                    "/var/lib/rancher/k3s/agent/containerd/containerd.log",
+                )
                 print(diagnostics.stdout or diagnostics.stderr, file=sys.stderr)
                 for command in (
                     ["get", "pods", "-A", "-o", "wide"],
                     ["describe", "pods", "-n", "argocd"],
-                    ["logs", "-n", "argocd", "deployment/argocd-applicationset-controller", "--all-containers", "--prefix", "--tail=100"],
-                    ["logs", "-n", "argocd", "deployment/argocd-applicationset-controller", "--all-containers", "--prefix", "--previous", "--tail=100"],
+                    [
+                        "logs",
+                        "-n",
+                        "argocd",
+                        "deployment/argocd-applicationset-controller",
+                        "--all-containers",
+                        "--prefix",
+                        "--tail=100",
+                    ],
+                    [
+                        "logs",
+                        "-n",
+                        "argocd",
+                        "deployment/argocd-applicationset-controller",
+                        "--all-containers",
+                        "--prefix",
+                        "--previous",
+                        "--tail=100",
+                    ],
                     ["describe", "pods", "-n", "jellyfin"],
                     ["logs", "-n", "jellyfin", "deployment/jellyfin", "--all-containers", "--prefix", "--tail=100"],
                     ["logs", "-n", "jellyfin", "job/jellyfin-configuration", "--all-containers", "--prefix", "--tail=100"],
                 ):
                     diagnostics = completed(
-                        "incus", "--force-local", "--project", project, "exec", instance_name,
-                        "--", "k3s", "kubectl", "--request-timeout=15s", *command)
+                        "incus",
+                        "--force-local",
+                        "--project",
+                        project,
+                        "exec",
+                        instance_name,
+                        "--",
+                        "k3s",
+                        "kubectl",
+                        "--request-timeout=15s",
+                        *command,
+                    )
                     print(diagnostics.stdout or diagnostics.stderr, file=sys.stderr)
                 # A CrashLooping container's failed attempt only survives in
                 # --previous logs; fetch them for every container that restarted.
@@ -1493,20 +2561,57 @@ def run_scenario(args: argparse.Namespace) -> None:
             runtime.cleanup()
             for path in safe_dirs:
                 clear_directory(path)
-        check(run("findmnt", "-n", "-o", "FSTYPE,SOURCE,TARGET", "-M", str(pool_path)) == pool_mount,
-              "fixture ZFS dataset remains mounted after scenario cleanup")
+        check(
+            run("findmnt", "-n", "-o", "FSTYPE,SOURCE,TARGET", "-M", str(pool_path))
+            == pool_mount,
+            "fixture ZFS dataset remains mounted after scenario cleanup",
+        )
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument("--bundle", required=True, type=Path, help="Nix store guest bundle for the fixture architecture")
-    result.add_argument("--fixture", required=True, type=Path, help="evaluated host fixture JSON")
-    result.add_argument("--repo", required=True, type=Path, help="canonical recovery inputs: Jellyfin manifests")
-    result.add_argument("--seed", required=True, type=Path, help="bootstrap seed tree; the shipped wrapper is pointed at it")
-    result.add_argument("--smoke", required=True, type=Path, help="Jellyfin application smoke helper")
-    result.add_argument("--fixture-media", required=True, type=Path, help="Nix-built media fixture placed in the Jellyfin library")
-    result.add_argument("--bootstrap-host", required=True, type=Path, help="shipped household-bootstrap-host executable")
-    result.add_argument("--helper", type=Path, default=Path("/run/current-system/sw/bin/compute-guest"), help="generic compute lifecycle executable")
+    result.add_argument(
+        "--bundle",
+        required=True,
+        type=Path,
+        help="Nix store guest bundle for the fixture architecture",
+    )
+    result.add_argument(
+        "--fixture", required=True, type=Path, help="evaluated host fixture JSON"
+    )
+    result.add_argument(
+        "--repo",
+        required=True,
+        type=Path,
+        help="canonical recovery inputs: Jellyfin manifests",
+    )
+    result.add_argument(
+        "--seed",
+        required=True,
+        type=Path,
+        help="bootstrap seed tree; the shipped wrapper is pointed at it",
+    )
+    result.add_argument(
+        "--smoke", required=True, type=Path, help="Jellyfin application smoke helper"
+    )
+    result.add_argument(
+        "--fixture-media",
+        required=True,
+        type=Path,
+        help="Nix-built media fixture placed in the Jellyfin library",
+    )
+    result.add_argument(
+        "--bootstrap-host",
+        required=True,
+        type=Path,
+        help="shipped household-bootstrap-host executable",
+    )
+    result.add_argument(
+        "--helper",
+        type=Path,
+        default=Path("/run/current-system/sw/bin/compute-guest"),
+        help="generic compute lifecycle executable",
+    )
     return result
 
 
@@ -1516,7 +2621,7 @@ def main(argv: list[str] | None = None) -> int:
         platform.node() not in (TEST_HOSTNAME, "fixture-host")
         or platform.machine() not in SUPPORTED_ARCHITECTURES
     ):
-        parser().error("refusing to run outside a designated disposable x86_64/aarch64 compute test host")
+        parser().error("refusing to run outside a designated disposable x86_64 compute test host")
     if os.geteuid() != 0:
         parser().error("run as root inside the disposable Linux guest")
     if not args.fixture.is_file():
@@ -1526,7 +2631,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with phase("complete-replacement-scenario"):
             run_scenario(args)
-    except (AssertionError, OSError, ScenarioError, KeyError, ValueError, subprocess.SubprocessError) as error:
+    except (
+        AssertionError,
+        OSError,
+        ScenarioError,
+        KeyError,
+        ValueError,
+        subprocess.SubprocessError,
+    ) as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1
     print("PASS: compute recovery scenario completed on disposable runtime", flush=True)

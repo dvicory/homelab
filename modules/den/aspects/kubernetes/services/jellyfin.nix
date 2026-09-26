@@ -6,6 +6,18 @@
 }:
 let
   namespace = "jellyfin";
+  integration = {
+    inherit namespace;
+    service = "jellyfin";
+    port = 8096;
+    host = "jellyfin.jellyfin.svc.cluster.local";
+    administrator = "daniel";
+    adminSecret = {
+      name = "jellyfin-admin";
+      key = "password";
+    };
+    moviesLibrary = "Movies";
+  };
   retain = {
     "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
   };
@@ -16,6 +28,13 @@ let
   mediaGid = (config.den.groups or { }).media.gid;
 in
 {
+  den.aspects.kubernetes.services.jellyfin.settings.integration = lib.mkOption {
+    type = lib.types.attrs;
+    readOnly = true;
+    default = integration;
+    description = "Read-only Jellyfin endpoint, administrator Secret reference and configured Movies library for consumers.";
+  };
+
   den.aspects.kubernetes.services.jellyfin.compute-resources =
     { cluster, ... }:
     let
@@ -36,8 +55,8 @@ in
       };
       runtimeSecrets."jellyfin--jellyfin-admin--password" = {
         inherit namespace;
-        name = "jellyfin-admin";
-        key = "password";
+        name = integration.adminSecret.name;
+        key = integration.adminSecret.key;
       };
     };
 
@@ -82,12 +101,12 @@ in
       };
       jellarrConfig = ''
         version: 1
-        base_url: http://jellyfin.jellyfin.svc.cluster.local:8096
+        base_url: http://${integration.host}:${toString integration.port}
         system:
           enableMetrics: true
         library:
           virtualFolders:
-            - name: Movies
+            - name: ${integration.moviesLibrary}
               collectionType: movies
               libraryOptions:
                 pathInfos:
@@ -132,7 +151,7 @@ in
             "Content-Type": "application/json",
             Authorization: 'MediaBrowser Client="homelab-jellarr-bootstrap", Device="Kubernetes Job", DeviceId="jellarr-bootstrap", Version="1"',
           },
-          body: JSON.stringify({ Username: "daniel", Pw: password }),
+          body: JSON.stringify({ Username: "${integration.administrator}", Pw: password }),
         });
         const administratorToken = authentication.AccessToken || authentication.accessToken;
         if (!administratorToken) {
@@ -175,10 +194,10 @@ in
     in
     assert lib.assertMsg (
       route.namespace == namespace
-      && route.service == "jellyfin"
-      && route.port == 8096
+      && route.service == integration.service
+      && route.port == integration.port
       && !route.backendTLS
-    ) "Jellyfin route must target its declared HTTP Service jellyfin/jellyfin:8096";
+    ) "Jellyfin route must target its declared HTTP Service";
     assert lib.assertMsg (
       provisionerRelease.version == "12.1"
       && provisionerRelease.runtimeImage == "docker.io/jellyfin/jellyfin:12.1"
@@ -315,7 +334,7 @@ in
                       startupProbe = {
                         httpGet = {
                           path = "${prefix}/Users/Public";
-                          port = 8096;
+                          port = integration.port;
                         };
                         periodSeconds = 10;
                         timeoutSeconds = 5;
@@ -324,7 +343,7 @@ in
                       readinessProbe = {
                         httpGet = {
                           path = "${prefix}/Users/Public";
-                          port = 8096;
+                          port = integration.port;
                         };
                         periodSeconds = 10;
                         timeoutSeconds = 5;
@@ -332,7 +351,7 @@ in
                       livenessProbe = {
                         httpGet = {
                           path = "${prefix}/health";
-                          port = 8096;
+                          port = integration.port;
                         };
                         periodSeconds = 30;
                         timeoutSeconds = 5;
@@ -383,11 +402,11 @@ in
                     {
                       name = "admin-password";
                       secret = {
-                        secretName = "jellyfin-admin";
+                        secretName = integration.adminSecret.name;
                         defaultMode = 292;
                         items = [
                           {
-                            key = "password";
+                            key = integration.adminSecret.key;
                             path = "password";
                           }
                         ];
@@ -402,7 +421,7 @@ in
             apiVersion = "v1";
             kind = "Service";
             metadata = {
-              name = "jellyfin";
+              name = integration.service;
               inherit namespace labels;
             };
             spec = {
@@ -411,9 +430,105 @@ in
               ports = [
                 {
                   name = "http";
-                  port = 8096;
-                  targetPort = 8096;
+                  port = integration.port;
+                  targetPort = integration.port;
                   protocol = "TCP";
+                }
+              ];
+            };
+          }
+          {
+            apiVersion = "rbac.authorization.k8s.io/v1";
+            kind = "Role";
+            metadata = {
+              name = "seerr-jellyfin-admin-reader";
+              inherit namespace;
+            };
+            rules = [
+              {
+                apiGroups = [ "" ];
+                resources = [ "secrets" ];
+                resourceNames = [ integration.adminSecret.name ];
+                verbs = [ "get" ];
+              }
+            ];
+          }
+          {
+            apiVersion = "rbac.authorization.k8s.io/v1";
+            kind = "RoleBinding";
+            metadata = {
+              name = "seerr-jellyfin-admin-reader";
+              inherit namespace;
+            };
+            roleRef = {
+              apiGroup = "rbac.authorization.k8s.io";
+              kind = "Role";
+              name = "seerr-jellyfin-admin-reader";
+            };
+            subjects = [
+              {
+                kind = "ServiceAccount";
+                name = "media-config-seerr";
+                namespace = "media";
+              }
+            ];
+          }
+          {
+            apiVersion = "networking.k8s.io/v1";
+            kind = "NetworkPolicy";
+            metadata = {
+              name = "seerr-configuration-jellyfin-ingress";
+              inherit namespace;
+            };
+            spec = {
+              podSelector.matchLabels = labels;
+              policyTypes = [ "Ingress" ];
+              ingress = [
+                {
+                  from = [
+                    {
+                      namespaceSelector.matchLabels."kubernetes.io/metadata.name" = "media";
+                      podSelector.matchLabels."app.kubernetes.io/name" = "media-config-seerr";
+                    }
+                  ];
+                  ports = [
+                    {
+                      protocol = "TCP";
+                      port = integration.port;
+                    }
+                  ];
+                }
+              ];
+            };
+          }
+          # The Jellarr configuration Job runs in this same namespace; once a
+          # policy selects the Jellyfin pod, this Application must admit the
+          # Job itself because the replacement fixture deploys Jellyfin without
+          # the gateway app's backend policy.
+          {
+            apiVersion = "networking.k8s.io/v1";
+            kind = "NetworkPolicy";
+            metadata = {
+              name = "jellyfin-configuration-ingress";
+              inherit namespace;
+            };
+            spec = {
+              podSelector.matchLabels = labels;
+              policyTypes = [ "Ingress" ];
+              ingress = [
+                {
+                  from = [
+                    {
+                      namespaceSelector.matchLabels."kubernetes.io/metadata.name" = namespace;
+                      podSelector.matchLabels = configurationLabels;
+                    }
+                  ];
+                  ports = [
+                    {
+                      protocol = "TCP";
+                      port = integration.port;
+                    }
+                  ];
                 }
               ];
             };
@@ -474,7 +589,7 @@ in
                       env = [
                         {
                           name = "JELLYFIN_URL";
-                          value = "http://jellyfin.jellyfin.svc.cluster.local:8096";
+                          value = "http://${integration.host}:${toString integration.port}";
                         }
                       ];
                       resources = {
@@ -550,11 +665,11 @@ in
                     {
                       name = "admin-password";
                       secret = {
-                        secretName = "jellyfin-admin";
+                        secretName = integration.adminSecret.name;
                         defaultMode = 288;
                         items = [
                           {
-                            key = "password";
+                            key = integration.adminSecret.key;
                             path = "password";
                           }
                         ];

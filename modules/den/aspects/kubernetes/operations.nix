@@ -6,6 +6,7 @@
 let
   cluster = config.den.clusters.prod-home;
   identityPhase = cluster.settings.kubernetes.services.identity.phase;
+  seerrPhase = cluster.settings.kubernetes.services.seerr.phase;
   computeInstance =
     config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute.instance;
   retainedPaths =
@@ -72,6 +73,7 @@ in
         - **Compute guest:** `${computeInstance}`
         - **Ingress:** `${cluster.ingress.mode}` on NodePort `${toString cluster.ingress.nodePort}`
         - **Identity phase:** `${identityPhase}`
+        - **Seerr publication phase:** `${seerrPhase}`
 
         ## Deployment flow
 
@@ -93,7 +95,9 @@ in
         | --- | --- | --- | --- | --- |
         ${lib.concatStringsSep "\n" routeRows}
 
-        Public edges publish only `public` routes. The `idm` canonical hostname
+        Public edges publish only `public` routes. The `requests` route is
+        declared public but is omitted from Gateway and edge configuration
+        while Seerr remains in the `initial` phase. The `idm` canonical hostname
         remains the identity issuer across direct and secondary-edge access;
         failover changes DNS, not the issuer or certificate identity.
 
@@ -157,6 +161,26 @@ in
         provisioning succeeds. The subsequent one-shot Jellarr Job owns the
         `Movies` library at `/media`
         and selected supported API settings.
+
+        ## Seerr first-owner boundary
+
+        The checked-in `initial` phase starts Seerr privately. After Jellyfin's
+        patched initializer and Jellarr Job succeed, the media-configuration
+        PostSync Job uses Jellyfin's owned administrator Secret once to claim
+        Seerr's distinguished owner. It selects and synchronizes the `Movies`
+        library, then installs the standard Radarr and Sonarr connections.
+        The declared `media/media-runtime` `SEERR_API_KEY` is used for subsequent
+        reconciliation; it cannot authorize the pre-owner API.
+
+        Verify the Seerr Job succeeded, `/settings/public` reports
+        `initialized=true`, the `Movies` library remains enabled, and both
+        standard Arr servers have their intended profiles. Only then commit
+        `settings.kubernetes.services.seerr.phase = "ready"` and let Argo
+        publish the native-auth `requests` route. Never switch to `ready`
+        before first-owner initialization: the fresh setup page is claimable.
+        Configarr and Seerr perform immediate Git reconciliation and separate
+        six-hour repair runs; an unhealthy dependency must be repaired before
+        publishing Seerr.
 
         ## Runtime-secret references
 

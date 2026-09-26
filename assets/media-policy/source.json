@@ -1,0 +1,52 @@
+{
+  "repository": "https://github.com/TRaSH-Guides/Guides",
+  "revision": "04e692c8926f6b9736943afcd9b505bad29f5e54",
+  "files": {
+    "radarr-web-1080p.json": {
+      "upstream": "docs/json/radarr/quality-profiles/web-1080p.json",
+      "sha256": "sha256-pcnracxmZi4VTTtz7KZVNi+fa0ZvFHz5Ea1F1L8qX9E="
+    },
+    "radarr-web-2160p.json": {
+      "upstream": "docs/json/radarr/quality-profiles/web-2160p.json",
+      "sha256": "sha256-3z+yjxipDHyYAZcNI/rD7b+wc9LtVsVE453lsx0Yr48="
+    },
+    "sonarr-web-1080p.json": {
+      "upstream": "docs/json/sonarr/quality-profiles/web-1080p.json",
+      "sha256": "sha256-9o9R0v00hf1ewgf2EfslPrjJSHUnwyyQ8dDDhSTb0YM="
+    },
+    "sonarr-web-2160p.json": {
+      "upstream": "docs/json/sonarr/quality-profiles/web-2160p.json",
+      "sha256": "sha256-b0ad2fOqfjwSEEmMH3Dmmj6UVA0BMUKbHfgfk9EYsCA="
+    },
+    "radarr-cf-repack-proper.json": {"upstream": "docs/json/radarr/cf/repack-proper.json", "sha256": "sha256-/YP7gMEYuYTQtj+ztLuqvicl+TWiBbZ0UfL+TuKhvaM="},
+    "radarr-cf-repack2.json": {"upstream": "docs/json/radarr/cf/repack2.json", "sha256": "sha256-uOzcN+uJkJwphyT8l7eYbXIaAbt6WYNosdoIN1pyTl4="},
+    "radarr-cf-repack3.json": {"upstream": "docs/json/radarr/cf/repack3.json", "sha256": "sha256-v0m2Mjz1os/3/qah99jTmggkBAhR5bUR71q/mw2/+WA="},
+    "radarr-cf-web-tier-01.json": {"upstream": "docs/json/radarr/cf/web-tier-01.json", "sha256": "sha256-8K2SLt3yPoBilSAltHkyhBnopVHZRnOtqocyjHlFs1g="},
+    "radarr-cf-web-tier-02.json": {"upstream": "docs/json/radarr/cf/web-tier-02.json", "sha256": "sha256-+l4Cb4PgP9aYOvJf1SdwCNcbB26+ixEjYqdbxczs6/E="},
+    "radarr-cf-web-tier-03.json": {"upstream": "docs/json/radarr/cf/web-tier-03.json", "sha256": "sha256-Uxo8ofEoL7OVwqmiiQx3Xvj+xyS2L3LtGvVOWsqGKzc="},
+    "sonarr-cf-repack-proper.json": {"upstream": "docs/json/sonarr/cf/repack-proper.json", "sha256": "sha256-jtAu2m0oz0F3F6ZK69016JYxI6Rx5Zi+pCQfaFIdcuc="},
+    "sonarr-cf-repack2.json": {"upstream": "docs/json/sonarr/cf/repack2.json", "sha256": "sha256-WWDTzAuxCUKiPOEN27tounoWoPOyhS/ycOZeM+33h5Q="},
+    "sonarr-cf-repack3.json": {"upstream": "docs/json/sonarr/cf/repack3.json", "sha256": "sha256-rj2CxHFylE9hp5Ob9tuHM1jXvc5wZi9PL1qWnSyBJZ8="},
+    "sonarr-cf-web-scene.json": {"upstream": "docs/json/sonarr/cf/web-scene.json", "sha256": "sha256-eDIHe6xlmc1LZNhmfp/UWmIfJCFNPMAvU6Ye4FZLZSc="},
+    "sonarr-cf-web-tier-01.json": {"upstream": "docs/json/sonarr/cf/web-tier-01.json", "sha256": "sha256-x8MMttZ2hpzCb/o0x4YtaugI8tO8X0U5hy7CoUMAOtk="},
+    "sonarr-cf-web-tier-02.json": {"upstream": "docs/json/sonarr/cf/web-tier-02.json", "sha256": "sha256-e7sI5ddSPNE4FiBuJOkjXPok3LaPQlim4G7o6l72Ifw="},
+    "sonarr-cf-web-tier-03.json": {"upstream": "docs/json/sonarr/cf/web-tier-03.json", "sha256": "sha256-/u0eAphpUKCWCWxFLl/ibWzmALtRMgSW1ewQH3Eypqc="},
+    "radarr-movie.json": {
+      "upstream": "docs/json/radarr/quality-size/movie.json",
+      "sha256": "sha256-vKB1Vmip9V+lEqfl0tDoAA7UM5rEzNmWu4vg76bb7zw="
+    },
+    "sonarr-series.json": {
+      "upstream": "docs/json/sonarr/quality-size/series.json",
+      "sha256": "sha256-LiwP6dy/FI2Sgs7k/3bB5W4JbRCWWq+qEvOYkKBjeCs="
+    },
+    "sonarr-anime.json": {
+      "upstream": "docs/json/sonarr/quality-size/anime.json",
+      "sha256": "sha256-wel6cY5+VueLJ3Y49dtYrK1FpIxr4VoA4tN2FksMo5Y="
+    }
+  },
+  "localFiles": {
+    "conflicts.json": {
+      "sha256": "sha256-TIbqxhLRSNmboWY+H65MT/7Iv/3ilIILFqArfyp1/bM="
+    }
+  }
+}

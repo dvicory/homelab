@@ -64,6 +64,25 @@
           }
         );
       };
+      apps.media-live-acceptance = {
+        type = "app";
+        program = lib.getExe (
+          pkgs.writeShellApplication {
+            name = "media-live-acceptance";
+            runtimeInputs = [
+              (pkgs.python3.withPackages (ps: [ ps.pyyaml ]))
+              pkgs.docker
+              pkgs.openssl
+              pkgs.git
+              config.flake-root.package
+            ];
+            text = ''
+              root="$(${lib.getExe config.flake-root.package})"
+              exec python "$root/modules/tests/media-live-acceptance.py"
+            '';
+          }
+        );
+      };
 
       checks.prod-home-manifests-fresh =
         pkgs.runCommandLocal "prod-home-manifests-fresh"
@@ -134,6 +153,19 @@
                 "jellyfin-retained",
                 "jellyfin",
                 "jellyfin-configuration",
+                "media-access",
+                "media-configuration",
+                "media-storage",
+                "prowlarr",
+                "prowlarr-storage",
+                "radarr",
+                "radarr-storage",
+                "sabnzbd",
+                "sabnzbd-storage",
+                "seerr",
+                "seerr-storage",
+                "sonarr",
+                "sonarr-storage",
             }
 
             application_destinations = set()

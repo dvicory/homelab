@@ -41,5 +41,7 @@ spec:
       server: https://kubernetes.default.svc
     - namespace: jellyfin
       server: https://kubernetes.default.svc
+    - namespace: media
+      server: https://kubernetes.default.svc
   sourceRepos:
     - https://github.com/dvicory/homelab.git

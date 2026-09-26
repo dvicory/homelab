@@ -13,6 +13,7 @@ let
       trustedProxyCIDRs = peerCIDRs;
     };
     settings.kubernetes.services.identity.phase = "normal";
+    settings.kubernetes.services.seerr.phase = "ready";
   };
   sourceFor =
     inventory:
@@ -68,6 +69,7 @@ let
   homeModule = roleModule homeAspect (mkHost "home-edge" homeSettings);
   initialCluster = lib.recursiveUpdate testCluster {
     settings.kubernetes.services.identity.phase = "initial";
+    settings.kubernetes.services.seerr.phase = "initial";
   };
   initialEdge = sourceFor initialCluster;
   initialRemoteModule = roleModule initialEdge.den.aspects.services.remote-edge (
@@ -78,6 +80,7 @@ let
   );
   provisioningCluster = lib.recursiveUpdate testCluster {
     settings.kubernetes.services.identity.phase = "provisioning";
+    settings.kubernetes.services.seerr.phase = "initial";
   };
   provisioningEdge = sourceFor provisioningCluster;
   provisioningRemoteModule = roleModule provisioningEdge.den.aspects.services.remote-edge (
@@ -166,6 +169,29 @@ let
         "Forwarded"
       ]
   ) gatewayRoutes;
+  seerrInitialCluster = lib.recursiveUpdate testCluster {
+    settings.kubernetes.services.seerr.phase = "initial";
+  };
+  seerrInitialEdge = sourceFor seerrInitialCluster;
+  seerrInitialRemote = roleModule seerrInitialEdge.den.aspects.services.remote-edge (
+    mkHost "remote-edge" remoteSettings
+  );
+  seerrInitialHome = roleModule seerrInitialEdge.den.aspects.services.home-edge (
+    mkHost "home-edge" homeSettings
+  );
+  hasRequests = objects: lib.any (object: object.metadata.name == "requests") objects;
+  seerrPhaseContract =
+    routes.requests.auth == "native"
+    && routes.requests.exposure == "public"
+    && !(hasRequests (allGatewayObjects seerrInitialCluster))
+    && hasRequests (allGatewayObjects testCluster)
+    && lib.all (
+      module:
+      !(builtins.hasAttr (builtins.head routes.requests.hostnames) module.services.nginx.virtualHosts)
+      && !(builtins.hasAttr (builtins.elemAt routes.requests.hostnames 1) module.services.nginx.virtualHosts)
+    ) [ seerrInitialRemote seerrInitialHome ]
+    && builtins.hasAttr (builtins.head routes.requests.hostnames) remoteModule.services.nginx.virtualHosts
+    && builtins.hasAttr (builtins.elemAt routes.requests.hostnames 1) homeModule.services.nginx.virtualHosts;
   initialGatewayObjects = allGatewayObjects initialCluster;
   initialAdminPublicationAbsent = lib.all (
     object:
@@ -453,6 +479,7 @@ let
       privatePhaseEdge initialIdmHomeModule && privatePhaseEdge provisioningIdmRemoteModule;
     invalid-bare-route-inventory-key-rejected = !allAssertions invalidBareRouteModule;
     initial-admin-gateway-publication-absent = initialAdminPublicationAbsent;
+    seerr-native-auth-phase-boundary = seerrPhaseContract;
     public-origin-rejected = !allAssertions badOriginModule;
     undeclared-peer-rejected = !allAssertions badPeerModule;
     incomplete-tls-rejected = !allAssertions badTLSModule;

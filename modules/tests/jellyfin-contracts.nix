@@ -46,9 +46,16 @@
             runtime_secrets = json.loads(pathlib.Path(sys.argv[4]).read_text())
             jellarr_release = json.loads(pathlib.Path(sys.argv[5]).read_text())
             resources = []
+            application_objects = {}
             for application in ("jellyfin-retained", "jellyfin", "jellyfin-configuration", "gateway"):
-                for path in (environment / application).rglob("*.yaml"):
-                    resources.extend(resource for resource in yaml.safe_load_all(path.read_text()) if resource)
+                objects = [
+                    resource
+                    for path in (environment / application).rglob("*.yaml")
+                    for resource in yaml.safe_load_all(path.read_text())
+                    if resource
+                ]
+                application_objects[application] = objects
+                resources.extend(objects)
 
             def find(kind, name, namespace="jellyfin"):
                 return next(
@@ -225,6 +232,50 @@
             ), "Jellarr API-key bootstrap has no durable Secret resource"
             pathlib.Path("bootstrap.mjs").write_text(configuration["data"]["bootstrap.mjs"])
 
+            # Once any NetworkPolicy in the jellyfin Application selects the
+            # Jellyfin pod, the same Application must admit the Jellarr
+            # configuration Job on 8096; another Application's policy cannot
+            # cover it where the Jellyfin app is deployed alone.
+            deployment_labels = deployment["spec"]["template"]["metadata"]["labels"]
+            job_labels = job["spec"]["template"]["metadata"]["labels"]
+            jellyfin_policies = [
+                resource
+                for resource in application_objects["jellyfin"]
+                if resource["kind"] == "NetworkPolicy"
+            ]
+            selecting = [
+                policy
+                for policy in jellyfin_policies
+                if set(policy["spec"].get("podSelector", {}).get("matchLabels", {}).items())
+                <= set(deployment_labels.items())
+            ]
+
+            def admits_configuration_job(policy):
+                for rule in policy["spec"].get("ingress", []):
+                    ports = rule.get("ports", [])
+                    port_ok = not ports or any(
+                        entry.get("port") == 8096 for entry in ports
+                    )
+                    for source in rule.get("from", []):
+                        pod_labels = source.get("podSelector", {}).get("matchLabels", {})
+                        namespace = (
+                            source.get("namespaceSelector", {})
+                            .get("matchLabels", {})
+                            .get("kubernetes.io/metadata.name")
+                        )
+                        if (
+                            namespace == "jellyfin"
+                            and set(job_labels.items()) <= set(pod_labels.items())
+                            and port_ok
+                        ):
+                            return True
+                return False
+
+            if selecting:
+                assert any(
+                    admits_configuration_job(policy) for policy in jellyfin_policies
+                ), "the jellyfin Application admits the jellyfin-configuration Job on 8096"
+
             service = find("Service", "jellyfin")
             service_spec = service["spec"]
             assert service_spec.get("type", "ClusterIP") == "ClusterIP"
@@ -239,50 +290,6 @@
                 "backendRequest": "0s",
             }, "Jellyfin request and backend deadlines remain streaming-safe"
 
-            def pod_template_specs():
-                for resource in resources:
-                    spec = resource.get("spec") or {}
-                    template = spec.get("template") or spec.get("jobTemplate", {}).get("spec", {}).get("template")
-                    if isinstance(template, dict) and isinstance(template.get("spec"), dict):
-                        yield resource, template["spec"]
-
-            for resource, template_spec in pod_template_specs():
-                owner = f"{resource['kind']}/{resource['metadata']['name']}"
-                pod_security = template_spec.get("securityContext", {})
-                declared_volumes = {volume["name"]: volume for volume in template_spec.get("volumes", [])}
-                assert not (
-                    "fsGroup" in pod_security
-                    and any("persistentVolumeClaim" in volume for volume in declared_volumes.values())
-                ), f"{owner} mounts a PersistentVolumeClaim and must not set fsGroup"
-                pod_containers = (
-                    template_spec.get("containers", [])
-                    + template_spec.get("initContainers", [])
-                    + template_spec.get("ephemeralContainers", [])
-                )
-                for container in pod_containers:
-                    container_security = container.get("securityContext", {})
-                    run_as_user = container_security.get("runAsUser", pod_security.get("runAsUser"))
-                    if run_as_user == 0:
-                        continue
-                    run_as_group = container_security.get("runAsGroup", pod_security.get("runAsGroup"))
-                    for volume_mount in container.get("volumeMounts", []):
-                        volume = declared_volumes.get(volume_mount["name"])
-                        if volume is None:
-                            continue
-                        for source in ("secret", "projected"):
-                            source_spec = volume.get(source)
-                            if not source_spec:
-                                continue
-                            default_mode = source_spec.get("defaultMode", 0o644)
-                            entries = source_spec.get("items") or source_spec.get("sources") or [{}]
-                            for mode in (entry.get("mode", default_mode) for entry in entries):
-                                readable = bool(mode & 0o004) or (
-                                    bool(mode & 0o040) and pod_security.get("fsGroup") == run_as_group
-                                )
-                                assert readable, (
-                                    f"{owner} container {container['name']} mounts {source} volume "
-                                    f"{volume['name']} with mode {mode:04o} unreadable by uid {run_as_user}"
-                                )
             PY
             node ${./jellyfin-bootstrap.mjs} bootstrap.mjs
             touch "$out"

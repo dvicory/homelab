@@ -41,7 +41,11 @@
         request = "15s";
         backendRequest = "15s";
       };
-      publishedRoutes = lib.filterAttrs (_: route: route.auth != "admin") cluster.routes;
+      publishedRoutes = lib.filterAttrs (
+        name: route:
+        route.auth != "admin"
+        && (name != "requests" || cluster.settings.kubernetes.services.seerr.phase == "ready")
+      ) cluster.routes;
       adminPublishedRoutes =
         if identityNormal then lib.filterAttrs (_: route: route.auth == "admin") cluster.routes else { };
       retained = {
