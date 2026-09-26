@@ -13,6 +13,15 @@ let
         default = null;
         description = "Systemd unit that mounts the backing path.";
       };
+      fileSystemMount = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Depend on the mount unit systemd generates for this path's NixOS
+          `fileSystems` entry. The unit name is derived from the path with
+          `utils.escapeSystemdPath`; do not also set `unit`.
+        '';
+      };
       required = lib.mkOption {
         type = lib.types.bool;
         default = true;
@@ -57,12 +66,28 @@ in
     nixos =
       {
         host,
+        config,
         pkgs,
         lib,
+        utils,
         ...
       }:
       let
         cfg = host.settings.services.mergerfs.pools or { };
+        # The unit a branch depends on: the declared unit, or the mount unit
+        # systemd generates from the branch's fileSystems entry.
+        branchUnit =
+          branch:
+          if branch.fileSystemMount then "${utils.escapeSystemdPath branch.path}.mount" else branch.unit;
+        allBranches = lib.concatMap (pool: pool.branches) (builtins.attrValues cfg);
+        unitAndFileSystemMount = map (branch: branch.path) (
+          builtins.filter (branch: branch.fileSystemMount && branch.unit != null) allBranches
+        );
+        fileSystemMountWithoutEntry = map (branch: branch.path) (
+          builtins.filter (
+            branch: branch.fileSystemMount && !(config.fileSystems ? ${branch.path})
+          ) allBranches
+        );
         nonCanonicalPoolPaths = mergerfs.nonCanonicalPoolPaths cfg;
         duplicateServiceNames = mergerfs.duplicateServiceNames cfg;
         duplicatePaths = mergerfs.duplicatePaths cfg;
@@ -102,6 +127,14 @@ in
                 message = "services.mergerfs: required backing paths need a mount unit: ${lib.concatStringsSep ", " requiredWithoutUnit}";
               }
               {
+                assertion = unitAndFileSystemMount == [ ];
+                message = "services.mergerfs: set either unit or fileSystemMount, not both: ${lib.concatStringsSep ", " unitAndFileSystemMount}";
+              }
+              {
+                assertion = fileSystemMountWithoutEntry == [ ];
+                message = "services.mergerfs: fileSystemMount branches need a fileSystems entry at the same path: ${lib.concatStringsSep ", " fileSystemMountWithoutEntry}";
+              }
+              {
                 assertion = optionalCreatePaths == [ ];
                 message = "services.mergerfs: optional backing paths must be no-create: ${lib.concatStringsSep ", " optionalCreatePaths}";
               }
@@ -113,12 +146,12 @@ in
               path: poolCfg:
               let
                 escapedPath = lib.strings.sanitizeDerivationName (builtins.substring 1 (-1) path);
-                units = builtins.filter (unit: unit != null) (map (branch: branch.unit) poolCfg.branches);
+                units = builtins.filter (unit: unit != null) (map branchUnit poolCfg.branches);
                 requiredUnits = builtins.filter (unit: unit != null) (
-                  map (branch: if branch.required then branch.unit else null) poolCfg.branches
+                  map (branch: if branch.required then branchUnit branch else null) poolCfg.branches
                 );
                 optionalUnits = builtins.filter (unit: unit != null) (
-                  map (branch: if branch.required then null else branch.unit) poolCfg.branches
+                  map (branch: if branch.required then null else branchUnit branch) poolCfg.branches
                 );
                 options = lib.concatStringsSep "," poolCfg.options;
                 mountScript = pkgs.writeShellScript "mount-mergerfs-${escapedPath}" ''

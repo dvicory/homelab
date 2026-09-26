@@ -36,7 +36,7 @@ Pool `/srv/media/data`:
 
 | # | Branch | Create | Required | Mount unit |
 | --- | --- | --- | --- | --- |
-| 1 | `/mnt/storage-clear/media1` | yes | yes | `gocryptfs-media1.service` |
+| 1 | `/mnt/storage-clear/media4` | yes | yes | the `fileSystems` mount of this path |
 | 2 | `/mnt/storage-clear/media2` | yes | yes | `gocryptfs-media2.service` |
 | 3 | `/mnt/storage-clear/media3` | yes | yes | `gocryptfs-media3.service` |
 

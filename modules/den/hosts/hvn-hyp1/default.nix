@@ -66,10 +66,19 @@
         group = "media";
         mode = "2770";
       };
+      # Revision B: media4 replaces media1 in the running pool. Media1 stays
+      # mounted outside mergerfs as the rollback copy; it is removed only by a
+      # later explicitly approved revision. Under category.create=epmfs new
+      # files follow existing parent-directory paths, so the first branch is
+      # preferred for new content that has no existing placement.
       services.mergerfs.pools."/srv/media/data".branches = [
         {
-          path = "/mnt/storage-clear/media1";
-          unit = "gocryptfs-media1.service";
+          path = "/mnt/storage-clear/media4";
+          # The pool requires the mount unit systemd generates for media4's
+          # disk.luks-storage fileSystems entry; the name is derived, not typed.
+          fileSystemMount = true;
+          required = true;
+          create = true;
         }
         {
           path = "/mnt/storage-clear/media2";

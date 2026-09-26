@@ -111,6 +111,18 @@ let
     darwinConfig.nix.gc.automatic
     && darwinConfig.nix.gc.options == "--delete-older-than 30d"
     && darwinUsers."daniel.vicory".home.stateVersion == "25.11";
+  integrationAssertions.media-pool-revision-b =
+    let
+      mediaPath = "/mnt/storage-clear/media4";
+      mergerfs = import ../den/aspects/services/_mergerfs.nix { inherit lib; };
+      pool = hvnConfig.systemd.services.${mergerfs.serviceNameFor "/srv/media/data"};
+      # The unit systemd's fstab generator creates for the mountpoint, computed
+      # here with the NixOS escaping helper rather than copied from the host.
+      mediaMountUnit = "${self.nixosConfigurations.hvn-hyp1._module.args.utils.escapeSystemdPath mediaPath}.mount";
+    in
+    elem mediaMountUnit pool.requires
+    && elem mediaMountUnit pool.bindsTo
+    && hasAttr mediaPath hvnConfig.fileSystems;
   integrationAssertions.hermes-secure-terminal =
     hasAttr "hermes-qa-broker" hvnConfig.systemd.services
     && hasAttr "hermes-qa-broker-execution" hvnConfig.systemd.sockets
