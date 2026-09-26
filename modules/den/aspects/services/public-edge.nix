@@ -200,7 +200,8 @@ let
               [ ];
           routeHosts = map (entry: entry.hostname) routeEntries;
           routeHostsUnique = builtins.length (lib.unique routeHosts) == builtins.length routeHosts;
-          bareRouteValid = cfg.bareRoute != null && builtins.hasAttr cfg.bareRoute cluster.routes && routesValid;
+          bareRouteValid =
+            cfg.bareRoute != null && builtins.hasAttr cfg.bareRoute cluster.routes && routesValid;
           bareRoutePublishable = bareRouteValid && builtins.hasAttr cfg.bareRoute routes;
           bareTarget =
             if bareRoutePublishable then builtins.elemAt routes.${cfg.bareRoute}.hostnames variant else "";
@@ -216,7 +217,9 @@ let
             && tlsPairValid backupTLS
             && selectedTLS.certificate != null
             && selectedTLS.key != null
-            && (role != "home" || !(routes ? idm) || (primaryTLS.certificate != null && primaryTLS.key != null));
+            && (
+              role != "home" || !(routes ? idm) || (primaryTLS.certificate != null && primaryTLS.key != null)
+            );
           originValid =
             cfg.originHost != null
             && privateIPv4 cfg.originHost
@@ -255,6 +258,13 @@ let
                 "_" = {
                   default = true;
                   rejectSSL = true;
+                  # NixOS only emits `http2 on;` for TLS-serving vhosts. Without
+                  # it here, an HTTP/2 request whose SNI matched a real vhost but
+                  # whose Host resolves nowhere gets nginx's 421 Misdirected
+                  # Request instead of the declared 404.
+                  extraConfig = ''
+                    http2 on;
+                  '';
                   locations."/" = {
                     return = "404";
                   };
@@ -275,6 +285,13 @@ let
                 "_" = {
                   default = true;
                   rejectSSL = true;
+                  # NixOS only emits `http2 on;` for TLS-serving vhosts. Without
+                  # it here, an HTTP/2 request whose SNI matched a real vhost but
+                  # whose Host resolves nowhere gets nginx's 421 Misdirected
+                  # Request instead of the declared 404.
+                  extraConfig = ''
+                    http2 on;
+                  '';
                   locations."/" = {
                     return = "404";
                   };
