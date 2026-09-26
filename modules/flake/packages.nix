@@ -23,6 +23,9 @@
       rekey = callPackage (self + "/pkgs/by-name/rekey/package.nix") { };
       install = callPackage (self + "/pkgs/by-name/install/package.nix") { };
 
+      agenix-restart-guard = lib.optionalAttrs isLinux {
+        agenix-restart-guard = callPackage (self + "/pkgs/by-name/agenix-restart-guard/package.nix") { };
+      };
       compute-runtime = lib.optionalAttrs isLinux {
         compute-runtime = callPackage (self + "/pkgs/by-name/compute-runtime/package.nix") { };
       };
@@ -43,6 +46,7 @@
           install
           ;
       }
+      // agenix-restart-guard
       // compute-runtime
       // prepare-luks-storage;
 
