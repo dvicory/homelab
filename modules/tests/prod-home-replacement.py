@@ -479,7 +479,7 @@ class Runtime:
                           ("Jellarr Job", job["spec"]["template"]["spec"])):
             for container in pod.get("containers", []) + pod.get("initContainers", []):
                 assert_secret_absent(values, json.dumps(container), context=f"{name} args/env")
-        logs = self.kubectl("logs", "job/jellyfin-configuration", "-c", "bootstrap", "--tail=200")
+        logs = self.kubectl("logs", "job/jellyfin-configuration", "-c", "bootstrap", "--tail=200", namespace="jellyfin")
         assert_secret_absent(values, logs, context="Jellarr bootstrap logs")
 
     def node_ready(self) -> bool:
