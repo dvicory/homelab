@@ -66,18 +66,20 @@
         group = "media";
         mode = "2770";
       };
+      # Revision B: media4's pool/ tree is the whole pool. media1 stays mounted
+      # outside mergerfs as the rollback copy until a later approved revision.
+      # media2 and media3 still hold the old layout, so they stay mounted but
+      # outside the pool; each joins only after its own conversion puts its
+      # canonical content in pool/ with the shared group and default ACL.
       services.mergerfs.pools."/srv/media/data".branches = [
         {
-          path = "/mnt/storage-clear/media1";
-          unit = "gocryptfs-media1.service";
-        }
-        {
-          path = "/mnt/storage-clear/media2";
-          unit = "gocryptfs-media2.service";
-        }
-        {
-          path = "/mnt/storage-clear/media3";
-          unit = "gocryptfs-media3.service";
+          path = "/mnt/storage-clear/media4/pool";
+          mountPoint = "/mnt/storage-clear/media4";
+          # The pool requires the mount unit systemd generates for media4's
+          # disk.luks-storage fileSystems entry; the name is derived, not typed.
+          fileSystemMount = true;
+          required = true;
+          create = true;
         }
       ];
       services.hermes.agent = {

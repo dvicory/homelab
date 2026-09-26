@@ -38,6 +38,16 @@ let
       }
     ];
   };
+  derivedUnit = {
+    "/srv/media/data".branches = [
+      {
+        path = "/mnt/hot";
+        unit = null;
+        fileSystemMount = true;
+        required = true;
+      }
+    ];
+  };
   optionalWriter = {
     "/srv/media/data".branches = [
       {
@@ -74,6 +84,8 @@ let
     "one placement cannot back two pools" = mergerfs.duplicatePaths duplicate == [ "/mnt/hot" ];
     "optional placements need no mount unit" = mergerfs.requiredWithoutUnit valid == [ ];
     "required placements need a mount unit" = mergerfs.requiredWithoutUnit incomplete == [ "/mnt/hot" ];
+    "a derived fileSystems mount unit satisfies a required placement" =
+      mergerfs.requiredWithoutUnit derivedUnit == [ ];
     "optional placements cannot receive writes" =
       mergerfs.optionalCreatePaths optionalWriter == [ "/mnt/archive" ];
     "no-create optional placements are valid" = mergerfs.optionalCreatePaths valid == [ ];

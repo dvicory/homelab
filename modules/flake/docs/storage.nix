@@ -67,7 +67,9 @@ let
                 if branch.unit != null then
                   "`${branch.unit}`"
                 else if branch.fileSystemMount or false then
-                  "the `fileSystems` mount of this path"
+                  "the `fileSystems` mount of `${
+                    if (branch.mountPoint or null) == null then branch.path else branch.mountPoint
+                  }`"
                 else
                   "none"
               } |"
