@@ -46,7 +46,22 @@
       // compute-runtime
       // prepare-luks-storage;
 
-      checks = compute-runtime;
+      checks =
+        compute-runtime
+        // lib.optionalAttrs isLinux {
+          prepare-luks-storage =
+            pkgs.runCommand "prepare-luks-storage-check"
+              {
+                nativeBuildInputs = [
+                  pkgs.bash
+                  pkgs.coreutils
+                ];
+              }
+              ''
+                ${pkgs.bash}/bin/bash ${self + "/pkgs/by-name/prepare-luks-storage/test.sh"}
+                touch "$out"
+              '';
+        };
 
       devshells.default = {
         packages = [
@@ -54,13 +69,18 @@
           pkgs.openssh
           pkgs.coreutils
           pkgs.git
+        ]
+        ++ lib.optionals isLinux [
+          pkgs.python3
+          pkgs.rsync
+          pkgs.xfsprogs
         ];
 
         commands =
           lib.optionals isLinux [
             {
               package = prepare-luks-storage.prepare-luks-storage;
-              help = "One-shot provisioner for a LUKS-encrypted btrfs data disk";
+              help = "Read-only direct-source preflight, separately approved LUKS2 format, and verified copy";
             }
           ]
           ++ [
