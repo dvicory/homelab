@@ -11,15 +11,15 @@ open; production data has not been migrated.
 
 ## 2. Reconcile pooling into one namespace
 
-- [ ] 2.1 Make a single pooling instance serve the namespace, with creation restricted to placements declared to accept new content. Verify by evaluating the host: exactly one pooling instance is declared for the namespace, its rendered options restrict creation to those placements, and archive placements are present without accepting creation.
+- [x] 2.1 Make a single pooling instance serve the namespace, with creation restricted to placements declared to accept new content. Verify by evaluating the host: exactly one pooling instance is declared for the namespace, its rendered options restrict creation to those placements, and archive placements are present without accepting creation.
 - [x] 2.2 Declare each managed root's backing location as required or optional, and make an absent required location deny access instead of exposing an empty writable location. `mergerfs-contracts` checks the same required-location model used by the host assertion; the generated-unit runtime check stops the pool and its layout when a required mount is lost.
-- [ ] 2.3 Replace the independent read-only export with a read-only view of the same namespace, so both views are the same filesystem. Verify in a disposable Linux environment that a file created through the writable view and the same file read through the read-only view share one underlying allocation.
+- [x] 2.3 Replace the independent read-only export with a read-only view of the same namespace, so both views are the same filesystem. Verify in a disposable Linux environment that a file created through the writable view and the same file read through the read-only view share one underlying allocation.
 
 ## 3. Repoint consumers
 
 - [ ] 3.1 Point the writable media boundary of the acquisition workloads at the namespace, keeping the common parent so that import can link, and replacing the current per-application library roots with the namespace layout. Verified by `media-contracts`, which confirms no consumer-declared volume references the compute state root.
 - [ ] 3.2 Give the player read-only access to the library subtree only. Verified by `media-contracts` and the x86_64 replacement acceptance.
-- [ ] 3.3 Remove the compute-retained media mapping once nothing consumes it, then evaluate the host and confirm the remaining retained mappings describe guest-owned state only.
+- [x] 3.3 Remove the compute-retained media mapping once nothing consumes it, then evaluate the host and confirm the remaining retained mappings describe guest-owned state only.
 - [ ] 3.4 Regenerate `docs/operations.md` and confirm its retained-state table no longer lists a media mapping.
 
 ## 4. Evaluation checks
@@ -30,9 +30,9 @@ open; production data has not been migrated.
 
 ## 5. Disposable-environment checks
 
-- [ ] 5.1 Link: create an item in the ingest path and link it into the library path through the common parent, then confirm both paths share one underlying allocation. Then confirm the same operation fails when the two paths are presented as separate filesystems, establishing that the common parent is required rather than merely convenient.
-- [ ] 5.2 Placement: create a new item through the namespace and confirm it resides on storage declared to accept new content and not on archive placement. Conditional on a second placement existing; if only one placement exists, record the archive half as unexercised.
+- [x] 5.1 Link: create an item in the ingest path and link it into the library path through the common parent, then confirm both paths share one underlying allocation. Then confirm the same operation fails when the two paths are presented as separate filesystems, establishing that the common parent is required rather than merely convenient.
+- [x] 5.2 Placement: create a new item through the namespace and confirm it resides on storage declared to accept new content and not on archive placement. Conditional on a second placement existing; if only one placement exists, record the archive half as unexercised.
 - [ ] 5.3 Capacity: add archive capacity without changing creation eligibility and confirm the capacity reported to a writer is unchanged; then consume creation-eligible space and confirm the reported capacity falls before creation begins to fail.
-- [ ] 5.4 Fail-closed: with a required placement unavailable, confirm access is denied, no substitute location accepts writes, the dependent workload fails, and host management and unrelated workloads continue to operate. Verified by the recorded x86_64/KVM replacement acceptance.
-- [ ] 5.5 Permissions: create an entry inside a shared root as a participating identity and confirm it carries the declared group and permissions with no corrective step run afterwards. Then re-activate configuration with existing content present and confirm nothing under the root changed ownership, mode, or access entries.
+- [x] 5.4 Fail-closed: with a required placement unavailable, confirm access is denied, no substitute location accepts writes, the dependent workload fails, and host management and unrelated workloads continue to operate. Verified by the recorded x86_64/KVM replacement acceptance.
+- [x] 5.5 Permissions: create an entry inside a shared root as a participating identity and confirm it carries the declared group and permissions with no corrective step run afterwards. Then re-activate configuration with existing content present and confirm nothing under the root changed ownership, mode, or access entries.
 - [x] 5.6 Movement: no link-aware mover exists, so movement remains unexercised. The namespace sets `moveonenospc=false`, and no configured job performs link-unaware balancing over it.
