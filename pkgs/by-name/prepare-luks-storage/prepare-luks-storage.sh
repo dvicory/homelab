@@ -378,10 +378,10 @@ holders_for() {
 holders_for_tree() {
   local node=$1 child child_type children
   children=$(children_for "$node") || return 1
-  holders_for "$node"
+  holders_for "$node" || return 1
   while IFS=$'\t' read -r child child_type; do
     [[ -n $child ]] || continue
-    holders_for "$child"
+    holders_for "$child" || return 1
   done <<< "$children"
 }
 

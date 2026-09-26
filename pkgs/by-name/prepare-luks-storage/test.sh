@@ -28,8 +28,9 @@ case "$*" in
     ;;
   "-dnro MODEL -- "*) printf 'fixture-disk\n' ;;
   "-nrpo NAME,TYPE -- "*)
-    if [[ ${CASE-} == children || ${CASE-} == children-probe ]]; then
-      [[ ${CASE-} != children-probe ]] && printf '/dev/fake-part1 part\n' || exit 2
+    if [[ ${CASE-} == children-probe ]]; then exit 2; fi
+    if [[ ${CASE-} == children || ${CASE-} == holders-probe-child ]]; then
+      printf '/dev/fake-part1 part\n'
     else
       printf ''
     fi
@@ -225,9 +226,12 @@ fixture_setup() {
   stable_aliases_for() {
     [[ ${CASE-} != missing-wwn || $1 != wwn-* ]] && printf '/dev/disk/by-id/wwn-fixture\n'
   }
-  holders_for_tree() {
-    [[ ${CASE-} != holders-probe ]] || return 1
-    [[ ${CASE-} == holders ]] && printf 'fixture-holder\n'
+  holders_for() {
+    case ${CASE-} in
+      holders-probe|holders-probe-root) [[ $1 == /dev/fake-disk ]] && return 1 ;;
+      holders-probe-child) [[ $1 == /dev/fake-part1 ]] && return 1 ;;
+    esac
+    [[ ${CASE-} == holders && $1 == /dev/fake-disk ]] && printf 'fixture-holder\n'
     return 0
   }
   assert_key_ready() { [[ ${CASE-} != key-missing ]]; }
@@ -263,13 +267,10 @@ assert_no_format_mutator() {
 run_preflight_case() {
   local name=$1 expected=$2 with_source=${3-yes} case_name=${4-$1}
   local evidence=$tmp/$name.evidence log=$tmp/$name.log
-  local descriptor_path=$descriptor rc=0
-  [[ $name != wrong-identity ]] || {
-    descriptor_path=$tmp/wrong-descriptor
-    sed 's#DECLARED_DEVICE=.*#DECLARED_DEVICE=/dev/sdX#' "$descriptor" > "$descriptor_path"
-  }
+  local rc=0
   rm -f "$evidence" "$log" "$log.partition"
-  if CASE=$case_name LOG=$log EVIDENCE=$evidence FIXTURE_DESCRIPTOR=$descriptor_path PATH="$fake_bin:$PATH" \
+  [[ $name != wrong-identity ]] || : > "$log.partition"
+  if CASE=$case_name LOG=$log EVIDENCE=$evidence FIXTURE_DESCRIPTOR=$descriptor PATH="$fake_bin:$PATH" \
     WITH_SOURCE=$with_source bash -c '
       set -euo pipefail
       source "$SCRIPT"
@@ -297,7 +298,8 @@ run_preflight_case success pass
 base_evidence=$tmp/success.evidence
 for refusal in \
   wrong-identity partition-alias missing-serial missing-wwn missing-size \
-  children children-probe mount mount-probe holders holders-probe signature \
+  children children-probe mount mount-probe holders holders-probe \
+  holders-probe-root holders-probe-child signature \
   partition-table signature-probe source-mount-probe source-pool source-nested \
   source-nested-probe source-stat-probe source-du-probe small-capacity \
   mountpoint-confinement; do
@@ -321,6 +323,15 @@ for refusal in children signature holders missing-wwn; do
   run_preflight_case "no-source-$refusal" fail no "$refusal"
   [[ ! -e $tmp/no-source-$refusal.evidence ]]
 done
+
+# The wrong-identity fixture resolves the declared partition to one disk while
+# its whole-disk by-id alias resolves to another, so the identity gate is the
+# refusal — not descriptor parsing.
+grep -q 'declared by-id identity changed' "$tmp/wrong-identity.log.out"
+# A failed holder probe on the root or on a child must surface as MANUAL, not
+# a silent "no holders" pass.
+grep -q 'holder inspection failed' "$tmp/holders-probe-root.log.out"
+grep -q 'holder inspection failed' "$tmp/holders-probe-child.log.out"
 
 # Readiness flags are string booleans. A probe that leaves one false without a
 # counted FAIL or MANUAL must still refuse format readiness.
