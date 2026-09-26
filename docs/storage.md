@@ -19,7 +19,7 @@ the disk conversion procedure is in
 
 | Disk | Declared device | Mapper | Mountpoint | Filesystem | Provisioned |
 | --- | --- | --- | --- | --- | --- |
-| `media4` | `/dev/disk/by-id/wwn-0x5000cca27061f6b4-part1` | `crypt-media4` | `/mnt/storage-clear/media4` | `xfs` | no |
+| `media4` | `/dev/disk/by-id/wwn-0x5000cca27061f6b4-part1` | `crypt-media4` | `/mnt/storage-clear/media4` | `xfs` | yes |
 
 `Provisioned = no` declares only the wrapper and the agenix key path.
 `yes` adds the crypttab row and the direct mount. Neither value proves
