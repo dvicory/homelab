@@ -11,6 +11,7 @@ let
   # resulting NixOS configuration, so it is captured here where the compute
   # aspect can resolve a declared capability name to its stable GID.
   fleetGroups = config.den.groups or { };
+  prodHomeIngress = config.den.clusters.prod-home.ingress;
   idmap = import ./_idmap.nix { inherit lib; };
   planFor =
     cfg:
@@ -169,6 +170,20 @@ in
       }:
       let
         cfg = host.settings.virtualization.compute;
+        # Direct household ingress DNATs tcp/443 from the LAN uplink and
+        # Tailscale to the guest's declared gateway NodePort. No TLS
+        # termination and no SNAT: the peer connection keeps the client
+        # source address.
+        directIngress = prodHomeIngress.mode == "direct";
+        ingressNodePort = prodHomeIngress.nodePort;
+        ingressLanInterfaces = lib.attrNames (
+          lib.filterAttrs (_: iface: (iface.gateway or null) != null) (host.networking.interfaces or { })
+        );
+        ingressInterfaces =
+          ingressLanInterfaces
+          ++ lib.optional (config.services.tailscale.enable or false) (
+            config.services.tailscale.interfaceName or "tailscale0"
+          );
         computeRuntime = pkgs.callPackage (inputs.self + "/pkgs/by-name/compute-runtime/package.nix") { };
         lifecycleLock = "/run/lock/compute-${cfg.project}-${cfg.instance}.lock";
         runtimeSecrets = cfg.runtimeSecrets or { };
@@ -521,6 +536,9 @@ in
             chain forward {
               type filter hook forward priority -50; policy accept;
               oifname "${cfg.network}" ct state { established, related } accept
+              ${lib.optionalString directIngress ''
+                oifname "${cfg.network}" ip daddr ${cfg.address} tcp dport ${toString ingressNodePort} accept
+              ''}
               oifname "${cfg.network}" drop
             }
           '';
@@ -532,10 +550,37 @@ in
             chain forward {
               type filter hook forward priority -50; policy accept;
               oifname "${cfg.devices.eth0.host_name}" ct state { established, related } accept
+              ${lib.optionalString directIngress ''
+                oifname "${cfg.devices.eth0.host_name}" ip daddr ${cfg.address} tcp dport ${toString ingressNodePort} accept
+              ''}
               oifname "${cfg.devices.eth0.host_name}" drop
             }
           '';
         };
+
+        networking.nftables.tables."homelab-compute-ingress" = lib.mkIf directIngress {
+          family = "inet";
+          content = ''
+            chain ingress {
+              type nat hook prerouting priority dstnat; policy accept;
+              iifname { ${
+                lib.concatMapStringsSep ", " (name: ''"${name}"'') ingressInterfaces
+              } } tcp dport 443 dnat ip to ${cfg.address}:${toString ingressNodePort}
+            }
+          '';
+        };
+
+        # Forwarding is required for the DNAT path; Incus also enables it at
+        # runtime for the NAT'd bridge, this declaration keeps the invariant
+        # visible and independent of Incus internals.
+        boot.kernel.sysctl."net.ipv4.ip_forward" = lib.mkIf directIngress 1;
+
+        assertions = [
+          {
+            assertion = !directIngress || builtins.length ingressLanInterfaces == 1;
+            message = "direct cluster ingress requires exactly one LAN interface carrying a default gateway on host ${host.name}";
+          }
+        ];
       };
   };
 }
