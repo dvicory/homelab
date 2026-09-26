@@ -204,24 +204,23 @@
             hostId = "2f618214";
           };
 
+          # No restartUnits: a changed passfile applies on the next unlock, and
+          # restarting gocryptfs would unmount the live media pool.
           secretRequests = {
             "gocryptfs-media1" = {
               provider = "agenix";
               ageFile = inputs.self + "/.secrets/hosts/hvn-hyp1/gocryptfs-media1.age";
               mode = "0400";
-              restartUnits = [ "gocryptfs-media1" ];
             };
             "gocryptfs-media2" = {
               provider = "agenix";
               ageFile = inputs.self + "/.secrets/hosts/hvn-hyp1/gocryptfs-media2.age";
               mode = "0400";
-              restartUnits = [ "gocryptfs-media2" ];
             };
             "gocryptfs-media3" = {
               provider = "agenix";
               ageFile = inputs.self + "/.secrets/hosts/hvn-hyp1/gocryptfs-media3.age";
               mode = "0400";
-              restartUnits = [ "gocryptfs-media3" ];
             };
           };
 
