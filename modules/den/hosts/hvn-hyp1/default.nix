@@ -106,7 +106,7 @@
         device = "/dev/disk/by-id/wwn-0x5000cca27061f6b4-part1";
         mountpoint = "/mnt/storage-clear/media4";
         fsType = "xfs";
-        provisioned = false;
+        provisioned = true;
       };
     };
 
