@@ -40,10 +40,13 @@ failover changes DNS, not the issuer or certificate identity.
 The checked-in `initial` phase keeps the identity route private and
 omits the provisioning credential, Job, and administrator policy.
 
-Before the first identity deployment, provision a publicly trusted
-Kanidm leaf certificate and key as `tls.crt` and `tls.key` in the declared
-`identity/kanidm-tls` runtime Secret. This is a deployment prerequisite,
-not an automated certificate issuance path.
+Certificates are issued in-cluster by cert-manager through the
+`letsencrypt-prod` ClusterIssuer (Let's Encrypt production, Cloudflare
+DNS-01). The operator prerequisite is the Cloudflare DNS-edit token
+`cert-manager--cloudflare-api-token--api-token` runtime secret;
+`gateway/gateway-tls` and `identity/kanidm-tls` are Certificate
+resources. Check issuance with `kubectl get certificate -A` and note
+the shared Let's Encrypt rate limits.
 
 1. Through an authorized private interactive `kubectl exec` session,
    run Kanidm `recover-account` for the stock accounts. Immediately
@@ -80,13 +83,34 @@ mounts.
 ## Runtime-secret references
 
 This table contains references only. Never put plaintext Secret values
-in Git, the Nix store, manifests, images, or this document.
+in Git, the Nix store, manifests, images, or this document. Each source
+is either operator-supplied through agenix (`agenix edit`/rekey under
+`.secrets/hosts/`) or a generated value produced by `agenix generate`.
+`gateway-tls` and `kanidm-tls` are not listed: cert-manager issues them
+in the cluster from its Cloudflare DNS-01 ClusterIssuer.
 
-| Kubernetes Secret | Agenix source -> key | Type |
+| Kubernetes Secret | Source -> key | Type |
 | --- | --- | --- |
 | `argocd/argocd-secret` | `argocd--argocd-secret--admin.password` → `admin.password`, `argocd--argocd-secret--admin.passwordMtime` → `admin.passwordMtime`, `argocd--argocd-secret--server.secretkey` → `server.secretkey` | `Opaque` |
-| `gateway/gateway-tls` | `gateway--gateway-tls--ca.crt` → `ca.crt`, `gateway--gateway-tls--tls.crt` → `tls.crt`, `gateway--gateway-tls--tls.key` → `tls.key` | `kubernetes.io/tls` |
-| `identity/kanidm-tls` | `identity--kanidm-tls--tls.crt` → `tls.crt`, `identity--kanidm-tls--tls.key` → `tls.key` | `kubernetes.io/tls` |
+| `cert-manager/cloudflare-api-token` | `cert-manager--cloudflare-api-token--api-token` → `api-token` | `Opaque` |
+
+## Certificates
+
+cert-manager issues TLS in the cluster: the `letsencrypt-prod`
+ClusterIssuer does Cloudflare DNS-01 (the `cloudflare-api-token` runtime
+Secret) and writes `gateway-tls` in `gateway` and `kanidm-tls` in
+`identity`. Check issuance inside the guest:
+
+```sh
+kubectl get clusterissuer letsencrypt-prod
+kubectl get certificate -A
+```
+
+A `READY=False` Certificate's `status.conditions` and
+`kubectl -n cert-manager describe challenge` name the failing step.
+Let's Encrypt production limits repeated identical issuances, so a
+flapping Certificate or weekly guest rebuilds will eventually stall
+new issuance until the window clears.
 
 ## Lifecycle and bootstrap
 
