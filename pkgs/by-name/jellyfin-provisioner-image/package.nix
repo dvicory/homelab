@@ -1,9 +1,7 @@
 {
   lib,
-  buildDotnetModule,
   fetchFromGitHub,
-  fetchpatch,
-  dotnetCorePackages,
+  jellyfinMultiverse,
   sqlite,
   fontconfig,
   freetype,
@@ -18,10 +16,14 @@ let
   provisionPatchRev = "8b0a2c269d5a3d9d7084b5295fd818a8a67af6f2";
   runtimeImage = "docker.io/jellyfin/jellyfin:12.1";
   runtimeDigest = "sha256:78d3ea1207d1322471fcac39a614f004f2ccf7e878f95ab2977d752f07e4dd7e";
+  provisionerRuntimeDeps = [
+    sqlite
+    fontconfig
+    freetype
+  ];
 
-  provisioner = buildDotnetModule (finalAttrs: {
+  provisioner = (jellyfinMultiverse.version "jellyfin" version).overrideAttrs {
     pname = "jellyfin-provisioner";
-    inherit version;
 
     src = fetchFromGitHub {
       owner = "jellyfin";
@@ -30,41 +32,18 @@ let
       hash = "sha256-WB/miD5uwoCY9DcTRRtxxOu9G+jojNGp5FZ0HHDqhys=";
     };
 
-    patches = [
-      (fetchpatch {
-        url = "https://github.com/jellyfin/jellyfin/commit/${provisionPatchRev}.patch";
-        hash = "sha256-pgCNgOP27SHgf0wUmYqxxytJSym2vI2MIOG17JWpoAA=";
-      })
-    ];
+    # PR #17902: https://github.com/jellyfin/jellyfin/commit/8b0a2c269d5a3d9d7084b5295fd818a8a67af6f2
+    # Vendored fetchpatch output, sha256-pgCNgOP27SHgf0wUmYqxxytJSym2vI2MIOG17JWpoAA=.
+    patches = [ ./provision.patch ];
 
-    propagatedBuildInputs = [ sqlite ];
-    projectFile = "Jellyfin.Server/Jellyfin.Server.csproj";
-    executables = [ "jellyfin" ];
-    nugetDeps = ./nuget-deps.json;
-    dotnet-sdk = dotnetCorePackages.sdk_10_0;
-    dotnet-runtime = dotnetCorePackages.aspnetcore_10_0;
-    dotnetBuildFlags = [ "--no-self-contained" ];
-
-    # Provision mode skips media-server startup (and therefore ffmpeg). The
-    # pinned Jellyfin recipe's fontconfig/freetype deps remain for Skia's
-    # static typeface initialization during provider discovery.
-    runtimeDeps = [
-      sqlite
-      fontconfig
-      freetype
-    ];
+    # buildDotnetModule captures runtimeDeps before overrideAttrs. Replace both
+    # to exclude upstream ffmpeg while retaining the Skia font libraries.
+    runtimeDeps = provisionerRuntimeDeps;
+    dotnetRuntimeDeps = map lib.getLib provisionerRuntimeDeps;
     makeWrapperArgs = [ ];
     nativeInstallCheckInputs = [ ];
     doInstallCheck = false;
-
-    meta = {
-      description = "Minimal Jellyfin startup provisioner image payload";
-      homepage = "https://jellyfin.org/";
-      license = lib.licenses.gpl2Plus;
-      mainProgram = "jellyfin";
-      platforms = finalAttrs.dotnet-runtime.meta.platforms;
-    };
-  });
+  };
 
   runner = writeShellApplication {
     name = "jellyfin-provision";

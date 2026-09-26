@@ -8,6 +8,8 @@
     url = "github:numtide/devshell";
     inputs.nixpkgs.follows = "nixpkgs";
   };
+  flake-file.inputs.nixpkgs-multiverse.url =
+    "github:fzakaria/nixpkgs-multiverse/9e89229225547747c0150f396ffa413d80bc1427";
 
   imports = [
     inputs.devshell.flakeModule
@@ -40,7 +42,9 @@
       jellyfin-provisioner-image = lib.optionalAttrs isLinux {
         jellyfin-provisioner-image = callPackage (
           self + "/pkgs/by-name/jellyfin-provisioner-image/package.nix"
-        ) { };
+        ) {
+          jellyfinMultiverse = inputs.nixpkgs-multiverse.multiverse.${pkgs.stdenv.hostPlatform.system};
+        };
       };
       jellarr-image = lib.optionalAttrs isLinux {
         jellarr-image = callPackage (self + "/pkgs/by-name/jellarr-image/package.nix") { };
