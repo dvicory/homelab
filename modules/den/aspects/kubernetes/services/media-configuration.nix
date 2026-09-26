@@ -433,7 +433,6 @@
                 runAsUser = 1000;
                 runAsGroup = 1000;
                 runAsNonRoot = true;
-                fsGroup = 1000;
                 seccompProfile.type = "RuntimeDefault";
               };
               containers = [
@@ -462,7 +461,9 @@
                 {
                   name = "secrets";
                   projected = {
-                    defaultMode = 288;
+                    # No fsGroup on this pod: it mounts the retained media-seerr
+                    # PVC, and fsGroup would chown that volume recursively.
+                    defaultMode = 292;
                     sources = [
                       {
                         secret = {
@@ -581,7 +582,7 @@
           {
             name = "kubernetes-api";
             projected = {
-              defaultMode = 288;
+              defaultMode = 292;
               sources = [
                 {
                   serviceAccountToken = {

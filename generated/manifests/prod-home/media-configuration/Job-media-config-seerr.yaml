@@ -55,7 +55,6 @@ spec:
         kubernetes.io/hostname: compute-1
       restartPolicy: OnFailure
       securityContext:
-        fsGroup: 1000
         runAsGroup: 1000
         runAsNonRoot: true
         runAsUser: 1000
@@ -71,7 +70,7 @@ spec:
             claimName: media-seerr
         - name: kubernetes-api
           projected:
-            defaultMode: 288
+            defaultMode: 292
             sources:
               - serviceAccountToken:
                   expirationSeconds: 600
@@ -83,7 +82,7 @@ spec:
                   name: kube-root-ca.crt
         - name: secrets
           projected:
-            defaultMode: 288
+            defaultMode: 292
             sources:
               - secret:
                   items:

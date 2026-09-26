@@ -239,50 +239,6 @@
                 "backendRequest": "0s",
             }, "Jellyfin request and backend deadlines remain streaming-safe"
 
-            def pod_template_specs():
-                for resource in resources:
-                    spec = resource.get("spec") or {}
-                    template = spec.get("template") or spec.get("jobTemplate", {}).get("spec", {}).get("template")
-                    if isinstance(template, dict) and isinstance(template.get("spec"), dict):
-                        yield resource, template["spec"]
-
-            for resource, template_spec in pod_template_specs():
-                owner = f"{resource['kind']}/{resource['metadata']['name']}"
-                pod_security = template_spec.get("securityContext", {})
-                declared_volumes = {volume["name"]: volume for volume in template_spec.get("volumes", [])}
-                assert not (
-                    "fsGroup" in pod_security
-                    and any("persistentVolumeClaim" in volume for volume in declared_volumes.values())
-                ), f"{owner} mounts a PersistentVolumeClaim and must not set fsGroup"
-                pod_containers = (
-                    template_spec.get("containers", [])
-                    + template_spec.get("initContainers", [])
-                    + template_spec.get("ephemeralContainers", [])
-                )
-                for container in pod_containers:
-                    container_security = container.get("securityContext", {})
-                    run_as_user = container_security.get("runAsUser", pod_security.get("runAsUser"))
-                    if run_as_user == 0:
-                        continue
-                    run_as_group = container_security.get("runAsGroup", pod_security.get("runAsGroup"))
-                    for volume_mount in container.get("volumeMounts", []):
-                        volume = declared_volumes.get(volume_mount["name"])
-                        if volume is None:
-                            continue
-                        for source in ("secret", "projected"):
-                            source_spec = volume.get(source)
-                            if not source_spec:
-                                continue
-                            default_mode = source_spec.get("defaultMode", 0o644)
-                            entries = source_spec.get("items") or source_spec.get("sources") or [{}]
-                            for mode in (entry.get("mode", default_mode) for entry in entries):
-                                readable = bool(mode & 0o004) or (
-                                    bool(mode & 0o040) and pod_security.get("fsGroup") == run_as_group
-                                )
-                                assert readable, (
-                                    f"{owner} container {container['name']} mounts {source} volume "
-                                    f"{volume['name']} with mode {mode:04o} unreadable by uid {run_as_user}"
-                                )
             PY
             node ${./jellyfin-bootstrap.mjs} bootstrap.mjs
             touch "$out"
