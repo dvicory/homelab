@@ -242,11 +242,16 @@
           };
         };
 
-      firstPolicy =
+      seerrPolicy =
         cluster: kind: instances:
         let
-          name = builtins.head (builtins.attrNames instances);
-          cfg = builtins.getAttr name instances;
+          selected = lib.filter (name: instances.${name}.seerrDefault) (builtins.attrNames instances);
+        in
+        assert lib.assertMsg (builtins.length selected == 1)
+          "Exactly one ${kind} instance must have seerrDefault = true for Seerr.";
+        let
+          name = builtins.head selected;
+          cfg = instances.${name};
         in
         (instancePolicy {
           inherit cluster kind cfg;
@@ -334,8 +339,8 @@
           };
           seerr = builtins.toJSON {
             arr = {
-              radarr = firstPolicy cluster "radarr" settings.radarr;
-              sonarr = firstPolicy cluster "sonarr" settings.sonarr;
+              radarr = seerrPolicy cluster "radarr" settings.radarr;
+              sonarr = seerrPolicy cluster "sonarr" settings.sonarr;
             };
             seerr = {
               url = endpoint apps.seerr;
@@ -516,22 +521,6 @@
         inherit spec;
       };
 
-      cron = name: spec: {
-        apiVersion = "batch/v1";
-        kind = "CronJob";
-        metadata = {
-          inherit name;
-          namespace = "media";
-        };
-        spec = {
-          schedule = "0 4 * * *";
-          suspend = true;
-          concurrencyPolicy = "Forbid";
-          successfulJobsHistoryLimit = 1;
-          failedJobsHistoryLimit = 2;
-          jobTemplate.spec = spec;
-        };
-      };
       secretName = cluster.settings.kubernetes.services.media.configurationSecret;
       arrSecretKeys = lib.unique (
         map (cfg: cfg.apiSecretKey) (
@@ -997,15 +986,12 @@
     {
       applications.media-configuration = {
         namespace = "media";
+        annotations."argocd.argoproj.io/sync-wave" = "3";
         objects = baseObjects ++ [
           (hook "media-config-roots" 0 rootJob)
-          (cron "media-config-roots" rootJob)
           (hook "media-configarr" 1 configarrJob)
-          (cron "media-configarr" configarrJob)
           (hook "media-config-prowlarr" 1 prowlarrJob)
-          (cron "media-config-prowlarr" prowlarrJob)
           (hook "media-config-seerr" 2 seerrJob)
-          (cron "media-config-seerr" seerrJob)
         ];
       };
     };

@@ -57,6 +57,11 @@ let
               default = "${lib.toUpper kind}_API_KEY";
               description = "Runtime Secret key containing this instance's native API key.";
             };
+            seerrDefault = lib.mkOption {
+              type = lib.types.bool;
+              default = name == kind;
+              description = "Select this instance as the default ${kind} backend for Seerr.";
+            };
             root = lib.mkOption {
               type = lib.types.addCheck dataPathType (path: path != "/data");
               default = if kind == "radarr" then "/data/library/movies" else "/data/library/tv";
