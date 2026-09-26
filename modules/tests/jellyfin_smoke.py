@@ -14,6 +14,13 @@ import urllib.parse
 import urllib.request
 
 
+def authorization(token: str | None = None) -> str:
+    # Jellyfin 12 rejects the legacy X-Emby-Authorization/X-MediaBrowser-Token
+    # headers on fresh installs; client identity and token share one header.
+    value = 'MediaBrowser Client="homelab-smoke", Device="integration", DeviceId="homelab-smoke", Version="1.0"'
+    return value + (f', Token="{token}"' if token is not None else "")
+
+
 def api_request(
     base: str,
     method: str,
@@ -26,11 +33,8 @@ def api_request(
 ):
     headers = {
         "Accept": "application/json",
-        "X-Emby-Authorization": 'MediaBrowser Client="homelab-smoke", Device="integration", '
-        'DeviceId="homelab-smoke", Version="1.0"',
+        "Authorization": authorization(token),
     }
-    if token is not None:
-        headers["X-MediaBrowser-Token"] = token
     data = None
     if payload is not None:
         data = json.dumps(payload).encode()
@@ -50,11 +54,7 @@ def api_request(
 
 
 def api_bytes(base: str, path: str, token: str) -> bytes:
-    headers = {
-        "X-MediaBrowser-Token": token,
-        "X-Emby-Authorization": 'MediaBrowser Client="homelab-smoke", Device="integration", '
-        'DeviceId="homelab-smoke", Version="1.0"',
-    }
+    headers = {"Authorization": authorization(token)}
     request = urllib.request.Request(base + path, headers=headers, method="GET")
     with urllib.request.urlopen(request, timeout=120) as response:
         if response.status != 200:
