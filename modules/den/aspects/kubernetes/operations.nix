@@ -229,10 +229,13 @@ in
         `replace` is destructive and requires the exact
         `--confirm ${computeInstance}` acknowledgement.
 
-        For a newly created or replacement Running guest before Argo handoff, run:
+        For a newly created or replacement Running guest before Argo handoff, run
+        the wrapped bootstrap from the bundle (`BUNDLE/bin/household-bootstrap-host`
+        carries the pinned manifests; the bare `compute-runtime` binary requires
+        `HOUSEHOLD_BOOTSTRAP_MANIFESTS`):
 
         ```sh
-        household-bootstrap-host /etc/homelab/compute.json --confirm ${computeInstance}
+        BUNDLE/bin/household-bootstrap-host /etc/homelab/compute.json --confirm ${computeInstance}
         ```
 
         The host command validates the descriptor, guest, kubeconfig, node
@@ -243,8 +246,8 @@ in
         ## Verify
 
         ```sh
-        household-bootstrap --status
-        household-bootstrap --check-ready
+        BUNDLE/bin/household-bootstrap --status
+        BUNDLE/bin/household-bootstrap --check-ready
         ```
 
         `--status` reports the declared Argo controllers and bootstrap Jobs.
@@ -259,7 +262,7 @@ in
         operation. Retry only declared terminal failed hook Jobs:
 
         ```sh
-        household-bootstrap --retry-jobs
+        BUNDLE/bin/household-bootstrap --retry-jobs
         ```
 
         Missing, active, unknown, or non-terminal Jobs are refused.

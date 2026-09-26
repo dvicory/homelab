@@ -188,10 +188,13 @@ compute-guest replace --bundle BUNDLE --confirm compute-1
 `replace` is destructive and requires the exact
 `--confirm compute-1` acknowledgement.
 
-For a newly created or replacement Running guest before Argo handoff, run:
+For a newly created or replacement Running guest before Argo handoff, run
+the wrapped bootstrap from the bundle (`BUNDLE/bin/household-bootstrap-host`
+carries the pinned manifests; the bare `compute-runtime` binary requires
+`HOUSEHOLD_BOOTSTRAP_MANIFESTS`):
 
 ```sh
-household-bootstrap-host /etc/homelab/compute.json --confirm compute-1
+BUNDLE/bin/household-bootstrap-host /etc/homelab/compute.json --confirm compute-1
 ```
 
 The host command validates the descriptor, guest, kubeconfig, node
@@ -202,8 +205,8 @@ project, and applies the canonical root Application.
 ## Verify
 
 ```sh
-household-bootstrap --status
-household-bootstrap --check-ready
+BUNDLE/bin/household-bootstrap --status
+BUNDLE/bin/household-bootstrap --check-ready
 ```
 
 `--status` reports the declared Argo controllers and bootstrap Jobs.
@@ -218,7 +221,7 @@ Fix the reported preflight prerequisite and start a new explicit
 operation. Retry only declared terminal failed hook Jobs:
 
 ```sh
-household-bootstrap --retry-jobs
+BUNDLE/bin/household-bootstrap --retry-jobs
 ```
 
 Missing, active, unknown, or non-terminal Jobs are refused.
