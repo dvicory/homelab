@@ -44,6 +44,14 @@ while Seerr remains in the `initial` phase. The `idm` canonical hostname
 remains the identity issuer across direct and secondary-edge access;
 failover changes DNS, not the issuer or certificate identity.
 
+In `direct` ingress mode every declared hostname must resolve to an
+address that reaches the physical host — its LAN uplink for LAN
+clients or its Tailscale address for tailnet clients. The host DNATs
+TCP 443 to the compute guest's NodePort without terminating TLS or
+rewriting the client source, so the guest sees the real peer address.
+In `trustedEdges` mode this forward does not exist and reachability is
+the edge's responsibility.
+
 ## Kanidm bootstrap
 
 The checked-in `initial` phase keeps the identity route private and

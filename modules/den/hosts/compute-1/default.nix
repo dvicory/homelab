@@ -2,6 +2,7 @@
 let
   clusterImages = config.flake.clusterResources.prod-home.images;
   mediaGid = config.den.groups.media.gid;
+  ingress = config.den.clusters.prod-home.ingress;
 in
 {
   den.hosts.x86_64-linux.compute-1 = {
@@ -47,6 +48,11 @@ in
           22
           6443
         ];
+        # Direct household ingress: the host DNATs tcp/443 to this NodePort on
+        # the bridge-facing NIC only. Other ingress modes expose nothing.
+        networking.firewall.interfaces.eth0.allowedTCPPorts = lib.optional (
+          ingress.mode == "direct"
+        ) ingress.nodePort;
         programs.command-not-found.enable = lib.mkForce false;
 
         services.openssh = {

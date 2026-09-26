@@ -166,6 +166,36 @@ let
         ]
         ++ builtins.attrNames config.den.hosts.x86_64-linux.hvn-hyp1.networking.interfaces
       );
+    household-direct-ingress =
+      let
+        ingress = config.den.clusters.prod-home.ingress;
+        nodePort = toString ingress.nodePort;
+        ingressTable = host.networking.nftables.tables."homelab-compute-ingress".content or "";
+        boundary = host.networking.nftables.tables."homelab-compute-boundary".content;
+        bridgeBoundary = host.networking.nftables.tables."homelab-compute-bridge-boundary".content;
+        lanInterfaces = builtins.attrNames (
+          lib.filterAttrs (_: iface: (iface.gateway or null) != null) (
+            config.den.hosts.x86_64-linux.hvn-hyp1.networking.interfaces
+          )
+        );
+        dnatRule = "tcp dport 443 dnat ip to ${compute.address}:${nodePort}";
+        forwardAccept = ''oifname "${compute.network}" ip daddr ${compute.address} tcp dport ${nodePort} accept'';
+        bridgeAccept = ''oifname "${devices.eth0.host_name}" ip daddr ${compute.address} tcp dport ${nodePort} accept'';
+      in
+      ingress.mode == "direct"
+      && lib.hasInfix "type nat hook prerouting" ingressTable
+      && lib.hasInfix dnatRule ingressTable
+      && builtins.all (name: lib.hasInfix ''"${name}"'' ingressTable) lanInterfaces
+      && lib.hasInfix ''"${host.services.tailscale.interfaceName}"'' ingressTable
+      && !(lib.hasInfix "masquerade" ingressTable)
+      && !(lib.hasInfix "snat" ingressTable)
+      && lib.hasInfix forwardAccept boundary
+      && lib.hasInfix bridgeAccept bridgeBoundary
+      && builtins.elem ingress.nodePort (guest.networking.firewall.interfaces.eth0.allowedTCPPorts or [ ])
+      && !(builtins.elem ingress.nodePort host.networking.firewall.allowedTCPPorts)
+      && !(builtins.elem 443 host.networking.firewall.allowedTCPPorts)
+      && !(builtins.elem 80 host.networking.firewall.allowedTCPPorts)
+      && !(builtins.elem 6443 host.networking.firewall.allowedTCPPorts);
   };
   failures = builtins.attrNames (lib.filterAttrs (_: passed: !passed) assertions);
 in
