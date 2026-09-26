@@ -30,6 +30,11 @@ let
   ];
 in
 {
+  den.aspects.kubernetes.services.media.compute-resources.mediaPaths = {
+    data = root;
+    library = "${root}/library";
+  };
+
   den.aspects.services.media-namespace = {
     nixos =
       {

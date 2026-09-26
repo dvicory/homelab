@@ -58,7 +58,7 @@ in
       provisionerImage = "${provisioner.imageName}:${provisioner.imageTag}";
       runtimeImage = "${provisionerRelease.runtimeImage}@${provisionerRelease.runtimeDigest}";
       jellarrImage = "${jellarrRelease.imageName}:${jellarrRelease.imageTag}";
-      mediaPath = "/srv/media/data/library";
+      mediaPath = computeResources.mediaPaths.library;
       route = cluster.routes.jellyfin;
       prefix = lib.optionalString (route.pathPrefix != "/") (lib.removeSuffix "/" route.pathPrefix);
       labels = {
@@ -140,29 +140,37 @@ in
         }
         const headers = {
           "Content-Type": "application/json",
-          "X-Emby-Token": administratorToken,
+          Authorization: 'MediaBrowser Client="homelab-jellarr-bootstrap", Device="Kubernetes Job", DeviceId="jellarr-bootstrap", Version="1", Token="' + administratorToken + '"',
         };
-        const keyName = "Jellarr";
-        const namedKey = (response) =>
-          (response.Items || response.items || []).filter(
-            (key) => (key.AppName || key.appName) === keyName
-          );
-        let keys = namedKey(await request("/Auth/Keys", { headers }));
-        if (keys.length > 1) {
-          throw new Error("More than one Jellarr API key exists");
+        try {
+          const keyName = "Jellarr";
+          const namedKey = (response) =>
+            (response.Items || response.items || []).filter(
+              (key) => (key.AppName || key.appName) === keyName
+            );
+          let keys = namedKey(await request("/Auth/Keys", { headers }));
+          if (keys.length > 1) {
+            throw new Error("More than one Jellarr API key exists");
+          }
+          if (keys.length === 0) {
+            await request("/Auth/Keys?app=Jellarr", { method: "POST", headers });
+            keys = namedKey(await request("/Auth/Keys", { headers }));
+          }
+          if (keys.length !== 1) {
+            throw new Error("Jellarr API key was not available after creation");
+          }
+          const apiKey = keys[0].AccessToken || keys[0].accessToken;
+          if (!apiKey) {
+            throw new Error("Jellarr API key response contained no token");
+          }
+          fs.writeFileSync("/run/jellarr/api-key", apiKey + "\n", { mode: 0o400 });
+        } finally {
+          try {
+            await request("/Sessions/Logout", { method: "POST", headers });
+          } catch (_) {
+            // A failed logout must not hide a key-bootstrap failure.
+          }
         }
-        if (keys.length === 0) {
-          await request("/Auth/Keys?app=Jellarr", { method: "POST", headers });
-          keys = namedKey(await request("/Auth/Keys", { headers }));
-        }
-        if (keys.length !== 1) {
-          throw new Error("Jellarr API key was not available after creation");
-        }
-        const apiKey = keys[0].AccessToken || keys[0].accessToken;
-        if (!apiKey) {
-          throw new Error("Jellarr API key response contained no token");
-        }
-        fs.writeFileSync("/run/jellarr/api-key", apiKey + "\n", { mode: 0o400 });
       '';
     in
     assert lib.assertMsg (
@@ -274,12 +282,6 @@ in
                           mountPath = "/cache";
                         }
                         {
-                          name = "media";
-                          mountPath = "/media";
-                          readOnly = true;
-                          mountPropagation = "HostToContainer";
-                        }
-                        {
                           name = "provision";
                           mountPath = "/run/provision";
                         }
@@ -301,6 +303,7 @@ in
                         requests = {
                           cpu = "500m";
                           memory = "512Mi";
+                          ephemeral-storage = "4Gi";
                         };
                         limits = {
                           cpu = "2";

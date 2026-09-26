@@ -1,6 +1,6 @@
 ## Why
 
-The replaceable compute boundary must recover a real application without relying on
+Jellyfin must recover from an empty or retained `/config` without relying on
 an old guest root, a Kubernetes database, or an undocumented first-run action.
 The current Jellyfin shape leaves first-start state, the normal server, and
 steady-state configuration too close together: browser setup can race the
@@ -15,9 +15,6 @@ reconcile only its selected supported API surface after that server is healthy.
 
 ## What Changes
 
-- Preserve the replaceable, unprivileged Incus/K3s compute domain, its explicit
-  durable inputs, fail-closed storage attachment, host-managed identity, and
-  explicit destructive-replacement boundary.
 - Define one Nix-owned Jellyfin release identity. The identity is Jellyfin
   `12.1`, source commit
   `ee91c75e777da41a9c4f4855e70adc604fbf2ef8`, the exact PR #17902 backport
@@ -89,9 +86,9 @@ acceptance work; this proposal does not claim implementation complete.
 
 ### New Capabilities
 
-- `compute-recovery`: isolation, durable-input, storage-attachment,
-  application-failure-domain, lifecycle, and recovery contracts for the
-  replaceable compute domain, including the Jellyfin startup boundary.
+- `compute-recovery`: Jellyfin release coupling, bounded first-start
+  provisioning, stock-runtime startup, and supported-API reconciliation after
+  its declared compute and retained-media inputs are available.
 
 ### Modified Capabilities
 
@@ -101,10 +98,6 @@ None. The new capability composes with the existing
 
 ## Impact
 
-- `hvn-hyp1`: continues to supply the Den compute entity, native Incus
-  preseed, private networking, narrow storage exports, runtime identity, and
-  bounded instance operations. Application-only storage remains a workload
-  dependency, not a node-boot prerequisite.
 - Nix/Den and Kubernetes/Argo: gain one release declaration, the provisioner
   initContainer gate, the stock runtime image reference, retained config/media
   projections, and one post-health Jellarr reconciliation owner.

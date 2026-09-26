@@ -10,6 +10,7 @@
       storage = pkgs.writeText "jellyfin-storage-contract.json" (
         builtins.toJSON {
           inherit (compute) retainedPaths;
+          inherit (config.flake.clusterResources.prod-home) mediaPaths;
         }
       );
       release = pkgs.writeText "jellyfin-release-contract.json" (
@@ -27,7 +28,10 @@
       checks.jellyfin-contracts =
         pkgs.runCommand "jellyfin-contracts"
           {
-            nativeBuildInputs = [ python ];
+            nativeBuildInputs = [
+              python
+              pkgs.nodejs
+            ];
           }
           ''
             python - ${environment} ${storage} ${release} ${runtimeSecrets} ${jellarrRelease} <<'PY'
@@ -119,15 +123,22 @@
             assert pod["securityContext"]["runAsUser"] == retained["uid"]
             assert pod["securityContext"]["runAsGroup"] == retained["gid"]
             media_mount = mount(runtime, "/media")
+            assert not any(m["mountPath"] == "/media" for m in provisioner["volumeMounts"]), "provisioner does not access media"
             assert media_mount.get("readOnly") is True
             assert deployment["spec"]["strategy"]["type"] == "Recreate"
             media_volume = volumes[media_mount["name"]]
             assert media_volume["hostPath"] == {
-                "path": "/srv/media/data/library",
+                "path": storage["mediaPaths"]["library"],
                 "type": "Directory",
             }, "Jellyfin consumes the semantic media-library projection"
+            assert storage["mediaPaths"]["library"] == storage["mediaPaths"]["data"] + "/library"
             assert volumes[mount(runtime, "/cache")["name"]]["emptyDir"]["sizeLimit"] == "4Gi"
             assert runtime["resources"]["limits"]["ephemeral-storage"] == "5Gi"
+            assert runtime["resources"]["requests"]["ephemeral-storage"] == "4Gi"
+            cache_gib = int(volumes[mount(runtime, "/cache")["name"]]["emptyDir"]["sizeLimit"].removesuffix("Gi"))
+            requested_gib = int(runtime["resources"]["requests"]["ephemeral-storage"].removesuffix("Gi"))
+            limited_gib = int(runtime["resources"]["limits"]["ephemeral-storage"].removesuffix("Gi"))
+            assert cache_gib <= requested_gib < limited_gib, "the scheduler reserves cache capacity with headroom"
 
             pv = find("PersistentVolume", "jellyfin-config")
             pvc = find("PersistentVolumeClaim", "jellyfin-config")
@@ -212,6 +223,7 @@
                 and any(fragment in resource["metadata"]["name"].lower() for fragment in ("jellarr", "api-key", "apikey"))
                 for resource in jellyfin_objects
             ), "Jellarr API-key bootstrap has no durable Secret resource"
+            pathlib.Path("bootstrap.mjs").write_text(configuration["data"]["bootstrap.mjs"])
 
             service = find("Service", "jellyfin")
             service_spec = service["spec"]
@@ -227,6 +239,7 @@
                 "backendRequest": "0s",
             }, "Jellyfin request and backend deadlines remain streaming-safe"
             PY
+            node ${./jellyfin-bootstrap.mjs} bootstrap.mjs
             touch "$out"
           '';
     };

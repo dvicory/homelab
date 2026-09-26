@@ -1095,7 +1095,20 @@ def run_scenario(args: argparse.Namespace) -> None:
                     guest_architecture == fixture_architecture,
                     f"guest architecture equals fixture architecture: {guest_architecture}",
                 )
+                check(
+                    runtime.guest("findmnt", "-n", "-o", "FSTYPE", "-M", "/srv/media/data", user=505)
+                    == "fuse.mergerfs",
+                    "mapped media user sees the live guest mergerfs mount",
+                )
+                runtime.guest("test", "-r", "/srv/media/data/library/recovery.wav", user=505)
                 wait_for("healthy K3s node", runtime.node_ready)
+                k3s_pid = runtime.guest("systemctl", "show", "--value", "-p", "MainPID", "k3s")
+                k3s_groups = [
+                    line.split()[1:]
+                    for line in runtime.guest("cat", f"/proc/{k3s_pid}/status").splitlines()
+                    if line.startswith("Groups:")
+                ]
+                check(k3s_groups and "505" in k3s_groups[0], "K3s kubelet can traverse the media group")
                 wait_for("unrelated CoreDNS availability", runtime.unrelated_ready)
                 wait_for("node resource metrics", runtime.metrics_ready)
             runtime.check_secret_payload(secret_payload)

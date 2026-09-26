@@ -150,37 +150,6 @@ Where both phases touch a supported field, the provisioner establishes the
 initial value and Jellarr becomes the ongoing owner with the same desired
 value. Routine reconciliation never copies generated XML or rewrites SQLite.
 
-## Compute, storage, and recovery boundary
-
-Host metadata remains in Den entities; aspects supply behavior through the
-existing access, persistence, and secret-request conventions. NixOS preseed
-owns Incus projects, networks, profiles, pools, and resource configuration.
-`compute-guest` only inspects, creates, and explicitly replaces instances; it
-verifies effective configuration, retained prerequisites, identity, and image
-availability without knowing Jellyfin internals.
-
-Use one host-side lock for guest mutation, identity staging, and operator
-maintenance. Acquire artifacts before destruction; distinguish absence from
-daemon/access errors; never delete the containing pool or retained paths. The
-guest remains unprivileged with explicit grants, fixed non-root host-ID
-translation, private networking, K3s with bundled Flannel/kube-proxy, and the
-standard overlayfs snapshotter. No privileged fallback, host management socket,
-broad writable host tree, or disabled confinement is allowed.
-
-Required host paths fail closed by validating actual source mounts rather than
-mountpoint directories. Media is projected through the declared semantic
-read-only boundary; source disappearance must not expose a substitute
-underlying directory. Application-only media loss must not gate node boot or
-unrelated workload management. Retained Jellyfin config/PV/PVC ownership and
-media projection stay explicit and non-overlapping.
-
-Routine reconciliation preserves retained data and does not replace an
-existing compute instance. Destructive replacement is an explicit operation
-that names the target and retained inputs, validates them before destruction,
-and serializes against competing lifecycle operations. Preserve owns the
-retained-state protection and recovery policy; this change only declares the
-inputs that Jellyfin recovery consumes.
-
 ## Storage and exposure constraints
 
 The startup architecture also keeps these workload constraints:

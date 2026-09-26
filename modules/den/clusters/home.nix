@@ -77,6 +77,7 @@ in
       argocd
       cluster-dns
       retained-storage
+      media
       jellyfin
       gateway
       identity

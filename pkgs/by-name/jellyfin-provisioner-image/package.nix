@@ -76,15 +76,6 @@ let
     text = ''
       umask 077
       test -s /run/secrets/password
-      test -d /media -a -r /media
-      media_mounted=false
-      while read -r _ _ _ _ mountpoint _; do
-        if [ "$mountpoint" = /media ]; then
-          media_mounted=true
-          break
-        fi
-      done < /proc/self/mountinfo
-      "$media_mounted"
       trap 'rm -f /run/provision/provision.json /run/provision/provision.json.tmp' EXIT
       jq -n --rawfile password /run/secrets/password '{
         Administrator: { Name: "admin", Password: ($password | rtrimstr("\n")) }
