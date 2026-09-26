@@ -98,6 +98,7 @@ in
     }:
     {
       agenix-rekey = {
+        nixosConfigurations = lib.filterAttrs (_: node: node.config ? age.rekey) self.nixosConfigurations;
         agePackage = pkgs.age;
       };
 
