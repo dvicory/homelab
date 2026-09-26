@@ -51,6 +51,14 @@ if [[ $* == "-rn -T $SOURCE -o TARGET,SOURCE,FSTYPE,UUID" ]]; then
   [[ ${CASE-} != source-mount-probe ]] || exit 2
   if [[ ${CASE-} == source-pool ]]; then
     printf '%s /srv/media/data fuse.mergerfs -\n' "$SOURCE"
+  elif [[ ${CASE-} == source-remounted ]]; then
+    printf '%s /dev/fuse fuse.gocryptfs NEWUUID-9\n' "$SOURCE"
+  elif [[ ${CASE-} == source-different-device ]]; then
+    printf '%s /dev/other fuse.gocryptfs -\n' "$SOURCE"
+  elif [[ ${CASE-} == source-different-fstype ]]; then
+    printf '%s /dev/fuse fuse.other -\n' "$SOURCE"
+  elif [[ ${CASE-} == source-moved ]]; then
+    printf '%s-moved /dev/fuse fuse.gocryptfs -\n' "$SOURCE"
   else
     printf '%s /dev/fuse fuse.gocryptfs -\n' "$SOURCE"
   fi
@@ -104,7 +112,10 @@ cat > "$fake_bin/stat" <<'EOF'
 set -eu
 printf 'stat %s\n' "$*" >> "$LOG"
 if [[ ${CASE-} == source-stat-probe ]]; then exit 2; fi
-if [[ $* == "-c %d -- $SOURCE" ]]; then printf '400\n'; exit 0; fi
+if [[ $* == "-c %d -- $SOURCE" ]]; then
+  if [[ ${CASE-} == source-remounted ]]; then printf '777\n'; else printf '400\n'; fi
+  exit 0
+fi
 if [[ $* == "-c %d -- $MOUNTPOINT" ]]; then printf '401\n'; exit 0; fi
 printf '0 400\n'
 EOF
@@ -123,7 +134,11 @@ set -eu
 printf 'df %s\n' "$*" >> "$LOG"
 [[ ${CASE-} != destination-free-probe ]] || exit 2
 printf 'Filesystem 1-blocks Used Available Capacity Mounted on\n'
-printf '/dev/mapper/crypt-fixture 20000000000000 100 14000000000000 1%% %s\n' "$MOUNTPOINT"
+if [[ ${CASE-} == destination-small ]]; then
+  printf '/dev/mapper/crypt-fixture 20000000000000 100 50 1%% %s\n' "$MOUNTPOINT"
+else
+  printf '/dev/mapper/crypt-fixture 20000000000000 100 14000000000000 1%% %s\n' "$MOUNTPOINT"
+fi
 EOF
 
 cat > "$fake_bin/sgdisk" <<'EOF'
@@ -419,7 +434,7 @@ run_copy_case() {
   rm -f "$receipt" "$log" "$log.partition"
   rm -rf "$mountpoint/.seed" "$mountpoint/unsafe"
   [[ $name != destination-nonempty ]] || : > "$mountpoint/unsafe"
-  if CASE=$name LOG=$log PATH="$fake_bin:$PATH" APPROVE=$approve EVIDENCE=${COPY_EVIDENCE-$EVIDENCE} \
+  if CASE=$name LOG=$log PATH="$fake_bin:$PATH" APPROVE=$approve RECEIPT=$receipt EVIDENCE=${COPY_EVIDENCE-$EVIDENCE} \
     bash -c '
       set -euo pipefail
       source "$SCRIPT"
@@ -459,3 +474,63 @@ QUIESCENCE=$quiescence COPY_EVIDENCE=$no_source_evidence run_copy_case no-source
 grep -q 'records SOURCE=none' "$tmp/copy-no-source-copy.log.out"
 QUIESCENCE=$quiescence run_copy_case success pass
 grep -q "^SEED_ROOT=$mountpoint/.seed\$" "$tmp/receipt-success"
+
+run_quiesce_case() {
+  local name=$1 expected=$2 writers=${3-stopped}
+  local quiescence_out=$tmp/quiescence-$name log=$tmp/quiesce-$name.log rc=0
+  rm -f "$quiescence_out" "$log"
+  rm -rf "$mountpoint/.seed"
+  [[ $name != quiesce-exists ]] || printf 'EVIDENCE_VERSION=2\nWRITERS=STOPPED\n' > "$quiescence_out"
+  if CASE=$name LOG=$log PATH="$fake_bin:$PATH" QUIESCENT=$quiescence_out WRITERS=$writers \
+    bash -c '
+      set -euo pipefail
+      source "$SCRIPT"
+      fixture_setup
+      args=(--descriptor "$FIXTURE_DESCRIPTOR" --evidence "$EVIDENCE"
+        --quiescence-evidence "$QUIESCENT")
+      case $WRITERS in
+        stopped) args+=(--writers-stopped) ;;
+        independent) args+=(--independent-consistency) ;;
+        none) ;;
+      esac
+      parse_args quiesce "${args[@]}"
+      quiesce_source
+    ' >"$log.out" 2>&1; then
+    rc=0
+  else
+    rc=$?
+  fi
+  if [[ $expected == pass ]]; then
+    [[ $rc -eq 0 && -s $quiescence_out ]] || { cat "$log.out" >&2; return 1; }
+    LAST_QUIESCENCE=$quiescence_out
+  else
+    [[ $rc -ne 0 ]] || { echo "quiesce fixture unexpectedly passed: $name" >&2; return 1; }
+    [[ $name == quiesce-exists || ! -e $quiescence_out ]]
+  fi
+}
+
+# v2 quiescence re-stabilizes a FUSE-remounted source (new st_dev/UUID, same
+# filesystem identity) and copy accepts the fresh token.
+run_quiesce_case source-remounted pass
+grep -q '^EVIDENCE_VERSION=2$' "$LAST_QUIESCENCE"
+grep -q '^WRITERS=STOPPED$' "$LAST_QUIESCENCE"
+grep -q 'SOURCE_ST_DEV preflight=400 current=777' "$tmp/quiesce-source-remounted.log.out"
+grep -q 'SOURCE_UUID preflight=- current=NEWUUID-9' "$tmp/quiesce-source-remounted.log.out"
+QUIESCENCE=$LAST_QUIESCENCE run_copy_case source-remounted pass
+
+# v2 still pins filesystem identity, capacity, and single-shot evidence.
+for refusal in source-different-device source-different-fstype source-moved   destination-small; do
+  run_quiesce_case "$refusal" fail
+done
+run_quiesce_case quiesce-exists fail
+run_quiesce_case no-assertion fail none
+EVIDENCE=$no_source_evidence run_quiesce_case no-source-quiesce fail
+grep -q 'records SOURCE=none' "$tmp/quiesce-no-source-quiesce.log.out"
+run_quiesce_case independent pass
+
+# A source that drifts after v2 quiescence is refused at copy.
+run_quiesce_case pre-drift pass
+QUIESCENCE=$LAST_QUIESCENCE run_copy_case source-remounted fail
+
+# v1 quiescence keeps the old binding: it still refuses the remounted source.
+QUIESCENCE=$quiescence run_copy_case source-remounted fail

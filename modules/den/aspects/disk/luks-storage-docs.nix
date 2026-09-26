@@ -100,10 +100,15 @@ in
            records one), requires the declared root-private agenix key, and
            repeats the target probes immediately before `sgdisk`. It only
            partitions the evaluated target and runs `cryptsetup luksFormat`.
-        3. `copy` requires evidence with a direct source, quiescence evidence
-           bound to that source, a direct XFS destination mount, and
-           `--approve-copy`. It copies the source into a new `.seed` tree at
-           the destination root, then verifies it.
+        3. `quiesce` requires evidence with a direct source. It rechecks the
+           destination and the source's filesystem identity against that
+           evidence, then records a fresh source token once, after
+           `--writers-stopped` or `--independent-consistency` is asserted.
+        4. `copy` requires evidence with a direct source, a quiescence record
+           from `quiesce` (or a version 1 record bound to the preflight
+           token), a direct XFS destination mount, and `--approve-copy`. It
+           copies the source into a new `.seed` tree at the destination root,
+           then verifies it.
 
         Evidence is bound to the descriptor and rechecked; it is not a
         free-form confirmation string. Any missing, conflicting, changed, or
@@ -273,26 +278,32 @@ in
 
         Writers and reconciliation must stay stopped from the source
         inventory through copy verification, any pool change, and acceptance.
-        Read the token without sourcing the evidence file:
+
+        A host activation can restart a FUSE source, which then remounts with
+        a new anonymous device number and filesystem UUID. Do not hand-write
+        a token from preflight evidence; run `quiesce`. It rechecks the
+        destination, requires the same filesystem identity (mount path, mount
+        source, filesystem type) as preflight, records a fresh source token,
+        and reports the fields that drifted:
 
         ```sh
-        SOURCE_TOKEN=$(sed -n 's/^SOURCE_TOKEN=//p' "$EVIDENCE")
-        test -n "$SOURCE_TOKEN"
-        printf 'EVIDENCE_VERSION=1\nSOURCE_TOKEN=%s\nWRITERS=STOPPED\n' \
-          "$SOURCE_TOKEN" > "$QUIESCENCE"
-        chmod 0600 "$QUIESCENCE"
+        prepare-luks-storage-$DISK quiesce \
+          --evidence "$EVIDENCE" \
+          --quiescence-evidence "$QUIESCENCE" \
+          --writers-stopped
         ```
 
-        Create this file only after the recorded workload inventory proves
-        that all writers are stopped. If writers cannot be stopped, replace
-        `WRITERS=STOPPED` with independently reviewed
-        `INDEPENDENT_CONSISTENCY=PASS` evidence that actually establishes a
-        stable source snapshot.
+        Run it only after the recorded workload inventory proves that all
+        writers are stopped; `--writers-stopped` is that operator assertion.
+        If writers cannot be stopped, use `--independent-consistency` only
+        when independently reviewed evidence establishes a stable source
+        snapshot. `quiesce` refuses if the quiescence file already exists;
+        delete it deliberately to re-stabilize.
 
         The copy command rechecks the evidence, target identity, direct XFS
-        mount, free space, and source provenance and bytes. It refuses a
-        non-empty destination or an existing staging tree. Approve the write
-        separately:
+        mount, free space, and source provenance, and requires the source to
+        be unchanged since quiescence. It refuses a non-empty destination or
+        an existing staging tree. Approve the write separately:
 
         ```sh
         prepare-luks-storage-$DISK copy \

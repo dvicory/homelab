@@ -19,13 +19,16 @@ usage:
   prepare-luks-storage format --descriptor /etc/homelab/storage/NAME \
     --evidence /run/NAME-preflight \
     --confirm-target WHOLE_BY_ID|SERIAL|WWN|SIZE_BYTES --approve-format
+  prepare-luks-storage quiesce --descriptor /etc/homelab/storage/NAME \
+    --evidence /run/NAME-preflight \
+    --quiescence-evidence /run/NAME-quiescence --writers-stopped
   prepare-luks-storage copy --descriptor /etc/homelab/storage/NAME \
     --evidence /run/NAME-preflight \
     --quiescence-evidence /run/NAME-quiescence \
     --receipt /run/NAME-copy-receipt --approve-copy
 
 Without --source, preflight checks only target identity and emptiness and
-records SOURCE=none. Such evidence allows format; copy refuses it.
+records SOURCE=none. Such evidence allows format; quiesce and copy refuse it.
 copy stages the source under MOUNTPOINT/.seed.
 
 The host-specific wrapper supplies --descriptor from the evaluated Den
@@ -64,6 +67,8 @@ RECEIPT_PATH=
 CONFIRM_TARGET=
 APPROVE_FORMAT=false
 APPROVE_COPY=false
+WRITERS_STOPPED=false
+INDEPENDENT_CONSISTENCY=false
 
 WHOLE_DEVICE=
 WHOLE_BY_ID=
@@ -143,6 +148,14 @@ parse_args() {
         ;;
       --approve-copy)
         APPROVE_COPY=true
+        shift
+        ;;
+      --writers-stopped)
+        WRITERS_STOPPED=true
+        shift
+        ;;
+      --independent-consistency)
+        INDEPENDENT_CONSISTENCY=true
         shift
         ;;
       -h|--help)
@@ -896,6 +909,36 @@ assert_source_evidence_current() {
     die "source provenance or byte measurement does not match preflight evidence"
 }
 
+# Re-inspect the evidence source and require the mount identity that proves the
+# same filesystem (path, canonical path, mount target, source device, fstype).
+# st_dev, UUID, and byte counts may drift when a host activation re-decrypts
+# agenix secrets and remounts FUSE sources; report each drifted field.
+assert_source_identity_matches_evidence() {
+  SOURCE_PATH=$EVIDENCE_SOURCE_PATH
+  [[ $SOURCE_PATH == "$EVIDENCE_SOURCE_REALPATH" ]] ||
+    die "preflight source path is not canonical"
+  SOURCE_READY=false
+  GATE_FAILURES=0
+  GATE_MANUALS=0
+  inspect_source
+  ((GATE_FAILURES == 0 && GATE_MANUALS == 0)) ||
+    die "source is not inspectable; rerun preflight after quiescing the source"
+  [[ $SOURCE_READY == true ]] ||
+    die "source is not inspectable; rerun preflight after quiescing the source"
+  [[ $SOURCE_REALPATH == "$EVIDENCE_SOURCE_REALPATH" &&
+    $SOURCE_MOUNT_TARGET == "$EVIDENCE_SOURCE_MOUNT_TARGET" &&
+    $SOURCE_DEVICE == "$EVIDENCE_SOURCE_DEVICE" &&
+    $SOURCE_FSTYPE == "$EVIDENCE_SOURCE_FSTYPE" ]] ||
+    die "source filesystem identity does not match preflight evidence"
+  local field evidence_var current_var
+  for field in UUID ST_DEV APPARENT_BYTES ALLOCATED_BYTES; do
+    evidence_var=EVIDENCE_SOURCE_$field
+    current_var=SOURCE_$field
+    [[ ${!evidence_var} == "${!current_var}" ]] ||
+      printf 'SOURCE_%s preflight=%s current=%s\n' "$field" "${!evidence_var}" "${!current_var}"
+  done
+}
+
 assert_detached() {
   local children mounted holders
   children=$(children_for "$WHOLE_DEVICE") || die "could not inspect target children; refusing to format"
@@ -946,14 +989,20 @@ read_quiescence_evidence() {
       SOURCE_TOKEN) QUIESCENCE_SOURCE_TOKEN=$value ;;
       WRITERS) QUIESCENCE_WRITERS=$value ;;
       INDEPENDENT_CONSISTENCY) QUIESCENCE_CONSISTENCY=$value ;;
+      SOURCE_PATH|SOURCE_REALPATH|SOURCE_MOUNT_TARGET|SOURCE_DEVICE|SOURCE_FSTYPE|SOURCE_UUID|SOURCE_ST_DEV|SOURCE_APPARENT_BYTES|SOURCE_ALLOCATED_BYTES) ;;
       *) die "unknown quiescence field: $key" ;;
     esac
   done < "$QUIESCENCE_EVIDENCE"
-  [[ $QUIESCENCE_VERSION == 1 ]] || die "unsupported quiescence evidence version"
+  [[ $QUIESCENCE_VERSION == 1 || $QUIESCENCE_VERSION == 2 ]] ||
+    die "unsupported quiescence evidence version"
   [[ $QUIESCENCE_WRITERS == STOPPED || $QUIESCENCE_CONSISTENCY == PASS ]] ||
     die "quiescence evidence does not establish stopped writers or independent consistency"
-  [[ $QUIESCENCE_SOURCE_TOKEN == "$EVIDENCE_SOURCE_TOKEN" ]] ||
-    die "quiescence evidence is bound to a different source snapshot"
+  # Version 1 pins to the preflight snapshot token; version 2 records a fresh
+  # token taken after re-stabilizing a possibly remounted source.
+  if [[ $QUIESCENCE_VERSION == 1 ]]; then
+    [[ $QUIESCENCE_SOURCE_TOKEN == "$EVIDENCE_SOURCE_TOKEN" ]] ||
+      die "quiescence evidence is bound to a different source snapshot"
+  fi
 }
 
 inspect_destination_mount() {
@@ -982,7 +1031,7 @@ inspect_destination_mount() {
 }
 
 destination_free_bytes() {
-  local output line free output_line
+  local required=$1 output line free output_line
   if ! output=$(df -P -B1 -- "$MOUNTPOINT" 2>&1); then
     die "destination free-space probe failed"
   fi
@@ -992,7 +1041,7 @@ destination_free_bytes() {
   done <<< "$output"
   read -r _ _ _ free _ _ <<< "$line"
   is_uint "$free" || die "destination free-space probe returned an invalid value"
-  ((free >= EVIDENCE_SOURCE_APPARENT_BYTES + MIN_HEADROOM_BYTES)) ||
+  ((free >= required + MIN_HEADROOM_BYTES)) ||
     die "destination has insufficient free space for the measured source"
   printf 'DESTINATION_FREE_BYTES=%s\n' "$free"
 }
@@ -1063,6 +1112,61 @@ if sorted(map(sorted, src_links.values())) != sorted(map(sorted, dst_links.value
 PY
 }
 
+quiesce_source() {
+  parse_args quiesce "$@"
+  read_descriptor
+  [[ -n $EVIDENCE_PATH ]] || die "quiesce requires --evidence"
+  [[ -n $QUIESCENCE_EVIDENCE ]] || die "quiesce requires --quiescence-evidence"
+  if [[ $WRITERS_STOPPED == true && $INDEPENDENT_CONSISTENCY == true ]]; then
+    die "quiesce takes only one of --writers-stopped or --independent-consistency"
+  fi
+  [[ $WRITERS_STOPPED == true || $INDEPENDENT_CONSISTENCY == true ]] ||
+    die "quiesce requires --writers-stopped or --independent-consistency"
+  [[ ! -e $QUIESCENCE_EVIDENCE && ! -L $QUIESCENCE_EVIDENCE ]] ||
+    die "quiescence evidence already exists: $QUIESCENCE_EVIDENCE"
+  read_evidence
+  require_source_evidence quiesce
+  resolve_declared_device || die "could not resolve the evaluated target"
+  if [[ $(identity_token) != "$EVIDENCE_TARGET_TOKEN" ]]; then
+    report_target_evidence_diff
+    die "target identity no longer matches preflight evidence"
+  fi
+  inspect_destination_mount
+  destination_is_empty
+  [[ ! -e $MOUNTPOINT/.seed && ! -L $MOUNTPOINT/.seed ]] ||
+    die "destination staging tree already exists; refusing to record quiescence"
+  # The same filesystem identity as preflight, re-stabilized in place; st_dev,
+  # UUID, and byte drift are reported rather than fatal.
+  assert_source_identity_matches_evidence
+  destination_free_bytes "$SOURCE_APPARENT_BYTES"
+
+  evidence_path_safe "$QUIESCENCE_EVIDENCE"
+  local tmp
+  umask 077
+  tmp=$(mktemp "${QUIESCENCE_EVIDENCE}.tmp.XXXXXX") || die "could not create quiescence evidence"
+  cat > "$tmp" <<EOF
+EVIDENCE_VERSION=2
+SOURCE_PATH=$SOURCE_PATH
+SOURCE_REALPATH=$SOURCE_REALPATH
+SOURCE_MOUNT_TARGET=$SOURCE_MOUNT_TARGET
+SOURCE_DEVICE=$SOURCE_DEVICE
+SOURCE_FSTYPE=$SOURCE_FSTYPE
+SOURCE_UUID=$SOURCE_UUID
+SOURCE_ST_DEV=$SOURCE_ST_DEV
+SOURCE_APPARENT_BYTES=$SOURCE_APPARENT_BYTES
+SOURCE_ALLOCATED_BYTES=$SOURCE_ALLOCATED_BYTES
+SOURCE_TOKEN=$SOURCE_TOKEN
+EOF
+  if [[ $WRITERS_STOPPED == true ]]; then
+    printf 'WRITERS=STOPPED\n' >> "$tmp"
+  else
+    printf 'INDEPENDENT_CONSISTENCY=PASS\n' >> "$tmp"
+  fi
+  chmod 0600 "$tmp"
+  mv -f -- "$tmp" "$QUIESCENCE_EVIDENCE"
+  printf 'QUIESCENCE_EVIDENCE=%s\n' "$QUIESCENCE_EVIDENCE"
+}
+
 copy_disk() {
   parse_args copy "$@"
   read_descriptor
@@ -1072,7 +1176,8 @@ copy_disk() {
   read_evidence
   require_source_evidence copy
   read_quiescence_evidence
-  [[ $QUIESCENCE_SOURCE_TOKEN == "$EVIDENCE_SOURCE_TOKEN" ]] || die "source provenance mismatch"
+  [[ $QUIESCENCE_VERSION == 2 || $QUIESCENCE_SOURCE_TOKEN == "$EVIDENCE_SOURCE_TOKEN" ]] ||
+    die "source provenance mismatch"
   SOURCE_PATH=$EVIDENCE_SOURCE_PATH
   resolve_declared_device || die "could not resolve the evaluated target"
   if [[ $(identity_token) != "$EVIDENCE_TARGET_TOKEN" ]]; then
@@ -1080,9 +1185,17 @@ copy_disk() {
     die "target identity no longer matches preflight evidence"
   fi
   inspect_destination_mount
-  destination_free_bytes
-  destination_is_empty
-  assert_source_evidence_current
+  if [[ $QUIESCENCE_VERSION == 2 ]]; then
+    # Version 2 re-stabilizes identity after intervening host activations; the
+    # copy still requires the source to be byte-identical since quiescence.
+    assert_source_identity_matches_evidence
+    destination_free_bytes "$SOURCE_APPARENT_BYTES"
+    destination_is_empty
+  else
+    destination_free_bytes "$EVIDENCE_SOURCE_APPARENT_BYTES"
+    destination_is_empty
+    assert_source_evidence_current
+  fi
   [[ $SOURCE_TOKEN == "$QUIESCENCE_SOURCE_TOKEN" ]] ||
     die "source changed after quiescence evidence; rerun preflight"
 
@@ -1189,6 +1302,7 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
   case $command in
     describe) describe_disk "$@" ;;
     preflight) preflight "$@" ;;
+    quiesce) quiesce_source "$@" ;;
     format) format_disk "$@" ;;
     copy) copy_disk "$@" ;;
     -h|--help|"") usage ;;
