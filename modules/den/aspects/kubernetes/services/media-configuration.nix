@@ -10,9 +10,9 @@
       type = lib.types.str;
       default = "media-runtime";
       description = ''
-        Runtime Secret in media containing native Arr API keys, SABnzbd
-        credentials and the Jellyfin administrator credentials used only for
-        Seerr's supported first-owner login. Values stay in the runtime Secret.
+        Runtime Secret in media containing native Arr API keys and SABnzbd
+        credentials. Jellyfin's administrator credential remains owned by
+        Jellyfin in its own namespace.
       '';
     };
     includes = [
@@ -20,26 +20,6 @@
     ];
   };
 
-  den.aspects.kubernetes.services.media.configuration.compute-resources =
-    { cluster, ... }:
-    let
-      name = cluster.settings.kubernetes.services.media.configurationSecret;
-    in
-    {
-      runtimeSecrets =
-        lib.mapAttrs'
-          (
-            key: generator:
-            lib.nameValuePair "media--${name}--${key}" {
-              namespace = "media";
-              inherit name key generator;
-            }
-          )
-          {
-            JELLYFIN_OWNER_USERNAME = null;
-            JELLYFIN_OWNER_PASSWORD = "alnum-no-newline";
-          };
-    };
   den.aspects.kubernetes.services.media.configuration.k8s-manifests =
     { cluster, ... }:
     let
@@ -100,11 +80,7 @@
         sonarr = arrFacts "sonarr" 8989;
       };
       apps = {
-        jellyfin = {
-          namespace = "jellyfin";
-          service = "jellyfin";
-          port = 8096;
-        };
+        jellyfin = cluster.settings.kubernetes.services.jellyfin.integration;
         inherit (services) prowlarr sabnzbd seerr;
       };
       images = builtins.mapAttrs (_: image: "${image.repository}:${image.tag}@${image.digest}") {
@@ -293,10 +269,7 @@
         cluster:
         let
           settings = cluster.settings.kubernetes.services.media;
-          jellyfinRoute =
-            assert lib.assertMsg (builtins.hasAttr "jellyfin" cluster.routes)
-              "Media route jellyfin is not declared.";
-            cluster.routes.jellyfin;
+          jellyfinRoute = cluster.routes.jellyfin;
           prowlarrUrl = endpoint apps.prowlarr;
         in
         {
@@ -347,11 +320,14 @@
               applicationUrl = apps.seerr.externalUrl;
             };
             jellyfin = {
-              ip = "${apps.jellyfin.service}.${apps.jellyfin.namespace}.svc";
+              ip = apps.jellyfin.host;
               port = apps.jellyfin.port;
               useSsl = jellyfinRoute.backendTLS;
               urlBase = routePrefix jellyfinRoute;
               externalHostname = "https://${builtins.head jellyfinRoute.hostnames}${routePrefix jellyfinRoute}";
+              username = apps.jellyfin.administrator;
+              library = apps.jellyfin.moviesLibrary;
+              secret = apps.jellyfin.adminSecret;
             };
             # Keep this value visible in the evaluated policy: SAB is configured by
             # its own native INI initializer, not by Seerr or the Arr reconciler.
@@ -434,7 +410,8 @@
           volumes,
           secretName,
           secretKeys,
-          optionalSecretKeys ? [ ],
+          serviceAccountName ? "default",
+          env ? [ ],
         }:
         {
           backoffLimit = 6;
@@ -444,6 +421,7 @@
             spec = {
               restartPolicy = "OnFailure";
               automountServiceAccountToken = false;
+              inherit serviceAccountName;
               securityContext = {
                 runAsUser = 1000;
                 runAsGroup = 1000;
@@ -454,7 +432,7 @@
               containers = [
                 {
                   name = "configure";
-                  inherit image command;
+                  inherit image command env;
                   resources = {
                     requests = {
                       cpu = "25m";
@@ -488,17 +466,7 @@
                           }) secretKeys;
                         };
                       }
-                    ]
-                    ++ lib.optional (optionalSecretKeys != [ ]) {
-                      secret = {
-                        name = secretName;
-                        optional = true;
-                        items = map (key: {
-                          inherit key;
-                          path = key;
-                        }) optionalSecretKeys;
-                      };
-                    };
+                    ];
                   };
                 }
               ];
@@ -605,11 +573,14 @@
           "/configuration/seerr.mjs"
         ];
         secretName = secretName;
-        secretKeys = arrSecretKeys ++ [
-          "JELLYFIN_OWNER_USERNAME"
-          "JELLYFIN_OWNER_PASSWORD"
+        secretKeys = arrSecretKeys;
+        serviceAccountName = "media-config-seerr";
+        env = [
+          {
+            name = "NODE_EXTRA_CA_CERTS";
+            value = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
+          }
         ];
-        optionalSecretKeys = [ "SEERR_API_KEY" ];
         mounts = [
           {
             name = "configuration";
@@ -621,12 +592,42 @@
             mountPath = "/secrets";
             readOnly = true;
           }
+          {
+            name = "kubernetes-api";
+            mountPath = "/var/run/secrets/kubernetes.io/serviceaccount";
+            readOnly = true;
+          }
         ];
         volumes = [
           {
             name = "configuration";
             configMap = {
               name = "media-configuration";
+            };
+          }
+          {
+            name = "kubernetes-api";
+            projected = {
+              defaultMode = 288;
+              sources = [
+                {
+                  serviceAccountToken = {
+                    path = "token";
+                    expirationSeconds = 600;
+                  };
+                }
+                {
+                  configMap = {
+                    name = "kube-root-ca.crt";
+                    items = [
+                      {
+                        key = "ca.crt";
+                        path = "ca.crt";
+                      }
+                    ];
+                  };
+                }
+              ];
             };
           }
         ];
@@ -791,6 +792,15 @@
       baseObjects = [
         {
           apiVersion = "v1";
+          kind = "ServiceAccount";
+          metadata = {
+            name = "media-config-seerr";
+            namespace = "media";
+          };
+          automountServiceAccountToken = false;
+        }
+        {
+          apiVersion = "v1";
           kind = "ConfigMap";
           metadata = {
             name = "media-configuration";
@@ -865,123 +875,7 @@
         console.log('media roots: declared roots reconciled');
       '';
       prowlarrScript = builtins.readFile ./prowlarr.mjs;
-      seerrScript = ''
-        import { readFileSync, existsSync } from 'node:fs';
-        const policy = JSON.parse(readFileSync('/configuration/seerr.json', 'utf8'));
-        const secret = name => {
-          const value = readFileSync('/secrets/' + name, 'utf8').replace(/\r?\n$/, "");
-          if (!value.trim()) throw new Error('Empty required Secret key: ' + name);
-          return value;
-        };
-        function api(base, headers = {}) {
-          const cookies = new Map();
-          return async (path, method = 'GET', body) => {
-            let response;
-            try {
-              response = await fetch(base + path, {
-                method,
-                headers: { 'Content-Type': 'application/json', ...headers,
-                  ...(cookies.size ? { Cookie: [...cookies].map(([k, v]) => k + '=' + v).join('; ') } : {}),
-                  ...(cookies.has('XSRF-TOKEN') ? { 'X-XSRF-TOKEN': decodeURIComponent(cookies.get('XSRF-TOKEN')) } : {}),
-                },
-                body: body === undefined ? undefined : JSON.stringify(body),
-                signal: AbortSignal.timeout(20000),
-                redirect: 'error',
-              });
-            } catch {
-              throw new Error(method + ' ' + path + ': dependency unreachable');
-            }
-            if (!response.ok) throw new Error(method + ' ' + path + ': HTTP ' + response.status);
-            for (const cookie of response.headers.getSetCookie()) {
-              const pair = cookie.split(';')[0], index = pair.indexOf('=');
-              cookies.set(pair.slice(0, index), pair.slice(index + 1));
-            }
-            const text = await response.text();
-            try { return text ? JSON.parse(text) : null; }
-            catch { throw new Error(method + ' ' + path + ': invalid JSON response'); }
-          };
-        }
-        function one(items, predicate, label) {
-          const matches = items.filter(predicate);
-          if (matches.length > 1) throw new Error('Ambiguous managed ' + label);
-          return matches[0];
-        }
-        async function configure() {
-          const base = policy.seerr.url + '/api/v1';
-          const headers = { Origin: policy.seerr.url };
-          const request = api(base, headers);
-          const publicSettings = await request('/settings/public');
-          if (existsSync('/secrets/SEERR_API_KEY')) {
-            headers['X-Api-Key'] = secret('SEERR_API_KEY');
-          } else {
-            const login = {
-              username: secret('JELLYFIN_OWNER_USERNAME'),
-              password: secret('JELLYFIN_OWNER_PASSWORD'),
-              serverType: 2,
-            };
-            if (publicSettings.mediaServerType === 4) Object.assign(login, {
-              hostname: policy.jellyfin.ip,
-              port: policy.jellyfin.port,
-              useSsl: policy.jellyfin.useSsl,
-              urlBase: policy.jellyfin.urlBase,
-            });
-            const session = await request('/auth/jellyfin', 'POST', login);
-            if (session.id !== 1) throw new Error('Runtime Jellyfin account is not the Seerr owner (id 1)');
-            headers['X-Api-Key'] = (await request('/settings/main')).apiKey;
-          }
-          const owner = await request('/auth/me');
-          if (owner.id !== 1) throw new Error('Configuration requires Seerr owner');
-          await request('/settings/jellyfin', 'POST', policy.jellyfin);
-          await request('/settings/main', 'POST', { applicationUrl: policy.seerr.applicationUrl });
-          for (const [name, desired] of Object.entries(policy.arr)) {
-            const profiles = await api(desired.url + '/api/v3', { 'X-Api-Key': secret(desired.apiSecretKey) })('/qualityprofile');
-            const profile = one(profiles, item => item.name === desired.profile, 'Seerr quality profile');
-            if (!profile) throw new Error('Run Configarr before Seerr');
-            const path = '/settings/' + name;
-            const connectionName = name === 'radarr' ? 'Radarr' : 'Sonarr';
-            const existing = one(await request(path), item => item.name === connectionName, 'Seerr connection');
-            const url = new URL(desired.url);
-            const server = {
-              tags: [], overrideRule: [], tagRequests: false,
-              ...(existing || {}),
-              name: connectionName,
-              hostname: url.hostname,
-              port: Number(url.port),
-              useSsl: false,
-              baseUrl: url.pathname === '/' ? "" : url.pathname,
-              apiKey: secret(desired.apiSecretKey),
-              activeProfileId: profile.id,
-              activeProfileName: desired.profile,
-              activeDirectory: desired.root,
-              externalUrl: desired.externalUrl,
-              isDefault: true,
-              is4k: false,
-              syncEnabled: true,
-              preventSearch: false,
-              ...(name === 'radarr' ? { minimumAvailability: 'released' } : {
-                seriesType: 'standard',
-                animeSeriesType: 'anime',
-                activeAnimeProfileId: profile.id,
-                activeAnimeProfileName: desired.profile,
-                activeAnimeDirectory: desired.root,
-                enableSeasonFolders: true,
-                monitorNewItems: 'all',
-              }),
-            };
-            delete server.id;
-            await request(path + '/test', 'POST', server);
-            await request(path + (existing ? '/' + existing.id : ""), existing ? 'PUT' : 'POST', server);
-          }
-          await request('/settings/initialize', 'POST');
-        }
-        try {
-          await configure();
-          console.log('seerr: declared Jellyfin and Arr servers reconciled');
-        } catch (error) {
-          console.error(error.message);
-          process.exitCode = 1;
-        }
-      '';
+      seerrScript = builtins.readFile ./seerr.mjs;
     in
     {
       applications.media-configuration = {
