@@ -93,6 +93,7 @@ spec:
         kubernetes.io/hostname: compute-1
       restartPolicy: Never
       securityContext:
+        fsGroup: 751
         runAsGroup: 751
         runAsNonRoot: true
         runAsUser: 751
@@ -105,7 +106,7 @@ spec:
           name: configuration
         - name: admin-password
           secret:
-            defaultMode: 256
+            defaultMode: 288
             items:
               - key: password
                 path: password

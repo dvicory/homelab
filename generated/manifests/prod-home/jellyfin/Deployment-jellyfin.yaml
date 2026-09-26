@@ -138,7 +138,7 @@ spec:
           name: provision
         - name: admin-password
           secret:
-            defaultMode: 256
+            defaultMode: 292
             items:
               - key: password
                 path: password

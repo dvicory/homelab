@@ -1471,14 +1471,38 @@ def run_scenario(args: argparse.Namespace) -> None:
                 for command in (
                     ["get", "pods", "-A", "-o", "wide"],
                     ["describe", "pods", "-n", "argocd"],
-                    ["logs", "-n", "argocd", "deployment/argocd-applicationset-controller", "--tail=100"],
-                    ["logs", "-n", "argocd", "deployment/argocd-applicationset-controller", "--previous", "--tail=100"],
+                    ["logs", "-n", "argocd", "deployment/argocd-applicationset-controller", "--all-containers", "--prefix", "--tail=100"],
+                    ["logs", "-n", "argocd", "deployment/argocd-applicationset-controller", "--all-containers", "--prefix", "--previous", "--tail=100"],
                     ["describe", "pods", "-n", "jellyfin"],
-                    ["logs", "-n", "jellyfin", "deployment/jellyfin", "--tail=100"],
+                    ["logs", "-n", "jellyfin", "deployment/jellyfin", "--all-containers", "--prefix", "--tail=100"],
+                    ["logs", "-n", "jellyfin", "job/jellyfin-configuration", "--all-containers", "--prefix", "--tail=100"],
                 ):
                     diagnostics = completed(
                         "incus", "--force-local", "--project", project, "exec", instance_name,
                         "--", "k3s", "kubectl", "--request-timeout=15s", *command)
+                    print(diagnostics.stdout or diagnostics.stderr, file=sys.stderr)
+                # A CrashLooping container's failed attempt only survives in
+                # --previous logs; fetch them for every container that restarted.
+                pods_dump = completed(
+                    "incus", "--force-local", "--project", project, "exec", instance_name,
+                    "--", "k3s", "kubectl", "--request-timeout=15s",
+                    "get", "pods", "-A", "-o", "json")
+                try:
+                    restarted_containers = [
+                        (pod["metadata"]["namespace"], pod["metadata"]["name"], status["name"])
+                        for pod in json.loads(pods_dump.stdout or "{}").get("items", [])
+                        for status in pod.get("status", {}).get("initContainerStatuses", [])
+                        + pod.get("status", {}).get("containerStatuses", [])
+                        if status.get("restartCount", 0) > 0
+                    ]
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    restarted_containers = []
+                for pod_namespace, pod_name, container_name in restarted_containers:
+                    diagnostics = completed(
+                        "incus", "--force-local", "--project", project, "exec", instance_name,
+                        "--", "k3s", "kubectl", "--request-timeout=15s",
+                        "logs", "-n", pod_namespace, f"pod/{pod_name}", "-c", container_name,
+                        "--previous", "--tail=100")
                     print(diagnostics.stdout or diagnostics.stderr, file=sys.stderr)
             runtime.cleanup()
             for path in safe_dirs:

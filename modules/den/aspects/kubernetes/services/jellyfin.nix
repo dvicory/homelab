@@ -384,7 +384,7 @@ in
                       name = "admin-password";
                       secret = {
                         secretName = "jellyfin-admin";
-                        defaultMode = 256;
+                        defaultMode = 292;
                         items = [
                           {
                             key = "password";
@@ -461,7 +461,9 @@ in
                   automountServiceAccountToken = false;
                   enableServiceLinks = false;
                   nodeSelector."kubernetes.io/hostname" = computeResources.instance;
-                  securityContext = podSecurity;
+                  securityContext = podSecurity // {
+                    fsGroup = identity.gid;
+                  };
                   initContainers = [
                     {
                       name = "bootstrap";
@@ -549,7 +551,7 @@ in
                       name = "admin-password";
                       secret = {
                         secretName = "jellyfin-admin";
-                        defaultMode = 256;
+                        defaultMode = 288;
                         items = [
                           {
                             key = "password";
