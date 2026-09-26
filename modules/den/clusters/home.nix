@@ -32,6 +32,7 @@ in
 {
   den.clusters.prod-home = {
     environment = "prod";
+    inherit domain backupDomain;
     hostSystem = "x86_64-linux";
     hostName = "hvn-hyp1";
     inherit kubeVersion;
@@ -105,6 +106,7 @@ in
   den.aspects.prod-home = {
     includes = with den.aspects.kubernetes.services; [
       argocd
+      cert-manager
       cluster-dns
       retained-storage
       media

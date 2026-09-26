@@ -135,15 +135,36 @@ publishing Seerr.
 ## Runtime-secret references
 
 This table contains references only. Never put plaintext Secret values
-in Git, the Nix store, manifests, images, or this document.
+in Git, the Nix store, manifests, images, or this document. Each source
+is either operator-supplied through agenix (`agenix edit`/rekey under
+`.secrets/hosts/`) or a generated value produced by `agenix generate`.
+`gateway-tls` and `kanidm-tls` are not listed: cert-manager issues them
+in the cluster from its Cloudflare DNS-01 ClusterIssuer.
 
-| Kubernetes Secret | Agenix source -> key | Type |
+| Kubernetes Secret | Source -> key | Type |
 | --- | --- | --- |
 | `argocd/argocd-secret` | `argocd--argocd-secret--admin.password` → `admin.password`, `argocd--argocd-secret--admin.passwordMtime` → `admin.passwordMtime`, `argocd--argocd-secret--server.secretkey` → `server.secretkey` | `Opaque` |
-| `gateway/gateway-tls` | `gateway--gateway-tls--ca.crt` → `ca.crt`, `gateway--gateway-tls--tls.crt` → `tls.crt`, `gateway--gateway-tls--tls.key` → `tls.key` | `kubernetes.io/tls` |
-| `identity/kanidm-tls` | `identity--kanidm-tls--tls.crt` → `tls.crt`, `identity--kanidm-tls--tls.key` → `tls.key` | `kubernetes.io/tls` |
+| `cert-manager/cloudflare-api-token` | `cert-manager--cloudflare-api-token--api-token` → `api-token` | `Opaque` |
 | `jellyfin/jellyfin-admin` | `jellyfin--jellyfin-admin--password` → `password` | `Opaque` |
 | `media/media-runtime` | `media--media-runtime--PROWLARR_API_KEY` → `PROWLARR_API_KEY`, `media--media-runtime--RADARR_API_KEY` → `RADARR_API_KEY`, `media--media-runtime--SABNZBD_API_KEY` → `SABNZBD_API_KEY`, `media--media-runtime--SABNZBD_PASSWORD` → `SABNZBD_PASSWORD`, `media--media-runtime--SABNZBD_USERNAME` → `SABNZBD_USERNAME`, `media--media-runtime--SEERR_API_KEY` → `SEERR_API_KEY`, `media--media-runtime--SONARR_API_KEY` → `SONARR_API_KEY` | `Opaque` |
+
+## Certificates
+
+cert-manager issues TLS in the cluster: the `letsencrypt-prod`
+ClusterIssuer does Cloudflare DNS-01 (the `cloudflare-api-token` runtime
+Secret) and writes `gateway-tls` in `gateway` and `kanidm-tls` in
+`identity`. Check issuance inside the guest:
+
+```sh
+kubectl get clusterissuer letsencrypt-prod
+kubectl get certificate -A
+```
+
+A `READY=False` Certificate's `status.conditions` and
+`kubectl -n cert-manager describe challenge` name the failing step.
+Let's Encrypt production limits repeated identical issuances, so a
+flapping Certificate or weekly guest rebuilds will eventually stall
+new issuance until the window clears.
 
 ## Lifecycle and bootstrap
 

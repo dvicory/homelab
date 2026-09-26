@@ -28,6 +28,7 @@
                   })
                   [
                     "argocd"
+                    "cert-manager"
                     "kube-system"
                     "local-path-storage"
                     "gateway"
@@ -49,6 +50,10 @@
                   kind = "CustomResourceDefinition";
                 }
                 {
+                  group = "cert-manager.io";
+                  kind = "ClusterIssuer";
+                }
+                {
                   group = "admissionregistration.k8s.io";
                   kind = "MutatingWebhookConfiguration";
                 }
@@ -59,6 +64,10 @@
                 {
                   group = "admissionregistration.k8s.io";
                   kind = "ValidatingAdmissionPolicyBinding";
+                }
+                {
+                  group = "admissionregistration.k8s.io";
+                  kind = "ValidatingWebhookConfiguration";
                 }
                 {
                   group = "rbac.authorization.k8s.io";

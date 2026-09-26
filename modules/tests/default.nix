@@ -129,6 +129,28 @@ let
     && hasAttr "hermes-qa-broker-control" hvnConfig.systemd.sockets
     && !(hasAttr "hermes-prod-broker" hvnConfig.systemd.services);
   securityAssertions.runtime-secret-source-names = runtimeSecretSourceNames;
+  # cert-manager is the sole writer of the TLS Secrets; no runtime Secret may
+  # stage them and the Cloudflare token must be operator-supplied (agenix edit,
+  # not generated).
+  securityAssertions.runtime-secret-certificate-ownership =
+    let
+      runtimeSecrets = config.flake.clusterResources.prod-home.runtimeSecrets;
+      tlsSources = [
+        "gateway--gateway-tls--tls.crt"
+        "gateway--gateway-tls--tls.key"
+        "gateway--gateway-tls--ca.crt"
+        "identity--kanidm-tls--tls.crt"
+        "identity--kanidm-tls--tls.key"
+      ];
+      token = runtimeSecrets."cert-manager--cloudflare-api-token--api-token" or null;
+    in
+    builtins.all (source: !(hasAttr source runtimeSecrets)) tlsSources
+    && token != null
+    && token.namespace == "cert-manager"
+    && token.name == "cloudflare-api-token"
+    && token.key == "api-token"
+    && (token.generator or null) == null
+    && (token.hostFile or null) == null;
 
   failures = attrNames (
     lib.filterAttrs (_: passed: !passed) (
