@@ -27,6 +27,12 @@ let
       hash = "sha256-J2r6XzNBcddW7kodls3TC6xb7fsSjUXIyR6ujinorIA=";
     };
 
+    # Jellyfin 12 removed the legacy X-Emby-* auth headers that upstream
+    # f94c24f sends; send the MediaBrowser Authorization scheme instead. The
+    # patch also makes every call reject bodiless non-2xx responses, which
+    # openapi-fetch otherwise reports without res.error.
+    patches = [ ./jellyfin-12-auth.patch ];
+
     nativeBuildInputs = [
       makeBinaryWrapper
       nodejs_24

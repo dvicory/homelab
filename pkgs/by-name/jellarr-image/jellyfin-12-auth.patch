@@ -1,0 +1,377 @@
+--- a/src/api/client.ts	1969-12-31 16:00:01
++++ b/src/api/client.ts	2026-09-26 06:03:00
+@@ -9,10 +9,9 @@
+   client.use({
+     onRequest({ request }: { request: Request }): Request {
+       const headers: Headers = new Headers(request.headers);
+-      headers.set("X-Emby-Token", apiKey);
+       headers.set(
+-        "X-Emby-Authorization",
+-        'MediaBrowser Client="jellarr", Device="cli", Version="0.1.0"',
++        "Authorization",
++        `MediaBrowser Client="jellarr", Device="cli", DeviceId="jellarr", Version="0.1.0", Token="${apiKey}"`,
+       );
+       return new Request(request, { headers });
+     },
+--- a/src/api/jellyfin_client.ts	1969-12-31 16:00:01
++++ b/src/api/jellyfin_client.ts	2026-09-26 06:03:00
+@@ -50,7 +50,7 @@
+         "/System/Configuration",
+       );
+ 
+-      if (res.error) {
++      if (res.error || !res.response.ok) {
+         throw new Error(
+           `GET /System/Configuration failed: ${res.response.status.toString()}`,
+         );
+@@ -70,7 +70,7 @@
+         },
+       );
+ 
+-      if (res.error) {
++      if (res.error || !res.response.ok) {
+         throw new Error(
+           `POST /System/Configuration failed: ${res.response.status.toString()}`,
+         );
+@@ -85,7 +85,7 @@
+         },
+       );
+ 
+-      if (res.error) {
++      if (res.error || !res.response.ok) {
+         throw new Error(
+           `GET /System/Configuration/encoding failed: ${res.response.status.toString()}`,
+         );
+@@ -106,7 +106,7 @@
+         },
+       );
+ 
+-      if (res.error) {
++      if (res.error || !res.response.ok) {
+         throw new Error(
+           `POST /System/Configuration/encoding failed: ${res.response.status.toString()}`,
+         );
+@@ -118,7 +118,7 @@
+         "/Library/VirtualFolders",
+       );
+ 
+-      if (res.error) {
++      if (res.error || !res.response.ok) {
+         throw new Error(
+           `GET /Library/VirtualFolders failed: ${res.response.status.toString()}`,
+         );
+@@ -147,7 +147,7 @@
+         },
+       );
+ 
+-      if (res.error) {
++      if (res.error || !res.response.ok) {
+         throw new Error(
+           `POST /Library/VirtualFolders failed: ${res.response.status.toString()}`,
+         );
+@@ -166,7 +166,7 @@
+         },
+       );
+ 
+-      if (res.error) {
++      if (res.error || !res.response.ok) {
+         throw new Error(
+           `GET /System/Configuration/Branding failed: ${res.response.status.toString()}`,
+         );
+@@ -185,7 +185,7 @@
+         },
+       );
+ 
+-      if (res.error) {
++      if (res.error || !res.response.ok) {
+         throw new Error(
+           `POST /System/Configuration/Branding failed: ${res.response.status.toString()}`,
+         );
+@@ -195,7 +195,7 @@
+     async getUsers(): Promise<UserDtoSchema[]> {
+       const res: GetUsersResponse = await client.GET("/Users");
+ 
+-      if (res.error) {
++      if (res.error || !res.response.ok) {
+         throw new Error(`GET /Users failed: ${res.response.status.toString()}`);
+       }
+ 
+@@ -207,7 +207,7 @@
+         body,
+       });
+ 
+-      if (res.error) {
++      if (res.error || !res.response.ok) {
+         throw new Error(
+           `POST /Users/New failed: ${res.response.status.toString()}`,
+         );
+@@ -227,7 +227,7 @@
+         },
+       );
+ 
+-      if (res.error) {
++      if (res.error || !res.response.ok) {
+         throw new Error(
+           `POST /Users/{userId}/Policy failed: ${res.response.status.toString()}`,
+         );
+@@ -238,7 +238,7 @@
+       const res: PostStartupCompleteResponse =
+         await client.POST("/Startup/Complete");
+ 
+-      if (res.error) {
++      if (res.error || !res.response.ok) {
+         throw new Error(
+           `POST /Startup/Complete failed: ${res.response.status.toString()}`,
+         );
+@@ -247,7 +247,7 @@
+ 
+     async getPlugins(): Promise<PluginInfoSchema[]> {
+       const res: GetPluginsResponse = await client.GET("/Plugins");
+-      if (res.error) {
++      if (res.error || !res.response.ok) {
+         throw new Error(
+           `GET /Plugins failed: ${res.response.status.toString()}`,
+         );
+@@ -262,7 +262,7 @@
+           params: { path: { name } },
+         },
+       );
+-      if (res.error) {
++      if (res.error || !res.response.ok) {
+         throw new Error(
+           `POST /Packages/Installed/${name} failed: ${res.response.status.toString()}`,
+         );
+@@ -278,7 +278,7 @@
+           params: { path: { pluginId } },
+         },
+       );
+-      if (res.error) {
++      if (res.error || !res.response.ok) {
+         throw new Error(
+           `GET /Plugins/${pluginId}/Configuration failed: ${res.response.status.toString()}`,
+         );
+@@ -297,7 +297,7 @@
+           body,
+         } as unknown as { params: { path: { pluginId: string } } },
+       );
+-      if (res.error) {
++      if (res.error || !res.response.ok) {
+         throw new Error(
+           `POST /Plugins/${pluginId}/Configuration failed: ${res.response.status.toString()}`,
+         );
+--- a/tests/api/client.spec.ts	1969-12-31 16:00:01
++++ b/tests/api/client.spec.ts	2026-09-26 06:04:51
+@@ -25,8 +25,8 @@
+       expect(req).toBeInstanceOf(Request);
+ 
+       const h: Headers = req.headers;
+-      expect(h.get("X-Emby-Token")).toBe("XYZ");
+-      expect(h.get("X-Emby-Authorization")).toContain("jellarr");
++      expect(h.get("Authorization")).toContain("jellarr");
++      expect(h.get("Authorization")).toContain('Token="XYZ"');
+     } finally {
+       spy.mockRestore();
+     }
+--- a/tests/api/jellyfin_client.spec.ts	1969-12-31 16:00:01
++++ b/tests/api/jellyfin_client.spec.ts	2026-09-26 06:03:15
+@@ -87,8 +87,10 @@
+     const req: Request = getLastRequest();
+     expect(req.method).toBe("GET");
+     expect(req.url).toMatch(/\/System\/Configuration$/);
+-    expect(req.headers.get("X-Emby-Token")).toBe(apiKey);
+-    expect(req.headers.get("X-Emby-Authorization")).toContain(
++    expect(req.headers.get("Authorization")).toBe(
++      `MediaBrowser Client="jellarr", Device="cli", DeviceId="jellarr", Version="0.1.0", Token="${apiKey}"`,
++    );
++    expect(req.headers.get("Authorization")).toContain(
+       'MediaBrowser Client="jellarr"',
+     );
+   });
+@@ -109,7 +111,9 @@
+     expect(req.method).toBe("POST");
+     expect(req.url).toMatch(/\/System\/Configuration$/);
+     expect(req.headers.get("content-type")).toBe("application/json");
+-    expect(req.headers.get("X-Emby-Token")).toBe(apiKey);
++    expect(req.headers.get("Authorization")).toBe(
++      `MediaBrowser Client="jellarr", Device="cli", DeviceId="jellarr", Version="0.1.0", Token="${apiKey}"`,
++    );
+ 
+     const bodyText: string = await req.text();
+     expect(bodyText).toContain("EnableMetrics");
+@@ -214,7 +218,9 @@
+     const req: Request = getLastRequest();
+     expect(req.method).toBe("GET");
+     expect(req.url).toMatch(/\/Library\/VirtualFolders$/);
+-    expect(req.headers.get("X-Emby-Token")).toBe(apiKey);
++    expect(req.headers.get("Authorization")).toBe(
++      `MediaBrowser Client="jellarr", Device="cli", DeviceId="jellarr", Version="0.1.0", Token="${apiKey}"`,
++    );
+   });
+ 
+   it("when GET /Library/VirtualFolders returns empty array then it returns empty array", async (): Promise<void> => {
+@@ -252,6 +258,22 @@
+     );
+   });
+ 
++  it("when GET /Library/VirtualFolders returns a bodiless non-2xx then it rejects", async (): Promise<void> => {
++    // Arrange: Jellyfin 12 rejects legacy auth with a 401 and no body.
++    mockFetchNoContent(401);
++
++    // Act
++    const jellyfinClient: JellyfinClient = createJellyfinClient(
++      baseUrl,
++      apiKey,
++    );
++
++    // Assert
++    await expect(jellyfinClient.getVirtualFolders()).rejects.toThrow(
++      /GET \/Library\/VirtualFolders failed: 401/,
++    );
++  });
++
+   it("when POST /Library/VirtualFolders succeeds then it sends correct body and query params", async (): Promise<void> => {
+     // Arrange
+     mockFetchNoContent(204);
+@@ -276,7 +298,9 @@
+     expect(req.url).toContain("collectionType=movies");
+     expect(req.url).toContain("refreshLibrary=true");
+     expect(req.headers.get("content-type")).toBe("application/json");
+-    expect(req.headers.get("X-Emby-Token")).toBe(apiKey);
++    expect(req.headers.get("Authorization")).toBe(
++      `MediaBrowser Client="jellarr", Device="cli", DeviceId="jellarr", Version="0.1.0", Token="${apiKey}"`,
++    );
+ 
+     const bodyText: string = await req.text();
+     expect(bodyText).toContain("LibraryOptions");
+@@ -340,7 +364,9 @@
+     const req: Request = getLastRequest();
+     expect(req.method).toBe("GET");
+     expect(req.url).toMatch(/\/System\/Configuration\/encoding$/);
+-    expect(req.headers.get("X-Emby-Token")).toBe(apiKey);
++    expect(req.headers.get("Authorization")).toBe(
++      `MediaBrowser Client="jellarr", Device="cli", DeviceId="jellarr", Version="0.1.0", Token="${apiKey}"`,
++    );
+   });
+ 
+   it("when POST /System/Configuration/Encoding succeeds then it sends JSON body and resolves", async (): Promise<void> => {
+@@ -361,7 +387,9 @@
+     expect(req.method).toBe("POST");
+     expect(req.url).toMatch(/\/System\/Configuration\/encoding$/);
+     expect(req.headers.get("content-type")).toBe("application/json");
+-    expect(req.headers.get("X-Emby-Token")).toBe(apiKey);
++    expect(req.headers.get("Authorization")).toBe(
++      `MediaBrowser Client="jellarr", Device="cli", DeviceId="jellarr", Version="0.1.0", Token="${apiKey}"`,
++    );
+ 
+     const bodyText: string = await req.text();
+     expect(bodyText).toContain("EnableHardwareEncoding");
+@@ -437,7 +465,9 @@
+     const req: Request = getLastRequest();
+     expect(req.method).toBe("GET");
+     expect(req.url).toMatch(/\/System\/Configuration\/Branding$/);
+-    expect(req.headers.get("X-Emby-Token")).toBe(apiKey);
++    expect(req.headers.get("Authorization")).toBe(
++      `MediaBrowser Client="jellarr", Device="cli", DeviceId="jellarr", Version="0.1.0", Token="${apiKey}"`,
++    );
+   });
+ 
+   it("when POST /System/Configuration/Branding succeeds then it sends JSON body and resolves", async (): Promise<void> => {
+@@ -459,7 +489,9 @@
+     expect(req.method).toBe("POST");
+     expect(req.url).toMatch(/\/System\/Configuration\/Branding$/);
+     expect(req.headers.get("content-type")).toBe("application/json");
+-    expect(req.headers.get("X-Emby-Token")).toBe(apiKey);
++    expect(req.headers.get("Authorization")).toBe(
++      `MediaBrowser Client="jellarr", Device="cli", DeviceId="jellarr", Version="0.1.0", Token="${apiKey}"`,
++    );
+ 
+     const bodyText: string = await req.text();
+     expect(bodyText).toContain("LoginDisclaimer");
+@@ -547,7 +579,9 @@
+     const req: Request = getLastRequest();
+     expect(req.method).toBe("GET");
+     expect(req.url).toMatch(/\/Users$/);
+-    expect(req.headers.get("X-Emby-Token")).toBe(apiKey);
++    expect(req.headers.get("Authorization")).toBe(
++      `MediaBrowser Client="jellarr", Device="cli", DeviceId="jellarr", Version="0.1.0", Token="${apiKey}"`,
++    );
+   });
+ 
+   it("when GET /Users returns empty array then it returns empty array", async (): Promise<void> => {
+@@ -591,7 +625,9 @@
+     expect(req.method).toBe("POST");
+     expect(req.url).toMatch(/\/Users\/New$/);
+     expect(req.headers.get("content-type")).toBe("application/json");
+-    expect(req.headers.get("X-Emby-Token")).toBe(apiKey);
++    expect(req.headers.get("Authorization")).toBe(
++      `MediaBrowser Client="jellarr", Device="cli", DeviceId="jellarr", Version="0.1.0", Token="${apiKey}"`,
++    );
+ 
+     const bodyText: string = await req.text();
+     expect(bodyText).toContain("newuser");
+@@ -658,7 +694,9 @@
+     expect(req.method).toBe("POST");
+     expect(req.url).toMatch(/\/Users\/user-id-123\/Policy/);
+     expect(req.headers.get("content-type")).toBe("application/json");
+-    expect(req.headers.get("X-Emby-Token")).toBe(apiKey);
++    expect(req.headers.get("Authorization")).toBe(
++      `MediaBrowser Client="jellarr", Device="cli", DeviceId="jellarr", Version="0.1.0", Token="${apiKey}"`,
++    );
+ 
+     const bodyText: string = await req.text();
+     expect(bodyText).toContain("IsAdministrator");
+@@ -712,7 +750,9 @@
+     const req: Request = getLastRequest();
+     expect(req.method).toBe("POST");
+     expect(req.url).toMatch(/\/Startup\/Complete$/);
+-    expect(req.headers.get("X-Emby-Token")).toBe(apiKey);
++    expect(req.headers.get("Authorization")).toBe(
++      `MediaBrowser Client="jellarr", Device="cli", DeviceId="jellarr", Version="0.1.0", Token="${apiKey}"`,
++    );
+   });
+ 
+   it("when POST /Startup/Complete fails then it throws an error with status", async (): Promise<void> => {
+@@ -778,7 +818,9 @@
+     const req: Request = getLastRequest();
+     expect(req.method).toBe("GET");
+     expect(req.url).toMatch(/\/Plugins$/);
+-    expect(req.headers.get("X-Emby-Token")).toBe(apiKey);
++    expect(req.headers.get("Authorization")).toBe(
++      `MediaBrowser Client="jellarr", Device="cli", DeviceId="jellarr", Version="0.1.0", Token="${apiKey}"`,
++    );
+   });
+ 
+   it("when GET /Plugins returns empty array then it returns empty array", async (): Promise<void> => {
+@@ -830,7 +872,9 @@
+     const req: Request = getLastRequest();
+     expect(req.method).toBe("POST");
+     expect(req.url).toMatch(/\/Packages\/Installed\/Trakt$/);
+-    expect(req.headers.get("X-Emby-Token")).toBe(apiKey);
++    expect(req.headers.get("Authorization")).toBe(
++      `MediaBrowser Client="jellarr", Device="cli", DeviceId="jellarr", Version="0.1.0", Token="${apiKey}"`,
++    );
+   });
+ 
+   it("when POST /Packages/Installed/{name} with spaces succeeds then it URL-encodes the name", async (): Promise<void> => {
+@@ -889,7 +933,9 @@
+     const req: Request = getLastRequest();
+     expect(req.method).toBe("GET");
+     expect(req.url).toMatch(/\/Plugins\/plugin-id-123\/Configuration$/);
+-    expect(req.headers.get("X-Emby-Token")).toBe(apiKey);
++    expect(req.headers.get("Authorization")).toBe(
++      `MediaBrowser Client="jellarr", Device="cli", DeviceId="jellarr", Version="0.1.0", Token="${apiKey}"`,
++    );
+   });
+ 
+   it("when GET /Plugins/{pluginId}/Configuration fails then it throws an error with status", async (): Promise<void> => {
+@@ -929,7 +975,9 @@
+     expect(req.method).toBe("POST");
+     expect(req.url).toMatch(/\/Plugins\/plugin-id-123\/Configuration$/);
+     expect(req.headers.get("content-type")).toBe("application/json");
+-    expect(req.headers.get("X-Emby-Token")).toBe(apiKey);
++    expect(req.headers.get("Authorization")).toBe(
++      `MediaBrowser Client="jellarr", Device="cli", DeviceId="jellarr", Version="0.1.0", Token="${apiKey}"`,
++    );
+ 
+     const bodyText: string = await req.text();
+     expect(bodyText).toContain("TraktUsers");
