@@ -9,6 +9,7 @@
   writeShellApplication,
   jq,
   coreutils,
+  nss_wrapper,
 }:
 let
   version = "12.1";
@@ -54,12 +55,29 @@ let
     text = ''
       umask 077
       test -s /run/secrets/password
-      trap 'rm -f /run/provision/provision.json /run/provision/provision.json.tmp' EXIT
+      trap 'rm -f /run/provision/provision.json /run/provision/provision.json.tmp /run/provision/passwd /run/provision/group' EXIT
+
+      # The image has no /etc/passwd. Jellyfin reads Environment.UserName,
+      # which fails unless the runtime uid resolves, so nss_wrapper supplies
+      # entries for whatever uid and gid the pod runs as.
+      uid="$(id -u)"
+      gid="$(id -g)"
+      printf 'root:x:0:0:root:/root:/bin/false\njellyfin:x:%s:%s:jellyfin:/config:/bin/false\n' \
+        "$uid" "$gid" > /run/provision/passwd
+      printf 'root:x:0:\njellyfin:x:%s:\n' "$gid" > /run/provision/group
+
       jq -n --rawfile password /run/secrets/password '{
         Administrator: { Name: "daniel", Password: ($password | rtrimstr("\n")) }
       }' > /run/provision/provision.json.tmp
       mv /run/provision/provision.json.tmp /run/provision/provision.json
-      jellyfin --nowebclient --mode Provision --provision-file /run/provision/provision.json
+
+      # /cache is the pod's writable emptyDir; fontconfig and .NET need a
+      # writable HOME.
+      HOME=/cache \
+        LD_PRELOAD=${nss_wrapper}/lib/libnss_wrapper.so \
+        NSS_WRAPPER_PASSWD=/run/provision/passwd \
+        NSS_WRAPPER_GROUP=/run/provision/group \
+        jellyfin --nowebclient --mode Provision --provision-file /run/provision/provision.json
     '';
   };
 
@@ -81,6 +99,7 @@ let
 in
 image.overrideAttrs (old: {
   passthru = (old.passthru or { }) // {
+    inherit provisioner runner;
     release = {
       inherit
         version
