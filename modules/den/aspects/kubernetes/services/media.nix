@@ -161,6 +161,7 @@ in
           ];
         storageApplication = group: {
           namespace = "media";
+          annotations."argocd.argoproj.io/sync-wave" = "0";
           retained = true;
           objects = lib.concatMap mkStorage group.values;
         };
@@ -188,7 +189,7 @@ in
       {
         applications = {
           media-access = {
-            namespace = "media";
+            namespace = cluster.routes.jellyfin.namespace;
             objects = [
               {
                 apiVersion = "networking.k8s.io/v1";
@@ -230,6 +231,7 @@ in
           };
           media-storage = {
             namespace = "media";
+            annotations."argocd.argoproj.io/sync-wave" = "0";
             retained = true;
             objects = [
               {

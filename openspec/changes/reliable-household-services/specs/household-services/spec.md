@@ -26,19 +26,19 @@ The shared media writer group provides coarse filesystem write capability over a
 
 ### Requirement: Managed policy is reconstructible and bounded
 
-The selected configuration tool and external policy inputs SHALL identify their pinned versions and provenance. Rebuilding managed configuration SHALL NOT silently follow newer upstream policy or require live upstream policy content. Managed fields MAY be repaired on reconciliation, but unrelated application records, accounts, media and UI-owned fields SHALL survive; policy reconciliation alone SHALL NOT initiate media search, upgrades or deletion. Each managed field SHALL have one reconciliation owner.
+The selected configuration tool and external policy inputs SHALL identify their pinned versions and content provenance. Rebuilding managed configuration SHALL NOT silently follow newer upstream policy or require live upstream policy content. Declared Arr root records, profiles, scored formats and download clients SHALL have one native configuration owner; managed Prowlarr registrations SHALL NOT erase UI-owned applications. Reconciliation MAY remove undeclared Arr root records, but SHALL NOT remove media files or unrelated application accounts and records. Malformed policy or a rejected API write SHALL fail visibly rather than report successful repair. Policy reconciliation alone SHALL NOT initiate media search, upgrades or deletion.
 
 #### Scenario: Upstream policy changes
 - **WHEN** media policy is rebuilt after the upstream guide changes
 - **THEN** the selected release and inputs produce the declared configuration without adopting the newer guide
 
 #### Scenario: Reconciliation follows a user edit
-- **WHEN** a managed field and an unrelated record have changed
-- **THEN** the managed field returns to its declared value while the unrelated record remains intact and no media action is started solely by policy reconciliation
+- **WHEN** a declared Arr root record changes while an unrelated Prowlarr application and media files exist
+- **THEN** the root record returns to its declared value, the unrelated application and files survive, and no media action starts solely from policy reconciliation
 
 ### Requirement: Cross-application configuration waits for its prerequisites
 
-Initial media reconciliation SHALL wait for the required workload Applications and the Jellyfin-owned integration readiness boundary before using their APIs. Supported-API checks SHALL tolerate bounded startup variance. Reconciliation SHALL be repeatable after an ordinary Git revision or re-sync without manual first-cluster intervention and SHALL NOT run destructive first-start setup on every workload restart.
+Initial media reconciliation SHALL wait for healthy workload Applications and the Jellyfin-owned integration readiness boundary before using their APIs. Supported-API checks SHALL tolerate bounded startup variance. Git revisions SHALL rerun ordered PostSync Jobs without manual first-cluster intervention. After successful initial convergence, unsuspended Configarr and Seerr Jobs SHALL repair drift on staggered roughly six-hour schedules without overlapping runs or unbounded retries; failed repair SHALL remain visible and SHALL NOT mark a rejected API write successful.
 
 #### Scenario: All services arrive from one fresh-cluster revision
 - **WHEN** media workloads and Jellyfin integration become ready after the configuration declaration
@@ -46,7 +46,7 @@ Initial media reconciliation SHALL wait for the required workload Applications a
 
 ### Requirement: Seerr integration roles and account ownership are explicit
 
-Exactly one Radarr and one Sonarr instance SHALL be selected as Seerr's default backends. Adding or renaming another instance SHALL NOT implicitly change either selection; missing or duplicate selections SHALL be rejected. Seerr SHALL consume the already configured Jellyfin endpoint, libraries and integration credential from their owner, not create or reset Jellyfin accounts or libraries. Seerr SHALL recognize availability from those libraries and integrate its selected Arr backends.
+Exactly one Radarr and one Sonarr instance SHALL be selected by semantic role as Seerr's standard default backends. Optional 4K instances SHALL remain independent, and adding or renaming another instance SHALL NOT implicitly change either default; missing or duplicate defaults SHALL be rejected. Seerr SHALL consume the configured Jellyfin endpoint, libraries and owner credential without creating or resetting Jellyfin accounts or libraries. Its first-owner claim SHALL run privately using that credential, and later reconciliation SHALL use a stable operator-owned Seerr API key. Seerr SHALL recognize availability from the Jellyfin libraries and integrate the selected Arr backends.
 
 #### Scenario: A secondary Arr instance is introduced
 - **WHEN** another instance is declared without the Seerr default role
@@ -58,15 +58,19 @@ Exactly one Radarr and one Sonarr instance SHALL be selected as Seerr's default 
 
 ### Requirement: Media exposure preserves native user authentication
 
-Seerr's household-facing request route SHALL admit users to Seerr's native Jellyfin/local sign-in while Seerr governs application roles. Radarr, Sonarr, Prowlarr and SABnzbd browser administration SHALL remain administrator-only at the edge; internal automation SHALL use their native authenticated APIs. Runtime credentials SHALL NOT appear in rendered manifests or policy assets.
+The household-facing Seerr request route SHALL be absent while first-owner setup is claimable. It MAY be published only after Seerr reports initialized, its intended Jellyfin library has synchronized, and selected Arr defaults are verified. Once published, the route SHALL admit users to Seerr's native Jellyfin/local sign-in while Seerr governs application roles. Radarr, Sonarr, Prowlarr and SABnzbd browser administration SHALL remain administrator-only at the edge; internal automation SHALL use authenticated native APIs. Runtime credentials SHALL NOT appear in rendered manifests or policy assets.
 
 #### Scenario: A non-administrator opens the request UI
 - **WHEN** a household user accesses Seerr but lacks the edge administrator role
 - **THEN** the user can reach Seerr's native sign-in without gaining Arr or downloader administration
 
+#### Scenario: Fresh Seerr cannot yet authenticate a household user
+- **WHEN** a retained Seerr instance has no owner or its Jellyfin library integration is incomplete
+- **THEN** no public requests route exists, and an API key alone cannot bypass first-owner authentication
+
 ### Requirement: Runtime acceptance covers actual pinned application behavior
 
-A completed integration claim SHALL be supported by a bounded disposable run against the pinned Radarr, Sonarr, Prowlarr, SABnzbd, Seerr, Configarr and Jellyfin integration releases. It SHALL exercise credential acceptance, root/profile/download-client configuration, Prowlarr registration, SAB configuration, Seerr's Jellyfin and Arr onboarding, idempotent repetition and preservation of undeclared records. External indexer/provider availability and production credentials are not prerequisites for that local evidence.
+A completed integration claim SHALL be supported by a bounded disposable run against the pinned Radarr, Sonarr, Prowlarr, SABnzbd, Seerr, Configarr and Jellyfin releases. It SHALL exercise credential acceptance and rotation, root/profile/download-client configuration, Prowlarr registration, SAB configuration, private Seerr first-owner and selected Jellyfin/Arr integration, idempotent repetition, malformed policy and rejected API writes, and preservation of UI-owned records and filesystem media when an Arr root record is removed. It SHALL confirm no search or upgrade command is started solely by reconciliation. External indexer/provider availability and production credentials are not prerequisites for that local evidence; whole-cluster Argo convergence remains a separate hosted acceptance gate.
 
 #### Scenario: Configuration is rerun against real services
 - **WHEN** the same selected policy is applied twice to the pinned running applications after an unmanaged record is created

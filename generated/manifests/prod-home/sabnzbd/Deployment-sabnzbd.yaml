@@ -37,7 +37,7 @@ spec:
               value: UTC
             - name: UMASK
               value: "007"
-          image: ghcr.io/linuxserver/sabnzbd:latest@sha256:64c4c2b6ed546237451cbfec33aa8bac1396865c1a266dd247c02b36ffe27c62
+          image: ghcr.io/linuxserver/sabnzbd:5.1.2-ls271@sha256:64c4c2b6ed546237451cbfec33aa8bac1396865c1a266dd247c02b36ffe27c62
           livenessProbe:
             periodSeconds: 30
             tcpSocket:
@@ -101,7 +101,7 @@ spec:
               for key in ["SABNZBD_API_KEY","SABNZBD_USERNAME","SABNZBD_PASSWORD"]:
                   if not os.environ[key].strip():
                       raise ValueError('Required runtime secret is empty: ' + key)
-              for directory in ('library/movies', 'library/tv', 'downloads/usenet/incomplete', 'downloads/usenet/complete'):
+              for directory in ["library/movies","library/tv"] + ['downloads/usenet/incomplete', 'downloads/usenet/complete']:
                   os.makedirs('/data/' + directory, mode=0o2770, exist_ok=True)
               categories = config.setdefault('categories', {})
               for name in ["movies","tv"]:
@@ -151,7 +151,7 @@ spec:
                 secretKeyRef:
                   key: SABNZBD_USERNAME
                   name: media-runtime
-          image: ghcr.io/linuxserver/sabnzbd:latest@sha256:64c4c2b6ed546237451cbfec33aa8bac1396865c1a266dd247c02b36ffe27c62
+          image: ghcr.io/linuxserver/sabnzbd:5.1.2-ls271@sha256:64c4c2b6ed546237451cbfec33aa8bac1396865c1a266dd247c02b36ffe27c62
           name: config
           resources:
             limits:

@@ -1,0 +1,13 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: seerr-jellyfin-admin-reader
+  namespace: jellyfin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: seerr-jellyfin-admin-reader
+subjects:
+  - kind: ServiceAccount
+    name: media-config-seerr
+    namespace: media

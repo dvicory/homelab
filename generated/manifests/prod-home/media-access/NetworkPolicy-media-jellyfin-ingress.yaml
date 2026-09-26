@@ -9,9 +9,18 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: media
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/controller: main
+              app.kubernetes.io/instance: seerr
+              app.kubernetes.io/name: seerr
       ports:
         - port: 8096
           protocol: TCP
-  podSelector: {}
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/controller: main
+      app.kubernetes.io/instance: jellyfin
+      app.kubernetes.io/name: jellyfin
   policyTypes:
     - Ingress

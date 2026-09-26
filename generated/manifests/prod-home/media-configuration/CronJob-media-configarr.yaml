@@ -5,7 +5,7 @@ metadata:
   namespace: media
 spec:
   concurrencyPolicy: Forbid
-  failedJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 1
   jobTemplate:
     spec:
       activeDeadlineSeconds: 900
@@ -17,7 +17,19 @@ spec:
         spec:
           automountServiceAccountToken: false
           containers:
-            - env:
+            - command:
+                - /bin/sh
+                - -ec
+                - |
+                  output="$(dumb-init node index.js 2>&1)" || {
+                    printf '%s\n' "$output"
+                    exit 1
+                  }
+                  printf '%s\n' "$output"
+                  case "$output" in
+                    *"ERROR "*|*"change(s) failed"*) exit 1 ;;
+                  esac
+              env:
                 - name: ROOT_PATH
                   value: /app
                 - name: CONFIG_LOCATION
@@ -28,6 +40,10 @@ spec:
                   value: "true"
                 - name: LOG_LEVEL
                   value: warn
+                - name: CONFIGARR_ENFORCE_CONFIG_VALIDATION
+                  value: "true"
+                - name: CONFIGARR_ENFORCE_EXTERNAL_VALIDATION
+                  value: "true"
                 - name: RADARR_API_KEY
                   valueFrom:
                     secretKeyRef:
@@ -53,7 +69,12 @@ spec:
                     secretKeyRef:
                       key: SABNZBD_PASSWORD
                       name: media-runtime
-              image: docker.io/configarr/configarr:1.30.2@sha256:ec585b6d2530f6090ee26fdcc9701f279666c24dc96c9087208e88ec867c2416
+                - name: PROWLARR_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      key: PROWLARR_API_KEY
+                      name: media-runtime
+              image: docker.io/configarr/configarr:1.32.0@sha256:8a94c8355f86619ac4c52298144f15859f9c66311515f96c4688435fa020039e
               name: configarr
               resources:
                 limits:
@@ -79,6 +100,59 @@ spec:
                   name: repos
           initContainers:
             - command:
+                - node
+                - -e
+                - |
+                  const targets = JSON.parse(process.env.READY_TARGETS);
+                  const deadline = Date.now() + 600000;
+                  async function ready(target) {
+                    while (true) {
+                      try {
+                        const response = await fetch(target.url, {
+                          headers: { 'X-Api-Key': process.env[target.key] },
+                          signal: AbortSignal.timeout(10000),
+                        });
+                        if (response.ok) return;
+                      } catch {}
+                      if (Date.now() + 5000 >= deadline) throw new Error('Media API readiness timed out: ' + target.url);
+                      await new Promise(resolve => setTimeout(resolve, 5000));
+                    }
+                  }
+                  Promise.all(targets.map(ready)).catch(error => { console.error(error); process.exitCode = 1; });
+              env:
+                - name: READY_TARGETS
+                  value: '[{"key":"RADARR_API_KEY","url":"http://radarr.media.svc:7878/api/v3/system/status"},{"key":"SONARR_API_KEY","url":"http://sonarr.media.svc:8989/api/v3/system/status"},{"key":"PROWLARR_API_KEY","url":"http://prowlarr.media.svc:9696/api/v1/system/status"}]'
+                - name: RADARR_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      key: RADARR_API_KEY
+                      name: media-runtime
+                - name: SONARR_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      key: SONARR_API_KEY
+                      name: media-runtime
+                - name: PROWLARR_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      key: PROWLARR_API_KEY
+                      name: media-runtime
+              image: docker.io/library/node:22.14.0-bookworm-slim@sha256:1c18d9ab3af4585870b92e4dbc5cac5a0dc77dd13df1a5905cea89fc720eb05b
+              name: wait-for-apis
+              resources:
+                limits:
+                  cpu: 250m
+                  memory: 128Mi
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true
+            - command:
                 - /bin/sh
                 - -ec
                 - |
@@ -102,6 +176,19 @@ spec:
                   cp /seed/sonarr-anime.json "$trash/sonarr/quality-size/anime.json"
                   cp /seed/conflicts.json "$trash/radarr/conflicts.json"
                   cp /seed/conflicts.json "$trash/sonarr/conflicts.json"
+                  cp /seed/radarr-cf-repack-proper.json /app/repos/trash-guides/docs/json/radarr/cf/repack-proper.json
+                  cp /seed/radarr-cf-repack2.json /app/repos/trash-guides/docs/json/radarr/cf/repack2.json
+                  cp /seed/radarr-cf-repack3.json /app/repos/trash-guides/docs/json/radarr/cf/repack3.json
+                  cp /seed/radarr-cf-web-tier-01.json /app/repos/trash-guides/docs/json/radarr/cf/web-tier-01.json
+                  cp /seed/radarr-cf-web-tier-02.json /app/repos/trash-guides/docs/json/radarr/cf/web-tier-02.json
+                  cp /seed/radarr-cf-web-tier-03.json /app/repos/trash-guides/docs/json/radarr/cf/web-tier-03.json
+                  cp /seed/sonarr-cf-repack-proper.json /app/repos/trash-guides/docs/json/sonarr/cf/repack-proper.json
+                  cp /seed/sonarr-cf-repack2.json /app/repos/trash-guides/docs/json/sonarr/cf/repack2.json
+                  cp /seed/sonarr-cf-repack3.json /app/repos/trash-guides/docs/json/sonarr/cf/repack3.json
+                  cp /seed/sonarr-cf-web-scene.json /app/repos/trash-guides/docs/json/sonarr/cf/web-scene.json
+                  cp /seed/sonarr-cf-web-tier-01.json /app/repos/trash-guides/docs/json/sonarr/cf/web-tier-01.json
+                  cp /seed/sonarr-cf-web-tier-02.json /app/repos/trash-guides/docs/json/sonarr/cf/web-tier-02.json
+                  cp /seed/sonarr-cf-web-tier-03.json /app/repos/trash-guides/docs/json/sonarr/cf/web-tier-03.json
                   printf '%s\n' '04e692c8926f6b9736943afcd9b505bad29f5e54' > /app/repos/trash-guides/TRASH-GUIDES-REVISION
                   for repo in trash-guides recyclarr-config; do
                     git -C "/app/repos/$repo" init -q
@@ -111,7 +198,7 @@ spec:
                     git -C "/app/repos/$repo" commit --allow-empty -qm "Pinned offline media policy inputs"
                     git -C "/app/repos/$repo" checkout --detach -q HEAD
                   done
-              image: docker.io/configarr/configarr:1.30.2@sha256:ec585b6d2530f6090ee26fdcc9701f279666c24dc96c9087208e88ec867c2416
+              image: docker.io/configarr/configarr:1.32.0@sha256:8a94c8355f86619ac4c52298144f15859f9c66311515f96c4688435fa020039e
               name: seed-policy
               resources:
                 limits:
@@ -155,6 +242,7 @@ spec:
               name: policy-inputs
             - emptyDir: {}
               name: repos
-  schedule: 0 4 * * *
+  schedule: 7 */6 * * *
+  startingDeadlineSeconds: 900
   successfulJobsHistoryLimit: 1
-  suspend: true
+  suspend: false

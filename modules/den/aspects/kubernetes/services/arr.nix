@@ -57,10 +57,10 @@ let
               default = "${lib.toUpper kind}_API_KEY";
               description = "Runtime Secret key containing this instance's native API key.";
             };
-            seerrDefault = lib.mkOption {
-              type = lib.types.bool;
-              default = name == kind;
-              description = "Select this instance as the default ${kind} backend for Seerr.";
+            role = lib.mkOption {
+              type = lib.types.nullOr (lib.types.enum [ "standard" "4k" ]);
+              default = if name == kind then "standard" else null;
+              description = "Optional Seerr role, independent of the policy bundle. Exactly one standard and at most one 4k instance per kind.";
             };
             root = lib.mkOption {
               type = lib.types.addCheck dataPathType (path: path != "/data");
@@ -72,13 +72,13 @@ let
               default = if kind == "radarr" then "movies" else "tv";
               description = "Fresh download category assigned to this instance.";
             };
-            profile = lib.mkOption {
+            bundle = lib.mkOption {
               type = lib.types.enum [
-                "WEB-1080p"
-                "WEB-2160p"
+                "web-1080p"
+                "web-2160p"
               ];
-              default = "WEB-1080p";
-              description = "Selected configuration profile name.";
+              default = "web-1080p";
+              description = "Semantic pinned media policy bundle applied to this instance.";
             };
             sharedWritablePaths = lib.mkOption {
               type = lib.types.listOf dataPathType;
@@ -199,7 +199,7 @@ let
             };
             data = {
               type = "hostPath";
-              hostPath = "/srv/media/data";
+              hostPath = computeResources.mediaPaths.data;
               hostPathType = "Directory";
               globalMounts = [ { path = "/data"; } ];
             };
@@ -218,6 +218,7 @@ let
           instanceName: cfg:
           lib.nameValuePair (serviceName kind instanceName) {
             namespace = app.namespace;
+            annotations."argocd.argoproj.io/sync-wave" = "1";
             helm.releases.${serviceName kind instanceName} = {
               chart = charts.bjw-s-labs.app-template;
               values = mkArrValues {
@@ -292,7 +293,7 @@ let
     };
     image = {
       repository = "ghcr.io/linuxserver/radarr";
-      tag = "latest";
+      tag = "6.3.0.10514-ls315";
       digest = "sha256:95ba0801df4d9d1d79d0d9a3849f656542497dab061d91b87ad4f53a71aff3ef";
     };
   };
@@ -306,7 +307,7 @@ let
     };
     image = {
       repository = "ghcr.io/linuxserver/sonarr";
-      tag = "latest";
+      tag = "4.0.19.2979-ls323";
       digest = "sha256:4d9df314875e1249ab7d6170c2b9b3dc1d8e6383f168ceb10dc9a5ad9b324739";
     };
   };

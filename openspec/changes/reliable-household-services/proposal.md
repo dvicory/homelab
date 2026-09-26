@@ -5,9 +5,9 @@ The media-acquisition services need a reproducible, independently reconciled dep
 ## What Changes
 
 - Deliver Radarr, Sonarr, Prowlarr, SABnzbd and Seerr with retained private state and declared shared media access. Keep separate Radarr/Sonarr instances independently configurable and explicitly select the instances used by Seerr.
-- Pin Configarr and selected TRaSH policy inputs so configuration can be reconstructed offline. Reconcile only declared roots, profiles, download clients and service connections while preserving undeclared application records and UI-owned state.
-- Expose Seerr for household use through its native Jellyfin/local authentication; keep Arr, Prowlarr and SAB browser administration behind administrator access. Consume the Jellyfin readiness, library and integration-credential contracts owned by the Jellyfin configuration path rather than creating another owner account or library configurator.
-- Establish startup ordering between workload Applications, Jellyfin integration readiness and media configuration, with supported-API readiness checks and repeatable re-sync. Require real pinned-application API evidence of first setup, idempotence and unmanaged-record preservation before claiming completion.
+- Pin Configarr and selected TRaSH policy inputs locally for offline reconstruction. Configarr owns declared Arr root records, semantic profiles and scored formats, download clients and managed Prowlarr registrations. Removing an undeclared Arr root record SHALL NOT delete files; unrelated accounts, media and UI-owned Prowlarr applications survive.
+- Initialize Seerr privately with the Jellyfin-owned credential and existing libraries. Publish its household-facing native-auth route only after its owner and library integration are verified; use a stable operator-owned Seerr API key for later reconciliation. Keep Arr, Prowlarr and SAB browser administration behind administrator access.
+- Order workload Applications, Jellyfin integration and immediate media PostSync Jobs. Run Configarr and Seerr repairs on staggered, unsuspended six-hour schedules without overlapping runs. Require pinned-application evidence for initial setup, idempotence, malformed-input and API-write failures, credential rotation, data preservation and no search/upgrade actions before claiming completion.
 - State the actual write boundary: shared media GID 505 grants coarse filesystem write capability; declarative root/category ownership and explicit sharing prevent logical conflicts, not cross-application filesystem writes.
 
 ## Capabilities

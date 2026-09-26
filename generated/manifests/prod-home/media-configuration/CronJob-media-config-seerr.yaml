@@ -5,7 +5,7 @@ metadata:
   namespace: media
 spec:
   concurrencyPolicy: Forbid
-  failedJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 1
   jobTemplate:
     spec:
       activeDeadlineSeconds: 900
@@ -20,6 +20,9 @@ spec:
             - command:
                 - node
                 - /configuration/seerr.mjs
+              env:
+                - name: NODE_EXTRA_CA_CERTS
+                  value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
               image: docker.io/library/node:22.14.0-bookworm-slim@sha256:1c18d9ab3af4585870b92e4dbc5cac5a0dc77dd13df1a5905cea89fc720eb05b
               name: configure
               resources:
@@ -42,6 +45,14 @@ spec:
                 - mountPath: /secrets
                   name: secrets
                   readOnly: true
+                - mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+                  name: kubernetes-api
+                  readOnly: true
+                - mountPath: /seerr-state
+                  name: seerr-state
+                  readOnly: true
+          nodeSelector:
+            kubernetes.io/hostname: compute-1
           restartPolicy: OnFailure
           securityContext:
             fsGroup: 1000
@@ -50,10 +61,26 @@ spec:
             runAsUser: 1000
             seccompProfile:
               type: RuntimeDefault
+          serviceAccountName: media-config-seerr
           volumes:
             - configMap:
                 name: media-configuration
               name: configuration
+            - name: seerr-state
+              persistentVolumeClaim:
+                claimName: media-seerr
+            - name: kubernetes-api
+              projected:
+                defaultMode: 288
+                sources:
+                  - serviceAccountToken:
+                      expirationSeconds: 600
+                      path: token
+                  - configMap:
+                      items:
+                        - key: ca.crt
+                          path: ca.crt
+                      name: kube-root-ca.crt
             - name: secrets
               projected:
                 defaultMode: 288
@@ -64,17 +91,10 @@ spec:
                           path: RADARR_API_KEY
                         - key: SONARR_API_KEY
                           path: SONARR_API_KEY
-                        - key: JELLYFIN_OWNER_USERNAME
-                          path: JELLYFIN_OWNER_USERNAME
-                        - key: JELLYFIN_OWNER_PASSWORD
-                          path: JELLYFIN_OWNER_PASSWORD
-                      name: media-runtime
-                  - secret:
-                      items:
                         - key: SEERR_API_KEY
                           path: SEERR_API_KEY
                       name: media-runtime
-                      optional: true
-  schedule: 0 4 * * *
+  schedule: 37 */6 * * *
+  startingDeadlineSeconds: 900
   successfulJobsHistoryLimit: 1
-  suspend: true
+  suspend: false

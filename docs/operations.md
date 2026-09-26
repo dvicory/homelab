@@ -9,6 +9,7 @@
 - **Compute guest:** `compute-1`
 - **Ingress:** `direct` on NodePort `30443`
 - **Identity phase:** `initial`
+- **Seerr publication phase:** `initial`
 
 ## Deployment flow
 
@@ -37,7 +38,9 @@ the tracked ref changes production desired state.
 | `sabnzbd` | `public` | `https://sabnzbd.plus2.danielvicory.dev` | `https://sabnzbd.backup.plus2.danielvicory.dev` | `media/sabnzbd:8080` |
 | `sonarr` | `public` | `https://sonarr.plus2.danielvicory.dev` | `https://sonarr.backup.plus2.danielvicory.dev` | `media/sonarr:8989` |
 
-Public edges publish only `public` routes. The `idm` canonical hostname
+Public edges publish only `public` routes. The `requests` route is
+declared public but is omitted from Gateway and edge configuration
+while Seerr remains in the `initial` phase. The `idm` canonical hostname
 remains the identity issuer across direct and secondary-edge access;
 failover changes DNS, not the issuer or certificate identity.
 
@@ -109,6 +112,26 @@ provisioning succeeds. The subsequent one-shot Jellarr Job owns the
 `Movies` library at `/media`
 and selected supported API settings.
 
+## Seerr first-owner boundary
+
+The checked-in `initial` phase starts Seerr privately. After Jellyfin's
+patched initializer and Jellarr Job succeed, the media-configuration
+PostSync Job uses Jellyfin's owned administrator Secret once to claim
+Seerr's distinguished owner. It selects and synchronizes the `Movies`
+library, then installs the standard Radarr and Sonarr connections.
+The declared `media/media-runtime` `SEERR_API_KEY` is used for subsequent
+reconciliation; it cannot authorize the pre-owner API.
+
+Verify the Seerr Job succeeded, `/settings/public` reports
+`initialized=true`, the `Movies` library remains enabled, and both
+standard Arr servers have their intended profiles. Only then commit
+`settings.kubernetes.services.seerr.phase = "ready"` and let Argo
+publish the native-auth `requests` route. Never switch to `ready`
+before first-owner initialization: the fresh setup page is claimable.
+Configarr and Seerr perform immediate Git reconciliation and separate
+six-hour repair runs; an unhealthy dependency must be repaired before
+publishing Seerr.
+
 ## Runtime-secret references
 
 This table contains references only. Never put plaintext Secret values
@@ -120,7 +143,7 @@ in Git, the Nix store, manifests, images, or this document.
 | `gateway/gateway-tls` | `gateway--gateway-tls--ca.crt` → `ca.crt`, `gateway--gateway-tls--tls.crt` → `tls.crt`, `gateway--gateway-tls--tls.key` → `tls.key` | `kubernetes.io/tls` |
 | `identity/kanidm-tls` | `identity--kanidm-tls--tls.crt` → `tls.crt`, `identity--kanidm-tls--tls.key` → `tls.key` | `kubernetes.io/tls` |
 | `jellyfin/jellyfin-admin` | `jellyfin--jellyfin-admin--password` → `password` | `Opaque` |
-| `media/media-runtime` | `media--media-runtime--JELLYFIN_OWNER_PASSWORD` → `JELLYFIN_OWNER_PASSWORD`, `media--media-runtime--JELLYFIN_OWNER_USERNAME` → `JELLYFIN_OWNER_USERNAME`, `media--media-runtime--PROWLARR_API_KEY` → `PROWLARR_API_KEY`, `media--media-runtime--RADARR_API_KEY` → `RADARR_API_KEY`, `media--media-runtime--SABNZBD_API_KEY` → `SABNZBD_API_KEY`, `media--media-runtime--SABNZBD_PASSWORD` → `SABNZBD_PASSWORD`, `media--media-runtime--SABNZBD_USERNAME` → `SABNZBD_USERNAME`, `media--media-runtime--SONARR_API_KEY` → `SONARR_API_KEY` | `Opaque` |
+| `media/media-runtime` | `media--media-runtime--PROWLARR_API_KEY` → `PROWLARR_API_KEY`, `media--media-runtime--RADARR_API_KEY` → `RADARR_API_KEY`, `media--media-runtime--SABNZBD_API_KEY` → `SABNZBD_API_KEY`, `media--media-runtime--SABNZBD_PASSWORD` → `SABNZBD_PASSWORD`, `media--media-runtime--SABNZBD_USERNAME` → `SABNZBD_USERNAME`, `media--media-runtime--SEERR_API_KEY` → `SEERR_API_KEY`, `media--media-runtime--SONARR_API_KEY` → `SONARR_API_KEY` | `Opaque` |
 
 ## Lifecycle and bootstrap
 

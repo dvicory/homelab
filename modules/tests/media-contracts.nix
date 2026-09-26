@@ -9,11 +9,24 @@
     { pkgs, system, ... }:
     let
       environment = ../../generated/manifests/prod-home;
+      policyDirectory = ../../assets/media-policy;
+      policySource = builtins.fromJSON (builtins.readFile (policyDirectory + "/source.json"));
+      upstreamPolicy = lib.mapAttrs (
+        _: file:
+        pkgs.fetchurl {
+          url = "https://raw.githubusercontent.com/TRaSH-Guides/Guides/${policySource.revision}/${file.upstream}";
+          hash = file.sha256;
+        }
+      ) policySource.files;
+      upstreamPolicyPaths = pkgs.writeText "media-policy-upstream-paths.json" (
+        builtins.toJSON (lib.mapAttrs (_: path: toString path) upstreamPolicy)
+      );
       cluster = config.den.clusters.prod-home;
       compute =
         config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
       computeResources = {
         inherit (compute) instance retainedPaths;
+        inherit (config.flake.clusterResources.prod-home) mediaPaths;
       };
       providerContract =
         let
@@ -99,7 +112,8 @@
           apiSecretKey,
           root,
           category,
-          profile,
+          bundle,
+          role ? null,
         }:
         {
           inherit
@@ -108,45 +122,50 @@
             apiSecretKey
             root
             category
-            profile
+            bundle
+            role
             ;
           sharedWritablePaths = [ "/data" ];
         };
       fixtureInstances = {
         radarr = {
           radarr = instance {
+            role = "standard";
             state = "radarr-hd";
             routeKey = "radarr";
             apiSecretKey = "RADARR_HD_API_KEY";
             root = "/data/library/movies/hd";
             category = "movies-hd";
-            profile = "WEB-1080p";
+            bundle = "web-1080p";
           };
           uhd = instance {
+            role = "4k";
             state = "radarr-uhd";
             routeKey = null;
             apiSecretKey = "RADARR_UHD_API_KEY";
             root = "/data/library/movies/uhd";
             category = "movies-uhd";
-            profile = "WEB-2160p";
+            bundle = "web-2160p";
           };
         };
         sonarr = {
           sonarr = instance {
+            role = "standard";
             state = "sonarr-hd";
             routeKey = "sonarr";
             apiSecretKey = "SONARR_HD_API_KEY";
             root = "/data/library/tv/hd";
             category = "tv-hd";
-            profile = "WEB-1080p";
+            bundle = "web-1080p";
           };
           anime = instance {
+            role = "4k";
             state = "sonarr-anime";
             routeKey = null;
             apiSecretKey = "SONARR_ANIME_API_KEY";
             root = "/data/library/tv/anime";
             category = "tv-anime";
-            profile = "WEB-2160p";
+            bundle = "web-2160p";
           };
         };
       };
@@ -155,7 +174,7 @@
           uhd = fixtureInstances.radarr.uhd // {
             root = "/data/library/movies/uhd-remux";
             category = "movies-uhd-remux";
-            profile = "WEB-1080p";
+            bundle = "web-1080p";
           };
         };
       };
@@ -235,16 +254,34 @@
       mediaWith =
         overrides:
         builtins.tryEval (
-          mediaManifests (
+          builtins.deepSeq (mediaManifests (
             fixtureCluster
             // {
               settings = lib.recursiveUpdate fixtureCluster.settings {
                 kubernetes.services.media = overrides;
               };
             }
-          )
+          )) true
+        );
+      configurationWith =
+        overrides:
+        builtins.tryEval (
+          builtins.deepSeq ((config.den.aspects.kubernetes.services.media.configuration."k8s-manifests" {
+            cluster = fixtureCluster // {
+              settings = lib.recursiveUpdate fixtureCluster.settings {
+                kubernetes.services.media = overrides;
+              };
+            };
+            computeResources = fixtureCompute;
+          }).applications.media-configuration.objects
+          ) true
         );
       mediaBase = mediaWith { };
+      mediaNoStandard = configurationWith {
+        radarr.radarr.role = null;
+        sonarr.sonarr.role = null;
+      };
+      mediaAmbiguousStandard = configurationWith { radarr.uhd.role = "standard"; };
       mediaNoSharing = mediaWith { radarr.uhd.sharedWritablePaths = [ ]; };
       mediaStateCollision = mediaWith { sonarr.anime.state = "radarr-hd"; };
       mediaSecretCollision = mediaWith { sonarr.anime.apiSecretKey = "RADARR_HD_API_KEY"; };
@@ -295,6 +332,10 @@
           runtimeSecrets = fixtureRuntimeSecrets;
           sabnzbdInit = fixtureSabnzbdInit;
           positive = mediaBase.success;
+          seerrRoleAccepted = (configurationWith { }).success;
+          noStandardRejected = !mediaNoStandard.success;
+          ambiguousStandardRejected = !mediaAmbiguousStandard.success;
+          optionalFourKAccepted = (configurationWith { sonarr.anime.role = null; }).success;
           noSharingRejected = !mediaNoSharing.success;
           stateCollisionRejected = !mediaStateCollision.success;
           secretCollisionRejected = !mediaSecretCollision.success;
@@ -318,11 +359,12 @@
               python
               pkgs.git
               pkgs.dash
-              pkgs.nodejs
             ];
           }
           ''
-            python - ${environment} ${storage} ${./prowlarr-reconciliation.mjs} ${providerContract} ${fixture} <<'PY'
+            python - ${environment} ${storage} ${providerContract} ${fixture} ${policyDirectory} ${upstreamPolicyPaths} <<'PY'
+            import base64
+            import hashlib
             import json
             import os
             import pathlib
@@ -334,9 +376,45 @@
 
             environment = pathlib.Path(sys.argv[1])
             storage = json.loads(pathlib.Path(sys.argv[2]).read_text())
-            prowlarr_fixture = pathlib.Path(sys.argv[3])
-            provider = json.loads(pathlib.Path(sys.argv[4]).read_text())
-            fixture = json.loads(pathlib.Path(sys.argv[5]).read_text())
+            provider = json.loads(pathlib.Path(sys.argv[3]).read_text())
+            fixture = json.loads(pathlib.Path(sys.argv[4]).read_text())
+            policy_dir = pathlib.Path(sys.argv[5])
+            source = json.loads((policy_dir / "source.json").read_text())
+            upstream = json.loads(pathlib.Path(sys.argv[6]).read_text())
+            assert set(source) == {"repository", "revision", "files", "localFiles"}
+            assert source["repository"] == "https://github.com/TRaSH-Guides/Guides"
+            assert {name: file["upstream"] for name, file in source["files"].items()
+                    if "-cf-" not in name} == {
+                "radarr-web-1080p.json": "docs/json/radarr/quality-profiles/web-1080p.json",
+                "radarr-web-2160p.json": "docs/json/radarr/quality-profiles/web-2160p.json",
+                "sonarr-web-1080p.json": "docs/json/sonarr/quality-profiles/web-1080p.json",
+                "sonarr-web-2160p.json": "docs/json/sonarr/quality-profiles/web-2160p.json",
+                "radarr-movie.json": "docs/json/radarr/quality-size/movie.json",
+                "sonarr-series.json": "docs/json/sonarr/quality-size/series.json",
+                "sonarr-anime.json": "docs/json/sonarr/quality-size/anime.json",
+            }
+            assert set(upstream) == set(source["files"])
+            for name, file in source["files"].items():
+                assert set(file) == {"upstream", "sha256"}
+                actual = pathlib.Path(upstream[name]).read_bytes()
+                assert file["sha256"] == "sha256-" + base64.b64encode(hashlib.sha256(actual).digest()).decode()
+                assert (policy_dir / name).is_file(), name
+                assert json.loads((policy_dir / name).read_bytes()) == json.loads(actual), name
+            for kind in ("radarr", "sonarr"):
+                cf_ids = {
+                    json.loads(pathlib.Path(upstream[name]).read_text())["trash_id"]
+                    for name in upstream if name.startswith(kind + "-cf-")
+                }
+                for bundle in ("web-1080p", "web-2160p"):
+                    profile = json.loads(pathlib.Path(upstream[f"{kind}-{bundle}.json"]).read_text())
+                    assert set(profile["formatItems"].values()) <= cf_ids
+            assert set(source["localFiles"]) == {"conflicts.json"}
+            local = source["localFiles"]["conflicts.json"]
+            assert set(local) == {"sha256"}
+            assert local["sha256"] == "sha256-" + base64.b64encode(
+                hashlib.sha256((policy_dir / "conflicts.json").read_bytes()).digest()
+            ).decode()
+
             resources = []
             for path in environment.rglob("*.yaml"):
                 resources.extend(
@@ -369,6 +447,10 @@
             expected_services = {"radarr", "radarr-uhd", "sonarr", "sonarr-anime"}
             assert set(fixture_apps) == expected_services
             assert fixture["positive"]
+            assert fixture["seerrRoleAccepted"]
+            assert fixture["noStandardRejected"]
+            assert fixture["ambiguousStandardRejected"]
+            assert fixture["optionalFourKAccepted"]
             assert fixture["noSharingRejected"]
             assert fixture["stateCollisionRejected"]
             assert fixture["secretCollisionRejected"]
@@ -382,7 +464,7 @@
             def validate_instance_group(kind, instances):
                 expected_names = {"radarr", "uhd"} if kind == "radarr" else {"sonarr", "anime"}
                 assert set(instances) == expected_names
-                for field in ("state", "apiSecretKey", "root", "category", "profile"):
+                for field in ("state", "apiSecretKey", "root", "category", "bundle"):
                     values = [instance[field] for instance in instances.values()]
                     assert len(values) == len(set(values)), (kind, field)
                 assert all(instance["sharedWritablePaths"] == ["/data"] for instance in instances.values())
@@ -442,25 +524,6 @@
                         local_pvs[volume_name]["spec"]["local"]["path"]
                     ), resource["metadata"]["name"]
 
-            jellyfin = find("Deployment", "jellyfin")
-            jellyfin_pod = jellyfin["spec"]["template"]["spec"]
-            jellyfin_media = next(
-                volume for volume in jellyfin_pod["volumes"] if volume["name"] == "media"
-            )
-            assert jellyfin_media["hostPath"] == {
-                "path": storage["media"] + "/library",
-                "type": "Directory",
-            }
-            for container in jellyfin_pod["containers"] + jellyfin_pod.get("initContainers", []):
-                mounts = [mount for mount in container["volumeMounts"] if mount["name"] == "media"]
-                assert len(mounts) == 1
-                mount = mounts[0]
-                assert (
-                    mount["mountPath"] == "/media"
-                    and mount["readOnly"]
-                    and mount["mountPropagation"] == "HostToContainer"
-                )
-
             # Acquisition applications write the host-owned media namespace at /data.
             for name in ("radarr", "sonarr", "sabnzbd"):
                 deployment = find("Deployment", name)
@@ -487,7 +550,8 @@
             sabnzbd_init_security = sabnzbd_pod["initContainers"][0]["securityContext"]
             assert int(sabnzbd_init_security["runAsUser"]) == sabnzbd_identity["uid"]
             assert int(sabnzbd_init_security["runAsGroup"]) == sabnzbd_identity["gid"]
-            assert media_gid in jellyfin_pod["securityContext"]["supplementalGroups"]
+            jellyfin_security = find("Deployment", "jellyfin")["spec"]["template"]["spec"]["securityContext"]
+            assert media_gid in jellyfin_security["supplementalGroups"]
 
             script = provider["script"]
             assert provider["rejectsProviderCollision"]
@@ -608,9 +672,8 @@
 
             configarr = None
             configarr_env = None
-            prowlarr_script = None
-            seed_program = None
             seed_files = None
+            seed_program = None
             # Configarr consumes nested instance maps, not top-level instance keys.
             class ConfigarrLoader(yaml.SafeLoader):
                 pass
@@ -622,9 +685,15 @@
                         if resource["kind"] == "CronJob":
                             spec = spec["jobTemplate"]["spec"]
                         pod = spec["template"]["spec"]
-                        # API configuration jobs must not gain filesystem access to application data.
-                        assert all("persistentVolumeClaim" not in volume and "hostPath" not in volume
-                                   for volume in pod.get("volumes", [])), resource["metadata"]["name"]
+                        state_mounts = [mount for container in pod["containers"] for mount in container.get("volumeMounts", [])
+                                        if mount["name"] == "seerr-state"]
+                        state_volumes = [volume for volume in pod.get("volumes", []) if "persistentVolumeClaim" in volume]
+                        if resource["metadata"]["name"] == "media-config-seerr":
+                            assert state_mounts == [{"name": "seerr-state", "mountPath": "/seerr-state", "readOnly": True}]
+                            assert state_volumes == [{"name": "seerr-state", "persistentVolumeClaim": {"claimName": "media-seerr"}}]
+                        else:
+                            assert not state_mounts and not state_volumes
+                        assert all("hostPath" not in volume for volume in pod.get("volumes", []))
                         for container in pod["containers"] + pod.get("initContainers", []):
                             assert isinstance(container["image"], str), resource["metadata"]["name"]
                             assert isinstance(container.get("env", []), list), resource["metadata"]["name"]
@@ -639,15 +708,33 @@
                         seed_files = resource["data"]
                     if (resource and resource["kind"] == "ConfigMap"
                             and resource["metadata"]["name"] == "media-configuration"):
-                        prowlarr_script = resource["data"]["prowlarr.mjs"]
                         configarr = yaml.load(resource["data"]["config.yml"], Loader=ConfigarrLoader)
+                        assert resource["data"]["trash-guide-revision"] == source["revision"]
                         for kind, names in storage["mediaInstances"].items():
                             assert set(configarr[kind]) == set(names), (kind, configarr[kind])
                             assert all(isinstance(instance, dict) and "base_url" in instance
                                        for instance in configarr[kind].values())
-            assert configarr is not None and prowlarr_script is not None, "Missing media configuration"
+            periodic = {
+                resource["metadata"]["name"]: resource["spec"]
+                for resource in resources
+                if resource["kind"] == "CronJob" and resource["metadata"]["namespace"] == "media"
+            }
+            assert set(periodic) == {"media-configarr", "media-config-seerr"}
+            for name, minute in (("media-configarr", 7), ("media-config-seerr", 37)):
+                schedule = periodic[name]
+                assert schedule["schedule"] == f"{minute} */6 * * *"
+                assert schedule["suspend"] == "false" and schedule["concurrencyPolicy"] == "Forbid"
+                assert schedule["jobTemplate"]["spec"] == find("Job", name)["spec"]
+            assert configarr is not None, "Missing media configuration"
             assert configarr_env["LOG_LEVEL"] == "warn"
             assert configarr_env["STOP_ON_ERROR"] == "true"
+            assert configarr_env["CONFIGARR_ENFORCE_CONFIG_VALIDATION"] == "true"
+            assert configarr_env["CONFIGARR_ENFORCE_EXTERNAL_VALIDATION"] == "true"
+            assert configarr["prowlarr"]["main"]["applications"]["delete_unmanaged"]["enabled"] is False
+            for kind in ("radarr", "sonarr"):
+                for instance in configarr[kind].values():
+                    assert len(instance["root_folders"]) == 1
+                    assert instance["custom_formats"][0]["assign_scores_to"][0]["use_default_score"]
             # Exercise the actual seed script with POSIX sh: brace expansion silently
             # creates the wrong directories, and an empty template repo still needs HEAD.
             assert seed_program is not None and seed_files is not None
@@ -662,12 +749,21 @@
                 for repo in ("trash-guides", "recyclarr-config"):
                     subprocess.run(["git", "-C", str(root / "repos" / repo), "rev-parse", "--verify", "HEAD"],
                                    check=True, stdout=subprocess.DEVNULL)
-            with tempfile.TemporaryDirectory() as directory:
-                rendered_script = pathlib.Path(directory) / "prowlarr.mjs"
-                rendered_script.write_text(prowlarr_script)
-                subprocess.run(["node", str(prowlarr_fixture), str(rendered_script)], check=True)
+                trash_repo = root / "repos" / "trash-guides"
+                assert (trash_repo / "TRASH-GUIDES-REVISION").read_text().strip() == source["revision"]
+                for name, metadata in source["files"].items():
+                    if "-cf-" in name:
+                        assert (trash_repo / metadata["upstream"]).read_bytes() == pathlib.Path(upstream[name]).read_bytes()
+                synthetic_head = subprocess.check_output(
+                    ["git", "-C", str(trash_repo), "rev-parse", "HEAD"], text=True
+                ).strip()
+                assert synthetic_head != source["revision"]
             PY
             touch "$out"
           '';
+      checks.seerr-credential-boundary = pkgs.runCommand "seerr-credential-boundary" { } ''
+        ${pkgs.nodejs_22}/bin/node ${./seerr-credential-boundary.mjs} ${../den/aspects/kubernetes/services/seerr.mjs}
+        touch "$out"
+      '';
     };
 }

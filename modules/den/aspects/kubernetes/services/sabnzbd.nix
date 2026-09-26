@@ -14,7 +14,7 @@ let
   };
   images.sabnzbd = {
     repository = "ghcr.io/linuxserver/sabnzbd";
-    tag = "latest";
+    tag = "5.1.2-ls271";
     digest = "sha256:64c4c2b6ed546237451cbfec33aa8bac1396865c1a266dd247c02b36ffe27c62";
   };
   retainedEntry =
@@ -167,12 +167,11 @@ in
       secretName = cluster.settings.kubernetes.services.media.configurationSecret;
       providers = checkedProviders cluster.settings.kubernetes.services.media.sabnzbd.providers;
       requiredKeys = ownSecretKeys ++ providerSecretKeys providers;
-      downloadCategories = lib.unique (
-        map (cfg: cfg.category) (
-          builtins.attrValues cluster.settings.kubernetes.services.media.radarr
-          ++ builtins.attrValues cluster.settings.kubernetes.services.media.sonarr
-        )
-      );
+      mediaInstances =
+        builtins.attrValues cluster.settings.kubernetes.services.media.radarr
+        ++ builtins.attrValues cluster.settings.kubernetes.services.media.sonarr;
+      downloadCategories = lib.unique (map (cfg: cfg.category) mediaInstances);
+      libraryRoots = lib.unique (map (cfg: lib.removePrefix "/data/" cfg.root) mediaInstances);
       sabConfig = ''
         import json
         import os
@@ -204,7 +203,7 @@ in
         for key in ${builtins.toJSON requiredKeys}:
             if not os.environ[key].strip():
                 raise ValueError('Required runtime secret is empty: ' + key)
-        for directory in ('library/movies', 'library/tv', 'downloads/usenet/incomplete', 'downloads/usenet/complete'):
+        for directory in ${builtins.toJSON libraryRoots} + ['downloads/usenet/incomplete', 'downloads/usenet/complete']:
             os.makedirs('/data/' + directory, mode=0o2770, exist_ok=True)
         categories = config.setdefault('categories', {})
         for name in ${builtins.toJSON downloadCategories}:
@@ -243,6 +242,7 @@ in
     {
       applications.sabnzbd = {
         namespace = app.namespace;
+        annotations."argocd.argoproj.io/sync-wave" = "1";
         helm.releases.sabnzbd = {
           chart = charts.bjw-s-labs.app-template;
           values = {
@@ -349,7 +349,7 @@ in
               };
               data = {
                 type = "hostPath";
-                hostPath = "/srv/media/data";
+                hostPath = computeResources.mediaPaths.data;
                 hostPathType = "Directory";
                 globalMounts = [ { path = "/data"; } ];
               };

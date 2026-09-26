@@ -71,6 +71,7 @@ in
     {
       config.applications.prowlarr = {
         namespace = app.namespace;
+        annotations."argocd.argoproj.io/sync-wave" = "1";
         helm.releases.prowlarr = {
           chart = charts.bjw-s-labs.app-template;
           values = {

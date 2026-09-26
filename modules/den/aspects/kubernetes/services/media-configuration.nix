@@ -21,9 +21,14 @@
   };
 
   den.aspects.kubernetes.services.media.configuration.k8s-manifests =
-    { cluster, ... }:
+    { cluster, computeResources, ... }:
     let
       settings = cluster.settings.kubernetes.services.media;
+      policySource = builtins.fromJSON (
+        builtins.readFile (inputs.self + "/assets/media-policy/source.json")
+      );
+      pinnedInput = name: builtins.readFile (inputs.self + "/assets/media-policy/${name}");
+      profileData = kind: bundle: builtins.fromJSON (pinnedInput "${kind}-${bundle}.json");
       routePrefix =
         route:
         if route == null || route.pathPrefix == "/" then "" else lib.removeSuffix "/" route.pathPrefix;
@@ -86,8 +91,8 @@
       images = builtins.mapAttrs (_: image: "${image.repository}:${image.tag}@${image.digest}") {
         configarr = {
           repository = "docker.io/configarr/configarr";
-          tag = "1.30.2";
-          digest = "sha256:ec585b6d2530f6090ee26fdcc9701f279666c24dc96c9087208e88ec867c2416";
+          tag = "1.32.0";
+          digest = "sha256:8a94c8355f86619ac4c52298144f15859f9c66311515f96c4688435fa020039e";
         };
         node = {
           repository = "docker.io/library/node";
@@ -95,7 +100,7 @@
           digest = "sha256:1c18d9ab3af4585870b92e4dbc5cac5a0dc77dd13df1a5905cea89fc720eb05b";
         };
       };
-      trashRevision = "04e692c8926f6b9736943afcd9b505bad29f5e54";
+      trashRevision = policySource.revision;
       prowlarrSecretKey = services.prowlarr.apiSecretKey;
       retained = {
         "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
@@ -119,29 +124,36 @@
           externalUrl = fact.externalUrl;
           root = cfg.root;
           category = cfg.category;
-          profile = cfg.profile;
+          profile = (profileData kind cfg.bundle).name;
+          bundle = cfg.bundle;
           apiSecretKey = cfg.apiSecretKey;
         };
 
       profileTemplate =
-        profile:
+        kind: bundle:
         let
-          quality = lib.removePrefix "WEB-" profile;
+          profile = profileData kind bundle;
+          quality =
+            item:
+            "      - name: ${yaml item.name}\n"
+            + "        enabled: ${if item.allowed then "true" else "false"}\n"
+            + lib.optionalString (item ? items) "        qualities: ${yaml item.items}\n";
         in
         ''
+          # ${policySource.repository}/blob/${policySource.revision}/${
+            policySource.files."${kind}-${bundle}.json".upstream
+          }
           quality_profiles:
-            - name: ${yaml profile}
+            - name: ${yaml profile.name}
               upgrade:
-                allowed: true
-                until_quality: "WEB ${quality}"
-                until_score: 10000
-                min_format_score: 1
-              min_format_score: 0
+                allowed: ${if profile.upgradeAllowed then "true" else "false"}
+                until_quality: ${yaml profile.cutoff}
+                until_score: ${toString profile.cutoffFormatScore}
+                min_format_score: ${toString profile.minUpgradeFormatScore}
+              min_format_score: ${toString profile.minFormatScore}
+          ${lib.optionalString (profile ? language) "    language: ${yaml profile.language}\n"}
               qualities:
-                - name: "WEB ${quality}"
-                  qualities:
-                    - "WEBDL-${quality}"
-                    - "WEBRip-${quality}"
+          ${lib.concatMapStrings quality profile.items}
         '';
 
       instanceYaml =
@@ -172,6 +184,13 @@
                 type: ${if kind == "radarr" then "movie" else "series"}
               include:
                 - template: ${yaml "media-${kind}-${instanceName}"}
+              custom_formats:
+                - trash_ids: ${yaml (builtins.attrValues (profileData kind cfg.bundle).formatItems)}
+                  assign_scores_to:
+                    - name: ${yaml desired.profile}
+                      use_default_score: true
+              root_folders:
+                - ${yaml cfg.root}
               download_clients:
                 update_password: true
                 data:
@@ -193,49 +212,33 @@
           ''
         ) (builtins.attrNames instances);
 
-      rootsPolicy =
-        cluster:
-        let
-          settings = cluster.settings.kubernetes.services.media;
-          make =
-            kind: instances:
-            lib.mapAttrs (
-              instanceName: cfg:
-              instancePolicy {
-                inherit
-                  cluster
-                  kind
-                  instanceName
-                  cfg
-                  ;
-              }
-            ) instances;
-        in
-        {
-          arr = {
-            radarr = make "radarr" settings.radarr;
-            sonarr = make "sonarr" settings.sonarr;
-          };
-        };
-
       seerrPolicy =
         cluster: kind: instances:
         let
-          selected = lib.filter (name: instances.${name}.seerrDefault) (builtins.attrNames instances);
+          selected = role: lib.filter (name: instances.${name}.role == role) (builtins.attrNames instances);
+          standard = selected "standard";
+          fourK = selected "4k";
+          fact =
+            name:
+            (instancePolicy {
+              inherit cluster kind;
+              cfg = instances.${name};
+              instanceName = name;
+            })
+            // {
+              inherit name;
+            };
         in
-        assert lib.assertMsg (builtins.length selected == 1)
-          "Exactly one ${kind} instance must have seerrDefault = true for Seerr.";
-        let
-          name = builtins.head selected;
-          cfg = instances.${name};
-        in
-        (instancePolicy {
-          inherit cluster kind cfg;
-          instanceName = name;
-        })
-        // {
-          inherit name;
-        };
+        assert lib.assertMsg (
+          builtins.length standard == 1
+        ) "Exactly one ${kind} instance must have role = standard for Seerr.";
+        assert lib.assertMsg (
+          builtins.length fourK <= 1
+        ) "At most one ${kind} instance may have role = 4k for Seerr.";
+        {
+          standard = fact (builtins.head standard);
+        }
+        // lib.optionalAttrs (fourK != [ ]) { "4k" = fact (builtins.head fourK); };
 
       configarrConfig =
         cluster:
@@ -249,10 +252,36 @@
                 instances = settings.${kind};
               })
             );
+          applications =
+            lib.concatMap
+              (
+                kind:
+                lib.mapAttrsToList (instanceName: cfg: {
+                  name = "homelab-${services.${kind}.${instanceName}.service}";
+                  implementation = if kind == "radarr" then "Radarr" else "Sonarr";
+                  baseUrl = endpoint services.${kind}.${instanceName};
+                  apiSecretKey = cfg.apiSecretKey;
+                  syncLevel = "fullSync";
+                  prowlarrUrl = endpoint apps.prowlarr;
+                }) settings.${kind}
+              )
+              [
+                "radarr"
+                "sonarr"
+              ];
+          prowlarrApps = lib.concatMapStringsSep "\n" (
+            application:
+            "        - name: ${yaml application.name}\n"
+            + "          type: ${yaml application.implementation}\n"
+            + "          sync_level: ${yaml application.syncLevel}\n"
+            + "          fields:\n"
+            + "            prowlarrUrl: ${yaml application.prowlarrUrl}\n"
+            + "            baseUrl: ${yaml application.baseUrl}\n"
+            + "            apiKey: !env ${application.apiSecretKey}"
+          ) applications;
         in
         ''
-          # Configarr v1.30.2: the Git URLs intentionally point at detached local
-          # repositories seeded from the selected TRaSH revision before each run.
+          # Configarr v1.32.0: Git URLs refer to locally seeded, detached policy inputs.
           trashGuideUrl: "file:///app/repos/trash-guides"
           trashRevision: HEAD
           recyclarrConfigUrl: "file:///app/repos/recyclarr-config"
@@ -263,6 +292,15 @@
           ${nestedInstances "sonarr"}
           radarr:
           ${nestedInstances "radarr"}
+          prowlarr:
+            main:
+              base_url: ${yaml (endpoint apps.prowlarr)}
+              api_key: !env ${prowlarrSecretKey}
+              applications:
+                data:
+          ${prowlarrApps}
+                delete_unmanaged:
+                  enabled: false
         '';
 
       policyConfig =
@@ -270,46 +308,8 @@
         let
           settings = cluster.settings.kubernetes.services.media;
           jellyfinRoute = cluster.routes.jellyfin;
-          prowlarrUrl = endpoint apps.prowlarr;
         in
         {
-          roots = builtins.toJSON (rootsPolicy cluster);
-          prowlarr = builtins.toJSON {
-            prowlarr = {
-              url = prowlarrUrl;
-              apiSecretKey = prowlarrSecretKey;
-            };
-            applications =
-              lib.concatMap
-                (
-                  kind:
-                  lib.mapAttrsToList (
-                    instanceName: cfg:
-                    let
-                      desired = instancePolicy {
-                        inherit
-                          cluster
-                          kind
-                          instanceName
-                          cfg
-                          ;
-                      };
-                    in
-                    {
-                      name = "homelab-${services.${kind}.${instanceName}.service}";
-                      implementation = if kind == "radarr" then "Radarr" else "Sonarr";
-                      baseUrl = desired.url;
-                      apiSecretKey = cfg.apiSecretKey;
-                      syncLevel = "fullSync";
-                      inherit prowlarrUrl;
-                    }
-                  ) settings.${kind}
-                )
-                [
-                  "radarr"
-                  "sonarr"
-                ];
-          };
           seerr = builtins.toJSON {
             arr = {
               radarr = seerrPolicy cluster "radarr" settings.radarr;
@@ -320,6 +320,7 @@
               applicationUrl = apps.seerr.externalUrl;
             };
             jellyfin = {
+              namespace = apps.jellyfin.namespace;
               ip = apps.jellyfin.host;
               port = apps.jellyfin.port;
               useSsl = jellyfinRoute.backendTLS;
@@ -348,18 +349,20 @@
             lib.listToAttrs (
               lib.mapAttrsToList (name: cfg: {
                 name = "media-${kind}-${name}.yml";
-                value = profileTemplate cfg.profile;
+                value = profileTemplate kind cfg.bundle;
               }) instances
             );
         in
         (make "radarr" settings.radarr) // (make "sonarr" settings.sonarr);
 
+      cfFiles = lib.filterAttrs (name: _: lib.hasInfix "-cf-" name) policySource.files;
       trashInputs = {
         "radarr-movie.json" = builtins.readFile (inputs.self + "/assets/media-policy/radarr-movie.json");
         "sonarr-series.json" = builtins.readFile (inputs.self + "/assets/media-policy/sonarr-series.json");
         "sonarr-anime.json" = builtins.readFile (inputs.self + "/assets/media-policy/sonarr-anime.json");
         "conflicts.json" = builtins.readFile (inputs.self + "/assets/media-policy/conflicts.json");
-      };
+      }
+      // lib.mapAttrs (name: _: pinnedInput name) cfFiles;
 
       seedPolicy = ''
         set -eu
@@ -382,6 +385,9 @@
         cp /seed/sonarr-anime.json "$trash/sonarr/quality-size/anime.json"
         cp /seed/conflicts.json "$trash/radarr/conflicts.json"
         cp /seed/conflicts.json "$trash/sonarr/conflicts.json"
+        ${lib.concatMapStringsSep "\n" (
+          name: "cp /seed/${name} /app/repos/trash-guides/${cfFiles.${name}.upstream}"
+        ) (builtins.attrNames cfFiles)}
         printf '%s\n' '${trashRevision}' > /app/repos/trash-guides/TRASH-GUIDES-REVISION
         for repo in trash-guides recyclarr-config; do
           git -C "/app/repos/$repo" init -q
@@ -411,6 +417,7 @@
           secretName,
           secretKeys,
           serviceAccountName ? "default",
+          nodeSelector ? null,
           env ? [ ],
         }:
         {
@@ -470,7 +477,8 @@
                   };
                 }
               ];
-            };
+            }
+            // lib.optionalAttrs (nodeSelector != null) { inherit nodeSelector; };
           };
         };
 
@@ -488,6 +496,23 @@
         };
         inherit spec;
       };
+      periodic = name: minute: jobSpec: {
+        apiVersion = "batch/v1";
+        kind = "CronJob";
+        metadata = {
+          inherit name;
+          namespace = "media";
+        };
+        spec = {
+          schedule = "${toString minute} */6 * * *";
+          suspend = false;
+          concurrencyPolicy = "Forbid";
+          startingDeadlineSeconds = 900;
+          successfulJobsHistoryLimit = 1;
+          failedJobsHistoryLimit = 1;
+          jobTemplate.spec = jobSpec;
+        };
+      };
 
       secretName = cluster.settings.kubernetes.services.media.configurationSecret;
       arrSecretKeys = lib.unique (
@@ -499,72 +524,10 @@
       generatedPolicy = policyConfig cluster;
       configurationData = {
         "config.yml" = configarrConfig cluster;
-        "roots.json" = generatedPolicy.roots;
-        "prowlarr.json" = generatedPolicy.prowlarr;
         "seerr.json" = generatedPolicy.seerr;
         "trash-guide-revision" = generatedPolicy.trashRevision;
       };
       templateFiles = templates cluster;
-      rootJob = baseJob {
-        name = "media-config-roots";
-        image = images.node;
-        command = [
-          "node"
-          "/configuration/roots.mjs"
-        ];
-        secretName = secretName;
-        secretKeys = arrSecretKeys;
-        mounts = [
-          {
-            name = "configuration";
-            mountPath = "/configuration";
-            readOnly = true;
-          }
-          {
-            name = "secrets";
-            mountPath = "/secrets";
-            readOnly = true;
-          }
-        ];
-        volumes = [
-          {
-            name = "configuration";
-            configMap = {
-              name = "media-configuration";
-            };
-          }
-        ];
-      };
-      prowlarrJob = baseJob {
-        name = "media-config-prowlarr";
-        image = images.node;
-        command = [
-          "node"
-          "/configuration/prowlarr.mjs"
-        ];
-        secretName = secretName;
-        secretKeys = arrSecretKeys ++ [ prowlarrSecretKey ];
-        mounts = [
-          {
-            name = "configuration";
-            mountPath = "/configuration";
-            readOnly = true;
-          }
-          {
-            name = "secrets";
-            mountPath = "/secrets";
-            readOnly = true;
-          }
-        ];
-        volumes = [
-          {
-            name = "configuration";
-            configMap = {
-              name = "media-configuration";
-            };
-          }
-        ];
-      };
       seerrJob = baseJob {
         name = "media-config-seerr";
         image = images.node;
@@ -573,8 +536,9 @@
           "/configuration/seerr.mjs"
         ];
         secretName = secretName;
-        secretKeys = arrSecretKeys;
+        secretKeys = arrSecretKeys ++ [ "SEERR_API_KEY" ];
         serviceAccountName = "media-config-seerr";
+        nodeSelector."kubernetes.io/hostname" = computeResources.instance;
         env = [
           {
             name = "NODE_EXTRA_CA_CERTS";
@@ -597,6 +561,11 @@
             mountPath = "/var/run/secrets/kubernetes.io/serviceaccount";
             readOnly = true;
           }
+          {
+            name = "seerr-state";
+            mountPath = "/seerr-state";
+            readOnly = true;
+          }
         ];
         volumes = [
           {
@@ -604,6 +573,10 @@
             configMap = {
               name = "media-configuration";
             };
+          }
+          {
+            name = "seerr-state";
+            persistentVolumeClaim.claimName = "media-seerr";
           }
           {
             name = "kubernetes-api";
@@ -632,6 +605,26 @@
           }
         ];
       };
+      readinessTargets = builtins.toJSON (
+        lib.concatMap
+          (
+            kind:
+            lib.mapAttrsToList (name: cfg: {
+              url = "${endpoint services.${kind}.${name}}/api/v3/system/status";
+              key = cfg.apiSecretKey;
+            }) settings.${kind}
+          )
+          [
+            "radarr"
+            "sonarr"
+          ]
+        ++ [
+          {
+            url = "${endpoint apps.prowlarr}/api/v1/system/status";
+            key = prowlarrSecretKey;
+          }
+        ]
+      );
       configarrJob = {
         backoffLimit = 6;
         activeDeadlineSeconds = 900;
@@ -648,6 +641,54 @@
               seccompProfile.type = "RuntimeDefault";
             };
             initContainers = [
+              {
+                name = "wait-for-apis";
+                image = images.node;
+                command = [
+                  "node"
+                  "-e"
+                  ''
+                    const targets = JSON.parse(process.env.READY_TARGETS);
+                    const deadline = Date.now() + 600000;
+                    async function ready(target) {
+                      while (true) {
+                        try {
+                          const response = await fetch(target.url, {
+                            headers: { 'X-Api-Key': process.env[target.key] },
+                            signal: AbortSignal.timeout(10000),
+                          });
+                          if (response.ok) return;
+                        } catch {}
+                        if (Date.now() + 5000 >= deadline) throw new Error('Media API readiness timed out: ' + target.url);
+                        await new Promise(resolve => setTimeout(resolve, 5000));
+                      }
+                    }
+                    Promise.all(targets.map(ready)).catch(error => { console.error(error); process.exitCode = 1; });
+                  ''
+                ];
+                env = [
+                  {
+                    name = "READY_TARGETS";
+                    value = readinessTargets;
+                  }
+                ]
+                ++ map (secretEnv secretName) (arrSecretKeys ++ [ prowlarrSecretKey ]);
+                securityContext = {
+                  allowPrivilegeEscalation = false;
+                  readOnlyRootFilesystem = true;
+                  capabilities.drop = [ "ALL" ];
+                };
+                resources = {
+                  requests = {
+                    cpu = "10m";
+                    memory = "32Mi";
+                  };
+                  limits = {
+                    cpu = "250m";
+                    memory = "128Mi";
+                  };
+                };
+              }
               {
                 name = "seed-policy";
                 image = images.configarr;
@@ -688,6 +729,21 @@
               {
                 name = "configarr";
                 image = images.configarr;
+                # Configarr 1.32 can report failed API writes while exiting zero.
+                command = [
+                  "/bin/sh"
+                  "-ec"
+                  ''
+                    output="$(dumb-init node index.js 2>&1)" || {
+                      printf '%s\n' "$output"
+                      exit 1
+                    }
+                    printf '%s\n' "$output"
+                    case "$output" in
+                      *"ERROR "*|*"change(s) failed"*) exit 1 ;;
+                    esac
+                  ''
+                ];
                 env = [
                   {
                     name = "ROOT_PATH";
@@ -709,6 +765,14 @@
                     name = "LOG_LEVEL";
                     value = "warn";
                   }
+                  {
+                    name = "CONFIGARR_ENFORCE_CONFIG_VALIDATION";
+                    value = "true";
+                  }
+                  {
+                    name = "CONFIGARR_ENFORCE_EXTERNAL_VALIDATION";
+                    value = "true";
+                  }
                 ]
                 ++ map (secretEnv secretName) (
                   lib.unique (
@@ -721,6 +785,7 @@
                     "SABNZBD_API_KEY"
                     "SABNZBD_USERNAME"
                     "SABNZBD_PASSWORD"
+                    prowlarrSecretKey
                   ]
                 );
                 resources = {
@@ -807,8 +872,6 @@
             namespace = "media";
           };
           data = configurationData // {
-            "roots.mjs" = rootsScript;
-            "prowlarr.mjs" = prowlarrScript;
             "seerr.mjs" = seerrScript;
           };
         }
@@ -831,50 +894,6 @@
           data = trashInputs;
         }
       ];
-      rootsScript = ''
-        import { readFileSync } from 'node:fs';
-        const policy = JSON.parse(readFileSync('/configuration/roots.json', 'utf8'));
-        const secret = name => {
-          const value = readFileSync('/secrets/' + name, 'utf8').replace(/\r?\n$/, "");
-          if (!value.trim()) throw new Error('Empty required Secret key: ' + name);
-          return value;
-        };
-        function api(base, headers = {}) {
-          return async (path, method = 'GET', body) => {
-            let response;
-            try {
-              response = await fetch(base + path, {
-                method,
-                headers: { 'Content-Type': 'application/json', ...headers },
-                body: body === undefined ? undefined : JSON.stringify(body),
-                signal: AbortSignal.timeout(20000),
-                redirect: 'error',
-              });
-            } catch {
-              throw new Error(method + ' ' + path + ': dependency unreachable');
-            }
-            if (!response.ok) throw new Error(method + ' ' + path + ': HTTP ' + response.status);
-            const text = await response.text();
-            return text ? JSON.parse(text) : null;
-          };
-        }
-        function one(items, predicate, label) {
-          const matches = items.filter(predicate);
-          if (matches.length > 1) throw new Error('Ambiguous managed ' + label);
-          return matches[0];
-        }
-        for (const [kind, instances] of Object.entries(policy.arr)) {
-          for (const desired of Object.values(instances)) {
-            const request = api(desired.url + '/api/v3', { 'X-Api-Key': secret(desired.apiSecretKey) });
-            const roots = await request('/rootfolder');
-            if (!one(roots, root => root.path === desired.root, 'root')) {
-              await request('/rootfolder', 'POST', { path: desired.root });
-            }
-          }
-        }
-        console.log('media roots: declared roots reconciled');
-      '';
-      prowlarrScript = builtins.readFile ./prowlarr.mjs;
       seerrScript = builtins.readFile ./seerr.mjs;
     in
     {
@@ -882,10 +901,10 @@
         namespace = "media";
         annotations."argocd.argoproj.io/sync-wave" = "3";
         objects = baseObjects ++ [
-          (hook "media-config-roots" 0 rootJob)
           (hook "media-configarr" 1 configarrJob)
-          (hook "media-config-prowlarr" 1 prowlarrJob)
           (hook "media-config-seerr" 2 seerrJob)
+          (periodic "media-configarr" 7 configarrJob)
+          (periodic "media-config-seerr" 37 seerrJob)
         ];
       };
     };

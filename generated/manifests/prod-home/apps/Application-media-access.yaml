@@ -7,7 +7,7 @@ metadata:
   namespace: argocd
 spec:
   destination:
-    namespace: media
+    namespace: jellyfin
     server: https://kubernetes.default.svc
   project: prod-home
   source:

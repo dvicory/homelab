@@ -1,6 +1,77 @@
 apiVersion: v1
 data:
-  media-radarr-radarr.yml: |
+  media-radarr-radarr.yml: |+
+    # https://github.com/TRaSH-Guides/Guides/blob/04e692c8926f6b9736943afcd9b505bad29f5e54/docs/json/radarr/quality-profiles/web-1080p.json
+    quality_profiles:
+      - name: "WEB 1080p"
+        upgrade:
+          allowed: true
+          until_quality: "WEB 1080p"
+          until_score: 10000
+          min_format_score: 1
+        min_format_score: 0
+        language: "Original"
+
+        qualities:
+          - name: "WEB 1080p"
+            enabled: true
+            qualities: ["WEBRip-1080p","WEBDL-1080p"]
+          - name: "WEB 720p"
+            enabled: false
+            qualities: ["WEBRip-720p","WEBDL-720p"]
+          - name: "WEB 480p"
+            enabled: false
+            qualities: ["WEBRip-480p","WEBDL-480p"]
+          - name: "Remux-1080p"
+            enabled: false
+          - name: "Raw-HD"
+            enabled: false
+          - name: "BR-DISK"
+            enabled: false
+          - name: "Remux-2160p"
+            enabled: false
+          - name: "Bluray-2160p"
+            enabled: false
+          - name: "WEB 2160p"
+            enabled: false
+            qualities: ["WEBRip-2160p","WEBDL-2160p"]
+          - name: "HDTV-2160p"
+            enabled: false
+          - name: "Bluray-1080p"
+            enabled: false
+          - name: "HDTV-1080p"
+            enabled: false
+          - name: "Bluray-720p"
+            enabled: false
+          - name: "HDTV-720p"
+            enabled: false
+          - name: "Bluray-576p"
+            enabled: false
+          - name: "Bluray-480p"
+            enabled: false
+          - name: "DVD-R"
+            enabled: false
+          - name: "DVD"
+            enabled: false
+          - name: "SDTV"
+            enabled: false
+          - name: "DVDSCR"
+            enabled: false
+          - name: "REGIONAL"
+            enabled: false
+          - name: "TELECINE"
+            enabled: false
+          - name: "TELESYNC"
+            enabled: false
+          - name: "CAM"
+            enabled: false
+          - name: "WORKPRINT"
+            enabled: false
+          - name: "Unknown"
+            enabled: false
+
+  media-sonarr-sonarr.yml: |+
+    # https://github.com/TRaSH-Guides/Guides/blob/04e692c8926f6b9736943afcd9b505bad29f5e54/docs/json/sonarr/quality-profiles/web-1080p.json
     quality_profiles:
       - name: "WEB-1080p"
         upgrade:
@@ -9,25 +80,49 @@ data:
           until_score: 10000
           min_format_score: 1
         min_format_score: 0
+
         qualities:
           - name: "WEB 1080p"
-            qualities:
-              - "WEBDL-1080p"
-              - "WEBRip-1080p"
-  media-sonarr-sonarr.yml: |
-    quality_profiles:
-      - name: "WEB-1080p"
-        upgrade:
-          allowed: true
-          until_quality: "WEB 1080p"
-          until_score: 10000
-          min_format_score: 1
-        min_format_score: 0
-        qualities:
-          - name: "WEB 1080p"
-            qualities:
-              - "WEBDL-1080p"
-              - "WEBRip-1080p"
+            enabled: true
+            qualities: ["WEBRip-1080p","WEBDL-1080p"]
+          - name: "Bluray-2160p Remux"
+            enabled: false
+          - name: "Bluray-2160p"
+            enabled: false
+          - name: "WEB 2160p"
+            enabled: false
+            qualities: ["WEBRip-2160p","WEBDL-2160p"]
+          - name: "HDTV-2160p"
+            enabled: false
+          - name: "Bluray-1080p Remux"
+            enabled: false
+          - name: "Bluray-1080p"
+            enabled: false
+          - name: "Bluray-720p"
+            enabled: false
+          - name: "WEB 720p"
+            enabled: false
+            qualities: ["WEBRip-720p","WEBDL-720p"]
+          - name: "Raw-HD"
+            enabled: false
+          - name: "HDTV-1080p"
+            enabled: false
+          - name: "HDTV-720p"
+            enabled: false
+          - name: "Bluray-576p"
+            enabled: false
+          - name: "Bluray-480p"
+            enabled: false
+          - name: "DVD"
+            enabled: false
+          - name: "WEB 480p"
+            enabled: false
+            qualities: ["WEBRip-480p","WEBDL-480p"]
+          - name: "SDTV"
+            enabled: false
+          - name: "Unknown"
+            enabled: false
+
 kind: ConfigMap
 metadata:
   name: media-configarr-templates

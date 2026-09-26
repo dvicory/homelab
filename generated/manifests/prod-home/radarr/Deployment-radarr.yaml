@@ -44,7 +44,7 @@ spec:
               value: UTC
             - name: UMASK
               value: "007"
-          image: ghcr.io/linuxserver/radarr:latest@sha256:95ba0801df4d9d1d79d0d9a3849f656542497dab061d91b87ad4f53a71aff3ef
+          image: ghcr.io/linuxserver/radarr:6.3.0.10514-ls315@sha256:95ba0801df4d9d1d79d0d9a3849f656542497dab061d91b87ad4f53a71aff3ef
           livenessProbe:
             failureThreshold: 6
             httpGet:

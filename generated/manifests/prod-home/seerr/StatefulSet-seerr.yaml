@@ -29,6 +29,11 @@ spec:
       automountServiceAccountToken: false
       containers:
         - env:
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: SEERR_API_KEY
+                  name: media-runtime
             - name: TZ
               value: UTC
           image: ghcr.io/seerr-team/seerr:v3.4.1@sha256:f4768de5f616248d723e05891f3345a1402123775d03bf0890dbfedc0831bda1

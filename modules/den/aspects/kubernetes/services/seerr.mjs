@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs';
 
-const policy = JSON.parse(readFileSync('/configuration/seerr.json', 'utf8'));
+const policy = JSON.parse(readFileSync((process.env.MEDIA_CONFIGURATION_ROOT || '/configuration') + '/seerr.json', 'utf8'));
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const secret = name => {
-  const value = readFileSync('/secrets/' + name, 'utf8').replace(/\r?\n$/, '');
+  const value = readFileSync((process.env.MEDIA_SECRETS_ROOT || '/secrets') + '/' + name, 'utf8').replace(/\r?\n$/, '');
   if (!value.trim()) throw new Error('Empty required Secret key: ' + name);
   return value;
 };
@@ -49,7 +49,7 @@ async function administratorPassword() {
   const token = readFileSync('/var/run/secrets/kubernetes.io/serviceaccount/token', 'utf8');
   const { name, key } = policy.jellyfin.secret;
   const request = api('https://kubernetes.default.svc', { Authorization: 'Bearer ' + token });
-  const result = await request('/api/v1/namespaces/jellyfin/secrets/' + encodeURIComponent(name));
+  const result = await request('/api/v1/namespaces/' + encodeURIComponent(policy.jellyfin.namespace) + '/secrets/' + encodeURIComponent(name));
   const encoded = result?.data?.[key];
   if (typeof encoded !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
     throw new Error('Jellyfin administrator Secret is missing or invalid');
@@ -72,76 +72,97 @@ function checkedStatus(status, libraryId) {
 
 async function configure() {
   const base = policy.seerr.url + '/api/v1';
-  const headers = { Origin: policy.seerr.url };
+  const headers = { Origin: policy.seerr.url, 'X-Api-Key': secret('SEERR_API_KEY') };
   const request = api(base, headers);
   const publicSettings = await request('/settings/public');
   if (![2, 4].includes(publicSettings?.mediaServerType)) throw new Error('Seerr is not available for Jellyfin onboarding');
-  const { username, library: libraryName, secret: secretRef, ...jellyfinSettings } = policy.jellyfin;
-  const password = await administratorPassword();
-  const login = { username, password, serverType: 2 };
-  if (publicSettings.mediaServerType === 4) Object.assign(login, {
-    hostname: jellyfinSettings.ip,
-    port: jellyfinSettings.port,
-    useSsl: jellyfinSettings.useSsl,
-    urlBase: jellyfinSettings.urlBase,
-  });
-  const session = await request('/auth/jellyfin', 'POST', login);
-  if (session?.id !== 1) throw new Error('Jellyfin administrator is not the Seerr owner');
-  const apiKey = (await request('/settings/main'))?.apiKey;
-  if (typeof apiKey !== 'string' || !apiKey) throw new Error('Seerr did not expose its persisted API key');
-  headers['X-Api-Key'] = apiKey;
+  const { username, library: libraryName, namespace: _namespace, secret: _secret, ...jellyfinSettings } = policy.jellyfin;
+  if (publicSettings.mediaServerType === 2 || publicSettings.initialized) {
+    const configured = await request('/settings/jellyfin');
+    if (configured?.ip !== jellyfinSettings.ip || configured.port !== jellyfinSettings.port ||
+        Boolean(configured.useSsl) !== jellyfinSettings.useSsl ||
+        (configured.urlBase || '') !== jellyfinSettings.urlBase) {
+      throw new Error('Seerr Jellyfin host differs from the declared Jellyfin server');
+    }
+  } else {
+    // The pre-owner API key cannot read /settings/jellyfin. Inspect the same
+    // retained settings Seerr loads before allowing its auth endpoint to use
+    // a stored hostname instead of the hostname supplied below.
+    const saved = JSON.parse(readFileSync((process.env.SEERR_STATE_ROOT || '/seerr-state') + '/settings.json', 'utf8'));
+    if (saved?.main?.mediaServerType !== 4 || saved?.jellyfin?.ip !== '') {
+      throw new Error('Cannot verify unclaimed Seerr has no configured Jellyfin host');
+    }
+    const password = await administratorPassword();
+    const session = await request('/auth/jellyfin', 'POST', {
+      username, password, serverType: 2,
+      hostname: jellyfinSettings.ip,
+      port: jellyfinSettings.port,
+      useSsl: jellyfinSettings.useSsl,
+      urlBase: jellyfinSettings.urlBase,
+    });
+    if (session?.id !== 1) throw new Error('Jellyfin administrator is not the Seerr owner');
+  }
   const owner = await request('/auth/me');
   if (owner?.id !== 1) throw new Error('Configuration requires Seerr owner');
 
   await request('/settings/jellyfin', 'POST', jellyfinSettings);
   await request('/settings/main', 'POST', { applicationUrl: policy.seerr.applicationUrl });
-  for (const [name, desired] of Object.entries(policy.arr)) {
-    const profiles = await api(desired.url + '/api/v3', { 'X-Api-Key': secret(desired.apiSecretKey) })('/qualityprofile');
-    const profile = one(profiles, item => item.name === desired.profile, 'Seerr quality profile');
-    if (!profile) throw new Error('Run Configarr before Seerr');
-    const path = '/settings/' + name;
-    const connectionName = name === 'radarr' ? 'Radarr' : 'Sonarr';
-    const existing = one(await request(path), item => item.name === connectionName, 'Seerr connection');
-    const url = new URL(desired.url);
-    const server = {
-      tags: [], overrideRule: [], tagRequests: false,
-      ...(existing || {}),
-      name: connectionName,
-      hostname: url.hostname,
-      port: Number(url.port),
-      useSsl: false,
-      baseUrl: url.pathname === '/' ? '' : url.pathname,
-      apiKey: secret(desired.apiSecretKey),
-      activeProfileId: profile.id,
-      activeProfileName: desired.profile,
-      activeDirectory: desired.root,
-      externalUrl: desired.externalUrl,
-      isDefault: true,
-      is4k: false,
-      syncEnabled: true,
-      preventSearch: false,
-      ...(name === 'radarr' ? { minimumAvailability: 'released' } : {
-        seriesType: 'standard', animeSeriesType: 'anime',
-        activeAnimeProfileId: profile.id,
-        activeAnimeProfileName: desired.profile,
-        activeAnimeDirectory: desired.root,
-        enableSeasonFolders: true,
-        monitorNewItems: 'all',
-      }),
-    };
-    delete server.id;
-    await request(path + '/test', 'POST', server);
-    await request(path + (existing ? '/' + existing.id : ''), existing ? 'PUT' : 'POST', server);
+  for (const [kind, roles] of Object.entries(policy.arr)) {
+    const path = '/settings/' + kind;
+    const current = await request(path);
+    for (const role of ['standard', '4k']) {
+      const connectionName = (kind === 'radarr' ? 'Radarr' : 'Sonarr') + (role === '4k' ? ' 4K' : '');
+      const existing = one(current, item => item.name === connectionName, 'Seerr connection');
+      const desired = roles[role];
+      if (!desired) {
+        if (existing) await request(path + '/' + existing.id, 'DELETE');
+        continue;
+      }
+      const profiles = await api(desired.url + '/api/v3', { 'X-Api-Key': secret(desired.apiSecretKey) })('/qualityprofile');
+      const profile = one(profiles, item => item.name === desired.profile, 'Seerr quality profile');
+      if (!profile) throw new Error('Run Configarr before Seerr');
+      const url = new URL(desired.url);
+      const server = {
+        tags: [], overrideRule: [], tagRequests: false,
+        ...(existing || {}),
+        name: connectionName,
+        hostname: url.hostname,
+        port: Number(url.port),
+        useSsl: url.protocol === 'https:',
+        baseUrl: url.pathname === '/' ? '' : url.pathname,
+        apiKey: secret(desired.apiSecretKey),
+        activeProfileId: profile.id,
+        activeProfileName: desired.profile,
+        activeDirectory: desired.root,
+        externalUrl: desired.externalUrl,
+        isDefault: true,
+        is4k: role === '4k',
+        syncEnabled: true,
+        preventSearch: false,
+        ...(kind === 'radarr' ? { minimumAvailability: 'released' } : {
+          seriesType: 'standard', animeSeriesType: 'anime',
+          activeAnimeProfileId: profile.id,
+          activeAnimeProfileName: desired.profile,
+          activeAnimeDirectory: desired.root,
+          enableSeasonFolders: true,
+          monitorNewItems: 'all',
+        }),
+      };
+      delete server.id;
+      await request(path + '/test', 'POST', server);
+      await request(path + (existing ? '/' + existing.id : ''), existing ? 'PUT' : 'POST', server);
+    }
   }
 
   // The Seerr library GET mutates enabled flags. Discover the ID from Jellyfin first.
-  const jellyfinUrl = 'http://' + jellyfinSettings.ip + ':' + jellyfinSettings.port + jellyfinSettings.urlBase;
-  const jellyfin = api(jellyfinUrl, {
-    Authorization: 'MediaBrowser Client="homelab-seerr", Device="Kubernetes Job", DeviceId="media-config-seerr", Version="1"',
-  });
-  const auth = await jellyfin('/Users/AuthenticateByName', 'POST', { Username: username, Pw: password });
-  if (!auth?.AccessToken) throw new Error('Jellyfin administrator authentication returned no token');
-  const folders = await api(jellyfinUrl, { 'X-Emby-Token': auth.AccessToken })('/Library/MediaFolders');
+  const jellyfinUrl = (jellyfinSettings.useSsl ? 'https://' : 'http://') +
+    jellyfinSettings.ip + ':' + jellyfinSettings.port + jellyfinSettings.urlBase;
+  const configuredJellyfin = await request('/settings/jellyfin');
+  if (typeof configuredJellyfin?.apiKey !== 'string' || !configuredJellyfin.apiKey) {
+    throw new Error('Seerr has no Jellyfin API key after owner claim');
+  }
+  const jellyfinAuthorization = 'MediaBrowser Client="homelab-seerr", Device="Kubernetes Job", DeviceId="media-config-seerr", Version="1", Token="' + configuredJellyfin.apiKey + '"';
+  const folders = await api(jellyfinUrl, { Authorization: jellyfinAuthorization })('/Library/MediaFolders');
   const selected = one(folders?.Items, item => item.Name === libraryName && item.Type === 'CollectionFolder' && item.CollectionType === 'movies', 'Movies library');
   if (typeof selected?.Id !== 'string' || !selected.Id || selected.Id.includes(',')) throw new Error('Configured Movies library not found or invalid');
   if (folders.Items.filter(item => item.Id === selected.Id).length !== 1) throw new Error('Ambiguous Movies library ID');

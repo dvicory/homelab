@@ -18,10 +18,26 @@ let
     builtins.getAttr key computeResources.retainedPaths;
 in
 {
-  den.aspects.kubernetes.services.seerr.compute-resources.retainedPaths.seerr = {
-    uid = 1000;
-    gid = 1000;
-    mode = "0700";
+  den.aspects.kubernetes.services.seerr.compute-resources = { cluster, ... }: {
+    retainedPaths.seerr = {
+      uid = 1000;
+      gid = 1000;
+      mode = "0700";
+    };
+    runtimeSecrets."media--${cluster.settings.kubernetes.services.media.configurationSecret}--SEERR_API_KEY" =
+      {
+        namespace = "media";
+        name = cluster.settings.kubernetes.services.media.configurationSecret;
+        key = "SEERR_API_KEY";
+      };
+  };
+  den.aspects.kubernetes.services.seerr.settings.phase = lib.mkOption {
+    type = lib.types.enum [
+      "initial"
+      "ready"
+    ];
+    default = "initial";
+    description = "Publish native-auth requests only after Seerr owner claim and Movies library sync succeed.";
   };
   den.aspects.kubernetes.services.seerr.k8s-manifests =
     {
@@ -41,7 +57,9 @@ in
           value = cluster.routes.requests;
         in
         assert lib.assertMsg (
-          value.namespace == app.namespace && value.service == app.service && value.port == app.port
+          value.namespace == app.namespace
+          && value.service == app.service
+          && value.port == app.port
           && value.pathPrefix == "/"
         ) "Media route requests must target ${app.namespace}/${app.service}:${toString app.port} at /.";
         value;
@@ -64,7 +82,13 @@ in
               replicas = 1;
               containers.main = {
                 image = images.seerr;
-                env.TZ = "UTC";
+                env = {
+                  TZ = "UTC";
+                  API_KEY.valueFrom.secretKeyRef = {
+                    name = cluster.settings.kubernetes.services.media.configurationSecret;
+                    key = "SEERR_API_KEY";
+                  };
+                };
                 securityContext = {
                   allowPrivilegeEscalation = false;
                   capabilities.drop = [ "ALL" ];
