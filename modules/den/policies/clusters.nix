@@ -73,6 +73,14 @@ in
                       }
                     );
                   };
+                  options.mediaPaths = lib.mkOption {
+                    type = lib.types.submodule {
+                      options = {
+                        data = lib.mkOption { type = lib.types.str; };
+                        library = lib.mkOption { type = lib.types.str; };
+                      };
+                    };
+                  };
                   options.runtimeSecrets = den.aspects.virtualization.compute.settings.runtimeSecrets;
                   options.images = lib.mkOption {
                     type = lib.types.listOf lib.types.package;
@@ -97,6 +105,7 @@ in
           retainedPaths = hostCompute.retainedPaths;
           storageCapabilities = hostCompute.storageCapabilities;
           runtimeSecrets = resources.runtimeSecrets;
+          mediaPaths = resources.mediaPaths;
           images = resources.images;
         };
       in
@@ -104,6 +113,7 @@ in
         lib.sort builtins.lessThan (builtins.attrNames computeResources) == [
           "images"
           "instance"
+          "mediaPaths"
           "retainedPaths"
           "runtimeSecrets"
           "storageCapabilities"
