@@ -166,6 +166,21 @@ let
         ]
         ++ builtins.attrNames config.den.hosts.x86_64-linux.hvn-hyp1.networking.interfaces
       );
+    # Rule content is covered by the compute-ingress-runtime VM test, which
+    # drives real packets through the generated nftables tables. What stays
+    # here is the firewall inventory the synthetic listener cannot exercise:
+    # the guest must open the NodePort and the host must not open ingress or
+    # management ports on its input chain.
+    household-direct-ingress-ports =
+      let
+        ingress = config.den.clusters.prod-home.ingress;
+      in
+      ingress.mode == "direct"
+      && builtins.elem ingress.nodePort (guest.networking.firewall.interfaces.eth0.allowedTCPPorts or [ ])
+      && !(builtins.elem ingress.nodePort host.networking.firewall.allowedTCPPorts)
+      && !(builtins.elem 443 host.networking.firewall.allowedTCPPorts)
+      && !(builtins.elem 80 host.networking.firewall.allowedTCPPorts)
+      && !(builtins.elem 6443 host.networking.firewall.allowedTCPPorts);
   };
   failures = builtins.attrNames (lib.filterAttrs (_: passed: !passed) assertions);
 in
