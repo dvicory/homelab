@@ -69,7 +69,7 @@ in
         "app.kubernetes.io/instance" = "sabnzbd";
         "app.kubernetes.io/name" = "sabnzbd";
       };
-      requests = route "requests" "media" "seerr" 5055 "admin" "public" {
+      requests = route "requests" "media" "seerr" 5055 "native" "public" {
         "app.kubernetes.io/controller" = "main";
         "app.kubernetes.io/instance" = "seerr";
         "app.kubernetes.io/name" = "seerr";

@@ -16,7 +16,6 @@ let
     assert lib.assertMsg (builtins.hasAttr key computeResources.retainedPaths)
       "Media state ${key} is not declared in computeResources.retainedPaths.";
     builtins.getAttr key computeResources.retainedPaths;
-  routePrefix = route: if route.pathPrefix == "/" then "" else lib.removeSuffix "/" route.pathPrefix;
 in
 {
   den.aspects.kubernetes.services.seerr.compute-resources.retainedPaths.seerr = {
@@ -43,9 +42,9 @@ in
         in
         assert lib.assertMsg (
           value.namespace == app.namespace && value.service == app.service && value.port == app.port
-        ) "Media route requests must target ${app.namespace}/${app.service}:${toString app.port}.";
+          && value.pathPrefix == "/"
+        ) "Media route requests must target ${app.namespace}/${app.service}:${toString app.port} at /.";
         value;
-      prefix = routePrefix route;
     in
     assert lib.assertMsg (!state.readOnly) "Media state seerr must be writable.";
     {

@@ -22,7 +22,6 @@ let
     assert lib.assertMsg (builtins.hasAttr key computeResources.retainedPaths)
       "Media state ${key} is not declared in computeResources.retainedPaths.";
     builtins.getAttr key computeResources.retainedPaths;
-  routePrefix = route: if route.pathPrefix == "/" then "" else lib.removeSuffix "/" route.pathPrefix;
   fixedRoute =
     {
       cluster,
@@ -35,7 +34,8 @@ let
     in
     assert lib.assertMsg (
       route.namespace == app.namespace && route.service == app.service && route.port == app.port
-    ) "Media route ${name} must target ${app.namespace}/${app.service}:${toString app.port}.";
+      && route.pathPrefix == "/"
+    ) "Media route ${name} must target ${app.namespace}/${app.service}:${toString app.port} at /.";
     route;
   secretRef = secretName: key: {
     valueFrom.secretKeyRef = {

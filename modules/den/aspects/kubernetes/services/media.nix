@@ -198,12 +198,23 @@ in
                   namespace = cluster.routes.jellyfin.namespace;
                 };
                 spec = {
-                  podSelector = { };
+                  podSelector.matchLabels = {
+                    "app.kubernetes.io/controller" = "main";
+                    "app.kubernetes.io/instance" = "jellyfin";
+                    "app.kubernetes.io/name" = "jellyfin";
+                  };
                   policyTypes = [ "Ingress" ];
                   ingress = [
                     {
                       from = [
-                        { namespaceSelector.matchLabels."kubernetes.io/metadata.name" = "media"; }
+                        {
+                          namespaceSelector.matchLabels."kubernetes.io/metadata.name" = "media";
+                          podSelector.matchLabels = {
+                            "app.kubernetes.io/controller" = "main";
+                            "app.kubernetes.io/instance" = "seerr";
+                            "app.kubernetes.io/name" = "seerr";
+                          };
+                        }
                       ];
                       ports = [
                         {
