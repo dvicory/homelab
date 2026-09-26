@@ -9,8 +9,8 @@ in
 {
   inherit isCanonicalPath serviceNameFor;
 
-  # `/srv/media` -> `mergerfs-mnt-srv-media.service`, the unit the pooling module
-  # creates for that pool.
+  # `/srv/media` -> `mergerfs-mnt-<sha256 of the pool path>.service`, the unit
+  # the pooling module creates for that pool.
   unitNameFor = path: "${serviceNameFor path}.service";
   nonCanonicalPoolPaths =
     pools: builtins.filter (path: !isCanonicalPath path) (builtins.attrNames pools);

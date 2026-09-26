@@ -6,6 +6,8 @@
   perSystem =
     { pkgs, system, ... }:
     let
+      mergerfsLib = import ../den/aspects/services/_mergerfs.nix { inherit lib; };
+      poolUnit = mergerfsLib.unitNameFor "/srv/media/data";
       host = {
         settings.services = {
           mergerfs.pools."/srv/media/data" = {
@@ -118,7 +120,7 @@
         testScript = ''
           start_all()
           machine.wait_until_succeeds(
-              "systemctl is-active mergerfs-mnt-srv-media-data.service", timeout=30
+              "systemctl is-active ${poolUnit}", timeout=30
           )
           machine.wait_until_succeeds("systemctl is-active media-namespace.service", timeout=30)
           machine.succeed("mountpoint -q /srv/media/data")
@@ -220,7 +222,7 @@
           # Losing a required mount stops the pool and its dependent layout while
           # unrelated mounts remain operational.
           machine.succeed("systemctl stop srv-b1.mount")
-          machine.wait_until_fails("systemctl is-active mergerfs-mnt-srv-media-data.service")
+          machine.wait_until_fails("systemctl is-active ${poolUnit}")
           machine.wait_until_fails("systemctl is-active media-namespace.service")
           machine.fail("mountpoint -q /srv/media/data")
           machine.fail(
@@ -233,7 +235,7 @@
           # a separate operator action.
           machine.succeed("systemctl start srv-b1.mount")
           machine.wait_until_succeeds(
-              "systemctl is-active mergerfs-mnt-srv-media-data.service", timeout=30
+              "systemctl is-active ${poolUnit}", timeout=30
           )
           machine.wait_until_succeeds("systemctl is-active media-namespace.service", timeout=30)
           machine.succeed("mountpoint -q /srv/media/data")
