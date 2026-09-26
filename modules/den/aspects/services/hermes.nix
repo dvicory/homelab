@@ -44,54 +44,62 @@
       '';
     };
 
-    nixos = { host, config, lib, ... }: let
-      agentSettings = host.settings.services.hermes.agent or { };
-      dependencyGroups = host.settings.services.hermes.dependencyGroups or [ ];
-      secretName = "hermes-env";
-      ageFile = inputs.self + "/.secrets/hosts/${host.name}/hermes-env.age";
-      provisioned = builtins.pathExists ageFile;
-    in lib.mkIf provisioned {
-      secretRequests.${secretName} = {
-        provider = "agenix";
-        inherit ageFile;
-        mode = "0400";
-      };
-
-      containers.hermes = {
-        autoStart = true;
-        # Shared network namespace: outbound-only gateway traffic, so a
-        # private veth + NAT would add complexity without isolation
-        # benefit. Filesystem / process / capability isolation still
-        # comes from systemd-nspawn.
-        privateNetwork = false;
-
-        bindMounts."/run/agenix/${secretName}" = {
-          hostPath = config.age.secrets.${secretName}.path;
-          isReadOnly = true;
+    nixos =
+      {
+        host,
+        config,
+        lib,
+        ...
+      }:
+      let
+        agentSettings = host.settings.services.hermes.agent or { };
+        dependencyGroups = host.settings.services.hermes.dependencyGroups or [ ];
+        secretName = "hermes-env";
+        ageFile = inputs.self + "/.secrets/hosts/${host.name}/hermes-env.age";
+        provisioned = builtins.pathExists ageFile;
+      in
+      lib.mkIf provisioned {
+        secretRequests.${secretName} = {
+          provider = "agenix";
+          inherit ageFile;
+          mode = "0400";
         };
 
-        config = { pkgs, ... }: {
-          imports = [ inputs.hermes-agent.nixosModules.default ];
-          nixpkgs.overlays = [ inputs.hermes-agent.overlays.default ];
+        containers.hermes = {
+          autoStart = true;
+          # Shared network namespace: outbound-only gateway traffic, so a
+          # private veth + NAT would add complexity without isolation
+          # benefit. Filesystem / process / capability isolation still
+          # comes from systemd-nspawn.
+          privateNetwork = false;
 
-          services.hermes-agent = {
-            enable = true;
-            # Native mode: container.enable is left false (default), so
-            # the agent runs as a hardened systemd service *inside* this
-            # nspawn NixOS rather than as a nested OCI container.
-            addToSystemPackages = true;
-            settings = agentSettings;
-            extraDependencyGroups = dependencyGroups;
-            environmentFiles = [ "/run/agenix/${secretName}" ];
+          bindMounts."/run/agenix/${secretName}" = {
+            hostPath = config.age.secrets.${secretName}.path;
+            isReadOnly = true;
           };
 
-          # The host owns the firewall; avoid a duplicate ruleset in the
-          # shared network namespace.
-          networking.firewall.enable = false;
-          system.stateVersion = "26.05";
+          config = { pkgs, ... }: {
+            imports = [ inputs.hermes-agent.nixosModules.default ];
+            nixpkgs.overlays = [ inputs.hermes-agent.overlays.default ];
+
+            services.hermes-agent = {
+              enable = true;
+              # Native mode: container.enable is left false (default), so
+              # the agent runs as a hardened systemd service *inside* this
+              # nspawn NixOS rather than as a nested OCI container.
+              addToSystemPackages = true;
+              settings = agentSettings;
+              extraDependencyGroups = dependencyGroups;
+              environmentFiles = [ "/run/agenix/${secretName}" ];
+            };
+
+            # The host owns the firewall; avoid a duplicate ruleset in the
+            # shared network namespace.
+            networking.firewall.enable = false;
+            system.stateVersion = "26.05";
+          };
         };
       };
-    };
 
     persist = [ "/var/lib/nixos-containers/hermes" ];
   };
