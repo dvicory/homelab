@@ -7,7 +7,7 @@
   # - home-manager sharedModules
   # - The generators module (ssh-key, age-identity, etc.)
   den.aspects.secrets.agenix = {
-    nixos = { host, config, lib, ... }:
+    nixos = { host, config, lib, pkgs, ... }:
       let
         hasImpermanence = host.hasAspect den.aspects.disk.impermanence;
         persistPrefix = lib.optionalString hasImpermanence "/persist";
@@ -31,6 +31,10 @@
         restartReqs = filterAttrs (
           _: req: (req.restartUnits or [ ]) != [ ]
         ) agenixReqs;
+
+        restartGuard = pkgs.callPackage (inputs.self + "/pkgs/by-name/agenix-restart-guard/package.nix") {
+          systemd = config.systemd.package;
+        };
       in {
         imports = [
           inputs.agenix.nixosModules.default
@@ -69,7 +73,11 @@
               restartUnits = mkOption {
                 type = types.listOf types.str;
                 default = [ ];
-                description = "Systemd units to restart when the secret file changes.";
+                description = ''
+                  Systemd units to try-restart when the decrypted secret's
+                  content changes. Re-decrypting identical content does not
+                  restart them.
+                '';
               };
               generator = mkOption {
                 type = types.nullOr (types.submodule {
@@ -121,6 +129,15 @@
             secrets = mapAttrs mkAgeSecret agenixReqs;
           };
 
+          # restartUnits: restart consumers when a secret's content changes.
+          #
+          # agenix re-creates every secret file on every activation: it
+          # decrypts into a new /run/agenix.d generation, repoints /run/agenix,
+          # deletes the old generation and chowns the new files. The path unit
+          # therefore fires on every deploy, even for unchanged secrets. The
+          # service runs agenix-restart-guard, which compares a SHA-256 of the
+          # secret with a stamp in /run/agenix-restart and calls
+          # `systemctl try-restart` only when the content differs.
           systemd.paths = mapAttrs' (name: _:
             nameValuePair "agenix-restart-${name}" {
               wantedBy = [ "multi-user.target" ];
@@ -130,8 +147,16 @@
 
           systemd.services = mapAttrs' (name: req:
             nameValuePair "agenix-restart-${name}" {
+              description = "Restart ${lib.concatStringsSep " " req.restartUnits} if agenix secret ${name} changed";
+              # PathModified= never fires when the path unit starts, so the
+              # service also runs at boot to record the baseline content.
+              wantedBy = [ "multi-user.target" ];
+              after = [ "agenix-install.service" ];
               serviceConfig.Type = "oneshot";
-              serviceConfig.ExecStart = "${config.systemd.package}/bin/systemctl try-restart ${lib.concatStringsSep " " req.restartUnits}";
+              serviceConfig.ExecStart = lib.escapeShellArgs (
+                [ (lib.getExe restartGuard) name config.age.secrets.${name}.path ]
+                ++ req.restartUnits
+              );
             }
           ) restartReqs;
 

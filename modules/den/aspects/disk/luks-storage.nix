@@ -57,13 +57,14 @@
       cfg = host.settings.disk.luks-storage.disks or { };
       readyDisks = lib.filterAttrs (_: d: d.provisioned) cfg;
     in lib.mkIf (cfg != { }) {
-      secretRequests = lib.mapAttrs' (name: d: {
+      secretRequests = lib.mapAttrs' (name: _: {
         name = "luks-${name}-key";
         value = {
           provider = "agenix";
           ageFile = self + "/.secrets/hosts/${host.name}/luks-${name}-key.age";
           mode = "0400";
-          restartUnits = lib.optional (d.provisioned) "systemd-cryptsetup@${d.mapperName}.service";
+          # No restartUnits: a changed keyfile applies on the next unlock, and
+          # restarting systemd-cryptsetup would close the mounted volume.
           # Generator defined in modules/den/aspects/secrets/_generators.nix
           generator.script = "luks-key";
         };
