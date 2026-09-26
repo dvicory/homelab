@@ -1,4 +1,8 @@
-{ den, ... }:
+{ config, den, ... }:
+let
+  clusterImages = config.flake.clusterResources.prod-home.images;
+  mediaGid = config.den.groups.media.gid;
+in
 {
   den.hosts.x86_64-linux.compute-1 = {
     environment = "prod";
@@ -33,6 +37,10 @@
       {
         boot.isContainer = true;
         hardware.enableAllHardware = false;
+        services.k3s.images = clusterImages;
+        # Kubelet must traverse the unshifted root:media (2770) hostPath
+        # before it can mount the library for media-capable pods.
+        systemd.services.k3s.serviceConfig.SupplementaryGroups = [ (toString mediaGid) ];
         networking.hostName = "compute-1";
         networking.useHostResolvConf = false;
         networking.firewall.allowedTCPPorts = [

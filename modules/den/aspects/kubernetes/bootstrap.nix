@@ -1,0 +1,128 @@
+{
+  lib,
+  rootPath,
+  self,
+  ...
+}:
+{
+  perSystem =
+    {
+      config,
+      pkgs,
+      system,
+      ...
+    }:
+    let
+      manifestSource = rootPath + "/generated/manifests/prod-home";
+      environment =
+        if builtins.pathExists manifestSource then
+          manifestSource
+        else
+          throw ''
+            Canonical production manifests are missing. Generate them with:
+              nix run .#sync-prod-home-manifests
+            Then review and track generated/manifests/prod-home before building bootstrap artifacts.
+          '';
+      seed = self.nixidyEnvs.${system}.prod-home.config.build.bootstrapPackage;
+      manifests = pkgs.runCommand "household-static-bootstrap" { nativeBuildInputs = [ pkgs.yq-go ]; } ''
+        mkdir -p "$out"
+        cp ${environment}/argocd-retained/Namespace-argocd.yaml "$out/namespaces.yaml"
+        yq '.' ${environment}/argocd/CustomResourceDefinition-*.yaml > "$out/crds.yaml"
+        rm -f "$out/controllers.yaml"
+        first=1
+        for file in ${environment}/argocd/*.yaml; do
+          case "$(basename "$file")" in
+            CustomResourceDefinition-*) ;;
+            *)
+              if [ "$first" -eq 1 ]; then first=0; else printf '\n---\n' >> "$out/controllers.yaml"; fi
+              cat "$file" >> "$out/controllers.yaml"
+              ;;
+          esac
+        done
+
+        set -- ${environment}/apps/AppProject-*.yaml
+        if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+          echo "expected one root-owned AppProject in the generated apps tree" >&2
+          exit 1
+        fi
+        managed_project="$1"
+        set -- ${seed}/AppProject-*.yaml
+        if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+          echo "expected one default AppProject in the nixidy bootstrap package" >&2
+          exit 1
+        fi
+        seed_project="$1"
+        yq -e '.metadata.name == "prod-home"' "$managed_project" > /dev/null
+        yq -e '.metadata.name == "default"' "$seed_project" > /dev/null
+
+        set -- ${seed}/Application-*.yaml
+        if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+          echo "expected one seeded root Application in the nixidy bootstrap package" >&2
+          exit 1
+        fi
+        cmp "$1" ${environment}/bootstrap.yaml
+        cat "$seed_project" > "$out/root.yaml"
+        printf '\n---\n' >> "$out/root.yaml"
+        cat "$1" >> "$out/root.yaml"
+        yq 'select(.kind == "Deployment" or .kind == "StatefulSet" or .kind == "DaemonSet")' "$out/controllers.yaml" > "$out/readiness.yaml"
+        yq 'select(.kind == "Prometheus" or .kind == "Alertmanager")' "$out/controllers.yaml" > "$out/operator-readiness.yaml"
+        yq 'select(.kind == "Job")' "$out/controllers.yaml" > "$out/jobs.yaml"
+        yq 'select(.kind == "Job" and .spec.ttlSecondsAfterFinished == null)' "$out/controllers.yaml" > "$out/persistent-jobs.yaml"
+        yq 'select((.metadata.annotations."helm.sh/hook" // "") | contains("pre-install"))' "$out/controllers.yaml" > "$out/pre-install.yaml"
+        yq 'select(.kind == "Job")' "$out/pre-install.yaml" > "$out/pre-install-jobs.yaml"
+      '';
+      runtime = config.packages.compute-runtime;
+      bootstrap = pkgs.runCommand "household-bootstrap" { nativeBuildInputs = [ pkgs.makeWrapper ]; } ''
+        mkdir -p "$out/bin"
+        makeWrapper ${runtime}/bin/household-bootstrap "$out/bin/household-bootstrap" \
+          --set-default HOUSEHOLD_BOOTSTRAP_MANIFESTS ${manifests}
+      '';
+    in
+    {
+      checks.household-bootstrap-crds =
+        pkgs.runCommand "household-bootstrap-crds" { nativeBuildInputs = [ pkgs.yq-go ]; }
+          ''
+            yq ea -e '[select(.kind == "CustomResourceDefinition") | .metadata.name] | sort | join(",") == "applications.argoproj.io,applicationsets.argoproj.io,appprojects.argoproj.io"' \
+              ${manifests}/crds.yaml > /dev/null
+            touch "$out"
+          '';
+
+      packages = {
+        household-bootstrap-manifests = manifests;
+        household-bootstrap = bootstrap;
+      }
+      // lib.optionalAttrs (lib.hasSuffix "-linux" system) (
+        let
+          hostBootstrap =
+            pkgs.runCommand "household-bootstrap-host" { nativeBuildInputs = [ pkgs.makeWrapper ]; }
+              ''
+                mkdir -p "$out/bin"
+                makeWrapper ${runtime}/bin/household-bootstrap-host "$out/bin/household-bootstrap-host" \
+                  --set-default HOUSEHOLD_BOOTSTRAP_MANIFESTS ${manifests} \
+                  --set-default HOUSEHOLD_BOOTSTRAP_BIN ${bootstrap}/bin/household-bootstrap
+              '';
+        in
+        {
+          household-bootstrap-host = hostBootstrap;
+          household-bootstrap-bundle = pkgs.linkFarm "household-bootstrap-bundle" [
+            {
+              name = "manifests";
+              path = manifests;
+            }
+            {
+              name = "bin/household-bootstrap";
+              path = "${bootstrap}/bin/household-bootstrap";
+            }
+            {
+              name = "bin/household-bootstrap-host";
+              path = "${hostBootstrap}/bin/household-bootstrap-host";
+            }
+            {
+              name = "operations.md";
+              path = config.files.file."docs/operations.md".source;
+            }
+          ];
+        }
+      );
+    };
+}
