@@ -77,6 +77,7 @@
         testRepo = pkgs.runCommand "prod-home-recovery-repo" { } ''
           mkdir -p "$out"/{apps,jellyfin,jellyfin-retained,jellyfin-configuration}
           cp ${canonical}/apps/Application-jellyfin.yaml ${canonical}/apps/Application-jellyfin-retained.yaml ${canonical}/apps/Application-jellyfin-configuration.yaml "$out/apps/"
+          cp ${canonical}/apps/AppProject-prod-home.yaml "$out/apps/"
           cp ${canonical}/jellyfin/*.yaml "$out/jellyfin/"
           cp ${canonical}/jellyfin-retained/*.yaml "$out/jellyfin-retained/"
           cp ${canonical}/jellyfin-configuration/*.yaml "$out/jellyfin-configuration/"

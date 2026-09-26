@@ -562,8 +562,8 @@ def rewrite_text(path: Path, replacements: dict[str, str]) -> None:
 class GitOrigin:
     """Disposable Git origin fixture standing in for the canonical Git remote.
 
-    The repository holds verbatim canonical manifests; only the child
-    Application repository URLs/paths are rewritten at runtime. The root
+    The repository holds canonical manifests; child Application sources and
+    their AppProject allowlist use the disposable Git URL. The root
     Application lives in the static seed, as in production, and is not
     managed from Git. Argo speaks the real Git protocol to this origin.
     """
@@ -585,6 +585,9 @@ class GitOrigin:
                 "repoURL: https://github.com/dvicory/homelab.git": f"repoURL: {self.url}",
                 f"path: ./generated/manifests/prod-home/{child}": f"path: ./{child}",
             })
+        rewrite_text(work / "apps" / "AppProject-prod-home.yaml", {
+            "- https://github.com/dvicory/homelab.git": f"- {self.url}",
+        })
         git = ["git", "-C", str(work)]
         run(*git, "init", "-b", "main")
         run(*git, "-c", "user.email=recovery@test", "-c", "user.name=recovery", "add", "-A")
