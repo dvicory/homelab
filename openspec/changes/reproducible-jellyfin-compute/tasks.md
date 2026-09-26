@@ -62,7 +62,7 @@ and 2.4 onward.
   Use a memory-backed shared volume, restrictive ownership/mode, and cleanup;
   verify the final file is absent from Git, generated manifests, the Nix
   store, logs, command-line arguments, and retained `/config`.
-- [ ] 2.6 Verify safe repeated Provision mode against initialized retained
+- [x] 2.6 Verify safe repeated Provision mode against initialized retained
   state: successful no-op with unchanged administrator, users, libraries,
   retained data, and Jellarr-owned settings. If the exact patch needs it, add
   only the smallest Provision-mode idempotence adjustment; do not add XML or
@@ -99,22 +99,22 @@ and 2.4 onward.
 
 ## 3. Local integration and focused startup acceptance
 
-- [ ] 3.1 Fresh-state acceptance: with an empty retained `/config`, prove the
+- [x] 3.1 Fresh-state acceptance: with an empty retained `/config`, prove the
   provisioner uses Jellyfin v12.1 plus the exact PR #17902 patch, runs only its
   internal `SetupServer`, and leaves no externally routable stock-runtime
   backend until provisioning completes. Prove the one normal administrator is
   created, startup is complete, and the stock official v12.1 runtime starts
   healthy against the resulting state.
-- [ ] 3.2 Repeat acceptance: recreate the Pod against initialized `/config`,
+- [x] 3.2 Repeat acceptance: recreate the Pod against initialized `/config`,
   prove init exits successfully as a no-op, credentials/libraries/Jellarr-
   owned settings remain unchanged, and the stock runtime starts normally.
 - [ ] 3.3 Version acceptance: deliberately mismatch the provisioner source and
   stock runtime release or digest and prove the single release invariant fails
   evaluation/build before deployment.
-- [ ] 3.4 Stock-runtime acceptance: prove the long-lived Jellyfin process is
+- [x] 3.4 Stock-runtime acceptance: prove the long-lived Jellyfin process is
   from the official pinned image and retains the expected upstream ffmpeg/GPU
   runtime integration; the patched provisioner must never become the server.
-- [ ] 3.5 Jellarr bootstrap acceptance: with no named Jellarr key, authenticate
+- [x] 3.5 Jellarr bootstrap acceptance: with no named Jellarr key, authenticate
   through the supported APIs, create exactly one key, reconcile one declared
   setting, then repeat and prove the existing key is reused, no duplicate is
   created, and the desired state is unchanged.
@@ -139,7 +139,7 @@ Jellyfin startup and recovery boundary before its acceptance task is checked.
   conflicts, then verify the initContainer-to-stock-runtime gate, private
   Jellarr reconciliation, real playback, and denied Jellyfin media writes.
   Do not infer production readiness from local fixtures.
-- [ ] 4.2 On an x86_64 Linux/KVM runner, execute
+- [x] 4.2 On an x86_64 Linux/KVM runner, execute
   `checks.prod-home-replacement` through `prod-home-replacement.py` and
   `jellyfin_smoke.py`. Verify both Argo reconciliations, the Jellyfin
   provisioner and stock server, the same user, library, playback and retained
