@@ -45,13 +45,7 @@ let
   secretRows = lib.mapAttrsToList (
     target: sources:
     let
-      refs = map (
-        source:
-        let
-          entry = runtimeSecrets.${source};
-        in
-        "`${source}` → `${entry.key}`"
-      ) sources;
+      refs = map (source: "`${source}` → `${runtimeSecrets.${source}.key}`") sources;
       entry = runtimeSecrets.${builtins.head sources};
     in
     "| `${target}` | ${lib.concatStringsSep ", " refs} | `${entry.type}` |"
@@ -185,11 +179,33 @@ in
         ## Runtime-secret references
 
         This table contains references only. Never put plaintext Secret values
-        in Git, the Nix store, manifests, images, or this document.
+        in Git, the Nix store, manifests, images, or this document. Each source
+        is either operator-supplied through agenix (`agenix edit`/rekey under
+        `.secrets/hosts/`) or a generated value produced by `agenix generate`.
+        `gateway-tls` and `kanidm-tls` are not listed: cert-manager issues them
+        in the cluster from its Cloudflare DNS-01 ClusterIssuer.
 
-        | Kubernetes Secret | Agenix source -> key | Type |
+        | Kubernetes Secret | Source -> key | Type |
         | --- | --- | --- |
         ${lib.concatStringsSep "\n" secretRows}
+
+        ## Certificates
+
+        cert-manager issues TLS in the cluster: the `letsencrypt-prod`
+        ClusterIssuer does Cloudflare DNS-01 (the `cloudflare-api-token` runtime
+        Secret) and writes `gateway-tls` in `gateway` and `kanidm-tls` in
+        `identity`. Check issuance inside the guest:
+
+        ```sh
+        kubectl get clusterissuer letsencrypt-prod
+        kubectl get certificate -A
+        ```
+
+        A `READY=False` Certificate's `status.conditions` and
+        `kubectl -n cert-manager describe challenge` name the failing step.
+        Let's Encrypt production limits repeated identical issuances, so a
+        flapping Certificate or weekly guest rebuilds will eventually stall
+        new issuance until the window clears.
 
         ## Lifecycle and bootstrap
 

@@ -70,6 +70,14 @@ in
       {
         options = {
           environment = mkOption { type = types.str; };
+          domain = mkOption {
+            type = types.str;
+            description = "Primary DNS zone the cluster's routes render under.";
+          };
+          backupDomain = mkOption {
+            type = types.str;
+            description = "Backup DNS zone serving the cluster's routes during failover.";
+          };
           hostSystem = mkOption {
             type = types.str;
             description = "System key identifying the physical host/toolchain that owns compute, storage lifecycle, guest tooling, and cluster API input. It does not describe Kubernetes node architectures, renderer independence, or workload image selection.";

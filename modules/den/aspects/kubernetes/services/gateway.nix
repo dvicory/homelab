@@ -1,25 +1,5 @@
 { ... }:
 {
-  den.aspects.kubernetes.services.gateway.compute-resources.runtimeSecrets = {
-    "gateway--gateway-tls--tls.crt" = {
-      namespace = "gateway";
-      name = "gateway-tls";
-      key = "tls.crt";
-      type = "kubernetes.io/tls";
-    };
-    "gateway--gateway-tls--tls.key" = {
-      namespace = "gateway";
-      name = "gateway-tls";
-      key = "tls.key";
-      type = "kubernetes.io/tls";
-    };
-    "gateway--gateway-tls--ca.crt" = {
-      namespace = "gateway";
-      name = "gateway-tls";
-      key = "ca.crt";
-      type = "kubernetes.io/tls";
-    };
-  };
   den.aspects.kubernetes.services.gateway.k8s-manifests =
     {
       cluster,
