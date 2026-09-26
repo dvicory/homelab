@@ -95,7 +95,7 @@ jobs:
   # Linux system closure needed to bootstrap the full Darwin configuration.
   build:
     needs: bootstrap-darwin-builder
-    if: always()
+    if: ${{ !cancelled() }}
     name: ${{ matrix.group }} (${{ matrix.system }})
     runs-on: ${{ matrix.system == 'x86_64-linux' && 'ubuntu-24.04' || matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'macos-14' }}
     environment:
