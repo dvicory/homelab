@@ -501,6 +501,38 @@ in
               ];
             };
           }
+          # The Jellarr configuration Job runs in this same namespace; once a
+          # policy selects the Jellyfin pod, this Application must admit the
+          # Job itself because the replacement fixture deploys Jellyfin without
+          # the gateway app's backend policy.
+          {
+            apiVersion = "networking.k8s.io/v1";
+            kind = "NetworkPolicy";
+            metadata = {
+              name = "jellyfin-configuration-ingress";
+              inherit namespace;
+            };
+            spec = {
+              podSelector.matchLabels = labels;
+              policyTypes = [ "Ingress" ];
+              ingress = [
+                {
+                  from = [
+                    {
+                      namespaceSelector.matchLabels."kubernetes.io/metadata.name" = namespace;
+                      podSelector.matchLabels = configurationLabels;
+                    }
+                  ];
+                  ports = [
+                    {
+                      protocol = "TCP";
+                      port = integration.port;
+                    }
+                  ];
+                }
+              ];
+            };
+          }
         ];
       };
 

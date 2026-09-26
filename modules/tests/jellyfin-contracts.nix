@@ -46,9 +46,16 @@
             runtime_secrets = json.loads(pathlib.Path(sys.argv[4]).read_text())
             jellarr_release = json.loads(pathlib.Path(sys.argv[5]).read_text())
             resources = []
+            application_objects = {}
             for application in ("jellyfin-retained", "jellyfin", "jellyfin-configuration", "gateway"):
-                for path in (environment / application).rglob("*.yaml"):
-                    resources.extend(resource for resource in yaml.safe_load_all(path.read_text()) if resource)
+                objects = [
+                    resource
+                    for path in (environment / application).rglob("*.yaml")
+                    for resource in yaml.safe_load_all(path.read_text())
+                    if resource
+                ]
+                application_objects[application] = objects
+                resources.extend(objects)
 
             def find(kind, name, namespace="jellyfin"):
                 return next(
@@ -224,6 +231,50 @@
                 for resource in jellyfin_objects
             ), "Jellarr API-key bootstrap has no durable Secret resource"
             pathlib.Path("bootstrap.mjs").write_text(configuration["data"]["bootstrap.mjs"])
+
+            # Once any NetworkPolicy in the jellyfin Application selects the
+            # Jellyfin pod, the same Application must admit the Jellarr
+            # configuration Job on 8096; another Application's policy cannot
+            # cover it where the Jellyfin app is deployed alone.
+            deployment_labels = deployment["spec"]["template"]["metadata"]["labels"]
+            job_labels = job["spec"]["template"]["metadata"]["labels"]
+            jellyfin_policies = [
+                resource
+                for resource in application_objects["jellyfin"]
+                if resource["kind"] == "NetworkPolicy"
+            ]
+            selecting = [
+                policy
+                for policy in jellyfin_policies
+                if set(policy["spec"].get("podSelector", {}).get("matchLabels", {}).items())
+                <= set(deployment_labels.items())
+            ]
+
+            def admits_configuration_job(policy):
+                for rule in policy["spec"].get("ingress", []):
+                    ports = rule.get("ports", [])
+                    port_ok = not ports or any(
+                        entry.get("port") == 8096 for entry in ports
+                    )
+                    for source in rule.get("from", []):
+                        pod_labels = source.get("podSelector", {}).get("matchLabels", {})
+                        namespace = (
+                            source.get("namespaceSelector", {})
+                            .get("matchLabels", {})
+                            .get("kubernetes.io/metadata.name")
+                        )
+                        if (
+                            namespace == "jellyfin"
+                            and set(job_labels.items()) <= set(pod_labels.items())
+                            and port_ok
+                        ):
+                            return True
+                return False
+
+            if selecting:
+                assert any(
+                    admits_configuration_job(policy) for policy in jellyfin_policies
+                ), "the jellyfin Application admits the jellyfin-configuration Job on 8096"
 
             service = find("Service", "jellyfin")
             service_spec = service["spec"]
