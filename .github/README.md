@@ -2,9 +2,9 @@
 
 ## CI
 
-`.github/workflows/ci.yml` runs for pushes to `main` or `ci/**`, pull requests,
-and manual dispatches. Push a temporary `ci/<name>` branch to send a revision
-to the GitHub-hosted build farm without merging it.
+`.github/workflows/ci.yml` runs for pushes to `main`, pull requests, and
+manual dispatches from any ref. Pushes to other branches alone do not start
+Nix CI.
 
 `modules/flake/ci.nix` automatically projects packages, checks, development
 shells, formatters, NixOS and Darwin systems, and Home Manager activation
@@ -53,7 +53,7 @@ jobs publish their existing outputs and runtime closures directly from the build
 runner; another job's failure does not prevent those uploads. There is no second
 build on a separate publication runner. The `cachix-publish` environment remains
 restricted to `main`, and only the publication step receives its per-cache write
-token. Pull requests, `ci/**`, and manual dispatches remain read-only.
+token. Pull requests and manual dispatches remain read-only.
 
 Nix store contents published by CI are public, so CI outputs must never contain
 decrypted secrets.
