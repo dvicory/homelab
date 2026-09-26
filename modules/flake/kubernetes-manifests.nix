@@ -334,6 +334,7 @@
                 and application_waves["argocd"] < application_waves["cluster-dns"]
                 and application_waves["gateway-retained"] < application_waves["gateway-crds"]
                 and application_waves["gateway-crds"] < application_waves["gateway-controller"]
+                and application_waves["cert-manager"] < application_waves["cert-manager-issuance"]
                 and application_waves["gateway-controller"] < application_waves["gateway"]
                 and application_waves["identity-retained"] < application_waves["identity"],
                 apps_root,

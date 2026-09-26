@@ -35,18 +35,6 @@
         mode = "0700";
       };
       runtimeSecrets = {
-        "identity--kanidm-tls--tls.crt" = {
-          namespace = "identity";
-          name = "kanidm-tls";
-          key = "tls.crt";
-          type = "kubernetes.io/tls";
-        };
-        "identity--kanidm-tls--tls.key" = {
-          namespace = "identity";
-          name = "kanidm-tls";
-          key = "tls.key";
-          type = "kubernetes.io/tls";
-        };
       }
       // lib.optionalAttrs activated {
         "identity--kanidm-provision--idm-admin-password" = {
