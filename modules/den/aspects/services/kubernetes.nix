@@ -210,34 +210,36 @@
                 exit "$status"
               fi
               [ -n "$currentUID" ] && [ "$currentUID" = "$uid" ] || continue
-              if secretType="$(kubectl get secret "$name" --namespace "$namespace" \
-                -o jsonpath='{.type}')"; then
+              if observed="$(kubectl get secret "$name" --namespace "$namespace" \
+                -o jsonpath='{.type}{"\t"}{.metadata.managedFields[*].manager}')"; then
                 :
               else
                 status=$?
-                echo "Runtime Secret type inspection failed (exit $status); native output suppressed." >&2
+                echo "Runtime Secret ownership inspection failed (exit $status); native output suppressed." >&2
                 exit "$status"
               fi
-              [ -n "$secretType" ] || secretType=Opaque
-              if kubectl create secret generic "$name" \
-                --namespace "$namespace" \
-                --type "$secretType" \
-                --dry-run=client -o json |
-                kubectl label --local -f - homelab.danielvicory/runtime-secret=true -o json |
-                kubectl apply --server-side --force-conflicts \
+              observedType="''${observed%%$(printf '\t')*}"
+              otherManagers="$(printf '%s\n' "''${observed#*$(printf '\t')}" | tr ' ' '\n' | grep -vx 'homelab-runtime-secrets' || true)"
+              # Relinquishing a TLS Secret nothing else owns would drop its
+              # immutable type and required keys, which the API rejects.
+              if [ "$observedType" = kubernetes.io/tls ] && [ -z "$otherManagers" ]; then
+                if kubectl delete secret "$name" --namespace "$namespace" \
+                  --ignore-not-found >/dev/null 2>&1; then
+                  continue
+                else
+                  status=$?
+                  echo "Runtime Secret retirement failed (exit $status); native output suppressed." >&2
+                  exit "$status"
+                fi
+              fi
+              if printf '{"apiVersion":"v1","kind":"Secret","metadata":{"name":"%s","namespace":"%s","uid":"%s"}}\n' \
+                "$name" "$namespace" "$uid" |
+                kubectl apply --server-side \
                   --field-manager=homelab-runtime-secrets -f - >/dev/null 2>&1; then
                 :
               else
                 status=$?
                 echo "Runtime Secret retirement failed (exit $status); native output suppressed." >&2
-                exit "$status"
-              fi
-              if kubectl label secret "$name" --namespace "$namespace" \
-                homelab.danielvicory/runtime-secret- >/dev/null 2>&1; then
-                :
-              else
-                status=$?
-                echo "Runtime Secret ownership release failed (exit $status); native output suppressed." >&2
                 exit "$status"
               fi
             done < "$owned"

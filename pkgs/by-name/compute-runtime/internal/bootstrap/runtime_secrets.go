@@ -26,7 +26,7 @@ var (
 	secretNamespace     = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 	secretName          = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
 	secretKey           = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
-	secretType          = regexp.MustCompile(`^Opaque$`)
+	secretType          = regexp.MustCompile(`^(Opaque|kubernetes[.]io/tls)$`)
 	inventorySecretType = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
 )
 

@@ -119,15 +119,9 @@
             expected_destination = ${builtins.toJSON nixidy.defaults.destination.server}
             application_ids = set()
             application_waves = {}
-            expected_platform_apps = {
-                "argocd-retained",
-                "argocd",
-                "retained-storage",
-                "local-path-provisioner",
-                "cluster-dns",
-            }
 
             application_destinations = set()
+            network_policies = []
 
             def check_application(resource, path, allow_retained, project_name):
                 check(resource.get("kind") == "Application", path, "expected an Application")
@@ -239,14 +233,12 @@
 
             seen = set()
             owners = {}
-            rendered_application_names = set()
 
             rendered_cluster_resources = set()
             for path in files:
                 with path.open() as handle:
                     resource = yaml.safe_load(handle)
                 source, finalizers, prune = check_application(resource, path, allow_retained=True, project_name=expected_project)
-                rendered_application_names.add(resource["metadata"]["name"])
 
                 for marker in ("helm", "kustomize", "jsonnet", "plugin"):
                     check(marker not in source, path, f"unsupported source renderer {marker}")
@@ -315,6 +307,8 @@
                             f"duplicate object {identity}; already owned by {owners.get(identity)}",
                         )
                         owners[identity] = path.name
+                        if identity[1] == "NetworkPolicy":
+                            network_policies.append((manifest, obj))
                         options = metadata.get("annotations", {}).get(
                             "argocd.argoproj.io/sync-options", ""
                         ).split(",")
@@ -334,18 +328,24 @@
                     check(object_count > 0, path, "Application source directory has no valid Kubernetes objects")
                 seen.add(relative)
             check(
-                rendered_application_names == expected_platform_apps,
-                apps_root,
-                f"unexpected platform Applications {sorted(rendered_application_names)}",
-            )
-            check(
                 application_waves["argocd-retained"] < application_waves["argocd"]
                 and application_waves["argocd-retained"] < application_waves["retained-storage"]
                 and application_waves["retained-storage"] < application_waves["local-path-provisioner"]
-                and application_waves["argocd"] < application_waves["cluster-dns"],
+                and application_waves["argocd"] < application_waves["cluster-dns"]
+                and application_waves["gateway-retained"] < application_waves["gateway-crds"]
+                and application_waves["gateway-crds"] < application_waves["gateway-controller"]
+                and application_waves["gateway-controller"] < application_waves["gateway"]
+                and application_waves["identity-retained"] < application_waves["identity"],
                 apps_root,
-                "platform Application waves violate lifecycle dependencies",
+                "Application waves violate declared lifecycle dependencies",
             )
+            if "identity-gateway" in application_waves:
+                check(
+                    application_waves["identity"] < application_waves["identity-gateway"]
+                    and application_waves["gateway"] < application_waves["identity-gateway"],
+                    apps_root,
+                    "identity-gateway must follow identity and gateway",
+                )
 
             project_path = project_files[0]
             with project_path.open() as handle:
@@ -396,9 +396,11 @@
                 )
                 allowed_cluster_resources.add((group, kind))
             check(
-                rendered_cluster_resources <= allowed_cluster_resources,
+                rendered_cluster_resources == allowed_cluster_resources,
                 project_path,
-                f"AppProject does not authorize rendered cluster resources {sorted(rendered_cluster_resources - allowed_cluster_resources)}",
+                "AppProject cluster resources must exactly match rendered cluster-scoped GroupKinds "
+                f"(missing {sorted(rendered_cluster_resources - allowed_cluster_resources)}, "
+                f"unused {sorted(allowed_cluster_resources - rendered_cluster_resources)})",
             )
 
             seed_root = Path(os.environ["BOOTSTRAP_ROOT"])
@@ -425,6 +427,19 @@
             check(len(seed_apps) == 1, seed_root, "bootstrap package must contain exactly one root Application")
             bootstrap_path = root / "bootstrap.yaml"
             check(seed_apps[0].read_bytes() == bootstrap_path.read_bytes(), bootstrap_path, "bootstrap Application differs from its seed")
+
+            argocd_server_selector = {
+                "app.kubernetes.io/instance": "argocd",
+                "app.kubernetes.io/name": "argocd-server",
+            }
+            for path, policy in network_policies:
+                metadata = policy["metadata"]
+                spec = policy.get("spec", {})
+                if (
+                    metadata.get("namespace") == "argocd"
+                    and spec.get("podSelector", {}).get("matchLabels") == argocd_server_selector
+                ):
+                    check({} not in spec.get("ingress", []), path, "Argo server policy allows every ingress source")
 
             bootstrap = yaml.safe_load((root / "bootstrap.yaml").read_text())
             bootstrapSource, _, _ = check_application(bootstrap, root / "bootstrap.yaml", allow_retained=False, project_name="default")
