@@ -6,6 +6,7 @@
 let
   cluster = config.den.clusters.prod-home;
   identityPhase = cluster.settings.kubernetes.services.identity.phase;
+  jellyfinAdministrator = cluster.settings.kubernetes.services.jellyfin.administrator;
   computeInstance =
     config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute.instance;
   retainedPaths =
@@ -142,6 +143,26 @@ in
         A retained path is not a backup. Incus propagates host mounts one way;
         after restoring a source, recreate affected pods to refresh child
         mounts.
+
+        ## Jellyfin storage and startup
+
+        The stable compute attachment is `/srv/media`; its replaceable merged
+        filesystem is `/srv/media/data`. Jellyfin consumes only the semantic
+        `/srv/media/data/library` directory, mounted read-only as `/media`.
+        `/config` is the statically bound retained volume. `/cache` is a
+        disposable 4 GiB `emptyDir` under a 5 GiB container ephemeral-storage
+        limit.
+
+        Before deployment, encrypt and rekey a strong, unique password for
+        Jellyfin administrator `${jellyfinAdministrator}` as
+        `jellyfin--jellyfin-admin--password` for `${computeInstance}`. Use the existing
+        password instead if restoring already initialized state; this secret
+        does not reset it. Missing input fails closed. The patched
+        initContainer creates the initial administrator through its internal
+        `SetupServer`. No stock-runtime backend is externally routable until
+        provisioning succeeds. The subsequent one-shot Jellarr Job owns the
+        `Movies` library at `/media/movies`, the `Shows` library at
+        `/media/tv`, and selected supported API settings.
 
         ## Runtime-secret references
 
