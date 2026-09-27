@@ -14,7 +14,12 @@
   ];
 
   perSystem =
-    { pkgs, lib, ... }:
+    {
+      config,
+      pkgs,
+      lib,
+      ...
+    }:
     let
       callPackage = pkgs.callPackage;
       isLinux = pkgs.stdenv.hostPlatform.isLinux;
@@ -26,9 +31,7 @@
       agenix-restart-guard = lib.optionalAttrs isLinux {
         agenix-restart-guard = callPackage (self + "/pkgs/by-name/agenix-restart-guard/package.nix") { };
       };
-      compute-runtime = lib.optionalAttrs isLinux {
-        compute-runtime = callPackage (self + "/pkgs/by-name/compute-runtime/package.nix") { };
-      };
+      compute-runtime = callPackage (self + "/pkgs/by-name/compute-runtime/package.nix") { };
       prepare-luks-storage = lib.optionalAttrs isLinux {
         prepare-luks-storage = callPackage (self + "/pkgs/by-name/prepare-luks-storage/package.nix") { };
       };
@@ -44,41 +47,42 @@
           rekey
           provision-keys
           install
+          compute-runtime
           ;
       }
       // agenix-restart-guard
-      // compute-runtime
       // prepare-luks-storage;
 
-      checks =
-        compute-runtime
-        // lib.optionalAttrs isLinux {
-          prepare-luks-storage =
-            pkgs.runCommand "prepare-luks-storage-check"
-              {
-                # The real tools the script runs: test.sh uses rsync and
-                # python3 for copy and verify, and checks every other command
-                # line's options against these binaries.
-                nativeBuildInputs = [
-                  pkgs.bash
-                  pkgs.coreutils
-                  pkgs.cryptsetup
-                  pkgs.findutils
-                  pkgs.gnugrep
-                  pkgs.gnused
-                  pkgs.gptfdisk
-                  pkgs.python3
-                  pkgs.rsync
-                  pkgs.systemdMinimal
-                  pkgs.util-linux
-                ];
-                REQUIRE_REAL_TOOL_CHECKS = "1";
-              }
-              ''
-                ${pkgs.bash}/bin/bash ${self + "/pkgs/by-name/prepare-luks-storage/test.sh"}
-                touch "$out"
-              '';
-        };
+      checks = {
+        compute-runtime = config.packages.compute-runtime;
+      }
+      // lib.optionalAttrs isLinux {
+        prepare-luks-storage =
+          pkgs.runCommand "prepare-luks-storage-check"
+            {
+              # The real tools the script runs: test.sh uses rsync and
+              # python3 for copy and verify, and checks every other command
+              # line's options against these binaries.
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.coreutils
+                pkgs.cryptsetup
+                pkgs.findutils
+                pkgs.gnugrep
+                pkgs.gnused
+                pkgs.gptfdisk
+                pkgs.python3
+                pkgs.rsync
+                pkgs.systemdMinimal
+                pkgs.util-linux
+              ];
+              REQUIRE_REAL_TOOL_CHECKS = "1";
+            }
+            ''
+              ${pkgs.bash}/bin/bash ${self + "/pkgs/by-name/prepare-luks-storage/test.sh"}
+              touch "$out"
+            '';
+      };
 
       devshells.default = {
         packages = [

@@ -22,9 +22,7 @@ let
   descriptor = builtins.fromJSON host.environment.etc."homelab/compute.json".text;
   idRange = "${toString compute.idmapBase}-${toString (compute.idmapBase + compute.idmapSize - 1)}";
   expectedDeviceNames = lib.sort builtins.lessThan (
-    builtins.attrNames compute.devices
-    ++ builtins.attrNames compute.retainedPaths
-    ++ lib.optional (compute.runtimeSecrets != { }) "secrets"
+    builtins.attrNames compute.devices ++ builtins.attrNames compute.retainedPaths ++ [ "secrets" ]
   );
   owners = builtins.attrNames (
     lib.filterAttrs (
@@ -119,7 +117,7 @@ let
             map (entry: entry.path) (builtins.attrValues compute.retainedPaths)
             ++ [ compute.identityPath ]
             ++ baseDiskPaths
-            ++ lib.optional (compute.runtimeSecrets != { }) "/run/homelab-compute/secrets"
+            ++ [ "/run/homelab-compute/secrets" ]
           )
         )
       && builtins.all (kind: project."restricted.devices.${kind}" == "block") [
@@ -132,6 +130,22 @@ let
         "unix-hotplug"
         "usb"
       ];
+    optional-media-device =
+      let
+        media = devices.media or null;
+      in
+      media == null
+      || (
+        (media.required or null) == "false"
+        && (media.source or null) == "/srv/media"
+        && builtins.all (entry: entry.path != "/srv/media") descriptor.requiredPaths
+      );
+    container-does-not-discipline-host-clock =
+      guest.boot.isContainer
+      && !guest.services.chrony.enable
+      && !guest.services.timesyncd.enable
+      && host.services.chrony.enable
+      && !host.services.timesyncd.enable;
     runtime-only-private-identity =
       (guest.secretRequests or { }) == { }
       && (guest.age.secrets or { }) == { }
