@@ -1,0 +1,112 @@
+{
+  "trash_id": "af94e0fe497124d1f9ce732069ec8c3b",
+  "trash_scores": {
+    "default": 1600,
+    "sqp-4-ma-hybrid": 10,
+    "french-multi-vf": 0,
+    "german-anime": 150
+  },
+  "name": "WEB Tier 03",
+  "includeCustomFormatWhenRenaming": false,
+  "specifications": [
+    {
+      "name": "BLOOM",
+      "implementation": "ReleaseGroupSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": "^(BLOOM)$"
+      }
+    },
+    {
+      "name": "Dooky",
+      "implementation": "ReleaseGroupSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": "^(Dooky)$"
+      }
+    },
+    {
+      "name": "GNOMiSSiON",
+      "implementation": "ReleaseGroupSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": "^(GNOMiSSiON)$"
+      }
+    },
+    {
+      "name": "NINJACENTRAL",
+      "implementation": "ReleaseGroupSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": "^(NINJACENTRAL)$"
+      }
+    },
+    {
+      "name": "NPMS",
+      "implementation": "ReleaseGroupSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": "^(NPMS)$"
+      }
+    },
+    {
+      "name": "ROCCaT",
+      "implementation": "ReleaseGroupSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": "^(ROCCaT)$"
+      }
+    },
+    {
+      "name": "SiGMA",
+      "implementation": "ReleaseGroupSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": "^(SiGMA)$"
+      }
+    },
+    {
+      "name": "SLiGNOME",
+      "implementation": "ReleaseGroupSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": "^(SLiGNOME)$"
+      }
+    },
+    {
+      "name": "SwAgLaNdEr",
+      "implementation": "ReleaseGroupSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": "^(SwAgLaNdEr)$"
+      }
+    },
+    {
+      "name": "WEBDL",
+      "implementation": "SourceSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": 7
+      }
+    },
+    {
+      "name": "WEBRIP",
+      "implementation": "SourceSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": 8
+      }
+    }
+  ]
+}
