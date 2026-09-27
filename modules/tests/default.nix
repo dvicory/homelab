@@ -392,7 +392,7 @@ in
                 tls.crt: Y2VydA==
                 tls.key: a2V5
               EOF
-              printf 'media\ttls\n' > /srv/secrets/runtime-secrets.names
+              printf 'media\ttls\tkubernetes.io/tls\ttls.crt,tls.key\n' > /srv/secrets/runtime-secrets.names
               yaml_checksum=$(sha256sum /srv/secrets/runtime-secrets.yaml | cut -d ' ' -f 1)
               names_checksum=$(sha256sum /srv/secrets/runtime-secrets.names | cut -d ' ' -f 1)
               generation=$(printf '%s\n%s\n' "$yaml_checksum" "$names_checksum" | sha256sum | cut -d ' ' -f 1)
