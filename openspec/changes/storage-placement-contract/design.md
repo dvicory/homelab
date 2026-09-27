@@ -37,9 +37,8 @@ Evidence from the current repository:
 **Non-Goals:**
 
 - Choosing encryption layering, filesystem types, redundancy, or a key
-  hierarchy. Those stay open in
-  [`docs/architecture/storage.md`](../../../docs/architecture/storage.md) and
-  this change must work with whatever is currently configured.
+  hierarchy. Those remain outside this contract; it must work with whatever is
+  currently configured.
 - Implementing or selecting the placement mover. This change fixes the
   contract the mover must satisfy; the mover itself remains open.
 - Choosing a Kubernetes storage adapter or introducing distributed storage.
