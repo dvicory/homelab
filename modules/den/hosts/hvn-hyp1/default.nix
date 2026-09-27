@@ -225,6 +225,29 @@
 
           environment.systemPackages = [ pkgs.gocryptfs ];
 
+          # Migration tooling for disks seeded from the old media pool: one
+          # wrapper per LUKS data disk, bound to its descriptor, the media
+          # group, and the namespace's library classes. Build it with
+          # `nix build .#nixosConfigurations.hvn-hyp1.config.system.build.classify-legacy-media.<disk>`;
+          # it is not installed, and goes away with the last old disk.
+          system.build.classify-legacy-media =
+            let
+              classify = pkgs.callPackage (inputs.self + "/pkgs/by-name/classify-legacy-media/package.nix") { };
+              classes = lib.concatMapStringsSep " " (
+                path: "--library-class ${lib.removePrefix "library/" path}"
+              ) (lib.filter (lib.hasPrefix "library/") config.system.build.media-namespace-layout);
+            in
+            lib.mapAttrs (
+              name: descriptor:
+              pkgs.writeShellApplication {
+                name = "classify-legacy-media-${name}";
+                text = ''
+                  exec ${classify}/bin/classify-legacy-media "$@" --descriptor ${descriptor} \
+                    --group ${toString config.users.groups.media.gid} ${classes}
+                '';
+              }
+            ) config.system.build.luks-storage-descriptors;
+
           deployment = {
             enable = true;
             target = "172.27.50.17";
