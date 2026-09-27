@@ -70,6 +70,26 @@ Storage declared as archive placement SHALL NOT receive newly created content.
 - **THEN** the content resides on storage declared to accept new content, and
   no part of it resides on archive placement
 
+#### Scenario: The parent directory exists only on archive placement
+
+- **WHEN** a consumer creates a new item inside a directory whose content so
+  far resides only on archive placement
+- **THEN** the creation succeeds, and the new item resides on storage declared
+  to accept new content
+
+### Requirement: Whether storage is required and whether it accepts new content are independent
+
+Declaring that a backing location is required SHALL NOT imply that it accepts
+new content, and declaring that it accepts no new content SHALL NOT make it
+optional.
+
+#### Scenario: Required archive storage is unavailable
+
+- **WHEN** a backing location is declared required and accepting no new
+  content, and it is unavailable
+- **THEN** access through the namespace is denied, as for any other required
+  location
+
 ### Requirement: Archive placements remain usable for their existing content
 
 Storage declared as archive placement SHALL remain fully usable for content
@@ -163,6 +183,32 @@ receives access beyond owner/group/mode without a further corrective step.
   managed shared root whose sharing policy declares inherited default access
 - **THEN** the entry carries the declared group and permissions without an
   additional operation being run afterwards
+
+### Requirement: Shared content remains modifiable by every capability holder
+
+Content created in a shared root by one participating identity SHALL be
+modifiable by every other identity holding that root's storage capability,
+and SHALL NOT be accessible to identities that do not hold it.
+
+#### Scenario: Two services share imported media
+
+- **WHEN** one service creates a file in the shared media namespace and a
+  second service with a different UID but the same storage capability
+  modifies it
+- **THEN** the modification succeeds, and an identity without the capability
+  can neither read nor modify the file
+
+### Requirement: Media library content is grouped by media class
+
+Media library content SHALL be organized in one library tree, one directory
+per media class, and acquisition content in one ingest tree, both in the same
+filesystem. Personal photos SHALL NOT be stored in the media namespace.
+
+#### Scenario: A new media class is added
+
+- **WHEN** a service for a new media class starts using the namespace
+- **THEN** its content appears as a new class directory under the library
+  tree, and no existing consumer path changes
 
 ### Requirement: Shared identities remain stable across compute replacement
 

@@ -11,13 +11,14 @@ Evidence from the current repository:
   systemd-based and the blank snapshot exists. `/persist` is `neededForBoot`.
   Any storage root that must survive a rollback has to be declared as
   persistent; nothing under `/` qualifies.
-- Current media branches mount individually; production uses gocryptfs over plain
-  filesystems and one mergerfs namespace at `/srv/media`. The namespace
-  aggregates the clear views and is the host-owned media boundary. Changing the
-  provider or encryption layer is outside this contract.
-- Acquisition workloads attach that namespace at `/data`, while Jellyfin
-  attaches only `/srv/media/library` at `/media` read-only. Private application
-  state remains in separately declared retained paths.
+- Current media branches mount individually; production pools them with one
+  mergerfs filesystem at `/srv/media/data`, one level below the stable,
+  host-owned `/srv/media` attachment point. The pool aggregates the clear views
+  and is the host-owned media boundary. Changing the provider or encryption
+  layer is outside this contract.
+- Acquisition workloads attach `/srv/media/data` at `/data`, while Jellyfin
+  attaches only `/srv/media/data/library` at `/media` read-only. Private
+  application state remains in separately declared retained paths.
 
 ## Goals / Non-Goals
 
@@ -97,17 +98,42 @@ would drift. A single pool with per-consumer access is simpler and is what the
 ### Placement eligibility and availability are explicit per backing path
 
 Each pooling branch declares its path, mount unit, whether it is required, and
-whether it may receive new content. The current three media branches are
-required and creation-eligible. A future archive branch can join the same
-namespace as optional and no-create: existing archive content remains visible,
-but normal writes stay on hot storage and reported writable capacity excludes
-the archive.
+whether it may receive new content. The two properties are independent. A
+cold archive branch whose library the namespace depends on is required and
+no-create: its content stays visible and modifiable, new content goes to
+creation-eligible branches, and reported writable capacity excludes it. An
+optional branch must be no-create, so its absence never changes where new
+content lands.
+
+Creation must not depend on where a new file's parent directory already
+lives. A new episode of a show whose directory exists only on a no-create
+branch must still land on a creation-eligible branch. Path-preserving
+creation policies (mergerfs `ep*`) refuse that write, so the pool uses a
+non-path-preserving policy, `category.create=pfrd`, which weights eligible
+branches by free space and recreates the parent directory there. Links and
+renames then recreate a missing target directory on the source's branch, so
+an import hardlink stays on one branch.
 
 The pool refuses to start when any required branch is unmounted or when no
 mounted creation-eligible branch remains. Optional unmounted branches are
-omitted at mount time. `statfs-ignore=nc` makes the capacity view match creation
-eligibility, and `moveonenospc=false` prevents implicit emergency relocation
-from becoming an undeclared balancing mechanism.
+omitted at mount time. `statfs=base` with `statfs-ignore=nc` reports the
+capacity of creation-eligible branches regardless of which branches hold a
+path, and `moveonenospc=false` prevents implicit emergency relocation from
+becoming an undeclared balancing mechanism.
+
+A physical disk contributes only a dedicated subtree to the pool (its
+`pool/` directory), never its whole filesystem root, so migration leftovers
+and receipts kept elsewhere on the disk never appear in the namespace.
+
+### The media namespace vocabulary
+
+Library content is grouped by media class under `library/`: `movies/` and
+`tv/` today, and `music/`, `audiobooks/`, and `books/` when a service for
+them arrives. Ingest is grouped by transport under `downloads/`
+(`usenet/incomplete`, `usenet/complete`, `torrents/`). Both trees share the
+one pooled filesystem so import can link or rename. A class directory is
+created when a service needs it, not in advance. Personal photos are not
+media and do not belong in this namespace; they get their own semantic root.
 
 ### Preserve the existing fail-closed attachment discipline, and extend it
 
@@ -133,6 +159,18 @@ or access control entries of existing content.
 activation. Rejected: it is unbounded work over large trees, it makes a rebuild
 a potentially destructive operation, and it fights any writer that legitimately
 creates files with other ownership.
+
+### Shared media content stays writable by every capability holder
+
+Setgid on shared directories makes new entries inherit the capability group,
+but the permission bits come from the writer. A writer with umask 0022 would
+create `service:media 0644` files that no other media service can modify.
+Media writers therefore run with umask 0007, which yields directories 2770
+and files 0660 in group `media`, with no world access. Service UIDs stay
+distinct; the shared group is the collaboration capability. Activation never
+repairs payload modes recursively. Content migrated from older disks gets the
+shared group and modes once, as an explicit migration step on the disk's
+`pool/` tree.
 
 ### Shared access resolves through the fleet identity graph
 
