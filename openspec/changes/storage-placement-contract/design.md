@@ -1,24 +1,26 @@
 ## Context
 
-This section records only the current state and constraints that shape the approach.
+This section records only the current storage state and constraints that shape
+the approach. The platform cut carries the durable placement contract; the
+consumer repointing and physical data migration remain incomplete.
 
 Evidence from the current repository:
 
 - The root pool is created from a single declared device and already carries
-  `encryption=on`, `acltype=posixacl`, `xattr=sa`, `atime=off` and a
+  `encryption=on`, `acltype=posixacl`, `xattr=sa`, `atime=off`, and a
   `canmount=off` root. Impermanence rolls back to a blank snapshot of the root
   dataset, and that rollback runs from the initrd only when the initrd is
   systemd-based and the blank snapshot exists. `/persist` is `neededForBoot`.
-  Any storage root that must survive a rollback has to be declared as
-  persistent; nothing under `/` qualifies.
+  Any storage root that must survive a rollback has to be declared persistent;
+  nothing under `/` qualifies.
 - Current media branches mount individually; production pools them with one
   mergerfs filesystem at `/srv/media/data`, one level below the stable,
   host-owned `/srv/media` attachment point. The pool aggregates the clear views
   and is the host-owned media boundary. Changing the provider or encryption
   layer is outside this contract.
-- Acquisition workloads attach `/srv/media/data` at `/data`, while Jellyfin
-  attaches only `/srv/media/data/library` at `/media` read-only. Private
-  application state remains in separately declared retained paths.
+- Consumer attachments and the final ingest/library layout are downstream
+  work. This change defines their stable namespace and access boundary without
+  claiming that those consumers are deployed in the platform cut.
 
 ## Goals / Non-Goals
 
@@ -65,24 +67,21 @@ failures that must deny access.
 accept an arbitrary host path. Rejected: it would erase the difference between
 guest-translated state and host-owned data, and would let a guest-facing
 declaration place content anywhere on the host. Naming devices directly in
-application configuration is not part of this proposal; the alternatives are
-recorded in the proposed ADR-0006.
+application configuration is outside this change.
 
-### The writable media boundary is the namespace, not a per-application tree
+### The writable boundary is the namespace, not a per-consumer tree
 
-Acquisition services and the player consume the same host-owned namespace with
-different access: writers receive the common parent because they link into the
-library, and the player receives the library read-only. This is the selected
-boundary and removes the former split between a guest-retained writable tree
-and an unrelated read-only export.
+Link-dependent consumers receive the common host-owned namespace, while
+read-only consumers receive only the semantic subtree they need. This is the
+selected boundary and removes the former split between a guest-retained
+writable tree and an unrelated read-only export.
 
-*Alternatives considered:* keeping a per-application writable tree and
-exporting the library separately (the status quo) — it cannot express the link
-that import depends on. Giving the player the whole namespace read-only was also
-rejected: it would let it see in-progress downloads.
+*Alternatives considered:* keeping separate writable and read-only pools —
+rejected because their creation policy, capacity reporting, and failure
+behavior could drift and links could not cross the boundary.
 
-The writable media boundary is the host-owned namespace. Repointing acquisition
-consumers does not change the current media provider or physical disks.
+The namespace boundary is host-owned. Repointing downstream consumers does not
+change the current media provider or physical disks.
 
 ### One pooling instance per namespace
 
