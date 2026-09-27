@@ -82,6 +82,22 @@ let
       requests = attrNames hvnConfig.secretRequests;
     in
     requests != [ ] && builtins.all (name: hasAttr name hvnConfig.age.secrets) requests;
+  # Restarting a storage unit on a secret change would close or unmount a live
+  # volume; unlock secrets apply on the next unlock.
+  integrationAssertions.secret-restarts-spare-storage =
+    let
+      isStorageUnit =
+        unit:
+        lib.hasPrefix "gocryptfs-" unit
+        || lib.hasPrefix "systemd-cryptsetup@" unit
+        || lib.hasPrefix "mergerfs-" unit
+        || lib.hasSuffix ".mount" unit;
+      restartTargets = lib.concatMap (
+        host:
+        lib.concatMap (req: req.restartUnits) (builtins.attrValues (host.config.secretRequests or { }))
+      ) (builtins.attrValues self.nixosConfigurations);
+    in
+    !(builtins.any isStorageUnit restartTargets);
   integrationAssertions.darwin-account =
     hasAttr "daniel.vicory" darwinUsers
     && !(hasAttr "daniel" darwinUsers)
