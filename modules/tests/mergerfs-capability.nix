@@ -6,6 +6,12 @@
   perSystem =
     { pkgs, system, ... }:
     let
+      mergerfsLib = import ../den/aspects/services/_mergerfs.nix { inherit lib; };
+      poolUnit = mergerfsLib.unitNameFor "/srv/media/data";
+      mediaRoot = {
+        group = "media";
+        mode = "2770";
+      };
       host = {
         settings.services = {
           mergerfs.pools."/srv/media/data" = {
@@ -40,8 +46,7 @@
           storage-roots.roots.media = {
             path = "/srv/media";
             user = "root";
-            group = "media";
-            mode = "2770";
+            inherit (mediaRoot) group mode;
             access = [ ];
           };
         };
@@ -113,12 +118,13 @@
             };
 
             users.groups.media.gid = 505;
+            environment.systemPackages = [ pkgs.acl ];
           };
 
         testScript = ''
           start_all()
           machine.wait_until_succeeds(
-              "systemctl is-active mergerfs-mnt-srv-media-data.service", timeout=30
+              "systemctl is-active ${poolUnit}", timeout=30
           )
           machine.wait_until_succeeds("systemctl is-active media-namespace.service", timeout=30)
           machine.succeed("mountpoint -q /srv/media/data")
@@ -152,6 +158,21 @@
               "touch /srv/media/data/library/without"
           )
 
+          # With the workload umask the participating identity's entries take
+          # the declared group through setgid and umask-shaped permission bits
+          # with no corrective step; a directory keeps the root's declared mode.
+          machine.succeed(
+              "setpriv --reuid 6100 --regid 6100 --groups 505 -- sh -c "
+              "'umask 007; touch /srv/media/data/library/new-file; "
+              "mkdir /srv/media/data/library/new-dir'"
+          )
+          machine.succeed(
+              "test \"$(stat -c '%g:%a' /srv/media/data/library/new-file)\" = 505:660"
+          )
+          machine.succeed(
+              "test \"$(stat -c '%g:%a' /srv/media/data/library/new-dir)\" = 505:${mediaRoot.mode}"
+          )
+
           # Routine activation must not chmod the live merged root back to its
           # fail-closed bare-directory mode.
           machine.succeed("systemd-tmpfiles --create")
@@ -165,12 +186,18 @@
           # application-managed metadata on existing directories.
           machine.succeed("chown root:root /srv/media/data/library/tv")
           machine.succeed("chmod 0751 /srv/media/data/library/tv")
+          machine.succeed("setfacl -m u:nobody:rX /srv/media/data/library/tv")
           machine.succeed(
               "before=$(stat -c '%u:%g:%a' /srv/media/data/library/tv); "
+              "acl_before=$(getfacl -cp /srv/media/data/library/tv); "
               "systemctl restart media-namespace.service; "
+              "systemd-tmpfiles --create; "
               "after=$(stat -c '%u:%g:%a' /srv/media/data/library/tv); "
+              "acl_after=$(getfacl -cp /srv/media/data/library/tv); "
               "test \"$after\" = \"$before\" || { "
-              "echo \"metadata changed: $before -> $after\"; exit 1; }"
+              "echo \"metadata changed: $before -> $after\"; exit 1; }; "
+              "test \"$acl_after\" = \"$acl_before\" || { "
+              "echo \"ACL changed: $acl_before -> $acl_after\"; exit 1; }"
           )
 
           # A bind-mounted read-only player view remains the same filesystem.
@@ -220,7 +247,7 @@
           # Losing a required mount stops the pool and its dependent layout while
           # unrelated mounts remain operational.
           machine.succeed("systemctl stop srv-b1.mount")
-          machine.wait_until_fails("systemctl is-active mergerfs-mnt-srv-media-data.service")
+          machine.wait_until_fails("systemctl is-active ${poolUnit}")
           machine.wait_until_fails("systemctl is-active media-namespace.service")
           machine.fail("mountpoint -q /srv/media/data")
           machine.fail(
@@ -233,7 +260,7 @@
           # a separate operator action.
           machine.succeed("systemctl start srv-b1.mount")
           machine.wait_until_succeeds(
-              "systemctl is-active mergerfs-mnt-srv-media-data.service", timeout=30
+              "systemctl is-active ${poolUnit}", timeout=30
           )
           machine.wait_until_succeeds("systemctl is-active media-namespace.service", timeout=30)
           machine.succeed("mountpoint -q /srv/media/data")
