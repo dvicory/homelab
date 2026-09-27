@@ -49,9 +49,13 @@ let
   checksFor = system: (self.checks or { }).${system} or { };
   hostedChecksFor =
     system:
-    lib.filterAttrs (_: check: !(lib.hasSuffix "runtime" (check.meta.hestia.group or ""))) (
-      checksFor system
-    );
+    # Hosted x86_64-linux runners have KVM, so runtime-group (VM) checks run
+    # there. They are excluded only on systems without hosted KVM.
+    lib.filterAttrs (
+      _: check:
+      system == "x86_64-linux"
+      || !(lib.hasSuffix "runtime" (check.meta.hestia.group or ""))
+    ) (checksFor system);
 
   ciJobs = lib.genAttrs ciSystems (
     system:
