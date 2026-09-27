@@ -50,11 +50,14 @@ in
               # does not require the parent path to exist there, so a new file
               # under a directory held only by a no-create branch still lands on
               # an eligible one. statfs=base with statfs-ignore=nc reports the
-              # capacity of creation-eligible branches only.
+              # capacity of creation-eligible branches only. posix_acl lets the
+              # kernel apply the branches' POSIX ACLs, including the default
+              # ACLs that keep shared media group-writable.
               default = [
                 "allow_other"
                 "category.create=pfrd"
                 "moveonenospc=false"
+                "posix_acl=true"
                 "statfs-ignore=nc"
                 "statfs=base"
               ];

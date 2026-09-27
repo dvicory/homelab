@@ -162,15 +162,31 @@ creates files with other ownership.
 
 ### Shared media content stays writable by every capability holder
 
-Setgid on shared directories makes new entries inherit the capability group,
-but the permission bits come from the writer. A writer with umask 0022 would
-create `service:media 0644` files that no other media service can modify.
-Media writers therefore run with umask 0007, which yields directories 2770
-and files 0660 in group `media`, with no world access. Service UIDs stay
-distinct; the shared group is the collaboration capability. Activation never
-repairs payload modes recursively. Content migrated from older disks gets the
-shared group and modes once, as an explicit migration step on the disk's
-`pool/` tree.
+Media access is ordinary Unix ownership: each service keeps its own UID, and
+the stable `media` group (GID 505) is the shared capability from host through
+the compute boundary to Kubernetes workloads, which hold it as a
+supplemental group. Canonical directories are `media`-group, group rwx and
+setgid; canonical files are `media`-group and group rw; nothing needs world
+access.
+
+Setgid makes new entries inherit the group, but the permission bits still
+come from the writer: a writer with umask 0022 would create `service:media
+0644` files that no other media service can modify. Canonical shared
+directories therefore carry a narrow default POSIX ACL (`d:u::rwx`,
+`d:g::rwx`, `d:m::rwx`, `d:o::---`), so new content stays group-writable
+whatever the writer's umask. The ACL has no named user or group entries and
+is not an authorization vocabulary; it only keeps group inheritance
+reliable. The pool is mounted with `posix_acl` so the kernel honours it.
+
+The contract does not override a writer that deliberately restricts a
+file's mode (for example `0600`); such a file is not shared. A real
+application doing that in normal operation needs its own compatibility
+decision.
+
+Layout directories get the default ACL when they are created. Activation
+never repairs payload modes or ACLs recursively. Content migrated from older
+disks gets the shared group, modes and default ACL once, as an explicit
+migration step on the disk's `pool/` tree.
 
 ### Shared access resolves through the fleet identity graph
 
