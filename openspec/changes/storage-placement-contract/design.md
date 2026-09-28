@@ -43,7 +43,8 @@ Evidence from the current repository:
 - Implementing or selecting the placement mover. This change fixes the
   contract the mover must satisfy; the mover itself remains open.
 - Choosing a Kubernetes storage adapter or introducing distributed storage.
-- Migrating, classifying, or importing existing content.
+- How a particular old disk is copied and classified (ADR-0007 covers the
+  disk migration; the destination layout is decided here).
 
 ## Decisions
 
@@ -99,7 +100,7 @@ would drift. A single pool with per-consumer access is simpler and is what the
 
 Each pooling branch declares its path, mount unit, whether it is required, and
 whether it may receive new content. The two properties are independent. A
-cold archive branch whose library the namespace depends on is required and
+cold branch whose library the namespace depends on is required and
 no-create: its content stays visible and modifiable, new content goes to
 creation-eligible branches, and reported writable capacity excludes it. An
 optional branch must be no-create, so its absence never changes where new
@@ -122,8 +123,16 @@ path, and `moveonenospc=false` prevents implicit emergency relocation from
 becoming an undeclared balancing mechanism.
 
 A physical disk contributes only a dedicated subtree to the pool (its
-`pool/` directory), never its whole filesystem root, so migration leftovers
-and receipts kept elsewhere on the disk never appear in the namespace.
+`pool/` directory), never its whole filesystem root. Content that has not
+been classified into the canonical layout stays in the disk's `migration/`
+area, with the records of how it got there, and never appears in the
+namespace. Classification and sharing never remove or rename anything left in
+`migration/` and never change its payload. Sharing does not walk
+`migration/`, but a file there that is hardlinked to canonical content shares
+that inode's group, mode, and ACL, so it takes on the canonical metadata. A
+disk joins the pool only after its canonical content is in `pool/` and
+carries the shared group and default ACL; until then it stays mounted outside
+the pool.
 
 ### The media namespace vocabulary
 
@@ -273,15 +282,20 @@ an export, or another host.
   schema exposes no second root-pool device, so "protected" describes intent
   rather than current redundancy → the architecture document records this as an
   open decision, and nothing here depends on redundancy existing yet.
-- **Archive placement movement is not exercised until a link-aware mover exists**
-  → keep the requirement explicit; a single-tier deployment still satisfies the
-  contract.
+- **Movement between placements is not exercised until a link-aware mover
+  exists** → keep the requirement explicit; a single-tier deployment still
+  satisfies the contract.
 
 ## Migration Plan
 
-No content migration is in scope. Run synthetic placement, linking, capacity,
-permission, and fail-closed checks before importing real content. Reverting
-after content import would be a data migration outside this change.
+Existing content reaches the namespace one disk at a time. A disk is
+converted and seeded (ADR-0007); its known canonical content is moved into
+`pool/` by renames that are proven lossless, and everything else stays in
+`migration/`; the shared group and default ACL are applied once to `pool/`;
+only then does its `pool/` join the pool. Synthetic placement, linking,
+capacity, permission, and fail-closed checks run before real content is
+exposed. Reverting a disk means removing its `pool/` from the branch set; its
+content stays on the disk.
 
 ## Open Questions
 
@@ -291,7 +305,6 @@ after content import would be a data migration outside this change.
   spelling of the declaration and the lifecycle tool's representation of a
   range with declared holes, which should stay small and deterministic rather
   than becoming a general idmap policy language.
-- Internal directory naming beneath each tier root is not fixed by this change.
 - Watermark and free-space reserve values are operational tuning.
-- Whether archive branches join the namespace does not change the contract; it
+- Which no-create branches join the namespace does not change the contract; it
   only determines the deployed placement set.

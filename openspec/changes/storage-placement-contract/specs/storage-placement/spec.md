@@ -62,18 +62,18 @@ it, and SHALL NOT receive access to the ingest location.
 ### Requirement: New content is created only on creation-eligible placements
 
 New content SHALL be created only on storage declared to accept new content.
-Storage declared as archive placement SHALL NOT receive newly created content.
+Storage declared as no-create SHALL NOT receive newly created content.
 
 #### Scenario: A new item is written through the namespace
 
 - **WHEN** a consumer creates a new file or directory
 - **THEN** the content resides on storage declared to accept new content, and
-  no part of it resides on archive placement
+  no part of it resides on no-create storage
 
-#### Scenario: The parent directory exists only on archive placement
+#### Scenario: The parent directory exists only on no-create storage
 
 - **WHEN** a consumer creates a new item inside a directory whose content so
-  far resides only on archive placement
+  far resides only on no-create storage
 - **THEN** the creation succeeds, and the new item resides on storage declared
   to accept new content
 
@@ -83,22 +83,22 @@ Declaring that a backing location is required SHALL NOT imply that it accepts
 new content, and declaring that it accepts no new content SHALL NOT make it
 optional.
 
-#### Scenario: Required archive storage is unavailable
+#### Scenario: Required no-create storage is unavailable
 
 - **WHEN** a backing location is declared required and accepting no new
   content, and it is unavailable
 - **THEN** access through the namespace is denied, as for any other required
   location
 
-### Requirement: Archive placements remain usable for their existing content
+### Requirement: No-create placements remain usable for their existing content
 
-Storage declared as archive placement SHALL remain fully usable for content
-already present there.
+Storage declared as no-create SHALL remain fully usable for content already
+present there.
 
-#### Scenario: Archived content is modified
+#### Scenario: Content on no-create storage is modified
 
 - **WHEN** a consumer modifies, renames, or deletes content that already
-  resides on archive placement
+  resides on no-create storage
 - **THEN** the operation succeeds on that storage
 
 ### Requirement: Movement between placements preserves link relationships
@@ -127,9 +127,9 @@ Capacity reported for a namespace SHALL reflect the space available where new
 content can be created. It SHALL NOT include capacity that new content cannot
 use.
 
-#### Scenario: Archive capacity is added
+#### Scenario: No-create capacity is added
 
-- **WHEN** archive capacity is added to a namespace without changing where new
+- **WHEN** no-create capacity is added to a namespace without changing where new
   content is created
 - **THEN** the capacity reported to a consumer that writes to the namespace is
   unchanged
@@ -140,6 +140,35 @@ use.
   exhausted
 - **THEN** the capacity reported to a consumer falls to reflect that, before
   creation begins to fail
+
+### Requirement: Only classified content is visible through the namespace
+
+Content on a backing device that has not been classified into the canonical
+layout SHALL NOT be visible through the namespace, and a device SHALL join
+the namespace only through its canonical subtree.
+
+#### Scenario: A device holds preserved non-canonical content
+
+- **WHEN** a device's canonical content is in the namespace and other content
+  from its previous layout is preserved on the same device
+- **THEN** consumers see only the canonical content, and the preserved content
+  remains on the device outside the namespace, with its paths and payload
+  intact
+
+#### Scenario: Preserved content shares an inode with canonical content
+
+- **WHEN** a preserved file is a hardlink to a file in the canonical subtree,
+  and the canonical copy receives one-time sharing of group and permissions
+- **THEN** the preserved path and its payload remain intact and outside the
+  namespace, although the metadata it shares with the canonical copy may
+  change
+
+#### Scenario: A device's canonical subtree is missing
+
+- **WHEN** a device is mounted but its canonical subtree is missing or is not a
+  real directory on that device
+- **THEN** the namespace treats the device as unavailable instead of exposing
+  its filesystem root or another location
 
 ### Requirement: Required storage fails closed
 
