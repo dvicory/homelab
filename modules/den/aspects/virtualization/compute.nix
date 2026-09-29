@@ -464,13 +464,12 @@ in
           allowedTCPPorts = [ 53 ];
         };
 
-        secretRequests = lib.optionalAttrs hasIdentity {
-          "${cfg.instance}-host-key" = {
-            provider = "agenix";
-            ageFile = identityAge;
-            mode = "0400";
-            restartUnits = [ "compute-stage-identity.service" ];
-          };
+        secretRequests."${cfg.instance}-host-key" = {
+          provider = "agenix";
+          ageFile = identityAge;
+          mode = "0400";
+          restartUnits = [ "compute-stage-identity.service" ];
+          generator.script = "ssh-key";
         };
         systemd.services.compute-stage-identity = {
           description = "Stage the declared compute SSH identity";
@@ -494,7 +493,7 @@ in
             flock -n 9
             test -s ${publicKeyFile}
             key=/run/agenix/${cfg.instance}-host-key
-            actual="$(ssh-keygen -y -f "$key")"
+            actual="$(ssh-keygen -y -f "$key" | cut -d ' ' -f 1-2)"
             expected="$(cut -d ' ' -f 1-2 ${publicKeyFile})"
             test "$actual" = "$expected"
             install -m 0400 -o ${toString cfg.idmapBase} -g ${toString cfg.idmapBase} "$key" ${cfg.identityPath}/.key-new

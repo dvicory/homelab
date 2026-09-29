@@ -31,6 +31,8 @@ let
   );
   assertions = {
     intended-host-owns-compute = owners == [ "hvn-hyp1" ];
+    guest-identity-provisioned =
+      builtins.isString descriptor.publicKey && lib.hasPrefix "ssh-ed25519 " descriptor.publicKey;
     unprivileged-confinement =
       project.restricted == "true"
       && project."restricted.containers.lowlevel" == "block"
