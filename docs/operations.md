@@ -35,6 +35,14 @@ Public edges publish only `public` routes. The `idm` canonical hostname
 remains the identity issuer across direct and secondary-edge access;
 failover changes DNS, not the issuer or certificate identity.
 
+In `direct` ingress mode every declared hostname must resolve to an
+address that reaches the physical host — its LAN uplink for LAN
+clients or its Tailscale address for tailnet clients. The host DNATs
+TCP 443 to the compute guest's NodePort without terminating TLS or
+rewriting the client source, so the guest sees the real peer address.
+In `trustedEdges` mode this forward does not exist and reachability is
+the edge's responsibility.
+
 ## Kanidm bootstrap
 
 The checked-in `initial` phase keeps the identity route private and
@@ -114,22 +122,36 @@ new issuance until the window clears.
 
 ## Lifecycle and bootstrap
 
-Run `compute-guest` as root on the physical Linux Incus host:
+Two artifacts are built from the same checkout of this repository on the
+physical Linux Incus host:
+
+```sh
+nix build .#nixosConfigurations.compute-1.config.system.build.computeBundle --out-link guest-bundle
+nix build .#packages.x86_64-linux.household-bootstrap-bundle --out-link bootstrap-bundle
+```
+
+`guest-bundle` is the guest image (`metadata.tar.xz`, `rootfs.tar.xz`,
+`system`). `bootstrap-bundle` holds the bootstrap commands with their
+pinned manifests (`bin/household-bootstrap-host`,
+`bin/household-bootstrap`, `manifests/`).
+
+Run `compute-guest` as root:
 
 ```sh
 compute-guest adopt
 compute-guest inspect
-compute-guest create --bundle BUNDLE
-compute-guest replace --bundle BUNDLE --confirm compute-1
+compute-guest create --bundle ./guest-bundle
+compute-guest replace --bundle ./guest-bundle --confirm compute-1
 ```
 
 `replace` is destructive and requires the exact
 `--confirm compute-1` acknowledgement.
 
-For a newly created or replacement Running guest before Argo handoff, run:
+For a newly created or replacement Running guest before Argo handoff, run
+as root:
 
 ```sh
-household-bootstrap-host /etc/homelab/compute.json --confirm compute-1
+./bootstrap-bundle/bin/household-bootstrap-host /etc/homelab/compute.json --confirm compute-1
 ```
 
 The host command validates the descriptor, guest, kubeconfig, node
@@ -139,9 +161,11 @@ project, and applies the canonical root Application.
 
 ## Verify
 
+With `KUBECONFIG` selecting the guest's cluster:
+
 ```sh
-household-bootstrap --status
-household-bootstrap --check-ready
+./bootstrap-bundle/bin/household-bootstrap --status
+./bootstrap-bundle/bin/household-bootstrap --check-ready
 ```
 
 `--status` reports the declared Argo controllers and bootstrap Jobs.
@@ -156,7 +180,7 @@ Fix the reported preflight prerequisite and start a new explicit
 operation. Retry only declared terminal failed hook Jobs:
 
 ```sh
-household-bootstrap --retry-jobs
+./bootstrap-bundle/bin/household-bootstrap --retry-jobs
 ```
 
 Missing, active, unknown, or non-terminal Jobs are refused.
