@@ -50,6 +50,8 @@ in
         rootSettings = host.settings.services.storage-roots.roots.media;
       in
       lib.mkIf (pools ? ${root}) {
+        # The layout, relative to the pool, for tools that place content in it.
+        system.build.media-namespace-layout = layout;
         systemd.services.media-namespace = {
           description = "Create the media namespace layout on the merged filesystem";
           wantedBy = [ poolUnit ];

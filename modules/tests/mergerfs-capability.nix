@@ -22,8 +22,10 @@
             { options.pools = mergerfs.settings.pools; }
             {
               pools."/srv/media/data".branches = [
+                # media4 contributes only its pool/ subtree.
                 {
-                  path = "/srv/b0";
+                  path = "/srv/b0/pool";
+                  mountPoint = "/srv/b0";
                   unit = "srv-b0.mount";
                   required = true;
                   create = true;
@@ -74,6 +76,7 @@
             config,
             lib,
             pkgs,
+            utils,
             ...
           }:
           {
@@ -84,6 +87,7 @@
                   host
                   lib
                   pkgs
+                  utils
                   ;
               })
               (mediaNamespace.nixos { inherit host lib pkgs; })
@@ -123,6 +127,12 @@
               };
             };
 
+            # The disk's pool/ tree and a migration/ holding area beside it.
+            systemd.tmpfiles.rules = [
+              "d /srv/b0/pool 2770 root media -"
+              "d /srv/b0/migration 0700 root root -"
+              "f /srv/b0/migration/receipt 0600 root root - evacuated"
+            ];
             users.groups.media.gid = 505;
             environment.systemPackages = [ pkgs.acl ];
           };
@@ -149,11 +159,16 @@
           machine.succeed(f"mountpoint -q {pool}")
           machine.succeed("findmnt -no FSTYPE /srv/b0 | grep -qx xfs")
 
+          # Only the disk's pool/ subtree joins the namespace; its migration/
+          # holding area does not.
+          machine.fail(f"test -e {pool}/migration")
+          machine.fail(f"test -e {pool}/pool")
+
           # The namespace creates its layout on the creation-eligible disk,
           # owned by the media group, setgid, with the group-only default ACL.
           for directory in ["library", "library/movies", "library/tv", "downloads/usenet/complete"]:
-              assert mode(f"/srv/b0/{directory}") == "2770:505", directory
-              assert default_acl(f"/srv/b0/{directory}") == shared_default, directory
+              assert mode(f"/srv/b0/pool/{directory}") == "2770:505", directory
+              assert default_acl(f"/srv/b0/pool/{directory}") == shared_default, directory
 
           # Reported capacity is the creation-eligible disk's, even for a
           # directory held only by a no-create branch.
@@ -168,15 +183,15 @@
           # Permission contract, directly on the XFS disk and through the pool:
           # a writer with umask 022 still produces group-writable content, and
           # nested directories keep the group, setgid and default ACL.
-          machine.succeed(f"{radarr} sh -c 'umask 022; echo direct > /srv/b0/library/movies/direct.mkv'")
-          assert mode("/srv/b0/library/movies/direct.mkv") == "660:505"
+          machine.succeed(f"{radarr} sh -c 'umask 022; echo direct > /srv/b0/pool/library/movies/direct.mkv'")
+          assert mode("/srv/b0/pool/library/movies/direct.mkv") == "660:505"
           machine.succeed(
               f"{radarr} sh -c 'umask 022; mkdir -p {pool}/library/tv/Show/Season1 && "
               f"echo e1 > {pool}/library/tv/Show/Season1/e1.mkv'"
           )
-          assert mode("/srv/b0/library/tv/Show/Season1") == "2770:505"
-          assert default_acl("/srv/b0/library/tv/Show/Season1") == shared_default
-          assert mode("/srv/b0/library/tv/Show/Season1/e1.mkv") == "660:505"
+          assert mode("/srv/b0/pool/library/tv/Show/Season1") == "2770:505"
+          assert default_acl("/srv/b0/pool/library/tv/Show/Season1") == shared_default
+          assert mode("/srv/b0/pool/library/tv/Show/Season1/e1.mkv") == "660:505"
 
           # A second capability holder can modify, link, rename and remove what
           # the first created; an identity without the group cannot even read.
@@ -194,7 +209,7 @@
           # Known limit of the contract: default ACLs do not override a writer
           # that deliberately restricts a file's mode.
           machine.succeed(f"{radarr} install -m 0600 /dev/null {pool}/library/tv/private.mkv")
-          assert mode("/srv/b0/library/tv/private.mkv") == "600:505"
+          assert mode("/srv/b0/pool/library/tv/private.mkv") == "600:505"
           machine.fail(f"{sab} cat {pool}/library/tv/private.mkv")
 
           # Radarr's import: Foo's directory exists only on a no-create legacy
@@ -210,17 +225,17 @@
           )
           legacy_before = machine.succeed("find /srv/b1 /srv/b2 -printf '%p %i %s\\n' | sort")
           machine.succeed(f"{sab} sh -c 'umask 022; echo movie > {pool}/downloads/usenet/complete/Foo.mkv'")
-          machine.succeed("test -f /srv/b0/downloads/usenet/complete/Foo.mkv")
+          machine.succeed("test -f /srv/b0/pool/downloads/usenet/complete/Foo.mkv")
           machine.succeed(f"{radarr} ln {pool}/downloads/usenet/complete/Foo.mkv {pool}/library/movies/Foo/new.mkv")
           machine.succeed(
-              "test \"$(stat -c %i /srv/b0/downloads/usenet/complete/Foo.mkv)\" "
-              "= \"$(stat -c %i /srv/b0/library/movies/Foo/new.mkv)\""
+              "test \"$(stat -c %i /srv/b0/pool/downloads/usenet/complete/Foo.mkv)\" "
+              "= \"$(stat -c %i /srv/b0/pool/library/movies/Foo/new.mkv)\""
           )
-          machine.succeed("test \"$(stat -c %h /srv/b0/library/movies/Foo/new.mkv)\" -eq 2")
+          machine.succeed("test \"$(stat -c %h /srv/b0/pool/library/movies/Foo/new.mkv)\" -eq 2")
           assert machine.succeed("find /srv/b1 /srv/b2 -printf '%p %i %s\\n' | sort") == legacy_before
-          assert mode("/srv/b0/library/movies/Foo") == "2770:505"
-          assert default_acl("/srv/b0/library/movies/Foo") == shared_default
-          assert mode("/srv/b0/library/movies/Foo/new.mkv") == "660:505"
+          assert mode("/srv/b0/pool/library/movies/Foo") == "2770:505"
+          assert default_acl("/srv/b0/pool/library/movies/Foo") == shared_default
+          assert mode("/srv/b0/pool/library/movies/Foo/new.mkv") == "660:505"
           # The legacy file stays visible, and modifiable, at the canonical path.
           machine.succeed(f"test \"$(cat {pool}/library/movies/Foo/old.mkv)\" = old")
           machine.succeed(f"{sab} sh -c 'echo edited >> {pool}/library/movies/Foo/old.mkv'")
@@ -269,6 +284,20 @@
           machine.wait_until_succeeds("systemctl is-active media-namespace.service", timeout=30)
           machine.succeed(f"mountpoint -q {pool}")
           machine.succeed(f"test -d {pool}/archive")
+
+          # A subtree branch whose directory is missing, or is a symlink off its
+          # mount, refuses the pool even though the disk itself is mounted.
+          machine.succeed("systemctl stop ${poolUnit}")
+          machine.succeed("mv /srv/b0/pool /srv/b0/pool.away")
+          machine.fail("systemctl start ${poolUnit}")
+          machine.fail(f"mountpoint -q {pool}")
+          machine.fail("test -e /srv/b0/pool")
+          machine.succeed("ln -s /srv/b1 /srv/b0/pool")
+          machine.fail("systemctl start ${poolUnit}")
+          machine.fail(f"mountpoint -q {pool}")
+          machine.succeed("rm /srv/b0/pool && mv /srv/b0/pool.away /srv/b0/pool")
+          machine.succeed("systemctl start ${poolUnit}")
+          machine.succeed(f"test -e {pool}/library/movies/Foo/new.mkv")
         '';
       };
     in

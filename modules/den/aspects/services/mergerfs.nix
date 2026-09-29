@@ -6,12 +6,31 @@ let
     options = {
       path = lib.mkOption {
         type = lib.types.addCheck lib.types.str mergerfs.isCanonicalPath;
-        description = "Mounted backing path.";
+        description = "Backing path: a mount point, or a directory below `mountPoint`.";
+      };
+      mountPoint = lib.mkOption {
+        type = lib.types.nullOr (lib.types.addCheck lib.types.str mergerfs.isCanonicalPath);
+        default = null;
+        description = ''
+          Mount that holds `path`, when only a subtree of it joins the pool
+          (a disk's `pool/` directory). The branch is available only when this
+          is mounted and `path` is a real directory on that same filesystem;
+          the pool never creates `path`. Defaults to `path`.
+        '';
       };
       unit = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
         description = "Systemd unit that mounts the backing path.";
+      };
+      fileSystemMount = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Depend on the mount unit systemd generates for the NixOS
+          `fileSystems` entry at `mountPoint` (or `path`). The unit name is
+          derived with `utils.escapeSystemdPath`; do not also set `unit`.
+        '';
       };
       required = lib.mkOption {
         type = lib.types.bool;
@@ -73,12 +92,34 @@ in
     nixos =
       {
         host,
+        config,
         pkgs,
         lib,
+        utils,
         ...
       }:
       let
         cfg = host.settings.services.mergerfs.pools or { };
+        mountOf = branch: if branch.mountPoint == null then branch.path else branch.mountPoint;
+        # The unit a branch depends on: the declared unit, or the mount unit
+        # systemd generates from the branch's fileSystems entry.
+        branchUnit =
+          branch:
+          if branch.fileSystemMount then "${utils.escapeSystemdPath (mountOf branch)}.mount" else branch.unit;
+        allBranches = lib.concatMap (pool: pool.branches) (builtins.attrValues cfg);
+        unitAndFileSystemMount = map (branch: branch.path) (
+          builtins.filter (branch: branch.fileSystemMount && branch.unit != null) allBranches
+        );
+        fileSystemMountWithoutEntry = map (branch: branch.path) (
+          builtins.filter (
+            branch: branch.fileSystemMount && !(config.fileSystems ? ${mountOf branch})
+          ) allBranches
+        );
+        pathOutsideMount = map (branch: branch.path) (
+          builtins.filter (
+            branch: branch.mountPoint != null && !(lib.hasPrefix "${branch.mountPoint}/" branch.path)
+          ) allBranches
+        );
         nonCanonicalPoolPaths = mergerfs.nonCanonicalPoolPaths cfg;
         duplicateServiceNames = mergerfs.duplicateServiceNames cfg;
         duplicatePaths = mergerfs.duplicatePaths cfg;
@@ -118,6 +159,18 @@ in
                 message = "services.mergerfs: required backing paths need a mount unit: ${lib.concatStringsSep ", " requiredWithoutUnit}";
               }
               {
+                assertion = unitAndFileSystemMount == [ ];
+                message = "services.mergerfs: set either unit or fileSystemMount, not both: ${lib.concatStringsSep ", " unitAndFileSystemMount}";
+              }
+              {
+                assertion = fileSystemMountWithoutEntry == [ ];
+                message = "services.mergerfs: fileSystemMount branches need a fileSystems entry at their mount point: ${lib.concatStringsSep ", " fileSystemMountWithoutEntry}";
+              }
+              {
+                assertion = pathOutsideMount == [ ];
+                message = "services.mergerfs: a branch path must lie below its mountPoint: ${lib.concatStringsSep ", " pathOutsideMount}";
+              }
+              {
                 assertion = optionalCreatePaths == [ ];
                 message = "services.mergerfs: optional backing paths must be no-create: ${lib.concatStringsSep ", " optionalCreatePaths}";
               }
@@ -129,12 +182,12 @@ in
               path: poolCfg:
               let
                 escapedPath = lib.strings.sanitizeDerivationName (builtins.substring 1 (-1) path);
-                units = builtins.filter (unit: unit != null) (map (branch: branch.unit) poolCfg.branches);
+                units = builtins.filter (unit: unit != null) (map branchUnit poolCfg.branches);
                 requiredUnits = builtins.filter (unit: unit != null) (
-                  map (branch: if branch.required then branch.unit else null) poolCfg.branches
+                  map (branch: if branch.required then branchUnit branch else null) poolCfg.branches
                 );
                 optionalUnits = builtins.filter (unit: unit != null) (
-                  map (branch: if branch.required then null else branch.unit) poolCfg.branches
+                  map (branch: if branch.required then null else branchUnit branch) poolCfg.branches
                 );
                 options = lib.concatStringsSep "," poolCfg.options;
                 mountScript = pkgs.writeShellScript "mount-mergerfs-${escapedPath}" ''
@@ -146,19 +199,29 @@ in
                   ${pkgs.coreutils}/bin/install -d -o root -g root -m 0000 ${lib.escapeShellArg path}
                   branches=
                   creatable=0
+                  # A subtree branch counts only as a real directory on its mount,
+                  # never as a same-named directory left on the root filesystem.
+                  subtree_on_mount() {
+                    [ -d "$1" ] && [ ! -L "$1" ] &&
+                      [ "$(${pkgs.coreutils}/bin/stat -c %d -- "$1")" = "$(${pkgs.coreutils}/bin/stat -c %d -- "$2")" ]
+                  }
                   ${lib.concatMapStrings (
                     branch:
                     let
                       rendered = "${branch.path}=${if branch.create then "RW" else "NC"}";
+                      available =
+                        "${pkgs.util-linux}/bin/mountpoint -q ${lib.escapeShellArg (mountOf branch)}"
+                        + lib.optionalString (branch.mountPoint != null)
+                          " && subtree_on_mount ${lib.escapeShellArg branch.path} ${lib.escapeShellArg branch.mountPoint}";
                     in
                     ''
-                      if ${pkgs.util-linux}/bin/mountpoint -q ${lib.escapeShellArg branch.path}; then
+                      if ${available}; then
                         branch=${lib.escapeShellArg rendered}
                         branches="$branches''${branches:+:}$branch"
                         ${lib.optionalString branch.create "creatable=$((creatable + 1))"}
                       ${lib.optionalString branch.required ''
                         else
-                          echo "mergerfs: required branch ${branch.path} is not mounted" >&2
+                          echo "mergerfs: required branch ${branch.path} is not available" >&2
                           exit 1
                       ''}
                       fi

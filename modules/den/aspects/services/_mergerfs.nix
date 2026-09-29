@@ -36,9 +36,9 @@ in
   requiredWithoutUnit =
     pools:
     map (branch: branch.path) (
-      builtins.filter (branch: branch.required && branch.unit == null) (
-        lib.concatMap (pool: pools.${pool}.branches) (builtins.attrNames pools)
-      )
+      builtins.filter (
+        branch: branch.required && branch.unit == null && !(branch.fileSystemMount or false)
+      ) (lib.concatMap (pool: pools.${pool}.branches) (builtins.attrNames pools))
     );
 
   optionalCreatePaths =

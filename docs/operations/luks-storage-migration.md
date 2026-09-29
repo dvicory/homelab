@@ -67,8 +67,8 @@ The tool has these operations:
    recovery path when a copy's transfer completed but its
    verification failed or never ran.
 
-The tool never moves content into `pool/`. That classification is a
-separate, disk-specific step (section 6).
+The tool never moves content into `pool/`. Classification and sharing
+are separate migration tooling, `classify-legacy-media` (section 6).
 
 Evidence is bound to the descriptor and rechecked; it is not a
 free-form confirmation string. Any missing, conflicting, changed, or
@@ -319,47 +319,121 @@ On success it writes the same receipt as `copy`, with
 `VERIFIED_BY=verify`. If `verify` reports differing entries, the
 copied tree does not match the source; stop and inspect it.
 
-## 6. Seeded disks: classify evacuated content
+## 6. Seeded disks: classify and share evacuated content
 
-The copy is a complete, unchanged image of the source under
-`migration/`. Move only content whose place in the pool's semantic
-layout is clearly understood into `pool/`, with same-filesystem
-renames such as `mv -T --no-copy --update=none-fail`, never a copy.
-Leave everything else in `migration/`, flat, until someone decides
-where it belongs.
+The copy is a complete image of the source under `migration/`.
+`classify-legacy-media` moves the content whose place in the semantic
+layout it recognizes into `pool/` and leaves everything else in
+`migration/`. It is migration tooling for disks copied from the old
+media pool, not part of `prepare-luks-storage`, and is deleted with
+the last such disk.
 
-Source layouts differ between generations of disks, so this step is
-not part of the tool and has no permanent mapping schema. When a
-script helps, keep it with the migration it serves (for example, all
-disks copied from one old pool) and delete it afterwards. Before it
-renames anything, it should:
+A host with such disks builds one wrapper per declared disk,
+`classify-legacy-media-<name>`, bound to the disk's descriptor, the
+media group, and the namespace's library classes. It is not
+installed; build it from the host configuration:
 
-- recheck the target identity and the direct XFS mount;
-- read the copy receipt with the tool's strict reader (source the
-  tool and call `read_copy_receipt` after `read_descriptor`,
-  `read_evidence`, and `inspect_destination_mount`), which requires
-  `COPY_VERIFIED=PASS` and the SHA-256 of this evidence file and
-  descriptor;
-- require the exact source entries it expects, as real directories
-  on the destination filesystem, and refuse anything else.
+```sh
+nix build .#nixosConfigurations.<host>.config.system.build.classify-legacy-media.$DISK
+CLASSIFY=./result/bin/classify-legacy-media-$DISK
+```
 
-Create `pool/` and its structural directories owned by root and the
-pool's capability group, with mode 2770 and a group-only default ACL. Record what moved, and keep
-copies of the evidence, quiescence record, and copy receipt inside
-`migration/` on the disk (for example in `migration/.receipts/`):
-evidence under `/run` does not survive a reboot.
+It recognizes `library/<class>` and `medialibrary/<class>` (to
+`pool/library/<class>`) and `downloads` and `medialibrary/downloads`
+(to `pool/downloads`). Everything else stays in `migration/` at its
+source-relative path. Unrecognized content is intentionally preserved
+there; it is not a classification failure.
 
-Renames keep ownership, modes, content, hardlinks, and sparse
-extents, so the copy receipt remains the content proof. If existing
-content must gain the pool's shared group and modes, do that as a
-separate, one-time step on `pool/` only, never as part of routine
-activation.
+Keep writers stopped, and run each step before the host reboots:
+the evidence files live under `/run`.
+
+1. Plan. This is read-only:
+
+   ```sh
+   sudo "$CLASSIFY" plan --evidence "$EVIDENCE" --receipt "$RECEIPT" \
+     | tee "$DISK-plan.txt"
+   ```
+
+   Review every line before going on:
+
+   - `MOVE` lines: each tree that moves into `pool/`, with its object
+     count. Check that the counts are plausible for the source.
+   - `STAYS` lines: what remains in `migration/`, two levels deep.
+     Confirm nothing canonical is left behind and nothing personal or
+     unknown is promoted.
+   - `KEEP` lines: empty duplicate skeletons that stay in `migration/`.
+   - `SYMLINK` lines and `SYMLINKS`: every symlink in the copy.
+   - `HARDLINKED_FILES` and `CROSS_TREE_HARDLINKS`: a file linked both
+     into `pool/` and into `migration/` is one object, so sharing
+     changes its metadata under both names.
+   - `BLOCKED` lines: a collision (two sources holding files for one
+     destination), an existing `pool/` or `migration/`, a known path
+     that is not a real directory, or a symlink the renames would make
+     dangle or resolve to a different object. The tool never
+     rewrites symlinks; resolve a symlink blocker by hand in the copy,
+     then plan again.
+
+   Continue only when the plan ends with `CLASSIFY_READY=yes`.
+
+2. Classify. This renames, and never copies or deletes:
+
+   ```sh
+   sudo "$CLASSIFY" classify --evidence "$EVIDENCE" \
+     --quiescence-evidence "$QUIESCENCE" --receipt "$RECEIPT" \
+     --approve-classify | tee "$DISK-classify.txt"
+   ```
+
+   It recomputes the plan and refuses if anything blocks it. It
+   records every object's path, type, device, inode, and link count,
+   and what each symlink resolves to; renames the copied root to
+   `migration/` if needed; creates `pool/` and `pool/library/` (root,
+   the media group, mode 2770, group-only default ACL); and moves the
+   recognized trees. It then proves every object is still present
+   with the same identity and every symlink into the disk resolves to
+   the same object. It must print `VERIFIED_OBJECTS=<n>` and
+   `CLASSIFIED=PASS`. The evidence, quiescence record, copy receipt,
+   plan, inventories, and a classify receipt are stored in
+   `migration/.receipts/`, so they survive a reboot.
+
+3. Share. This runs once, on `pool/` only:
+
+   ```sh
+   sudo "$CLASSIFY" share --approve-share | tee "$DISK-share.txt"
+   ```
+
+   It removes the ACLs the copy preserved, including named user and
+   group entries, then keeps owners, sets the media group, gives
+   files group read and write and directories group `rwx` with
+   setgid, installs the group-only default ACL on directories, and
+   removes world access. It does not follow symlinks and does not
+   walk `migration/`. It must print `SHARED=PASS`. It is never part of
+   routine activation.
+
+4. Verify, read-only:
+
+   ```sh
+   sudo ls -la "$MOUNTPOINT" "$MOUNTPOINT/pool" "$MOUNTPOINT/pool/library"
+   sudo find "$MOUNTPOINT/pool" ! -type l \( ! -group media -o -perm /0007 \) -print -quit
+   sudo find "$MOUNTPOINT/pool" ! -type l -print0 | sudo xargs -0 getfacl -cpn -- \
+     | grep -E '^(default:)?(user|group):[^:]+:'
+   sudo getfacl -cp "$MOUNTPOINT/pool/library"
+   sudo find "$MOUNTPOINT/migration" -maxdepth 2
+   sudo cat "$MOUNTPOINT/migration/.receipts/classify" "$MOUNTPOINT/migration/.receipts/share"
+   ```
+
+   The disk root holds only `pool/` and `migration/`; the two `find`
+   and `grep` checks print nothing; the library directory carries
+   `default:group::rwx` and no world access; `migration/` holds the
+   preserved content and `.receipts/`.
+
+Only `pool/` ever joins the pool. Content left in `migration/` stays
+outside the namespace until someone classifies it.
 
 ## 7. Put the disk into service
 
 A later, separately approved host revision adds the disk's `pool/`
-tree to its consumer, for example as a mergerfs branch that depends on
-the disk's mount unit. When the disk replaces a source branch, change the
+tree, never its filesystem root or `migration/`, as a mergerfs branch
+that depends on the disk's mount unit. When the disk replaces a source branch, change the
 branch set in one activation; do not run with both the source and the
 new disk as branches, and do not reload the pool ad hoc.
 
@@ -393,8 +467,8 @@ explicit destructive approval.
    header backup and recovery evidence are complete.
 3. Preflight output and evidence are reviewed against the physical
    target and, for a seeded disk, the direct source.
-4. Format, the direct-mount revision, copy, classification, and the
-   pool revision are separate decisions.
+4. Format, the direct-mount revision, copy, classification, sharing,
+   and the pool revision are separate decisions.
 5. Quiescence or independent consistency evidence stays valid through
    the copy and cutover.
 6. Consumer refresh and acceptance pass before writers and
