@@ -1,73 +1,73 @@
 ## Why
 
-Storage paths are consumed by Nix, application configuration, Kubernetes
-objects, backup policy and people, but today they encode physical placement:
-writable media lives in guest-retained state on the protected mirror, while the
-library a player reads arrives through a separate read-only export of the media
-devices. Changing where data lives therefore becomes a change to every
-consumer, and the ingest-to-library workflow has no single filesystem within
-which to link or rename.
+Media paths are consumed by Nix, application configuration, Kubernetes
+objects, backup policy and people. If those paths name disks, pools or tiers,
+every change to where data lives becomes a change to every consumer, and
+import cannot link or rename between download and library paths that sit on
+different filesystems.
 
-This must be settled before library data is imported at scale, because the cost
-of changing the namespace grows with the amount of data already placed
-underneath it.
+Legacy media disks are being converted one at a time into independent
+LUKS2/XFS disks. Each conversion needs a fixed destination: a stable namespace
+that the disk joins without exposing its old layout, and placement rules that
+decide where new content lands. The cost of changing that namespace grows with
+the amount of data placed underneath it, so it must be settled before bulk
+import.
 
 ## What Changes
 
-- Introduce a stable semantic storage namespace whose paths describe the kind
-  of data, not its placement, and keep device, pool and tier names beneath it.
-- Require that paths a consumer links or renames between are presented to that
-  consumer as one filesystem, and that ingest and library content share that
-  property.
-- Require new content to be created only on placement branches declared to
-  accept it, so that placement policy — not the application — decides where a
-  new file lands.
-- Require movement between placements to preserve the link relationships the
-  data depends on, and to leave the semantic paths usable throughout, with
-  temporary duplication permitted.
-- Require reported free space to reflect where new content can actually be
-  created rather than total attached capacity.
-- Require managed roots to carry declared owner, group, and mode. Inherited
-  default access is optional policy: a root declares it only when its sharing
-  policy requires later content to receive access beyond owner/group/mode.
-- Require routine activation to leave existing payload trees alone.
-- Require required backing storage to fail closed: an unavailable mount denies
-  access rather than exposing a writable empty directory in its place.
+- Keep `/srv/media` as the stable, host-owned attachment boundary that compute
+  guests receive, and serve the media namespace at `/srv/media/data` as one
+  mergerfs filesystem beneath it. Consumer paths describe the kind of data
+  (`library/...`, `downloads/...`), never the disk that holds it.
+- Present download and library paths to link-dependent writers as one
+  filesystem (`/data`), and give read-only consumers only the library subtree
+  (`/media`).
+- Declare each placement's `required` and `create` properties independently:
+  an unavailable required placement fails closed, and new content lands only
+  on placements that accept creation, whichever placement holds the parent
+  directory. Reported capacity reflects only creation-eligible placements.
+- Split each converted disk into `pool/`, the only part that joins the
+  namespace, and `migration/`, which preserves content not yet classified into
+  the canonical layout, together with its receipts, outside the namespace.
+- Admit legacy disks incrementally: a disk joins only after its canonical
+  content has been classified into `pool/` and shared under the media group;
+  disks not yet converted stay mounted outside the namespace.
+- Keep shared media group-writable: service UIDs stay distinct, the stable
+  media group is the capability, and canonical directories carry a narrow
+  group-only default ACL.
+- Require that movement between placements preserve link relationships. No
+  mover is implemented in this change.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `storage-placement`: the observable contract of the stable storage
-  namespace. Covers path stability versus placement, single-filesystem
-  presentation for link-dependent consumers, placement-driven creation,
-  link-preserving movement, truthful capacity reporting, fail-closed
-  attachment, optional inherited-permission policy on managed roots, and
-  non-destructive activation.
+- `storage-placement`: the observable contract of the stable media namespace:
+  semantic paths, one-filesystem presentation to link-dependent consumers,
+  independent required and create placement properties, truthful capacity,
+  fail-closed attachment, classified-only visibility, shared-group access,
+  link-preserving movement, and non-destructive activation.
 
 ### Modified Capabilities
 
-None. Existing storage, management, access, and compute contracts remain
-unchanged; this proposal adds a distinct `storage-placement` capability for
-consumer-visible paths, placement, and attachment behavior.
+None. Existing storage, management, access, and compute contracts remain as
+they are; this change adds the `storage-placement` capability.
 
 ## Impact
 
-- Host storage declaration: mount definitions, pooling, managed roots and their
-  permissions, and failure behavior.
-- The compute guest's media attachment and the writable boundary the media
-  workloads use.
-- Media workload configuration, which currently distinguishes guest-retained
-  writable state from a read-only library export.
+- Host storage declaration: disk mounts, the mergerfs branch set and its
+  options, managed roots and their permissions, and failure behavior.
+- The compute guest's `/srv/media` attachment and the `/data` and `/media`
+  projections the media workloads use.
+- Legacy disk migration, which must deliver each disk into the `pool/` and
+  `migration/` layout before it joins.
 
 ### Non-goals
 
-- Choosing encryption layering, filesystem types for individual devices, or a
-  key hierarchy.
-- Changing the redundancy of any existing pool or adding devices.
-- Implementing or selecting the placement mover.
-- Choosing a Kubernetes storage adapter, or introducing distributed storage for
-  bulk media.
-- Migrating, classifying or importing existing data.
-- Changing `storage-foundations`, `management-boundaries`, or the compute
-  isolation decision in ADR-0001.
+- Encryption layering, per-device filesystem choice, and key hierarchy
+  (ADR-0007).
+- Redundancy, parity, or adding devices.
+- Implementing or selecting a placement mover.
+- A Kubernetes storage adapter or distributed storage for bulk media.
+- Backup, off-host copies, and restore policy, which Preserve owns.
+- Personal photos, which stay outside replaceable media.

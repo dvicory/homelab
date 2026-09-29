@@ -11,13 +11,14 @@ Evidence from the current repository:
   systemd-based and the blank snapshot exists. `/persist` is `neededForBoot`.
   Any storage root that must survive a rollback has to be declared as
   persistent; nothing under `/` qualifies.
-- Current media branches mount individually; production uses gocryptfs over plain
-  filesystems and one mergerfs namespace at `/srv/media`. The namespace
-  aggregates the clear views and is the host-owned media boundary. Changing the
-  provider or encryption layer is outside this contract.
-- Acquisition workloads attach that namespace at `/data`, while Jellyfin
-  attaches only `/srv/media/library` at `/media` read-only. Private application
-  state remains in separately declared retained paths.
+- Current media branches mount individually; production pools them with one
+  mergerfs filesystem at `/srv/media/data`, one level below the stable,
+  host-owned `/srv/media` attachment point. The pool aggregates the clear views
+  and is the host-owned media boundary. Changing the provider or encryption
+  layer is outside this contract.
+- Acquisition workloads attach `/srv/media/data` at `/data`, while Jellyfin
+  attaches only `/srv/media/data/library` at `/media` read-only. Private
+  application state remains in separately declared retained paths.
 
 ## Goals / Non-Goals
 
@@ -42,7 +43,8 @@ Evidence from the current repository:
 - Implementing or selecting the placement mover. This change fixes the
   contract the mover must satisfy; the mover itself remains open.
 - Choosing a Kubernetes storage adapter or introducing distributed storage.
-- Migrating, classifying, or importing existing content.
+- How a particular old disk is copied and classified (ADR-0007 covers the
+  disk migration; the destination layout is decided here).
 
 ## Decisions
 
@@ -97,17 +99,50 @@ would drift. A single pool with per-consumer access is simpler and is what the
 ### Placement eligibility and availability are explicit per backing path
 
 Each pooling branch declares its path, mount unit, whether it is required, and
-whether it may receive new content. The current three media branches are
-required and creation-eligible. A future archive branch can join the same
-namespace as optional and no-create: existing archive content remains visible,
-but normal writes stay on hot storage and reported writable capacity excludes
-the archive.
+whether it may receive new content. The two properties are independent. A
+cold branch whose library the namespace depends on is required and
+no-create: its content stays visible and modifiable, new content goes to
+creation-eligible branches, and reported writable capacity excludes it. An
+optional branch must be no-create, so its absence never changes where new
+content lands.
+
+Creation must not depend on where a new file's parent directory already
+lives. A new episode of a show whose directory exists only on a no-create
+branch must still land on a creation-eligible branch. Path-preserving
+creation policies (mergerfs `ep*`) refuse that write, so the pool uses a
+non-path-preserving policy, `category.create=pfrd`, which weights eligible
+branches by free space and recreates the parent directory there. Links and
+renames then recreate a missing target directory on the source's branch, so
+an import hardlink stays on one branch.
 
 The pool refuses to start when any required branch is unmounted or when no
 mounted creation-eligible branch remains. Optional unmounted branches are
-omitted at mount time. `statfs-ignore=nc` makes the capacity view match creation
-eligibility, and `moveonenospc=false` prevents implicit emergency relocation
-from becoming an undeclared balancing mechanism.
+omitted at mount time. `statfs=base` with `statfs-ignore=nc` reports the
+capacity of creation-eligible branches regardless of which branches hold a
+path, and `moveonenospc=false` prevents implicit emergency relocation from
+becoming an undeclared balancing mechanism.
+
+A physical disk contributes only a dedicated subtree to the pool (its
+`pool/` directory), never its whole filesystem root. Content that has not
+been classified into the canonical layout stays in the disk's `migration/`
+area, with the records of how it got there, and never appears in the
+namespace. Classification and sharing never remove or rename anything left in
+`migration/` and never change its payload. Sharing does not walk
+`migration/`, but a file there that is hardlinked to canonical content shares
+that inode's group, mode, and ACL, so it takes on the canonical metadata. A
+disk joins the pool only after its canonical content is in `pool/` and
+carries the shared group and default ACL; until then it stays mounted outside
+the pool.
+
+### The media namespace vocabulary
+
+Library content is grouped by media class under `library/`: `movies/` and
+`tv/` today, and `music/`, `audiobooks/`, and `books/` when a service for
+them arrives. Ingest is grouped by transport under `downloads/`
+(`usenet/incomplete`, `usenet/complete`, `torrents/`). Both trees share the
+one pooled filesystem so import can link or rename. A class directory is
+created when a service needs it, not in advance. Personal photos are not
+media and do not belong in this namespace; they get their own semantic root.
 
 ### Preserve the existing fail-closed attachment discipline, and extend it
 
@@ -133,6 +168,34 @@ or access control entries of existing content.
 activation. Rejected: it is unbounded work over large trees, it makes a rebuild
 a potentially destructive operation, and it fights any writer that legitimately
 creates files with other ownership.
+
+### Shared media content stays writable by every capability holder
+
+Media access is ordinary Unix ownership: each service keeps its own UID, and
+the stable `media` group (GID 505) is the shared capability from host through
+the compute boundary to Kubernetes workloads, which hold it as a
+supplemental group. Canonical directories are `media`-group, group rwx and
+setgid; canonical files are `media`-group and group rw; nothing needs world
+access.
+
+Setgid makes new entries inherit the group, but the permission bits still
+come from the writer: a writer with umask 0022 would create `service:media
+0644` files that no other media service can modify. Canonical shared
+directories therefore carry a narrow default POSIX ACL (`d:u::rwx`,
+`d:g::rwx`, `d:m::rwx`, `d:o::---`), so new content stays group-writable
+whatever the writer's umask. The ACL has no named user or group entries and
+is not an authorization vocabulary; it only keeps group inheritance
+reliable. The pool is mounted with `posix_acl` so the kernel honours it.
+
+The contract does not override a writer that deliberately restricts a
+file's mode (for example `0600`); such a file is not shared. A real
+application doing that in normal operation needs its own compatibility
+decision.
+
+Layout directories get the default ACL when they are created. Activation
+never repairs payload modes or ACLs recursively. Content migrated from older
+disks gets the shared group, modes and default ACL once, as an explicit
+migration step on the disk's `pool/` tree.
 
 ### Shared access resolves through the fleet identity graph
 
@@ -219,15 +282,20 @@ an export, or another host.
   schema exposes no second root-pool device, so "protected" describes intent
   rather than current redundancy → the architecture document records this as an
   open decision, and nothing here depends on redundancy existing yet.
-- **Archive placement movement is not exercised until a link-aware mover exists**
-  → keep the requirement explicit; a single-tier deployment still satisfies the
-  contract.
+- **Movement between placements is not exercised until a link-aware mover
+  exists** → keep the requirement explicit; a single-tier deployment still
+  satisfies the contract.
 
 ## Migration Plan
 
-No content migration is in scope. Run synthetic placement, linking, capacity,
-permission, and fail-closed checks before importing real content. Reverting
-after content import would be a data migration outside this change.
+Existing content reaches the namespace one disk at a time. A disk is
+converted and seeded (ADR-0007); its known canonical content is moved into
+`pool/` by renames that are proven lossless, and everything else stays in
+`migration/`; the shared group and default ACL are applied once to `pool/`;
+only then does its `pool/` join the pool. Synthetic placement, linking,
+capacity, permission, and fail-closed checks run before real content is
+exposed. Reverting a disk means removing its `pool/` from the branch set; its
+content stays on the disk.
 
 ## Open Questions
 
@@ -237,7 +305,6 @@ after content import would be a data migration outside this change.
   spelling of the declaration and the lifecycle tool's representation of a
   range with declared holes, which should stay small and deterministic rather
   than becoming a general idmap policy language.
-- Internal directory naming beneath each tier root is not fixed by this change.
 - Watermark and free-space reserve values are operational tuning.
-- Whether archive branches join the namespace does not change the contract; it
+- Which no-create branches join the namespace does not change the contract; it
   only determines the deployed placement set.

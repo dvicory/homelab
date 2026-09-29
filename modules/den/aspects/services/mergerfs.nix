@@ -16,12 +16,20 @@ let
       required = lib.mkOption {
         type = lib.types.bool;
         default = true;
-        description = "Whether an unavailable backing path refuses the pool.";
+        description = ''
+          Whether an unavailable backing path refuses the pool. Independent of
+          `create`: a branch whose existing content the pool needs can be
+          required and still receive no new content.
+        '';
       };
       create = lib.mkOption {
         type = lib.types.bool;
         default = true;
-        description = "Whether mergerfs may place new content on this backing path.";
+        description = ''
+          Whether mergerfs may place new content on this backing path. Branches
+          with `create = false` stay readable and modifiable, and their space is
+          left out of the capacity the pool reports.
+        '';
       };
     };
   };
@@ -38,12 +46,20 @@ in
             };
             options = lib.mkOption {
               type = lib.types.listOf lib.types.str;
+              # pfrd chooses among creation-eligible branches by free space and
+              # does not require the parent path to exist there, so a new file
+              # under a directory held only by a no-create branch still lands on
+              # an eligible one. statfs=base with statfs-ignore=nc reports the
+              # capacity of creation-eligible branches only. posix_acl lets the
+              # kernel apply the branches' POSIX ACLs, including the default
+              # ACLs that keep shared media group-writable.
               default = [
                 "allow_other"
-                "category.create=epmfs"
+                "category.create=pfrd"
                 "moveonenospc=false"
+                "posix_acl=true"
                 "statfs-ignore=nc"
-                "statfs=full"
+                "statfs=base"
               ];
               description = "MergerFS mount options.";
             };

@@ -5,6 +5,10 @@
 # storage roots: they share one access policy, so they are created together by
 # one unit instead of becoming four independent roots with four owners.
 #
+# Each layout directory it creates gets a group-only default ACL, so content
+# created below it stays readable and writable by the media group whatever the
+# writer's umask. It never changes a directory that already exists.
+#
 # The unit refuses to run unless the merged filesystem is actually mounted. That
 # refusal is the whole point: if the pool is missing, the alternative is a
 # plausible-looking directory tree on the root filesystem that applications
@@ -18,6 +22,9 @@
 let
   mergerfs = import ./_mergerfs.nix { inherit lib; };
   root = "/srv/media/data";
+  # Owner and group get full access by inheritance, other nothing. No named
+  # user or group entries: the media group (GID 505) is the capability.
+  sharedDefaultAcl = "d:u::rwx,d:g::rwx,d:m::rwx,d:o::---";
   layout = [
     "library"
     "library/movies"
@@ -57,6 +64,7 @@ in
             RemainAfterExit = true;
           };
           path = [
+            pkgs.acl
             pkgs.coreutils
             pkgs.util-linux
           ];
@@ -73,6 +81,7 @@ in
               target="$mountpoint/${dir}"
               if [ ! -e "$target" ]; then
                 install -d -o ${lib.escapeShellArg rootSettings.user} -g ${lib.escapeShellArg rootSettings.group} -m ${lib.escapeShellArg rootSettings.mode} "$target"
+                setfacl -m ${sharedDefaultAcl} "$target"
               fi
             '') layout}
           '';
