@@ -1,0 +1,99 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: media-config-seerr
+  namespace: media
+spec:
+  concurrencyPolicy: Forbid
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 900
+      backoffLimit: 6
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: media-config-seerr
+        spec:
+          automountServiceAccountToken: false
+          containers:
+            - command:
+                - node
+                - /configuration/seerr.mjs
+              env:
+                - name: NODE_EXTRA_CA_CERTS
+                  value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+              image: docker.io/library/node:22.14.0-bookworm-slim@sha256:1c18d9ab3af4585870b92e4dbc5cac5a0dc77dd13df1a5905cea89fc720eb05b
+              name: configure
+              resources:
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+                requests:
+                  cpu: 25m
+                  memory: 64Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - mountPath: /configuration
+                  name: configuration
+                  readOnly: true
+                - mountPath: /secrets
+                  name: secrets
+                  readOnly: true
+                - mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+                  name: kubernetes-api
+                  readOnly: true
+                - mountPath: /seerr-state
+                  name: seerr-state
+                  readOnly: true
+          nodeSelector:
+            kubernetes.io/hostname: compute-1
+          restartPolicy: OnFailure
+          securityContext:
+            runAsGroup: 1000
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          serviceAccountName: media-config-seerr
+          volumes:
+            - configMap:
+                name: media-configuration
+              name: configuration
+            - name: seerr-state
+              persistentVolumeClaim:
+                claimName: media-seerr
+            - name: kubernetes-api
+              projected:
+                defaultMode: 292
+                sources:
+                  - serviceAccountToken:
+                      expirationSeconds: 600
+                      path: token
+                  - configMap:
+                      items:
+                        - key: ca.crt
+                          path: ca.crt
+                      name: kube-root-ca.crt
+            - name: secrets
+              projected:
+                defaultMode: 292
+                sources:
+                  - secret:
+                      items:
+                        - key: RADARR_API_KEY
+                          path: RADARR_API_KEY
+                        - key: SONARR_API_KEY
+                          path: SONARR_API_KEY
+                        - key: SEERR_API_KEY
+                          path: SEERR_API_KEY
+                      name: media-runtime
+  schedule: 37 */6 * * *
+  startingDeadlineSeconds: 900
+  successfulJobsHistoryLimit: 1
+  suspend: false

@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  name: prowlarr-storage
+  namespace: argocd
+spec:
+  destination:
+    namespace: media
+    server: https://kubernetes.default.svc
+  project: prod-home
+  source:
+    path: ./generated/manifests/prod-home/prowlarr-storage
+    repoURL: https://github.com/dvicory/homelab.git
+    targetRevision: main
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    retry:
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 1m
+      limit: 5
+    syncOptions:
+      - FailOnSharedResource=true
+      - ServerSideApply=true
