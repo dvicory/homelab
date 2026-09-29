@@ -12,6 +12,10 @@ Compute lifecycle operations SHALL NOT require knowledge of an individual applic
 - **WHEN** an operator selects a new application release
 - **THEN** the release can be delivered without rebuilding or activating the compute operating system, and its required recovery procedure remains application-scoped
 
+#### Scenario: A stateful application is added
+- **WHEN** desired state adds an application with retained state
+- **THEN** its retained directory is created with the declared owner and mode within the compute domain's persistent state attachment, without a host change, a change to the compute boundary, or replacing the instance
+
 #### Scenario: Shared compute is replaced
 - **WHEN** an operator replaces a compute instance
 - **THEN** the infrastructure operation preserves declared external inputs without an application-specific lifecycle implementation, and the selected workload releases are restored through their declared delivery procedures
@@ -81,6 +85,10 @@ A workload SHALL NOT start against a missing, substituted, or incorrectly mounte
 #### Scenario: Host-provided storage is unavailable
 - **WHEN** a required source mount is absent even though its mountpoint directory exists
 - **THEN** the workload does not start against that directory or initialize replacement application data there
+
+#### Scenario: The persistent state root is not the intended storage
+- **WHEN** the compute domain's state root is unmounted or lacks its persistent-side marker
+- **THEN** no retained directory is created there, so a workload whose retained directory does not already exist on the intended storage does not start
 
 #### Scenario: An attached source disappears
 - **WHEN** the host loses a required source mount while the workload is running

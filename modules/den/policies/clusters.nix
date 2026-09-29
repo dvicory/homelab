@@ -95,6 +95,10 @@ in
         computeResources = {
           instance = hostCompute.instance;
           retainedPaths = hostCompute.retainedPaths;
+          stateRoot = {
+            guestPath = hostCompute.stateGuestPath;
+            marker = hostCompute.stateMarker;
+          };
           storageCapabilities = hostCompute.storageCapabilities;
           runtimeSecrets = resources.runtimeSecrets;
           images = resources.images;
@@ -106,6 +110,7 @@ in
           "instance"
           "retainedPaths"
           "runtimeSecrets"
+          "stateRoot"
           "storageCapabilities"
         ]
       ) "Cluster projection must expose only selected compute resource facts";

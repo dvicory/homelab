@@ -1,4 +1,4 @@
-{ ... }:
+{ config, inputs, ... }:
 let
   namespace = "local-path-storage";
   storageClassName = "retained-local";
@@ -10,16 +10,28 @@ let
   };
 in
 {
-  den.aspects.kubernetes.services.retained-storage.compute-resources.retainedPaths.kubernetes-volumes =
+  den.aspects.kubernetes.services.retained-storage.compute-resources =
+    { cluster, ... }:
+    let
+      compute =
+        config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
+      guestSystem = inputs.self.nixosConfigurations.${compute.instance}.pkgs.stdenv.hostPlatform.system;
+    in
     {
-      uid = 0;
-      gid = 0;
-      mode = "0700";
+      images = [ inputs.self.packages.${guestSystem}.retained-directories-image ];
+      retainedPaths.kubernetes-volumes = {
+        uid = 0;
+        gid = 0;
+        mode = "0700";
+      };
     };
   den.aspects.kubernetes.services.retained-storage.k8s-manifests =
     { computeResources, lib, ... }:
     let
       retained = computeResources.retainedPaths."kubernetes-volumes";
+      linuxSystem =
+        inputs.self.nixosConfigurations.${computeResources.instance}.pkgs.stdenv.hostPlatform.system;
+      directories = inputs.self.packages.${linuxSystem}.retained-directories-image;
       chart = lib.helm.downloadHelmChart {
         repo = "oci://ghcr.io/rancher/local-path-provisioner/charts";
         chart = "local-path-provisioner";
@@ -73,6 +85,68 @@ in
             metadata = {
               name = namespace;
               annotations = protect;
+            };
+          }
+          {
+            apiVersion = "batch/v1";
+            kind = "Job";
+            metadata = {
+              name = "retained-directories";
+              annotations = {
+                "argocd.argoproj.io/hook" = "Sync";
+                "argocd.argoproj.io/hook-delete-policy" = "BeforeHookCreation";
+                "argocd.argoproj.io/sync-wave" = "1";
+              };
+            };
+            spec = {
+              backoffLimit = 0;
+              template.spec = {
+                restartPolicy = "Never";
+                automountServiceAccountToken = false;
+                nodeSelector."kubernetes.io/hostname" = computeResources.instance;
+                containers = [
+                  {
+                    name = "retained-directories";
+                    image = directories.imageReference;
+                    imagePullPolicy = "Never";
+                    args = [
+                      "/srv/state"
+                      computeResources.stateRoot.marker
+                      (builtins.toJSON (
+                        lib.mapAttrs (_: entry: {
+                          inherit (entry) uid gid mode;
+                        }) computeResources.retainedPaths
+                      ))
+                    ];
+                    securityContext = {
+                      runAsUser = 0;
+                      runAsGroup = 0;
+                      allowPrivilegeEscalation = false;
+                      readOnlyRootFilesystem = true;
+                      capabilities = {
+                        drop = [ "ALL" ];
+                        add = [ "CHOWN" ];
+                      };
+                    };
+                    resources = helperResources;
+                    volumeMounts = [
+                      {
+                        name = "state";
+                        mountPath = "/srv/state";
+                      }
+                    ];
+                  }
+                ];
+                volumes = [
+                  {
+                    name = "state";
+                    hostPath = {
+                      path = computeResources.stateRoot.guestPath;
+                      type = "Directory";
+                    };
+                  }
+                ];
+              };
             };
           }
           {

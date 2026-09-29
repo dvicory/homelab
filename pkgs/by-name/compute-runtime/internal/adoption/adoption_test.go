@@ -423,3 +423,154 @@ func TestGateWithFakeClient(t *testing.T) {
 		})
 	}
 }
+
+func TestDecideOwnership(t *testing.T) {
+	desired := declared()
+	desired.ProjectConfig[OwnerKey] = "hvn-hyp1/compute-1"
+	for _, tc := range []struct {
+		name     string
+		state    func(State) State
+		outcome  Outcome
+		drift    []string
+		conflict string
+	}{
+		{
+			name:    "owned and matching",
+			state:   func(s State) State { return s },
+			outcome: Matching,
+		},
+		{
+			name: "owned project with a changed limit is applied",
+			state: func(s State) State {
+				s.Profile.Config["limits.cpu"] = "2"
+				return s
+			},
+			outcome: Owned,
+			drift:   []string{`profile/compute/compute-1: config limits.cpu is "2", declared "4"`},
+		},
+		{
+			name: "owned project with a changed allowlist is applied",
+			state: func(s State) State {
+				s.Project.Config["restricted.devices.gpu"] = "allow"
+				return s
+			},
+			outcome: Owned,
+			drift:   []string{`project/compute: config restricted.devices.gpu is "allow", declared "block"`},
+		},
+		{
+			name: "project without the marker is someone else's",
+			state: func(s State) State {
+				delete(s.Project.Config, OwnerKey)
+				s.Profile.Config["limits.cpu"] = "2"
+				return s
+			},
+			conflict: "project/compute",
+		},
+		{
+			name: "project marked by another owner",
+			state: func(s State) State {
+				s.Project.Config[OwnerKey] = "other-host/compute-1"
+				return s
+			},
+			conflict: "project/compute",
+		},
+		{
+			name: "ownership does not extend to the shared pool",
+			state: func(s State) State {
+				s.Pool.Config["source"] = "/elsewhere"
+				return s
+			},
+			conflict: "storage-pool/incus-compute",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			decision, err := Decide(desired, tc.state(matchingState(desired)))
+			if tc.conflict != "" {
+				var conflict *ConflictError
+				if !errors.As(err, &conflict) || conflict.Resource != tc.conflict {
+					t.Fatalf("decision=%+v err=%v; want conflict on %s", decision, err, tc.conflict)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decision.Outcome != tc.outcome || !reflect.DeepEqual(decision.Drift, tc.drift) {
+				t.Fatalf("decision=%+v; want outcome %s drift %v", decision, tc.outcome, tc.drift)
+			}
+		})
+	}
+}
+
+func TestOwnedProjectUndeclaredValuesStayConflicts(t *testing.T) {
+	desired := declared()
+	desired.ProjectConfig[OwnerKey] = "hvn-hyp1/compute-1"
+	for _, tc := range []struct {
+		name     string
+		state    func(State) State
+		conflict string
+	}{
+		{
+			name: "undeclared device",
+			state: func(s State) State {
+				s.Profile.Devices["extra"] = map[string]string{"type": "disk", "source": "/", "path": "/host"}
+				return s
+			},
+			conflict: "profile/compute/compute-1",
+		},
+		{
+			name: "undeclared key inside a declared device",
+			state: func(s State) State {
+				s.Profile.Devices["root"]["readonly"] = "false"
+				return s
+			},
+			conflict: "profile/compute/compute-1",
+		},
+		{
+			name: "undeclared profile config",
+			state: func(s State) State {
+				s.Profile.Config["security.nesting"] = "true"
+				return s
+			},
+			conflict: "profile/compute/compute-1",
+		},
+		{
+			name: "undeclared project restriction",
+			state: func(s State) State {
+				s.Project.Config["restricted.devices.proxy"] = "allow"
+				return s
+			},
+			conflict: "project/compute",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			decision, err := Decide(desired, tc.state(matchingState(desired)))
+			var conflict *ConflictError
+			if !errors.As(err, &conflict) || conflict.Resource != tc.conflict || !strings.Contains(conflict.Mismatch, "preseed cannot remove it") {
+				t.Fatalf("decision=%+v err=%v; want a conflict on %s that preseed cannot remove", decision, err, tc.conflict)
+			}
+		})
+	}
+}
+
+func TestOwnedProjectMissingOrChangedDeviceIsApplied(t *testing.T) {
+	desired := declared()
+	desired.ProjectConfig[OwnerKey] = "hvn-hyp1/compute-1"
+	for name, change := range map[string]func(State) State{
+		"missing device": func(s State) State {
+			delete(s.Profile.Devices, "eth0")
+			return s
+		},
+		"changed device value": func(s State) State {
+			s.Profile.Devices["eth0"]["network"] = "other"
+			return s
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			decision, err := Decide(desired, change(matchingState(desired)))
+			if err != nil || decision.Outcome != Owned || len(decision.Drift) != 1 {
+				t.Fatalf("decision=%+v err=%v; want the declared device applied", decision, err)
+			}
+		})
+	}
+}

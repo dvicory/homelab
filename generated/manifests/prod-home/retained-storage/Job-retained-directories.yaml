@@ -1,0 +1,49 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "1"
+  name: retained-directories
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - args:
+            - /srv/state
+            - .homelab-state-root
+            - '{"identity-kanidm":{"gid":1000,"mode":"0700","uid":1000},"kubernetes-volumes":{"gid":0,"mode":"0700","uid":0}}'
+          image: homelab/retained-directories:sipwzr1kx45r7i69kf4sy8s3lw905clz
+          imagePullPolicy: Never
+          name: retained-directories
+          resources:
+            limits:
+              cpu: 100m
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 16Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              add:
+                - CHOWN
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsGroup: 0
+            runAsUser: 0
+          volumeMounts:
+            - mountPath: /srv/state
+              name: state
+      nodeSelector:
+        kubernetes.io/hostname: compute-1
+      restartPolicy: Never
+      volumes:
+        - hostPath:
+            path: /srv/state
+            type: Directory
+          name: state
