@@ -35,6 +35,11 @@
       prepare-luks-storage = lib.optionalAttrs isLinux {
         prepare-luks-storage = callPackage (self + "/pkgs/by-name/prepare-luks-storage/package.nix") { };
       };
+      kanidm-provision-image = lib.optionalAttrs isLinux {
+        kanidm-provision-image = callPackage (
+          self + "/pkgs/by-name/kanidm-provision-image/package.nix"
+        ) { };
+      };
 
       provision-keys = callPackage (self + "/pkgs/by-name/provision-keys/package.nix") {
         inherit generate-secrets rekey;
@@ -51,7 +56,8 @@
           ;
       }
       // agenix-restart-guard
-      // prepare-luks-storage;
+      // prepare-luks-storage
+      // kanidm-provision-image;
 
       checks = {
         compute-runtime = config.packages.compute-runtime;
