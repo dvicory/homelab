@@ -7,7 +7,7 @@
   # - home-manager sharedModules
   # - The generators module (ssh-key, age-identity, etc.)
   den.aspects.secrets.agenix = {
-    nixos = { host, config, lib, pkgs, ... }:
+    nixos = { host, secretsConfig, config, lib, pkgs, ... }:
       let
         hasImpermanence = host.hasAspect den.aspects.disk.impermanence;
         persistPrefix = lib.optionalString hasImpermanence "/persist";
@@ -114,12 +114,7 @@
             identityPaths = [ "${persistPrefix}/etc/ssh/ssh_host_ed25519_key" ];
 
             rekey = {
-              masterIdentities = [
-                {
-                  identity = inputs.self + "/.secrets/keys/master.age";
-                  pubkey = inputs.self + "/.secrets/pub/master.pub";
-                }
-              ];
+              inherit (secretsConfig) masterIdentities;
               storageMode = "local";
               hostPubkey = builtins.readFile host.public_key;
               generatedSecretsDir = host.secretPath + "/generated";
@@ -174,7 +169,7 @@
       };
 
     darwin =
-      { host, config, lib, ... }:
+      { host, secretsConfig, config, lib, ... }:
       {
         imports = [
           inputs.agenix.darwinModules.default
@@ -185,12 +180,7 @@
         age = {
           identityPaths = [ "/etc/ssh/ssh_host_ed25519_key" ];
           rekey = {
-            masterIdentities = [
-              {
-                identity = inputs.self + "/.secrets/keys/master.age";
-                pubkey = inputs.self + "/.secrets/pub/master.pub";
-              }
-            ];
+            inherit (secretsConfig) masterIdentities;
             storageMode = "local";
             hostPubkey = builtins.readFile host.public_key;
             generatedSecretsDir = host.secretPath + "/generated";

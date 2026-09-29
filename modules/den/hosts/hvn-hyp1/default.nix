@@ -1,9 +1,13 @@
 {
+  config,
   den,
   inputs,
   lib,
   ...
 }:
+let
+  clusterResources = config.flake.clusterResources.prod-home;
+in
 {
   den.hosts.x86_64-linux.hvn-hyp1 = {
     environment = "prod";
@@ -25,8 +29,15 @@
         project = "compute";
         instance = "compute-1";
         profile = "compute-1";
-        retainedPaths = { };
-        runtimeSecrets = { };
+        retainedPaths = lib.mapAttrs (
+          name: entry:
+          entry
+          // {
+            path = "${stateRoot}/${name}";
+            guestPath = "/srv/state/${name}";
+          }
+        ) clusterResources.retainedPaths;
+        runtimeSecrets = clusterResources.runtimeSecrets;
         storageCapabilities = [ ];
         instanceConfig = {
           "boot.autostart" = "true";

@@ -1,21 +1,28 @@
 # Custom agenix-rekey secret generators.
 # Plain NixOS module (not flake-parts) — prefix prevents import-tree auto-import.
 #
-# Imported by the agenix battery. Overrides / extends the built-in
-# generators from agenix-rekey with:
-#   ssh-key     - generates ed25519 SSH key pairs
-#   age-identity - generates age x25519 identity (referenced by the
-#                  agenix user-identity secret in
-#                  modules/den/batteries/agenix.nix)
-#   luks-key    - 4096 random bytes, used as a LUKS key file
-{ config, lib, pkgs, ... }:
+# Imported by the agenix battery. Extends the built-in generators from
+# agenix-rekey with:
+#   alnum-no-newline - 48 alphanumeric bytes without a trailing newline
+#   api-key         - 32 hexadecimal characters without a trailing newline
+#   ssh-key         - generates ed25519 SSH key pairs
+#   age-identity    - generates age x25519 identity (referenced by the
+#                     agenix user-identity secret in
+#                     modules/den/batteries/agenix.nix)
+#   luks-key        - 4096 random bytes, used as a LUKS key file
+{ config, lib, ... }:
 let
   inherit (lib) escapeShellArg removeSuffix;
 in
 {
   age.generators = {
     ssh-key =
-      { pkgs, file, name, ... }:
+      {
+        pkgs,
+        file,
+        name,
+        ...
+      }:
       let
         target = config.networking.hostName or "host";
       in
@@ -38,22 +45,33 @@ in
         )
       '';
 
-    passphrase =
+    # 32 hex characters for API keys consumed by platform integrations.
+    api-key =
       { pkgs, ... }:
       ''
-        ${pkgs.openssl}/bin/openssl rand -base64 48 | tr -d '\n'
+        export LC_ALL=C
+        value="$(${pkgs.openssl}/bin/openssl rand -hex 16)" || exit $?
+        if [ -z "$value" ] || [ "''${#value}" -ne 32 ]; then
+          exit 1
+        fi
+        case "$value" in
+          *[!0-9A-Fa-f]*) exit 1 ;;
+        esac
+        ${pkgs.coreutils}/bin/printf '%s' "$value"
       '';
 
-    hex =
-      { length ? 64, ... }:
+    alnum-no-newline =
+      { pkgs, ... }:
       ''
-        ${pkgs.openssl}/bin/openssl rand -hex ${toString (length / 2)}
-      '';
-
-    base64 =
-      { length ? 64, ... }:
-      ''
-        ${pkgs.openssl}/bin/openssl rand -base64 ${toString (length * 3 / 4)} | tr -d '\n'
+        export LC_ALL=C
+        value="$(${pkgs.pwgen}/bin/pwgen -s 48 1)" || exit $?
+        if [ -z "$value" ] || [ "''${#value}" -ne 48 ]; then
+          exit 1
+        fi
+        case "$value" in
+          *[![:alnum:]]*) exit 1 ;;
+        esac
+        ${pkgs.coreutils}/bin/printf '%s' "$value"
       '';
 
     # 4096 bytes of random data, suitable as a LUKS key file. The
