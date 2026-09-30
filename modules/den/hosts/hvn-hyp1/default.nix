@@ -115,9 +115,15 @@ in
     zfs = {
       rootPool = {
         name = "rpool";
-        disk1 = "/dev/nvme0n1";
+        disk1 = "/dev/disk/by-id/nvme-SSDPELKX010T8L_PHLJ952201X91P0I_1";
+        disk2 = "/dev/disk/by-id/nvme-SSDPELKX010T8L_PHLJ952202FT1P0I_1";
+        espSizeGiB = 2;
+        tailReserveGiB = 64;
       };
-      swap.enable = true;
+      swap = {
+        enable = true;
+        sizeGiB = 32;
+      };
     };
 
     networking.interfaces.eno1 = {

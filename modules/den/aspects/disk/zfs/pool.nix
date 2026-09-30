@@ -9,9 +9,16 @@
       };
     };
 
-    nixos = { host, ... }: let
+    nixos = { host, pkgs, ... }: let
       pool = host.zfs.rootPool or null;
       swapCfg = host.zfs.swap or { };
+      mirrorEnabled = pool.disk2 != null;
+      espSizeGiB = pool.espSizeGiB or 1;
+      tailReserveGiB = pool.tailReserveGiB or 0;
+      swapEnabled = swapCfg.enable or false;
+      swapSizeGiB = swapCfg.sizeGiB or 8;
+      trailingGiB = tailReserveGiB + (if swapEnabled then swapSizeGiB else 0);
+      zfsEnd = if trailingGiB == 0 then "-0" else "-${toString trailingGiB}G";
     in {
       config = {
         disko.devices = {
@@ -22,7 +29,8 @@
               type = "gpt";
               partitions = {
                 ESP = {
-                  size = "1G";
+                  priority = 1000;
+                  size = "${toString espSizeGiB}G";
                   type = "EF00";
                   content = {
                     type = "filesystem";
@@ -39,7 +47,8 @@
                   };
                 };
                 swap = lib.mkIf (swapCfg.enable or false) {
-                  size = swapCfg.size or "8G";
+                  priority = 3000;
+                  size = "${toString swapSizeGiB}G";
                   uuid = "bc5dda00-e581-451d-9940-16fdd5417a0e";
                   content = {
                     type = "swap";
@@ -48,7 +57,41 @@
                   };
                 };
                 zfs = {
-                  size = "100%";
+                  priority = 2000;
+                  end = zfsEnd;
+                  content = {
+                    type = "zfs";
+                    pool = pool.name;
+                  };
+                };
+              };
+            };
+          };
+
+          disk."root-mirror" = lib.mkIf mirrorEnabled {
+            type = "disk";
+            device = pool.disk2;
+            content = {
+              type = "gpt";
+              partitions = {
+                ESP = {
+                  priority = 1000;
+                  size = "${toString espSizeGiB}G";
+                  type = "EF00";
+                  content = {
+                    type = "filesystem";
+                    format = "vfat";
+                    mountpoint = "/boot-mirror";
+                    mountOptions = [
+                      "umask=0077"
+                      "nofail"
+                      "x-systemd.device-timeout=5s"
+                    ];
+                  };
+                };
+                zfs = {
+                  priority = 2000;
+                  end = zfsEnd;
                   content = {
                     type = "zfs";
                     pool = pool.name;
@@ -60,7 +103,7 @@
 
           zpool.${pool.name} = {
             type = "zpool";
-            mode = "";
+            mode = if mirrorEnabled then "mirror" else "";
             options = {
               ashift = "12";
               autotrim = "on";
@@ -109,6 +152,15 @@
             };
           };
         };
+
+        boot.loader.systemd-boot.extraInstallCommands = lib.mkIf mirrorEnabled ''
+          if ${pkgs.util-linux}/bin/mountpoint -q /boot-mirror; then
+            ${pkgs.rsync}/bin/rsync -rt --delete --exclude=/loader/random-seed /boot/ /boot-mirror/
+            ${pkgs.systemd}/bin/bootctl --esp-path=/boot-mirror --variables=no random-seed
+          else
+            echo "Skipping mirror ESP update because /boot-mirror is not mounted" >&2
+          fi
+        '';
       };
     };
   };
