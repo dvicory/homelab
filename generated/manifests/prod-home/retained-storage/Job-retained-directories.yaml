@@ -4,8 +4,10 @@ metadata:
   annotations:
     argocd.argoproj.io/hook: Sync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
     argocd.argoproj.io/sync-wave: "1"
   name: retained-directories
+  namespace: local-path-storage
 spec:
   backoffLimit: 0
   template:

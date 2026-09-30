@@ -88,6 +88,11 @@ A retained path is not a backup. Incus propagates host mounts one way;
 after restoring a source, recreate affected pods to refresh child
 mounts.
 
+The `retained-directories` Sync hook creates declared directories before
+dependent applications sync. Like the other retained-storage resources,
+it resists pruning and Application deletion; `BeforeHookCreation` still
+replaces the Job on the next sync without removing retained data.
+
 ## Runtime-secret references
 
 This table contains references only. Never put plaintext Secret values

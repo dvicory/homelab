@@ -92,7 +92,8 @@ in
             kind = "Job";
             metadata = {
               name = "retained-directories";
-              annotations = {
+              inherit namespace;
+              annotations = protect // {
                 "argocd.argoproj.io/hook" = "Sync";
                 "argocd.argoproj.io/hook-delete-policy" = "BeforeHookCreation";
                 "argocd.argoproj.io/sync-wave" = "1";
