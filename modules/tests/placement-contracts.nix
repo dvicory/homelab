@@ -11,7 +11,7 @@ let
   cluster = config.den.clusters.prod-home;
   environment = config.den.environments.${cluster.environment};
   retainedStorageRenderer =
-    (import ../den/aspects/kubernetes/services/retained-storage.nix { })
+    (import ../den/aspects/kubernetes/services/retained-storage.nix { inherit config inputs; })
     .den.aspects.kubernetes.services.retained-storage.k8s-manifests;
   rendererFixture = {
     instance = "compute-1";
@@ -22,6 +22,10 @@ let
       gid = 0;
       mode = "0700";
       readOnly = false;
+    };
+    stateRoot = {
+      guestPath = "/srv/state";
+      marker = ".homelab-state-root";
     };
     storageCapabilities = [ "media" ];
     runtimeSecrets = { };

@@ -22,7 +22,11 @@ let
   descriptor = builtins.fromJSON host.environment.etc."homelab/compute.json".text;
   idRange = "${toString compute.idmapBase}-${toString (compute.idmapBase + compute.idmapSize - 1)}";
   expectedDeviceNames = lib.sort builtins.lessThan (
-    builtins.attrNames compute.devices ++ builtins.attrNames compute.retainedPaths ++ [ "secrets" ]
+    builtins.attrNames compute.devices
+    ++ [
+      "secrets"
+      "state"
+    ]
   );
   owners = builtins.attrNames (
     lib.filterAttrs (
@@ -104,20 +108,16 @@ let
         ]
       ) (builtins.attrValues devices)
       && devices.root.pool == compute.pool
-      && builtins.all (
-        name:
-        devices.${name}.source == compute.retainedPaths.${name}.path
-        && devices.${name}.path == compute.retainedPaths.${name}.guestPath
-        && devices.${name}.readonly == lib.boolToString compute.retainedPaths.${name}.readOnly
-      ) (builtins.attrNames compute.retainedPaths)
       && devices.identity.source == compute.identityPath
       && devices.identity.readonly == "true"
       && devices.eth0.network == compute.network
       &&
         project."restricted.devices.disk.paths" == lib.concatStringsSep "," (
           lib.unique (
-            map (entry: entry.path) (builtins.attrValues compute.retainedPaths)
-            ++ [ compute.identityPath ]
+            [
+              compute.stateRoot
+              compute.identityPath
+            ]
             ++ baseDiskPaths
             ++ [ "/run/homelab-compute/secrets" ]
           )
@@ -132,6 +132,18 @@ let
         "unix-hotplug"
         "usb"
       ];
+    workload-state-outside-envelope =
+      let
+        allowed = lib.splitString "," project."restricted.devices.disk.paths";
+        sources = lib.filter (source: source != null) (
+          map (device: device.source or null) (builtins.attrValues devices)
+        );
+        retained = map (entry: entry.path) (builtins.attrValues compute.retainedPaths);
+      in
+      retained != [ ]
+      && builtins.all (path: !(builtins.elem path allowed) && !(builtins.elem path sources)) retained
+      && devices.state.source == compute.stateRoot
+      && devices.state.required == "true";
     optional-media-device =
       let
         media = devices.media or null;

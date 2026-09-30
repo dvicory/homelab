@@ -20,6 +20,7 @@ in
       core.nix.gc.enable = false;
       virtualization.compute = rec {
         stateRoot = "/var/lib/homelab/compute-1/state";
+        stateGuestPath = "/srv/state";
         address = "10.210.0.10";
         pool = "incus-compute";
         network = "incus-compute";
@@ -34,7 +35,7 @@ in
           entry
           // {
             path = "${stateRoot}/${name}";
-            guestPath = "/srv/state/${name}";
+            guestPath = "${stateGuestPath}/${name}";
           }
         ) clusterResources.retainedPaths;
         runtimeSecrets = clusterResources.runtimeSecrets;

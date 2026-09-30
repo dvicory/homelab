@@ -170,6 +170,9 @@ func run(argv []string) error {
 		if len(decision.Missing) != 0 {
 			fmt.Printf(" (missing %s)", strings.Join(decision.Missing, ", "))
 		}
+		if len(decision.Drift) != 0 {
+			fmt.Printf(" (applying %s)", strings.Join(decision.Drift, "; "))
+		}
 		fmt.Println()
 		return nil
 	}
@@ -375,6 +378,9 @@ func checkPreseed(server incus.InstanceServer, spec descriptor) ([]string, error
 	decision, err := checkAdoption(server, spec)
 	if err != nil {
 		return nil, err
+	}
+	if len(decision.Drift) != 0 {
+		return nil, fmt.Errorf("declared Incus envelope is not applied (%s); start incus-preseed.service", strings.Join(decision.Drift, "; "))
 	}
 	return decision.Missing, nil
 }
