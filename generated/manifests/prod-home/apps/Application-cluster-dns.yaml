@@ -15,7 +15,7 @@ spec:
   source:
     path: ./generated/manifests/prod-home/cluster-dns
     repoURL: https://github.com/dvicory/homelab.git
-    targetRevision: feat/kanidm-provisioning
+    targetRevision: main
   syncPolicy:
     automated:
       prune: true
