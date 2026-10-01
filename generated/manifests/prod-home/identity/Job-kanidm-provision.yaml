@@ -27,7 +27,7 @@ spec:
               value: oidc-client
             - name: HOME
               value: /work
-          image: homelab/kanidm-provision:5qnb2mzwi4z0p5fc9qg4ygq14vdkg8lp
+          image: homelab/kanidm-provision:0idbfdnybzxxhwliskxvwaf4clqz57cg
           imagePullPolicy: Never
           name: provision
           resources:

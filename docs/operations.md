@@ -24,6 +24,11 @@ ref.
 Once this production path is active, merging generated manifests to
 the tracked ref changes production desired state.
 
+Regenerate canonical YAML with `nix run .#sync-prod-home-manifests`.
+The writer uses fresh file timestamps so jj notices equal-sized
+changes. Check manifest freshness from the committed Git revision
+before rollout; filesystem-only checks do not prove publication.
+
 ## Declared routes
 
 | Service | Exposure | Canonical URL | Secondary URL | Backend |
