@@ -50,8 +50,9 @@
               mkdir -p "$destination"
 
               # Copy the store's symlinked tree as ordinary checked-in files and
-              # omit nixidy's volatile revision marker.
-              rsync -a --copy-links --delete --exclude .revision \
+              # omit nixidy's volatile revision marker. Fresh mtimes let jj
+              # notice equal-sized content changes from immutable store files.
+              rsync -a --no-times --copy-links --delete --exclude .revision \
                 --chmod=Du+rwx,Dg+rx,Do+rx,Fu+rw,Fg+r,Fo+r \
                 "$source"/ "$destination"/
 
