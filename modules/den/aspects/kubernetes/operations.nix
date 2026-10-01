@@ -129,11 +129,19 @@ in
            identity Application's publication RBAC and PostSync provisioning
            Job to succeed. Administrator routes stay absent while the Job
            creates the named people and client.
-        3. Enroll durable human authentication for those people and verify
-           native login over the private canonical identity route.
+        3. Verify existing password-plus-MFA authentication or enroll a preferred
+           passkey, then verify native login over the private canonical identity
+           route. The administrator group requires MFA, not passkey-only
+           credentials.
         4. Commit `normal`; wait for the provisioning Job to grant administrator
            membership. Argo then publishes each administrator route together
            with its policy, ordered before the route.
+
+        Kanidm is pinned to server 1.11.2. Before upgrading an existing 1.10
+        database, run its native domain upgrade check and preserve a restorable
+        pre-upgrade backup. Minor releases must be upgraded sequentially;
+        successful database upgrades cannot be downgraded. Match the Kanidm
+        command-line client to the server version.
 
         The normal-only `identity-gateway` Application reconciles the OIDC
         Backend and BackendTLSPolicy with their administrator policies and
