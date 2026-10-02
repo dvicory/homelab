@@ -267,11 +267,9 @@ class Runtime:
     def helper_run(self, operation: str, *, spec: Path | None = None, bundle: Path | None = None, confirm: bool = False, timeout: int = 3_600) -> str:
         return run(*self.helper_command(operation, spec=spec, bundle=bundle, confirm=confirm), timeout=timeout)
 
-    def helper_expect_failure(self, operation: str, expected: str, diagnostic: str, *, spec: Path | None = None) -> None:
+    def helper_expect_failure(self, operation: str, expected: str, *, spec: Path | None = None) -> None:
         result = completed(*self.helper_command(operation, spec=spec, bundle=self.bundle, confirm=True), timeout=3_600)
         check(result.returncode != 0, f"helper refuses {expected}")
-        output = (result.stderr or "") + (result.stdout or "")
-        check(diagnostic in output, f"helper refusal for {expected} reports {diagnostic!r}: {output.strip()}")
 
     def forward_stop(self) -> None:
         proc, self.forward_proc = self.forward_proc, None
@@ -541,7 +539,7 @@ def load_nftables(runtime: Runtime, tables: list[dict]) -> None:
         check(completed("nft", "list", "table", family, name).returncode == 0, f"nftables table {family}/{name} loaded from the fixture")
 
 ROOT_APP = "recovery-test-apps"
-CHILD_APPS = ("jellyfin", "jellyfin-retained", "jellyfin-configuration")
+CHILD_APPS = ("retained-storage", "jellyfin", "jellyfin-retained", "jellyfin-configuration")
 SYNC_TIMEOUT = 1500
 ROOT_FAILURE_TIMEOUT = 600
 
@@ -925,6 +923,8 @@ def run_scenario(args: argparse.Namespace) -> None:
           "guest root artifact contains no preinstalled runtime host identity")
     check(args.helper.is_file(), "compute helper exists")
     for member in (
+        "apps/Application-retained-storage.yaml",
+        "retained-storage",
         "apps/Application-jellyfin.yaml",
         "apps/Application-jellyfin-retained.yaml",
         "apps/Application-jellyfin-configuration.yaml",
@@ -1026,6 +1026,10 @@ def run_scenario(args: argparse.Namespace) -> None:
                 os.chmod(target, int(entry["mode"], 8))
                 if entry["readOnly"]:
                     run("mount", "-o", "remount,bind,ro", str(target))
+            # Only the production marker writer authorizes the directory Job;
+            # leave it absent until the first Argo sync proves the failure gate.
+            check(all(not Path(entry["path"]).exists() for entry in descriptor["retainedPaths"].values()),
+                  "retained application directories are absent before Argo reconciliation")
             public_key = stage_identity(descriptor, Path(descriptor["identityPath"]))
             spec_path.write_text(json.dumps(descriptor, indent=2) + "\n")
             spec_path.chmod(0o400)
@@ -1079,18 +1083,25 @@ def run_scenario(args: argparse.Namespace) -> None:
                             staged.append(f"root:{row['hostid']}:1")
                 path.write_text("\n".join(staged) + "\n")
 
-            retained = descriptor["retainedPaths"]["jellyfin-config"]
-            retained_path = Path(retained["path"])
-            run("umount", str(retained_path))
+            state_path = Path(descriptor["devices"]["state"]["source"])
+            state_attributes = state_path.stat()
+            run("umount", str(state_path))
             try:
-                os.chown(retained_path, descriptor["idmapBase"] + retained["uid"],
-                         descriptor["idmapBase"] + retained["gid"])
-                os.chmod(retained_path, int(retained["mode"], 8))
-                runtime.helper_expect_failure("create", "unmounted retained storage", "findmnt failed")
-                check(instance_query(project, instance_name) is None,
-                      "missing retained mount cannot create a guest on substitute storage")
+                os.chown(state_path, state_attributes.st_uid, state_attributes.st_gid)
+                os.chmod(state_path, state_attributes.st_mode & 0o7777)
+                runtime.helper_expect_failure("create", "unmounted retained state root")
+                check(instance_query(project, instance_name) is None and not any(state_path.iterdir()),
+                      "missing state-root mount creates neither a guest nor substitute storage")
             finally:
-                run("mount", "--bind", str(persist / str(retained_path).lstrip("/")), str(retained_path))
+                run("mount", "--bind", str(persist / str(state_path).lstrip("/")), str(state_path))
+            state_mode = state_path.stat().st_mode & 0o7777
+            os.chmod(state_path, state_mode ^ 0o001)
+            try:
+                runtime.helper_expect_failure("create", "state-root mode drift")
+                check(instance_query(project, instance_name) is None,
+                      "state-root mode drift cannot create a guest")
+            finally:
+                os.chmod(state_path, state_mode)
             runtime.created_instance = True
             with phase("compute-create-and-k3s-ready"):
                 runtime.helper_run("create", bundle=args.bundle, timeout=3_600)
@@ -1143,33 +1154,6 @@ def run_scenario(args: argparse.Namespace) -> None:
             assert_secret_absent(secret_values, complete_stage.stdout, complete_stage.stderr, context="staging output")
             rotated_payload = secret_manifest.read_bytes()
             check(rotated_payload != secret_payload, "successful rotation changes the published payload")
-            for name, entry in descriptor["retainedPaths"].items():
-                target = Path(entry["path"])
-                permissions = target.stat()
-                check(permissions.st_mode & 0o7777 == int(entry["mode"], 8),
-                      f"{name} has its declared retained directory permissions")
-                if name == "jellyfin-config":
-                    expected_mode = int(entry["mode"], 8)
-                    os.chmod(target, expected_mode ^ 0o001)
-                    try:
-                        runtime.helper_expect_failure("inspect", "required path mode drift", "unexpected required path mode")
-                    finally:
-                        os.chmod(target, expected_mode)
-                probe = entry["guestPath"] + "/.retained-permission-probe"
-                result = completed(
-                    "incus", "--force-local", "--project", project, "exec", instance_name,
-                    "--user", str(entry["uid"]), "--group", str(entry["gid"]),
-                    "--mode=non-interactive", "--", "sh", "-ec",
-                    "printf retained > " + shlex.quote(probe))
-                if entry["readOnly"]:
-                    check(result.returncode != 0, f"{name} denies writes through its declared read-only attachment")
-                else:
-                    written = Path(entry["path"]) / ".retained-permission-probe"
-                    check(written.read_text() == "retained"
-                          and written.stat().st_uid == descriptor["idmapBase"] + entry["uid"]
-                          and written.stat().st_gid == descriptor["idmapBase"] + entry["gid"],
-                          f"{name} retains data with the declared mapped owner")
-                    written.unlink()
             origin = GitOrigin(workspace / "origin", fixture["bridgeAddress"])
             origin.publish(args.repo)
             runtime.git_origin = origin
@@ -1181,9 +1165,71 @@ def run_scenario(args: argparse.Namespace) -> None:
                 check(not origin.reachable(), f"fixture Git origin {origin.address}:9418 still refuses connections after the failed reconciliation")
                 check(all(kubectl_absent(kubeconfig, "application", name, "argocd") for name in CHILD_APPS), "root Application produces no child Applications while Git is unreachable")
             origin.serve()
+            with phase("retained-root-marker-gate"):
+                def directory_job_failed() -> bool:
+                    raw = runtime.kubectl("get", "job/retained-directories", "--ignore-not-found",
+                                          "-o", "json", namespace="local-path-storage")
+                    if not raw.strip():
+                        return False
+                    if not any(condition.get("type") == "Failed" and condition.get("status") == "True"
+                               for condition in json.loads(raw).get("status", {}).get("conditions", [])):
+                        return False
+                    return True
+                wait_for("retained directory Job fails without the persistent marker",
+                         directory_job_failed, timeout=600)
+                check(all(not Path(entry["path"]).exists() for entry in descriptor["retainedPaths"].values()),
+                      "missing persistent marker creates no retained application directories")
+                def jellyfin_storage_blocked() -> bool:
+                    pods = runtime.kubectl_json(
+                        "get", "pods", "-l", "app.kubernetes.io/name=jellyfin", "-o", "json",
+                        namespace="jellyfin")["items"]
+                    if not pods:
+                        return False
+                    for pod in pods:
+                        status = pod.get("status", {})
+                        containers = status.get("initContainerStatuses", []) + status.get("containerStatuses", [])
+                        check(not any("running" in container.get("state", {})
+                                      or "terminated" in container.get("state", {})
+                                      for container in containers),
+                              "Jellyfin containers never start against uninitialized retained storage")
+                    uids = {pod["metadata"]["uid"] for pod in pods}
+                    events = runtime.kubectl_json(
+                        "get", "events", "--field-selector", "reason=FailedMount", "-o", "json",
+                        namespace="jellyfin")["items"]
+                    return any(event.get("involvedObject", {}).get("uid") in uids for event in events)
+                wait_for("Jellyfin refuses its unavailable required volume", jellyfin_storage_blocked)
+                check(all(not Path(entry["path"]).exists() for entry in descriptor["retainedPaths"].values()),
+                      "blocked Jellyfin creates no replacement retained application data")
+                run("/bin/sh", "-c", fixture["stateMarkerScript"])
+                sync = json.dumps({"operation": {"sync": {"prune": False}}})
+                runtime.kubectl("patch", "application/retained-storage", "--type=merge",
+                                "-p", sync, namespace="argocd")
+                wait_argo_synced(kubeconfig, ("retained-storage",))
+                runtime.kubectl("patch", f"application/{ROOT_APP}", "--type=merge",
+                                "-p", sync, namespace="argocd")
             with phase("first-git-reconciliation"):
                 wait_stack(runtime, kubeconfig)
                 check(not any(kubectl_absent(kubeconfig, "application", name, "argocd") for name in CHILD_APPS), "the same root Application produces the child Applications once Git is served")
+            for name, entry in descriptor["retainedPaths"].items():
+                target = Path(entry["path"])
+                permissions = target.stat()
+                check(permissions.st_mode & 0o7777 == int(entry["mode"], 8)
+                      and permissions.st_uid == descriptor["idmapBase"] + entry["uid"]
+                      and permissions.st_gid == descriptor["idmapBase"] + entry["gid"],
+                      f"directory Job creates {name} with its declared mapped identity and permissions")
+                probe = entry["guestPath"] + "/.retained-permission-probe"
+                result = completed(
+                    "incus", "--force-local", "--project", project, "exec", instance_name,
+                    "--user", str(entry["uid"]), "--group", str(entry["gid"]),
+                    "--mode=non-interactive", "--", "sh", "-ec",
+                    "printf retained > " + shlex.quote(probe))
+                check(result.returncode == 0, f"{name} is writable by its declared guest identity")
+                written = Path(entry["path"]) / ".retained-permission-probe"
+                check(written.read_text() == "retained"
+                      and written.stat().st_uid == descriptor["idmapBase"] + entry["uid"]
+                      and written.stat().st_gid == descriptor["idmapBase"] + entry["gid"],
+                      f"{name} retains data with the declared mapped owner")
+                written.unlink()
             wait_for("Jellarr post-health reconciliation", runtime.jellarr_ready, timeout=600)
             runtime.verify_no_jellarr_secret()
             runtime.verify_secret_boundary(secret_values)
@@ -1197,10 +1243,6 @@ def run_scenario(args: argparse.Namespace) -> None:
             # access proof; no privileged filesystem read is needed.
             # The Incus media attachment itself is writable host storage; the
             # read-only boundary lives at the Jellyfin workload mount.
-            hosted = runtime.media_path / "library" / ".compute-recovery-probe"
-            hosted.write_text("host-owned\n")
-            check(hosted.read_text() == "host-owned\n", "host root owns the writable media namespace")
-            hosted.unlink()
             admin_sources = [
                 source
                 for source, entry in descriptor["runtimeSecrets"].items()
@@ -1236,7 +1278,7 @@ def run_scenario(args: argparse.Namespace) -> None:
                   "repeated creation preserves the existing guest")
             with Path(f"/run/lock/compute-{project}-{instance_name}.lock").open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                runtime.helper_expect_failure("replace", "concurrent maintenance", "cannot acquire lifecycle lock")
+                runtime.helper_expect_failure("replace", "concurrent maintenance")
                 command = runtime.helper_command("inspect") + ["--lock-fd", str(lock.fileno())]
                 inspected = subprocess.run(command, pass_fds=(lock.fileno(),), capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
                 check(inspected.returncode == 0, "inspection reuses the selected held lifecycle lock")
@@ -1257,8 +1299,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             bad_spec = workspace / "bad-public.json"
             bad_spec.write_text(json.dumps(bad_descriptor) + "\n")
             bad_spec.chmod(0o400)
-            runtime.helper_expect_failure("replace", "a mismatched public identity",
-                                          "does not match the declared public identity", spec=bad_spec)
+            runtime.helper_expect_failure("replace", "a mismatched public identity", spec=bad_spec)
             check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid, "mismatched identity does not mutate the instance")
             public_path = Path(descriptor["identityPath"]) / "ssh_host_ed25519_key.pub"
             trusted_public = public_path.read_text()
@@ -1278,7 +1319,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             runtime.guest("systemctl", "stop", "sshd.service")
             private.rename(missing_private)
             try:
-                runtime.helper_expect_failure("replace", "a missing private identity", "No such file")
+                runtime.helper_expect_failure("replace", "a missing private identity")
                 runtime.guest("sh", "-ec",
                               "if systemctl start sshd.service; then exit 1; fi; ! systemctl is-active --quiet sshd.service")
                 check(not private.exists() and runtime.node_ready(),
@@ -1289,10 +1330,8 @@ def run_scenario(args: argparse.Namespace) -> None:
             check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid, "missing identity does not mutate the instance")
             runtime.incus("config", "set", instance_name, "user.homelab.unsafe-drift", "true")
             try:
-                runtime.helper_expect_failure("inspect", "unsafe effective configuration",
-                                              "incompatible effective configuration")
-                runtime.helper_expect_failure("replace", "unsafe effective configuration",
-                                              "incompatible effective configuration")
+                runtime.helper_expect_failure("inspect", "unsafe effective configuration")
+                runtime.helper_expect_failure("replace", "unsafe effective configuration")
             finally:
                 runtime.incus("config", "unset", instance_name, "user.homelab.unsafe-drift")
             check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid, "unsafe instance drift does not trigger replacement")

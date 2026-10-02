@@ -19,6 +19,10 @@ operations runbook, not in this design.
   access, persistence, and secret-request conventions.
 - NixOS preseed owns Incus projects, networks, profiles, and pools. Check for
   conflicts before first adoption: preseed can overwrite existing resources.
+  The declared project carries an ownership marker. A project without it that
+  differs from the declaration is refused; a project with it receives the
+  declared project and profile state. Instance operations still require the
+  applied envelope to match the declaration.
 - `compute-guest` only inspects, creates, and explicitly replaces instances. It
   verifies effective configuration, retained prerequisites, identity, and image
   availability; it does not reconcile the envelope or know application
@@ -57,6 +61,25 @@ Retain host-managed state and guest identity outside guest root and cluster
 state. Workload-specific retained data and access projections are declared by
 the later workload cut; this platform boundary does not select an application
 layout or media path.
+
+The host attaches one persistent state root to the guest. Each workload's
+retained directory lives beneath it and is created, with its declared owner
+and mode, by cluster desired state rather than by the host. Adding or
+removing a workload's retained state therefore changes neither the host nor
+the Incus envelope. Every retained path is writable by the same guest, so a
+per-workload attachment added no isolation; separation between workloads is
+enforced inside the cluster. A read-only source needs its own attachment.
+
+The state root carries a marker that exists only on the persistent side.
+Retained directories are created only when the marker is present, so a
+missing or unmounted root leaves workloads unable to start instead of
+initializing data in its place. Creation never recurses, and an existing
+directory with the wrong owner or mode is reported, not repaired.
+
+Changing how a runtime Secret is delivered, such as moving decryption into
+the cluster, must first give the new writer ownership of the same values and
+only then retire the previous writer, so consumers never observe a missing
+or emptied Secret.
 
 Required host paths fail closed: validate actual source mounts, not directory
 existence, and deny access without exposing a substitute directory. Reattach

@@ -17,6 +17,7 @@ buildGoModule {
 
   subPackages = [
     "cmd/household-bootstrap"
+    "cmd/retained-directories"
   ]
   ++ lib.optionals stdenv.hostPlatform.isLinux [
     "cmd/compute-guest"

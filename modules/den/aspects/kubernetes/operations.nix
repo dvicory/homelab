@@ -144,6 +144,14 @@ in
         after restoring a source, recreate affected pods to refresh child
         mounts.
 
+        The `retained-directories` Sync hook creates declared directories before
+        later waves in its own Application. It is not a cross-Application
+        declaration barrier: a consumer may be declared while the hook refuses,
+        but it cannot start against a missing directory or create substitute data.
+        Like the other retained-storage resources, the hook resists pruning and
+        Application deletion; `BeforeHookCreation` replaces the Job on the next
+        sync without removing retained data.
+
         ## Jellyfin storage and startup
 
         The stable compute attachment is `/srv/media`; its replaceable merged

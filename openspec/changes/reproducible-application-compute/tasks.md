@@ -84,3 +84,17 @@ application recovery.
   Require an explicit target, preserve a verified rollback point, refuse
   resources referenced by an instance, and check host capacity before deletion.
   Exercise retirement without affecting the active guest or retained data.
+
+## 7. Persistent state root
+
+- [x] 7.1 Attach one persistent state root to the guest instead of one Incus
+  device per retained path; keep the project's disk allowlist independent of
+  workloads. Verify the rendered envelope contains no workload paths.
+- [x] 7.2 Create declared retained directories from cluster desired state,
+  only when the persistent-side marker is present, never recursively, and
+  report rather than repair a wrong owner or mode. Verify creation, a
+  matching existing directory, a mismatched one, a symlink, and a missing
+  marker.
+- [x] 7.3 Mark the declared project as owned; refuse an unmarked differing
+  project, apply the declaration to an owned one, and keep instance
+  operations refusing an envelope that has not been applied. Verify each case.

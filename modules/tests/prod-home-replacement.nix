@@ -65,6 +65,7 @@
               stop = mediaPoolUnit.serviceConfig.ExecStop;
             };
             mediaRootScript = hostConfig.systemd.services.media-namespace.script;
+            stateMarkerScript = hostConfig.systemd.services.compute-state-marker.script;
             secretStageScript = hostConfig.systemd.services.compute-stage-secrets.script;
             secretStagePath = lib.makeBinPath hostConfig.systemd.services.compute-stage-secrets.path;
           }
@@ -91,9 +92,10 @@
         # images from the canonical manifests, with no fixture image rewrites.
         # The scenario copies them into disposable local inputs.
         testRepo = pkgs.runCommand "prod-home-recovery-repo" { } ''
-          mkdir -p "$out"/{apps,jellyfin,jellyfin-retained,jellyfin-configuration}
-          cp ${canonical}/apps/Application-jellyfin.yaml ${canonical}/apps/Application-jellyfin-retained.yaml ${canonical}/apps/Application-jellyfin-configuration.yaml "$out/apps/"
+          mkdir -p "$out"/{apps,retained-storage,jellyfin,jellyfin-retained,jellyfin-configuration}
+          cp ${canonical}/apps/Application-retained-storage.yaml ${canonical}/apps/Application-jellyfin.yaml ${canonical}/apps/Application-jellyfin-retained.yaml ${canonical}/apps/Application-jellyfin-configuration.yaml "$out/apps/"
           cp ${canonical}/apps/AppProject-prod-home.yaml "$out/apps/"
+          cp ${canonical}/retained-storage/*.yaml "$out/retained-storage/"
           cp ${canonical}/jellyfin/*.yaml "$out/jellyfin/"
           cp ${canonical}/jellyfin-retained/*.yaml "$out/jellyfin-retained/"
           cp ${canonical}/jellyfin-configuration/*.yaml "$out/jellyfin-configuration/"

@@ -102,6 +102,16 @@ in
         type = types.str;
         description = "Host-owned parent for the selected services' retained state.";
       };
+      stateGuestPath = mkOption {
+        type = types.str;
+        default = "/srv/state";
+        description = "Where the guest sees the state root.";
+      };
+      stateMarker = mkOption {
+        type = types.str;
+        default = ".homelab-state-root";
+        description = "File that exists only on the persistent side of the state root.";
+      };
       retainedPaths = mkOption {
         type = types.attrsOf (
           types.submodule {
@@ -153,12 +163,14 @@ in
           mode = "0700";
         }
       ]
-      ++ lib.mapAttrsToList (_: entry: {
-        directories = [ entry.path ];
-        user = toString (mapPlan.hostUid entry.uid);
-        group = toString (mapPlan.hostGid entry.gid);
-        inherit (entry) mode;
-      }) cfg.retainedPaths;
+      ++ [
+        {
+          directories = [ cfg.stateRoot ];
+          user = toString (mapPlan.hostUid 0);
+          group = toString (mapPlan.hostGid 0);
+          mode = "0755";
+        }
+      ];
 
     nixos =
       {
@@ -186,16 +198,27 @@ in
           );
         computeRuntime = pkgs.callPackage (inputs.self + "/pkgs/by-name/compute-runtime/package.nix") { };
         lifecycleLock = "/run/lock/compute-${cfg.project}-${cfg.instance}.lock";
+        # Must match adoption.OwnerKey in compute-runtime.
+        adoptionOwnerKey = "user.homelab.owner";
         runtimeSecrets = cfg.runtimeSecrets or { };
         secretPath = "/run/homelab-compute/secrets";
         secretNames = builtins.attrNames runtimeSecrets;
         retainedNames = builtins.attrNames cfg.retainedPaths;
-        reservedDeviceNames = [ "secrets" ];
+        inherit (cfg) stateGuestPath;
+        hasImpermanence = host.hasAspect den.aspects.disk.impermanence;
+        persistentStateRoot = lib.optionalString hasImpermanence "/persist" + cfg.stateRoot;
+        misplacedRetained = lib.filter (
+          name:
+          cfg.retainedPaths.${name}.path != "${cfg.stateRoot}/${name}"
+          || cfg.retainedPaths.${name}.guestPath != "${stateGuestPath}/${name}"
+        ) retainedNames;
+        readOnlyRetained = lib.filter (name: cfg.retainedPaths.${name}.readOnly) retainedNames;
+        reservedDeviceNames = [
+          "secrets"
+          "state"
+        ];
         baseDeviceNames = builtins.attrNames cfg.devices;
         reservedCollisions = lib.filter (name: builtins.elem name baseDeviceNames) reservedDeviceNames;
-        retainedCollisions = lib.filter (
-          name: builtins.elem name (baseDeviceNames ++ reservedDeviceNames)
-        ) retainedNames;
         invalidRetainedIds = lib.filter (
           name:
           let
@@ -288,23 +311,24 @@ in
             reservedCollisions == [ ]
           ) "Incus device map uses reserved names: ${lib.concatStringsSep ", " reservedCollisions}";
           assert lib.assertMsg (
-            retainedCollisions == [ ]
-          ) "Retained paths collide with Incus device names: ${lib.concatStringsSep ", " retainedCollisions}";
-          assert lib.assertMsg (
             invalidRetainedIds == [ ]
           ) "Retained path IDs must be below idmapSize: ${lib.concatStringsSep ", " invalidRetainedIds}";
           assert lib.assertMsg (missingRequiredPathMetadata == [ ])
             "Required source-backed disk devices need requiredPath metadata: ${lib.concatStringsSep ", " missingRequiredPathMetadata}";
+          assert lib.assertMsg (misplacedRetained == [ ])
+            "Retained paths must be ${cfg.stateRoot}/<name> on the host and ${stateGuestPath}/<name> in the guest: ${lib.concatStringsSep ", " misplacedRetained}";
+          assert lib.assertMsg (readOnlyRetained == [ ])
+            "Retained paths share one writable state root; a read-only source needs its own attachment: ${lib.concatStringsSep ", " readOnlyRetained}";
           baseDevices
-          // lib.mapAttrs (_: entry: {
-            type = "disk";
-            source = entry.path;
-            path = entry.guestPath;
-            propagation = "rprivate";
-            readonly = lib.boolToString entry.readOnly;
-            required = "true";
-          }) cfg.retainedPaths
           // {
+            state = {
+              type = "disk";
+              source = cfg.stateRoot;
+              path = stateGuestPath;
+              propagation = "rprivate";
+              readonly = "false";
+              required = "true";
+            };
             secrets = {
               type = "disk";
               source = secretPath;
@@ -314,6 +338,7 @@ in
             };
           };
         projectConfig = {
+          ${adoptionOwnerKey} = "${host.name}/${cfg.instance}";
           "features.images" = "true";
           "features.networks" = "false";
           restricted = "true";
@@ -328,8 +353,10 @@ in
           "restricted.devices.disk" = "allow";
           "restricted.devices.disk.paths" = lib.concatStringsSep "," (
             lib.unique (
-              map (entry: entry.path) (builtins.attrValues cfg.retainedPaths)
-              ++ [ cfg.identityPath ]
+              [
+                cfg.stateRoot
+                cfg.identityPath
+              ]
               ++ deviceDiskPaths
               ++ [ secretPath ]
             )
@@ -405,22 +432,23 @@ in
           ${config.systemd.services.incus-preseed.script}
         '';
 
-        requiredPaths =
-          lib.mapAttrsToList (_: entry: {
-            inherit (entry) path mode readOnly;
-            uid = idmapPlan.hostUid entry.uid;
-            gid = idmapPlan.hostGid entry.gid;
-          }) cfg.retainedPaths
-          ++ [
-            {
-              path = cfg.identityPath;
-              uid = idmapPlan.hostUid 0;
-              gid = idmapPlan.hostGid 0;
-              mode = "0700";
-              readOnly = false;
-            }
-          ]
-          ++ deviceRequiredPaths;
+        requiredPaths = [
+          {
+            path = cfg.stateRoot;
+            uid = idmapPlan.hostUid 0;
+            gid = idmapPlan.hostGid 0;
+            mode = "0755";
+            readOnly = false;
+          }
+          {
+            path = cfg.identityPath;
+            uid = idmapPlan.hostUid 0;
+            gid = idmapPlan.hostGid 0;
+            mode = "0700";
+            readOnly = false;
+          }
+        ]
+        ++ deviceRequiredPaths;
         descriptor = {
           inherit
             publicKey
@@ -466,6 +494,31 @@ in
         # lifecycle lock; a conflict therefore aborts before preseed mutation.
         systemd.services.incus-preseed.serviceConfig.ExecStart = lib.mkForce lockedPreseed;
 
+        systemd.tmpfiles.rules = [
+          "d ${persistentStateRoot} 0755 ${toString (idmapPlan.hostUid 0)} ${toString (idmapPlan.hostGid 0)} -"
+        ];
+        # A tmpfiles rule would also write the marker onto the root filesystem
+        # whenever /persist is not mounted.
+        systemd.services.compute-state-marker = {
+          description = "Mark the persistent compute state root";
+          wantedBy = [ "multi-user.target" ];
+          after = [ "systemd-tmpfiles-setup.service" ];
+          unitConfig.ConditionPathIsMountPoint = lib.mkIf hasImpermanence "/persist";
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+          };
+          script = ''
+            set -eu
+            marker=${persistentStateRoot}/${cfg.stateMarker}
+            if [ ! -e "$marker" ]; then
+              printf '%s\n' ${cfg.instance} > "$marker.new"
+              chmod 0444 "$marker.new"
+              mv -T "$marker.new" "$marker"
+            fi
+          '';
+        };
+
         environment.etc."homelab/compute.json" = {
           mode = "0444";
           text = builtins.toJSON descriptor + "\n";
@@ -479,13 +532,12 @@ in
           allowedTCPPorts = [ 53 ];
         };
 
-        secretRequests = lib.optionalAttrs hasIdentity {
-          "${cfg.instance}-host-key" = {
-            provider = "agenix";
-            ageFile = identityAge;
-            mode = "0400";
-            restartUnits = [ "compute-stage-identity.service" ];
-          };
+        secretRequests."${cfg.instance}-host-key" = {
+          provider = "agenix";
+          ageFile = identityAge;
+          mode = "0400";
+          restartUnits = [ "compute-stage-identity.service" ];
+          generator.script = "ssh-key";
         };
         systemd.services.compute-stage-identity = {
           description = "Stage the declared compute SSH identity";
@@ -509,7 +561,7 @@ in
             flock -n 9
             test -s ${publicKeyFile}
             key=/run/agenix/${cfg.instance}-host-key
-            actual="$(ssh-keygen -y -f "$key")"
+            actual="$(ssh-keygen -y -f "$key" | cut -d ' ' -f 1-2)"
             expected="$(cut -d ' ' -f 1-2 ${publicKeyFile})"
             test "$actual" = "$expected"
             install -m 0400 -o ${toString cfg.idmapBase} -g ${toString cfg.idmapBase} "$key" ${cfg.identityPath}/.key-new

@@ -37,6 +37,11 @@
       prepare-luks-storage = lib.optionalAttrs isLinux {
         prepare-luks-storage = callPackage (self + "/pkgs/by-name/prepare-luks-storage/package.nix") { };
       };
+      retained-directories-image = lib.optionalAttrs isLinux {
+        retained-directories-image = callPackage (
+          self + "/pkgs/by-name/retained-directories-image/package.nix"
+        ) { inherit compute-runtime; };
+      };
       kanidm-provision-image = lib.optionalAttrs isLinux {
         kanidm-provision-image = callPackage (
           self + "/pkgs/by-name/kanidm-provision-image/package.nix"
@@ -69,6 +74,7 @@
       }
       // agenix-restart-guard
       // prepare-luks-storage
+      // retained-directories-image
       // kanidm-provision-image
       // jellyfin-provisioner-image
       // jellarr-image;
