@@ -217,6 +217,22 @@ in
 
         Missing, active, unknown, or non-terminal Jobs are refused.
 
+        ### Gateway authentication failures
+
+        Start with the Gateway access logs. Find the request by timestamp and
+        `request_id`; check `status`, `response_flags`, and `upstream`. Check
+        Kanidm's pod health and logs for the same time window.
+
+        Inspect the OAuth success and failure counters on the private
+        `/stats/prometheus` endpoint. Counters show OAuth outcomes, not the cause
+        of a failure. The declared stack does not configure a scraper or alerts;
+        inspect these counters manually.
+
+        Keep the OAuth2 text logger at `critical`. Do not enable verbose OAuth2
+        logging or add `%RESPONSE_CODE_DETAILS%` to access logs: both can expose
+        credential material. Other warning logs and queryless access logs remain
+        available.
+
         ## Compute-loss recovery
 
         ```text
