@@ -8,7 +8,7 @@
 - **Host:** `hvn-hyp1` (`x86_64-linux`)
 - **Compute guest:** `compute-1`
 - **Ingress:** `direct` on NodePort `30443`
-- **Identity phase:** `provisioning`
+- **Identity phase:** `normal`
 
 ## Deploy configuration
 
