@@ -50,8 +50,10 @@ Confirm TLS certificates are Ready before recovering accounts.
    before running agenix-rekey. Commit the host-rekeyed ciphertext and
    generated manifests, then activate the host to stage the runtime
    Secret. Wait for the `kanidm-provision` PostSync Job to complete.
-3. Verify native login over the private canonical identity route using
-   password-plus-MFA or a passkey. Administrator accounts require MFA.
+3. Enroll credentials for a new administrator through Kanidm's
+   enrollment flow: password-plus-MFA or an optional passkey.
+   Verify native login over the private canonical identity route
+   before selecting `normal`. Already-enrolled accounts need no repeat.
 4. Select `normal`, wait for provisioning to complete, and verify
    protected administrator access.
 
