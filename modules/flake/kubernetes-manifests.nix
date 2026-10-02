@@ -167,7 +167,6 @@
 
                 spec = resource.get("spec", {})
                 destination = spec.get("destination", {})
-                check(isinstance(destination, dict), path, "Application destination must be a mapping")
                 check(destination.get("server") == expected_destination, path, f"unexpected destination server {destination.get('server')}")
                 check(isinstance(destination.get("namespace"), str) and destination["namespace"], path, "Application lacks destination namespace")
                 application_destinations.add((destination["server"], destination["namespace"]))
@@ -175,21 +174,12 @@
                 finalizers = metadata.get("finalizers", [])
                 check(isinstance(finalizers, list), path, "Application finalizers must be a list")
                 sync_policy = spec.get("syncPolicy", {})
-                check(isinstance(sync_policy, dict), path, "Application syncPolicy must be a mapping")
                 sync_options = sync_policy.get("syncOptions", [])
-                retry = sync_policy.get("retry")
-                check(
-                    isinstance(retry, dict)
-                    and isinstance(retry.get("limit"), int)
-                    and retry["limit"] > 0,
-                    path,
-                    "Application retry policy must have a positive limit",
-                )
+                retry = sync_policy.get("retry") or {}
+                check(retry.get("limit", 0) > 0, path, "Application retry policy must have a positive limit")
 
-                check(isinstance(sync_options, list), path, "Application syncOptions must be a list")
                 check("FailOnSharedResource=true" in sync_options, path, "Application must refuse shared resources")
                 automated = sync_policy.get("automated", {})
-                check(isinstance(automated, dict), path, "Application automated sync policy must be a mapping")
                 prune = automated.get("prune")
                 if allow_retained and not finalizers:
                     check(prune is False, path, "retained Application must disable pruning")
@@ -197,7 +187,6 @@
                     check(finalizers == ["resources-finalizer.argocd.argoproj.io"], path, f"unexpected finalizers {finalizers}")
                     check(prune is True, path, "cascading Application must enable pruning")
                 source = spec.get("source", {})
-                check(isinstance(source, dict), path, "Application source must be a mapping")
                 return source, finalizers, prune
 
             root = Path(os.environ["MANIFEST_ROOT"])
@@ -280,13 +269,7 @@
                 for marker in ("helm", "kustomize", "jsonnet", "plugin"):
                     check(marker not in source, path, f"unsupported source renderer {marker}")
                 directory = source.get("directory") or {}
-                check(isinstance(directory, dict), path, "source.directory must be a mapping")
                 check(set(directory) <= {"recurse"}, path, "source.directory has unsupported options")
-                check(
-                    "recurse" not in directory or isinstance(directory["recurse"], bool),
-                    path,
-                    "source.directory.recurse must be boolean",
-                )
                 check(source["repoURL"] == expected_repository, path, f"unexpected repository {source['repoURL']}")
                 check(source["targetRevision"] == expected_revision, path, f"unexpected revision {source['targetRevision']}")
                 check(source["path"].startswith(expected_prefix), path, f"unexpected path {source['path']}")
@@ -411,22 +394,17 @@
                 "root-owned AppProject must reconcile before every child Application",
             )
             project_spec = project.get("spec", {})
-            check(isinstance(project_spec, dict), project_path, "AppProject spec must be a mapping")
             check(project_spec.get("sourceRepos") == [expected_repository], project_path, "AppProject must allow only the evaluated repository")
             project_destinations = project_spec.get("destinations", [])
-            check(isinstance(project_destinations, list), project_path, "AppProject destinations must be a list")
             destination_ids = set()
             for destination in project_destinations:
-                check(isinstance(destination, dict), project_path, "AppProject destination must be a mapping")
                 check(destination.get("server") == expected_destination, project_path, "AppProject destination has an unexpected server")
                 check(isinstance(destination.get("namespace"), str) and destination["namespace"], project_path, "AppProject destination lacks a namespace")
                 destination_ids.add((destination["server"], destination["namespace"]))
             check(destination_ids == application_destinations, project_path, "AppProject destinations must cover exactly the rendered Application namespaces")
             cluster_resources = project_spec.get("clusterResourceWhitelist", [])
-            check(isinstance(cluster_resources, list), project_path, "AppProject clusterResourceWhitelist must be a list")
             allowed_cluster_resources = set()
             for entry in cluster_resources:
-                check(isinstance(entry, dict), project_path, "AppProject cluster resource entry must be a mapping")
                 group = entry.get("group")
                 kind = entry.get("kind")
                 check(
@@ -486,13 +464,7 @@
             for marker in ("helm", "kustomize", "jsonnet", "plugin"):
                 check(marker not in bootstrapSource, root / "bootstrap.yaml", f"unsupported source renderer {marker}")
             bootstrapDirectory = bootstrapSource.get("directory") or {}
-            check(isinstance(bootstrapDirectory, dict), root / "bootstrap.yaml", "bootstrap source.directory must be a mapping")
             check(set(bootstrapDirectory) <= {"recurse"}, root / "bootstrap.yaml", "bootstrap source.directory has unsupported options")
-            check(
-                "recurse" not in bootstrapDirectory or isinstance(bootstrapDirectory["recurse"], bool),
-                root / "bootstrap.yaml",
-                "bootstrap source.directory.recurse must be boolean",
-            )
             check(
                 bootstrapDirectory.get("recurse", False) is False,
                 root / "bootstrap.yaml",

@@ -1,0 +1,163 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: argo-01-child-gating-recovery
+  labels:
+    verification.homelab/layer: controller-node-local
+spec:
+  timeouts:
+    assert: 180s
+    exec: 300s
+  steps:
+    - name: current-failed-and-missing-revisions
+      try:
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" revision payload
+            outputs:
+              - name: payload
+                value: ($stdout)
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" revision initial
+            outputs:
+              - name: initial
+                value: ($stdout)
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: failed-child
+                namespace: argocd
+              (status.sync.revision == $payload): true
+              (status.sync.comparedTo.source == spec.source): true
+              (status.operationState.syncResult.revision == $payload): true
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: failed-child
+                namespace: argocd
+              status:
+                health:
+                  status: Degraded
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: missing-child
+                namespace: argocd
+              (status.sync.comparedTo.source == spec.source): true
+              (length(status.conditions[?type == 'ComparisonError']) > `0`): true
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: failed-root
+                namespace: argocd
+              (status.sync.revision == $initial): true
+              (status.sync.comparedTo.source == spec.source): true
+              (status.operationState.syncResult.revision == $initial): true
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: missing-root
+                namespace: argocd
+              (status.sync.revision == $initial): true
+              (status.sync.comparedTo.source == spec.source): true
+              (status.operationState.syncResult.revision == $initial): true
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" blocked-children
+    - name: recover-current-revision-before-parent-wave
+      try:
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" recover-children
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" revision repaired
+            outputs:
+              - name: repaired
+                value: ($stdout)
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: failed-child
+                namespace: argocd
+              (status.sync.revision == $repaired): true
+              (status.sync.comparedTo.source == spec.source): true
+              (status.operationState.syncResult.revision == $repaired): true
+              status:
+                sync:
+                  status: Synced
+                health:
+                  status: Healthy
+                operationState:
+                  phase: Succeeded
+              (length(status.conditions[?type == 'ComparisonError'] || `[]`) == `0`): true
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: missing-child
+                namespace: argocd
+              (status.sync.revision == $repaired): true
+              (status.sync.comparedTo.source == spec.source): true
+              (status.operationState.syncResult.revision == $repaired): true
+              status:
+                sync:
+                  status: Synced
+                health:
+                  status: Healthy
+                operationState:
+                  phase: Succeeded
+              (length(status.conditions[?type == 'ComparisonError'] || `[]`) == `0`): true
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: failed-root
+                namespace: argocd
+              (status.sync.revision == $initial): true
+              (status.sync.comparedTo.source == spec.source): true
+              (status.operationState.syncResult.revision == $initial): true
+              status:
+                sync:
+                  status: Synced
+                health:
+                  status: Healthy
+                operationState:
+                  phase: Succeeded
+              (length(status.conditions[?type == 'ComparisonError'] || `[]`) == `0`): true
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: missing-root
+                namespace: argocd
+              (status.sync.revision == $initial): true
+              (status.sync.comparedTo.source == spec.source): true
+              (status.operationState.syncResult.revision == $initial): true
+              status:
+                sync:
+                  status: Synced
+                health:
+                  status: Healthy
+                operationState:
+                  phase: Succeeded
+              (length(status.conditions[?type == 'ComparisonError'] || `[]`) == `0`): true
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" children-proof

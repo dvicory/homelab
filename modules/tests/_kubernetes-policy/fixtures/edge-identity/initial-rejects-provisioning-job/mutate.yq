@@ -1,0 +1,1 @@
+.bundle["resources"] += [{"file": "identity/Job-unexpected.yaml", "document": 0, "content": "", "object": {"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": "kanidm-provision", "namespace": "identity", "annotations": {"argocd.argoproj.io/hook": "PostSync"}}, "spec": {"template": {"spec": {"serviceAccountName": "kanidm-provision", "volumes": [], "containers": []}}}}}]

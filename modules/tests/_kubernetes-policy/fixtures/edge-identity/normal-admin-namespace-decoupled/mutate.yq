@@ -1,0 +1,1 @@
+(.bundle.resources[] | select(.object.kind == "SecurityPolicy" and .object.metadata.name == "argocd-admin") | .object["metadata"]["namespace"]) = "identity"

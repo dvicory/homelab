@@ -1,0 +1,391 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: positive-initial-ready-direct
+  annotations:
+    verification.homelab/variant: initial-ready-direct
+policies:
+- ../../../edge-identity.yaml
+resources:
+- resources.yaml
+paramResources:
+- policy-facts.yaml
+results:
+- policy: edge-identity
+  rule: identity-populations
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    name: verification-bundle
+    namespace: verification
+  result: pass
+- policy: edge-identity
+  rule: administrator-publication-atomic
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    name: verification-bundle
+    namespace: verification
+  result: pass
+- policy: edge-identity
+  rule: native-idm-population
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    name: verification-bundle
+    namespace: verification
+  result: pass
+- policy: edge-identity
+  rule: seerr-publication
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    name: verification-bundle
+    namespace: verification
+  result: pass
+- policy: edge-identity
+  rule: route-population
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    name: verification-bundle
+    namespace: verification
+  result: pass
+- policy: edge-identity
+  rule: route-service-grant-joins
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    name: verification-bundle
+    namespace: verification
+  result: pass
+- policy: edge-identity
+  rule: backend-tls-population
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    name: verification-bundle
+    namespace: verification
+  result: pass
+- policy: edge-identity
+  rule: origin-populations
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    name: verification-bundle
+    namespace: verification
+  result: pass
+- policy: edge-identity
+  rule: gateway-populations
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    name: verification-bundle
+    namespace: verification
+  result: pass
+- policy: edge-identity
+  rule: backend-exact-isolation
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    name: verification-bundle
+    namespace: verification
+  result: pass
+- policy: edge-identity
+  rule: effective-ingress-authority
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    name: verification-bundle
+    namespace: verification
+  result: pass
+- policy: edge-identity
+  rule: identity-data-deployment
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: kanidm
+    namespace: identity
+  result: pass
+- policy: edge-identity
+  rule: identity-data-claim
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: PersistentVolumeClaim
+    name: identity-kanidm
+    namespace: identity
+  result: pass
+- policy: edge-identity
+  rule: identity-data-volume
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: PersistentVolume
+    name: identity-kanidm
+  result: pass
+- policy: edge-identity
+  rule: identity-backup-absent
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    name: kanidm-config
+    namespace: identity
+  result: pass
+- policy: edge-identity
+  rule: route-inventory
+  resources: []
+  resourceSpecs:
+  - group: gateway.networking.k8s.io
+    version: v1
+    kind: HTTPRoute
+    name: idm
+    namespace: gateway
+  result: pass
+- policy: edge-identity
+  rule: route-domain-placement
+  resources: []
+  resourceSpecs:
+  - group: gateway.networking.k8s.io
+    version: v1
+    kind: HTTPRoute
+    name: idm
+    namespace: gateway
+  result: pass
+- policy: edge-identity
+  rule: request-header-sanitizer
+  resources: []
+  resourceSpecs:
+  - group: gateway.networking.k8s.io
+    version: v1
+    kind: HTTPRoute
+    name: idm
+    namespace: gateway
+  result: pass
+- policy: edge-identity
+  rule: route-timeouts
+  resources: []
+  resourceSpecs:
+  - group: gateway.networking.k8s.io
+    version: v1
+    kind: HTTPRoute
+    name: idm
+    namespace: gateway
+  result: pass
+- policy: edge-identity
+  rule: backend-isolation-shape
+  resources: []
+  resourceSpecs:
+  - group: networking.k8s.io
+    version: v1
+    kind: NetworkPolicy
+    name: gateway-idm-backend-ingress
+    namespace: identity
+  result: pass
+- policy: edge-identity
+  rule: route-inventory
+  resources: []
+  resourceSpecs:
+  - group: gateway.networking.k8s.io
+    version: v1
+    kind: HTTPRoute
+    name: jellyfin
+    namespace: gateway
+  result: pass
+- policy: edge-identity
+  rule: route-domain-placement
+  resources: []
+  resourceSpecs:
+  - group: gateway.networking.k8s.io
+    version: v1
+    kind: HTTPRoute
+    name: jellyfin
+    namespace: gateway
+  result: pass
+- policy: edge-identity
+  rule: request-header-sanitizer
+  resources: []
+  resourceSpecs:
+  - group: gateway.networking.k8s.io
+    version: v1
+    kind: HTTPRoute
+    name: jellyfin
+    namespace: gateway
+  result: pass
+- policy: edge-identity
+  rule: route-timeouts
+  resources: []
+  resourceSpecs:
+  - group: gateway.networking.k8s.io
+    version: v1
+    kind: HTTPRoute
+    name: jellyfin
+    namespace: gateway
+  result: pass
+- policy: edge-identity
+  rule: backend-isolation-shape
+  resources: []
+  resourceSpecs:
+  - group: networking.k8s.io
+    version: v1
+    kind: NetworkPolicy
+    name: gateway-jellyfin-backend-ingress
+    namespace: jellyfin
+  result: pass
+- policy: edge-identity
+  rule: route-inventory
+  resources: []
+  resourceSpecs:
+  - group: gateway.networking.k8s.io
+    version: v1
+    kind: HTTPRoute
+    name: requests
+    namespace: gateway
+  result: pass
+- policy: edge-identity
+  rule: route-domain-placement
+  resources: []
+  resourceSpecs:
+  - group: gateway.networking.k8s.io
+    version: v1
+    kind: HTTPRoute
+    name: requests
+    namespace: gateway
+  result: pass
+- policy: edge-identity
+  rule: request-header-sanitizer
+  resources: []
+  resourceSpecs:
+  - group: gateway.networking.k8s.io
+    version: v1
+    kind: HTTPRoute
+    name: requests
+    namespace: gateway
+  result: pass
+- policy: edge-identity
+  rule: route-timeouts
+  resources: []
+  resourceSpecs:
+  - group: gateway.networking.k8s.io
+    version: v1
+    kind: HTTPRoute
+    name: requests
+    namespace: gateway
+  result: pass
+- policy: edge-identity
+  rule: backend-isolation-shape
+  resources: []
+  resourceSpecs:
+  - group: networking.k8s.io
+    version: v1
+    kind: NetworkPolicy
+    name: gateway-requests-backend-ingress
+    namespace: media
+  result: pass
+- policy: edge-identity
+  rule: backend-tls
+  resources: []
+  resourceSpecs:
+  - group: gateway.networking.k8s.io
+    version: v1
+    kind: BackendTLSPolicy
+    name: idm
+    namespace: identity
+  result: pass
+- policy: edge-identity
+  rule: client-traffic-origin
+  resources: []
+  resourceSpecs:
+  - group: gateway.envoyproxy.io
+    version: v1alpha1
+    kind: ClientTrafficPolicy
+    name: trusted-edges
+    namespace: gateway
+  result: pass
+- policy: edge-identity
+  rule: gateway-native-origin
+  resources: []
+  resourceSpecs:
+  - group: gateway.networking.k8s.io
+    version: v1
+    kind: Gateway
+    name: household
+    namespace: gateway
+  result: pass
+- policy: edge-identity
+  rule: proxy-native-origin
+  resources: []
+  resourceSpecs:
+  - group: gateway.envoyproxy.io
+    version: v1alpha1
+    kind: EnvoyProxy
+    name: household
+    namespace: gateway
+  result: pass
+- policy: edge-identity
+  rule: gateway-class
+  resources: []
+  resourceSpecs:
+  - group: gateway.networking.k8s.io
+    version: v1
+    kind: GatewayClass
+    name: envoy
+  result: pass
+- policy: edge-identity
+  rule: gateway-controller-image
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: envoy-gateway
+    namespace: gateway
+  result: pass
+- policy: edge-identity
+  rule: gateway-proxy-image
+  resources: []
+  resourceSpecs:
+  - group: gateway.envoyproxy.io
+    version: v1alpha1
+    kind: EnvoyProxy
+    name: household
+    namespace: gateway
+  result: pass
+- policy: edge-identity
+  rule: controller-config-pinned-images
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    name: envoy-gateway-config
+    namespace: gateway
+  result: pass

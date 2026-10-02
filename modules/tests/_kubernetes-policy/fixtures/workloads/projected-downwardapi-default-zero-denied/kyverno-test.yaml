@@ -1,0 +1,33 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: projected-downwardapi-default-zero-denied
+  annotations:
+    verification.homelab/variant: normal-ready-trustedEdges
+policies:
+- ../../../workloads.yaml
+resources:
+- resources.yaml
+paramResources:
+- ../policy-facts.yaml
+results:
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: Pod
+    name: credential-reader
+    namespace: verification
+  result: fail
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: Pod
+    name: credential-reader
+    namespace: verification
+  result: pass

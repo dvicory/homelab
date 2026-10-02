@@ -1,0 +1,33 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: route-empty-hostnames
+  annotations:
+    verification.homelab/variant: normal-ready-trustedEdges
+policies:
+- ../../../edge-identity.yaml
+resources:
+- resources.yaml
+paramResources:
+- policy-facts.yaml
+results:
+- policy: edge-identity
+  rule: route-inventory
+  resources: []
+  resourceSpecs:
+  - group: gateway.networking.k8s.io
+    version: v1
+    kind: HTTPRoute
+    name: idm
+    namespace: gateway
+  result: fail
+- policy: edge-identity
+  rule: route-domain-placement
+  resources: []
+  resourceSpecs:
+  - group: gateway.networking.k8s.io
+    version: v1
+    kind: HTTPRoute
+    name: idm
+    namespace: gateway
+  result: fail

@@ -1,0 +1,23 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: gateway-controller-image-unpinned
+  annotations:
+    verification.homelab/variant: normal-ready-trustedEdges
+policies:
+- ../../../edge-identity.yaml
+resources:
+- resources.yaml
+paramResources:
+- policy-facts.yaml
+results:
+- policy: edge-identity
+  rule: gateway-controller-image
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: envoy-gateway
+    namespace: gateway
+  result: fail

@@ -1,0 +1,43 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: media-job-configarr-hostpath
+  annotations:
+    verification.homelab/variant: normal-ready-trustedEdges
+policies:
+- ../../../workloads.yaml
+resources:
+- resources.yaml
+paramResources:
+- ../policy-facts.yaml
+results:
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: media-configarr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: media-configarr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: media-configuration-state
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: media-configarr
+    namespace: media
+  result: fail

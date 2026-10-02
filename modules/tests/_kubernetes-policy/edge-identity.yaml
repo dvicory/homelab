@@ -1,0 +1,1052 @@
+# Resource-local contracts match actual Kubernetes resources. Only population,
+# provenance and cross-resource joins use the independent verification bundle.
+# Additional selecting NetworkPolicies are checked as an effective ingress union.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: edge-identity
+  annotations:
+    pod-policies.kyverno.io/autogen-controllers: none
+spec:
+  background: false
+  rules:
+  - name: identity-populations
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      failureAction: Enforce
+      cel:
+        variables: &id001
+        - name: objects
+          expression: object.bundle.resources.map(r, r.object)
+        - name: cluster
+          expression: object.bundle.expected.cluster
+        - name: phase
+          expression: variables.cluster.settings.kubernetes.services.identity.phase
+        - name: inventory
+          expression: variables.cluster.routes
+        - name: active
+          expression: >-
+            variables.inventory.filter(n, (variables.inventory[n].auth != 'admin' || variables.phase ==
+            'normal') && (n != 'requests' || variables.cluster.settings.kubernetes.services.seerr.phase
+            == 'ready'))
+        - name: admins
+          expression: variables.inventory.filter(n, variables.inventory[n].auth == 'admin')
+        - name: routes
+          expression: variables.objects.filter(o, o.kind == 'HTTPRoute')
+        - name: tls
+          expression: variables.objects.filter(o, o.kind == 'BackendTLSPolicy' && o.metadata.name != 'kanidm-oidc-tls')
+        - name: isolation
+          expression: >-
+            variables.objects.filter(o, o.kind == 'NetworkPolicy' && o.metadata.name.startsWith('gateway-')
+            && o.metadata.name.endsWith('-backend-ingress'))
+        - name: peers
+          expression: variables.cluster.ingress.trustedProxyCIDRs
+        - name: gatewayImage
+          expression: '''docker.io/envoyproxy/gateway:v1.9.1@sha256:0049bcb384c591c6a6dd043fe5c9929ef6e74f230e12dd678d2d3701df9b301e'''
+        - name: proxyImage
+          expression: >-
+            'docker.io/envoyproxy/envoy:distroless-v1.39.1@sha256:eb2c01c13125d1629637cb4e4cce7207009fb7cc2c8027f9742758549d15b6f4'
+        expressions:
+        - expression: variables.phase in ['initial', 'provisioning', 'normal']
+          message: >-
+            Identity phase must have its own complete population, without initial provisioning or premature
+            OIDC transport.
+        - expression: >-
+            ['Deployment', 'Service', 'ConfigMap'].all(k, variables.objects.filter(o, o.kind == k && o.metadata.name
+            == (k == 'ConfigMap' ? 'kanidm-config' : 'kanidm') && has(o.metadata.namespace) && o.metadata.namespace
+            == 'identity').size() == 1)
+          message: >-
+            Identity phase must have its own complete population, without initial provisioning or premature
+            OIDC transport.
+        - expression: >-
+            ['ConfigMap', 'ServiceAccount', 'Job'].all(k, variables.objects.filter(o, o.kind == k && o.metadata.name
+            == 'kanidm-provision').size() == (variables.phase == 'initial' ? 0 : 1)) && ['Role', 'RoleBinding'].all(k,
+            variables.objects.filter(o, o.kind == k && o.metadata.name == 'kanidm-client-secret').size()
+            == (variables.phase == 'initial' ? 0 : 1))
+          message: >-
+            Identity phase must have its own complete population, without initial provisioning or premature
+            OIDC transport.
+        - expression: >-
+            ['Backend', 'BackendTLSPolicy', 'ReferenceGrant'].all(k, variables.objects.filter(o, o.kind
+            == k && o.metadata.name == (k == 'Backend' ? 'kanidm-oidc' : k == 'BackendTLSPolicy' ? 'kanidm-oidc-tls'
+            : 'gateway-oidc-backend')).size() == (variables.phase == 'normal' ? 1 : 0))
+          message: >-
+            Identity phase must have its own complete population, without initial provisioning or premature
+            OIDC transport.
+        - expression: >-
+            object.bundle.resources.filter(r, (r.object.kind == 'Backend' && r.object.metadata.name ==
+            'kanidm-oidc') || (r.object.kind == 'BackendTLSPolicy' && r.object.metadata.name == 'kanidm-oidc-tls')
+            || (r.object.kind == 'ReferenceGrant' && r.object.metadata.name == 'gateway-oidc-backend'))
+            .all(r, 'identity-gateway' in r.file.split('/'))
+          message: OIDC transport belongs to the normal administrator consumer application, never the
+            identity application.
+  - name: administrator-publication-atomic
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      failureAction: Enforce
+      cel:
+        variables: *id001
+        expressions:
+        - expression: >-
+            variables.objects.filter(o, o.kind == 'SecurityPolicy' && o.metadata.name.endsWith('-admin')).size()
+            == (variables.phase == 'normal' ? variables.admins.size() : 0)
+          message: >-
+            Administrator route and SecurityPolicy must publish together only in normal, with matching
+            namespace, target and waves.
+        - expression: >-
+            variables.admins.all(n, variables.routes.filter(r, r.metadata.name == n).size() == (variables.phase
+            == 'normal' ? 1 : 0) && variables.objects.filter(o, o.kind == 'SecurityPolicy' && o.metadata.name
+            == n + '-admin').size() == (variables.phase == 'normal' ? 1 : 0))
+          message: >-
+            Administrator route and SecurityPolicy must publish together only in normal, with matching
+            namespace, target and waves.
+        - expression: >-
+            variables.objects.filter(o, o.kind == 'SecurityPolicy' && o.metadata.name.endsWith('-admin')).all(p,
+            variables.admins.exists(n, p.metadata.name == n + '-admin' && variables.routes.exists(r, r.metadata.name
+            == n && p.metadata.namespace == r.metadata.namespace && p.spec.targetRefs == [{'group':r.apiVersion.split('/')[0],
+            'kind':r.kind, 'name':r.metadata.name}] && p.metadata.annotations['argocd.argoproj.io/sync-wave']
+            == '-1' && r.metadata.annotations['argocd.argoproj.io/sync-wave'] == '0')))
+          message: >-
+            Administrator route and SecurityPolicy must publish together only in normal, with matching
+            namespace, target and waves.
+        - expression: >-
+            variables.objects.filter(o, o.kind in ['ReferenceGrant', 'BackendTLSPolicy', 'NetworkPolicy']).all(o,
+            variables.admins.all(n, !(o.metadata.name in ['gateway-' + n, n, 'gateway-' + n + '-backend-ingress'])
+            || variables.phase == 'normal'))
+          message: >-
+            Administrator route and SecurityPolicy must publish together only in normal, with matching
+            namespace, target and waves.
+  - name: native-idm-population
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      failureAction: Enforce
+      cel:
+        variables: *id001
+        expressions:
+        - expression: variables.routes.filter(o, o.metadata.name == 'idm').size() == 1
+          message: Native identity data must remain on its retained claim and native idm route in every
+            phase.
+        - expression: >-
+            variables.objects.filter(o, o.kind == 'PersistentVolumeClaim' && o.metadata.name == 'identity-kanidm'
+            && o.metadata.namespace == 'identity').size() == 1 && variables.objects.filter(o, o.kind ==
+            'PersistentVolume' && o.metadata.name == 'identity-kanidm').size() == 1
+          message: Native identity data must remain on its retained claim and native idm route in every
+            phase.
+        - expression: >-
+            variables.inventory.idm.namespace == 'identity' && variables.inventory.idm.service == 'kanidm'
+            && variables.inventory.idm.port == 443 && variables.inventory.idm.backendTLS && variables.inventory.idm.backendHostname
+            == variables.inventory.idm.hostnames[0] && variables.inventory.idm.pathPrefix == '/'
+          message: The native idm route must retain its identity Service and HTTPS hostname-root boundary.
+  - name: seerr-publication
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      failureAction: Enforce
+      cel:
+        variables: *id001
+        expressions:
+        - expression: >-
+            variables.cluster.settings.kubernetes.services.seerr.phase in ['initial', 'ready'] && variables.inventory.requests.auth
+            == 'native' && variables.inventory.requests.exposure == 'public'
+          message: Requests publication must follow Seerr initial/ready facts independently of identity
+            phase.
+        - expression: >-
+            variables.routes.filter(o, o.metadata.name == 'requests').size() == (variables.cluster.settings.kubernetes.services.seerr.phase
+            == 'ready' ? 1 : 0)
+          message: Requests publication must follow Seerr initial/ready facts independently of identity
+            phase.
+  - name: route-population
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      failureAction: Enforce
+      cel:
+        variables: *id001
+        expressions:
+        - expression: >-
+            variables.routes.size() == variables.active.size() && variables.active.all(n, variables.routes.filter(o,
+            o.metadata.name == n && o.metadata.namespace == 'gateway').size() == 1)
+          message: Every active inventory route must render exactly once; unknown or inactive routes are
+            forbidden.
+  - name: route-service-grant-joins
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      failureAction: Enforce
+      cel:
+        variables: *id001
+        expressions:
+        - expression: >-
+            variables.routes.all(r, has(r.spec.rules) && r.spec.rules.size() > 0 && r.spec.rules.all(rule,
+            has(rule.backendRefs) && rule.backendRefs.size() > 0 && rule.backendRefs.all(ref, (!has(ref.group)
+            || ref.group == '') && (!has(ref.kind) || ref.kind == 'Service') && has(ref.port) && type(ref.port)
+            == int && ref.port >= 1 && ref.port <= 65535 && variables.objects.exists(s, s.kind == 'Service'
+            && s.metadata.name == ref.name && (has(s.metadata.namespace) ? s.metadata.namespace : 'default')
+            == (has(ref.namespace) ? ref.namespace : (has(r.metadata.namespace) ? r.metadata.namespace
+            : 'default')) && s.spec.ports.exists(p, p.port == ref.port)) && ((has(ref.namespace) ? ref.namespace
+            : (has(r.metadata.namespace) ? r.metadata.namespace : 'default')) == (has(r.metadata.namespace)
+            ? r.metadata.namespace : 'default') || variables.objects.exists(g, g.kind == 'ReferenceGrant'
+            && g.apiVersion.split('/')[0] == 'gateway.networking.k8s.io' && (has(g.metadata.namespace)
+            ? g.metadata.namespace : 'default') == (has(ref.namespace) ? ref.namespace : (has(r.metadata.namespace)
+            ? r.metadata.namespace : 'default')) && g.spec.from.exists(f, f.group == 'gateway.networking.k8s.io'
+            && f.kind == 'HTTPRoute' && f.namespace == (has(r.metadata.namespace) ? r.metadata.namespace
+            : 'default')) && g.spec.to.exists(t, (!has(t.group) || t.group == '') && t.kind == 'Service'
+            && (!has(t.name) || t.name == ref.name)))))))
+          message: Every route must resolve a valid Service port and a cross-namespace ReferenceGrant
+            using effective namespaces.
+  - name: backend-tls-population
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      failureAction: Enforce
+      cel:
+        variables: *id001
+        expressions:
+        - expression: >-
+            variables.tls.size() == variables.active.filter(n, variables.inventory[n].backendTLS).size()
+            && variables.active.filter(n, variables.inventory[n].backendTLS).all(n, variables.tls.filter(t,
+            t.metadata.name == n).size() == 1)
+          message: Every active TLS backend must have exactly one matching System-PKI policy; unknown
+            policies are forbidden.
+  - name: origin-populations
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      failureAction: Enforce
+      cel:
+        variables: *id001
+        expressions:
+        - expression: >-
+            (variables.cluster.ingress.mode == 'direct' && variables.peers.size() == 0) || (variables.cluster.ingress.mode
+            == 'trustedEdges' && variables.peers.size() > 0)
+          message: Ingress mode must have exact native request ID/client IP behavior and trusted-edge
+            private-origin isolation.
+        - expression: >-
+            variables.objects.filter(o, o.kind == 'ClientTrafficPolicy').size() == 1 && variables.objects.filter(o,
+            o.kind == 'NetworkPolicy' && o.metadata.name == 'private-origin').size() == (variables.cluster.ingress.mode
+            == 'trustedEdges' ? 1 : 0)
+          message: Native traffic and trusted-origin populations must be complete.
+  - name: gateway-populations
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      failureAction: Enforce
+      cel:
+        variables: *id001
+        expressions:
+        - expression: >-
+            variables.objects.filter(o, o.kind == 'Gateway' && o.metadata.name == 'household' && o.metadata.namespace
+            == 'gateway').size() == 1 && variables.objects.filter(o, o.kind == 'EnvoyProxy' && o.metadata.name
+            == 'household' && o.metadata.namespace == 'gateway').size() == 1
+          message: Native Gateway and EnvoyProxy must retain the HTTPS listener and local private-origin
+            NodePort.
+        - expression: >-
+            variables.objects.filter(o, o.kind == 'GatewayClass' && o.metadata.name == 'envoy').size()
+            == 1 && variables.objects.filter(o, o.kind == 'Deployment' && o.metadata.name == 'envoy-gateway'
+            && o.metadata.namespace == 'gateway').size() == 1 && variables.objects.filter(o, o.kind ==
+            'ConfigMap' && o.metadata.name == 'envoy-gateway-config' && o.metadata.namespace == 'gateway').size()
+            == 1
+          message: Gateway controller/class/configuration populations must be complete.
+  - name: backend-exact-isolation
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      failureAction: Enforce
+      cel:
+        variables: *id001
+        expressions:
+        - expression: >-
+            variables.isolation.size() == variables.active.size() && variables.active.all(n, variables.isolation.filter(p,
+            p.metadata.name == 'gateway-' + n + '-backend-ingress').size() == 1)
+          message: Each route must retain its own exact backend isolation policy, even for independent
+            same-namespace identities.
+  - name: provisioning-serviceaccount
+    match:
+      any:
+      - resources:
+          kinds:
+          - ServiceAccount
+          names:
+          - kanidm-provision
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: object.metadata.namespace == 'identity' && object.automountServiceAccountToken ==
+            false
+          message: provisioning serviceaccount
+  - name: provisioning-rbac-postsync
+    match:
+      any:
+      - resources:
+          kinds:
+          - Job
+          names:
+          - kanidm-provision
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: >-
+            object.metadata.namespace == 'identity' && object.metadata.annotations['argocd.argoproj.io/hook']
+            == 'PostSync' && object.spec.template.spec.serviceAccountName == 'kanidm-provision'
+          message: provisioning rbac postsync
+  - name: provisioning-secret-role
+    match:
+      any:
+      - resources:
+          kinds:
+          - Role
+          names:
+          - kanidm-client-secret
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: >-
+            object.metadata.namespace == 'gateway' && object.rules == [{'apiGroups':[''], 'resources':['secrets'],
+            'verbs':['create']}, {'apiGroups':[''], 'resources':['secrets'], 'resourceNames':['oidc-client'],
+            'verbs':['patch']}]
+          message: provisioning secret role
+  - name: provisioning-secret-binding
+    match:
+      any:
+      - resources:
+          kinds:
+          - RoleBinding
+          names:
+          - kanidm-client-secret
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: >-
+            object.metadata.namespace == 'gateway' && object.roleRef == {'apiGroup':'rbac.authorization.k8s.io',
+            'kind':'Role', 'name':'kanidm-client-secret'} && object.subjects == [{'kind':'ServiceAccount',
+            'name':'kanidm-provision', 'namespace':'identity'}]
+          message: provisioning secret binding
+  - name: administrator-membership
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - kanidm-provision
+          namespaces:
+          - identity
+    context:
+    - &id002
+      name: facts
+      apiCall:
+        urlPath: /api/v1/namespaces/verification/configmaps/policy-facts
+        jmesPath: data
+    - name: members
+      variable:
+        jmesPath: parse_json(request.object.data."members.json")
+    - name: state
+      variable:
+        jmesPath: parse_json(request.object.data."state.json")
+    - name: expectedMembers
+      variable:
+        jmesPath: (facts.identityPhase == 'normal' && sort(keys(state.persons))) || `[]`
+    validate:
+      failureAction: Enforce
+      message: administrator membership
+      deny:
+        conditions:
+          any:
+          - key: '{{ members }}'
+            operator: NotEquals
+            value: '{{ expectedMembers }}'
+  - name: identity-data-deployment
+    match:
+      any:
+      - resources:
+          kinds:
+          - Deployment
+          names:
+          - kanidm
+          namespaces:
+          - identity
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: >-
+            object.spec.template.spec.volumes.exists(v, v.name == 'data' && v.persistentVolumeClaim.claimName
+            == 'identity-kanidm') && object.spec.template.spec.containers.exists(c, c.name == 'kanidm'
+            && c.volumeMounts.exists(m, m.name == 'data' && m.mountPath == '/data'))
+          message: identity data deployment
+  - name: identity-data-claim
+    match:
+      any:
+      - resources:
+          kinds:
+          - PersistentVolumeClaim
+          names:
+          - identity-kanidm
+          namespaces:
+          - identity
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: object.spec.volumeName == 'identity-kanidm'
+          message: identity data claim
+  - name: identity-data-volume
+    match:
+      any:
+      - resources:
+          kinds:
+          - PersistentVolume
+          names:
+          - identity-kanidm
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: >-
+            object.spec.local.path == params.data.identityKanidmGuestPath && object.spec.claimRef.name
+            == 'identity-kanidm' && object.spec.claimRef.namespace == 'identity'
+          message: identity data volume
+        paramKind:
+          apiVersion: v1
+          kind: ConfigMap
+        paramRef:
+          name: policy-facts
+          namespace: verification
+          parameterNotFoundAction: Deny
+  - name: identity-backup-absent
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - kanidm-config
+          namespaces:
+          - identity
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: >-
+            !object.data['server.toml'].contains('[online_backup]') && !object.data['server.toml'].contains('schedule
+            =') && !object.data['server.toml'].contains('versions =')
+          message: identity backup absent
+  - name: oidc-backend
+    match:
+      any:
+      - resources:
+          kinds:
+          - Backend
+          names:
+          - kanidm-oidc
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: >-
+            object.metadata.namespace == 'identity' && object.spec.endpoints == [{'fqdn':{'hostname':'kanidm.identity.svc.cluster.local',
+            'port':443}}]
+          message: oidc backend
+  - name: oidc-system-pki
+    match:
+      any:
+      - resources:
+          kinds:
+          - BackendTLSPolicy
+          names:
+          - kanidm-oidc-tls
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: >-
+            object.metadata.namespace == 'identity' && object.spec.targetRefs == [{'group':'gateway.envoyproxy.io',
+            'kind':'Backend', 'name':'kanidm-oidc'}] && object.spec.validation == {'hostname':params.data['route.idm.backendHostname'],
+            'wellKnownCACertificates':'System'}
+          message: oidc system pki
+        paramKind:
+          apiVersion: v1
+          kind: ConfigMap
+        paramRef:
+          name: policy-facts
+          namespace: verification
+          parameterNotFoundAction: Deny
+  - name: oidc-reference-grant
+    match:
+      any:
+      - resources:
+          kinds:
+          - ReferenceGrant
+          names:
+          - gateway-oidc-backend
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: >-
+            object.metadata.namespace == 'identity' && object.spec.from == [{'group':'gateway.envoyproxy.io',
+            'kind':'SecurityPolicy', 'namespace':'gateway'}] && object.spec.to == [{'group':'gateway.envoyproxy.io',
+            'kind':'Backend', 'name':'kanidm-oidc'}]
+          message: oidc reference grant
+  - name: provisioner-system-pki
+    match:
+      any:
+      - resources:
+          kinds:
+          - Job
+          names:
+          - kanidm-provision
+          namespaces:
+          - identity
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: >-
+            object.spec.template.spec.volumes.all(v, v.name != 'trust') && object.spec.template.spec.containers.all(c,
+            (!has(c.env) || c.env.all(e, !(e.name in ['SSL_CERT_FILE', 'CURL_CA_BUNDLE']))) && (!has(c.volumeMounts)
+            || c.volumeMounts.all(m, m.name != 'trust')))
+          message: provisioner system pki
+  - name: route-inventory
+    match:
+      any:
+      - resources:
+          kinds:
+          - HTTPRoute
+          names: &id003
+          - argocd
+          - radarr
+          - sonarr
+          - prowlarr
+          - sabnzbd
+          - requests
+          - jellyfin
+          - idm
+          namespaces:
+          - gateway
+    context:
+    - *id002
+    - name: routeHosts
+      variable:
+        jmesPath: parse_json(facts."route.{{ request.object.metadata.name }}.hostnames")
+    - name: routeNamespace
+      variable:
+        jmesPath: facts."route.{{ request.object.metadata.name }}.namespace"
+    - name: routeService
+      variable:
+        jmesPath: facts."route.{{ request.object.metadata.name }}.service"
+    - name: routePort
+      variable:
+        jmesPath: to_number(facts."route.{{ request.object.metadata.name }}.port")
+    - name: routePath
+      variable:
+        jmesPath: facts."route.{{ request.object.metadata.name }}.pathPrefix"
+    validate:
+      failureAction: Enforce
+      message: route inventory
+      deny:
+        conditions:
+          any:
+          - key: '{{ request.object.spec.hostnames }}'
+            operator: NotEquals
+            value: '{{ routeHosts }}'
+          - key: '{{ request.object.spec.parentRefs }}'
+            operator: NotEquals
+            value:
+            - name: household
+          - key: '{{ length(request.object.spec.rules) }}'
+            operator: NotEquals
+            value: 1
+          - key: '{{ request.object.spec.rules[0].matches }}'
+            operator: NotEquals
+            value:
+            - path:
+                type: PathPrefix
+                value: '{{ routePath }}'
+          - key: '{{ request.object.spec.rules[0].backendRefs }}'
+            operator: NotEquals
+            value:
+            - name: '{{ routeService }}'
+              namespace: '{{ routeNamespace }}'
+              port: '{{ routePort }}'
+  - name: route-domain-placement
+    match:
+      any:
+      - resources:
+          kinds:
+          - HTTPRoute
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: >-
+            has(object.spec.hostnames) && object.spec.hostnames.size() > 0 && object.spec.hostnames.all(h,
+            [params.data.domain, params.data.backupDomain].exists(d, h == d || h.endsWith('.' + d)))
+          message: route domain placement
+        paramKind:
+          apiVersion: v1
+          kind: ConfigMap
+        paramRef:
+          name: policy-facts
+          namespace: verification
+          parameterNotFoundAction: Deny
+  - name: request-header-sanitizer
+    match:
+      any:
+      - resources:
+          kinds:
+          - HTTPRoute
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: >-
+            object.spec.rules.all(rule, rule.filters.size() == 1 && rule.filters[0].type == 'RequestHeaderModifier'
+            && rule.filters[0].requestHeaderModifier.size() == 1 && rule.filters[0].requestHeaderModifier.remove.size()
+            == 7 && ['X-Real-IP', 'X-Forwarded-User', 'X-Forwarded-Email', 'X-Auth-Request-User', 'X-Auth-Request-Email',
+            'Remote-User', 'Forwarded'].all(h, h in rule.filters[0].requestHeaderModifier.remove))
+          message: request header sanitizer
+  - name: route-timeouts
+    match:
+      any:
+      - resources:
+          kinds:
+          - HTTPRoute
+          names: *id003
+          namespaces:
+          - gateway
+    context:
+    - *id002
+    - name: routeTimeouts
+      variable:
+        jmesPath: >-
+          parse_json(facts."route.{{ request.object.metadata.name }}.timeouts") || `{"request":"15s","backendRequest":"15s"}`
+    validate:
+      failureAction: Enforce
+      message: route timeouts
+      foreach:
+      - list: request.object.spec.rules
+        deny:
+          conditions:
+            any:
+            - key: '{{ element.timeouts }}'
+              operator: NotEquals
+              value: '{{ routeTimeouts }}'
+  - name: backend-tls
+    match:
+      any:
+      - resources:
+          kinds:
+          - BackendTLSPolicy
+          names:
+          - idm
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: >-
+            object.metadata.namespace == params.data['route.' + object.metadata.name + '.namespace'] &&
+            object.spec.targetRefs == [{'group':'', 'kind':'Service', 'name':params.data['route.' + object.metadata.name
+            + '.service']}] && object.spec.validation == {'hostname':params.data['route.' + object.metadata.name
+            + '.backendHostname'], 'wellKnownCACertificates':'System'}
+          message: backend tls
+        paramKind:
+          apiVersion: v1
+          kind: ConfigMap
+        paramRef:
+          name: policy-facts
+          namespace: verification
+          parameterNotFoundAction: Deny
+  - name: client-traffic-origin
+    match:
+      any:
+      - resources:
+          kinds:
+          - ClientTrafficPolicy
+          names:
+          - trusted-edges
+          namespaces:
+          - gateway
+    context:
+    - *id002
+    - name: peers
+      variable:
+        jmesPath: parse_json(facts.trustedProxyCIDRs)
+    - name: clientDetection
+      variable:
+        jmesPath: (facts.ingressMode == 'direct' && `{"directSourceIP":{}}`) || {xForwardedFor:{trustedCIDRs:peers}}
+    - name: requestID
+      variable:
+        jmesPath: (facts.ingressMode == 'direct' && 'Generate') || 'PreserveOrGenerate'
+    validate:
+      failureAction: Enforce
+      message: client traffic origin
+      deny:
+        conditions:
+          any:
+          - key: '{{ request.object.spec.targetRefs }}'
+            operator: NotEquals
+            value:
+            - group: gateway.networking.k8s.io
+              kind: Gateway
+              name: household
+          - key: '{{ request.object.spec.clientIPDetection }}'
+            operator: NotEquals
+            value: '{{ clientDetection }}'
+          - key: '{{ request.object.spec.headers }}'
+            operator: NotEquals
+            value:
+              requestID: '{{ requestID }}'
+          - key: '{{ length(request.object.spec) }}'
+            operator: NotEquals
+            value: 3
+  - name: private-origin-isolation
+    match:
+      any:
+      - resources:
+          kinds:
+          - NetworkPolicy
+          names:
+          - private-origin
+          namespaces:
+          - gateway
+    context:
+    - *id002
+    - name: peers
+      variable:
+        jmesPath: parse_json(facts.trustedProxyCIDRs)
+    - name: sources
+      variable:
+        jmesPath: peers[].{ipBlock:{cidr:@}}
+    validate:
+      failureAction: Enforce
+      message: private origin isolation
+      deny:
+        conditions:
+          any:
+          - key: '{{ request.object.spec.podSelector }}'
+            operator: NotEquals
+            value:
+              matchLabels:
+                gateway.envoyproxy.io/owning-gateway-namespace: gateway
+                gateway.envoyproxy.io/owning-gateway-name: household
+          - key: '{{ request.object.spec.policyTypes }}'
+            operator: NotEquals
+            value:
+            - Ingress
+          - key: '{{ request.object.spec.ingress }}'
+            operator: NotEquals
+            value:
+            - from: '{{ sources }}'
+              ports:
+              - protocol: TCP
+                port: 10443
+          - key: '{{ length(request.object.spec) }}'
+            operator: NotEquals
+            value: 3
+  - name: gateway-native-origin
+    match:
+      any:
+      - resources:
+          kinds:
+          - Gateway
+          names:
+          - household
+          namespaces:
+          - gateway
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: >-
+            object.spec.gatewayClassName == 'envoy' && object.spec.infrastructure.parametersRef == {'group':'gateway.envoyproxy.io',
+            'kind':'EnvoyProxy', 'name':'household'} && object.spec.listeners == [{'name':'https', 'protocol':'HTTPS',
+            'port':443, 'allowedRoutes':{'namespaces':{'from':'Same'}}, 'tls':{'mode':'Terminate', 'certificateRefs':[{'group':'',
+            'kind':'Secret', 'name':'gateway-tls'}]}}]
+          message: gateway native origin
+  - name: proxy-native-origin
+    match:
+      any:
+      - resources:
+          kinds:
+          - EnvoyProxy
+          names:
+          - household
+          namespaces:
+          - gateway
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: >-
+            object.spec.provider.type == 'Kubernetes' && object.spec.provider.kubernetes.envoyService
+            == {'name':'household-origin', 'type':'NodePort', 'externalTrafficPolicy':'Local', 'patch':{'type':'StrategicMerge',
+            'value':{'spec':{'ports':[{'name':'https', 'port':443, 'nodePort':int(params.data.nodePort)}]}}}}
+          message: proxy native origin
+        paramKind:
+          apiVersion: v1
+          kind: ConfigMap
+        paramRef:
+          name: policy-facts
+          namespace: verification
+          parameterNotFoundAction: Deny
+  - name: gateway-class
+    match:
+      any:
+      - resources:
+          kinds:
+          - GatewayClass
+          names:
+          - envoy
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: object.spec.controllerName == 'gateway.envoyproxy.io/gatewayclass-controller'
+          message: gateway class
+  - name: gateway-controller-image
+    match:
+      any:
+      - resources:
+          kinds:
+          - Deployment
+          names:
+          - envoy-gateway
+          namespaces:
+          - gateway
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: >-
+            object.spec.template.spec.containers.filter(c, c.name == 'envoy-gateway').size() == 1 && object.spec.template.spec.containers.filter(c,
+            c.name == 'envoy-gateway').all(c, c.image == 'docker.io/envoyproxy/gateway:v1.9.1@sha256:0049bcb384c591c6a6dd043fe5c9929ef6e74f230e12dd678d2d3701df9b301e')
+          message: gateway controller image
+  - name: gateway-proxy-image
+    match:
+      any:
+      - resources:
+          kinds:
+          - EnvoyProxy
+          names:
+          - household
+          namespaces:
+          - gateway
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: >-
+            object.spec.provider.kubernetes.envoyDeployment.container.image == 'docker.io/envoyproxy/envoy:distroless-v1.39.1@sha256:eb2c01c13125d1629637cb4e4cce7207009fb7cc2c8027f9742758549d15b6f4'
+          message: gateway proxy image
+  - name: controller-config-pinned-images
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - envoy-gateway-config
+          namespaces:
+          - gateway
+    context:
+    - name: controller
+      variable:
+        jmesPath: parse_yaml(request.object.data."envoy-gateway.yaml")
+    validate:
+      failureAction: Enforce
+      message: controller config pinned images
+      deny:
+        conditions:
+          any:
+          - key: '{{ controller.envoyProxy.provider.kubernetes.envoyDeployment.container.image }}'
+            operator: NotEquals
+            value: >-
+              docker.io/envoyproxy/envoy:distroless-v1.39.1@sha256:eb2c01c13125d1629637cb4e4cce7207009fb7cc2c8027f9742758549d15b6f4
+          - key: '{{ controller.provider.kubernetes.shutdownManager.image }}'
+            operator: NotEquals
+            value: docker.io/envoyproxy/gateway:v1.9.1@sha256:0049bcb384c591c6a6dd043fe5c9929ef6e74f230e12dd678d2d3701df9b301e
+  - name: backend-isolation-shape
+    match:
+      any:
+      - resources:
+          kinds:
+          - NetworkPolicy
+          names:
+          - gateway-*-backend-ingress
+    context:
+    - *id002
+    - name: routeName
+      variable:
+        jmesPath: regex_replace_all('^gateway-(.*)-backend-ingress$',request.object.metadata.name,'${1}')
+    - name: selector
+      variable:
+        jmesPath: parse_json(facts."route.{{ routeName }}.backendPodSelector")
+    - name: backendNamespace
+      variable:
+        jmesPath: facts."route.{{ routeName }}.namespace"
+    validate:
+      failureAction: Enforce
+      message: backend isolation shape
+      deny:
+        conditions:
+          any:
+          - key: '{{ request.object.metadata.namespace }}'
+            operator: NotEquals
+            value: '{{ backendNamespace }}'
+          - key: '{{ request.object.spec }}'
+            operator: NotEquals
+            value:
+              podSelector:
+                matchLabels: '{{ selector }}'
+              policyTypes:
+              - Ingress
+              ingress:
+              - from:
+                - namespaceSelector:
+                    matchLabels:
+                      kubernetes.io/metadata.name: '{{ backendNamespace }}'
+              - from:
+                - namespaceSelector:
+                    matchLabels:
+                      kubernetes.io/metadata.name: gateway
+                  podSelector:
+                    matchLabels:
+                      gateway.envoyproxy.io/owning-gateway-namespace: gateway
+                      gateway.envoyproxy.io/owning-gateway-name: household
+  - name: effective-ingress-authority
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      failureAction: Enforce
+      cel:
+        variables: *id001
+        expressions:
+        - expression: >-
+            variables.active.all(n, variables.objects.filter(p, p.kind == 'NetworkPolicy' && (has(p.metadata.namespace)
+            ? p.metadata.namespace : 'default') == variables.inventory[n].namespace && (!has(p.spec.policyTypes)
+            || p.spec.policyTypes.size() == 0 || 'Ingress' in p.spec.policyTypes) && ((!has(p.spec.podSelector.matchLabels)
+            || p.spec.podSelector.matchLabels.all(k, !(k in variables.inventory[n].backendPodSelector)
+            || p.spec.podSelector.matchLabels[k] == variables.inventory[n].backendPodSelector[k])) &&
+            (!has(p.spec.podSelector.matchExpressions) || p.spec.podSelector.matchExpressions.all(e, !(e.key
+            in variables.inventory[n].backendPodSelector) || (e.operator == 'In' ? variables.inventory[n].backendPodSelector[e.key]
+            in e.values : e.operator == 'NotIn' ? !(variables.inventory[n].backendPodSelector[e.key] in
+            e.values) : e.operator == 'Exists'))))).all(p, !has(p.spec.ingress) || p.spec.ingress.all(i,
+            has(i.from) && i.from.size() > 0 && i.from.all(f, ((!has(f.namespaceSelector) && has(f.podSelector)
+            && !has(f.ipBlock)) || (has(f.namespaceSelector) && f.namespaceSelector == {'matchLabels':{'kubernetes.io/metadata.name':variables.inventory[n].namespace}}
+            && !has(f.ipBlock)) || (has(f.namespaceSelector) && f.namespaceSelector == {'matchLabels':{'kubernetes.io/metadata.name':'gateway'}}
+            && has(f.podSelector.matchLabels) && 'gateway.envoyproxy.io/owning-gateway-name' in f.podSelector.matchLabels
+            && f.podSelector.matchLabels['gateway.envoyproxy.io/owning-gateway-name'] == 'household' &&
+            (n == 'idm' || ('gateway.envoyproxy.io/owning-gateway-namespace' in f.podSelector.matchLabels
+            && f.podSelector.matchLabels['gateway.envoyproxy.io/owning-gateway-namespace'] == 'gateway'))
+            && !has(f.ipBlock)) || (n == 'jellyfin' && has(f.namespaceSelector) && f.namespaceSelector
+            == {'matchLabels':{'kubernetes.io/metadata.name':'media'}} && has(f.podSelector.matchLabels)
+            && 'app.kubernetes.io/name' in f.podSelector.matchLabels && f.podSelector.matchLabels['app.kubernetes.io/name']
+            in ['seerr', 'media-config-seerr'] && !has(f.ipBlock) && has(i.ports) && i.ports.size() >
+            0 && i.ports.all(port, port.port == variables.inventory[n].port && (!has(port.protocol) ||
+            port.protocol == 'TCP') && !has(port.endPort))))))))
+          message: >-
+            Every selecting NetworkPolicy must preserve backend ingress authority; additive allow-all
+            policies cannot widen the union.
+        - expression: >-
+            variables.cluster.ingress.mode != 'trustedEdges' || variables.objects.filter(p, p.kind ==
+            'NetworkPolicy' && (has(p.metadata.namespace) ? p.metadata.namespace : 'default') == 'gateway'
+            && (!has(p.spec.policyTypes) || p.spec.policyTypes.size() == 0 || 'Ingress' in p.spec.policyTypes)
+            && ((!has(p.spec.podSelector.matchLabels) || p.spec.podSelector.matchLabels.all(k, !(k in
+            {'gateway.envoyproxy.io/owning-gateway-namespace':'gateway', 'gateway.envoyproxy.io/owning-gateway-name':'household'})
+            || p.spec.podSelector.matchLabels[k] == {'gateway.envoyproxy.io/owning-gateway-namespace':'gateway',
+            'gateway.envoyproxy.io/owning-gateway-name':'household'}[k])) && (!has(p.spec.podSelector.matchExpressions)
+            || p.spec.podSelector.matchExpressions.all(e, !(e.key in {'gateway.envoyproxy.io/owning-gateway-namespace':'gateway',
+            'gateway.envoyproxy.io/owning-gateway-name':'household'}) || (e.operator == 'In' ? {'gateway.envoyproxy.io/owning-gateway-namespace':'gateway',
+            'gateway.envoyproxy.io/owning-gateway-name':'household'}[e.key] in e.values : e.operator ==
+            'NotIn' ? !({'gateway.envoyproxy.io/owning-gateway-namespace':'gateway', 'gateway.envoyproxy.io/owning-gateway-name':'household'}[e.key]
+            in e.values) : e.operator == 'Exists'))))).all(p, !has(p.spec.ingress) || p.spec.ingress.all(i,
+            has(i.from) && i.from.size() > 0 && i.from.all(f, f.size() == 1 && has(f.ipBlock) && f.ipBlock.size()
+            == 1 && f.ipBlock.cidr in variables.peers) && has(i.ports) && i.ports.size() > 0 && i.ports.all(port,
+            port.port == 10443 && (!has(port.protocol) || port.protocol == 'TCP') && !has(port.endPort))))
+          message: Every selecting proxy NetworkPolicy must preserve the trusted-peer native listener
+            boundary.

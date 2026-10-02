@@ -1,0 +1,25 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: sharing-enabled
+  annotations:
+    verification.homelab/variant: normal-ready-trustedEdges
+policies:
+- ../../../gitops.yaml
+resources:
+- resources.yaml
+paramResources:
+- ../policy-facts.yaml
+variables: ../values.yaml
+results:
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: argocd
+  result: fail

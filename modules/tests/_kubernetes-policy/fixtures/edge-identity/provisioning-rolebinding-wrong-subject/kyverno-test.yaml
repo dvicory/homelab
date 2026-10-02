@@ -1,0 +1,23 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: provisioning-rolebinding-wrong-subject
+  annotations:
+    verification.homelab/variant: normal-ready-trustedEdges
+policies:
+- ../../../edge-identity.yaml
+resources:
+- resources.yaml
+paramResources:
+- policy-facts.yaml
+results:
+- policy: edge-identity
+  rule: provisioning-secret-binding
+  resources: []
+  resourceSpecs:
+  - group: rbac.authorization.k8s.io
+    version: v1
+    kind: RoleBinding
+    name: kanidm-client-secret
+    namespace: gateway
+  result: fail

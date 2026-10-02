@@ -1,0 +1,31 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: jellyfin-storage-pv-dynamic-class
+  annotations:
+    verification.homelab/variant: normal-ready-trustedEdges
+policies:
+- ../../../workloads.yaml
+resources:
+- resources.yaml
+paramResources:
+- ../policy-facts.yaml
+results:
+- policy: verification-workloads
+  rule: jellyfin-retained-storage
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: PersistentVolume
+    name: jellyfin-config
+  result: fail
+- policy: verification-workloads
+  rule: media-private-storage
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: PersistentVolume
+    name: jellyfin-config
+  result: pass

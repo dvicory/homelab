@@ -1,0 +1,23 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: streaming-route-bounded
+  annotations:
+    verification.homelab/variant: normal-ready-trustedEdges
+policies:
+- ../../../edge-identity.yaml
+resources:
+- resources.yaml
+paramResources:
+- policy-facts.yaml
+results:
+- policy: edge-identity
+  rule: route-timeouts
+  resources: []
+  resourceSpecs:
+  - group: gateway.networking.k8s.io
+    version: v1
+    kind: HTTPRoute
+    name: jellyfin
+    namespace: gateway
+  result: fail

@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: media-host-namespace
+spec:
+  local:
+    path: /srv/media/data-sibling

@@ -1,0 +1,43 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: jellyfin-configuration-workspace-disconnected
+  annotations:
+    verification.homelab/variant: normal-ready-trustedEdges
+policies:
+- ../../../workloads.yaml
+resources:
+- resources.yaml
+paramResources:
+- ../policy-facts.yaml
+results:
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: jellyfin-configuration
+    namespace: jellyfin
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: jellyfin-configuration
+    namespace: jellyfin
+  result: pass
+- policy: verification-workloads
+  rule: jellyfin-configuration-job
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: jellyfin-configuration
+    namespace: jellyfin
+  result: fail

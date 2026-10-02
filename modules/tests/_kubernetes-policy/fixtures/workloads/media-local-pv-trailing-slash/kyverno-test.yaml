@@ -1,0 +1,22 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: media-local-pv-trailing-slash
+  annotations:
+    verification.homelab/variant: normal-ready-trustedEdges
+policies:
+- ../../../workloads.yaml
+resources:
+- resources.yaml
+paramResources:
+- ../policy-facts.yaml
+results:
+- policy: verification-workloads
+  rule: media-private-storage
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: PersistentVolume
+    name: media-sabnzbd
+  result: fail

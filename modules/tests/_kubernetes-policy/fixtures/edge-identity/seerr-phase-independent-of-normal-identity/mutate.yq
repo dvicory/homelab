@@ -1,0 +1,1 @@
+.bundle["expected"]["cluster"]["settings"]["kubernetes"]["services"]["seerr"]["phase"] = "initial"

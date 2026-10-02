@@ -1,0 +1,23 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: native-gateway-plaintext
+  annotations:
+    verification.homelab/variant: normal-ready-trustedEdges
+policies:
+- ../../../edge-identity.yaml
+resources:
+- resources.yaml
+paramResources:
+- policy-facts.yaml
+results:
+- policy: edge-identity
+  rule: gateway-native-origin
+  resources: []
+  resourceSpecs:
+  - group: gateway.networking.k8s.io
+    version: v1
+    kind: Gateway
+    name: household
+    namespace: gateway
+  result: fail

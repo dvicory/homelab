@@ -1,0 +1,38 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: transport-positive-normal-ready-direct
+  annotations:
+    verification.homelab/variant: normal-ready-direct
+policies:
+- ../../../transport.yaml
+resources:
+- resources.yaml
+paramResources:
+- policy-facts.yaml
+variables: ../../../values.yaml
+results:
+- policy: verification-transport
+  rule: required-values
+  kind: ConfigMap
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    namespace: verification
+    name: verification-bundle
+  result: pass
+  failOnMissingResources: true
+- policy: verification-transport
+  rule: complete-original-transport
+  kind: ConfigMap
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    namespace: verification
+    name: verification-bundle
+  result: pass
+  failOnMissingResources: true

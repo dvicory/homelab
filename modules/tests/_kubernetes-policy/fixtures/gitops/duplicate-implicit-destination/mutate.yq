@@ -1,0 +1,2 @@
+.bundle["resources"] += [{"file":"cluster-dns/ConfigMap-duplicate-implicit-destination.yaml","document":0,"object":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"coredns-custom"},"data":{"mutation":"duplicate"}},"content":""}] |
+.bundle["files"] += ["cluster-dns/ConfigMap-duplicate-implicit-destination.yaml"]

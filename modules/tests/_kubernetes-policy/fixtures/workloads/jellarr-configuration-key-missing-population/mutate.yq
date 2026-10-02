@@ -1,0 +1,1 @@
+(.bundle.resources[] | select(.object.apiVersion == "v1" and .object.kind == "ConfigMap" and .object.metadata.name == "jellarr-configuration" and .object.metadata.namespace == "jellyfin")) |= del(.object.data["config.yml"])

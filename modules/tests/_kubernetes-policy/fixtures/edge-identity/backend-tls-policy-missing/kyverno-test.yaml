@@ -1,0 +1,23 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: backend-tls-policy-missing
+  annotations:
+    verification.homelab/variant: normal-ready-trustedEdges
+policies:
+- ../../../edge-identity.yaml
+resources:
+- resources.yaml
+paramResources:
+- policy-facts.yaml
+results:
+- policy: edge-identity
+  rule: backend-tls-population
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    name: verification-bundle
+    namespace: verification
+  result: fail

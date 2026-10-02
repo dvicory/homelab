@@ -1,0 +1,23 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: oidc-backend-wrong-hostname
+  annotations:
+    verification.homelab/variant: normal-ready-trustedEdges
+policies:
+- ../../../edge-identity.yaml
+resources:
+- resources.yaml
+paramResources:
+- policy-facts.yaml
+results:
+- policy: edge-identity
+  rule: oidc-backend
+  resources: []
+  resourceSpecs:
+  - group: gateway.envoyproxy.io
+    version: v1alpha1
+    kind: Backend
+    name: kanidm-oidc
+    namespace: identity
+  result: fail

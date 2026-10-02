@@ -1,0 +1,34 @@
+apiVersion: v1
+data:
+  bootstrap.mjs: "import fs from \"node:fs\";\n\nconst baseUrl = process.env.JELLYFIN_URL;\nconst password = fs.readFileSync(\"\
+    /run/secrets/password\", \"utf8\").replace(/\\r?\\n$/, \"\");\nconst sleep = (milliseconds) => new Promise((resolve)\
+    \ => setTimeout(resolve, milliseconds));\n\nasync function request(path, options = {}) {\n  const response =\
+    \ await fetch(baseUrl + path, options);\n  const body = await response.text();\n  if (!response.ok) {\n    throw\
+    \ new Error(\"Jellyfin API request failed: \" + response.status);\n  }\n  return body.trim() === \"\" ? null\
+    \ : JSON.parse(body);\n}\n\nlet healthy = false;\nfor (let attempt = 0; attempt < 60; attempt += 1) {\n  try\
+    \ {\n    const response = await fetch(baseUrl + \"/health\");\n    if (response.ok) {\n      healthy = true;\n\
+    \      break;\n    }\n  } catch (_) {\n    // The stock Service can exist before its Pod is ready.\n  }\n  await\
+    \ sleep(2000);\n}\nif (!healthy) {\n  throw new Error(\"Jellyfin did not become healthy before the deadline\"\
+    );\n}\n\nconst authentication = await request(\"/Users/AuthenticateByName\", {\n  method: \"POST\",\n  headers:\
+    \ {\n    \"Content-Type\": \"application/json\",\n    Authorization: 'MediaBrowser Client=\"homelab-jellarr-bootstrap\"\
+    , Device=\"Kubernetes Job\", DeviceId=\"jellarr-bootstrap\", Version=\"1\"',\n  },\n  body: JSON.stringify({\
+    \ Username: process.env.JELLYFIN_ADMINISTRATOR, Pw: password }),\n});\nconst administratorToken = authentication.AccessToken\
+    \ || authentication.accessToken;\nif (!administratorToken) {\n  throw new Error(\"Jellyfin administrator authentication\
+    \ returned no token\");\n}\nconst headers = {\n  \"Content-Type\": \"application/json\",\n  Authorization: 'MediaBrowser\
+    \ Client=\"homelab-jellarr-bootstrap\", Device=\"Kubernetes Job\", DeviceId=\"jellarr-bootstrap\", Version=\"\
+    1\", Token=\"' + administratorToken + '\"',\n};\ntry {\n  const keyName = \"Jellarr\";\n  const namedKey = (response)\
+    \ =>\n    (response.Items || response.items || []).filter(\n      (key) => (key.AppName || key.appName) ===\
+    \ keyName\n    );\n  let keys = namedKey(await request(\"/Auth/Keys\", { headers }));\n  if (keys.length > 1)\
+    \ {\n    throw new Error(\"More than one Jellarr API key exists\");\n  }\n  if (keys.length === 0) {\n    await\
+    \ request(\"/Auth/Keys?app=Jellarr\", { method: \"POST\", headers });\n    keys = namedKey(await request(\"\
+    /Auth/Keys\", { headers }));\n  }\n  if (keys.length !== 1) {\n    throw new Error(\"Jellarr API key was not\
+    \ available after creation\");\n  }\n  const apiKey = keys[0].AccessToken || keys[0].accessToken;\n  if (!apiKey)\
+    \ {\n    throw new Error(\"Jellarr API key response contained no token\");\n  }\n  fs.writeFileSync(\"/run/jellarr/api-key\"\
+    , apiKey + \"\\n\", { mode: 0o400 });\n} finally {\n  try {\n    await request(\"/Sessions/Logout\", { method:\
+    \ \"POST\", headers });\n  } catch (_) {\n    // A failed logout must not hide a key-bootstrap failure.\n  }\n\
+    }\n"
+  config.yml: ''
+kind: ConfigMap
+metadata:
+  name: jellarr-configuration
+  namespace: jellyfin

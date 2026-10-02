@@ -1,0 +1,1 @@
+(.bundle.bootstrap[] | select(.object.kind == "AppProject") | .object.metadata.name) = "prod-home"

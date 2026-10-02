@@ -1,0 +1,17 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: trusted-edges
+  namespace: gateway
+spec:
+  clientIPDetection:
+    xForwardedFor:
+      trustedCIDRs:
+      - 10.0.0.11/32
+      - 10.0.0.12/32
+  headers:
+    requestID: Generate
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: household

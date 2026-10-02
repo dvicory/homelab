@@ -1,0 +1,1 @@
+(.bundle.resources[] | select(.object.kind == "Service" and .object.metadata.name == "kanidm") | .object["spec"]["ports"][0]["port"]) = 444

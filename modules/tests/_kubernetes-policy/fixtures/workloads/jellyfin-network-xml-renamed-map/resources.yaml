@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: renamed-network
+  namespace: jellyfin
+data:
+  network.xml: <NetworkConfiguration/>

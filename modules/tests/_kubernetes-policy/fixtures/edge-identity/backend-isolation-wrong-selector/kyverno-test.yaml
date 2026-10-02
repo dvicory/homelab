@@ -1,0 +1,23 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: backend-isolation-wrong-selector
+  annotations:
+    verification.homelab/variant: normal-ready-trustedEdges
+policies:
+- ../../../edge-identity.yaml
+resources:
+- resources.yaml
+paramResources:
+- policy-facts.yaml
+results:
+- policy: edge-identity
+  rule: backend-isolation-shape
+  resources: []
+  resourceSpecs:
+  - group: networking.k8s.io
+    version: v1
+    kind: NetworkPolicy
+    name: gateway-idm-backend-ingress
+    namespace: identity
+  result: fail

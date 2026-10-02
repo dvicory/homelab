@@ -1,0 +1,1 @@
+del(.bundle.resources[] | select(.object.kind == "Job" and .object.metadata.name == "kanidm-provision"))

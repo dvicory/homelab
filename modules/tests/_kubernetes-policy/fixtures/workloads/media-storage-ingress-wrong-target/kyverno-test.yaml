@@ -1,0 +1,23 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: media-storage-ingress-wrong-target
+  annotations:
+    verification.homelab/variant: normal-ready-trustedEdges
+policies:
+- ../../../workloads.yaml
+resources:
+- resources.yaml
+paramResources:
+- ../policy-facts.yaml
+results:
+- policy: verification-workloads
+  rule: media-storage-ingress
+  resources: []
+  resourceSpecs:
+  - group: networking.k8s.io
+    version: v1
+    kind: NetworkPolicy
+    name: media-jellyfin-ingress
+    namespace: jellyfin
+  result: fail

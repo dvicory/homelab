@@ -1,0 +1,28 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: transport-fail-closed-evaluation-error
+  annotations:
+    verification.homelab/variant: canonical
+    verification.homelab/expect-gate: reject
+    verification.homelab/rejection-message: nonexistent
+policies:
+- policy.yaml
+resources:
+- resources.yaml
+paramResources:
+- policy-facts.yaml
+variables: ../../../values.yaml
+results:
+- policy: verification-transport
+  rule: required-values
+  kind: ConfigMap
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    namespace: verification
+    name: verification-bundle
+  result: pass
+  failOnMissingResources: true

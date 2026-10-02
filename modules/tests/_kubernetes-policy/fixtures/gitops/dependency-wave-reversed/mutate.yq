@@ -1,0 +1,1 @@
+(.bundle.resources[] | select(.object.kind == "Application" and .object.metadata.name == "argocd-retained") | .object["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"]) = "100"

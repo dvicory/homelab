@@ -1,0 +1,1 @@
+del(.bundle.resources[] | select(.object.kind == "BackendTLSPolicy" and .object.metadata.name == "kanidm-oidc-tls"))

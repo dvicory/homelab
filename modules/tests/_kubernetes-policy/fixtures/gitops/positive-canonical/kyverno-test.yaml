@@ -1,0 +1,1191 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: positive-canonical
+  annotations:
+    verification.homelab/variant: canonical
+policies:
+- ../../../gitops.yaml
+resources:
+- resources.yaml
+paramResources:
+- ../policy-facts.yaml
+variables: ../values.yaml
+results:
+- policy: verification-gitops
+  rule: gitops-population
+  kind: ConfigMap
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    namespace: verification
+    name: verification-bundle
+  result: pass
+- policy: verification-gitops
+  rule: application-source-inventory
+  kind: ConfigMap
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    namespace: verification
+    name: verification-bundle
+  result: pass
+- policy: verification-gitops
+  rule: application-source-coverage
+  kind: ConfigMap
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    namespace: verification
+    name: verification-bundle
+  result: pass
+- policy: verification-gitops
+  rule: resource-retention
+  kind: ConfigMap
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    namespace: verification
+    name: verification-bundle
+  result: pass
+- policy: verification-gitops
+  rule: resource-effective-identity
+  kind: ConfigMap
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    namespace: verification
+    name: verification-bundle
+  result: pass
+- policy: verification-gitops
+  rule: project-cluster-authority
+  kind: ConfigMap
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    namespace: verification
+    name: verification-bundle
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle-order
+  kind: ConfigMap
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    namespace: verification
+    name: verification-bundle
+  result: pass
+- policy: verification-gitops
+  rule: bootstrap-provenance
+  kind: ConfigMap
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    namespace: verification
+    name: verification-bundle
+  result: pass
+- policy: verification-gitops
+  rule: root-project-source-ownership
+  kind: ConfigMap
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    namespace: verification
+    name: verification-bundle
+  result: pass
+- policy: verification-gitops
+  rule: project-destination-coverage
+  kind: ConfigMap
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    namespace: verification
+    name: verification-bundle
+  result: pass
+- policy: verification-gitops
+  rule: bootstrap-seed-identity
+  kind: ConfigMap
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    namespace: verification
+    name: verification-bundle
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: seerr
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: seerr
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: seerr
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: sonarr-storage
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: sonarr-storage
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: sonarr-storage
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: sonarr
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: sonarr
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: sonarr
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: retained-storage
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: retained-storage
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: retained-storage
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: sabnzbd-storage
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: sabnzbd-storage
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: sabnzbd-storage
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: sabnzbd
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: sabnzbd
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: sabnzbd
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: seerr-storage
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: seerr-storage
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: seerr-storage
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: media-storage
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: media-storage
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: media-storage
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: prowlarr-storage
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: prowlarr-storage
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: prowlarr-storage
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: prowlarr
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: prowlarr
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: prowlarr
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: radarr-storage
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: radarr-storage
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: radarr-storage
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: radarr
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: radarr
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: radarr
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: jellyfin-retained
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: jellyfin-retained
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: jellyfin-retained
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: jellyfin
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: jellyfin
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: jellyfin
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: local-path-provisioner
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: local-path-provisioner
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: local-path-provisioner
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: media-access
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: media-access
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: media-access
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: media-configuration
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: media-configuration
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: media-configuration
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: identity-retained
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: identity-retained
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: identity-retained
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: identity
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: identity
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: identity
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: jellyfin-configuration
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: jellyfin-configuration
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: jellyfin-configuration
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: cluster-dns
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: cluster-dns
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: cluster-dns
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: gateway-controller
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: gateway-controller
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: gateway-controller
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: gateway-crds
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: gateway-crds
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: gateway-crds
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: gateway-retained
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: gateway-retained
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: gateway-retained
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: gateway
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: gateway
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: gateway
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: argocd-retained
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: argocd-retained
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: argocd-retained
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: argocd
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: argocd
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: argocd
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: cert-manager-issuance
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: cert-manager-issuance
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: cert-manager-issuance
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: cert-manager
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: cert-manager
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: cert-manager
+  result: pass
+- policy: verification-gitops
+  rule: application-lifecycle
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: apps
+  result: pass
+- policy: verification-gitops
+  rule: application-directory-source
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: apps
+  result: pass
+- policy: verification-gitops
+  rule: application-source-confinement
+  kind: Application
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: Application
+    namespace: argocd
+    name: apps
+  result: pass
+- policy: verification-gitops
+  rule: root-project-ownership
+  kind: AppProject
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: AppProject
+    namespace: argocd
+    name: prod-home
+  result: pass
+- policy: verification-gitops
+  rule: project-repository-destination-authority
+  kind: AppProject
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: AppProject
+    namespace: argocd
+    name: prod-home
+  result: pass
+- policy: verification-gitops
+  rule: bootstrap-default-authority
+  kind: AppProject
+  resources: []
+  resourceSpecs:
+  - group: argoproj.io
+    version: v1alpha1
+    kind: AppProject
+    namespace: argocd
+    name: default
+  result: pass
+- policy: verification-gitops
+  rule: argocd-server-network-ingress
+  kind: NetworkPolicy
+  resources: []
+  resourceSpecs:
+  - group: networking.k8s.io
+    version: v1
+    kind: NetworkPolicy
+    namespace: argocd
+    name: argocd-repo-server
+  result: pass
+- policy: verification-gitops
+  rule: argocd-server-network-ingress
+  kind: NetworkPolicy
+  resources: []
+  resourceSpecs:
+  - group: networking.k8s.io
+    version: v1
+    kind: NetworkPolicy
+    namespace: argocd
+    name: argocd-application-controller
+  result: pass
+- policy: verification-gitops
+  rule: argocd-server-network-ingress
+  kind: NetworkPolicy
+  resources: []
+  resourceSpecs:
+  - group: networking.k8s.io
+    version: v1
+    kind: NetworkPolicy
+    namespace: argocd
+    name: argocd-redis
+  result: pass

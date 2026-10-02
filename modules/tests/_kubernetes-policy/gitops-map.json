@@ -1,0 +1,793 @@
+{
+  "policy": "verification-gitops",
+  "policyFile": "gitops.yaml",
+  "rules": [
+    "gitops-population",
+    "application-lifecycle",
+    "application-directory-source",
+    "application-source-confinement",
+    "application-source-inventory",
+    "application-source-coverage",
+    "resource-retention",
+    "resource-effective-identity",
+    "root-project-ownership",
+    "project-repository-destination-authority",
+    "project-cluster-authority",
+    "application-lifecycle-order",
+    "bootstrap-provenance",
+    "bootstrap-default-authority",
+    "argocd-server-network-ingress",
+    "root-project-source-ownership",
+    "project-destination-coverage",
+    "bootstrap-seed-identity"
+  ],
+  "classification": "offline-local-and-repository-only",
+  "admission": {
+    "enforced": false,
+    "possibleFutureLocalRules": [
+      "application-directory-source",
+      "application-lifecycle",
+      "application-source-confinement",
+      "argocd-server-network-ingress",
+      "bootstrap-default-authority",
+      "project-repository-destination-authority",
+      "root-project-ownership"
+    ],
+    "requirements": "Local rules already match actual resource GroupKinds and use native ConfigMap CEL parameters. Installing policies/parameters and deliberately scoping them for production admission is outside this offline gate; population, provenance, source-file and ownership joins remain repository-only."
+  },
+  "interface": {
+    "anchor": {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "name": "verification-bundle",
+      "namespace": "verification",
+      "celBundle": "object.bundle",
+      "jmespathBundle": "request.object.bundle"
+    },
+    "requiredRawFields": [
+      "resources[].{file,document,object,content}",
+      "files[] (all original relative files)",
+      "directories[] (all relative directories excluding root)",
+      "bootstrap[].{file,document,object,content} (independent actual bootstrapPackage)",
+      "builtinScopes[].{group,kind,scope} (pinned built-in Kubernetes GroupKinds only)",
+      "expected.{repository,revision,prefix,project,destination,appendNameWithEnv}"
+    ],
+    "scope": "Actual rendered CRD spec.group/spec.names.kind/spec.scope plus pinned known built-in scopes; namespace defaults to owner destination for namespaced objects. Identity ignores served version and preserves every document.",
+    "content": "Exact original file text for independent byte-preserving seed comparison; helper must not copy canonical bootstrap into seed.",
+    "parameters": {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "name": "policy-facts",
+      "namespace": "verification",
+      "parameterNotFoundAction": "Deny",
+      "rawData": [
+        "repository",
+        "revision",
+        "prefix",
+        "project",
+        "destination",
+        "appendNameWithEnv"
+      ],
+      "provenance": "Packaging writes data strings from the actual evaluated raw Nixidy leaves for each variant; checked-in shared policy-facts.yaml is the observed normal-ready-trustedEdges snapshot, not a policy verdict."
+    },
+    "nativeFixtures": {
+      "format": "Ordinary cli.kyverno.io/v1alpha1 Test with top-level policies/resources/paramResources/variables/results. Every result uses resources: [] and exact resourceSpecs identity.",
+      "local": "Checked-in resources.yaml is an actual variant resource copy with development-time mechanical edits; CLI consumes that ordinary resource directly.",
+      "crossObject": "Checked-in mutate.yq is an ordinary yq filter over .bundle only, applied to the complete actual variant anchor. Packaging then transports resulting .bundle.resources[].object and the independent seed default AppProject alongside the anchor, without semantic selection.",
+      "positiveCatalog": "13 checked-in positive Tests independently name actual observed Application/AppProject/Argo NetworkPolicy identities and every anchor rule. Packaging supplies their complete actual variant resource population, not another phase snapshot.",
+      "variant": "metadata.annotations verification.homelab/variant chooses the exact actual render."
+    }
+  },
+  "nativeCapabilitySources": [
+    "https://kyverno.io/docs/policy-types/cluster-policy/validate/#cel-variables",
+    "https://raw.githubusercontent.com/kyverno/kyverno/v1.19.0/pkg/engine/handlers/validation/validate_cel.go",
+    "https://raw.githubusercontent.com/kyverno/kyverno/v1.19.0/pkg/admissionpolicy/compiler.go",
+    "https://kubernetes.io/docs/reference/using-api/cel/",
+    "https://raw.githubusercontent.com/kyverno/kyverno/v1.19.0/cmd/cli/kubectl-kyverno/apis/v1alpha1/test.go",
+    "https://raw.githubusercontent.com/kyverno/kyverno/v1.19.0/cmd/cli/kubectl-kyverno/apis/v1alpha1/test_result.go",
+    "https://raw.githubusercontent.com/kyverno/kyverno/v1.19.0/cmd/cli/kubectl-kyverno/commands/test/test.go"
+  ],
+  "deletionMap": [
+    {
+      "file": "modules/flake/kubernetes-manifests.nix",
+      "legacySymbol": "check_application:identity,namespace,wave,destination,project,retry,sharing,finalizers,prune",
+      "lines": "148-190",
+      "decision": "replace after native positive/negative parity; do not delete during tasks 4.1-4.5",
+      "policy": "verification-gitops",
+      "rules": [
+        "application-lifecycle"
+      ]
+    },
+    {
+      "file": "modules/flake/kubernetes-manifests.nix",
+      "legacySymbol": "apps_root inventory; files; project_files",
+      "lines": "234-257",
+      "decision": "replace after native positive/negative parity; do not delete during tasks 4.1-4.5",
+      "policy": "verification-gitops",
+      "rules": [
+        "gitops-population"
+      ]
+    },
+    {
+      "file": "modules/flake/kubernetes-manifests.nix",
+      "legacySymbol": "source renderer markers, directory options, repository and revision",
+      "lines": "269-275",
+      "decision": "replace after native positive/negative parity; do not delete during tasks 4.1-4.5",
+      "policy": "verification-gitops",
+      "rules": [
+        "application-directory-source"
+      ]
+    },
+    {
+      "file": "modules/flake/kubernetes-manifests.nix",
+      "legacySymbol": "source relative confinement and existence",
+      "lines": "276-282",
+      "decision": "replace after native positive/negative parity; do not delete during tasks 4.1-4.5",
+      "policy": "verification-gitops",
+      "rules": [
+        "application-source-confinement",
+        "application-source-coverage"
+      ]
+    },
+    {
+      "file": "modules/flake/kubernetes-manifests.nix",
+      "legacySymbol": "manifest_paths and unsupported renderer markers; effective document inventory",
+      "lines": "283-301",
+      "decision": "replace after native positive/negative parity; do not delete during tasks 4.1-4.5",
+      "policy": "verification-gitops",
+      "rules": [
+        "application-source-inventory"
+      ]
+    },
+    {
+      "file": "modules/flake/kubernetes-manifests.nix",
+      "legacySymbol": "owners; identity; object_count; seen; covered",
+      "lines": "304-329,347-349,476-477",
+      "decision": "replace after native positive/negative parity; do not delete during tasks 4.1-4.5",
+      "policy": "verification-gitops",
+      "rules": [
+        "resource-effective-identity",
+        "application-source-coverage"
+      ]
+    },
+    {
+      "file": "modules/flake/kubernetes-manifests.nix",
+      "legacySymbol": "Delete=false resource/Application bidirectional retention",
+      "lines": "332-346",
+      "decision": "replace after native positive/negative parity; do not delete during tasks 4.1-4.5",
+      "policy": "verification-gitops",
+      "rules": [
+        "resource-retention"
+      ]
+    },
+    {
+      "file": "modules/flake/kubernetes-manifests.nix",
+      "legacySymbol": "application_waves lifecycle edges and optional identity-gateway",
+      "lines": "350-371",
+      "decision": "replace after native positive/negative parity; do not delete during tasks 4.1-4.5",
+      "policy": "verification-gitops",
+      "rules": [
+        "application-lifecycle-order"
+      ]
+    },
+    {
+      "file": "modules/flake/kubernetes-manifests.nix",
+      "legacySymbol": "project identity, root ownership, retention options and preceding wave",
+      "lines": "315-319,373-395",
+      "decision": "replace after native positive/negative parity; do not delete during tasks 4.1-4.5",
+      "policy": "verification-gitops",
+      "rules": [
+        "root-project-ownership",
+        "root-project-source-ownership",
+        "application-lifecycle-order"
+      ]
+    },
+    {
+      "file": "modules/flake/kubernetes-manifests.nix",
+      "legacySymbol": "project sourceRepos; destination_ids == application_destinations",
+      "lines": "396-404",
+      "decision": "replace after native positive/negative parity; do not delete during tasks 4.1-4.5",
+      "policy": "verification-gitops",
+      "rules": [
+        "project-repository-destination-authority",
+        "project-destination-coverage"
+      ]
+    },
+    {
+      "file": "modules/flake/kubernetes-manifests.nix",
+      "legacySymbol": "rendered_cluster_resources == allowed_cluster_resources",
+      "lines": "320-322,405-422",
+      "decision": "replace after native positive/negative parity; do not delete during tasks 4.1-4.5",
+      "policy": "verification-gitops",
+      "rules": [
+        "resource-effective-identity",
+        "project-cluster-authority"
+      ]
+    },
+    {
+      "file": "modules/flake/kubernetes-manifests.nix",
+      "legacySymbol": "seed_projects,seed_apps,bootstrap bytes",
+      "lines": "424-447",
+      "decision": "replace after native positive/negative parity; do not delete during tasks 4.1-4.5",
+      "policy": "verification-gitops",
+      "rules": [
+        "bootstrap-provenance",
+        "bootstrap-seed-identity",
+        "bootstrap-default-authority"
+      ]
+    },
+    {
+      "file": "modules/flake/kubernetes-manifests.nix",
+      "legacySymbol": "argocd_server_selector and allow-all ingress",
+      "lines": "449-460",
+      "decision": "replace after native positive/negative parity; do not delete during tasks 4.1-4.5",
+      "policy": "verification-gitops",
+      "rules": [
+        "argocd-server-network-ingress"
+      ]
+    },
+    {
+      "file": "modules/flake/kubernetes-manifests.nix",
+      "legacySymbol": "bootstrap check_application and bootstrapSource, bootstrapDirectory",
+      "lines": "462-475",
+      "decision": "replace after native positive/negative parity; do not delete during tasks 4.1-4.5",
+      "policy": "verification-gitops",
+      "rules": [
+        "application-lifecycle",
+        "application-directory-source",
+        "application-source-confinement"
+      ]
+    }
+  ],
+  "retainedBoundaries": [
+    {
+      "file": "modules/flake/kubernetes-manifests.nix",
+      "legacySymbol": "prod-home-manifests-fresh",
+      "lines": "88-112",
+      "decision": "retain generation integrity; not rendered semantic policy"
+    },
+    {
+      "file": "modules/flake/kubernetes-manifests.nix",
+      "legacySymbol": "health_lua and Lua execution",
+      "lines": "193-231",
+      "decision": "retain actual Lua behavior execution; cannot be replaced by resource declaration validation"
+    }
+  ],
+  "schemaOwned": [
+    "Mapping/list/type validation subsumed by required schema gate; native rules retain metadata identity, lifecycle, source/ownership and authority."
+  ],
+  "strengthenedBoundaries": [
+    "Native GroupKind/effective-namespace identity replaces apiVersion identity and omitted-namespace cluster inference.",
+    "Source inventory no longer silently skips unsupported files.",
+    "Alternative spec.sources and operation.sync source/manifest/revision overrides are forbidden.",
+    "Whitespace-normalized deletion tokens remain exact tokens."
+  ],
+  "fixtures": {
+    "root": "fixtures/gitops",
+    "tests": [
+      {
+        "name": "positive-canonical",
+        "variant": "canonical",
+        "test": "fixtures/gitops/positive-canonical/kyverno-test.yaml"
+      },
+      {
+        "name": "positive-initial-initial-direct",
+        "variant": "initial-initial-direct",
+        "test": "fixtures/gitops/positive-initial-initial-direct/kyverno-test.yaml"
+      },
+      {
+        "name": "positive-initial-ready-direct",
+        "variant": "initial-ready-direct",
+        "test": "fixtures/gitops/positive-initial-ready-direct/kyverno-test.yaml"
+      },
+      {
+        "name": "positive-initial-initial-trustedEdges",
+        "variant": "initial-initial-trustedEdges",
+        "test": "fixtures/gitops/positive-initial-initial-trustedEdges/kyverno-test.yaml"
+      },
+      {
+        "name": "positive-initial-ready-trustedEdges",
+        "variant": "initial-ready-trustedEdges",
+        "test": "fixtures/gitops/positive-initial-ready-trustedEdges/kyverno-test.yaml"
+      },
+      {
+        "name": "positive-provisioning-initial-direct",
+        "variant": "provisioning-initial-direct",
+        "test": "fixtures/gitops/positive-provisioning-initial-direct/kyverno-test.yaml"
+      },
+      {
+        "name": "positive-provisioning-ready-direct",
+        "variant": "provisioning-ready-direct",
+        "test": "fixtures/gitops/positive-provisioning-ready-direct/kyverno-test.yaml"
+      },
+      {
+        "name": "positive-provisioning-initial-trustedEdges",
+        "variant": "provisioning-initial-trustedEdges",
+        "test": "fixtures/gitops/positive-provisioning-initial-trustedEdges/kyverno-test.yaml"
+      },
+      {
+        "name": "positive-provisioning-ready-trustedEdges",
+        "variant": "provisioning-ready-trustedEdges",
+        "test": "fixtures/gitops/positive-provisioning-ready-trustedEdges/kyverno-test.yaml"
+      },
+      {
+        "name": "positive-normal-initial-direct",
+        "variant": "normal-initial-direct",
+        "test": "fixtures/gitops/positive-normal-initial-direct/kyverno-test.yaml"
+      },
+      {
+        "name": "positive-normal-ready-direct",
+        "variant": "normal-ready-direct",
+        "test": "fixtures/gitops/positive-normal-ready-direct/kyverno-test.yaml"
+      },
+      {
+        "name": "positive-normal-initial-trustedEdges",
+        "variant": "normal-initial-trustedEdges",
+        "test": "fixtures/gitops/positive-normal-initial-trustedEdges/kyverno-test.yaml"
+      },
+      {
+        "name": "positive-normal-ready-trustedEdges",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/positive-normal-ready-trustedEdges/kyverno-test.yaml"
+      },
+      {
+        "name": "valid-gitops-population",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/valid-gitops-population/kyverno-test.yaml"
+      },
+      {
+        "name": "valid-application-lifecycle",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/valid-application-lifecycle/kyverno-test.yaml"
+      },
+      {
+        "name": "valid-application-directory-source",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/valid-application-directory-source/kyverno-test.yaml"
+      },
+      {
+        "name": "valid-application-source-confinement",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/valid-application-source-confinement/kyverno-test.yaml"
+      },
+      {
+        "name": "valid-application-source-inventory",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/valid-application-source-inventory/kyverno-test.yaml"
+      },
+      {
+        "name": "valid-application-source-coverage",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/valid-application-source-coverage/kyverno-test.yaml"
+      },
+      {
+        "name": "valid-resource-retention",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/valid-resource-retention/kyverno-test.yaml"
+      },
+      {
+        "name": "valid-resource-effective-identity",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/valid-resource-effective-identity/kyverno-test.yaml"
+      },
+      {
+        "name": "valid-root-project-ownership",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/valid-root-project-ownership/kyverno-test.yaml"
+      },
+      {
+        "name": "valid-project-repository-destination-authority",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/valid-project-repository-destination-authority/kyverno-test.yaml"
+      },
+      {
+        "name": "valid-project-cluster-authority",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/valid-project-cluster-authority/kyverno-test.yaml"
+      },
+      {
+        "name": "valid-application-lifecycle-order",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/valid-application-lifecycle-order/kyverno-test.yaml"
+      },
+      {
+        "name": "valid-bootstrap-provenance",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/valid-bootstrap-provenance/kyverno-test.yaml"
+      },
+      {
+        "name": "valid-bootstrap-default-authority",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/valid-bootstrap-default-authority/kyverno-test.yaml"
+      },
+      {
+        "name": "valid-argocd-server-network-ingress",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/valid-argocd-server-network-ingress/kyverno-test.yaml"
+      },
+      {
+        "name": "missing-root",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/missing-root/kyverno-test.yaml"
+      },
+      {
+        "name": "missing-project",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/missing-project/kyverno-test.yaml"
+      },
+      {
+        "name": "unsupported-apps-file",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/unsupported-apps-file/kyverno-test.yaml"
+      },
+      {
+        "name": "apps-subdirectory",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/apps-subdirectory/kyverno-test.yaml"
+      },
+      {
+        "name": "wrong-project-filename",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/wrong-project-filename/kyverno-test.yaml"
+      },
+      {
+        "name": "cascading-prune-disabled",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/cascading-prune-disabled/kyverno-test.yaml"
+      },
+      {
+        "name": "retained-prune-enabled",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/retained-prune-enabled/kyverno-test.yaml"
+      },
+      {
+        "name": "foreign-finalizer",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/foreign-finalizer/kyverno-test.yaml"
+      },
+      {
+        "name": "retry-disabled",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/retry-disabled/kyverno-test.yaml"
+      },
+      {
+        "name": "sharing-enabled",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/sharing-enabled/kyverno-test.yaml"
+      },
+      {
+        "name": "wrong-child-project",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/wrong-child-project/kyverno-test.yaml"
+      },
+      {
+        "name": "wrong-destination",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/wrong-destination/kyverno-test.yaml"
+      },
+      {
+        "name": "invalid-wave",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/invalid-wave/kyverno-test.yaml"
+      },
+      {
+        "name": "alternate-multisource",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/alternate-multisource/kyverno-test.yaml"
+      },
+      {
+        "name": "alternate-renderer-helm",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/alternate-renderer-helm/kyverno-test.yaml"
+      },
+      {
+        "name": "alternate-renderer-kustomize",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/alternate-renderer-kustomize/kyverno-test.yaml"
+      },
+      {
+        "name": "alternate-renderer-jsonnet",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/alternate-renderer-jsonnet/kyverno-test.yaml"
+      },
+      {
+        "name": "alternate-renderer-plugin",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/alternate-renderer-plugin/kyverno-test.yaml"
+      },
+      {
+        "name": "alternate-renderer-chart",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/alternate-renderer-chart/kyverno-test.yaml"
+      },
+      {
+        "name": "operation-override-sources",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/operation-override-sources/kyverno-test.yaml"
+      },
+      {
+        "name": "operation-override-source",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/operation-override-source/kyverno-test.yaml"
+      },
+      {
+        "name": "operation-override-manifests",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/operation-override-manifests/kyverno-test.yaml"
+      },
+      {
+        "name": "operation-override-revision",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/operation-override-revision/kyverno-test.yaml"
+      },
+      {
+        "name": "operation-override-revisions",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/operation-override-revisions/kyverno-test.yaml"
+      },
+      {
+        "name": "directory-exclusion",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/directory-exclusion/kyverno-test.yaml"
+      },
+      {
+        "name": "foreign-repository",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/foreign-repository/kyverno-test.yaml"
+      },
+      {
+        "name": "foreign-revision",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/foreign-revision/kyverno-test.yaml"
+      },
+      {
+        "name": "path-traversal",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/path-traversal/kyverno-test.yaml"
+      },
+      {
+        "name": "path-alias",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/path-alias/kyverno-test.yaml"
+      },
+      {
+        "name": "source-directory-absent",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/source-directory-absent/kyverno-test.yaml"
+      },
+      {
+        "name": "recursive-bootstrap",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/recursive-bootstrap/kyverno-test.yaml"
+      },
+      {
+        "name": "renderer-marker-inventory",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/renderer-marker-inventory/kyverno-test.yaml"
+      },
+      {
+        "name": "jsonnet-inventory",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/jsonnet-inventory/kyverno-test.yaml"
+      },
+      {
+        "name": "unsupported-source-file",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/unsupported-source-file/kyverno-test.yaml"
+      },
+      {
+        "name": "unconsumed-manifest",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/unconsumed-manifest/kyverno-test.yaml"
+      },
+      {
+        "name": "unreferenced-source-directory",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/unreferenced-source-directory/kyverno-test.yaml"
+      },
+      {
+        "name": "shared-source-directory",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/shared-source-directory/kyverno-test.yaml"
+      },
+      {
+        "name": "empty-cascading-source",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/empty-cascading-source/kyverno-test.yaml"
+      },
+      {
+        "name": "retained-delete-token-removed",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/retained-delete-token-removed/kyverno-test.yaml"
+      },
+      {
+        "name": "retained-delete-substring",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/retained-delete-substring/kyverno-test.yaml"
+      },
+      {
+        "name": "cascading-delete-token",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/cascading-delete-token/kyverno-test.yaml"
+      },
+      {
+        "name": "retention-token-whitespace",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/retention-token-whitespace/kyverno-test.yaml"
+      },
+      {
+        "name": "unknown-groupkind-scope",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/unknown-groupkind-scope/kyverno-test.yaml"
+      },
+      {
+        "name": "duplicate-implicit-destination",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/duplicate-implicit-destination/kyverno-test.yaml"
+      },
+      {
+        "name": "duplicate-cross-version",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/duplicate-cross-version/kyverno-test.yaml"
+      },
+      {
+        "name": "project-wrong-name",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/project-wrong-name/kyverno-test.yaml"
+      },
+      {
+        "name": "project-delete-unprotected",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/project-delete-unprotected/kyverno-test.yaml"
+      },
+      {
+        "name": "project-too-late",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/project-too-late/kyverno-test.yaml"
+      },
+      {
+        "name": "project-repository-widened",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/project-repository-widened/kyverno-test.yaml"
+      },
+      {
+        "name": "project-destination-widened",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/project-destination-widened/kyverno-test.yaml"
+      },
+      {
+        "name": "project-destination-insufficient",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/project-destination-insufficient/kyverno-test.yaml"
+      },
+      {
+        "name": "project-alternate-authority",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/project-alternate-authority/kyverno-test.yaml"
+      },
+      {
+        "name": "project-cluster-wildcard",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/project-cluster-wildcard/kyverno-test.yaml"
+      },
+      {
+        "name": "project-cluster-unused",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/project-cluster-unused/kyverno-test.yaml"
+      },
+      {
+        "name": "project-cluster-insufficient",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/project-cluster-insufficient/kyverno-test.yaml"
+      },
+      {
+        "name": "dependency-wave-reversed",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/dependency-wave-reversed/kyverno-test.yaml"
+      },
+      {
+        "name": "dependency-population-missing",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/dependency-population-missing/kyverno-test.yaml"
+      },
+      {
+        "name": "bootstrap-population-missing",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/bootstrap-population-missing/kyverno-test.yaml"
+      },
+      {
+        "name": "bootstrap-object-drift",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/bootstrap-object-drift/kyverno-test.yaml"
+      },
+      {
+        "name": "bootstrap-seed-content-drift",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/bootstrap-seed-content-drift/kyverno-test.yaml"
+      },
+      {
+        "name": "bootstrap-default-repository-widened",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/bootstrap-default-repository-widened/kyverno-test.yaml"
+      },
+      {
+        "name": "bootstrap-default-cluster-widened",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/bootstrap-default-cluster-widened/kyverno-test.yaml"
+      },
+      {
+        "name": "bootstrap-default-namespace-widened",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/bootstrap-default-namespace-widened/kyverno-test.yaml"
+      },
+      {
+        "name": "synthetic-server-constrained",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/synthetic-server-constrained/kyverno-test.yaml"
+      },
+      {
+        "name": "synthetic-server-open",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/synthetic-server-open/kyverno-test.yaml"
+      },
+      {
+        "name": "alternate-source-hydrator",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/alternate-source-hydrator/kyverno-test.yaml"
+      },
+      {
+        "name": "project-child-owned",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/project-child-owned/kyverno-test.yaml"
+      },
+      {
+        "name": "project-destination-extra-explicit",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/project-destination-extra-explicit/kyverno-test.yaml"
+      },
+      {
+        "name": "bootstrap-seed-renamed",
+        "variant": "normal-ready-trustedEdges",
+        "test": "fixtures/gitops/bootstrap-seed-renamed/kyverno-test.yaml"
+      }
+    ],
+    "positiveCatalogs": [
+      "fixtures/gitops/positive-canonical/kyverno-test.yaml",
+      "fixtures/gitops/positive-initial-initial-direct/kyverno-test.yaml",
+      "fixtures/gitops/positive-initial-ready-direct/kyverno-test.yaml",
+      "fixtures/gitops/positive-initial-initial-trustedEdges/kyverno-test.yaml",
+      "fixtures/gitops/positive-initial-ready-trustedEdges/kyverno-test.yaml",
+      "fixtures/gitops/positive-provisioning-initial-direct/kyverno-test.yaml",
+      "fixtures/gitops/positive-provisioning-ready-direct/kyverno-test.yaml",
+      "fixtures/gitops/positive-provisioning-initial-trustedEdges/kyverno-test.yaml",
+      "fixtures/gitops/positive-provisioning-ready-trustedEdges/kyverno-test.yaml",
+      "fixtures/gitops/positive-normal-initial-direct/kyverno-test.yaml",
+      "fixtures/gitops/positive-normal-ready-direct/kyverno-test.yaml",
+      "fixtures/gitops/positive-normal-initial-trustedEdges/kyverno-test.yaml",
+      "fixtures/gitops/positive-normal-ready-trustedEdges/kyverno-test.yaml"
+    ],
+    "mutationImplementation": "Ordinary yq or concrete native resources; obsolete JSON selector/JSON-pointer runtime mutation DSL removed."
+  },
+  "localRules": [
+    "application-directory-source",
+    "application-lifecycle",
+    "application-source-confinement",
+    "argocd-server-network-ingress",
+    "bootstrap-default-authority",
+    "project-repository-destination-authority",
+    "root-project-ownership"
+  ],
+  "repositoryOnlyRules": [
+    "gitops-population",
+    "application-source-inventory",
+    "application-source-coverage",
+    "resource-retention",
+    "resource-effective-identity",
+    "project-cluster-authority",
+    "application-lifecycle-order",
+    "bootstrap-provenance",
+    "root-project-source-ownership",
+    "project-destination-coverage",
+    "bootstrap-seed-identity"
+  ]
+}

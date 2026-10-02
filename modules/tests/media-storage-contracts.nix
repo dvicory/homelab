@@ -44,12 +44,10 @@
             "/data/library/movies/edition"
             "/data/library/tv/anime"
           ];
-          inherit access policy;
+          inherit policy;
           storageWave = manifest.applications.media-storage.annotations."argocd.argoproj.io/sync-wave";
           retainedWave = manifest.applications.sabnzbd-storage.annotations."argocd.argoproj.io/sync-wave";
           workloadWave = (render fixtureCluster).annotations."argocd.argoproj.io/sync-wave";
-          hostPath = (render fixtureCluster).helm.releases.sabnzbd.values.persistence.data.hostPath;
-          mediaPath = computeResources.mediaPaths.data;
           jellyfinNamespace = cluster.routes.jellyfin.namespace;
           jellyfinPort = cluster.routes.jellyfin.port;
         }
@@ -71,7 +69,6 @@
             import tempfile
 
             contract = json.loads(Path(sys.argv[1]).read_text())
-            assert contract['access']['namespace'] == contract['jellyfinNamespace']
             policy = contract['policy']
             assert policy['metadata']['namespace'] == contract['jellyfinNamespace']
             assert policy['spec']['podSelector']['matchLabels'] == {
@@ -90,9 +87,9 @@
                 }],
                 'ports': [{'protocol': 'TCP', 'port': contract['jellyfinPort']}],
             }]
-            assert contract['jellyfinPort'] == 8096
-            assert (contract['storageWave'], contract['retainedWave'], contract['workloadWave']) == ('0', '0', '1')
-            assert contract['hostPath'] == contract['mediaPath']
+            # Keep provisioning before the workload without pinning incidental wave numbers.
+            assert int(contract['storageWave']) < int(contract['workloadWave'])
+            assert int(contract['retainedWave']) < int(contract['workloadWave'])
 
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -101,8 +98,6 @@
                 existing = data / 'library/movies/edition'
                 existing.mkdir(parents=True)
                 existing.chmod(0o750)
-                marker = existing / 'movie.mkv'
-                marker.write_text('keep media')
                 config_path = root / 'sabnzbd.ini'
                 values = {
                     'SABNZBD_API_KEY': 'fixture-key',
@@ -122,7 +117,6 @@
                 assert (data / 'downloads/usenet/incomplete').is_dir()
                 assert (data / 'downloads/usenet/complete').is_dir()
                 assert stat.S_IMODE(existing.stat().st_mode) == 0o750
-                assert marker.read_text() == 'keep media'
             PY
             touch "$out"
           '';

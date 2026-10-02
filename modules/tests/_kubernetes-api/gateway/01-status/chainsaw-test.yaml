@@ -1,0 +1,43 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: gateway-current-generation-status
+spec:
+  timeouts:
+    exec: 600s
+    assert: 180s
+  steps:
+    - name: exact-controller-parent-and-generation
+      try:
+        - script:
+            content: exec gateway-case status
+        - script:
+            content: '"$KUBECTL" get gateway household -n gateway -o jsonpath="{.metadata.generation}"'
+            outputs:
+              - name: gatewayGeneration
+                value: (to_number($stdout))
+        - script:
+            content: '"$KUBECTL" get httproute idm -n gateway -o jsonpath="{.metadata.generation}"'
+            outputs:
+              - name: routeGeneration
+                value: (to_number($stdout))
+        - assert:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: household
+                namespace: gateway
+                generation: ($gatewayGeneration)
+              (length(status.conditions[?type == 'Accepted' && status == 'True' && observedGeneration == $gatewayGeneration]) == `1`): true
+              (length(status.conditions[?type == 'Programmed' && status == 'True' && observedGeneration == $gatewayGeneration]) == `1`): true
+        - assert:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                name: idm
+                namespace: gateway
+                generation: ($routeGeneration)
+              (length(status.parents[?controllerName == 'gateway.envoyproxy.io/gatewayclass-controller' && parentRef.name == 'household' && (parentRef.namespace || 'gateway') == 'gateway'].conditions[] | [?type == 'Accepted' && status == 'True' && observedGeneration == $routeGeneration]) == `1`): true
+              (length(status.parents[?controllerName == 'gateway.envoyproxy.io/gatewayclass-controller' && parentRef.name == 'household' && (parentRef.namespace || 'gateway') == 'gateway'].conditions[] | [?type == 'ResolvedRefs' && status == 'True' && observedGeneration == $routeGeneration]) == `1`): true

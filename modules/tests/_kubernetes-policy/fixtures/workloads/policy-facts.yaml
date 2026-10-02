@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: policy-facts
+  namespace: verification
+data:
+  jellyfinUid: '751'
+  jellyfinGid: '751'
+  sabnzbdUid: '757'
+  sabnzbdGid: '757'
+  mediaData: /srv/media/data
+  mediaLibrary: /srv/media/data/library
+  jellyfinNamespace: jellyfin
+  jellyfinPort: '8096'

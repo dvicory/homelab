@@ -14,6 +14,7 @@ The latest observed identity CI run took about 55 minutes, with ARM64 packages t
 - Delete assertions that do not establish a meaningful boundary; demonstrate sensitivity before replacing useful checks.
 - Keep schema, policy, API admission, controller behavior, application integration, and host recovery evidence distinguishable.
 - Make missing coverage fail rather than silently produce a green run.
+- Prefer maintained Kubernetes-native verification and enduring policy enforcement over custom Python/Nix validators and Kubernetes-only VM orchestration; delete replaced implementations.
 
 **Non-goals:**
 
@@ -26,7 +27,7 @@ The latest observed identity CI run took about 55 minutes, with ARM64 packages t
 
 ### 1. Keep Nix as the artifact and configuration layer
 
-Keep negative tests for custom placement, access resolution, capability, path, and credential-ownership rules. Keep one canonical manifest freshness check: it detects deployed Git content diverging from Nix intent. Do not present freshness as runtime proof.
+Keep meaningful rejection tests for custom placement, access resolution, capability, path, and credential-ownership inputs that cannot be established from rendered Kubernetes resources. Do not classify rendered policy as Nix-only merely because its current assertion reads an intermediate Nix object. Keep one canonical manifest freshness check: it detects deployed Git content diverging from Nix intent, not runtime behavior.
 
 Keep local Go/filesystem tests for ownership refusal, unsafe path handling, ID-map overflow, operation cancellation, and preserving existing state. Controlled HTTP fakes are appropriate when testing our adapter's refusal or state machine; a callback that merely records its own invocation is not equivalent evidence.
 
@@ -40,36 +41,51 @@ CustomResourceDefinition envelopes need the official versioned local schema and 
 
 Prefer the maintained upstream converter; verify its behavior on the actual CRDs. The investigation used the tagged Python converter successfully, including a nested HTTPRoute backend typo rejection. Do not generalize that one example to all `allOf`/`anyOf` or extension behavior.
 
-Alternative: keep hundreds of generic shape/type checks in embedded Python. Rejected where independently validated schemas cover them; keep domain-specific joins that schemas cannot express.
+Alternative: keep generic shape/type checks in embedded Python. Rejected where independently validated schemas cover them. Move meaningful domain-specific joins to Kyverno rather than using schema limitations to retain a second policy engine.
 
-### 3. Pilot Kyverno CLI policy; do not mandate a wholesale rewrite
+### 3. Make Kyverno the required rendered-resource policy gate
 
-The pilot covers retained deletion protection and administrator-route/policy coupling using actual rendered resources and representative broken variants. Run offline, without Kyverno controllers or access to production. Require explicit expected rule/resource outcomes, including failures when the selected resource or rule disappears. Use `--require-tests`; for `apply`, disallow continuing on evaluation errors and reject zero matching passes. A global pass count alone does not prove every required rule matched.
+The operator superseded the pilot's decision to keep simpler Python/Nix checks. Ordinary reviewed Kyverno policies and native Test/Values fixtures now own rendered Kubernetes semantic verification. Run the pinned CLI offline against complete canonical resources and genuine initial/provisioning/normal and direct/trusted-edge renders. Require positive and deliberately unsafe cases before deleting equivalent custom assertions, collectors that compute policy verdicts, and dead helpers. Do not introduce a new custom policy framework around the CLI.
 
-Keep existing Python for cross-application ownership, path confinement, AppProject authority and manifest coverage until a policy replacement is demonstrably simpler and catches the same negative cases. Kyverno supports offline context evaluation, but this does not establish live RBAC, API availability, background reconciliation or admission-webhook behavior.
+| Existing verification | Native replacement and deletion boundary |
+| --- | --- |
+| `kubernetes-manifests.nix` Application lifecycle, source confinement, ownership, retention and AppProject authority | Kyverno resource rules and bundle joins; delete the semantic Python validator. Preserve generation integrity and separately execute the health Lua. |
+| `identity-contracts.nix` phase population, administrator membership, route/policy coupling and trust | Phase-aware Kyverno cardinality, absence and reciprocal binding rules; remove rendered-object selectors/assertions. Preserve genuine compute-resource input rejection. |
+| `placement-contracts.nix` rendered route/Service/ReferenceGrant validation | Native policy joins; delete `placement_errors` and its custom mutation harness, retaining Nix/Den input semantics. |
+| `public-edge-contracts.nix` rendered Gateway identity, TLS, timeout and isolation rules | Kyverno over complete rendered controller/Gateway resources; use Kubeconform for schema checks. Preserve genuine Nginx/NixOS and invalid-input boundaries, not Kubernetes duplicates. |
+| `pod-security-contracts.nix` pod/volume identity and secret readability | Native policy over every applicable workload/container kind, with validated mode arithmetic and negative cases; delete the Python scan. |
+| Jellyfin/media/media-storage rendered credentials, mounts, retention, exposure and lifecycle rules | Native application/storage policy; delete rendered-resource lookup helpers and assertions. Keep actual bootstrap/initializer execution and application protocol behavior. |
 
-Alternatives: Conftest/OPA can express bundle-wide semantic joins, but introduces another language and the same selection hazards. Do not adopt both policy engines. Native Kubernetes CEL/ValidatingAdmissionPolicy is preferable to another controller for any separately approved, sufficiently simple live admission rule. This slice adds no live rule.
+Provide trusted evaluated phase, destination, domain, route, storage and image facts plus complete file/source/bootstrap provenance as policy context. Context collection serializes facts; it must not decide policy, pre-filter unsupported files, collapse duplicate identities or borrow a different phase's resources. Filesystem enumeration and artifact equality cannot be inferred from Kubernetes objects alone. Keep only the necessary packaging/integrity boundary and express authority, ownership and coverage decisions in policy.
+
+Require exact expected policy/rule/resource outcomes, including missing populations. Per-resource selectors cannot detect a vanished resource: use an independently present anchor and explicit population/coverage rules. Use `--require-tests`; reject missing policies, rules, fixtures, values or expected outcomes, unexpected skips, evaluation errors, selector misses and zero matching passes. A global pass count is insufficient. Exercise representative retention, authority, route-binding, trust, credential and storage violations against the required gate.
+
+Policies remain required CI enforcement, not scratch pilot strings. Record whether each rule is repository/bundle-only or a candidate for future admission/background enforcement. Resource-local rules may transfer, but Git ownership, exact inventories, phase facts and cross-object joins need different live context and race semantics. Argo `Delete=false` is not an admission DELETE prohibition. This change installs no controller and claims no live enforcement.
+
+If a rendered-resource rule cannot be expressed reliably with supported native features, demonstrate the limitation and obtain an operator decision; do not silently preserve the old engine. Retaining an executed Lua, host-input or real protocol check requires the concrete boundary it observes. Existing implementation size is not an exception.
+
+Alternatives: Conftest/OPA would introduce another policy language and the same selection hazards; do not adopt a second engine. Native Kubernetes CEL/ValidatingAdmissionPolicy remains an option for separately approved live admission requirements, not a replacement for this complete rendered-policy gate.
 
 ### 4. Use Chainsaw for focused real Kubernetes scenarios
 
-Chainsaw runs independently of Kyverno. Use a disposable target-version K3s cluster with explicit kubeconfig/context and pinned artifacts. Install only the real controllers needed by each scenario. Namespace isolation supports parallel namespaced cases; CRD updates, cluster-scoped policies and shared-controller configuration require exclusive fixtures.
+Reuse the existing `verify-kubernetes-api` disposable, pinned K3s lifecycle and Chainsaw packaging. Extend that fixture for controllers, disposable Git, node-local storage, synthetic trust and browser/network prerequisites rather than adding another runner framework. Replace custom API polling/assertions with native operations and Chainsaw assertions. Namespace isolation supports parallel namespaced cases; CRD changes, cluster-scoped policies and shared-controller configuration require exclusive fixtures.
 
-Initial candidates:
+Required native scenarios:
 
 - API admission: valid resources accepted, invalid CEL/immutable updates denied for the intended reason, prior state preserved.
-- Runtime-Secret ownership: execute the actual reconciliation script against a real API; preserve foreign keys and replacement UIDs, reject malformed inventory before mutation. Keep a separate small systemd/host-delivery seam.
-- Gateway behavior: actual Accepted/ResolvedRefs/Programmed conditions, trusted versus denied traffic, hostname/CA failures, queryless logs, and authorization boundaries. A schema or `kubectl get` success is insufficient.
-- Argo behavior: failed child prevents progress, missing dependencies do not become false Healthy, deleted workload is recreated, and retained state is not cascaded away. Test observed outcomes rather than exact wave strings.
+- Runtime-Secret ownership: execute the exact evaluated production reconciliation script in an owned Linux fixture, with its packaged closure and isolated expected paths. Preserve foreign keys and replacement UIDs, reject malformed inventory before mutation, and cover both same-UID shared and sole-owner TLS retirement. Replace imperative API-test orchestration; keep the small real systemd/host-delivery seam.
+- Gateway behavior: actual generation-aware Accepted/ResolvedRefs/Programmed conditions, missing-grant rejection/recovery, TLS name/CA failures/recovery, queryless and credential-free logs, and real authorization. Establish distinct trusted/untrusted connecting addresses and the deployed-family CNI's actual packet enforcement before removing the multi-VM network fixture. Docker port NAT or status-only assertions are not equivalent. Keep real Chromium/WebAuthn/Kanidm/OIDC execution, not mocked claims, while moving fixture orchestration to the shared native runner.
+- Argo behavior: current-revision failed/missing-child blocking and recovery, hook sequencing, self-heal, Git omission and direct/root-child retirement with retained identities and usable data. Replace Python polling and VM orchestration after native parity, including health/preservation counterfactuals. Node-local kubelet storage evidence does not replace host adoption or Incus mount/identity proof.
 
-Use exact identities and generation-aware status. Label-selector assertions can be existential; they do not prove all matching objects satisfy a condition. Assert the selected population when the claim is universal. Expected admission rejection must assert the intended reason, not accept any connection error. Unexpected skipped tests or an empty report fail the gate.
+Use exact identities and generation-aware status. Argo success must correlate desired source, resolved revision and operation revision; Healthy alone is insufficient. Label-selector assertions can be existential, so assert the selected population when the claim is universal. Expected rejection must establish the intended reason, not any connection error. Require stable safety-scenario identities and reject omitted, scoped, skipped, failed or empty coverage, missing reports and cleanup failure. Do not pin incidental operation counts or implementation sequences.
 
-Alternatives: existing Python is still appropriate for native application API reconciliation and POSIX/file behavior. Do not port it solely to change syntax. Kind is suitable for generic API/controller scenarios only with an explicitly suitable CNI; it does not automatically reproduce K3s network policy. Envtest lacks kubelet/data-plane/host behavior and is not the default for this deployed third-party stack.
+Retain a custom executable only for a concrete production algorithm, filesystem or protocol boundary that native resource operations/assertions cannot establish; prefer native assertions for the surrounding Kubernetes state. Existing browser-generated MFA and production bootstrap/initializer execution are such boundaries. Kind or generic Pods are not assumed to reproduce K3s CNI/source-address behavior; envtest lacks kubelet/data-plane/host behavior.
 
 ### 5. Keep narrow host and recovery VMs
 
 Retain Linux runtime coverage for whole-root mount identity and disappearance, the retained marker guard, UID/GID mappings, MergerFS/XFS hardlinks and permissions, read-only mounts, nftables source addresses, service activation and actual guest replacement. Schema and policy tools cannot observe these behaviors.
 
-Remove ordinary Kubernetes/application configuration checks from a broad recovery scenario only after a focused replacement proves them. Keep one real destructive-lifecycle acceptance path demonstrating changed disposable guest/control-plane identity and preserved application identity/data. Do not claim a generic Docker bind mount proves Incus propagation.
+Remove Kubernetes-only bootstrap/publication, self-heal, resource declaration and detailed Argo retirement assertions from broad recovery scenarios once their required native replacements pass. Delete superseded focused VM wrappers, helpers and CI registrations, not only their invocation. Keep startup gates and actual cross-boundary witnesses needed for host measurements: staged credentials, read-only mapped library access, source loss/return and real application state through changed guest/control-plane identity. A generic Docker bind mount is not Incus propagation, and a file sentinel is not persisted application identity or played state.
 
 ### 6. Delete vacuity without deleting useful selection guards
 
@@ -77,8 +93,8 @@ Initial deletion/repair inventory:
 
 | Location | Action | Evidence that remains or replaces it |
 | --- | --- | --- |
-| `kubernetes-manifests.nix`: exact `expected_health_lua` equality | Delete source pin; execute rendered Lua for absent/Healthy/Degraded child status | An always-Healthy mutation fails; real Argo scenario covers scheduling/health interaction |
-| `identity-contracts.nix`: exact phase enum and duplicate Job-presence assertion | Delete duplicate/type-copy assertions | Keep phase-specific absence/presence, grant, trust and protection invariants |
+| `kubernetes-manifests.nix`: exact `expected_health_lua` equality and semantic validator | Delete source pin and migrate resource policy to Kyverno; retain direct execution of rendered Lua separately | Broken health behavior fails; real Argo scenario covers scheduling/health interaction |
+| `identity-contracts.nix`: phase enum, Job copies and rendered policy | Delete incidental copies; migrate meaningful phase/grant/trust/protection rules to Kyverno | Native positive/negative phase fixtures; genuine Nix input refusals remain |
 | `placement-contracts.nix`: shallow renderer `tryEval` success | Delete bare-not-throw proof | Force the relevant output and assert the capability boundary; empty renderer must fail if that behavior is claimed |
 | `default.nix`: timezone projection, preferred shell and exact maintenance defaults | Delete incidental preference pins | Keep account ownership/ACL and storage-secret restart safety |
 | `mergerfs-contracts.nix`: exact service-name hash strings | Delete implementation pins | Keep distinct-path collision regression and unsafe-placement rejection |
@@ -101,7 +117,7 @@ For migrated checks, record setup/download time separately from scenario time an
 
 Tools: pinned nixpkgs Kubeconform 0.8.0, Kyverno CLI 1.19.0, and `kyverno-chainsaw` 0.2.15. `chainsaw` without the Kyverno prefix is a different Nix package. Measurements are individual local ARM64 runs, not benchmark medians or promised CI savings.
 
-- Actual 181-document provisioning corpus: 181 valid, zero invalid/errors/skips. With custom schemas and CRD envelope prepared, first complete run 0.765s and warm run 0.361s. Independent document inventory matched. This was a cached, immutable-URL-backed experiment; the proposed fully offline Nix check is not implemented yet.
+- Actual 181-document provisioning corpus: 181 valid, zero invalid/errors/skips. With custom schemas and CRD envelope prepared, first complete run 0.765s and warm run 0.361s. Independent document inventory matched. These exploratory measurements are not evidence of the later packaged offline gate's runtime.
 - Actual Deployment: misspelled security field rejected. Unknown custom schema failed. With `-ignore-missing-schemas`, the unknown resource instead returned success with one skip. Empty input returned success with zero checked resources.
 - Actual CRD: missing required `spec.group` rejected; additional misspelled envelope field accepted by the official non-strict envelope schema. This is a documented validation boundary, not permission to omit CRDs.
 - Actual retained PV policy: good input passed; removing `Delete=false` failed. Unrelated resource failed when zero-match protection was enabled. Runs took about 0.34–0.71s.
@@ -114,7 +130,7 @@ Tools: pinned nixpkgs Kubeconform 0.8.0, Kyverno CLI 1.19.0, and `kyverno-chains
 
 - Schema green mistaken for deployed correctness → retain CEL/API, controller, data-plane and host evidence as separate gates.
 - Test migration erases the only useful negative → prove replacement sensitivity before removing that check.
-- New framework adds more maintenance than it removes → keep the pilot bounded and preserve simpler existing code when it wins.
+- Migration becomes a second framework or leaves duplicate authorities → use ordinary native policies/fixtures, keep context transport minimal, and delete old validators after equivalent required proof.
 - Shared cluster makes parallel tests interfere → isolate namespaces and serialize shared/cluster-scoped mutations.
 - Image/schema fetches dominate reliability → pin inputs and preload/fetch in explicit setup, never hide admission or configuration failures behind retries.
 - Faster individual checks do not shorten package-dominated CI → measure and report critical-path effects separately.
@@ -124,8 +140,8 @@ Tools: pinned nixpkgs Kubeconform 0.8.0, Kyverno CLI 1.19.0, and `kyverno-chains
 1. Rebase onto the accepted application integration; preserve original branch provenance while investigating.
 2. Delete unambiguously incidental assertions; replace source-text safety claims with executable behavior. Keep all useful safety gates active.
 3. Land complete schema validation and negative coverage, then remove only structural guards it demonstrably subsumes.
-4. Pilot offline semantic policy and focused Chainsaw scenarios. Compare against existing evidence and measurements before moving their required CI gates.
-5. Narrow heavyweight VM scenarios only after their non-host portions have equivalent required coverage. Keep full recovery acceptance.
+4. Replace rendered semantic validators with required Kyverno policy and native positive/negative coverage across complete phase/mode renders; remove the old rules and helpers once each replacement passes.
+5. Extend the existing Chainsaw/K3s fixture for required controller, traffic and exact production-script scenarios. Prove CNI/source-address/browser and Secret packaging prerequisites; remove superseded Python orchestration and VM wrappers. Then narrow broad recovery scenarios while retaining real host and replacement witnesses.
 6. Roll back tooling by reverting its commits and restoring the previous required checks, not by disabling failed gates or changing production desired state.
 
 ## Sources

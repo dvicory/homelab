@@ -1,0 +1,1 @@
+(.bundle.resources[] | select(.object.kind == "NetworkPolicy" and .object.metadata.name == "gateway-idm-backend-ingress") | .object["spec"]["ingress"]) += [{"from": [{"ipBlock": {"cidr": "0.0.0.0/0"}}]}]

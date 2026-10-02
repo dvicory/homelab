@@ -1,0 +1,1 @@
+(.bundle.resources[] | select(.object.kind == "NetworkPolicy" and .object.metadata.name == "private-origin") | .object["spec"]["ingress"][0]["from"][0]["ipBlock"]["cidr"]) = "0.0.0.0/0"

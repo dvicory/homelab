@@ -1,0 +1,1 @@
+(.bundle.resources[] | select(.object.kind == "AppProject") | .object.spec.destinations) += [{"namespace":"unowned","server":"https://kubernetes.default.svc"}]
