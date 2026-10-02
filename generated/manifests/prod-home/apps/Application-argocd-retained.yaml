@@ -13,7 +13,7 @@ spec:
   source:
     path: ./generated/manifests/prod-home/argocd-retained
     repoURL: https://github.com/dvicory/homelab.git
-    targetRevision: feat/kanidm-provisioning
+    targetRevision: main
   syncPolicy:
     automated:
       prune: false
