@@ -224,8 +224,9 @@ with subtest("retained real PV/PVC and self-healing workload preserve data"):
 with subtest("failed and missing child do not unblock the next parent wave"):
     put(repo + "/failed/job.json", job("failed-child-job", "exit 1"))
     payload_revision = commit("failing workload")
+    machine.succeed(f"git -C {repo} update-ref refs/heads/dependency-source {shell(payload_revision)}")
     for name, path in (("failed-child", "failed"), ("missing-child", "does-not-exist")):
-        put(repo + "/" + name + "-root/child.json", app(name, path, payload_revision))
+        put(repo + "/" + name + "-root/child.json", app(name, path, "dependency-source"))
         put(repo + "/" + name + "-root/late.json", job(name + "-late", f"echo advanced > /proof/{name}-late", "1"))
     parent_revision = commit("dependency roots")
     apply(app("failed-root", "failed-child-root", parent_revision, namespace="argocd"))
@@ -249,13 +250,12 @@ with subtest("failed and missing child do not unblock the next parent wave"):
     put(repo + "/failed/job.json", job("repaired-child-job", "exit 0"))
     put(repo + "/does-not-exist/job.json", job("found-child-job", "exit 0"))
     repaired_revision = commit("repair both child workloads")
-    for name, path in (("failed-child", "failed"), ("missing-child", "does-not-exist")):
-        put(repo + "/" + name + "-root/child.json", app(name, path, repaired_revision))
-    resumed_revision = commit("resume dependency roots")
-    for root, path in (("failed-root", "failed-child-root"), ("missing-root", "missing-child-root")):
-        apply(app(root, path, resumed_revision, namespace="argocd"))
-        current(root, resumed_revision)
+    # Children track Git independently while the unchanged parent operation waits.
+    machine.succeed(f"git -C {repo} update-ref refs/heads/dependency-source {shell(repaired_revision)}")
+    machine.succeed(f"{k} -n argocd annotate applications failed-child missing-child argocd.argoproj.io/refresh=hard --overwrite")
     for child in ("failed-child", "missing-child"):
         current(child, repaired_revision)
         assert not any(condition.get("type") == "ComparisonError" for condition in (get("application/" + child).get("status", {}).get("conditions") or [])), "recovered child retains a source error"
+    for root in ("failed-root", "missing-root"):
+        current(root, parent_revision)
     machine.succeed("test \"$(cat /srv/proof/failed-child-late)\" = advanced; test \"$(cat /srv/proof/missing-child-late)\" = advanced")
