@@ -1,0 +1,98 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: argo-02-retained-hook-sequencing
+  labels:
+    verification.homelab/layer: controller-node-local
+spec:
+  timeouts:
+    assert: 180s
+    exec: 300s
+  steps:
+    - name: actual-hook-fails-before-later-wave
+      try:
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" revision initial
+            outputs:
+              - name: initial
+                value: ($stdout)
+        - assert:
+            resource:
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                name: retained-directories
+                namespace: local-path-storage
+              (length(status.conditions[?type == 'Failed' && status == 'True']) > `0`): true
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: hook
+                namespace: argocd
+              (status.sync.revision == $initial): true
+              (status.sync.comparedTo.source == spec.source): true
+              (status.operationState.syncResult.revision == $initial): true
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: hook
+                namespace: argocd
+              (length(status.operationState.syncResult.resources[?kind == 'Job' && name == 'retained-directories' && hookPhase == 'Failed']) > `0`): true
+              (status.operationState.phase == 'Running' || status.operationState.phase == 'Failed'): true
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" hook-blocked
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" consumer-uid
+            outputs:
+              - name: consumerUid
+                value: ($stdout)
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: Event
+              metadata:
+                namespace: runtime
+              involvedObject:
+                uid: ($consumerUid)
+              reason: FailedMount
+    - name: marker-enables-real-hook-retry-and-sequencing
+      try:
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" recover-hook
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: hook
+                namespace: argocd
+              (status.sync.revision == $initial): true
+              (status.sync.comparedTo.source == spec.source): true
+              (status.operationState.syncResult.revision == $initial): true
+              status:
+                sync:
+                  status: Synced
+                health:
+                  status: Healthy
+                operationState:
+                  phase: Succeeded
+              (length(status.conditions[?type == 'ComparisonError'] || `[]`) == `0`): true
+        - assert:
+            resource:
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                name: after-retained-hook
+                namespace: local-path-storage
+              (length(status.conditions[?type == 'Complete' && status == 'True']) > `0`): true
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" hook-proof

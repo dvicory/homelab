@@ -1,0 +1,16 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: transport-fail-closed-empty-results
+  annotations:
+    verification.homelab/variant: canonical
+    verification.homelab/expect-gate: reject
+    verification.homelab/rejection-message: Missing/empty native Kyverno JSON report
+policies:
+- ../../../transport.yaml
+resources:
+- resources.yaml
+paramResources:
+- policy-facts.yaml
+variables: ../../../values.yaml
+results: []

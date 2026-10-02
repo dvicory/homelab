@@ -1,0 +1,2 @@
+.bundle["resources"] += [{"file":"cluster-dns/ConfigMap-duplicate-cross-version.yaml","document":0,"object":{"apiVersion":"v2","kind":"ConfigMap","metadata":{"name":"coredns-custom","namespace":"kube-system"},"data":{"mutation":"duplicate"}},"content":""}] |
+.bundle["files"] += ["cluster-dns/ConfigMap-duplicate-cross-version.yaml"]

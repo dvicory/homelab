@@ -1,0 +1,1 @@
+del(.bundle.resources[] | select(.object.kind == "PersistentVolumeClaim" and .object.metadata.name == "identity-kanidm"))

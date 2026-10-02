@@ -6,7 +6,7 @@
 }:
 let
   cluster = config.den.clusters.prod-home;
-  computeResources = config.clusterResources.prod-home;
+  computeResources = config.flake.clusterResources.prod-home;
   identity =
     (import ../den/aspects/kubernetes/services/identity.nix {
       inherit config inputs lib;
@@ -47,6 +47,16 @@ let
     application: if application ? content then application.content.objects else application.objects;
   normalPolicyObjects = applicationObjects normal.applications.identity-gateway;
   normalRouteObjects = applicationObjects normalGateway.applications.identity-gateway;
+  normalAdminPolicy = builtins.head (
+    lib.filter (
+      object: object.kind == "SecurityPolicy" && object.metadata.name == "argocd-admin"
+    ) normalPolicyObjects
+  );
+  normalAdminRoute = builtins.head (
+    lib.filter (
+      object: object.kind == "HTTPRoute" && object.metadata.name == "argocd"
+    ) normalRouteObjects
+  );
   provisioningJob = builtins.head (
     lib.filter (
       object: object.kind == "Job" && object.metadata.name == "kanidm-provision"
@@ -79,12 +89,6 @@ let
     )).data."server.toml";
   initialResources = identity.compute-resources { cluster = withPhase "initial"; };
   failures = lib.filterAttrs (_: value: !value) {
-    three-phases-declared =
-      identity.settings.phase.type.functor.payload.values == [
-        "initial"
-        "provisioning"
-        "normal"
-      ];
     initial-credential-absent =
       !(initialResources.runtimeSecrets ? "identity--kanidm-provision--idm-admin-password");
     initial-provisioning-absent =
@@ -97,7 +101,6 @@ let
       && hasObject provisioningObjects "ServiceAccount" "kanidm-provision"
       && provisioningJob.metadata.annotations."argocd.argoproj.io/hook" == "PostSync"
       && provisioningJob.spec.template.spec.serviceAccountName == "kanidm-provision";
-    provisioning-job-present = hasObject provisioningObjects "Job" "kanidm-provision";
     oidc-transport-with-admin-consumer =
       lib.all
         (
@@ -126,12 +129,16 @@ let
       && normalGateway.applications.identity-gateway.condition
       && hasObject normalPolicyObjects "SecurityPolicy" "argocd-admin"
       && hasObject normalRouteObjects "HTTPRoute" "argocd"
-      &&
-        (builtins.head (lib.filter (object: object.kind == "SecurityPolicy") normalPolicyObjects))
-        .metadata.annotations."argocd.argoproj.io/sync-wave" == "-1"
-      &&
-        (builtins.head (lib.filter (object: object.kind == "HTTPRoute") normalRouteObjects))
-        .metadata.annotations."argocd.argoproj.io/sync-wave" == "0";
+      && normalAdminPolicy.metadata.namespace == normalAdminRoute.metadata.namespace
+      && normalAdminPolicy.spec.targetRefs == [
+        {
+          group = lib.head (lib.splitString "/" normalAdminRoute.apiVersion);
+          kind = normalAdminRoute.kind;
+          name = normalAdminRoute.metadata.name;
+        }
+      ]
+      && normalAdminPolicy.metadata.annotations."argocd.argoproj.io/sync-wave" == "-1"
+      && normalAdminRoute.metadata.annotations."argocd.argoproj.io/sync-wave" == "0";
     native-route-present-throughout =
       lib.all (rendered: hasObject rendered.applications.gateway.objects "HTTPRoute" "idm")
         [

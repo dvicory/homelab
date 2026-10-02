@@ -1,0 +1,53 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: media-acquisition-runtime-read-only
+  annotations:
+    verification.homelab/variant: normal-ready-trustedEdges
+policies:
+- ../../../workloads.yaml
+resources:
+- resources.yaml
+paramResources:
+- ../policy-facts.yaml
+results:
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: sabnzbd
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: sabnzbd
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: media-acquisition-mounts
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: sabnzbd
+    namespace: media
+  result: fail
+- policy: verification-workloads
+  rule: media-acquisition-identity
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: sabnzbd
+    namespace: media
+  result: pass

@@ -33,14 +33,35 @@ let
   };
   rendererBoundaryAssertions =
     let
-      rendered = builtins.tryEval (retainedStorageRenderer {
-        computeResources = rendererFixture // {
-          unrelatedProjectedCapability = "ignored";
+      render =
+        retained:
+        retainedStorageRenderer {
+          computeResources = rendererFixture // {
+            retainedPaths.kubernetes-volumes = retained;
+            unrelatedProjectedCapability = "ignored";
+          };
+          inherit lib;
         };
-        inherit lib;
-      });
+      nodePaths =
+        retained:
+        (render retained).applications.local-path-provisioner.helm.releases.local-path-provisioner.values.nodePathMap;
+      retained = rendererFixture.retainedPaths.kubernetes-volumes;
     in
-    rendered.success;
+    nodePaths retained == [
+      {
+        node = rendererFixture.instance;
+        paths = [ retained.guestPath ];
+      }
+    ]
+    && lib.all (
+      unsafe:
+      !(builtins.tryEval (builtins.deepSeq (nodePaths (retained // unsafe)) true)).success
+    ) [
+      { uid = 1000; }
+      { gid = 1000; }
+      { mode = "0755"; }
+      { readOnly = true; }
+    ];
   policiesFor =
     declared:
     (import ../den/policies/clusters.nix {
@@ -88,7 +109,7 @@ in
     {
       checks.placement-contracts =
         assert lib.assertMsg rendererBoundaryAssertions
-          "Kubernetes consumers must tolerate unrelated projected capabilities";
+          "Retained storage must project only its guest path and refuse unsafe parent ownership or access";
         assert lib.assertMsg policyAssertions
           "Cluster policies must reject undeclared environments, hosts and application aspects";
         pkgs.runCommand "placement-contracts"

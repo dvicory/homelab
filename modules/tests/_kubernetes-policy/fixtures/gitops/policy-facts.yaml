@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: policy-facts
+  namespace: verification
+data:
+  repository: https://github.com/dvicory/homelab.git
+  revision: main
+  prefix: ./generated/manifests/prod-home/
+  project: prod-home
+  destination: https://kubernetes.default.svc
+  appendNameWithEnv: 'false'

@@ -1,0 +1,579 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verification-gitops
+  annotations:
+    pod-policies.kyverno.io/autogen-controllers: none
+    verification.homelab/classification: offline-local-and-repository-only
+    verification.homelab/cel-version: kyverno-1.19.0
+spec:
+  background: false
+  validationFailureAction: Enforce
+  rules:
+  - name: gitops-population
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      message: gitops-population
+      cel:
+        variables:
+        - name: bundle
+          expression: object.bundle
+        - name: entries
+          expression: variables.bundle.resources
+        - name: children
+          expression: variables.entries.filter(e, e.file.startsWith('apps/') && e.object.kind == 'Application').map(e,
+            e.object)
+        - name: applications
+          expression: variables.entries.filter(e, e.object.kind == 'Application').map(e, e.object)
+        - name: projects
+          expression: variables.entries.filter(e, e.file.startsWith('apps/') && e.object.kind == 'AppProject').map(e,e.object)
+        - name: roots
+          expression: variables.entries.filter(e,e.file == 'bootstrap.yaml')
+        expressions:
+        - expression: variables.children.size() > 0 && variables.projects.size() == 1 && variables.roots.size()
+            == 1 && variables.roots[0].object.kind == 'Application'
+          message: Root, child Applications and exactly one root-owned project must exist independently of selectors.
+        - expression: variables.entries.all(e, e.file != 'bootstrap.yaml' || e.document == 0) && variables.entries.filter(e,e.file.startsWith('apps/')).all(e,e.document
+            == 0 && e.object.apiVersion == 'argoproj.io/v1alpha1' && (e.object.kind == 'Application' || e.object.kind
+            == 'AppProject') && e.file == 'apps/' + e.object.kind + '-' + e.object.metadata.name + '.yaml')
+          message: Every apps document is the correctly named single-document GitOps object.
+        - expression: variables.bundle.files.filter(f,f.startsWith('apps/')).all(f,variables.entries.exists(e,e.file
+            == f)) && variables.bundle.directories.filter(d,d.startsWith('apps/')).size() == 0
+          message: Every original apps file is checked; nested apps directories are unsupported.
+        - expression: variables.applications.all(a,variables.applications.filter(b,b.metadata.name == a.metadata.name
+            && b.metadata.namespace == a.metadata.namespace).size() == 1)
+          message: Root and child Application identities are unique.
+  - name: application-lifecycle
+    match:
+      any:
+      - resources:
+          kinds:
+          - argoproj.io/v1alpha1/Application
+    validate:
+      message: application-lifecycle
+      cel:
+        paramKind: &id001
+          apiVersion: v1
+          kind: ConfigMap
+        paramRef: &id002
+          name: policy-facts
+          namespace: verification
+          parameterNotFoundAction: Deny
+        variables:
+        - name: isRoot
+          expression: 'object.metadata.name == (params.data.appendNameWithEnv == ''true'' ? ''apps-'' + params.data.project
+            : ''apps'')'
+        expressions:
+        - expression: 'object.metadata.namespace == ''argocd'' && has(object.metadata.name) && object.metadata.name
+            != '''' && object.spec.destination.server == params.data.destination && object.spec.destination.namespace
+            != '''' && object.spec.project == (variables.isRoot ? ''default'' : params.data.project) && (!has(object.metadata.annotations)
+            || !(''argocd.argoproj.io/sync-wave'' in object.metadata.annotations) || object.metadata.annotations[''argocd.argoproj.io/sync-wave''].matches(''^-?[0-9]+$''))
+            && has(object.spec.syncPolicy.retry) && object.spec.syncPolicy.retry.limit > 0 && ''FailOnSharedResource=true''
+            in object.spec.syncPolicy.syncOptions && has(object.spec.syncPolicy.automated) && has(object.spec.syncPolicy.automated.prune)
+            && ((has(object.metadata.finalizers) && object.metadata.finalizers == [''resources-finalizer.argocd.argoproj.io'']
+            && object.spec.syncPolicy.automated.prune == true) || ((!has(object.metadata.finalizers) || object.metadata.finalizers.size()
+            == 0) && object.spec.syncPolicy.automated.prune == false && !variables.isRoot))'
+          message: Application destination/project, retries, sharing refusal and cascading/retained lifecycle are
+            safe.
+  - name: application-directory-source
+    match:
+      any:
+      - resources:
+          kinds:
+          - argoproj.io/v1alpha1/Application
+    validate:
+      message: application-directory-source
+      cel:
+        paramKind: *id001
+        paramRef: *id002
+        expressions:
+        - expression: '!has(object.spec.sources) && !has(object.spec.sourceHydrator) && (!has(object.operation)
+            || (object.operation.all(k,k in [''sync'',''initiatedBy'',''info'',''retry'']) && (!has(object.operation.sync)
+            || object.operation.sync.all(k,k in [''prune'',''dryRun'',''syncStrategy'',''resources'',''syncOptions'']))))
+            && object.spec.source.all(k,k in [''repoURL'',''targetRevision'',''path'',''directory'']) && object.spec.source.repoURL
+            == params.data.repository && object.spec.source.targetRevision == params.data.revision && (!has(object.spec.source.directory)
+            || (object.spec.source.directory.all(k,k == ''recurse'') && (!has(object.spec.source.directory.recurse)
+            || type(object.spec.source.directory.recurse) == bool)))'
+          message: Only the evaluated single directory source is allowed; effective source/manifest operation overrides
+            are forbidden.
+  - name: application-source-confinement
+    match:
+      any:
+      - resources:
+          kinds:
+          - argoproj.io/v1alpha1/Application
+    validate:
+      message: application-source-confinement
+      cel:
+        paramKind: *id001
+        paramRef: *id002
+        variables:
+        - name: isRoot
+          expression: 'object.metadata.name == (params.data.appendNameWithEnv == ''true'' ? ''apps-'' + params.data.project
+            : ''apps'')'
+        - name: relative
+          expression: 'object.spec.source.path.startsWith(params.data.prefix) ? object.spec.source.path.substring(params.data.prefix.size())
+            : '''''
+        expressions:
+        - expression: object.spec.source.path.startsWith(params.data.prefix) && variables.relative.matches('^[^/]+(/[^/]+)*$')
+            && variables.relative.split('/').all(p,p != '.' && p != '..') && (!variables.isRoot || (variables.relative
+            == 'apps' && (!has(object.spec.source.directory) || !has(object.spec.source.directory.recurse) || object.spec.source.directory.recurse
+            == false)))
+          message: Application source is a normalized confined directory; the root source is nonrecursive apps.
+  - name: application-source-inventory
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      message: application-source-inventory
+      cel:
+        variables:
+        - name: bundle
+          expression: object.bundle
+        - name: entries
+          expression: variables.bundle.resources
+        - name: applications
+          expression: variables.entries.filter(e, e.object.kind == 'Application').map(e, e.object)
+        expressions:
+        - expression: variables.applications.all(a,variables.bundle.files.filter(f,f.startsWith(a.spec.source.path.substring(variables.bundle.expected.prefix.size())
+            + '/') && ((has(a.spec.source.directory) && has(a.spec.source.directory.recurse) && a.spec.source.directory.recurse)
+            || !f.substring(a.spec.source.path.substring(variables.bundle.expected.prefix.size()).size()+1).contains('/'))).all(f,!f.matches('(^|.*/)(Chart.yaml|kustomization.yaml|kustomization.yml|Kustomization)$')
+            && f.lowerAscii().matches('.*[.](yaml|yml|json)$') && variables.entries.exists(e,e.file == f)))
+          message: All original source files must be consumed manifest files; renderer markers and unsupported/empty
+            files cannot be hidden.
+  - name: application-source-coverage
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      message: application-source-coverage
+      cel:
+        variables:
+        - name: bundle
+          expression: object.bundle
+        - name: entries
+          expression: variables.bundle.resources
+        - name: children
+          expression: variables.entries.filter(e, e.file.startsWith('apps/') && e.object.kind == 'Application').map(e,
+            e.object)
+        - name: applications
+          expression: variables.entries.filter(e, e.object.kind == 'Application').map(e, e.object)
+        - name: work
+          expression: variables.entries.filter(e,!e.file.startsWith('apps/') && e.file != 'bootstrap.yaml')
+        - name: ownership
+          expression: 'variables.work.map(e, {''entry'':e, ''group'':e.object.apiVersion.contains(''/'') ? e.object.apiVersion.split(''/'')[0]
+            : '''', ''owners'':variables.children.filter(a, e.file.startsWith(a.spec.source.path.substring(variables.bundle.expected.prefix.size())
+            + ''/'') && ((has(a.spec.source.directory) && has(a.spec.source.directory.recurse) && a.spec.source.directory.recurse)
+            || !e.file.substring(a.spec.source.path.substring(variables.bundle.expected.prefix.size()).size()+1).contains(''/'')))})'
+        expressions:
+        - expression: variables.bundle.directories.filter(d,!d.contains('/') && d != 'apps').all(d,variables.children.filter(a,a.spec.source.path
+            == variables.bundle.expected.prefix + d).size() == 1) && variables.children.all(a,!a.spec.source.path.substring(variables.bundle.expected.prefix.size()).contains('/')
+            && a.spec.source.path.substring(variables.bundle.expected.prefix.size()) != 'apps')
+          message: Exactly one child owns each non-apps source-root directory and no child owns the root apps directory.
+        - expression: variables.children.all(a,(!has(a.metadata.finalizers) || a.metadata.finalizers.size() == 0)
+            || variables.ownership.exists(x,x.owners.exists(o,o == a)))
+          message: Cascading Applications must have a nonempty effective object population.
+        - expression: variables.ownership.all(x,x.owners.size() == 1)
+          message: Every effective source document has exactly one Application owner.
+        - expression: variables.applications.all(a,a.spec.source.path.startsWith(variables.bundle.expected.prefix)
+            && a.spec.source.path.substring(variables.bundle.expected.prefix.size()) in variables.bundle.directories)
+          message: Every actual Application source directory exists in the full original directory inventory.
+  - name: resource-retention
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      message: resource-retention
+      cel:
+        variables:
+        - name: bundle
+          expression: object.bundle
+        - name: entries
+          expression: variables.bundle.resources
+        - name: children
+          expression: variables.entries.filter(e, e.file.startsWith('apps/') && e.object.kind == 'Application').map(e,
+            e.object)
+        - name: work
+          expression: variables.entries.filter(e,!e.file.startsWith('apps/') && e.file != 'bootstrap.yaml')
+        - name: ownership
+          expression: 'variables.work.map(e, {''entry'':e, ''group'':e.object.apiVersion.contains(''/'') ? e.object.apiVersion.split(''/'')[0]
+            : '''', ''owners'':variables.children.filter(a, e.file.startsWith(a.spec.source.path.substring(variables.bundle.expected.prefix.size())
+            + ''/'') && ((has(a.spec.source.directory) && has(a.spec.source.directory.recurse) && a.spec.source.directory.recurse)
+            || !e.file.substring(a.spec.source.path.substring(variables.bundle.expected.prefix.size()).size()+1).contains(''/'')))})'
+        expressions:
+        - expression: 'variables.ownership.all(x,x.owners.size() == 1 && (has(x.entry.object.metadata.annotations)
+            && ''argocd.argoproj.io/sync-options'' in x.entry.object.metadata.annotations ? x.entry.object.metadata.annotations[''argocd.argoproj.io/sync-options''].split('','').map(t,t.trim()).exists(t,t
+            == ''Delete=false'') : false) == (!has(x.owners[0].metadata.finalizers) || x.owners[0].metadata.finalizers.size()
+            == 0))'
+          message: Delete=false tokens and noncascading Application ownership imply each other; whitespace-normalized
+            tokens are not substring matches.
+  - name: resource-effective-identity
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      message: resource-effective-identity
+      cel:
+        variables:
+        - name: bundle
+          expression: object.bundle
+        - name: entries
+          expression: variables.bundle.resources
+        - name: children
+          expression: variables.entries.filter(e, e.file.startsWith('apps/') && e.object.kind == 'Application').map(e,
+            e.object)
+        - name: work
+          expression: variables.entries.filter(e,!e.file.startsWith('apps/') && e.file != 'bootstrap.yaml')
+        - name: crds
+          expression: variables.entries.filter(e,e.object.kind == 'CustomResourceDefinition').map(e,e.object)
+        - name: ownership
+          expression: 'variables.work.map(e, {''entry'':e, ''group'':e.object.apiVersion.contains(''/'') ? e.object.apiVersion.split(''/'')[0]
+            : '''', ''owners'':variables.children.filter(a, e.file.startsWith(a.spec.source.path.substring(variables.bundle.expected.prefix.size())
+            + ''/'') && ((has(a.spec.source.directory) && has(a.spec.source.directory.recurse) && a.spec.source.directory.recurse)
+            || !e.file.substring(a.spec.source.path.substring(variables.bundle.expected.prefix.size()).size()+1).contains(''/'')))})'
+        - name: scoped
+          expression: variables.ownership.map(x, {'entry':x.entry, 'group':x.group, 'owners':x.owners, 'scopes':variables.bundle.builtinScopes.filter(s,s.group
+            == x.group && s.kind == x.entry.object.kind).map(s,s.scope) + variables.crds.filter(c,c.spec.group ==
+            x.group && c.spec.names.kind == x.entry.object.kind).map(c,c.spec.scope)})
+        - name: identities
+          expression: 'variables.scoped.map(x, {''entry'':x.entry, ''owners'':x.owners, ''scopes'':x.scopes, ''group'':x.group,
+            ''kind'':x.entry.object.kind, ''name'':x.entry.object.metadata.name, ''namespace'':x.scopes.size() ==
+            1 && x.scopes[0] == ''Cluster'' ? '''' : (has(x.entry.object.metadata.namespace) && x.entry.object.metadata.namespace
+            != '''' ? x.entry.object.metadata.namespace : (x.owners.size() == 1 ? x.owners[0].spec.destination.namespace
+            : ''''))})'
+        expressions:
+        - expression: 'variables.identities.all(x,x.name != '''' && x.kind != '''' && x.entry.object.apiVersion
+            != '''' && x.scopes.size() == 1 && x.scopes[0] in [''Cluster'',''Namespaced''] && (x.scopes[0] == ''Cluster''
+            ? (!has(x.entry.object.metadata.namespace) || x.entry.object.metadata.namespace == '''') : x.namespace
+            != ''''))'
+          message: Every GroupKind resolves through a known built-in or real CRD scope; omitted namespace uses the
+            owning destination, never cluster-scope inference.
+        - expression: variables.identities.all(x,variables.identities.filter(y,y.group == x.group && y.kind == x.kind
+            && y.namespace == x.namespace && y.name == x.name).size() == 1)
+          message: Effective GroupKind/namespace/name ownership is unique across versions and omitted/explicit destination
+            namespace.
+  - name: root-project-ownership
+    match:
+      any:
+      - resources:
+          kinds:
+          - argoproj.io/v1alpha1/AppProject
+    validate:
+      message: root-project-ownership
+      cel:
+        paramKind: *id001
+        paramRef: *id002
+        expressions:
+        - expression: object.metadata.name == params.data.project && object.metadata.namespace == 'argocd' && has(object.metadata.annotations)
+            && 'argocd.argoproj.io/sync-options' in object.metadata.annotations && object.metadata.annotations['argocd.argoproj.io/sync-options'].split(',').map(t,t.trim()).all(t,t
+            in ['Prune=false','Delete=false']) && ['Prune=false','Delete=false'].all(t,t in object.metadata.annotations['argocd.argoproj.io/sync-options'].split(',').map(x,x.trim()))
+            && 'argocd.argoproj.io/sync-wave' in object.metadata.annotations && object.metadata.annotations['argocd.argoproj.io/sync-wave'].matches('^-?[0-9]+$')
+          message: Production AppProject has evaluated identity and exact prune/delete protection with an integer
+            wave.
+    exclude:
+      any:
+      - resources:
+          kinds:
+          - argoproj.io/v1alpha1/AppProject
+          names:
+          - default
+  - name: project-repository-destination-authority
+    match:
+      any:
+      - resources:
+          kinds:
+          - argoproj.io/v1alpha1/AppProject
+    validate:
+      message: project-repository-destination-authority
+      cel:
+        paramKind: *id001
+        paramRef: *id002
+        expressions:
+        - expression: object.spec.all(k,k in ['sourceRepos','destinations','clusterResourceWhitelist']) && object.spec.sourceRepos
+            == [params.data.repository] && object.spec.destinations.all(d,d.all(k,k in ['namespace','server']) &&
+            d.server == params.data.destination && d.namespace != '' && !d.namespace.contains('*') && !d.namespace.contains('?'))
+            && object.spec.clusterResourceWhitelist.all(g,g.all(k,k in ['group','kind']) && !g.group.contains('*')
+            && !g.group.contains('?') && g.kind != '' && !g.kind.contains('*') && !g.kind.contains('?'))
+          message: Production AppProject has only explicit evaluated repository/destination authority and explicit
+            cluster GroupKinds.
+    exclude:
+      any:
+      - resources:
+          kinds:
+          - argoproj.io/v1alpha1/AppProject
+          names:
+          - default
+  - name: project-cluster-authority
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      message: project-cluster-authority
+      cel:
+        variables:
+        - name: bundle
+          expression: object.bundle
+        - name: entries
+          expression: variables.bundle.resources
+        - name: children
+          expression: variables.entries.filter(e, e.file.startsWith('apps/') && e.object.kind == 'Application').map(e,
+            e.object)
+        - name: projects
+          expression: variables.entries.filter(e, e.file.startsWith('apps/') && e.object.kind == 'AppProject').map(e,e.object)
+        - name: work
+          expression: variables.entries.filter(e,!e.file.startsWith('apps/') && e.file != 'bootstrap.yaml')
+        - name: crds
+          expression: variables.entries.filter(e,e.object.kind == 'CustomResourceDefinition').map(e,e.object)
+        - name: ownership
+          expression: 'variables.work.map(e, {''entry'':e, ''group'':e.object.apiVersion.contains(''/'') ? e.object.apiVersion.split(''/'')[0]
+            : '''', ''owners'':variables.children.filter(a, e.file.startsWith(a.spec.source.path.substring(variables.bundle.expected.prefix.size())
+            + ''/'') && ((has(a.spec.source.directory) && has(a.spec.source.directory.recurse) && a.spec.source.directory.recurse)
+            || !e.file.substring(a.spec.source.path.substring(variables.bundle.expected.prefix.size()).size()+1).contains(''/'')))})'
+        - name: scoped
+          expression: variables.ownership.map(x, {'entry':x.entry, 'group':x.group, 'owners':x.owners, 'scopes':variables.bundle.builtinScopes.filter(s,s.group
+            == x.group && s.kind == x.entry.object.kind).map(s,s.scope) + variables.crds.filter(c,c.spec.group ==
+            x.group && c.spec.names.kind == x.entry.object.kind).map(c,c.spec.scope)})
+        - name: identities
+          expression: 'variables.scoped.map(x, {''entry'':x.entry, ''owners'':x.owners, ''scopes'':x.scopes, ''group'':x.group,
+            ''kind'':x.entry.object.kind, ''name'':x.entry.object.metadata.name, ''namespace'':x.scopes.size() ==
+            1 && x.scopes[0] == ''Cluster'' ? '''' : (has(x.entry.object.metadata.namespace) && x.entry.object.metadata.namespace
+            != '''' ? x.entry.object.metadata.namespace : (x.owners.size() == 1 ? x.owners[0].spec.destination.namespace
+            : ''''))})'
+        expressions:
+        - expression: variables.projects.all(p,p.spec.clusterResourceWhitelist.all(g,g.all(k,k in ['group','kind'])
+            && g.group != '*' && g.kind != '*' && g.kind != '' && variables.identities.exists(x,x.scopes.size()
+            == 1 && x.scopes[0] == 'Cluster' && x.group == g.group && x.kind == g.kind)) && variables.identities.filter(x,x.scopes.size()
+            == 1 && x.scopes[0] == 'Cluster').all(x,p.spec.clusterResourceWhitelist.exists(g,g.group == x.group
+            && g.kind == x.kind)))
+          message: Explicit cluster GroupKinds must cover exactly the real built-in/CRD cluster scopes, with no
+            widened or unused grants.
+  - name: application-lifecycle-order
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      message: application-lifecycle-order
+      cel:
+        variables:
+        - name: bundle
+          expression: object.bundle
+        - name: entries
+          expression: variables.bundle.resources
+        - name: children
+          expression: variables.entries.filter(e, e.file.startsWith('apps/') && e.object.kind == 'Application').map(e,
+            e.object)
+        - name: projects
+          expression: variables.entries.filter(e, e.file.startsWith('apps/') && e.object.kind == 'AppProject').map(e,e.object)
+        - name: suffix
+          expression: "variables.bundle.expected.appendNameWithEnv ? '-' + variables.bundle.expected.project : ''"
+        - name: waves
+          expression: >-
+            variables.children.map(a, {'name':a.metadata.name, 'wave':has(a.metadata.annotations) &&
+            'argocd.argoproj.io/sync-wave' in a.metadata.annotations ?
+            int(a.metadata.annotations['argocd.argoproj.io/sync-wave']) : 0})
+        - name: edges
+          expression: '[["argocd-retained", "argocd"], ["argocd-retained", "retained-storage"], ["retained-storage",
+            "local-path-provisioner"], ["argocd", "cluster-dns"], ["gateway-retained", "gateway-crds"], ["gateway-crds",
+            "gateway-controller"], ["cert-manager", "cert-manager-issuance"], ["gateway-controller", "gateway"],
+            ["identity-retained", "identity"], ["jellyfin-retained", "jellyfin"], ["jellyfin", "jellyfin-configuration"]]'
+        expressions:
+        - expression: >-
+            variables.edges.all(e,variables.waves.filter(a,a.name == e[0] + variables.suffix).size() == 1 &&
+            variables.waves.filter(a,a.name == e[1] + variables.suffix).size() == 1 &&
+            variables.waves.filter(a,a.name == e[0] + variables.suffix)[0].wave <
+            variables.waves.filter(a,a.name == e[1] + variables.suffix)[0].wave)
+          message: Declared lifecycle populations must exist and reconcile in dependency order.
+        - expression: >-
+            variables.waves.filter(a,a.name == 'identity-gateway' + variables.suffix).all(g,
+            variables.waves.filter(a,a.name in ['identity' + variables.suffix,'gateway' + variables.suffix]).size() == 2 &&
+            variables.waves.filter(a,a.name in ['identity' + variables.suffix,'gateway' + variables.suffix]).all(a,a.wave < g.wave))
+          message: Any identity-gateway follows both identity and gateway.
+        - expression: 'variables.projects.all(p,variables.children.all(a,int(p.metadata.annotations[''argocd.argoproj.io/sync-wave''])
+            < (has(a.metadata.annotations) && ''argocd.argoproj.io/sync-wave'' in a.metadata.annotations ? int(a.metadata.annotations[''argocd.argoproj.io/sync-wave''])
+            : 0)))'
+          message: The root-owned production AppProject reconciles before every child Application.
+  - name: bootstrap-provenance
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      message: bootstrap-provenance
+      cel:
+        variables:
+        - name: bundle
+          expression: object.bundle
+        - name: entries
+          expression: variables.bundle.resources
+        - name: roots
+          expression: variables.entries.filter(e,e.file == 'bootstrap.yaml')
+        expressions:
+        - expression: variables.bundle.bootstrap.filter(e,e.object.kind == 'Application').size() == 1 && variables.bundle.bootstrap.filter(e,e.object.kind
+            == 'AppProject').size() == 1 && variables.bundle.bootstrap.size() == 2
+          message: Real bootstrapPackage contains exactly one root Application and one default AppProject.
+        - expression: variables.roots.size() == 1 && variables.bundle.bootstrap.filter(e,e.object.kind == 'Application').all(e,e.file
+            == 'Application-' + e.object.metadata.name + '.yaml' && e.object == variables.roots[0].object && e.content
+            == variables.roots[0].content)
+          message: Canonical bootstrap is byte-identical and object-identical to its independently collected real
+            seed.
+  - name: bootstrap-default-authority
+    match:
+      any:
+      - resources:
+          kinds:
+          - argoproj.io/v1alpha1/AppProject
+          names:
+          - default
+    validate:
+      message: bootstrap-default-authority
+      cel:
+        paramKind: *id001
+        paramRef: *id002
+        expressions:
+        - expression: object.metadata.namespace == 'argocd' && object.spec == {'sourceRepos':[params.data.repository],
+            'destinations':[{'namespace':'argocd','server':params.data.destination}], 'clusterResourceWhitelist':[],
+            'namespaceResourceWhitelist':[{'group':'argoproj.io','kind':'Application'},{'group':'argoproj.io','kind':'AppProject'}]}
+          message: The default bootstrap project authorizes only root GitOps GroupKinds in argocd.
+  - name: argocd-server-network-ingress
+    match:
+      any:
+      - resources:
+          kinds:
+          - networking.k8s.io/v1/NetworkPolicy
+          namespaces:
+          - argocd
+    validate:
+      message: Argo server network policies must not contain an allow-all ingress rule.
+      cel:
+        expressions:
+        - expression: object.metadata.namespace != 'argocd' || !has(object.spec.podSelector.matchLabels) || object.spec.podSelector.matchLabels
+            != {'app.kubernetes.io/instance':'argocd','app.kubernetes.io/name':'argocd-server'} || !has(object.spec.ingress)
+            || object.spec.ingress.all(i,i != {})
+          message: Argo server policies cannot contain an unrestricted ingress rule.
+  - name: root-project-source-ownership
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      message: root-project-source-ownership
+      cel:
+        variables:
+        - name: bundle
+          expression: object.bundle
+        - name: entries
+          expression: variables.bundle.resources
+        - name: projects
+          expression: variables.entries.filter(e, e.file.startsWith('apps/') && e.object.kind == 'AppProject').map(e,e.object)
+        - name: work
+          expression: variables.entries.filter(e,!e.file.startsWith('apps/') && e.file != 'bootstrap.yaml')
+        expressions:
+        - expression: >-
+            variables.work.all(e,e.object.kind != 'AppProject') && variables.projects.size() == 1 &&
+            variables.projects[0].metadata.name == variables.bundle.expected.project &&
+            variables.projects[0].metadata.namespace == 'argocd'
+          message: The evaluated production AppProject must be root-owned, never child-source-owned.
+  - name: project-destination-coverage
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      message: project-destination-coverage
+      cel:
+        variables:
+        - name: bundle
+          expression: object.bundle
+        - name: entries
+          expression: variables.bundle.resources
+        - name: children
+          expression: variables.entries.filter(e, e.file.startsWith('apps/') && e.object.kind == 'Application').map(e,
+            e.object)
+        - name: projects
+          expression: variables.entries.filter(e, e.file.startsWith('apps/') && e.object.kind == 'AppProject').map(e,e.object)
+        expressions:
+        - expression: variables.projects.all(p,p.spec.destinations.all(d,variables.children.exists(a,a.spec.destination.server
+            == d.server && a.spec.destination.namespace == d.namespace)) && variables.children.all(a,p.spec.destinations.exists(d,d.server
+            == a.spec.destination.server && d.namespace == a.spec.destination.namespace)))
+          message: AppProject destinations cover exactly the actual child Application destinations, without widened
+            or missing grants.
+  - name: bootstrap-seed-identity
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      message: bootstrap-seed-identity
+      cel:
+        variables:
+        - name: bundle
+          expression: object.bundle
+        expressions:
+        - expression: variables.bundle.bootstrap.filter(e,e.object.kind == 'AppProject').size() == 1 && variables.bundle.bootstrap.filter(e,e.object.kind
+            == 'AppProject').all(e,e.file == 'AppProject-default.yaml' && e.document == 0 && e.object.apiVersion
+            == 'argoproj.io/v1alpha1' && e.object.metadata.name == 'default' && e.object.metadata.namespace == 'argocd')
+          message: The real independent bootstrap package owns exactly the default AppProject seed identity.

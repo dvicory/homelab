@@ -1,0 +1,38 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verification-transport
+  annotations:
+    pod-policies.kyverno.io/autogen-controllers: none
+spec:
+  background: false
+  rules:
+  - name: complete-original-transport
+    match:
+      any:
+      - resources:
+          kinds:
+          - ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      failureAction: Enforce
+      cel:
+        variables:
+        - name: bundle
+          expression: object.bundle
+        expressions:
+        - expression: "variables.bundle.resources.size() > 0 && variables.bundle.files.size()\
+            \ > 0 && variables.bundle.bootstrap.size() > 0 && variables.bundle.directories.size()\
+            \ > 0 && variables.bundle.expected.repository != '' && variables.bundle.expected.revision\
+            \ != '' && variables.bundle.expected.prefix != '' && variables.bundle.expected.project\
+            \ != '' && variables.bundle.expected.destination != '' && variables.bundle.builtinScopes.size()\
+            \ > 0 && variables.bundle.resources.all(r, r.file in variables.bundle.files\
+            \ && r.document >= 0 &&\n  r.content != '' && has(r.object.apiVersion)\
+            \ && has(r.object.kind) &&\n  has(r.object.metadata.name) && r.object.metadata.name\
+            \ != '') &&\nvariables.bundle.files.all(f, variables.bundle.resources.exists(r,\
+            \ r.file == f) || f == '.revision')"
+          message: Complete original resources, independent inventory, bootstrap provenance
+            and evaluated facts are required.

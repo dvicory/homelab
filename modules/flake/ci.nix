@@ -47,15 +47,65 @@ let
       )
     );
   checksFor = system: (self.checks or { }).${system} or { };
+  requiredFastChecks = [
+    "den-semantics"
+    "compute-contracts"
+    "placement-contracts"
+    "storage-roots-contracts"
+    "mergerfs-contracts"
+    "identity-contracts"
+    "public-edge-contracts"
+    "compute-runtime"
+    "household-bootstrap-generated"
+    "prod-home-manifests-fresh"
+    "prod-home-manifests-schema"
+    "prod-home-manifests-policy"
+    "prod-home-gitops-source"
+  ];
+  requiredKubernetesApplications = [
+    "runtime-secret-api"
+    "argocd-runtime"
+    "gateway-runtime"
+    "public-edge-runtime"
+    "media-runtime"
+  ];
+  requiredHostRecovery = [
+    "agenix-restart-guard"
+    "classify-legacy-media"
+    "mergerfs-capability"
+    "runtime-secret-k3s"
+    "compute-ingress-runtime"
+    "prod-home-replacement"
+  ];
+  # Native NixOS tests expose .driver; requiredSystemFeatures also catches
+  # other checks that actually require KVM, regardless of Hestia display groups.
+  needsVm = check: check ? driver || lib.elem "kvm" (check.requiredSystemFeatures or [ ]);
   hostedChecksFor =
     system:
-    # Hosted x86_64-linux runners have KVM, so runtime-group (VM) checks run
-    # there. They are excluded only on systems without hosted KVM.
-    lib.filterAttrs (
-      _: check:
-      system == "x86_64-linux"
-      || !(lib.hasSuffix "runtime" (check.meta.hestia.group or ""))
-    ) (checksFor system);
+    let
+      checks = checksFor system;
+      fastRequired = requiredFastChecks ++ lib.optional (lib.hasSuffix "-linux" system) "prepare-luks-storage";
+      required = fastRequired ++ lib.optionals (system == "x86_64-linux") (
+        requiredKubernetesApplications ++ requiredHostRecovery
+      );
+      missing = lib.filter (name: !(builtins.hasAttr name checks)) required;
+      select = names: lib.genAttrs names (name: checks.${name});
+    in
+    assert lib.assertMsg (missing == [ ])
+      "Missing required CI checks for ${system}: ${lib.concatStringsSep ", " missing}";
+    assert lib.assertMsg (lib.all (name: lib.isDerivation checks.${name}) required)
+      "Required CI checks for ${system} must be derivations";
+    assert lib.assertMsg (lib.all (name: !(needsVm checks.${name})) fastRequired)
+      "Required fast CI checks for ${system} must not require a VM";
+    {
+      fastChecks = select fastRequired // lib.filterAttrs (_: check: !(needsVm check)) checks;
+    }
+    // lib.optionalAttrs (system == "x86_64-linux") {
+      kubernetesApplications = select requiredKubernetesApplications;
+      hostRecovery = select requiredHostRecovery // lib.filterAttrs (
+        name: check: needsVm check && !(lib.elem name requiredKubernetesApplications)
+      ) checks;
+    };
 
   ciJobs = lib.genAttrs ciSystems (
     system:
@@ -92,9 +142,16 @@ in
       system:
       withSystem system (
         { pkgs, ... }:
-        {
-          checks = pkgs.linkFarm "ci-checks-hosted" (project system "checks" (hostedChecksFor system));
-        }
+        lib.mapAttrs (name: entries: pkgs.linkFarm "ci-${name}-hosted" (project system "checks" entries)) (
+          hostedChecksFor system
+          // lib.optionalAttrs (system == "x86_64-linux") {
+            kubernetesApplications =
+              assert lib.assertMsg (self.apps.${system} ? verify-kubernetes-api)
+                "Missing required CI app: verify-kubernetes-api";
+              (hostedChecksFor system).kubernetesApplications
+              // { verify-kubernetes-api = self.packages.${system}.verify-kubernetes-api; };
+          }
+        )
       )
     );
   };

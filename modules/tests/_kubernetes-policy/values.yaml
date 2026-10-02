@@ -1,0 +1,4 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Values
+globalValues:
+  transportVersion: original-render-v1

@@ -1,0 +1,1 @@
+(.bundle.resources[] | select(.object.kind == "AppProject" and .object.metadata.name == "prod-home") | .object["spec"]["destinations"]) = []

@@ -1,0 +1,894 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: media-pvc-bound-to-media-local-pv
+  annotations:
+    verification.homelab/variant: normal-ready-trustedEdges
+policies:
+- ../../../workloads.yaml
+resources:
+- resources.yaml
+paramResources:
+- ../policy-facts.yaml
+results:
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: argocd-server
+    namespace: argocd
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: argocd-server
+    namespace: argocd
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: StatefulSet
+    name: argocd-application-controller
+    namespace: argocd
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: StatefulSet
+    name: argocd-application-controller
+    namespace: argocd
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: argocd-repo-server
+    namespace: argocd
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: argocd-repo-server
+    namespace: argocd
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: argocd-redis-secret-init
+    namespace: argocd
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: argocd-redis-secret-init
+    namespace: argocd
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: argocd-applicationset-controller
+    namespace: argocd
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: argocd-applicationset-controller
+    namespace: argocd
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: argocd-redis
+    namespace: argocd
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: argocd-redis
+    namespace: argocd
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: retained-directories
+    namespace: local-path-storage
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: retained-directories
+    namespace: local-path-storage
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: sonarr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: sonarr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: media-acquisition-mounts
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: sonarr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: StatefulSet
+    name: seerr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: StatefulSet
+    name: seerr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: sabnzbd
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: sabnzbd
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: media-acquisition-mounts
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: sabnzbd
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: media-acquisition-identity
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: sabnzbd
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: radarr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: radarr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: media-acquisition-mounts
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: radarr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: prowlarr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: prowlarr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: CronJob
+    name: media-config-seerr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: CronJob
+    name: media-config-seerr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: media-configuration-state
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: CronJob
+    name: media-config-seerr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: media-periodic-safety
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: CronJob
+    name: media-config-seerr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: CronJob
+    name: media-configarr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: CronJob
+    name: media-configarr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: media-configuration-state
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: CronJob
+    name: media-configarr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: media-periodic-safety
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: CronJob
+    name: media-configarr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: media-config-seerr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: media-config-seerr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: media-configuration-state
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: media-config-seerr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: media-configarr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: media-configarr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: media-configuration-state
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: media-configarr
+    namespace: media
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: local-path-provisioner
+    namespace: local-path-storage
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: local-path-provisioner
+    namespace: local-path-storage
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: jellyfin
+    namespace: jellyfin
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: jellyfin
+    namespace: jellyfin
+  result: pass
+- policy: verification-workloads
+  rule: jellyfin-runtime
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: jellyfin
+    namespace: jellyfin
+  result: pass
+- policy: verification-workloads
+  rule: jellyfin-provisioner
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: jellyfin
+    namespace: jellyfin
+  result: pass
+- policy: verification-workloads
+  rule: jellyfin-media
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: jellyfin
+    namespace: jellyfin
+  result: pass
+- policy: verification-workloads
+  rule: jellyfin-cache
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: jellyfin
+    namespace: jellyfin
+  result: pass
+- policy: verification-workloads
+  rule: jellyfin-runtime-credentials
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: jellyfin
+    namespace: jellyfin
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: jellyfin-configuration
+    namespace: jellyfin
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: jellyfin-configuration
+    namespace: jellyfin
+  result: pass
+- policy: verification-workloads
+  rule: jellyfin-configuration-job
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: jellyfin-configuration
+    namespace: jellyfin
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: kanidm
+    namespace: identity
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: kanidm
+    namespace: identity
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: envoy-gateway
+    namespace: gateway
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: envoy-gateway
+    namespace: gateway
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: envoy-gateway-gateway-helm-certgen
+    namespace: gateway
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: envoy-gateway-gateway-helm-certgen
+    namespace: gateway
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: cert-manager-cainjector
+    namespace: cert-manager
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: cert-manager-cainjector
+    namespace: cert-manager
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: cert-manager-webhook
+    namespace: cert-manager
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: cert-manager-webhook
+    namespace: cert-manager
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: cert-manager
+    namespace: cert-manager
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: cert-manager
+    namespace: cert-manager
+  result: pass
+- policy: verification-workloads
+  rule: jellyfin-retained-storage
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: PersistentVolume
+    name: jellyfin-config
+  result: pass
+- policy: verification-workloads
+  rule: media-private-storage
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: PersistentVolume
+    name: jellyfin-config
+  result: pass
+- policy: verification-workloads
+  rule: jellyfin-retained-storage
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: PersistentVolumeClaim
+    name: jellyfin-config
+    namespace: jellyfin
+  result: pass
+- policy: verification-workloads
+  rule: jellyfin-service-route
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: Service
+    name: jellyfin
+    namespace: jellyfin
+  result: pass
+- policy: verification-workloads
+  rule: jellyfin-runtime-credentials
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    name: jellarr-configuration
+    namespace: jellyfin
+  result: pass
+- policy: verification-workloads
+  rule: jellyfin-configuration-no-startup
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    name: jellarr-configuration
+    namespace: jellyfin
+  result: pass
+- policy: verification-workloads
+  rule: jellyfin-service-route
+  resources: []
+  resourceSpecs:
+  - group: gateway.networking.k8s.io
+    version: v1
+    kind: HTTPRoute
+    name: jellyfin
+    namespace: gateway
+  result: pass
+- policy: verification-workloads
+  rule: media-storage-ingress
+  resources: []
+  resourceSpecs:
+  - group: networking.k8s.io
+    version: v1
+    kind: NetworkPolicy
+    name: media-jellyfin-ingress
+    namespace: jellyfin
+  result: pass
+- policy: verification-workloads
+  rule: media-private-storage
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: PersistentVolume
+    name: media-sonarr
+  result: pass
+- policy: verification-workloads
+  rule: media-private-storage
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: PersistentVolume
+    name: media-seerr
+  result: pass
+- policy: verification-workloads
+  rule: media-private-storage
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: PersistentVolume
+    name: media-sabnzbd
+  result: pass
+- policy: verification-workloads
+  rule: media-private-storage
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: PersistentVolume
+    name: media-radarr
+  result: pass
+- policy: verification-workloads
+  rule: media-private-storage
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: PersistentVolume
+    name: media-prowlarr
+  result: pass
+- policy: verification-workloads
+  rule: media-private-storage
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: PersistentVolume
+    name: identity-kanidm
+  result: pass
+- policy: verification-workloads
+  rule: media-private-storage
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: PersistentVolume
+    name: media-host-namespace
+  result: fail
+- policy: verification-workloads
+  rule: jellyfin-configuration-ingress
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    name: verification-bundle
+    namespace: verification
+  result: pass
+- policy: verification-workloads
+  rule: media-private-storage-bindings
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    name: verification-bundle
+    namespace: verification
+  result: fail
+- policy: verification-workloads
+  rule: media-configuration-inventory
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    name: verification-bundle
+    namespace: verification
+  result: pass
+- policy: verification-workloads
+  rule: media-periodic-inventory
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    name: verification-bundle
+    namespace: verification
+  result: pass
+- policy: verification-workloads
+  rule: media-storage-lifecycle
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    name: verification-bundle
+    namespace: verification
+  result: pass
+- policy: verification-workloads
+  rule: workload-population
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: ConfigMap
+    name: verification-bundle
+    namespace: verification
+  result: pass
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: kanidm-provision
+    namespace: identity
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: kanidm-provision
+    namespace: identity
+  result: pass

@@ -1,0 +1,210 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: '1'
+  name: media-configarr
+  namespace: media
+spec:
+  activeDeadlineSeconds: 900
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: media-configarr
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - command:
+        - /bin/sh
+        - -ec
+        - "output=\"$(dumb-init node index.js 2>&1)\" || {\n  printf '%s\\n' \"$output\"\n  exit 1\n}\nprintf '%s\\\
+          n' \"$output\"\ncase \"$output\" in\n  *\"ERROR \"*|*\"change(s) failed\"*) exit 1 ;;\nesac\n"
+        env:
+        - name: ROOT_PATH
+          value: /app
+        - name: CONFIG_LOCATION
+          value: /app/config/config.yml
+        - name: CUSTOM_REPO_ROOT
+          value: /app/repos
+        - name: STOP_ON_ERROR
+          value: 'true'
+        - name: LOG_LEVEL
+          value: warn
+        - name: CONFIGARR_ENFORCE_CONFIG_VALIDATION
+          value: 'true'
+        - name: CONFIGARR_ENFORCE_EXTERNAL_VALIDATION
+          value: 'true'
+        - name: RADARR_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: RADARR_API_KEY
+              name: media-runtime
+        - name: SONARR_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: SONARR_API_KEY
+              name: media-runtime
+        - name: SABNZBD_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: SABNZBD_API_KEY
+              name: media-runtime
+        - name: SABNZBD_USERNAME
+          valueFrom:
+            secretKeyRef:
+              key: SABNZBD_USERNAME
+              name: media-runtime
+        - name: SABNZBD_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: SABNZBD_PASSWORD
+              name: media-runtime
+        - name: PROWLARR_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: PROWLARR_API_KEY
+              name: media-runtime
+        image: docker.io/configarr/configarr:1.32.0@sha256:8a94c8355f86619ac4c52298144f15859f9c66311515f96c4688435fa020039e
+        name: configarr
+        resources:
+          limits:
+            cpu: '1'
+            memory: 512Mi
+          requests:
+            cpu: 25m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - mountPath: /app/config
+          name: configuration
+          readOnly: true
+        - mountPath: /app/templates
+          name: templates
+          readOnly: true
+        - mountPath: /app/repos
+          name: repos
+      initContainers:
+      - command:
+        - node
+        - -e
+        - "const targets = JSON.parse(process.env.READY_TARGETS);\nconst deadline = Date.now() + 600000;\nasync\
+          \ function ready(target) {\n  while (true) {\n    try {\n      const response = await fetch(target.url,\
+          \ {\n        headers: { 'X-Api-Key': process.env[target.key] },\n        signal: AbortSignal.timeout(10000),\n\
+          \      });\n      if (response.ok) return;\n    } catch {}\n    if (Date.now() + 5000 >= deadline) throw\
+          \ new Error('Media API readiness timed out: ' + target.url);\n    await new Promise(resolve => setTimeout(resolve,\
+          \ 5000));\n  }\n}\nPromise.all(targets.map(ready)).catch(error => { console.error(error); process.exitCode\
+          \ = 1; });\n"
+        env:
+        - name: READY_TARGETS
+          value: '[{"key":"RADARR_API_KEY","url":"http://radarr.media.svc:7878/api/v3/system/status"},{"key":"SONARR_API_KEY","url":"http://sonarr.media.svc:8989/api/v3/system/status"},{"key":"PROWLARR_API_KEY","url":"http://prowlarr.media.svc:9696/api/v1/system/status"}]'
+        - name: RADARR_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: RADARR_API_KEY
+              name: media-runtime
+        - name: SONARR_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: SONARR_API_KEY
+              name: media-runtime
+        - name: PROWLARR_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: PROWLARR_API_KEY
+              name: media-runtime
+        image: docker.io/library/node:22.14.0-bookworm-slim@sha256:1c18d9ab3af4585870b92e4dbc5cac5a0dc77dd13df1a5905cea89fc720eb05b
+        name: wait-for-apis
+        resources:
+          limits:
+            cpu: 250m
+            memory: 128Mi
+          requests:
+            cpu: 10m
+            memory: 32Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+      - command:
+        - /bin/sh
+        - -ec
+        - "set -eu\nfor repo in trash-guides recyclarr-config; do\n  root=\"/app/repos/$repo\"\n  rm -rf \"$root\"\
+          \n  mkdir -p \"$root\"\ndone\ntrash=\"/app/repos/trash-guides/docs/json\"\nfor app in radarr sonarr; do\n\
+          \  for directory in cf cf-groups naming quality-profiles quality-size; do\n    mkdir -p \"$trash/$app/$directory\"\
+          \n  done\n  for directory in custom-formats quality-definitions quality-profiles; do\n    mkdir -p \"\
+          /app/repos/recyclarr-config/$app/includes/$directory\"\n  done\ndone\ncp /seed/radarr-movie.json \"$trash/radarr/quality-size/movie.json\"\
+          \ncp /seed/sonarr-series.json \"$trash/sonarr/quality-size/series.json\"\ncp /seed/sonarr-anime.json \"\
+          $trash/sonarr/quality-size/anime.json\"\ncp /seed/conflicts.json \"$trash/radarr/conflicts.json\"\ncp\
+          \ /seed/conflicts.json \"$trash/sonarr/conflicts.json\"\ncp /seed/radarr-cf-repack-proper.json /app/repos/trash-guides/docs/json/radarr/cf/repack-proper.json\n\
+          cp /seed/radarr-cf-repack2.json /app/repos/trash-guides/docs/json/radarr/cf/repack2.json\ncp /seed/radarr-cf-repack3.json\
+          \ /app/repos/trash-guides/docs/json/radarr/cf/repack3.json\ncp /seed/radarr-cf-web-tier-01.json /app/repos/trash-guides/docs/json/radarr/cf/web-tier-01.json\n\
+          cp /seed/radarr-cf-web-tier-02.json /app/repos/trash-guides/docs/json/radarr/cf/web-tier-02.json\ncp /seed/radarr-cf-web-tier-03.json\
+          \ /app/repos/trash-guides/docs/json/radarr/cf/web-tier-03.json\ncp /seed/sonarr-cf-repack-proper.json\
+          \ /app/repos/trash-guides/docs/json/sonarr/cf/repack-proper.json\ncp /seed/sonarr-cf-repack2.json /app/repos/trash-guides/docs/json/sonarr/cf/repack2.json\n\
+          cp /seed/sonarr-cf-repack3.json /app/repos/trash-guides/docs/json/sonarr/cf/repack3.json\ncp /seed/sonarr-cf-web-scene.json\
+          \ /app/repos/trash-guides/docs/json/sonarr/cf/web-scene.json\ncp /seed/sonarr-cf-web-tier-01.json /app/repos/trash-guides/docs/json/sonarr/cf/web-tier-01.json\n\
+          cp /seed/sonarr-cf-web-tier-02.json /app/repos/trash-guides/docs/json/sonarr/cf/web-tier-02.json\ncp /seed/sonarr-cf-web-tier-03.json\
+          \ /app/repos/trash-guides/docs/json/sonarr/cf/web-tier-03.json\nprintf '%s\\n' '04e692c8926f6b9736943afcd9b505bad29f5e54'\
+          \ > /app/repos/trash-guides/TRASH-GUIDES-REVISION\nfor repo in trash-guides recyclarr-config; do\n  git\
+          \ -C \"/app/repos/$repo\" init -q\n  git -C \"/app/repos/$repo\" config user.email \"media-policy@localhost\"\
+          \n  git -C \"/app/repos/$repo\" config user.name \"media-policy\"\n  git -C \"/app/repos/$repo\" add .\n\
+          \  git -C \"/app/repos/$repo\" commit --allow-empty -qm \"Pinned offline media policy inputs\"\n  git\
+          \ -C \"/app/repos/$repo\" checkout --detach -q HEAD\ndone\n"
+        image: docker.io/configarr/configarr:1.32.0@sha256:8a94c8355f86619ac4c52298144f15859f9c66311515f96c4688435fa020039e
+        name: seed-policy
+        resources:
+          limits:
+            cpu: 250m
+            memory: 128Mi
+          requests:
+            cpu: 10m
+            memory: 32Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - mountPath: /seed
+          name: policy-inputs
+          readOnly: true
+        - mountPath: /app/repos
+          name: repos
+      restartPolicy: OnFailure
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+      - configMap:
+          items:
+          - key: config.yml
+            path: config.yml
+          name: media-configuration
+        name: configuration
+      - configMap:
+          name: media-configarr-templates
+        name: templates
+      - configMap:
+          name: media-configarr-inputs
+        name: policy-inputs
+      - emptyDir: {}
+        name: repos
+      - name: host-state
+        hostPath:
+          path: /srv/media/data
+          type: Directory

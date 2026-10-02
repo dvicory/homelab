@@ -1,0 +1,1 @@
+del(.bundle.resources[] | select(.object.kind == "HTTPRoute" and .object.metadata.name == "idm"))

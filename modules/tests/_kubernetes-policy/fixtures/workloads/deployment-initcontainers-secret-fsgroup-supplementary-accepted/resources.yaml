@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: credential-reader
+  namespace: verification
+spec:
+  template:
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 3000
+        fsGroup: 2000
+      containers:
+      - name: runtime
+        image: registry.k8s.io/pause:3.10
+      volumes:
+      - name: credential
+        secret:
+          secretName: fixture-password
+          items:
+          - key: password
+            path: password
+          defaultMode: 256
+      initContainers:
+      - name: reader
+        image: registry.k8s.io/pause:3.10
+        volumeMounts:
+        - name: credential
+          mountPath: /credential
+      restartPolicy: Always
+    metadata:
+      labels:
+        app: credential-reader
+  selector:
+    matchLabels:
+      app: credential-reader

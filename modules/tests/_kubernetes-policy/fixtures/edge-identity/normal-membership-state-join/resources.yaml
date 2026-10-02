@@ -1,0 +1,8 @@
+apiVersion: v1
+data:
+  members.json: '["daniel"]'
+  state.json: '{"persons":{"unauthorized":{}}}'
+kind: ConfigMap
+metadata:
+  name: kanidm-provision
+  namespace: identity

@@ -1,0 +1,1 @@
+.bundle.resources |= map(select((.object.kind == "AppProject" and .object.metadata.name == "prod-home") | not))

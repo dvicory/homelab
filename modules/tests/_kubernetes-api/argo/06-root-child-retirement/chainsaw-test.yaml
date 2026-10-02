@@ -1,0 +1,78 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: argo-06-root-child-retirement
+  labels:
+    verification.homelab/layer: controller-node-local
+spec:
+  timeouts:
+    assert: 180s
+    exec: 300s
+  steps:
+    - name: canonical-cascading-root-and-noncascading-retained-child
+      try:
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" prepare-root-retirement
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" revision rootPayload
+            outputs:
+              - name: rootPayload
+                value: ($stdout)
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" revision retirementRoot
+            outputs:
+              - name: retirementRoot
+                value: ($stdout)
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: retained
+                namespace: argocd
+              (status.sync.revision == $rootPayload): true
+              (status.sync.comparedTo.source == spec.source): true
+              (status.operationState.syncResult.revision == $rootPayload): true
+              status:
+                sync:
+                  status: Synced
+                health:
+                  status: Healthy
+                operationState:
+                  phase: Succeeded
+              (length(status.conditions[?type == 'ComparisonError'] || `[]`) == `0`): true
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: retirement-root
+                namespace: argocd
+              (status.sync.revision == $retirementRoot): true
+              (status.sync.comparedTo.source == spec.source): true
+              (status.operationState.syncResult.revision == $retirementRoot): true
+              status:
+                sync:
+                  status: Synced
+                health:
+                  status: Healthy
+                operationState:
+                  phase: Succeeded
+              (length(status.conditions[?type == 'ComparisonError'] || `[]`) == `0`): true
+    - name: root-deletes-child-but-preserves-usable-identities
+      try:
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" root-retire
+        - script:
+            content: |
+              "$KUBECTL" -n argocd wait --for=delete application/retirement-root --timeout=180s
+        - script:
+            content: |
+              "$KUBECTL" -n argocd wait --for=delete application/retained --timeout=180s
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" retirement-proof

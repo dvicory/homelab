@@ -1,0 +1,94 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: argo-03-workload-self-heal
+  labels:
+    verification.homelab/layer: controller-node-local
+spec:
+  timeouts:
+    assert: 180s
+    exec: 300s
+  steps:
+    - name: canonical-retained-resources-and-working-consumer
+      try:
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" prepare-storage
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" revision storage
+            outputs:
+              - name: storage
+                value: ($stdout)
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: retained
+                namespace: argocd
+              (status.sync.revision == $storage): true
+              (status.sync.comparedTo.source == spec.source): true
+              (status.operationState.syncResult.revision == $storage): true
+              status:
+                sync:
+                  status: Synced
+                health:
+                  status: Healthy
+                operationState:
+                  phase: Succeeded
+              (length(status.conditions[?type == 'ComparisonError'] || `[]`) == `0`): true
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: reader
+                namespace: argocd
+              (status.sync.revision == $storage): true
+              (status.sync.comparedTo.source == spec.source): true
+              (status.operationState.syncResult.revision == $storage): true
+              status:
+                sync:
+                  status: Synced
+                health:
+                  status: Healthy
+                operationState:
+                  phase: Succeeded
+              (length(status.conditions[?type == 'ComparisonError'] || `[]`) == `0`): true
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" self-heal
+    - name: deleted-workload-is-reconciled-with-usable-data
+      try:
+        - assert:
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: data-reader
+                namespace: identity
+              (status.observedGeneration == metadata.generation): true
+              status:
+                availableReplicas: 1
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: reader
+                namespace: argocd
+              (status.sync.revision == $storage): true
+              (status.sync.comparedTo.source == spec.source): true
+              (status.operationState.syncResult.revision == $storage): true
+              status:
+                sync:
+                  status: Synced
+                health:
+                  status: Healthy
+                operationState:
+                  phase: Succeeded
+              (length(status.conditions[?type == 'ComparisonError'] || `[]`) == `0`): true
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" self-heal-proof

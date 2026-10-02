@@ -1,0 +1,1 @@
+(.bundle.resources[] | select(.object.kind == "Job" and .object.metadata.name == "jellyfin-configuration" and .object.metadata.namespace == "jellyfin" and .object.apiVersion == "batch/v1")) |= (.object["spec"]["template"]["metadata"]["labels"]["fixture-extra"] = "preserved")

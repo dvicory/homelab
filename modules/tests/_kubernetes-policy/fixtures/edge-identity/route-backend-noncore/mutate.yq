@@ -1,0 +1,1 @@
+(.bundle.resources[] | select(.object.kind == "HTTPRoute" and .object.metadata.name == "idm") | .object["spec"]["rules"][0]["backendRefs"][0]["group"]) = "other.example"

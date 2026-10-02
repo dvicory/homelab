@@ -1,0 +1,2 @@
+.bundle["bootstrap"][0]["content"] = "independent-seed-drift" |
+.bundle["bootstrap"][1]["content"] = "independent-seed-drift"

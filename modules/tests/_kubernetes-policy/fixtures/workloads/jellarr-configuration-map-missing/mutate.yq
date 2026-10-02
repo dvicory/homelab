@@ -1,0 +1,2 @@
+(.bundle.resources |= map(select(.file != "jellyfin-configuration/ConfigMap-jellarr-configuration.yaml"))) |
+(.bundle.files |= map(select(. != "jellyfin-configuration/ConfigMap-jellarr-configuration.yaml")))

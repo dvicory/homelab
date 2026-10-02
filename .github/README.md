@@ -21,12 +21,140 @@ nix build .#ciJobs.x86_64-linux.nixosConfigurations
 nix build .#checks.aarch64-linux.den-semantics
 ```
 
-Linux VM checks remain directly buildable for x86-64 and ARM64. Hosted ARM
-jobs omit checks whose Hestia group ends in `-runtime`, because GitHub's ARM
-runners do not expose KVM. A KVM-capable ARM builder can build any omitted
-check directly. Check jobs use `--max-jobs 1` so VM tests do not compete with
-other builds on the same runner; other CI groups retain Nix's normal
-parallelism.
+### Required evidence layers
+
+Hosted CI uses three directly buildable groups, not Hestia metadata suffixes:
+
+| Group | Required coverage | Hosted platform |
+| --- | --- | --- |
+| `fastChecks` | Nix/Den placement, storage, identity and public-edge contracts; local compute-runtime and generated-bootstrap behavior; canonical manifest freshness, pinned local schemas and GitOps semantic guards | All three systems |
+| `kubernetesApplications` | `runtime-secret-api`, `argocd-runtime`, `gateway-runtime`, `public-edge-runtime`, `media-runtime`, plus the separately executed `verify-kubernetes-api` app | x86-64 Linux |
+| `hostRecovery` | `agenix-restart-guard`, `classify-legacy-media`, `mergerfs-capability`, `runtime-secret-k3s`, `compute-ingress-runtime`, `prod-home-replacement` | x86-64 Linux |
+
+The exact mandatory registrations live in `modules/flake/ci.nix`. Missing
+required checks or non-derivation replacements fail evaluation of every hosted
+check group for the affected platform; the API app and package must also exist.
+Other non-VM checks are still projected automatically into `fastChecks`.
+Other native VM/KVM checks are projected into `hostRecovery` on x86-64 Linux,
+without duplicating the focused application group. Ordinary `ciJobs.checks`
+and `ciBundles` still include every registered check; packages, development
+outputs and system configurations retain their automatic projection.
+
+Linux also requires `prepare-luks-storage` in `fastChecks`. It exercises real
+rsync transfers/checksum verification and refuses unsafe operations before
+simulated block/format mutators. It does not prove real partitioning or LUKS
+formatting. Error-wording probes of external utilities are not retained as
+safety evidence; unsupported fixture xattrs are reported as unexercised.
+
+Native NixOS tests are identified by their `.driver`, and other KVM-dependent
+checks by `requiredSystemFeatures`, not display metadata. Hosted application
+and host groups require `/dev/kvm`; missing acceleration fails rather than
+silently omitting the group. Hosted ARM Linux has no KVM and Darwin cannot run
+native Linux VMs, so neither hosts those groups. Linux checks registered for
+ARM remain directly buildable on a KVM-capable native ARM builder.
+Check groups use `--max-jobs 1`; other groups retain normal Nix parallelism.
+
+The schema gate checks original canonical YAML against pinned local schemas,
+with duplicate-key and complete document/schema accounting. It does not prove
+CEL, admission, controller reconciliation or traffic; the official CRD envelope
+schema also permits some extra fields. GitOps semantic guards retain ownership,
+retention, path confinement and AppProject authority rules.
+
+Phase/administrator-route coupling remains in the Nix identity contract check;
+it also requires the policy to target the actual route in the same namespace.
+Rendered retention and authority remain in the existing Python semantic gate.
+The bounded offline Kyverno pilot did not justify a second policy definition
+or a production admission controller.
+
+The real Docker API scenario proves Gateway CEL rejection and preservation of
+the prior resource using the actual tracked CRD and pinned target-version K3s.
+It does not prove controller or packet-path behavior. The focused native tests
+exercise production runtime-Secret reconciliation against a real API, Argo
+controller health/sequencing/self-heal/retention, Gateway controller/CNI traffic
+and authorization, and public-edge TLS/header/request/logging boundaries.
+These are disposable fixtures, not production availability or deployment proof.
+Host checks retain mount/ID-map/filesystem/firewall/service-delivery evidence;
+no Kubernetes-only replacement justifies removing that coverage.
+
+`media-runtime` exercises pinned native media services and production producer
+jobs: actual libraries/profiles/scores, wrong credentials/configuration and
+denied access, stable managed identities, preserved unmanaged video bytes,
+and Seerr first-owner/steady-state boundaries. It does not prove Kubernetes
+RBAC or host mount propagation. Required `prod-home-replacement` separately
+covers the real Incus/ZFS/MergerFS/K3s replacement, host-to-guest Secret
+staging/rotation, retained data and resource retirement.
+
+### Reproduction and omission probe
+
+On a native x86-64 Linux builder with KVM:
+
+```sh
+nix build -L .#hostedCiJobs.x86_64-linux.fastChecks
+nix build -L --max-jobs 1 .#hostedCiJobs.x86_64-linux.kubernetesApplications
+nix build -L --max-jobs 1 .#hostedCiJobs.x86_64-linux.hostRecovery
+# Native interactive interface is unchanged.
+nix build .#checks.x86_64-linux.runtime-secret-api.driver
+(
+  run_dir=$(mktemp -d /var/tmp/homelab-test.XXXXXX)
+  trap 'rm -rf -- "$run_dir"' EXIT
+  XDG_RUNTIME_DIR="$run_dir" ./result/bin/nixos-test-driver
+)
+```
+
+Manual drivers prefer `XDG_RUNTIME_DIR` over `TMPDIR` and retain VM disks after
+shutdown. Use owned, mode-0700 disk-backed scratch as above: accumulated VM
+images can exhaust `/run/user/$UID` tmpfs and cause guest block-device I/O
+failures. Hosted builds already use the disk-backed `/nix/build` directory.
+
+The application link farm builds the API app; executing it is a separate
+required workflow step. Use an explicit local Unix-socket Docker context and a
+new report filename (the app refuses overwrite):
+
+```sh
+nix run .#verify-kubernetes-api -- \
+  --docker-context default --report ./kubernetes-api-result.json
+```
+
+Hosted execution verifies that `default` addresses exactly
+`unix:///var/run/docker.sock`; local reproduction may explicitly select another
+Unix-socket context, such as `colima`. The app ignores ambient Docker/Kubernetes
+credentials, creates its own loopback-only API and kubeconfig, and removes its
+owned container, anonymous volumes and credentials even on scenario failure.
+Cleanup failure makes the gate fail. Only its sanitized report is uploaded,
+including on failure; no raw Docker logs, kubeconfig or assertion errors.
+
+This mutation removes a real registration from the actual flake checks without
+editing source or executing test outputs. Evaluation can still realize Helm
+and other import-from-derivation inputs. Run from the checkout on native Linux;
+require the named missing-check diagnostic, not merely any nonzero exit:
+
+```sh
+nix eval --impure --max-jobs 1 --cores 4 --expr '
+  let
+    f = builtins.getFlake (toString ./.);
+    ci = import ./modules/flake/ci.nix {
+      lib = f.inputs.nixpkgs.lib;
+      withSystem = system: action: action {
+        pkgs = import f.inputs.nixpkgs { inherit system; };
+      };
+      self = f // {
+        checks = f.checks // {
+          x86_64-linux = builtins.removeAttrs f.checks.x86_64-linux [
+            "runtime-secret-api"
+          ];
+        };
+      };
+    };
+  in ci.flake.hostedCiJobs.x86_64-linux.fastChecks.drvPath
+'
+# Expected: Missing required CI checks for x86_64-linux: runtime-secret-api
+```
+
+Removing `prod-home-manifests-schema` or `argocd-runtime` instead must fail with
+the corresponding identity. Removing the required-name list entry is not this
+probe: it changes the verification contract rather than testing registration
+loss. API empty selection, nonexistent selector or a removed TLS CEL rule are
+also negative probes, not accepted exclusions.
 
 Hosted CI builds the full ARM64 Darwin configuration. An ARM64 Linux job first
 builds the Linux system closure used by its `nix.linux-builder` VM and passes
@@ -34,20 +162,22 @@ that closure to the macOS job through a one-day workflow artifact. This breaks
 the first-build cycle without weakening the production configuration. The
 workstation builds the same configuration as its activation gate.
 
-Manual dispatch builds the full projection by default. Set `system` to build
+Manual dispatch builds all hosted groups by default. Set `system` to build
 only that platform, or set `check` to run one check (defaulting to x86-64 when
-no specific platform is selected):
+no specific platform is selected). A single-check dispatch or an ARM-only
+dispatch is not complete infrastructure verification:
 
 ```sh
 gh workflow run ci.yml --ref "$REF" -f check=den-semantics
 gh workflow run ci.yml --ref "$REF" -f system=aarch64-linux
 ```
 
-Check names and implementations belong in Nix, not workflow branches. Successful
-check jobs upload nonempty outputs as `check-output-<system>-<run-id>` artifacts;
-Linux runners enable available KVM acceleration and publish nonempty outputs to
-the public `dvicory-homelab` Cachix cache. System builds and checks can reuse
-narinfo and objects uploaded by other jobs.
+Successful check groups upload nonempty native outputs as
+`check-output-<group>-<system>-<run-id>` artifacts; empty successful outputs
+retain their evidence in the job log. The real API step uploads the sanitized
+`kubernetes-api-<system>-<run-id>` report on success or failure. Scenario identity,
+operation status, skipped selection and owned-state cleanup are enforced by
+the existing scenario implementations, not by artifact presence.
 All jobs read the public `dvicory-homelab` Cachix cache. Successful `main` push
 jobs publish their existing outputs and runtime closures directly from the build
 runner; another job's failure does not prevent those uploads. There is no second

@@ -1,0 +1,12 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: gateway-trusted-cni-source-boundary
+spec:
+  timeouts:
+    exec: 600s
+  steps:
+    - name: trusted-bridge-peer-allowed-stranger-spoof-denied
+      try:
+        - script:
+            content: exec gateway-case cni

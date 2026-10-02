@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: jellyfin-admin
+  namespace: jellyfin
+stringData:
+  password: fixture-only

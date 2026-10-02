@@ -1,0 +1,83 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: jellyfin-runtime-missing-drop-all
+  annotations:
+    verification.homelab/variant: normal-ready-trustedEdges
+policies:
+- ../../../workloads.yaml
+resources:
+- resources.yaml
+paramResources:
+- ../policy-facts.yaml
+results:
+- policy: verification-workloads
+  rule: pod-secret-readable
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: jellyfin
+    namespace: jellyfin
+  result: pass
+- policy: verification-workloads
+  rule: pod-pvc-no-fsgroup
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: jellyfin
+    namespace: jellyfin
+  result: pass
+- policy: verification-workloads
+  rule: jellyfin-runtime
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: jellyfin
+    namespace: jellyfin
+  result: fail
+- policy: verification-workloads
+  rule: jellyfin-provisioner
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: jellyfin
+    namespace: jellyfin
+  result: pass
+- policy: verification-workloads
+  rule: jellyfin-media
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: jellyfin
+    namespace: jellyfin
+  result: pass
+- policy: verification-workloads
+  rule: jellyfin-cache
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: jellyfin
+    namespace: jellyfin
+  result: pass
+- policy: verification-workloads
+  rule: jellyfin-runtime-credentials
+  resources: []
+  resourceSpecs:
+  - group: apps
+    version: v1
+    kind: Deployment
+    name: jellyfin
+    namespace: jellyfin
+  result: pass

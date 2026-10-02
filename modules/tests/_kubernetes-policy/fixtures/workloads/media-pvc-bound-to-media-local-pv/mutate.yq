@@ -1,0 +1,2 @@
+.bundle.resources += [{"file": "verification-fixtures/PersistentVolume-media-host-namespace.yaml", "document": 0, "object": {"apiVersion": "v1", "kind": "PersistentVolume", "metadata": {"name": "media-host-namespace"}, "spec": {"local": {"path": "/srv/media/data/library"}}}}] |
+.bundle.resources += [{"file": "verification-fixtures/PersistentVolumeClaim-media-host-namespace.yaml", "document": 0, "object": {"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": {"name": "media-host-namespace", "namespace": "media"}, "spec": {"volumeName": "media-host-namespace"}}}]

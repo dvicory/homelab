@@ -1,0 +1,1 @@
+(.bundle.resources[] | select(.object.kind == "Job" and .object.metadata.name == "media-configarr" and .object.metadata.namespace == "media" and .object.apiVersion == "batch/v1")) |= (.object["metadata"]["name"] = "renamed-configarr")

@@ -1,0 +1,1 @@
+(.bundle.resources[] | select(.object.kind == "HTTPRoute" and .object.metadata.name == "argocd") | .object["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"]) = "-2"

@@ -1,0 +1,1 @@
+(.bundle.resources[] | select(.object.kind == "NetworkPolicy" and .object.metadata.name == "jellyfin-configuration-ingress" and .object.metadata.namespace == "jellyfin" and .object.apiVersion == "networking.k8s.io/v1")) |= (.object["spec"]["ingress"][0]["ports"][0]["port"] = 1234)

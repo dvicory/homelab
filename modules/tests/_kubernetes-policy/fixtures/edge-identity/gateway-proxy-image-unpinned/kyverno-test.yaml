@@ -1,0 +1,23 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: gateway-proxy-image-unpinned
+  annotations:
+    verification.homelab/variant: normal-ready-trustedEdges
+policies:
+- ../../../edge-identity.yaml
+resources:
+- resources.yaml
+paramResources:
+- policy-facts.yaml
+results:
+- policy: edge-identity
+  rule: gateway-proxy-image
+  resources: []
+  resourceSpecs:
+  - group: gateway.envoyproxy.io
+    version: v1alpha1
+    kind: EnvoyProxy
+    name: household
+    namespace: gateway
+  result: fail

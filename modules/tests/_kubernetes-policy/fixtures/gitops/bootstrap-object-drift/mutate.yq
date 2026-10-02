@@ -1,0 +1,1 @@
+(.bundle.resources[] | select(.object.kind == "Application" and .object.metadata.name == "apps") | .object["metadata"]["annotations"]) = {"harmless":"drift"}

@@ -1,0 +1,24 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: argo-05-direct-retirement
+  labels:
+    verification.homelab/layer: controller-node-local
+spec:
+  timeouts:
+    assert: 180s
+    exec: 300s
+  steps:
+    - name: retire-application-without-pvc-protection-masking
+      try:
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" direct-retire
+        - script:
+            content: |
+              "$KUBECTL" -n argocd wait --for=delete application/retained --timeout=180s
+    - name: same-pv-pvc-uids-remain-usable-after-retirement
+      try:
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" retirement-proof

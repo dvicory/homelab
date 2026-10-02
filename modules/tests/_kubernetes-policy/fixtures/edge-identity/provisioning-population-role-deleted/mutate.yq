@@ -1,0 +1,1 @@
+del(.bundle.resources[] | select(.object.kind == "Role" and .object.metadata.name == "kanidm-client-secret"))

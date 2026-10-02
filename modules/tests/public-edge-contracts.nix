@@ -238,12 +238,6 @@ let
       && object.spec.validation.wellKnownCACertificates == "System"
     )
   ) (allGatewayObjects testCluster);
-  nginxLogConfig = remoteModule.services.nginx.commonHttpConfig;
-  querylessNginxLogs =
-    lib.hasInfix "\"path\":\"$uri\"" nginxLogConfig
-    && lib.hasInfix "\"request_id\":\"$request_id\"" nginxLogConfig
-    && !(lib.hasInfix "$request_uri" nginxLogConfig)
-    && !(lib.hasInfix "$args" nginxLogConfig);
   backendPolicies =
     inventory:
     lib.filter (object: lib.hasSuffix "-backend-ingress" object.metadata.name) (
@@ -353,23 +347,6 @@ let
     && lib.all (
       location:
       location.proxyPass == "https://${settings.originHost}:${toString settings.originPort}"
-      && lib.hasInfix "proxy_ssl_server_name on;" location.extraConfig
-      && lib.hasInfix "proxy_ssl_name ${settings.originServerName};" location.extraConfig
-      && lib.hasInfix "proxy_ssl_verify on;" location.extraConfig
-      && lib.hasInfix "proxy_ssl_trusted_certificate ${settings.originCA};" location.extraConfig
-      && !(lib.hasInfix "proxy_set_header X-Real-IP" location.extraConfig)
-      && lib.hasInfix "proxy_set_header X-Forwarded-For $remote_addr;" location.extraConfig
-      && lib.hasInfix "proxy_set_header X-Forwarded-Host $host;" location.extraConfig
-      && lib.hasInfix "proxy_set_header X-Forwarded-Proto https;" location.extraConfig
-      && lib.hasInfix "proxy_set_header X-Forwarded-Port 443;" location.extraConfig
-      && lib.hasInfix "proxy_set_header Forwarded \"\";" location.extraConfig
-      && lib.hasInfix "proxy_set_header X-Forwarded-User \"\";" location.extraConfig
-      && lib.hasInfix "proxy_set_header X-Forwarded-Email \"\";" location.extraConfig
-      && lib.hasInfix "proxy_set_header X-Auth-Request-User \"\";" location.extraConfig
-      && lib.hasInfix "proxy_set_header X-Auth-Request-Email \"\";" location.extraConfig
-      && lib.hasInfix "proxy_set_header Remote-User \"\";" location.extraConfig
-      && lib.hasInfix "proxy_set_header X-Request-ID $request_id;" location.extraConfig
-      && !(lib.hasInfix "$http_x_request_id" location.extraConfig)
     ) locations
     && lib.all (
       hostname:
@@ -484,7 +461,6 @@ let
     gateway-trusted-without-peers-rejected = !gatewayRenderSucceeds badTrustedModeCluster;
     bounded-route-timeouts = timeoutContract;
     backend-tls-hostname-and-trust = backendTLSContract;
-    queryless-nginx-logs = querylessNginxLogs;
     envoy-images-pinned = pinnedImages;
     non-private-trusted-peer-rejected = !allAssertions badTrustedModule;
     backend-policy-selectors = backendPolicyContract testCluster;

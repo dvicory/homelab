@@ -1,0 +1,1 @@
+del(.bundle.resources[] | select(.object.kind == "ConfigMap" and .object.metadata.name == "envoy-gateway-config"))

@@ -1,0 +1,23 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: normal-idm-persistence-wrong-volume
+  annotations:
+    verification.homelab/variant: normal-ready-trustedEdges
+policies:
+- ../../../edge-identity.yaml
+resources:
+- resources.yaml
+paramResources:
+- policy-facts.yaml
+results:
+- policy: edge-identity
+  rule: identity-data-claim
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: PersistentVolumeClaim
+    name: identity-kanidm
+    namespace: identity
+  result: fail

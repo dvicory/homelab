@@ -1,0 +1,23 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: provisioner-custom-trust-volume
+  annotations:
+    verification.homelab/variant: normal-ready-trustedEdges
+policies:
+- ../../../edge-identity.yaml
+resources:
+- resources.yaml
+paramResources:
+- policy-facts.yaml
+results:
+- policy: edge-identity
+  rule: provisioner-system-pki
+  resources: []
+  resourceSpecs:
+  - group: batch
+    version: v1
+    kind: Job
+    name: kanidm-provision
+    namespace: identity
+  result: fail

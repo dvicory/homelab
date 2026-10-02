@@ -1,0 +1,1 @@
+(.bundle.resources[] | select(.object.kind == "Application" and .object.metadata.name == "argocd") | .object["spec"]["source"]["path"]) = "./generated/manifests/prod-home/absent"

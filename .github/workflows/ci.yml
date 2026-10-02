@@ -104,7 +104,17 @@ jobs:
       fail-fast: false
       matrix:
         system: ${{ fromJSON(inputs.system && inputs.system != 'all' && format('["{0}"]', inputs.system) || inputs.check != '' && '["x86_64-linux"]' || '["x86_64-linux","aarch64-linux","aarch64-darwin"]') }}
-        group: ${{ fromJSON(inputs.check != '' && '["checks"]' || '["packages","checks","devShells","formatters","nixosConfigurations","darwinConfigurations","homeConfigurations"]') }}
+        group: ${{ fromJSON(inputs.check != '' && '["checks"]' || '["packages","fastChecks","kubernetesApplications","hostRecovery","devShells","formatters","nixosConfigurations","darwinConfigurations","homeConfigurations"]') }}
+        exclude:
+          # Hosted ARM Linux has no KVM; Darwin cannot run native Linux VMs.
+          - system: aarch64-linux
+            group: kubernetesApplications
+          - system: aarch64-linux
+            group: hostRecovery
+          - system: aarch64-darwin
+            group: kubernetesApplications
+          - system: aarch64-darwin
+            group: hostRecovery
     steps:
       - name: Monitor cache publication runner
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.CACHIX_CACHE != ''
@@ -165,7 +175,7 @@ jobs:
       # System builds and VM checks can fetch multi-GiB images. Hestia v3
       # buffers whole NARs in RAM; use durable/upstream caches for these groups.
       - name: Start Hestia cache
-        if: matrix.group != 'nixosConfigurations' && matrix.group != 'darwinConfigurations' && matrix.group != 'checks'
+        if: matrix.group != 'nixosConfigurations' && matrix.group != 'darwinConfigurations' && matrix.group != 'checks' && matrix.group != 'fastChecks' && matrix.group != 'kubernetesApplications' && matrix.group != 'hostRecovery'
         uses: Mic92/hestia@f1f4df2801140a36398ed423533c8460618539df # v3.0.1
         with:
           version: v3.0.1
@@ -194,23 +204,45 @@ jobs:
           if [ -n "$CHECK" ]; then
             [[ "$CHECK" =~ ^[a-zA-Z0-9_./-]+$ ]] || { echo "invalid check name" >&2; exit 1; }
             attr=".#checks.$SYSTEM.\"$CHECK\""
-          elif [ "$GROUP" = checks ]; then
-            attr=".#hostedCiJobs.$SYSTEM.checks"
+          elif [[ "$GROUP" = fastChecks || "$GROUP" = kubernetesApplications || "$GROUP" = hostRecovery ]]; then
+            attr=".#hostedCiJobs.$SYSTEM.$GROUP"
           else
             attr=".#ciJobs.$SYSTEM.$GROUP"
           fi
           # VM checks need the runner's resources, not a share of parallel builds.
           build_args=(--keep-going --fallback)
-          if [ "$GROUP" = checks ]; then
+          if [[ "$GROUP" = checks || "$GROUP" = fastChecks || "$GROUP" = kubernetesApplications || "$GROUP" = hostRecovery ]]; then
+            if [[ "$GROUP" = kubernetesApplications || "$GROUP" = hostRecovery ]]; then
+              test "$SYSTEM" = x86_64-linux
+              test -c /dev/kvm
+            fi
             build_args+=(--max-jobs 1)
           fi
           nix build -L --out-link "$RUNNER_TEMP/result" "${build_args[@]}" "$attr"
 
-      - name: Upload successful check outputs
-        if: matrix.group == 'checks'
+      - name: Run required Kubernetes safety scenarios
+        if: ${{ !cancelled() && matrix.group == 'kubernetesApplications' }}
+        run: |
+          set -euo pipefail
+          test -S /var/run/docker.sock
+          endpoint=$(env -u DOCKER_HOST -u DOCKER_CONTEXT docker context inspect default --format '{{ .Endpoints.docker.Host }}')
+          test "$endpoint" = unix:///var/run/docker.sock
+          nix run .#verify-kubernetes-api -- \
+            --docker-context default --report "$RUNNER_TEMP/kubernetes-api-result.json"
+
+      - name: Upload sanitized API report
+        if: always() && matrix.group == 'kubernetesApplications'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: check-output-${{ matrix.system }}-${{ github.run_id }}
+          name: kubernetes-api-${{ matrix.system }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/kubernetes-api-result.json
+          if-no-files-found: error
+
+      - name: Upload successful check outputs
+        if: matrix.group == 'checks' || matrix.group == 'fastChecks' || matrix.group == 'kubernetesApplications' || matrix.group == 'hostRecovery'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: check-output-${{ matrix.group }}-${{ matrix.system }}-${{ github.run_id }}
           path: ${{ runner.temp }}/result*
           # Some checks have empty successful outputs; their evidence is the job log.
           if-no-files-found: ignore

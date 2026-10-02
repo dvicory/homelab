@@ -1,0 +1,1 @@
+(.bundle.resources[] | select(.object.kind == "ReferenceGrant" and .object.metadata.name == "gateway-idm") | .object["spec"]["from"][0]["namespace"]) = "default"

@@ -1,0 +1,12 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: gateway-direct-source-spoofing
+spec:
+  timeouts:
+    exec: 600s
+  steps:
+    - name: observe-both-bridge-sources-and-replace-spoofed-metadata
+      try:
+        - script:
+            content: exec gateway-case direct

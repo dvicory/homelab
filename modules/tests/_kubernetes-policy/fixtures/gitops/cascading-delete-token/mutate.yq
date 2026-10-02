@@ -1,0 +1,1 @@
+(.bundle.resources[] | select(.object.kind == "ConfigMap" and .object.metadata.name == "coredns-custom") | .object["metadata"]["annotations"]) = {"argocd.argoproj.io/sync-options":"Delete=false"}

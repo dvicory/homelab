@@ -1,0 +1,1 @@
+.bundle.resources |= map(select((.object.kind == "ConfigMap" and .object.metadata.name == "coredns-custom") | not))

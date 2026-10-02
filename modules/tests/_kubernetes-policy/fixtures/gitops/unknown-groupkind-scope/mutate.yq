@@ -1,0 +1,1 @@
+(.bundle.resources[] | select(.object.kind == "ConfigMap" and .object.metadata.name == "coredns-custom") | .object["apiVersion"]) = "unregistered.example/v1"

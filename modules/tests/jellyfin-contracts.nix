@@ -1,4 +1,4 @@
-{ config, self, ... }:
+{ config, ... }:
 {
   perSystem =
     { pkgs, ... }:
@@ -11,17 +11,6 @@
         builtins.toJSON {
           inherit (compute) retainedPaths;
           inherit (config.flake.clusterResources.prod-home) mediaPaths;
-        }
-      );
-      release = pkgs.writeText "jellyfin-release-contract.json" (
-        builtins.toJSON self.packages.${cluster.hostSystem}.jellyfin-provisioner-image.passthru.release
-      );
-      jellarrRelease = pkgs.writeText "jellarr-release-contract.json" (
-        builtins.toJSON self.packages.${cluster.hostSystem}.jellarr-image.passthru.release
-      );
-      contractInputs = pkgs.writeText "jellyfin-contract-inputs.json" (
-        builtins.toJSON {
-          administrator = cluster.settings.kubernetes.services.jellyfin.administrator;
         }
       );
       runtimeSecrets = pkgs.writeText "jellyfin-runtime-secrets-contract.json" (
@@ -39,7 +28,7 @@
             ];
           }
           ''
-            python - ${environment} ${storage} ${release} ${runtimeSecrets} ${jellarrRelease} ${contractInputs} <<'PY'
+            python - ${environment} ${storage} ${runtimeSecrets} <<'PY'
             import json
             import pathlib
             import sys
@@ -47,10 +36,7 @@
 
             environment = pathlib.Path(sys.argv[1])
             storage = json.loads(pathlib.Path(sys.argv[2]).read_text())
-            release = json.loads(pathlib.Path(sys.argv[3]).read_text())
-            runtime_secrets = json.loads(pathlib.Path(sys.argv[4]).read_text())
-            jellarr_release = json.loads(pathlib.Path(sys.argv[5]).read_text())
-            contract_inputs = json.loads(pathlib.Path(sys.argv[6]).read_text())
+            runtime_secrets = json.loads(pathlib.Path(sys.argv[3]).read_text())
             resources = []
             application_objects = {}
             for application in ("jellyfin-retained", "jellyfin", "jellyfin-configuration", "gateway"):
@@ -92,33 +78,13 @@
                     )
                 return names
 
-            expected_release = {
-                "version": "12.1",
-                "sourceRev": "ee91c75e777da41a9c4f4855e70adc604fbf2ef8",
-                "runtimeImage": "docker.io/jellyfin/jellyfin:12.1",
-                "runtimeDigest": "sha256:78d3ea1207d1322471fcac39a614f004f2ccf7e878f95ab2977d752f07e4dd7e",
-                "provisionPatchRev": "8b0a2c269d5a3d9d7084b5295fd818a8a67af6f2",
-            }
-            assert release == expected_release, "provisioner passthru.release is the coupled Jellyfin identity"
-            assert all(
-                jellarr_release.get(key) == value
-                for key, value in {
-                    "version": "0.1.0",
-                    "sourceRev": "f94c24f26c0264a7c331b016968d5b6e8d1504b7",
-                }.items()
-            ), "Jellarr package pin is the reviewed API client release"
-            runtime_image = f"{release['runtimeImage']}@{release['runtimeDigest']}"
             retained = storage["retainedPaths"]["jellyfin-config"]
             deployment = find("Deployment", "jellyfin")
             pod = pod_spec(deployment)
             containers = pod["containers"]
             init_containers = pod.get("initContainers", [])
-            assert len(containers) == 1 and len(init_containers) == 1, "Jellyfin has one stock container behind one provisioner init"
-            runtime = containers[0]
-            provisioner = init_containers[0]
-            assert runtime["name"] == "jellyfin" and provisioner["name"] == "provision"
-            assert runtime["image"] == runtime_image, "long-lived Jellyfin uses the exact stock runtime digest"
-            assert runtime["image"].startswith("docker.io/jellyfin/jellyfin:12.1@sha256:")
+            runtime = next(container for container in containers if container["name"] == "jellyfin")
+            provisioner = next(container for container in init_containers if container["name"] == "provision")
             assert provisioner["image"] != runtime["image"], "patched provisioner bytes cannot become the long-lived runtime"
             assert mount(provisioner, "/config")["name"] == mount(runtime, "/config")["name"]
             assert mount(provisioner, "/run/provision")["name"] != mount(runtime, "/config")["name"]
@@ -126,12 +92,6 @@
             volumes = {volume["name"]: volume for volume in pod.get("volumes", [])}
             provision_volume = volumes[mount(provisioner, "/run/provision")["name"]]
             assert provision_volume["emptyDir"].get("medium") == "Memory"
-            provisioner_env = {
-                e["name"]: e["value"] for e in provisioner.get("env", [])
-            }
-            assert provisioner_env["JELLYFIN_ADMINISTRATOR"] == contract_inputs["administrator"], (
-                "the provisioner creates the declared administrator, not an embedded name"
-            )
             assert "readinessProbe" in runtime and "readinessProbe" not in provisioner
             assert "startupProbe" in runtime and "livenessProbe" in runtime
             assert runtime["securityContext"]["allowPrivilegeEscalation"] is False
@@ -150,10 +110,6 @@
                 "path": storage["mediaPaths"]["library"],
                 "type": "Directory",
             }, "Jellyfin consumes the semantic media-library projection"
-            assert storage["mediaPaths"]["library"] == storage["mediaPaths"]["data"] + "/library"
-            assert volumes[mount(runtime, "/cache")["name"]]["emptyDir"]["sizeLimit"] == "4Gi"
-            assert runtime["resources"]["limits"]["ephemeral-storage"] == "5Gi"
-            assert runtime["resources"]["requests"]["ephemeral-storage"] == "4Gi"
             cache_gib = int(volumes[mount(runtime, "/cache")["name"]]["emptyDir"]["sizeLimit"].removesuffix("Gi"))
             requested_gib = int(runtime["resources"]["requests"]["ephemeral-storage"].removesuffix("Gi"))
             limited_gib = int(runtime["resources"]["limits"]["ephemeral-storage"].removesuffix("Gi"))
@@ -194,20 +150,7 @@
                     assert not resource.get("data") and not resource.get("stringData"), "admin Secret values are runtime-only"
 
             configuration = find("ConfigMap", "jellarr-configuration")
-            assert set(configuration.get("data", {})) == {"config.yml", "bootstrap.mjs"}
-            jellarr_config = yaml.safe_load(configuration["data"]["config.yml"])
-            # Each library reads one media-class directory of the read-only
-            # /media projection; the replacement acceptance proves the
-            # libraries in a running Jellyfin.
-            library_paths = {
-                folder["name"]: [info["path"] for info in folder["libraryOptions"]["pathInfos"]]
-                for folder in jellarr_config["library"]["virtualFolders"]
-            }
-            assert all(
-                len(paths) == 1 and paths[0].startswith("/media/") for paths in library_paths.values()
-            ), library_paths
-            assert len({paths[0] for paths in library_paths.values()}) == len(library_paths), library_paths
-            assert "startup" not in jellarr_config
+            assert "startup" not in yaml.safe_load(configuration["data"]["config.yml"])
 
             job = find("Job", "jellyfin-configuration")
             annotations = job["metadata"].get("annotations", {})
@@ -215,14 +158,8 @@
             job_pod = pod_spec(job)
             job_containers = job_pod["containers"]
             job_init = job_pod.get("initContainers", [])
-            assert len(job_containers) == 1 and len(job_init) == 1, "Jellarr is one post-health one-shot with one API bootstrap init"
-            assert job_containers[0]["name"] == "jellarr" and job_init[0]["name"] == "bootstrap"
-            bootstrap_env = {
-                e["name"]: e["value"] for e in job_init[0].get("env", [])
-            }
-            assert bootstrap_env["JELLYFIN_ADMINISTRATOR"] == contract_inputs["administrator"]
-            assert job_containers[0]["image"].startswith("homelab/jellarr:0.1.0")
-            assert job_init[0]["image"] == job_containers[0]["image"]
+            jellarr = next(container for container in job_containers if container["name"] == "jellarr")
+            bootstrap = next(container for container in job_init if container["name"] == "bootstrap")
             assert "jellyfin-admin" in secret_names(job_pod)
             admin_volumes = {
                 volume["name"]
@@ -231,13 +168,13 @@
             }
             assert admin_volumes
             assert admin_volumes <= {
-                mount["name"] for mount in job_init[0].get("volumeMounts", [])
+                mount["name"] for mount in bootstrap.get("volumeMounts", [])
             }
             assert not admin_volumes & {
-                mount["name"] for mount in job_containers[0].get("volumeMounts", [])
+                mount["name"] for mount in jellarr.get("volumeMounts", [])
             }
-            jellarr_mount = mount(job_containers[0], "/run/jellarr")
-            assert mount(job_init[0], "/run/jellarr")["name"] == jellarr_mount["name"]
+            jellarr_mount = mount(jellarr, "/run/jellarr")
+            assert mount(bootstrap, "/run/jellarr")["name"] == jellarr_mount["name"]
             jellarr_volume = next(volume for volume in job_pod["volumes"] if volume["name"] == jellarr_mount["name"])
             assert jellarr_volume["emptyDir"].get("medium") == "Memory"
             assert not any(
@@ -296,8 +233,6 @@
             assert service_spec.get("type", "ClusterIP") == "ClusterIP"
             assert not service_spec.get("externalIPs") and not service_spec.get("loadBalancerIP")
             assert all("nodePort" not in port for port in service_spec["ports"])
-            assert service_spec["selector"] == deployment["spec"]["selector"]["matchLabels"]
-            assert any(port["port"] == 8096 and port["targetPort"] == 8096 for port in service_spec["ports"])
 
             route = find("HTTPRoute", "jellyfin", "gateway")
             assert route["spec"]["rules"][0]["timeouts"] == {

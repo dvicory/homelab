@@ -9,15 +9,30 @@ const script = process.argv[2];
 if (!script) throw new Error('usage: seerr-credential-boundary.mjs SEERR_SCRIPT');
 
 const requests = [];
+const credentialGuard = 'data:text/javascript,' + encodeURIComponent(`
+  import fs from 'node:fs';
+  import { syncBuiltinESMExports } from 'node:module';
+  const readFileSync = fs.readFileSync;
+  fs.readFileSync = (path, ...args) => {
+    if (path === '/var/run/secrets/kubernetes.io/serviceaccount/token') {
+      process.send({ credentialRead: true });
+      throw new Error('Credential access is forbidden in this fixture');
+    }
+    return readFileSync(path, ...args);
+  };
+  syncBuiltinESMExports();
+`);
 const key = 'fixture-seerr-api-key';
 let fresh = false;
 const server = createServer((request, response) => {
-  requests.push({ path: request.url, method: request.method, key: request.headers['x-api-key'] });
+  requests.push({ path: request.url, method: request.method });
   const body = request.url === '/api/v1/settings/public'
     ? { mediaServerType: fresh ? 4 : 2, initialized: !fresh }
     : request.url === '/api/v1/settings/jellyfin'
       ? { ip: 'untrusted.example', port: 8096, useSsl: false, urlBase: '' }
-      : null;
+      : request.url === '/api/v1/auth/me'
+        ? { id: 1 }
+        : null;
   response.writeHead(body ? 200 : 404, { 'content-type': 'application/json' }).end(JSON.stringify(body));
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -35,27 +50,28 @@ try {
     },
   }));
   const run = () => new Promise(resolve => {
-    const child = spawn(process.execPath, [script], {
+    const child = spawn(process.execPath, ['--import', credentialGuard, script], {
       env: {
         ...process.env,
         MEDIA_CONFIGURATION_ROOT: join(root, 'configuration'),
         MEDIA_SECRETS_ROOT: join(root, 'secrets'),
         SEERR_STATE_ROOT: join(root, 'seerr-state'),
       },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
-    let stderr = '';
-    child.stderr.on('data', chunk => { stderr += chunk; });
-    child.on('close', code => resolve({ code, stderr }));
+    let output = '';
+    let credentialReads = 0;
+    child.stdout.on('data', chunk => { output += chunk; });
+    child.stderr.on('data', chunk => { output += chunk; });
+    child.on('message', message => { if (message.credentialRead) credentialReads += 1; });
+    child.on('close', code => resolve({ code, output, credentialReads }));
   });
   const result = await run();
   assert.equal(result.code, 1);
-  assert.match(result.stderr, /Seerr Jellyfin host differs/);
-  assert(!result.stderr.includes(key));
-  assert.deepEqual(requests, [
-    { path: '/api/v1/settings/public', method: 'GET', key },
-    { path: '/api/v1/settings/jellyfin', method: 'GET', key },
-  ]);
+  assert(requests.some(request => request.path === '/api/v1/settings/jellyfin'), 'producer must encounter the hostile configured host');
+  assert.equal(result.credentialReads, 0, 'a claimed hostile host is refused before reading administrator credentials');
+  assert(!result.output.includes(key));
+  assert(requests.every(request => request.method === 'GET'), 'host refusal sends no mutation or authentication requests');
   fresh = true;
   requests.length = 0;
   await writeFile(join(root, 'seerr-state', 'settings.json'), JSON.stringify({
@@ -63,9 +79,10 @@ try {
   }));
   const preclaim = await run();
   assert.equal(preclaim.code, 1);
-  assert.match(preclaim.stderr, /Cannot verify unclaimed Seerr/);
-  assert(!preclaim.stderr.includes(key));
-  assert.deepEqual(requests, [{ path: '/api/v1/settings/public', method: 'GET', key }]);
+  assert(requests.some(request => request.path === '/api/v1/settings/public'), 'producer must encounter the unclaimed server');
+  assert.equal(preclaim.credentialReads, 0, 'an unclaimed hostile host is refused before reading administrator credentials');
+  assert(!preclaim.output.includes(key));
+  assert(requests.every(request => request.method === 'GET'), 'host refusal sends no mutation or authentication requests');
 } finally {
   await rm(root, { recursive: true, force: true });
   await new Promise(resolve => server.close(resolve));

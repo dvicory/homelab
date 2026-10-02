@@ -1,0 +1,23 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: jellyfin-admin-password-generated
+  annotations:
+    verification.homelab/variant: normal-ready-trustedEdges
+policies:
+- ../../../workloads.yaml
+resources:
+- resources.yaml
+paramResources:
+- ../policy-facts.yaml
+results:
+- policy: verification-workloads
+  rule: jellyfin-runtime-credentials
+  resources: []
+  resourceSpecs:
+  - group: ''
+    version: v1
+    kind: Secret
+    name: jellyfin-admin
+    namespace: jellyfin
+  result: fail

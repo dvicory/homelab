@@ -1,0 +1,170 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/controller: main
+    app.kubernetes.io/instance: sabnzbd
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: sabnzbd
+    helm.sh/chart: app-template-5.1.0
+  name: sabnzbd
+  namespace: media
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/controller: main
+      app.kubernetes.io/instance: sabnzbd
+      app.kubernetes.io/name: sabnzbd
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        checksum/configMaps: 48d17cdd79f10f00b458fb0fdc739e017ebb69dec6a9a303ca183906ca22b195
+      labels:
+        app.kubernetes.io/controller: main
+        app.kubernetes.io/instance: sabnzbd
+        app.kubernetes.io/name: sabnzbd
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - env:
+        - name: PGID
+          value: '757'
+        - name: PUID
+          value: '757'
+        - name: TZ
+          value: UTC
+        - name: UMASK
+          value: '007'
+        image: ghcr.io/linuxserver/sabnzbd:5.1.2-ls271@sha256:64c4c2b6ed546237451cbfec33aa8bac1396865c1a266dd247c02b36ffe27c62
+        livenessProbe:
+          periodSeconds: 30
+          tcpSocket:
+            port: 8080
+          timeoutSeconds: 5
+        name: main
+        readinessProbe:
+          periodSeconds: 10
+          tcpSocket:
+            port: 8080
+          timeoutSeconds: 5
+        resources:
+          limits:
+            cpu: '2'
+            memory: 2Gi
+          requests:
+            cpu: 100m
+            memory: 256Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          seccompProfile:
+            type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 60
+          periodSeconds: 10
+          tcpSocket:
+            port: 8080
+          timeoutSeconds: 5
+        volumeMounts:
+        - mountPath: /config
+          name: config
+        - mountPath: /data
+          name: data
+        - mountPath: /custom-cont-init.d/10-media-group.sh
+          name: media-group
+          readOnly: true
+          subPath: 10-media-group.sh
+      dnsPolicy: ClusterFirst
+      enableServiceLinks: false
+      hostIPC: false
+      hostNetwork: false
+      hostPID: false
+      initContainers:
+      - command:
+        - /lsiopy/bin/python
+        - -c
+        - "import json\nimport os\nfrom configobj import ConfigObj\nos.umask(0o007)\npath = '/config/sabnzbd.ini'\n\
+          config = ConfigObj(path, encoding='utf-8')\nmisc = config.setdefault('misc', {})\nmisc.update({\n    'host':\
+          \ '0.0.0.0', 'port': '8080',\n    'api_key': os.environ['SABNZBD_API_KEY'],\n    'username': os.environ['SABNZBD_USERNAME'],\n\
+          \    'password': os.environ['SABNZBD_PASSWORD'],\n    'host_whitelist': \"sabnzbd.plus2.danielvicory.dev,\
+          \ sabnzbd.backup.plus2.danielvicory.dev, sabnzbd, sabnzbd.media.svc\",\n    'inet_exposure': '4', 'permissions':\
+          \ '770',\n    'download_dir': '/data/downloads/usenet/incomplete',\n    'complete_dir': '/data/downloads/usenet/complete',\n\
+          })\nfor key in [\"SABNZBD_API_KEY\",\"SABNZBD_USERNAME\",\"SABNZBD_PASSWORD\"]:\n    if not os.environ[key].strip():\n\
+          \        raise ValueError('Required runtime secret is empty: ' + key)\nfor directory in [\"library/movies\"\
+          ,\"library/tv\"] + ['downloads/usenet/incomplete', 'downloads/usenet/complete']:\n    os.makedirs('/data/'\
+          \ + directory, mode=0o2770, exist_ok=True)\ncategories = config.setdefault('categories', {})\n# Without\
+          \ '*', SAB recreates its suggestions and overwrites movies/tv.\ncategories.setdefault('*', {'order': '0',\
+          \ 'pp': '3', 'script': 'None', 'priority': '0'})\nfor name in [\"movies\",\"tv\"]:\n    category = categories.setdefault(name,\
+          \ {})\n    category.update({\n        'name': name, 'order': '0', 'priority': '-100', 'pp': '3',\n   \
+          \     'script': 'Default', 'dir': name, 'newzbin': \"\",\n    })\nproviders = json.loads(\"{}\")\nmanaged\
+          \ = 'managed-by: homelab'\nservers = config.setdefault('servers', {})\nfor name, provider in providers.items():\n\
+          \    env_name = name.replace('-', '_').replace('.', '_').upper()\n    username_key = 'USENET_' + env_name\
+          \ + '_USERNAME'\n    password_key = 'USENET_' + env_name + '_PASSWORD'\n    server = servers.setdefault(name,\
+          \ {})\n    server.setdefault('displayname', name)\n    server.update({\n        'host': provider['host'],\
+          \ 'port': str(provider['port']),\n        'ssl': '1' if provider['ssl'] else '0',\n        'connections':\
+          \ str(provider['connections']),\n        'priority': str(provider['priority']),\n        'username': os.environ[username_key],\n\
+          \        'password': os.environ[password_key],\n        'enable': '1', 'notes': managed,\n    })\nfor\
+          \ name in list(servers):\n    if name not in providers and servers[name].get('notes') == managed:\n  \
+          \      del servers[name]\nconfig.filename = path + '.tmp'\nconfig.write()\nos.chmod(config.filename, 0o600)\n\
+          os.replace(config.filename, path)\n"
+        env:
+        - name: SABNZBD_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: SABNZBD_API_KEY
+              name: media-runtime
+        - name: SABNZBD_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: SABNZBD_PASSWORD
+              name: media-runtime
+        - name: SABNZBD_USERNAME
+          valueFrom:
+            secretKeyRef:
+              key: SABNZBD_USERNAME
+              name: media-runtime
+        image: ghcr.io/linuxserver/sabnzbd:5.1.2-ls271@sha256:64c4c2b6ed546237451cbfec33aa8bac1396865c1a266dd247c02b36ffe27c62
+        name: config
+        resources:
+          limits:
+            cpu: 250m
+            memory: 128Mi
+          requests:
+            cpu: 10m
+            memory: 32Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          runAsGroup: 999
+          runAsNonRoot: true
+          runAsUser: 757
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - mountPath: /config
+          name: config
+        - mountPath: /data
+          name: data
+      nodeSelector:
+        kubernetes.io/hostname: compute-1
+      securityContext:
+        supplementalGroups:
+        - 505
+      serviceAccountName: sabnzbd
+      volumes:
+      - name: config
+        persistentVolumeClaim:
+          claimName: media-sabnzbd
+      - hostPath:
+          path: /srv/media/data
+          type: Directory
+        name: data
+      - configMap:
+          defaultMode: 365
+          name: sabnzbd
+        name: media-group
