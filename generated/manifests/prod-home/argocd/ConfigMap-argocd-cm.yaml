@@ -12,6 +12,11 @@ data:
     hs.status = "Progressing"
     hs.message = ""
     if obj.status ~= nil then
+      for _, condition in ipairs(obj.status.conditions or {}) do
+        if condition.type == "ComparisonError" then
+          return {status = "Degraded", message = "Application source comparison failed"}
+        end
+      end
       if obj.status.health ~= nil then
         hs.status = obj.status.health.status
         if obj.status.health.message ~= nil then

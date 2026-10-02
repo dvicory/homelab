@@ -99,6 +99,7 @@
             bootstrap = bootstrapPackage;
             nativeBuildInputs = [
               (pkgs.python3.withPackages (ps: [ ps.pyyaml ]))
+              pkgs.lua
             ];
           }
           ''
@@ -107,6 +108,7 @@
             ${pkgs.python3.withPackages (ps: [ ps.pyyaml ])}/bin/python - <<'PY'
             from pathlib import Path
             import os
+            import subprocess
             import yaml
             # CRD enums may contain bare "="; PyYAML tags it but supplies no scalar constructor.
             yaml.SafeLoader.add_constructor("tag:yaml.org,2002:value", yaml.SafeLoader.construct_scalar)
@@ -180,29 +182,44 @@
                 return source, finalizers, prune
 
             root = Path(os.environ["MANIFEST_ROOT"])
-            argocd_cm = root / "argocd" / "ConfigMap-argocd-cm.yaml"
+            argocd_cm = Path(${builtins.toJSON "${environment}"}) / "argocd" / "ConfigMap-argocd-cm.yaml"
             check(argocd_cm.is_file(), argocd_cm, "generated argocd-cm is missing")
             with argocd_cm.open() as handle:
                 argocd_cm_resource = yaml.safe_load(handle)
-            expected_health_lua = """\
-            hs = {}
-            hs.status = "Progressing"
-            hs.message = ""
-            if obj.status ~= nil then
-              if obj.status.health ~= nil then
-                hs.status = obj.status.health.status
-                if obj.status.health.message ~= nil then
-                  hs.message = obj.status.health.message
-                end
-              end
-            end
-            return hs"""
             argocd_cm_data = argocd_cm_resource.get("data", {}) if isinstance(argocd_cm_resource, dict) else {}
             health_lua = argocd_cm_data.get("resource.customizations.health.argoproj.io_Application")
             check(
-                isinstance(health_lua, str) and health_lua.strip() == expected_health_lua,
+                isinstance(health_lua, str) and bool(health_lua.strip()),
                 argocd_cm,
                 "argocd-cm must restore Application health customization",
+            )
+            subprocess.run(
+                ["lua", "-e", """
+            local health = assert(load(io.read("*a")))
+            local cases = {
+              {object = {}, status = "Progressing", message = ""},
+              {object = {status = {}}, status = "Progressing", message = ""},
+              {object = {status = {health = {status = "Healthy"}}}, status = "Healthy", message = ""},
+              {object = {status = {health = {status = "Healthy", message = "ready"}}}, status = "Healthy", message = "ready"},
+              {object = {status = {health = {status = "Degraded", message = "child failed"}}}, status = "Degraded", message = "child failed"},
+              {object = {status = {sync = {status = "OutOfSync"}, health = {status = "Healthy"}}}, status = "Healthy"},
+              {object = {status = {conditions = {{type = "SharedResourceWarning"}}, health = {status = "Healthy"}}}, status = "Healthy"},
+              {object = {status = {conditions = {{type = "ComparisonError"}}, health = {status = "Healthy"}}}, status = "Degraded"},
+              {object = {status = {conditions = {{type = "ComparisonError"}}}}, status = "Degraded"},
+              {object = {status = {conditions = {}, health = {status = "Healthy"}}}, status = "Healthy", message = ""}
+            }
+            for _, case in ipairs(cases) do
+              obj = case.object
+              local result = health()
+              assert(result.status == case.status, "child health: expected " .. case.status .. ", got " .. tostring(result.status))
+              if case.message ~= nil then
+                assert(result.message == case.message, "child health message was not preserved")
+              end
+            end
+                """],
+                input=health_lua,
+                text=True,
+                check=True,
             )
 
 

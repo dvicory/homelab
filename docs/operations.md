@@ -23,6 +23,13 @@ jj file track generated/manifests/prod-home
 Commit the generated YAML and check `prod-home-manifests-fresh`
 against that Git revision before syncing.
 
+A child Application's `ComparisonError` blocks later parent sync waves,
+even when its existing workloads are Healthy. Inspect the child's
+conditions and repair its source; normal reconciliation resumes when
+the error clears and the child is healthy. This can delay unrelated
+later-wave applications. It does not stop running workloads or pause
+independently syncing child Applications.
+
 ## Declared routes
 
 | Service | Exposure | Canonical URL | Secondary URL | Backend |
