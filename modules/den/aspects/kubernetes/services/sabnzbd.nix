@@ -206,6 +206,8 @@ in
         for directory in ${builtins.toJSON libraryRoots} + ['downloads/usenet/incomplete', 'downloads/usenet/complete']:
             os.makedirs('/data/' + directory, mode=0o2770, exist_ok=True)
         categories = config.setdefault('categories', {})
+        # Without '*', SAB recreates its suggestions and overwrites movies/tv.
+        categories.setdefault('*', {'order': '0', 'pp': '3', 'script': 'None', 'priority': '0'})
         for name in ${builtins.toJSON downloadCategories}:
             category = categories.setdefault(name, {})
             category.update({
@@ -245,7 +247,7 @@ in
         annotations."argocd.argoproj.io/sync-wave" = "1";
         helm.releases.sabnzbd = {
           chart = charts.bjw-s-labs.app-template;
-          values = {
+          values = lib.recursiveUpdate (import ./_linuxserver-media.nix mediaGid) {
             fullnameOverride = "sabnzbd";
             defaultPodOptions = {
               nodeSelector."kubernetes.io/hostname" = computeResources.instance;

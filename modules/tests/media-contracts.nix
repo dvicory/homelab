@@ -188,8 +188,8 @@
           computeResources.retainedPaths
           // (lib.mapAttrs
             (state: uid: {
-              path = "/var/lib/homelab/compute-1/platform/media/${state}";
-              guestPath = "/srv/platform/media/${state}";
+              path = "${builtins.dirOf computeResources.retainedPaths.radarr.path}/${state}";
+              guestPath = "${builtins.dirOf computeResources.retainedPaths.radarr.guestPath}/${state}";
               inherit uid;
               gid = uid;
               mode = "0700";
@@ -285,6 +285,17 @@
       mediaNoSharing = mediaWith { radarr.uhd.sharedWritablePaths = [ ]; };
       mediaStateCollision = mediaWith { sonarr.anime.state = "radarr-hd"; };
       mediaSecretCollision = mediaWith { sonarr.anime.apiSecretKey = "RADARR_HD_API_KEY"; };
+      mediaFixedSecretCollision = mediaWith { radarr.radarr.apiSecretKey = "PROWLARR_API_KEY"; };
+      mediaProviderSecretCollision = mediaWith {
+        radarr.radarr.apiSecretKey = "USENET_FIXTURE_PASSWORD";
+        sabnzbd.providers.fixture = {
+          host = "news.example.test";
+          port = 563;
+          ssl = true;
+          connections = 8;
+          priority = 0;
+        };
+      };
       mediaCategoryCollision = mediaWith { sonarr.anime.category = "movies-hd"; };
       mediaRootCollision = mediaWith { radarr.uhd.root = "/data/library/movies/hd"; };
       mediaNestedRoot = mediaWith { radarr.uhd.root = "/data/library/movies/hd/remux"; };
@@ -339,6 +350,8 @@
           noSharingRejected = !mediaNoSharing.success;
           stateCollisionRejected = !mediaStateCollision.success;
           secretCollisionRejected = !mediaSecretCollision.success;
+          fixedSecretCollisionRejected = !mediaFixedSecretCollision.success;
+          providerSecretCollisionRejected = !mediaProviderSecretCollision.success;
           categoryCollisionRejected = !mediaCategoryCollision.success;
           rootCollisionRejected = !mediaRootCollision.success;
           nestedRootRejected = !mediaNestedRoot.success;
@@ -454,6 +467,8 @@
             assert fixture["noSharingRejected"]
             assert fixture["stateCollisionRejected"]
             assert fixture["secretCollisionRejected"]
+            assert fixture["fixedSecretCollisionRejected"]
+            assert fixture["providerSecretCollisionRejected"]
             assert fixture["categoryCollisionRejected"]
             assert fixture["rootCollisionRejected"]
             assert fixture["nestedRootRejected"]

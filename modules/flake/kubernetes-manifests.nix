@@ -78,7 +78,7 @@
             ];
             text = ''
               root="$(${lib.getExe config.flake-root.package})"
-              exec python "$root/modules/tests/media-live-acceptance.py"
+              exec python "$root/modules/tests/media-live-acceptance.py" "$@"
             '';
           }
         );

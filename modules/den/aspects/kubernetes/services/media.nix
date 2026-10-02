@@ -1,4 +1,4 @@
-{ lib, den, ... }:
+{ config, lib, den, ... }:
 let
   retained = {
     "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
@@ -57,6 +57,14 @@ in
           "sabnzbd"
           "seerr"
         ];
+        reservedSecretKeys = lib.concatMap (
+          name:
+          map (secret: secret.key) (
+            builtins.attrValues (
+              (config.den.aspects.kubernetes.services.${name}.compute-resources { inherit cluster; }).runtimeSecrets
+            )
+          )
+        ) reserved;
         demandGroups = [
           {
             application = "prowlarr-storage";
@@ -172,6 +180,9 @@ in
       assert lib.assertMsg (
         lib.unique secretKeys == secretKeys
       ) "Media instances must not share private API credentials.";
+      assert lib.assertMsg (lib.all (
+        key: !(lib.elem key reservedSecretKeys)
+      ) secretKeys) "Media instance API credentials may not reuse credentials owned by another media service.";
       assert lib.assertMsg (
         !unapprovedRootOverlap instances
       ) "Overlapping library roots require both instances to grant a common library path below /data.";

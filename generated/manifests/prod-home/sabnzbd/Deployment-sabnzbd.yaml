@@ -21,6 +21,8 @@ spec:
     type: Recreate
   template:
     metadata:
+      annotations:
+        checksum/configMaps: 48d17cdd79f10f00b458fb0fdc739e017ebb69dec6a9a303ca183906ca22b195
       labels:
         app.kubernetes.io/controller: main
         app.kubernetes.io/instance: sabnzbd
@@ -71,6 +73,10 @@ spec:
               name: config
             - mountPath: /data
               name: data
+            - mountPath: /custom-cont-init.d/10-media-group.sh
+              name: media-group
+              readOnly: true
+              subPath: 10-media-group.sh
       dnsPolicy: ClusterFirst
       enableServiceLinks: false
       hostIPC: false
@@ -104,6 +110,8 @@ spec:
               for directory in ["library/movies","library/tv"] + ['downloads/usenet/incomplete', 'downloads/usenet/complete']:
                   os.makedirs('/data/' + directory, mode=0o2770, exist_ok=True)
               categories = config.setdefault('categories', {})
+              # Without '*', SAB recreates its suggestions and overwrites movies/tv.
+              categories.setdefault('*', {'order': '0', 'pp': '3', 'script': 'None', 'priority': '0'})
               for name in ["movies","tv"]:
                   category = categories.setdefault(name, {})
                   category.update({
@@ -189,3 +197,7 @@ spec:
             path: /srv/media/data
             type: Directory
           name: data
+        - configMap:
+            defaultMode: 365
+            name: sabnzbd
+          name: media-group

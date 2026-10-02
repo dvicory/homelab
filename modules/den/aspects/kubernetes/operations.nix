@@ -176,6 +176,24 @@ in
         `Movies` library at `/media/movies`, the `Shows` library at
         `/media/tv`, and selected supported API settings.
 
+        ## Media process access and verification
+
+        Arr and SAB retain their private primary identities. Their read-only
+        LinuxServer startup hook adds the declared media group to `abc` before
+        the daemon starts; Kubernetes supplementary groups alone do not survive
+        the image's user switch. Do not relax media directory permissions.
+        SAB initialization preserves or seeds its native default `*` category
+        before managing `movies` and `tv`, so first-start defaults cannot replace
+        those directories.
+
+        `nix build .#checks.x86_64-linux.media-runtime` runs the pinned native
+        services and producer jobs in a disposable Docker VM. It checks native
+        libraries/profiles/scores, credential handshakes and refusals, repeated
+        reconciliation, real daemon access, and preserved unmanaged video bytes.
+        Provider APIs redact credentials; successful echoes are not authentication
+        proof. This gate does not prove Kubernetes RBAC, Incus mount propagation,
+        or the MergerFS/XFS recovery boundary; keep those separate checks.
+
         ## Seerr first-owner boundary
 
         The checked-in `initial` phase starts Seerr privately. After Jellyfin's

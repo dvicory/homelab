@@ -137,7 +137,7 @@ let
         assert lib.assertMsg (!state.readOnly) "Media state ${cfg.state} must be writable.";
         assert lib.assertMsg (lib.elem "/data" cfg.sharedWritablePaths)
           "Media instance ${kind}/${instanceName} must explicitly declare shared writable path /data.";
-        {
+        lib.recursiveUpdate (import ./_linuxserver-media.nix mediaGid) {
           fullnameOverride = service;
           defaultPodOptions = {
             nodeSelector."kubernetes.io/hostname" = computeResources.instance;
