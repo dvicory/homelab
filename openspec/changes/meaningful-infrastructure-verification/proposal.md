@@ -1,16 +1,17 @@
 ## Why
 
-Current verification mixes useful safety checks with source-text comparisons, copied configuration, weak selection checks, and large runtime scenarios. Separate the evidence layers so failures are caught earlier without replacing real authorization, storage, or recovery proof with faster but vacuous checks.
+Current verification mixes useful safety checks with source-text comparisons, copied configuration, custom Kubernetes validators, and large runtime scenarios. Replace custom verification with maintained Kubernetes-native tooling where it can establish the same boundary, retaining required policy enforcement and real authorization, storage, and recovery evidence.
 
 ## What Changes
 
 - Remove tests that only pin implementation text, incidental defaults, copies, or mock forwarding. Keep behavioral and safety assertions even when they are small or use controlled fakes.
 - Require representative passing and failing cases for each new or migrated safety check. Reject silent success from empty selection, missing schemas, unexpected skips, or swallowed errors.
 - Add pinned, offline Kubeconform validation of the actual canonical manifests, including schemas from the deployed CRDs and explicit schema-coverage accounting.
-- Use the Kyverno CLI for a bounded pilot of semantic manifest policy; retain existing meaningful Python/Nix checks unless the pilot demonstrates a simpler replacement with equivalent negative coverage. Do not install Kyverno controllers.
-- Use Chainsaw for focused scenarios against a disposable target-version K3s API/controllers. Move Kubernetes-only behavior out of broad NixOS VM scenarios only after replacement evidence exists.
-- Keep Nix for declared-state generation and custom Nix/Den semantics, Go/local execution for local algorithms, and narrow Linux VM coverage for host mounts, ID maps, filesystem permissions, firewall behavior, service activation, and actual guest recovery.
+- Make pinned, offline Kyverno policies the required rendered-resource semantic gate. Migrate retention, ownership, source confinement, authority, identity/Gateway protection, pod security, and application/storage declaration rules; delete equivalent Python/Nix validators and their dead helpers after positive and negative replacement proof. The bounded pilot is evidence, not the final deliverable.
+- Use Chainsaw and native Kubernetes operations against the existing disposable target-version K3s fixture for admission, Argo, Gateway, and runtime-Secret API behavior. Replace custom polling/assertion orchestration and Kubernetes-only NixOS VM coverage; delete superseded wrappers and registrations once equivalent required coverage passes.
+- Keep Nix for declared-state generation, artifact freshness, and meaningful custom Nix/Den input semantics. Retain local application/protocol execution and narrow Linux VM proof only for boundaries Kubernetes tooling cannot establish, including host mounts, ID maps, filesystems, firewall behavior, service activation, and actual guest recovery. A custom check needs a concrete retained boundary, not a preference for its current implementation.
 - Make selected scenario coverage and failure reports part of CI success. Measure setup, execution, warm/cold behavior, and external-fetch failures separately; do not promise a runtime reduction before comparison.
+- Keep ordinary reviewed policy files under continuous required CI enforcement, with native positive/negative fixtures and fail-closed coverage. Distinguish repository/bundle policy from rules potentially suitable for later admission or background enforcement; this change does not deploy a Kyverno controller or claim offline evidence proves live enforcement.
 
 ## Capabilities
 
