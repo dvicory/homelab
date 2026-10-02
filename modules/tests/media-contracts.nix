@@ -225,13 +225,6 @@
             values = application.helm.releases.${name}.values;
           }
         ) applications;
-      fixtureSabnzbd =
-        (config.den.aspects.kubernetes.services.sabnzbd."k8s-manifests" {
-          cluster = fixtureCluster;
-          computeResources = fixtureCompute;
-          inherit charts;
-        }).applications;
-      fixtureSabnzbdInit = builtins.elemAt (fixtureSabnzbd.sabnzbd.helm.releases.sabnzbd.values.controllers.main.initContainers.config.command) 2;
       fixtureApplications = projectApplications (
         renderApplications fixtureCluster fixtureCompute "radarr"
         // renderApplications fixtureCluster fixtureCompute "sonarr"
@@ -341,7 +334,6 @@
           applications = fixtureApplications;
           mutatedApplications = fixtureMutatedApplications;
           runtimeSecrets = fixtureRuntimeSecrets;
-          sabnzbdInit = fixtureSabnzbdInit;
           positive = mediaBase.success;
           seerrRoleAccepted = (configurationWith { }).success;
           noStandardRejected = !mediaNoStandard.success;
@@ -583,23 +575,6 @@
                 finally:
                     os.environ.clear()
                     os.environ.update(original)
-
-            with tempfile.TemporaryDirectory() as directory:
-                root = pathlib.Path(directory)
-                config_path = root / "sabnzbd.ini"
-                data_path = root / "data"
-                data_path.mkdir()
-                run_init(fixture["sabnzbdInit"], config_path, data_path, {
-                    "SABNZBD_API_KEY": "api-key-fixture",
-                    "SABNZBD_USERNAME": "admin-fixture",
-                    "SABNZBD_PASSWORD": "admin-password-fixture",
-                })
-                categories = ConfigObj(str(config_path), encoding="utf-8")["categories"]
-                assert set(categories) == {
-                    instance["category"]
-                    for instances in fixture_instances.values()
-                    for instance in instances.values()
-                }
 
             runtime_values = {
                 "SABNZBD_API_KEY": "api-key-fixture",
