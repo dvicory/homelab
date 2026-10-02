@@ -56,9 +56,7 @@
       phase = cluster.settings.kubernetes.services.identity.phase;
       activated = phase != "initial";
       normal = phase == "normal";
-      normalObjectNames = [
-        "kanidm-oidc"
-        "kanidm-oidc-tls"
+      provisionObjectNames = [
         "kanidm-provision"
         "kanidm-client-secret"
       ];
@@ -139,7 +137,7 @@
       # repeatable policy never resets recovery accounts or enrolls a user's
       # passkey.
       # Empty membership is deliberate: the final API operation grants the
-      # resolved administrators only after passkey and client policy succeeds.
+      # resolved administrators only after MFA and client policy succeeds.
       provisionState = {
         groups.${adminGroup} = {
           members = [ ];
@@ -176,7 +174,7 @@
         "app.kubernetes.io/name" = "kanidm";
       };
       gatewaySelector.matchLabels."gateway.envoyproxy.io/owning-gateway-name" = "household";
-      image = "docker.io/kanidm/server:1.10.0@sha256:accd09b39511385b79e4318f238f197dce15ee828c853e63164a1f7826184327";
+      image = "docker.io/kanidm/server:1.11.2@sha256:d87475bf9c9cfd24872d8b25957c9fc13fc090ace09ddc37c3b25fe394b397ac";
       # Kanidm's retained path and native export support are facts for Preserve.
       # Capture cadence, retention, targets, and restore policy belong there.
       serverConfig = ''
@@ -217,6 +215,44 @@
             }
           ) adminPolicies
           ++ [
+            # Transport health needs a route consumer; waiting in identity blocks PostSync.
+            {
+              apiVersion = "gateway.envoyproxy.io/v1alpha1";
+              kind = "Backend";
+              metadata = {
+                name = "kanidm-oidc";
+                inherit namespace;
+              };
+              spec.endpoints = [
+                {
+                  fqdn = {
+                    hostname = "kanidm.identity.svc.cluster.local";
+                    port = 443;
+                  };
+                }
+              ];
+            }
+            {
+              apiVersion = "gateway.networking.k8s.io/v1";
+              kind = "BackendTLSPolicy";
+              metadata = {
+                name = "kanidm-oidc-tls";
+                inherit namespace;
+              };
+              spec = {
+                targetRefs = [
+                  {
+                    group = "gateway.envoyproxy.io";
+                    kind = "Backend";
+                    name = "kanidm-oidc";
+                  }
+                ];
+                validation = {
+                  hostname = domain;
+                  wellKnownCACertificates = "System";
+                };
+              };
+            }
             {
               apiVersion = "gateway.networking.k8s.io/v1beta1";
               kind = "ReferenceGrant";
@@ -299,7 +335,7 @@
         finalizer = "foreground";
         annotations."argocd.argoproj.io/sync-wave" = "2";
         objects =
-          lib.filter (object: activated || !(builtins.elem object.metadata.name normalObjectNames))
+          lib.filter (object: activated || !(builtins.elem object.metadata.name provisionObjectNames))
             [
               {
                 apiVersion = "v1";
@@ -436,43 +472,6 @@
                       protocol = "TCP";
                     }
                   ];
-                };
-              }
-              {
-                apiVersion = "gateway.envoyproxy.io/v1alpha1";
-                kind = "Backend";
-                metadata = {
-                  name = "kanidm-oidc";
-                  inherit namespace;
-                };
-                spec.endpoints = [
-                  {
-                    fqdn = {
-                      hostname = "kanidm.identity.svc.cluster.local";
-                      port = 443;
-                    };
-                  }
-                ];
-              }
-              {
-                apiVersion = "gateway.networking.k8s.io/v1";
-                kind = "BackendTLSPolicy";
-                metadata = {
-                  name = "kanidm-oidc-tls";
-                  inherit namespace;
-                };
-                spec = {
-                  targetRefs = [
-                    {
-                      group = "gateway.envoyproxy.io";
-                      kind = "Backend";
-                      name = "kanidm-oidc";
-                    }
-                  ];
-                  validation = {
-                    hostname = domain;
-                    wellKnownCACertificates = "System";
-                  };
                 };
               }
               {

@@ -33,6 +33,8 @@
                     "local-path-storage"
                     "gateway"
                     "identity"
+                    "jellyfin"
+                    "media"
                   ];
               clusterResourceWhitelist = [
                 {

@@ -39,7 +39,7 @@ in
           }
         ) clusterResources.retainedPaths;
         runtimeSecrets = clusterResources.runtimeSecrets;
-        storageCapabilities = [ ];
+        storageCapabilities = [ "media" ];
         instanceConfig = {
           "boot.autostart" = "true";
           "limits.cpu" = "4";
@@ -62,6 +62,14 @@ in
             type = "nic";
             "ipv4.address" = address;
             host_name = "veth-comp-1";
+          };
+          media = {
+            path = "/srv/media";
+            propagation = "rslave";
+            recursive = "true";
+            required = "false";
+            source = "/srv/media";
+            type = "disk";
           };
           identity = {
             path = "/srv/identity";

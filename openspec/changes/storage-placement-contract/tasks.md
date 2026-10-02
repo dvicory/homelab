@@ -1,8 +1,9 @@
 Host-owned roots, pooling, placement, permissions and fail-closed behavior are
-implemented and checked in disposable environments. Consumer repointing lands
-with the workload cuts. Still open: declaration conflict checks (1.2), the
-physical-path check (4.1), the capacity-exhaustion half of 5.3, runtime
-fail-closed acceptance (5.4), movement (5.6), and production acceptance.
+implemented and checked in disposable environments, and the player reads the
+namespace read-only while the acquisition writers share one `/data`
+filesystem. Still open: declaration conflict checks (1.2), the physical-path check (4.1),
+the capacity-exhaustion half of 5.3, movement (5.6), and production
+acceptance.
 
 ## 1. Declare host-owned semantic roots
 
@@ -42,14 +43,24 @@ fail-closed acceptance (5.4), movement (5.6), and production acceptance.
 The later workload cut owns consumer manifests and runtime evidence. It must
 restore these tasks without claiming them in the platform cut:
 
-- [ ] 3.1 Point link-dependent writers at the common namespace and use the
-  semantic layout rather than a compute-state path.
-- [ ] 3.2 Give read-only consumers access only to the required semantic
-  subtree.
-- [ ] 3.3 Remove any obsolete compute-retained mapping once no consumer uses
-  it, then verify retained mappings describe guest-owned state only.
-- [ ] 3.4 Regenerate the operations document after consumer mappings change and
+- [x] 3.1 Point link-dependent writers at the common namespace and use the
+  semantic layout rather than a compute-state path. Radarr, Sonarr and
+  SABnzbd mount the one `/data` filesystem with roots under
+  `/data/library/...` and `/data/downloads/...` (`media-contracts`), and
+  `media-live-acceptance` runs them against pinned images.
+- [x] 3.2 Give read-only consumers access only to the required semantic
+  subtree. Jellyfin mounts `library` read-only at `/media` (`jellyfin-contracts`
+  checks the hostPath and `readOnly`; the replacement scenario shows its pod
+  cannot write `/media`).
+- [x] 3.3 Remove any obsolete compute-retained mapping once no consumer uses
+  it, then verify retained mappings describe guest-owned state only. Media is
+  the optional `/srv/media` attachment, not a retained path
+  (`compute-contracts`), and the retained paths are guest-owned application
+  state.
+- [x] 3.4 Regenerate the operations document after consumer mappings change and
   confirm its retained-state table reflects only guest-owned state.
+  `docs/operations.md` lists only guest-owned retained state and describes
+  the media attachment separately.
 
 ## 4. Evaluation checks
 
@@ -74,10 +85,13 @@ restore these tasks without claiming them in the platform cut:
   before writes fail. The first half is covered: `mergerfs-capability`
   reports only the creation-eligible disk's space, including for a directory
   held only by a no-create branch. The exhaustion half is unexercised.
-- [ ] 5.4 Fail-closed: with a required placement unavailable, verify access is
+- [x] 5.4 Fail-closed: with a required placement unavailable, verify access is
   denied, no substitute location accepts writes, the dependent workload fails,
-  and host management and unrelated workloads continue. No runtime replacement
-  acceptance is claimed here.
+  and host management and unrelated workloads continue. The replacement
+  scenario stops the media pool under a running guest: no substitute media
+  directory appears, the writer cannot write, Jellyfin stays blocked, and the
+  K3s node and an unrelated workload stay healthy; the pool's return recovers
+  Jellyfin without a node restart.
 - [x] 5.5 Permissions: verify shared-root entries carry declared permissions
   without a corrective recursive operation and that activation leaves existing
   ownership, mode, and access entries unchanged. Layout directories carry the

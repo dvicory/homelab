@@ -69,7 +69,7 @@ let
   oidcTLSPolicy = builtins.head (
     lib.filter (
       object: object.kind == "BackendTLSPolicy" && object.metadata.name == "kanidm-oidc-tls"
-    ) normalObjects
+    ) normalPolicyObjects
   );
   serverConfig =
     (builtins.head (
@@ -98,10 +98,25 @@ let
       && provisioningJob.metadata.annotations."argocd.argoproj.io/hook" == "PostSync"
       && provisioningJob.spec.template.spec.serviceAccountName == "kanidm-provision";
     provisioning-job-present = hasObject provisioningObjects "Job" "kanidm-provision";
+    oidc-transport-with-admin-consumer =
+      lib.all
+        (
+          objects:
+          !(hasObject objects "Backend" "kanidm-oidc")
+          && !(hasObject objects "BackendTLSPolicy" "kanidm-oidc-tls")
+        )
+        [
+          initialObjects
+          provisioningObjects
+          normalObjects
+        ]
+      && hasObject normalPolicyObjects "Backend" "kanidm-oidc"
+      && hasObject normalPolicyObjects "BackendTLSPolicy" "kanidm-oidc-tls";
     administrator-membership-gated =
       provisionMembers provisioningObjects == [ ]
-      && provisionMembers normalObjects
-      == builtins.attrNames (builtins.fromJSON (provisionData normalObjects)."state.json").persons;
+      &&
+        provisionMembers normalObjects
+        == builtins.attrNames (builtins.fromJSON (provisionData normalObjects)."state.json").persons;
     provisioning-admin-access-absent =
       !(provisioning.applications.identity-gateway.condition)
       && !(provisioningGateway.applications.identity-gateway.condition)

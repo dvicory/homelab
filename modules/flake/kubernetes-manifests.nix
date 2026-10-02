@@ -50,8 +50,9 @@
               mkdir -p "$destination"
 
               # Copy the store's symlinked tree as ordinary checked-in files and
-              # omit nixidy's volatile revision marker.
-              rsync -a --copy-links --delete --exclude .revision \
+              # omit nixidy's volatile revision marker. Fresh mtimes let jj
+              # notice equal-sized content changes from immutable store files.
+              rsync -a --no-times --copy-links --delete --exclude .revision \
                 --chmod=Du+rwx,Dg+rx,Do+rx,Fu+rw,Fg+r,Fo+r \
                 "$source"/ "$destination"/
 
@@ -60,6 +61,25 @@
               Review the tree, then track new YAML before evaluating checks:
                 jj file track generated/manifests/prod-home
               EOF
+            '';
+          }
+        );
+      };
+      apps.media-live-acceptance = {
+        type = "app";
+        program = lib.getExe (
+          pkgs.writeShellApplication {
+            name = "media-live-acceptance";
+            runtimeInputs = [
+              (pkgs.python3.withPackages (ps: [ ps.pyyaml ]))
+              pkgs.docker
+              pkgs.openssl
+              pkgs.git
+              config.flake-root.package
+            ];
+            text = ''
+              root="$(${lib.getExe config.flake-root.package})"
+              exec python "$root/modules/tests/media-live-acceptance.py" "$@"
             '';
           }
         );
@@ -336,7 +356,9 @@
                 and application_waves["gateway-crds"] < application_waves["gateway-controller"]
                 and application_waves["cert-manager"] < application_waves["cert-manager-issuance"]
                 and application_waves["gateway-controller"] < application_waves["gateway"]
-                and application_waves["identity-retained"] < application_waves["identity"],
+                and application_waves["identity-retained"] < application_waves["identity"]
+                and application_waves["jellyfin-retained"] < application_waves["jellyfin"]
+                and application_waves["jellyfin"] < application_waves["jellyfin-configuration"],
                 apps_root,
                 "Application waves violate declared lifecycle dependencies",
             )
