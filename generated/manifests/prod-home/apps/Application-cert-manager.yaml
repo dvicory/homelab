@@ -15,7 +15,7 @@ spec:
   source:
     path: ./generated/manifests/prod-home/cert-manager
     repoURL: https://github.com/dvicory/homelab.git
-    targetRevision: main
+    targetRevision: feat/kanidm-provisioning
   syncPolicy:
     automated:
       prune: true

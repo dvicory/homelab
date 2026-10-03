@@ -25,7 +25,7 @@ spec:
             - /etc/kanidm/server.toml
           command:
             - /sbin/kanidmd
-          image: docker.io/kanidm/server:1.10.0@sha256:accd09b39511385b79e4318f238f197dce15ee828c853e63164a1f7826184327
+          image: docker.io/kanidm/server:1.11.2@sha256:d87475bf9c9cfd24872d8b25957c9fc13fc090ace09ddc37c3b25fe394b397ac
           livenessProbe:
             httpGet:
               path: /status

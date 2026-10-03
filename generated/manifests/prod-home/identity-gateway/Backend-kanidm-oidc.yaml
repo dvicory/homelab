@@ -1,0 +1,10 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: Backend
+metadata:
+  name: kanidm-oidc
+  namespace: identity
+spec:
+  endpoints:
+    - fqdn:
+        hostname: kanidm.identity.svc.cluster.local
+        port: 443

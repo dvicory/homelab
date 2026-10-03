@@ -13,7 +13,7 @@ spec:
   source:
     path: ./generated/manifests/prod-home/identity-retained
     repoURL: https://github.com/dvicory/homelab.git
-    targetRevision: main
+    targetRevision: feat/kanidm-provisioning
   syncPolicy:
     automated:
       prune: false

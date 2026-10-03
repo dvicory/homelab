@@ -38,13 +38,13 @@ in
     inherit kubeVersion;
     k8sVersion = lib.versions.majorMinor kubeVersion;
     repository = "https://github.com/dvicory/homelab.git";
-    branch = "main";
+    branch = "feat/kanidm-provisioning";
     ingress = {
       mode = "direct";
       nodePort = 30443;
       trustedProxyCIDRs = [ ];
     };
-    settings.kubernetes.services.identity.phase = "initial";
+    settings.kubernetes.services.identity.phase = "normal";
     routes = {
       argocd = route "argocd" "argocd" "argocd-server" 80 "admin" "public" {
         "app.kubernetes.io/instance" = "argocd";

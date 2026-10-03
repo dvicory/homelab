@@ -2,10 +2,10 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   annotations:
-    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-wave: "4"
   finalizers:
     - resources-finalizer.argocd.argoproj.io
-  name: gateway
+  name: identity-gateway
   namespace: argocd
 spec:
   destination:
@@ -13,7 +13,7 @@ spec:
     server: https://kubernetes.default.svc
   project: prod-home
   source:
-    path: ./generated/manifests/prod-home/gateway
+    path: ./generated/manifests/prod-home/identity-gateway
     repoURL: https://github.com/dvicory/homelab.git
     targetRevision: feat/kanidm-provisioning
   syncPolicy:
