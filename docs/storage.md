@@ -13,6 +13,33 @@ and [ADR-0007](architecture/decisions/0007-block-level-encryption-for-data-disks
 the disk conversion procedure is in
 [`docs/operations/luks-storage-migration.md`](operations/luks-storage-migration.md).
 
+## Root ESP mirror updates and disposable proof
+
+A configured ZFS root mirror uses native udev link priorities to mount
+an available configured ESP at `/boot`, including in the initrd.
+`/boot` remains required for boot; a single-disk host keeps its existing
+device. The bootloader installer explicitly mounts the other available
+ESP in a private temporary mount, copies boot entries and pre-unlock
+credentials, and generates that ESP's own random seed. An absent member
+is skipped; failure to mount an available member fails the update.
+No routine activation formats either member.
+
+On a disposable `x86_64-linux` KVM builder, run:
+
+```sh
+nix build .#checks.x86_64-linux.root-esp-mirror -L --no-link
+```
+
+The native disko/UEFI scenario installs with the mirror unmounted,
+checks an update and refusal of an unrelated source mount, then boots
+and unlocks encrypted ZFS with each disk independently absent. It also
+consumes disposable credentials through the same initrd secret paths
+and systemd `LoadCredential` boundary as the pinned Hoopsnake module.
+It does not prove external Tailscale OAuth or live Hoopsnake access.
+Neither this declaration nor configuration evaluation proves degraded
+boot: retain the executed VM proof and separately verify firmware can
+select either physical ESP before relying on redundancy.
+
 ## `hvn-hyp1`
 
 ### LUKS data disks
