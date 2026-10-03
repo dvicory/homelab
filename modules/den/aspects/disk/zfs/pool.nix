@@ -9,7 +9,7 @@
       };
     };
 
-    nixos = { host, pkgs, ... }: let
+    nixos = { host, config, pkgs, ... }: let
       pool = host.zfs.rootPool or null;
       swapCfg = host.zfs.swap or { };
       mirrorEnabled = pool.disk2 != null;
@@ -19,6 +19,13 @@
       swapSizeGiB = swapCfg.sizeGiB or 8;
       trailingGiB = tailReserveGiB + (if swapEnabled then swapSizeGiB else 0);
       zfsEnd = if trailingGiB == 0 then "-0" else "-${toString trailingGiB}G";
+      primaryEsp = config.disko.devices.disk.root.content.partitions.ESP.device;
+      mirrorEsp = if mirrorEnabled then config.disko.devices.disk.root-mirror.content.partitions.ESP.device else null;
+      # Native udev link arbitration keeps /boot required, but not tied to disk1.
+      espRules = lib.optionalString mirrorEnabled ''
+        SUBSYSTEM=="block", SYMLINK=="${lib.removePrefix "/dev/" primaryEsp}", SYMLINK+="disk/root-esp", OPTIONS+="link_priority=100"
+        SUBSYSTEM=="block", SYMLINK=="${lib.removePrefix "/dev/" mirrorEsp}", SYMLINK+="disk/root-esp", OPTIONS+="link_priority=50"
+      '';
     in {
       config = {
         disko.devices = {
@@ -81,12 +88,8 @@
                   content = {
                     type = "filesystem";
                     format = "vfat";
-                    mountpoint = "/boot-mirror";
-                    mountOptions = [
-                      "umask=0077"
-                      "nofail"
-                      "x-systemd.device-timeout=5s"
-                    ];
+                    # The bootloader installer mounts the other ESP explicitly;
+                    # activation has not installed the new mount units yet.
                   };
                 };
                 zfs = {
@@ -153,13 +156,39 @@
           };
         };
 
-        boot.loader.systemd-boot.extraInstallCommands = lib.mkIf mirrorEnabled ''
-          if ${pkgs.util-linux}/bin/mountpoint -q /boot-mirror; then
-            ${pkgs.rsync}/bin/rsync -rt --delete --exclude=/loader/random-seed /boot/ /boot-mirror/
-            ${pkgs.systemd}/bin/bootctl --esp-path=/boot-mirror --variables=no random-seed
-          else
-            echo "Skipping mirror ESP update because /boot-mirror is not mounted" >&2
-          fi
+        fileSystems."/boot".device = lib.mkIf mirrorEnabled (lib.mkForce "/dev/disk/root-esp");
+        services.udev.extraRules = espRules;
+        boot.initrd.services.udev.rules = espRules;
+
+        boot.loader.systemd-boot.extraInstallCommands = lib.optionalString mirrorEnabled ''
+          (
+            set -eu
+            export PATH=${lib.makeBinPath [ pkgs.coreutils pkgs.util-linux pkgs.rsync pkgs.systemd ]}
+            source=$(findmnt -nro SOURCE --mountpoint /boot)
+            source=$(readlink -f "$source")
+            primary=$(readlink -m ${lib.escapeShellArg primaryEsp})
+            mirror=$(readlink -m ${lib.escapeShellArg mirrorEsp})
+            if [ "$source" != "$primary" ] && [ "$source" != "$mirror" ]; then
+              echo "Refusing ESP sync: /boot is not a configured root ESP" >&2
+              exit 1
+            fi
+            for device in "$primary" "$mirror"; do
+              [ "$device" != "$source" ] || continue
+              if [ ! -b "$device" ]; then
+                echo "Skipping absent root ESP $device" >&2
+                continue
+              fi
+              target=$(mktemp -d /run/root-esp-sync.XXXXXX)
+              trap 'mountpoint -q "$target" && umount "$target"; rmdir "$target"' EXIT
+              mount -t vfat -o umask=0077 "$device" "$target"
+              [ "$(readlink -f "$(findmnt -nro SOURCE --mountpoint "$target")")" = "$device" ]
+              rsync -rt --delete --exclude=/loader/random-seed /boot/ "$target/"
+              bootctl --esp-path="$target" --variables=no random-seed
+              umount "$target"
+              rmdir "$target"
+              trap - EXIT
+            done
+          )
         '';
       };
     };
