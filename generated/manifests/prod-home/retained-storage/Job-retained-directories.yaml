@@ -24,8 +24,8 @@ spec:
                 configMapKeyRef:
                   key: directories.json
                   name: retained-directories
-          image: ghcr.io/dvicory/homelab/retained-directories@sha256:be4d7a94fec6c14149484035bc20f6088b887946202885c8582690f0e495afc3
-          imagePullPolicy: IfNotPresent
+          image: homelab/retained-directories:y5l6gks69k1qbxa1f9wxp6lzzgnhfyl9
+          imagePullPolicy: Never
           name: retained-directories
           resources:
             limits:
