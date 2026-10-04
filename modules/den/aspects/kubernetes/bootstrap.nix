@@ -130,6 +130,10 @@
               name = "operations.md";
               path = config.files.file."docs/operations.md".source;
             }
+            {
+              name = "operations";
+              path = rootPath + "/docs/operations";
+            }
           ];
         }
       );

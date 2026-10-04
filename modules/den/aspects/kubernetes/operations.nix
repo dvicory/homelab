@@ -41,6 +41,11 @@ let
     in
     "${entry.namespace}/${entry.name}"
   ) (builtins.attrNames runtimeSecrets);
+  runbooks = lib.attrNames (
+    lib.filterAttrs (name: type: type == "regular" && lib.hasSuffix ".md" name) (
+      builtins.readDir ../../../../docs/operations
+    )
+  );
   secretRows = lib.mapAttrsToList (
     target: sources:
     let
@@ -67,19 +72,18 @@ in
         - **Ingress:** `${cluster.ingress.mode}` on NodePort `${toString cluster.ingress.nodePort}`
         - **Identity phase:** `${identityPhase}`
 
-        ## Deployment flow
+        ## Deploy configuration
 
-        ```text
-        Nix/Den -> rendered manifests -> pull-request review ->
-        merge tracked deployment ref -> Argo reconciliation
+        Argo tracks `${cluster.branch}` from `${cluster.repository}`.
+        Publishing to that ref can change running services.
+
+        ```sh
+        nix run .#sync-prod-home-manifests
+        jj file track generated/manifests/prod-home
         ```
 
-        The host bootstrap hands the replacement guest to Argo through the
-        canonical root Application. Argo then reconciles the tracked deployment
-        ref.
-
-        Once this production path is active, merging generated manifests to
-        the tracked ref changes production desired state.
+        Commit the generated YAML and check `prod-home-manifests-fresh`
+        against that Git revision before syncing.
 
         ## Declared routes
 
@@ -91,66 +95,9 @@ in
         remains the identity issuer across direct and secondary-edge access;
         failover changes DNS, not the issuer or certificate identity.
 
-        In `direct` ingress mode every declared hostname must resolve to an
-        address that reaches the physical host — its LAN uplink for LAN
-        clients or its Tailscale address for tailnet clients. The host DNATs
-        TCP 443 to the compute guest's NodePort without terminating TLS or
-        rewriting the client source, so the guest sees the real peer address.
-        In `trustedEdges` mode this forward does not exist and reachability is
-        the edge's responsibility.
-
-        ## Kanidm bootstrap
-
-        The `initial` phase keeps the identity route private and omits the
-        provisioning credential, Job, and administrator policy.
-
-        Certificates are issued in-cluster by cert-manager through the
-        `letsencrypt-prod` ClusterIssuer (Let's Encrypt production, Cloudflare
-        DNS-01). The operator prerequisite is the Cloudflare DNS-edit token
-        `cert-manager--cloudflare-api-token--api-token` runtime secret;
-        `gateway/gateway-tls` and `identity/kanidm-tls` are Certificate
-        resources. Check issuance with `kubectl get certificate -A` and note
-        the shared Let's Encrypt rate limits.
-
-        1. Through an authorized private interactive `kubectl exec` session,
-           run Kanidm `recover-account` for the stock accounts. Immediately
-           escrow or encrypt the output; do not copy it into ordinary files.
-        2. Encrypt and track the `idm_admin` credential, then select
-           `provisioning` before running the flake's agenix-rekey app. The
-           `initial` phase does not declare this Secret, so rekey has no
-           consumer for the encrypted file. Include the host-rekeyed copy and
-           generated manifests in the candidate, then activate the host
-           configuration to stage the new runtime Secret. Wait for the
-           identity Application's publication RBAC and PostSync provisioning
-           Job to succeed. Administrator routes stay absent while the Job
-           creates the named people and client.
-        3. Verify existing password-plus-MFA authentication or enroll a preferred
-           passkey, then verify native login over the private canonical identity
-           route. The administrator group requires MFA, not passkey-only
-           credentials.
-        4. Commit `normal`; wait for the provisioning Job to grant administrator
-           membership. Argo then publishes each administrator route together
-           with its policy, ordered before the route.
-
-        Kanidm is pinned to server 1.11.2. Before upgrading an existing 1.10
-        database, run its native domain upgrade check and preserve a restorable
-        pre-upgrade backup. Minor releases must be upgraded sequentially;
-        successful database upgrades cannot be downgraded. Match the Kanidm
-        command-line client to the server version.
-
-        The normal-only `identity-gateway` Application reconciles the OIDC
-        Backend and BackendTLSPolicy with their administrator policies and
-        routes. Keep this transport out of `identity`: its TLS policy needs a
-        Gateway consumer to become healthy and would otherwise block the
-        PostSync Job.
-
-        Never persist plaintext recovery output in Git, generated files, CI,
-        service logs, durable agent transcripts, or ordinary workspace files.
-
-        The retained `identity-kanidm` path and Kanidm's native online-export
-        capability are facts for a future Preserve integration. This change
-        defines no capture schedule, retention, target, adapter, recovery point,
-        or restore policy.
+        For `direct` ingress, point each hostname at the host's LAN or Tailscale
+        address. TCP 443 forwards to the guest's NodePort. For `trustedEdges`,
+        point DNS at the edge.
 
         ## Retained state
 
@@ -162,19 +109,15 @@ in
         after restoring a source, recreate affected pods to refresh child
         mounts.
 
-        The `retained-directories` Sync hook creates declared directories before
-        dependent applications sync. Like the other retained-storage resources,
-        it resists pruning and Application deletion; `BeforeHookCreation` still
-        replaces the Job on the next sync without removing retained data.
+        Wait for `retained-storage` to become Healthy before syncing stateful
+        applications.
 
         ## Runtime-secret references
 
-        This table contains references only. Never put plaintext Secret values
-        in Git, the Nix store, manifests, images, or this document. Each source
-        is either operator-supplied through agenix (`agenix edit`/rekey under
-        `.secrets/hosts/`) or a generated value produced by `agenix generate`.
-        `gateway-tls` and `kanidm-tls` are not listed: cert-manager issues them
-        in the cluster from its Cloudflare DNS-01 ClusterIssuer.
+        Manage operator secrets with `agenix edit` and rekey under
+        `.secrets/hosts/`; use `agenix generate` for generated secrets.
+        Never put plaintext credentials or recovery output in Git, Nix
+        outputs, images, documentation, or logs.
 
         | Kubernetes Secret | Source -> key | Type |
         | --- | --- | --- |
@@ -192,50 +135,46 @@ in
         kubectl get certificate -A
         ```
 
-        A `READY=False` Certificate's `status.conditions` and
-        `kubectl -n cert-manager describe challenge` name the failing step.
-        Let's Encrypt production limits repeated identical issuances, so a
-        flapping Certificate or weekly guest rebuilds will eventually stall
-        new issuance until the window clears.
+        For `READY=False`, inspect the Certificate's `status.conditions` and
+        run `kubectl -n cert-manager describe challenge`. Avoid repeated
+        issuance attempts: Let's Encrypt production rate limits can block
+        recovery.
 
         ## Lifecycle and bootstrap
 
-        Two artifacts are built from the same checkout of this repository on the
-        physical Linux Incus host:
+        Build both bundles from the same commit on the physical Linux Incus host:
 
         ```sh
         nix build .#nixosConfigurations.${computeInstance}.config.system.build.computeBundle --out-link guest-bundle
         nix build .#packages.x86_64-linux.household-bootstrap-bundle --out-link bootstrap-bundle
         ```
 
-        `guest-bundle` is the guest image (`metadata.tar.xz`, `rootfs.tar.xz`,
-        `system`). `bootstrap-bundle` holds the bootstrap commands with their
-        pinned manifests (`bin/household-bootstrap-host`,
-        `bin/household-bootstrap`, `manifests/`).
+        Run guest lifecycle commands as root.
 
-        Run `compute-guest` as root:
+        Adopt and inspect an existing guest:
 
         ```sh
         compute-guest adopt
         compute-guest inspect
+        ```
+
+        Create a new guest:
+
+        ```sh
         compute-guest create --bundle ./guest-bundle
+        ```
+
+        Replace an existing guest (**destructive**):
+
+        ```sh
         compute-guest replace --bundle ./guest-bundle --confirm ${computeInstance}
         ```
 
-        `replace` is destructive and requires the exact
-        `--confirm ${computeInstance}` acknowledgement.
-
-        For a newly created or replacement Running guest before Argo handoff, run
-        as root:
+        Once the new or replacement guest is Running, bootstrap it as root:
 
         ```sh
         ./bootstrap-bundle/bin/household-bootstrap-host /etc/homelab/compute.json --confirm ${computeInstance}
         ```
-
-        The host command validates the descriptor, guest, kubeconfig, node
-        placement, Argo state, and runtime-secret inventory before it mutates
-        namespaces, stages runtime Secrets, seeds Argo's restricted `default`
-        project, and applies the canonical root Application.
 
         ## Verify
 
@@ -246,11 +185,8 @@ in
         ./bootstrap-bundle/bin/household-bootstrap --check-ready
         ```
 
-        `--status` reports the declared Argo controllers and bootstrap Jobs.
-        `--check-ready` waits for the replacement node, Argo seed, and declared
-        bootstrap Jobs. Service acceptance additionally requires the route,
-        certificate, origin trust, and native-login checks owned by this edge
-        cut.
+        `--check-ready` covers the node, Argo seed, and bootstrap Jobs.
+        Also verify service routes, TLS, and native login.
 
         ## Failure and retry
 
@@ -263,22 +199,6 @@ in
 
         Missing, active, unknown, or non-terminal Jobs are refused.
 
-        ### Gateway authentication failures
-
-        Start with the Gateway access logs. Find the request by timestamp and
-        `request_id`; check `status`, `response_flags`, and `upstream`. Check
-        Kanidm's pod health and logs for the same time window.
-
-        Inspect the OAuth success and failure counters on the private
-        `/stats/prometheus` endpoint. Counters show OAuth outcomes, not the cause
-        of a failure. The declared stack does not configure a scraper or alerts;
-        inspect these counters manually.
-
-        Keep the OAuth2 text logger at `critical`. Do not enable verbose OAuth2
-        logging or add `%RESPONSE_CODE_DETAILS%` to access logs: both can expose
-        credential material. Other warning logs and queryless access logs remain
-        available.
-
         ## Compute-loss recovery
 
         ```text
@@ -290,6 +210,12 @@ in
         Replace the disposable guest root, K3s datastore, cache, and object
         identities from declared inputs; never restore the old K3s datastore
         over the replacement.
+
+        ## Service runbooks
+
+        ${lib.concatMapStringsSep "\n" (
+          name: "- [`${lib.removeSuffix ".md" name}`](operations/${name})"
+        ) runbooks}
 
       '';
     };
