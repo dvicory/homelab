@@ -42,7 +42,10 @@ in
       packages = inputs.self.packages.${linuxSystem};
     in
     {
-      images = [ packages.jellyfin-provisioner-image ];
+      images = [
+        packages.jellyfin-provisioner-image
+        packages.jellarr-image
+      ];
       retainedPaths.jellyfin-config = {
         inherit (identity) uid gid;
         mode = "0750";
@@ -66,8 +69,11 @@ in
       packages = inputs.self.packages.${linuxSystem};
       provisioner = packages.jellyfin-provisioner-image;
       provisionerRelease = provisioner.passthru.release;
+      jellarr = packages.jellarr-image;
+      jellarrRelease = jellarr.passthru.release;
       provisionerImage = "${provisioner.imageName}:${provisioner.imageTag}";
       runtimeImage = "${provisionerRelease.runtimeImage}@${provisionerRelease.runtimeDigest}";
+      jellarrImage = "${jellarrRelease.imageName}:${jellarrRelease.imageTag}";
       administrator = cluster.settings.kubernetes.services.jellyfin.administrator;
       mediaPath = computeResources.mediaPaths.library;
       route = cluster.routes.jellyfin;
@@ -76,6 +82,10 @@ in
         "app.kubernetes.io/controller" = "main";
         "app.kubernetes.io/instance" = "jellyfin";
         "app.kubernetes.io/name" = "jellyfin";
+      };
+      configurationLabels = {
+        "app.kubernetes.io/instance" = "jellyfin-configuration";
+        "app.kubernetes.io/name" = "jellarr";
       };
       podSecurity = {
         runAsUser = identity.uid;
@@ -87,6 +97,103 @@ in
         allowPrivilegeEscalation = false;
         capabilities.drop = [ "ALL" ];
       };
+      jellarrConfig = ''
+        version: 1
+        base_url: http://jellyfin.jellyfin.svc.cluster.local:8096
+        system:
+          enableMetrics: true
+        library:
+          virtualFolders:
+            - name: Movies
+              collectionType: movies
+              libraryOptions:
+                pathInfos:
+                  - path: /media/movies
+            - name: Shows
+              collectionType: tvshows
+              libraryOptions:
+                pathInfos:
+                  - path: /media/tv
+      '';
+      bootstrapScript = ''
+        import fs from "node:fs";
+
+        const baseUrl = process.env.JELLYFIN_URL;
+        const password = fs.readFileSync("/run/secrets/password", "utf8").replace(/\r?\n$/, "");
+        const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+        async function request(path, options = {}) {
+          const response = await fetch(baseUrl + path, options);
+          const body = await response.text();
+          if (!response.ok) {
+            throw new Error("Jellyfin API request failed: " + response.status);
+          }
+          return body.trim() === "" ? null : JSON.parse(body);
+        }
+
+        let healthy = false;
+        for (let attempt = 0; attempt < 60; attempt += 1) {
+          try {
+            const response = await fetch(baseUrl + "/health");
+            if (response.ok) {
+              healthy = true;
+              break;
+            }
+          } catch (_) {
+            // The stock Service can exist before its Pod is ready.
+          }
+          await sleep(2000);
+        }
+        if (!healthy) {
+          throw new Error("Jellyfin did not become healthy before the deadline");
+        }
+
+        const authentication = await request("/Users/AuthenticateByName", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: 'MediaBrowser Client="homelab-jellarr-bootstrap", Device="Kubernetes Job", DeviceId="jellarr-bootstrap", Version="1"',
+          },
+          body: JSON.stringify({ Username: process.env.JELLYFIN_ADMINISTRATOR, Pw: password }),
+        });
+        const administratorToken = authentication.AccessToken || authentication.accessToken;
+        if (!administratorToken) {
+          throw new Error("Jellyfin administrator authentication returned no token");
+        }
+        const headers = {
+          "Content-Type": "application/json",
+          Authorization: 'MediaBrowser Client="homelab-jellarr-bootstrap", Device="Kubernetes Job", DeviceId="jellarr-bootstrap", Version="1", Token="' + administratorToken + '"',
+        };
+        try {
+          const keyName = "Jellarr";
+          const namedKey = (response) =>
+            (response.Items || response.items || []).filter(
+              (key) => (key.AppName || key.appName) === keyName
+            );
+          let keys = namedKey(await request("/Auth/Keys", { headers }));
+          if (keys.length > 1) {
+            throw new Error("More than one Jellarr API key exists");
+          }
+          if (keys.length === 0) {
+            await request("/Auth/Keys?app=Jellarr", { method: "POST", headers });
+            keys = namedKey(await request("/Auth/Keys", { headers }));
+          }
+          if (keys.length !== 1) {
+            throw new Error("Jellarr API key was not available after creation");
+          }
+          const apiKey = keys[0].AccessToken || keys[0].accessToken;
+          if (!apiKey) {
+            throw new Error("Jellarr API key response contained no token");
+          }
+          fs.writeFileSync("/run/jellarr/api-key", apiKey + "\n", { mode: 0o400 });
+        } finally {
+          try {
+            await request("/Sessions/Logout", { method: "POST", headers });
+          } catch (_) {
+            // A failed logout must not hide a key-bootstrap failure.
+          }
+        }
+      '';
     in
     assert lib.assertMsg (
       route.namespace == namespace
@@ -352,6 +459,164 @@ in
                   protocol = "TCP";
                 }
               ];
+            };
+          }
+        ];
+      };
+
+      applications.jellyfin-configuration = {
+        inherit namespace;
+        annotations."argocd.argoproj.io/sync-wave" = "2";
+        finalizer = "foreground";
+        objects = [
+          {
+            apiVersion = "v1";
+            kind = "ConfigMap";
+            metadata = {
+              name = "jellarr-configuration";
+              inherit namespace;
+            };
+            data = {
+              "config.yml" = jellarrConfig;
+              "bootstrap.mjs" = bootstrapScript;
+            };
+          }
+          {
+            apiVersion = "batch/v1";
+            kind = "Job";
+            metadata = {
+              name = "jellyfin-configuration";
+              inherit namespace;
+              labels = configurationLabels;
+              annotations = {
+                "argocd.argoproj.io/hook" = "PostSync";
+                "argocd.argoproj.io/hook-delete-policy" = "BeforeHookCreation";
+                "homelab.danielvicory/jellarr-config" = builtins.hashString "sha256" jellarrConfig;
+              };
+            };
+            spec = {
+              backoffLimit = 4;
+              activeDeadlineSeconds = 600;
+              template = {
+                metadata.labels = configurationLabels;
+                spec = {
+                  restartPolicy = "Never";
+                  automountServiceAccountToken = false;
+                  enableServiceLinks = false;
+                  nodeSelector."kubernetes.io/hostname" = computeResources.instance;
+                  securityContext = podSecurity // {
+                    fsGroup = identity.gid;
+                  };
+                  initContainers = [
+                    {
+                      name = "bootstrap";
+                      image = jellarrImage;
+                      imagePullPolicy = "Never";
+                      command = [ "node" ];
+                      args = [ "/config/bootstrap.mjs" ];
+                      env = [
+                        {
+                          name = "JELLYFIN_URL";
+                          value = "http://jellyfin.jellyfin.svc.cluster.local:8096";
+                        }
+                        {
+                          name = "JELLYFIN_ADMINISTRATOR";
+                          value = administrator;
+                        }
+                      ];
+                      resources = {
+                        requests = {
+                          cpu = "10m";
+                          memory = "32Mi";
+                        };
+                        limits = {
+                          cpu = "250m";
+                          memory = "128Mi";
+                          ephemeral-storage = "64Mi";
+                        };
+                      };
+                      securityContext = containerSecurity;
+                      volumeMounts = [
+                        {
+                          name = "configuration";
+                          mountPath = "/config";
+                          readOnly = true;
+                        }
+                        {
+                          name = "admin-password";
+                          mountPath = "/run/secrets/password";
+                          subPath = "password";
+                          readOnly = true;
+                        }
+                        {
+                          name = "api-key";
+                          mountPath = "/run/jellarr";
+                        }
+                      ];
+                    }
+                  ];
+                  containers = [
+                    {
+                      name = "jellarr";
+                      image = jellarrImage;
+                      imagePullPolicy = "Never";
+                      resources = {
+                        requests = {
+                          cpu = "10m";
+                          memory = "32Mi";
+                        };
+                        limits = {
+                          cpu = "500m";
+                          memory = "256Mi";
+                          ephemeral-storage = "128Mi";
+                        };
+                      };
+                      securityContext = containerSecurity;
+                      volumeMounts = [
+                        {
+                          name = "configuration";
+                          mountPath = "/config";
+                          readOnly = true;
+                        }
+                        {
+                          name = "api-key";
+                          mountPath = "/run/jellarr";
+                          readOnly = true;
+                        }
+                      ];
+                    }
+                  ];
+                  volumes = [
+                    {
+                      name = "configuration";
+                      configMap = {
+                        name = "jellarr-configuration";
+                        defaultMode = 292;
+                      };
+                    }
+                    {
+                      name = "admin-password";
+                      secret = {
+                        secretName = "jellyfin-admin";
+                        defaultMode = 288;
+                        items = [
+                          {
+                            key = "password";
+                            path = "password";
+                          }
+                        ];
+                      };
+                    }
+                    {
+                      name = "api-key";
+                      emptyDir = {
+                        medium = "Memory";
+                        sizeLimit = "1Mi";
+                      };
+                    }
+                  ];
+                };
+              };
             };
           }
         ];

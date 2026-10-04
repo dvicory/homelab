@@ -54,6 +54,9 @@
           jellyfinMultiverse = inputs.nixpkgs-multiverse.multiverse.${pkgs.stdenv.hostPlatform.system};
         };
       };
+      jellarr-image = lib.optionalAttrs isLinux {
+        jellarr-image = callPackage (self + "/pkgs/by-name/jellarr-image/package.nix") { };
+      };
 
       provision-keys = callPackage (self + "/pkgs/by-name/provision-keys/package.nix") {
         inherit generate-secrets rekey;
@@ -73,7 +76,8 @@
       // prepare-luks-storage
       // kanidm-provision-image
       // retained-directories-image
-      // jellyfin-provisioner-image;
+      // jellyfin-provisioner-image
+      // jellarr-image;
 
       checks = {
         compute-runtime = config.packages.compute-runtime;

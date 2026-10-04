@@ -338,7 +338,8 @@
                 and application_waves["cert-manager"] < application_waves["cert-manager-issuance"]
                 and application_waves["gateway-controller"] < application_waves["gateway"]
                 and application_waves["identity-retained"] < application_waves["identity"]
-                and application_waves["jellyfin-retained"] < application_waves["jellyfin"],
+                and application_waves["jellyfin-retained"] < application_waves["jellyfin"]
+                and application_waves["jellyfin"] < application_waves["jellyfin-configuration"],
                 apps_root,
                 "Application waves violate declared lifecycle dependencies",
             )
