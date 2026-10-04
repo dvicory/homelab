@@ -101,8 +101,8 @@ in
 
         ## Kanidm bootstrap
 
-        The checked-in `initial` phase keeps the identity route private and
-        omits the provisioning credential, Job, and administrator policy.
+        The `initial` phase keeps the identity route private and omits the
+        provisioning credential, Job, and administrator policy.
 
         Certificates are issued in-cluster by cert-manager through the
         `letsencrypt-prod` ClusterIssuer (Let's Encrypt production, Cloudflare
@@ -115,15 +115,26 @@ in
         1. Through an authorized private interactive `kubectl exec` session,
            run Kanidm `recover-account` for the stock accounts. Immediately
            escrow or encrypt the output; do not copy it into ordinary files.
-        2. Encrypt the `idm_admin` credential with agenix/rekey and commit
-           `provisioning`. Wait for the identity Application's publication RBAC
-           and PostSync provisioning Job to succeed. Administrator routes stay
-           absent while the Job creates the named people and client.
+        2. Encrypt and track the `idm_admin` credential, then select
+           `provisioning` before running the flake's agenix-rekey app. The
+           `initial` phase does not declare this Secret, so rekey has no
+           consumer for the encrypted file. Include the host-rekeyed copy and
+           generated manifests in the candidate, then activate the host
+           configuration to stage the new runtime Secret. Wait for the
+           identity Application's publication RBAC and PostSync provisioning
+           Job to succeed. Administrator routes stay absent while the Job
+           creates the named people and client.
         3. Enroll durable human authentication for those people and verify
            native login over the private canonical identity route.
         4. Commit `normal`; wait for the provisioning Job to grant administrator
            membership. Argo then publishes each administrator route together
            with its policy, ordered before the route.
+
+        The normal-only `identity-gateway` Application reconciles the OIDC
+        Backend and BackendTLSPolicy with their administrator policies and
+        routes. Keep this transport out of `identity`: its TLS policy needs a
+        Gateway consumer to become healthy and would otherwise block the
+        PostSync Job.
 
         Never persist plaintext recovery output in Git, generated files, CI,
         service logs, durable agent transcripts, or ordinary workspace files.
