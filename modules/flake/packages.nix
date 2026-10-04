@@ -8,6 +8,8 @@
     url = "github:numtide/devshell";
     inputs.nixpkgs.follows = "nixpkgs";
   };
+  flake-file.inputs.nixpkgs-multiverse.url =
+    "github:fzakaria/nixpkgs-multiverse/9e89229225547747c0150f396ffa413d80bc1427";
 
   imports = [
     inputs.devshell.flakeModule
@@ -45,6 +47,13 @@
           self + "/pkgs/by-name/kanidm-provision-image/package.nix"
         ) { };
       };
+      jellyfin-provisioner-image = lib.optionalAttrs isLinux {
+        jellyfin-provisioner-image = callPackage (
+          self + "/pkgs/by-name/jellyfin-provisioner-image/package.nix"
+        ) {
+          jellyfinMultiverse = inputs.nixpkgs-multiverse.multiverse.${pkgs.stdenv.hostPlatform.system};
+        };
+      };
 
       provision-keys = callPackage (self + "/pkgs/by-name/provision-keys/package.nix") {
         inherit generate-secrets rekey;
@@ -63,7 +72,8 @@
       // agenix-restart-guard
       // prepare-luks-storage
       // kanidm-provision-image
-      // retained-directories-image;
+      // retained-directories-image
+      // jellyfin-provisioner-image;
 
       checks = {
         compute-runtime = config.packages.compute-runtime;
