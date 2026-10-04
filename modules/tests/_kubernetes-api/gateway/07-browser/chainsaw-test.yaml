@@ -1,0 +1,12 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: gateway-real-webauthn-authorization
+spec:
+  timeouts:
+    exec: 900s
+  steps:
+    - name: real-chromium-passkeys-admin-allow-authenticated-nonmember-and-tampered-session-denial
+      try:
+        - script:
+            content: exec gateway-case browser
