@@ -4,6 +4,9 @@
   lib,
   ...
 }:
+let
+  gatewayApi = import ./_gateway-api.nix;
+in
 {
   den.aspects.kubernetes.services.identity.settings.phase = lib.mkOption {
     type = lib.types.enum [
@@ -86,13 +89,13 @@
               authorizationEndpoint = "https://${domain}/ui/oauth2";
               tokenEndpoint = "https://${domain}/oauth2/token";
               backendRefs = [
-                {
+                (gatewayApi.backendRef {
                   group = "gateway.envoyproxy.io";
                   kind = "Backend";
                   name = "kanidm-oidc";
                   inherit namespace;
                   port = 443;
-                }
+                })
               ];
             };
             clientID = clientName;

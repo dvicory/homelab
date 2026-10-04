@@ -8,12 +8,17 @@ spec:
     - idm.plus2.danielvicory.dev
     - idm.backup.plus2.danielvicory.dev
   parentRefs:
-    - name: household
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: household
   rules:
     - backendRefs:
-        - name: kanidm
+        - group: ""
+          kind: Service
+          name: kanidm
           namespace: identity
           port: 443
+          weight: 1
       filters:
         - requestHeaderModifier:
             remove:

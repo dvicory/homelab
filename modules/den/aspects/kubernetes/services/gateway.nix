@@ -1,4 +1,7 @@
 { ... }:
+let
+  gatewayApi = import ./_gateway-api.nix;
+in
 {
   den.aspects.kubernetes.services.gateway.k8s-manifests =
     {
@@ -56,7 +59,7 @@
             timeouts = if route.timeouts == null then defaultTimeouts else route.timeouts;
           in
           object "gateway.networking.k8s.io/v1" "HTTPRoute" name namespace {
-            parentRefs = [ { name = "household"; } ];
+            parentRefs = [ (gatewayApi.parentRef { name = "household"; }) ];
             inherit (route) hostnames;
             rules = [
               {
@@ -84,10 +87,10 @@
                   }
                 ];
                 backendRefs = [
-                  {
+                  (gatewayApi.backendRef {
                     name = route.service;
                     inherit (route) namespace port;
-                  }
+                  })
                 ];
               }
             ];

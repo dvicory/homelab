@@ -21,6 +21,7 @@ spec:
           name: kanidm-oidc
           namespace: identity
           port: 443
+          weight: 1
       issuer: https://idm.plus2.danielvicory.dev/oauth2/openid/household-admin
       tokenEndpoint: https://idm.plus2.danielvicory.dev/oauth2/token
     redirectURL: https://%REQ(:authority)%/oauth2/callback
