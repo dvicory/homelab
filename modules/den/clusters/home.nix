@@ -72,6 +72,15 @@ in
         // {
           displayName = "Sonarr";
         };
+      prowlarr =
+        (route "prowlarr" "media" "prowlarr" 9696 "admin" "public" {
+          "app.kubernetes.io/controller" = "main";
+          "app.kubernetes.io/instance" = "prowlarr";
+          "app.kubernetes.io/name" = "prowlarr";
+        })
+        // {
+          displayName = "Prowlarr";
+        };
       sabnzbd =
         (route "sabnzbd" "media" "sabnzbd" 8080 "admin" "public" {
           "app.kubernetes.io/controller" = "main";

@@ -18,6 +18,7 @@ in
     includes = [
       den.aspects.kubernetes.services.radarr
       den.aspects.kubernetes.services.sonarr
+      den.aspects.kubernetes.services.prowlarr
       den.aspects.kubernetes.services.sabnzbd
     ];
     k8s-manifests =
@@ -60,6 +61,7 @@ in
             || unapprovedRootOverlap rest;
         sharedDataDeclared = lib.all (cfg: lib.elem "/data" cfg.sharedWritablePaths) instances;
         reserved = [
+          "prowlarr"
           "sabnzbd"
         ];
         reservedSecretKeys = lib.concatMap (
@@ -71,6 +73,15 @@ in
           )
         ) reserved;
         demandGroups = [
+          {
+            application = "prowlarr-storage";
+            values = [
+              {
+                claim = "prowlarr";
+                size = "5Gi";
+              }
+            ];
+          }
           {
             application = "sabnzbd-storage";
             values = [
