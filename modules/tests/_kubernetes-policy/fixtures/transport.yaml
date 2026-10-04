@@ -1,0 +1,106 @@
+# Native Kyverno scenarios for this policy family. transport.py generate turns each scenario into a
+# kyverno-test.yaml and, for single-object scenarios, a resources.yaml derived from the genuine render.
+# Expected results are the declared fails plus Pass for every other in-scope rule that applies, as listed
+# by the explicit complete-population positive below. Identities are apiVersion/kind/namespace/name.
+policy: verification-transport
+policyFile: transport.yaml
+rules:
+  admission-candidates: []
+  repository-only: [complete-original-transport]
+positive:
+  name: transport-positive-{variant}
+  applies:
+    v1/ConfigMap/verification/verification-bundle: [complete-original-transport]
+scenarios:
+- name: transport-missing-rendered-population
+  variant: canonical
+  mutate: .bundle.resources = []
+  fail: [complete-original-transport]
+- name: transport-missing-original-inventory
+  variant: canonical
+  mutate: .bundle.files = []
+  fail: [complete-original-transport]
+- name: transport-missing-bootstrap-provenance
+  variant: canonical
+  mutate: .bundle.bootstrap = []
+  fail: [complete-original-transport]
+- name: transport-missing-source-directories
+  variant: canonical
+  mutate: .bundle.directories = []
+  fail: [complete-original-transport]
+- name: transport-missing-trusted-repository-fact
+  variant: canonical
+  mutate: .bundle.expected.repository = ""
+  fail: [complete-original-transport]
+- name: transport-missing-scope-facts
+  variant: canonical
+  mutate: .bundle.builtinScopes = []
+  fail: [complete-original-transport]
+- name: transport-unchecked-effective-source-file
+  variant: canonical
+  mutate: .bundle.files += ["gateway/unknown.txt"]
+  fail: [complete-original-transport]
+- name: transport-fail-closed-missing-policy
+  variant: canonical
+  reject: missing-policy
+  test:
+    policies:
+    - absent-policy.yaml
+- name: transport-fail-closed-missing-rule
+  variant: canonical
+  reject: scope-not-exercised
+  policyMutate: .spec.rules[0].name = "unrelated-transport-rule"
+- name: transport-fail-closed-missing-resource
+  variant: canonical
+  reject: missing-resource
+  test:
+    resources:
+    - absent-resource.yaml
+- name: transport-fail-closed-empty-results
+  variant: canonical
+  reject: incomplete-coverage
+  test:
+    results: []
+- name: transport-fail-closed-unknown-rule
+  variant: canonical
+  reject: scope-not-exercised
+  applies:
+    v1/ConfigMap/verification/verification-bundle:
+    - unknown-required-rule
+- name: transport-fail-closed-selector-miss
+  variant: canonical
+  reject: scope-not-exercised
+  policyMutate: .spec.rules[0].match.any[0].resources.names = ["absent-selector"]
+- name: transport-fail-closed-evaluation-error
+  variant: canonical
+  reject: native-evaluation-error
+  policyMutate: '.spec.rules[0].validate.cel.expressions = [{"expression": "object.nonexistent.required == true"}]'
+- name: transport-fail-closed-skipped-rule
+  variant: canonical
+  reject: scope-not-exercised
+  policyMutate: '.spec.rules[0].preconditions = {"all": [{"key": "never", "operator": "Equals", "value": "always"}]}'
+- name: transport-fail-closed-evaluation-error-expected-deny
+  variant: canonical
+  reject: native-evaluation-error
+  fail: [complete-original-transport]
+  policyMutate: '.spec.rules[0].validate.cel.expressions = [{"expression": "object.nonexistent.required == true"}]'
+- name: transport-required-cronjob-scope-skip
+  variant: canonical
+  reject: scope-not-exercised
+  base: batch/v1/CronJob/media/media-configarr
+  params: false
+  policyMutate: .spec.rules |= map(select(.name == "media-periodic-safety")) | .spec.rules[0].match.any[0].resources.names
+    = ["absent-required-periodic"]
+  family: workloads
+  rules:
+  - media-periodic-safety
+- name: transport-unlisted-privileged-pod-denied
+  variant: canonical
+  family: workloads
+  reject: incomplete-coverage
+  mutate: |-
+    # Keep the complete real canonical population and its independent required identities.
+    # This extra privileged Pod violates the existing production PVC/fsGroup safety rule.
+    .bundle.resources += [{"file":"media/Pod-unlisted-privileged.yaml","document":0,"content":"","object":{"apiVersion":"v1","kind":"Pod","metadata":{"name":"unlisted-privileged","namespace":"default","labels":{"verification.homelab/context":"fixture-only"}},"spec":{"securityContext":{"fsGroup":2000},"containers":[{"name":"unsafe","image":"busybox:1.37.0","securityContext":{"privileged":true},"volumeMounts":[{"name":"state","mountPath":"/state"}]}],"volumes":[{"name":"state","persistentVolumeClaim":{"claimName":"unlisted-state"}}]}}}] |
+    .bundle.files += ["media/Pod-unlisted-privileged.yaml"]
+  scope: population
