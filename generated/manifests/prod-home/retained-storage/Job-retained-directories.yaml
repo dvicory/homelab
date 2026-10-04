@@ -24,7 +24,7 @@ spec:
                 configMapKeyRef:
                   key: directories.json
                   name: retained-directories
-          image: homelab/retained-directories:saw47jcswkjfpj46y3nnkgsamlkfx46z
+          image: homelab/retained-directories:y5l6gks69k1qbxa1f9wxp6lzzgnhfyl9
           imagePullPolicy: Never
           name: retained-directories
           resources:

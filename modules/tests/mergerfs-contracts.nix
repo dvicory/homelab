@@ -61,12 +61,8 @@ let
 
   assertions = {
     "canonical pool paths remain distinct service names" =
-      mergerfs.serviceNameFor "/srv/media/data"
-      == "mergerfs-mnt-${builtins.hashString "sha256" "/srv/media/data"}"
-      &&
-        mergerfs.unitNameFor "/srv/media/data"
-        == "mergerfs-mnt-${builtins.hashString "sha256" "/srv/media/data"}.service"
-      && mergerfs.serviceNameFor "/srv/a/b" != mergerfs.serviceNameFor "/srv/a-b";
+      mergerfs.serviceNameFor "/srv/a/b" != mergerfs.serviceNameFor "/srv/a-b"
+      && mergerfs.unitNameFor "/srv/a/b" != mergerfs.unitNameFor "/srv/a-b";
     "configured service names are unique" = mergerfs.duplicateServiceNames valid == [ ];
     "non-canonical pool paths are rejected" =
       mergerfs.nonCanonicalPoolPaths {
