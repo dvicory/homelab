@@ -162,7 +162,9 @@ let
           identityNormal = cluster.settings.kubernetes.services.identity.phase == "normal";
           routes = lib.filterAttrs (
             name: route:
-            route.exposure == "public" && (identityNormal || (route.auth != "admin" && name != "idm"))
+            route.exposure == "public"
+            && (identityNormal || (route.auth != "admin" && name != "idm"))
+            && (name != "requests" || cluster.settings.kubernetes.services.seerr.phase == "ready")
           ) cluster.routes;
           tlsConfig = cfg.tls;
           selectedTLS = if variant == 0 then tlsConfig.primary else tlsConfig.backup;

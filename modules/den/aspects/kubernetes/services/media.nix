@@ -6,20 +6,12 @@ let
 in
 {
   den.aspects.kubernetes.services.media = {
-    settings.configurationSecret = lib.mkOption {
-      type = lib.types.str;
-      default = "media-runtime";
-      description = ''
-        Runtime Secret in media containing native Arr API keys and SABnzbd
-        credentials. Jellyfin's administrator credential remains owned by
-        Jellyfin in its own namespace.
-      '';
-    };
     includes = [
       den.aspects.kubernetes.services.radarr
       den.aspects.kubernetes.services.sonarr
       den.aspects.kubernetes.services.prowlarr
       den.aspects.kubernetes.services.sabnzbd
+      den.aspects.kubernetes.services.seerr
     ];
     k8s-manifests =
       { cluster, computeResources, ... }:
@@ -63,6 +55,7 @@ in
         reserved = [
           "prowlarr"
           "sabnzbd"
+          "seerr"
         ];
         reservedSecretKeys = lib.concatMap (
           name:
@@ -87,6 +80,15 @@ in
             values = [
               {
                 claim = "sabnzbd";
+                size = "5Gi";
+              }
+            ];
+          }
+          {
+            application = "seerr-storage";
+            values = [
+              {
+                claim = "seerr";
                 size = "5Gi";
               }
             ];
@@ -197,6 +199,47 @@ in
       ) "Media retained storage claims must be unique.";
       {
         applications = {
+          media-access = {
+            namespace = cluster.routes.jellyfin.namespace;
+            objects = [
+              {
+                apiVersion = "networking.k8s.io/v1";
+                kind = "NetworkPolicy";
+                metadata = {
+                  name = "media-jellyfin-ingress";
+                  namespace = cluster.routes.jellyfin.namespace;
+                };
+                spec = {
+                  podSelector.matchLabels = {
+                    "app.kubernetes.io/controller" = "main";
+                    "app.kubernetes.io/instance" = "jellyfin";
+                    "app.kubernetes.io/name" = "jellyfin";
+                  };
+                  policyTypes = [ "Ingress" ];
+                  ingress = [
+                    {
+                      from = [
+                        {
+                          namespaceSelector.matchLabels."kubernetes.io/metadata.name" = "media";
+                          podSelector.matchLabels = {
+                            "app.kubernetes.io/controller" = "main";
+                            "app.kubernetes.io/instance" = "seerr";
+                            "app.kubernetes.io/name" = "seerr";
+                          };
+                        }
+                      ];
+                      ports = [
+                        {
+                          protocol = "TCP";
+                          port = cluster.routes.jellyfin.port;
+                        }
+                      ];
+                    }
+                  ];
+                };
+              }
+            ];
+          };
           media-storage = {
             namespace = "media";
             annotations."argocd.argoproj.io/sync-wave" = "0";

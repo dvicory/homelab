@@ -45,6 +45,7 @@ in
       trustedProxyCIDRs = [ ];
     };
     settings.kubernetes.services.identity.phase = "normal";
+    settings.kubernetes.services.seerr.phase = "initial";
     routes = {
       argocd =
         (route "argocd" "argocd" "argocd-server" 80 "admin" "public" {
@@ -90,6 +91,11 @@ in
         // {
           displayName = "SABnzbd";
         };
+      requests = route "requests" "media" "seerr" 5055 "native" "public" {
+        "app.kubernetes.io/controller" = "main";
+        "app.kubernetes.io/instance" = "seerr";
+        "app.kubernetes.io/name" = "seerr";
+      };
       jellyfin =
         (route "jellyfin" "jellyfin" "jellyfin" 8096 "native" "private" {
           "app.kubernetes.io/controller" = "main";
