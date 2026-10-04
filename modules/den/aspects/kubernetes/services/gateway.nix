@@ -295,6 +295,11 @@
                 };
               };
             };
+            # Stock OAuth2 diagnostics can include credential material.
+            logging.level = {
+              default = "warn";
+              oauth2 = "critical";
+            };
             telemetry.accessLog.settings = [
               {
                 format = {
