@@ -17,7 +17,7 @@ spec:
         - args:
             - /srv/state
             - .homelab-state-root
-            - '{"identity-kanidm":{"gid":1000,"mode":"0700","uid":1000},"jellyfin-config":{"gid":751,"mode":"0750","uid":751},"kubernetes-volumes":{"gid":0,"mode":"0700","uid":0},"radarr":{"gid":752,"mode":"0700","uid":752},"sabnzbd":{"gid":757,"mode":"0700","uid":757},"sonarr":{"gid":753,"mode":"0700","uid":753}}'
+            - '{"identity-kanidm":{"gid":1000,"mode":"0700","uid":1000},"jellyfin-config":{"gid":751,"mode":"0750","uid":751},"kubernetes-volumes":{"gid":0,"mode":"0700","uid":0},"prowlarr":{"gid":755,"mode":"0700","uid":755},"radarr":{"gid":752,"mode":"0700","uid":752},"sabnzbd":{"gid":757,"mode":"0700","uid":757},"sonarr":{"gid":753,"mode":"0700","uid":753}}'
           image: homelab/retained-directories:sipwzr1kx45r7i69kf4sy8s3lw905clz
           imagePullPolicy: Never
           name: retained-directories
