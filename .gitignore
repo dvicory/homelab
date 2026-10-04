@@ -31,3 +31,4 @@ ssh
 
 # JavaScript package installs
 node_modules/
+__pycache__/
