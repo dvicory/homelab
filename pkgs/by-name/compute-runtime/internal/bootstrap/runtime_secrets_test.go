@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -119,7 +120,7 @@ func TestRuntimeSecretInventoryBinding(t *testing.T) {
 	}
 }
 
-func TestRuntimeGenerationBindingAndEmptyAcknowledgment(t *testing.T) {
+func TestRuntimeGenerationBinding(t *testing.T) {
 	yaml := []byte("apiVersion: v1\n")
 	names := []byte("media\tshared\tOpaque\tPASSWORD,USER\n")
 	yamlDigest := sha256.Sum256(yaml)
@@ -149,14 +150,48 @@ func TestRuntimeGenerationBindingAndEmptyAcknowledgment(t *testing.T) {
 	if generation, err := readRuntimeGeneration(root); err != nil || generation != runtimeGenerationID(yaml, names) {
 		t.Fatalf("snapshot generation rejected: %q, %v", generation, err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	called := false
-	if err := waitRuntimeSecretGeneration(ctx, runtimeGenerationID(yaml, []byte{}), func(context.Context, string) error {
-		called = true
-		return nil
-	}); err != nil || !called {
-		t.Fatalf("empty-set generation acknowledgment failed: %v", err)
+}
+
+func TestRuntimeGenerationAcknowledgment(t *testing.T) {
+	for _, names := range [][]byte{nil, []byte("media\tshared\tOpaque\tPASSWORD,USER\n")} {
+		generation := runtimeGenerationID([]byte("apiVersion: v1\n"), names)
+		for _, tc := range []struct {
+			name string
+			ack  string
+			want bool
+		}{
+			{"missing", "", false},
+			{"stale", runtimeGenerationID([]byte("previous generation\n"), names), false},
+			{"exact", generation, true},
+		} {
+			t.Run(fmt.Sprintf("inventory-%d/%s", len(names), tc.name), func(t *testing.T) {
+				root := t.TempDir()
+				if tc.ack != "" {
+					if err := os.WriteFile(filepath.Join(root, "applied-generation"), []byte(tc.ack+"\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				err := waitRuntimeSecretGeneration(ctx, generation, func(probe context.Context, requested string) error {
+					command := runtimeSecretGenerationCommand(requested)
+					// Relocate only the guest filesystem path; execute the production acknowledgment predicate.
+					command[2] = strings.ReplaceAll(command[2], "/var/lib/homelab-runtime-secrets/applied-generation", `"$ACK_ROOT/applied-generation"`)
+					cmd := exec.CommandContext(probe, command[0], command[1:]...)
+					cmd.Env = append(os.Environ(), "ACK_ROOT="+root)
+					err := cmd.Run()
+					cancel()
+					return err
+				})
+				if tc.want {
+					if err != nil {
+						t.Fatalf("exact acknowledgment rejected: %v", err)
+					}
+				} else if !errors.Is(err, context.Canceled) {
+					t.Fatalf("%s acknowledgment completed readiness: %v", tc.name, err)
+				}
+			})
+		}
 	}
 }
 
