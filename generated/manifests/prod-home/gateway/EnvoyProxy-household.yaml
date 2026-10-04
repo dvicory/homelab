@@ -4,6 +4,10 @@ metadata:
   name: household
   namespace: gateway
 spec:
+  logging:
+    level:
+      default: warn
+      oauth2: critical
   provider:
     kubernetes:
       envoyDeployment:

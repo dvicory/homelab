@@ -83,10 +83,10 @@ let
       unset KANIDM_PROVISION_IDM_ADMIN_TOKEN
 
       # The first phase leaves this group empty. Grant membership only after
-      # passkey policy and the dedicated client's exhaustive grants are applied.
+      # MFA policy and the dedicated client's exhaustive grants are applied.
       printf '%s' '["account_policy"]' > request.json
       api POST "/v1/group/$KANIDM_ADMIN_GROUP/_attr/class" --data-binary @request.json
-      printf '%s' '["passkey"]' > request.json
+      printf '%s' '["mfa"]' > request.json
       api PUT "/v1/group/$KANIDM_ADMIN_GROUP/_attr/credential_type_minimum" --data-binary @request.json
       printf '%s' '{"attrs":{"oauth2_strict_redirect_uri":["true"]}}' > request.json
       api PATCH "/v1/oauth2/$KANIDM_OIDC_CLIENT" --data-binary @request.json

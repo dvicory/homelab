@@ -1,0 +1,13 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: BackendTLSPolicy
+metadata:
+  name: kanidm-oidc-tls
+  namespace: identity
+spec:
+  targetRefs:
+    - group: gateway.envoyproxy.io
+      kind: Backend
+      name: kanidm-oidc
+  validation:
+    hostname: idm.plus2.danielvicory.dev
+    wellKnownCACertificates: System
