@@ -210,6 +210,21 @@ in
                       type = types.str;
                       description = "Primary disk device for the root pool";
                     };
+                    disk2 = mkOption {
+                      type = types.nullOr types.str;
+                      default = null;
+                      description = "Optional mirror device for the root pool";
+                    };
+                    espSizeGiB = mkOption {
+                      type = types.ints.positive;
+                      default = 1;
+                      description = "Size of each EFI system partition in GiB";
+                    };
+                    tailReserveGiB = mkOption {
+                      type = types.ints.unsigned;
+                      default = 0;
+                      description = "Unallocated capacity to preserve after each root-pool partition in GiB";
+                    };
                   };
                 }
               );
@@ -222,10 +237,10 @@ in
                 default = false;
                 description = "Enable swap partition via disko";
               };
-              size = mkOption {
-                type = types.str;
-                default = "8G";
-                description = "Size of the swap partition";
+              sizeGiB = mkOption {
+                type = types.ints.positive;
+                default = 8;
+                description = "Size of the primary root-disk swap partition in GiB";
               };
             };
           };

@@ -160,6 +160,25 @@ in
         the disk conversion procedure is in
         [`docs/operations/luks-storage-migration.md`](operations/luks-storage-migration.md).
 
+        ## Root ESP mirror updates
+
+        A configured ZFS root mirror uses native udev link priorities to mount
+        an available configured ESP at `/boot`, including in the initrd.
+        `/boot` remains required for boot; a single-disk host keeps its existing
+        device. The bootloader installer explicitly mounts the other available
+        ESP in a private temporary mount, copies boot entries and pre-unlock
+        credentials, and generates that ESP's own random seed. An absent member
+        is skipped; failure to mount an available member fails the update.
+        No routine activation formats either member.
+
+        Switching a running host to the mirror changes the `/boot` device, so
+        activation remounts `/boot`. Before that remount,
+        `root-esp-link.service` reloads udev rules and re-runs them on the
+        present ESPs so that `/dev/disk/root-esp` exists.
+
+        These are current implementation details, not an additional fleet-wide
+        surviving-member guarantee in `storage-foundations`.
+
         ${hostSections}
       '';
     };
