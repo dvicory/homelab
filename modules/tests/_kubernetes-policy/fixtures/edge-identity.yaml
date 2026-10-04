@@ -1,0 +1,410 @@
+# Native Kyverno scenarios for this policy family. transport.py generate turns each scenario into a
+# kyverno-test.yaml and, for single-object scenarios, a resources.yaml derived from the genuine render.
+# Expected results are the declared fails plus Pass for every other in-scope rule that applies, as listed
+# by the explicit complete-population positive below. Identities are apiVersion/kind/namespace/name.
+policy: edge-identity
+policyFile: edge-identity.yaml
+rules:
+  admission-candidates: [provisioning-serviceaccount, provisioning-rbac-postsync, provisioning-secret-role, provisioning-secret-binding,
+    administrator-membership, identity-data-deployment, identity-data-claim, identity-data-volume, identity-backup-absent,
+    oidc-backend, oidc-system-pki, oidc-reference-grant, provisioner-system-pki, route-inventory, route-domain-placement,
+    request-header-sanitizer, route-timeouts, backend-tls, client-traffic-origin, private-origin-isolation, gateway-native-origin,
+    proxy-native-origin, gateway-class, gateway-controller-image, gateway-proxy-image, controller-config-pinned-images,
+    backend-isolation-shape]
+  repository-only: [identity-populations, administrator-publication-atomic, native-idm-population, seerr-publication,
+    route-population, route-service-grant-joins, backend-tls-population, origin-populations, gateway-populations,
+    backend-exact-isolation, effective-ingress-authority]
+test:
+  clusterResources: [../../../api-resources.yaml]
+positive:
+  name: positive-{variant}
+  applies:
+    apps/v1/Deployment/gateway/envoy-gateway: [gateway-controller-image]
+    apps/v1/Deployment/identity/kanidm: [identity-data-deployment]
+    gateway.envoyproxy.io/v1alpha1/ClientTrafficPolicy/gateway/trusted-edges: [client-traffic-origin]
+    gateway.envoyproxy.io/v1alpha1/EnvoyProxy/gateway/household: [proxy-native-origin, gateway-proxy-image]
+    gateway.networking.k8s.io/v1/BackendTLSPolicy/identity/idm: [backend-tls]
+    gateway.networking.k8s.io/v1/Gateway/gateway/household: [gateway-native-origin]
+    gateway.networking.k8s.io/v1/GatewayClass//envoy: [gateway-class]
+    gateway.networking.k8s.io/v1/HTTPRoute/gateway/idm: [route-inventory, route-domain-placement, request-header-sanitizer,
+      route-timeouts]
+    gateway.networking.k8s.io/v1/HTTPRoute/gateway/jellyfin: [route-inventory, route-domain-placement, request-header-sanitizer,
+      route-timeouts]
+    networking.k8s.io/v1/NetworkPolicy/identity/gateway-idm-backend-ingress: [backend-isolation-shape]
+    networking.k8s.io/v1/NetworkPolicy/jellyfin/gateway-jellyfin-backend-ingress: [backend-isolation-shape]
+    v1/ConfigMap/gateway/envoy-gateway-config: [controller-config-pinned-images]
+    v1/ConfigMap/identity/kanidm-config: [identity-backup-absent]
+    v1/ConfigMap/verification/verification-bundle: [identity-populations, administrator-publication-atomic, native-idm-population,
+      seerr-publication, route-population, route-service-grant-joins, backend-tls-population, origin-populations,
+      gateway-populations, backend-exact-isolation, effective-ingress-authority]
+    v1/PersistentVolume//identity-kanidm: [identity-data-volume]
+    v1/PersistentVolumeClaim/identity/identity-kanidm: [identity-data-claim]
+  when:
+  - if: {identity: [normal, provisioning]}
+    applies:
+      batch/v1/Job/identity/kanidm-provision: [provisioning-rbac-postsync, provisioner-system-pki]
+      rbac.authorization.k8s.io/v1/Role/argocd/kanidm-client-secret-argocd-kanidm-oidc: [provisioning-secret-role]
+      rbac.authorization.k8s.io/v1/Role/gateway/kanidm-client-secret-oidc-argocd: [provisioning-secret-role]
+      rbac.authorization.k8s.io/v1/Role/gateway/kanidm-client-secret-oidc-prowlarr: [provisioning-secret-role]
+      rbac.authorization.k8s.io/v1/Role/gateway/kanidm-client-secret-oidc-radarr: [provisioning-secret-role]
+      rbac.authorization.k8s.io/v1/Role/gateway/kanidm-client-secret-oidc-sabnzbd: [provisioning-secret-role]
+      rbac.authorization.k8s.io/v1/Role/gateway/kanidm-client-secret-oidc-sonarr: [provisioning-secret-role]
+      rbac.authorization.k8s.io/v1/RoleBinding/argocd/kanidm-client-secret-argocd-kanidm-oidc: [provisioning-secret-binding]
+      rbac.authorization.k8s.io/v1/RoleBinding/gateway/kanidm-client-secret-oidc-argocd: [provisioning-secret-binding]
+      rbac.authorization.k8s.io/v1/RoleBinding/gateway/kanidm-client-secret-oidc-prowlarr: [provisioning-secret-binding]
+      rbac.authorization.k8s.io/v1/RoleBinding/gateway/kanidm-client-secret-oidc-radarr: [provisioning-secret-binding]
+      rbac.authorization.k8s.io/v1/RoleBinding/gateway/kanidm-client-secret-oidc-sabnzbd: [provisioning-secret-binding]
+      rbac.authorization.k8s.io/v1/RoleBinding/gateway/kanidm-client-secret-oidc-sonarr: [provisioning-secret-binding]
+      v1/ConfigMap/identity/kanidm-provision: [administrator-membership]
+      v1/ServiceAccount/identity/kanidm-provision: [provisioning-serviceaccount]
+  - if: {identity: [normal]}
+    applies:
+      gateway.envoyproxy.io/v1alpha1/Backend/identity/kanidm-oidc: [oidc-backend]
+      gateway.networking.k8s.io/v1/BackendTLSPolicy/identity/kanidm-oidc-tls: [oidc-system-pki]
+      gateway.networking.k8s.io/v1/HTTPRoute/gateway/argocd: [route-inventory, route-domain-placement, request-header-sanitizer,
+        route-timeouts]
+      gateway.networking.k8s.io/v1/HTTPRoute/gateway/prowlarr: [route-inventory, route-domain-placement, request-header-sanitizer,
+        route-timeouts]
+      gateway.networking.k8s.io/v1/HTTPRoute/gateway/radarr: [route-inventory, route-domain-placement, request-header-sanitizer,
+        route-timeouts]
+      gateway.networking.k8s.io/v1/HTTPRoute/gateway/sabnzbd: [route-inventory, route-domain-placement, request-header-sanitizer,
+        route-timeouts]
+      gateway.networking.k8s.io/v1/HTTPRoute/gateway/sonarr: [route-inventory, route-domain-placement, request-header-sanitizer,
+        route-timeouts]
+      gateway.networking.k8s.io/v1beta1/ReferenceGrant/identity/gateway-oidc-backend: [oidc-reference-grant]
+      networking.k8s.io/v1/NetworkPolicy/argocd/gateway-argocd-backend-ingress: [backend-isolation-shape]
+      networking.k8s.io/v1/NetworkPolicy/media/gateway-prowlarr-backend-ingress: [backend-isolation-shape]
+      networking.k8s.io/v1/NetworkPolicy/media/gateway-radarr-backend-ingress: [backend-isolation-shape]
+      networking.k8s.io/v1/NetworkPolicy/media/gateway-sabnzbd-backend-ingress: [backend-isolation-shape]
+      networking.k8s.io/v1/NetworkPolicy/media/gateway-sonarr-backend-ingress: [backend-isolation-shape]
+  - if: {mode: [trustedEdges]}
+    applies:
+      networking.k8s.io/v1/NetworkPolicy/gateway/private-origin: [private-origin-isolation]
+  - if: {seerr: [ready]}
+    applies:
+      gateway.networking.k8s.io/v1/HTTPRoute/gateway/requests: [route-inventory, route-domain-placement, request-header-sanitizer,
+        route-timeouts]
+      networking.k8s.io/v1/NetworkPolicy/media/gateway-requests-backend-ingress: [backend-isolation-shape]
+scenarios:
+- name: provisioning-population-role-deleted
+  variant: provisioning-initial-trustedEdges
+  mutate: del(.bundle.resources[] | select(.object.kind == "Role" and .object.metadata.name == "kanidm-client-secret-oidc-argocd"))
+  fail: [identity-populations]
+- name: provisioning-population-role-without-secret
+  variant: provisioning-initial-direct
+  mutate: del(.bundle.resources[] | select(.object.kind == "Secret" and .object.metadata.name == "oidc-argocd"))
+  fail: [identity-populations]
+- name: provisioning-job-missing
+  variant: provisioning-initial-direct
+  mutate: del(.bundle.resources[] | select(.object.kind == "Job" and .object.metadata.name == "kanidm-provision"))
+  fail: [identity-populations]
+- name: initial-rejects-provisioning-job
+  variant: initial-initial-direct
+  mutate: '.bundle["resources"] += [{"file": "identity/Job-unexpected.yaml", "document": 0, "content": "", "object":
+    {"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": "kanidm-provision", "namespace": "identity",
+    "annotations": {"argocd.argoproj.io/hook": "PostSync"}}, "spec": {"template": {"spec": {"serviceAccountName":
+    "kanidm-provision", "volumes": [], "containers": []}}}}}]'
+  fail: [identity-populations]
+- name: provisioning-job-not-postsync
+  variant: provisioning-initial-trustedEdges
+  base: batch/v1/Job/identity/kanidm-provision
+  mutate: .metadata.annotations["argocd.argoproj.io/hook"] = "PreSync"
+  fail: [provisioning-rbac-postsync]
+- name: provisioning-job-wrong-serviceaccount
+  base: batch/v1/Job/identity/kanidm-provision
+  mutate: .spec.template.spec.serviceAccountName = "default"
+  fail: [provisioning-rbac-postsync]
+- name: provisioning-role-excess-secret-access
+  base: rbac.authorization.k8s.io/v1/Role/gateway/kanidm-client-secret-oidc-argocd
+  mutate: .rules[0].verbs = ["create", "get", "patch"]
+  fail: [provisioning-secret-role]
+- name: provisioning-role-other-secret
+  base: rbac.authorization.k8s.io/v1/Role/gateway/kanidm-client-secret-oidc-argocd
+  mutate: .rules[0].resourceNames = ["oidc-radarr"]
+  fail: [provisioning-secret-role]
+- name: provisioning-rolebinding-wrong-subject
+  base: rbac.authorization.k8s.io/v1/RoleBinding/gateway/kanidm-client-secret-oidc-argocd
+  mutate: .subjects[0].namespace = "gateway"
+  fail: [provisioning-secret-binding]
+- name: provisioning-membership-premature
+  variant: provisioning-initial-direct
+  base: v1/ConfigMap/identity/kanidm-provision
+  mutate: .data["members.json"] = "[\"unauthorized\"]"
+  fail: [administrator-membership]
+- name: normal-membership-not-exact-state
+  base: v1/ConfigMap/identity/kanidm-provision
+  mutate: .data["members.json"] = "[\"unauthorized\"]"
+  fail: [administrator-membership]
+- name: normal-membership-state-join
+  base: v1/ConfigMap/identity/kanidm-provision
+  mutate: .data["state.json"] = "{\"persons\":{\"unauthorized\":{}}}"
+  fail: [administrator-membership]
+- name: normal-admin-policy-missing
+  mutate: del(.bundle.resources[] | select(.object.kind == "SecurityPolicy" and .object.metadata.name == "argocd-admin"))
+  fail: [administrator-publication-atomic]
+- name: normal-admin-target-decoupled
+  mutate: (.bundle.resources[] | select(.object.kind == "SecurityPolicy" and .object.metadata.name == "argocd-admin")
+    | .object["spec"]["targetRefs"][0]["name"]) = "idm"
+  fail: [administrator-publication-atomic]
+- name: normal-admin-namespace-decoupled
+  mutate: (.bundle.resources[] | select(.object.kind == "SecurityPolicy" and .object.metadata.name == "argocd-admin")
+    | .object["metadata"]["namespace"]) = "identity"
+  fail: [administrator-publication-atomic]
+- name: normal-admin-wave-wrong
+  mutate: (.bundle.resources[] | select(.object.kind == "HTTPRoute" and .object.metadata.name == "argocd") | .object["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"])
+    = "-2"
+  fail: [administrator-publication-atomic]
+- name: normal-oidc-transport-missing
+  mutate: del(.bundle.resources[] | select(.object.kind == "BackendTLSPolicy" and .object.metadata.name == "kanidm-oidc-tls"))
+  fail: [identity-populations]
+- name: initial-idm-route-missing
+  variant: initial-initial-direct
+  mutate: del(.bundle.resources[] | select(.object.kind == "HTTPRoute" and .object.metadata.name == "idm"))
+  fail: [native-idm-population, route-population]
+- name: provisioning-idm-route-missing
+  variant: provisioning-initial-direct
+  mutate: del(.bundle.resources[] | select(.object.kind == "HTTPRoute" and .object.metadata.name == "idm"))
+  fail: [native-idm-population, route-population]
+- name: normal-idm-persistence-wrong-volume
+  base: v1/PersistentVolumeClaim/identity/identity-kanidm
+  mutate: .spec.volumeName = "wrong-claim"
+  fail: [identity-data-claim]
+- name: identity-data-claim-missing
+  mutate: del(.bundle.resources[] | select(.object.kind == "PersistentVolumeClaim" and .object.metadata.name ==
+    "identity-kanidm"))
+  fail: [native-idm-population]
+- name: identity-active-backup-rejected
+  base: v1/ConfigMap/identity/kanidm-config
+  mutate: .data["server.toml"] = "version = \"2\"\n[online_backup]\nschedule = \"@daily\"\nversions = 3\n"
+  fail: [identity-backup-absent]
+- name: oidc-system-pki-replaced
+  base: gateway.networking.k8s.io/v1/BackendTLSPolicy/identity/kanidm-oidc-tls
+  mutate: .spec.validation.wellKnownCACertificates = "Private"
+  fail: [oidc-system-pki]
+- name: oidc-target-wrong
+  base: gateway.networking.k8s.io/v1/BackendTLSPolicy/identity/kanidm-oidc-tls
+  mutate: .spec.targetRefs[0].name = "kanidm"
+  fail: [oidc-system-pki]
+- name: oidc-backend-wrong-hostname
+  base: gateway.envoyproxy.io/v1alpha1/Backend/identity/kanidm-oidc
+  mutate: .spec.endpoints[0].fqdn.hostname = "external.example"
+  fail: [oidc-backend]
+- name: provisioner-custom-trust-env
+  base: batch/v1/Job/identity/kanidm-provision
+  mutate: '.spec.template.spec.containers[0].env += [{"name": "SSL_CERT_FILE", "value": "/trust/ca.crt"}]'
+  fail: [provisioner-system-pki]
+- name: provisioner-custom-trust-mount
+  base: batch/v1/Job/identity/kanidm-provision
+  mutate: '.spec.template.spec.containers[0].volumeMounts += [{"name": "trust", "mountPath": "/trust"}]'
+  fail: [provisioner-system-pki]
+- name: provisioner-custom-trust-volume
+  base: batch/v1/Job/identity/kanidm-provision
+  mutate: '.spec.template.spec.volumes += [{"name": "trust", "secret": {"secretName": "private-ca"}}]'
+  fail: [provisioner-system-pki]
+- name: seerr-ready-route-missing
+  mutate: del(.bundle.resources[] | select(.object.kind == "HTTPRoute" and .object.metadata.name == "requests"))
+  fail: [route-population, seerr-publication]
+- name: seerr-phase-independent-of-normal-identity
+  mutate: .bundle["expected"]["cluster"]["settings"]["kubernetes"]["services"]["seerr"]["phase"] = "initial"
+  fail: [backend-exact-isolation, route-population, seerr-publication]
+- name: route-unknown-addition
+  mutate: '.bundle["resources"] += [{"file": "gateway/HTTPRoute-unknown.yaml", "document": 0, "content": "", "object":
+    {"apiVersion": "gateway.networking.k8s.io/v1", "kind": "HTTPRoute", "metadata": {"name": "unknown", "namespace":
+    "gateway"}, "spec": {"hostnames": ["outside.invalid"], "rules": []}}}]'
+  fail: [{route-domain-placement: gateway.networking.k8s.io/v1/HTTPRoute/gateway/unknown}, route-population, route-service-grant-joins]
+- name: route-domain-outside-authority
+  base: gateway.networking.k8s.io/v1/HTTPRoute/gateway/idm
+  mutate: .spec.hostnames = ["outside.invalid"]
+  fail: [route-domain-placement, route-inventory]
+- name: route-empty-hostnames
+  base: gateway.networking.k8s.io/v1/HTTPRoute/gateway/idm
+  mutate: .spec.hostnames = []
+  fail: [route-domain-placement, route-inventory]
+- name: route-missing-service
+  mutate: del(.bundle.resources[] | select(.object.kind == "Service" and .object.metadata.name == "kanidm"))
+  fail: [identity-populations, route-service-grant-joins]
+- name: route-service-wrong-port
+  mutate: (.bundle.resources[] | select(.object.kind == "Service" and .object.metadata.name == "kanidm") | .object["spec"]["ports"][0]["port"])
+    = 444
+  fail: [route-service-grant-joins]
+- name: route-service-effective-namespace
+  mutate: del(.bundle.resources[] | select(.object.kind == "Service" and .object.metadata.name == "kanidm") | .object["metadata"]["namespace"])
+  fail: [identity-populations, route-service-grant-joins]
+- name: route-cross-namespace-missing-grant
+  mutate: del(.bundle.resources[] | select(.object.kind == "ReferenceGrant" and .object.metadata.name == "gateway-idm"))
+  fail: [route-service-grant-joins]
+- name: route-cross-namespace-wrong-grant-source
+  mutate: (.bundle.resources[] | select(.object.kind == "ReferenceGrant" and .object.metadata.name == "gateway-idm")
+    | .object["spec"]["from"][0]["namespace"]) = "default"
+  fail: [route-service-grant-joins]
+- name: route-cross-namespace-wrong-grant-target
+  mutate: (.bundle.resources[] | select(.object.kind == "ReferenceGrant" and .object.metadata.name == "gateway-idm")
+    | .object["spec"]["to"][0]["name"]) = "other-service"
+  fail: [route-service-grant-joins]
+- name: route-backend-noncore
+  mutate: (.bundle.resources[] | select(.object.kind == "HTTPRoute" and .object.metadata.name == "idm") | .object["spec"]["rules"][0]["backendRefs"][0]["group"])
+    = "other.example"
+  fail: [{route-inventory: gateway.networking.k8s.io/v1/HTTPRoute/gateway/idm}, route-service-grant-joins]
+- name: route-invalid-service-port
+  mutate: (.bundle.resources[] | select(.object.kind == "HTTPRoute" and .object.metadata.name == "idm") | .object["spec"]["rules"][0]["backendRefs"][0]["port"])
+    = 0
+  fail: [{route-inventory: gateway.networking.k8s.io/v1/HTTPRoute/gateway/idm}, route-service-grant-joins]
+- name: route-header-sanitizer-incomplete
+  base: gateway.networking.k8s.io/v1/HTTPRoute/gateway/idm
+  mutate: del(.spec.rules[0].filters[0].requestHeaderModifier.remove[0])
+  fail: [request-header-sanitizer]
+- name: route-header-sanitizer-set-bypass
+  base: gateway.networking.k8s.io/v1/HTTPRoute/gateway/idm
+  mutate: '.spec.rules[0].filters[0].requestHeaderModifier.set = [{"name": "Remote-User", "value": "admin"}]'
+  fail: [request-header-sanitizer]
+- name: streaming-route-bounded
+  base: gateway.networking.k8s.io/v1/HTTPRoute/gateway/jellyfin
+  mutate: .spec.rules[0].timeouts.request = "15s" | .spec.rules[0].timeouts.backendRequest = "15s"
+  fail: [route-timeouts]
+- name: ordinary-route-unbounded
+  base: gateway.networking.k8s.io/v1/HTTPRoute/gateway/idm
+  mutate: .spec.rules[0].timeouts.request = "0s" | .spec.rules[0].timeouts.backendRequest = "0s"
+  fail: [route-timeouts]
+- name: backend-tls-policy-missing
+  mutate: del(.bundle.resources[] | select(.object.kind == "BackendTLSPolicy" and .object.metadata.name == "idm"))
+  fail: [backend-tls-population]
+- name: backend-tls-wrong-service-target
+  base: gateway.networking.k8s.io/v1/BackendTLSPolicy/identity/idm
+  mutate: .spec.targetRefs[0].name = "other-service"
+  fail: [backend-tls]
+- name: backend-tls-wrong-hostname
+  base: gateway.networking.k8s.io/v1/BackendTLSPolicy/identity/idm
+  mutate: .spec.validation.hostname = "wrong.invalid"
+  fail: [backend-tls]
+- name: backend-tls-private-trust
+  base: gateway.networking.k8s.io/v1/BackendTLSPolicy/identity/idm
+  mutate: .spec.validation.wellKnownCACertificates = "Private"
+  fail: [backend-tls]
+- name: trusted-edges-request-id-not-preserved
+  base: gateway.envoyproxy.io/v1alpha1/ClientTrafficPolicy/gateway/trusted-edges
+  mutate: .spec.headers.requestID = "Generate"
+  fail: [client-traffic-origin]
+- name: direct-request-id-preserved
+  variant: normal-ready-direct
+  base: gateway.envoyproxy.io/v1alpha1/ClientTrafficPolicy/gateway/trusted-edges
+  mutate: .spec.headers.requestID = "PreserveOrGenerate"
+  fail: [client-traffic-origin]
+- name: trusted-client-ip-spoofable
+  base: gateway.envoyproxy.io/v1alpha1/ClientTrafficPolicy/gateway/trusted-edges
+  mutate: del(.spec.clientIPDetection.xForwardedFor.trustedCIDRs) | .spec.clientIPDetection.xForwardedFor.numTrustedHops
+    = 1
+  fail: [client-traffic-origin]
+- name: trusted-private-origin-policy-missing
+  mutate: del(.bundle.resources[] | select(.object.kind == "NetworkPolicy" and .object.metadata.name == "private-origin"))
+  fail: [origin-populations]
+- name: trusted-private-origin-public-source
+  mutate: (.bundle.resources[] | select(.object.kind == "NetworkPolicy" and .object.metadata.name == "private-origin")
+    | .object["spec"]["ingress"][0]["from"][0]["ipBlock"]["cidr"]) = "0.0.0.0/0"
+  fail: [effective-ingress-authority, {private-origin-isolation: networking.k8s.io/v1/NetworkPolicy/gateway/private-origin}]
+- name: trusted-private-origin-listener-port
+  mutate: (.bundle.resources[] | select(.object.kind == "NetworkPolicy" and .object.metadata.name == "private-origin")
+    | .object["spec"]["ingress"][0]["ports"][0]["port"]) = 443
+  fail: [effective-ingress-authority, {private-origin-isolation: networking.k8s.io/v1/NetworkPolicy/gateway/private-origin}]
+- name: native-origin-not-local
+  base: gateway.envoyproxy.io/v1alpha1/EnvoyProxy/gateway/household
+  mutate: .spec.provider.kubernetes.envoyService.externalTrafficPolicy = "Cluster"
+  fail: [proxy-native-origin]
+- name: native-origin-nodeport-mismatch
+  base: gateway.envoyproxy.io/v1alpha1/EnvoyProxy/gateway/household
+  mutate: .spec.provider.kubernetes.envoyService.patch.value.spec.ports[0].nodePort = 30444
+  fail: [proxy-native-origin]
+- name: native-gateway-plaintext
+  base: gateway.networking.k8s.io/v1/Gateway/gateway/household
+  mutate: .spec.listeners[0].protocol = "HTTP"
+  fail: [gateway-native-origin]
+- name: gateway-controller-image-unpinned
+  base: apps/v1/Deployment/gateway/envoy-gateway
+  mutate: .spec.template.spec.containers[0].image = "docker.io/envoyproxy/gateway:latest"
+  fail: [gateway-controller-image]
+- name: gateway-proxy-image-unpinned
+  base: gateway.envoyproxy.io/v1alpha1/EnvoyProxy/gateway/household
+  mutate: .spec.provider.kubernetes.envoyDeployment.container.image = "docker.io/envoyproxy/envoy:latest"
+  fail: [gateway-proxy-image]
+- name: gateway-controller-config-missing
+  mutate: del(.bundle.resources[] | select(.object.kind == "ConfigMap" and .object.metadata.name == "envoy-gateway-config"))
+  fail: [gateway-populations]
+- name: gateway-controller-config-images-unpinned
+  base: v1/ConfigMap/gateway/envoy-gateway-config
+  mutate: '.data["envoy-gateway.yaml"] = "envoyProxy:\n  provider:\n    kubernetes:\n      envoyDeployment:\n        container:\n          image:
+    docker.io/envoyproxy/envoy:latest\nprovider:\n  kubernetes:\n    shutdownManager:\n      image: docker.io/envoyproxy/gateway:latest\n"'
+  fail: [controller-config-pinned-images]
+- name: backend-isolation-policy-missing
+  mutate: del(.bundle.resources[] | select(.object.kind == "NetworkPolicy" and .object.metadata.name == "gateway-idm-backend-ingress"))
+  fail: [backend-exact-isolation]
+- name: backend-isolation-extra-source
+  mutate: '(.bundle.resources[] | select(.object.kind == "NetworkPolicy" and .object.metadata.name == "gateway-idm-backend-ingress")
+    | .object["spec"]["ingress"]) += [{"from": [{"ipBlock": {"cidr": "0.0.0.0/0"}}]}]'
+  fail: [{backend-isolation-shape: networking.k8s.io/v1/NetworkPolicy/identity/gateway-idm-backend-ingress}, effective-ingress-authority]
+- name: backend-isolation-wrong-selector
+  base: networking.k8s.io/v1/NetworkPolicy/identity/gateway-idm-backend-ingress
+  mutate: .spec.podSelector.matchLabels["app.kubernetes.io/name"] = "argocd-server"
+  fail: [backend-isolation-shape]
+- name: same-namespace-identities-remain-independent
+  base: networking.k8s.io/v1/NetworkPolicy/media/gateway-radarr-backend-ingress
+  mutate: .spec.podSelector.matchLabels["app.kubernetes.io/instance"] = "sonarr" | .spec.podSelector.matchLabels["app.kubernetes.io/name"]
+    = "sonarr"
+  fail: [backend-isolation-shape]
+- name: backend-isolation-unknown-addition
+  mutate: '.bundle["resources"] += [{"file": "gateway/NetworkPolicy-allow-all.yaml", "document": 0, "content": "",
+    "object": {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": {"name": "allow-all",
+    "namespace": "identity"}, "spec": {"podSelector": {}, "policyTypes": ["Ingress"], "ingress": [{}]}}}]'
+  fail: [effective-ingress-authority]
+- name: additional-backend-policy-allow-all
+  mutate: '.bundle.resources += [{"file": "unexpected/NetworkPolicy-allow-all.yaml", "document": 0, "content": "",
+    "object": {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": {"name": "allow-all",
+    "namespace": "identity"}, "spec": {"podSelector": {"matchLabels": {"app.kubernetes.io/name": "kanidm"}}, "policyTypes":
+    ["Ingress"], "ingress": [{}]}}}]'
+  fail: [effective-ingress-authority]
+- name: additional-proxy-policy-allow-all
+  mutate: '.bundle.resources += [{"file": "unexpected/NetworkPolicy-allow-all.yaml", "document": 0, "content": "",
+    "object": {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": {"name": "allow-all",
+    "namespace": "gateway"}, "spec": {"podSelector": {}, "policyTypes": ["Ingress"], "ingress": [{}]}}}]'
+  fail: [effective-ingress-authority]
+- name: additional-backend-empty-source-list
+  mutate: '.bundle.resources += [{"file": "unexpected/NetworkPolicy-allow-all.yaml", "document": 0, "content": "",
+    "object": {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": {"name": "allow-all",
+    "namespace": "identity"}, "spec": {"podSelector": {}, "policyTypes": ["Ingress"], "ingress": [{"from": []}]}}}]'
+  fail: [effective-ingress-authority]
+- name: additional-backend-expression-selector
+  mutate: '.bundle.resources += [{"file": "unexpected/NetworkPolicy-allow-all.yaml", "document": 0, "content": "",
+    "object": {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": {"name": "allow-all",
+    "namespace": "identity"}, "spec": {"podSelector": {"matchExpressions": [{"key": "app.kubernetes.io/name", "operator":
+    "In", "values": ["kanidm"]}]}, "policyTypes": ["Ingress"], "ingress": [{}]}}}]'
+  fail: [effective-ingress-authority]
+- name: additional-proxy-implicit-namespace
+  mutate: |-
+    .bundle.resources += [{"file":"gateway/NetworkPolicy-allow-debug.yaml","document":0,"content":"","object":{"apiVersion":"networking.k8s.io/v1","kind":"NetworkPolicy","metadata":{"name":"allow-debug"},"spec":{"podSelector":{},"policyTypes":["Ingress"],"ingress":[{}]}}}] |
+    .bundle.files += ["gateway/NetworkPolicy-allow-debug.yaml"]
+  fail: [effective-ingress-authority]
+- name: additional-backend-implicit-namespace
+  mutate: |-
+    .bundle.resources += [{"file":"identity/NetworkPolicy-allow-debug.yaml","document":0,"content":"","object":{"apiVersion":"networking.k8s.io/v1","kind":"NetworkPolicy","metadata":{"name":"allow-debug"},"spec":{"podSelector":{},"policyTypes":["Ingress"],"ingress":[{}]}}}] |
+    .bundle.files += ["identity/NetworkPolicy-allow-debug.yaml"]
+  fail: [effective-ingress-authority]
+- name: normal-kanidm-peer-not-argocd-server
+  mutate: '(.bundle.resources[] | select(.file == "identity/NetworkPolicy-kanidm-private.yaml") | .object.spec.ingress[2].from[0].podSelector.matchLabels)
+    = {"app.kubernetes.io/name": "other"}'
+  fail: [effective-ingress-authority]
+- name: provisioning-rejects-argocd-server-kanidm-peer
+  variant: provisioning-initial-direct
+  mutate: '(.bundle.resources[] | select(.file == "identity/NetworkPolicy-kanidm-private.yaml") | .object.spec.ingress)
+    += [{"from": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "argocd"}}, "podSelector":
+    {"matchLabels": {"app.kubernetes.io/instance": "argocd", "app.kubernetes.io/name": "argocd-server"}}}], "ports":
+    [{"protocol": "TCP", "port": 8443}]}]'
+  fail: [effective-ingress-authority]
+- name: legitimate-policy-implicit-namespaces
+  mutate: del(.bundle.resources[] | select(.file == "identity/NetworkPolicy-kanidm-private.yaml" or .file == "gateway/NetworkPolicy-private-origin.yaml")
+    | .object.metadata.namespace)
+- name: route-fractional-service-port
+  mutate: (.bundle.resources[] | select(.object.kind == "HTTPRoute" and .object.metadata.name == "idm") | .object.spec.rules[0].backendRefs[0].port)
+    = 443.5
+  fail: [{route-inventory: gateway.networking.k8s.io/v1/HTTPRoute/gateway/idm}, route-service-grant-joins]
+- name: route-string-service-port
+  mutate: (.bundle.resources[] | select(.object.kind == "HTTPRoute" and .object.metadata.name == "idm") | .object.spec.rules[0].backendRefs[0].port)
+    = "443"
+  fail: [{route-inventory: gateway.networking.k8s.io/v1/HTTPRoute/gateway/idm}, route-service-grant-joins]
