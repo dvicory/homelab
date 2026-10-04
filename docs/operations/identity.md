@@ -1,7 +1,7 @@
 # Identity operations
 
 Kanidm runs in the `identity` namespace. The Gateway protects administrator
-routes with OIDC from Kanidm.
+routes with OIDC from Kanidm. Argo CD also signs users in through Kanidm.
 
 ## Bootstrap
 
@@ -21,6 +21,69 @@ Confirm TLS certificates are Ready before recovering accounts.
    before selecting `normal`. Already-enrolled accounts need no repeat.
 4. Select `normal`, wait for provisioning to complete, and verify
    protected administrator access.
+
+## Argo CD sign-in
+
+Argo CD signs in through Kanidm in phase `normal`. Members of
+`homelab-admin` get Argo CD's admin role; everyone else gets nothing.
+Argo CD's local `admin` account is enabled only before phase `normal`.
+It is not a break-glass path: it sits behind the Gateway's Kanidm
+sign-in, so it cannot help when Kanidm is down. Recover with kubectl on
+the host instead.
+
+1. After Argo syncs, confirm that the `kanidm-provision` Job completed
+   and that the client Secret holds its key. The command prints only key
+   names:
+
+   ```sh
+   kubectl -n identity get job kanidm-provision
+   kubectl -n argocd get secret argocd-kanidm-oidc -o jsonpath='{.data}' | jq 'keys'
+   ```
+
+   Expect `["clientSecret"]`. If it is empty, check the Job's logs.
+2. Open the canonical Argo CD URL, pass the Gateway sign-in, and choose
+   **Log in via Kanidm**. Approve the one-time Kanidm consent.
+3. Open **User Info** and confirm that the groups include
+   `homelab-admin`. Confirm admin rights by refreshing or syncing an
+   Application.
+4. Confirm that signing in as the local `admin` is rejected.
+
+### If Kanidm sign-in to Argo CD fails
+
+Run these commands on the host. The cluster API does not depend on
+Kanidm, so kubectl works even when Kanidm is down. If the Gateway
+sign-in still works and only Argo CD's Kanidm sign-in fails, you can
+enable the local account for the repair:
+
+1. Hold automated sync so self-heal does not revert your change. The
+   root `apps` Application restores the `argocd` Application, so hold
+   both:
+
+   ```sh
+   for app in apps argocd; do
+     incus --project compute exec compute-1 -- k3s kubectl -n argocd patch application "$app" \
+       --type json -p '[{"op":"remove","path":"/spec/syncPolicy/automated"}]'
+   done
+   ```
+
+2. Enable the local account:
+
+   ```sh
+   incus --project compute exec compute-1 -- k3s kubectl -n argocd patch configmap argocd-cm \
+     --type merge -p '{"data":{"admin.enabled":"true"}}'
+   ```
+
+3. Sign in as `admin` with the local password you escrowed for
+   `argocd-secret`. Fix the cause and publish the fix.
+4. Restore automated sync on `apps`. Its sync restores the `argocd`
+   Application, whose sync sets `admin.enabled` back to `"false"`:
+
+   ```sh
+   incus --project compute exec compute-1 -- k3s kubectl -n argocd patch application apps \
+     --type merge -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'
+   ```
+
+   Confirm that `argocd-cm` shows `admin.enabled: "false"` again.
 
 ## Upgrade
 
