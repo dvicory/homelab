@@ -1,0 +1,37 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  name: sabnzbd-admin
+  namespace: gateway
+spec:
+  oidc:
+    clientID: sabnzbd
+    clientSecret:
+      name: oidc-sabnzbd
+    forwardAccessToken: false
+    logoutPath: /logout
+    passThroughAuthHeader: false
+    provider:
+      authorizationEndpoint: https://idm.plus2.danielvicory.dev/ui/oauth2
+      backendRefs:
+        - group: gateway.envoyproxy.io
+          kind: Backend
+          name: kanidm-oidc
+          namespace: identity
+          port: 443
+          weight: 1
+      issuer: https://idm.plus2.danielvicory.dev/oauth2/openid/sabnzbd
+      tokenEndpoint: https://idm.plus2.danielvicory.dev/oauth2/token
+    redirectURL: https://%REQ(:authority)%/oauth2/callback
+    refreshToken: true
+    scopes:
+      - openid
+      - profile
+      - email
+      - homelab_admin
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: sabnzbd

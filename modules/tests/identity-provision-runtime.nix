@@ -99,14 +99,6 @@ in
               identity = "${manifests}/identity"
               callbacks = sorted(json.loads(${builtins.toJSON (builtins.toJSON argocdCallbacks)}))
               gateway_callbacks = sorted(json.loads(${builtins.toJSON (builtins.toJSON gatewayCallbacks)}))
-              # One client per administrator route. Argo CD's Gateway sign-in and
-              # its own sign-in share client argocd, which publishes to both Secrets.
-              scopes = {"argocd": ["email", "groups_name", "homelab_admin", "openid", "profile"]}
-              clients = sorted(scopes)
-              secrets = [
-                  ("argocd", dict(namespace="gateway", name="oidc-argocd", key="client-secret")),
-                  ("argocd", dict(namespace="argocd", name="argocd-kanidm-oidc", key="clientSecret")),
-              ]
               provisioner = "system:serviceaccount:identity:kanidm-provision"
 
               def evidence(label, value):
@@ -259,6 +251,20 @@ in
                   f"{kubectl} get configmap --namespace identity kanidm-provision --output json"
               ))["data"]["members.json"]))
               assert members, "the committed state declares no administrators"
+              # One client per administrator route, as the committed manifests
+              # declare. Argo CD's Gateway sign-in and its own sign-in share
+              # client argocd, which publishes to both of its Secrets.
+              declared = json.loads(json.loads(cluster.succeed(
+                  f"{kubectl} get configmap --namespace identity kanidm-provision --output json"
+              ))["data"]["clients.json"])
+              scopes = {client["name"]: sorted(client["scopes"]) for client in declared}
+              clients = sorted(scopes)
+              secrets = [
+                  (client["name"], {key: target[key] for key in ("namespace", "name", "key")})
+                  for client in declared for target in client["secrets"]
+              ]
+              assert scopes.get("argocd") == ["email", "groups_name", "homelab_admin", "openid", "profile"], scopes
+              assert ("argocd", dict(namespace="argocd", name="argocd-kanidm-oidc", key="clientSecret")) in secrets, secrets
 
               with subtest("the provisioner can patch only its declared Secrets and create none"):
                   for _, spec in secrets:
