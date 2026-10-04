@@ -1,0 +1,41 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  name: argocd
+  namespace: gateway
+spec:
+  hostnames:
+    - argocd.plus2.danielvicory.dev
+    - argocd.backup.plus2.danielvicory.dev
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: household
+  rules:
+    - backendRefs:
+        - group: ""
+          kind: Service
+          name: argocd-server
+          namespace: argocd
+          port: 80
+          weight: 1
+      filters:
+        - requestHeaderModifier:
+            remove:
+              - X-Real-IP
+              - X-Forwarded-User
+              - X-Forwarded-Email
+              - X-Auth-Request-User
+              - X-Auth-Request-Email
+              - Remote-User
+              - Forwarded
+          type: RequestHeaderModifier
+      matches:
+        - path:
+            type: PathPrefix
+            value: /
+      timeouts:
+        backendRequest: 15s
+        request: 15s
