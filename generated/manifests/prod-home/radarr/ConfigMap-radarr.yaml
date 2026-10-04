@@ -1,0 +1,16 @@
+apiVersion: v1
+data:
+  10-media-group.sh: |-
+    #!/bin/sh
+    set -eu
+    getent group 505 >/dev/null || groupadd --gid 505 homelab-media
+    usermod --append --groups 505 abc
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/instance: radarr
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: radarr
+    helm.sh/chart: app-template-5.1.0
+  name: radarr
+  namespace: media
