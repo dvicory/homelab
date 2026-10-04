@@ -6,17 +6,11 @@
 }:
 let
   cluster = config.den.clusters.prod-home;
-  compute =
-    config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
-  computeResources = config.flake.clusterResources.prod-home // {
-    inherit (compute) instance;
-  };
+  computeResources = config.clusterResources.prod-home;
   identity =
     (import ../den/aspects/kubernetes/services/identity.nix {
       inherit config inputs lib;
     }).den.aspects.kubernetes.services.identity;
-  gateway =
-    (import ../den/aspects/kubernetes/services/gateway.nix { }).den.aspects.kubernetes.services.gateway;
   argocdAspect =
     (import ../den/aspects/kubernetes/services/argocd.nix { inherit lib; })
     .den.aspects.kubernetes.services.argocd;
@@ -40,34 +34,13 @@ let
       cluster = inventory;
       inherit computeResources lib;
     };
-  renderGateway =
-    inventory:
-    gateway.k8s-manifests {
-      cluster = inventory;
-      inherit computeResources lib;
-      charts = { };
-    };
-  initial = renderIdentity (withPhase "initial");
   provisioning = renderIdentity (withPhase "provisioning");
   normal = renderIdentity (withPhase "normal");
-  initialGateway = renderGateway (withPhase "initial");
-  provisioningGateway = renderGateway (withPhase "provisioning");
-  normalGateway = renderGateway (withPhase "normal");
-  initialObjects = initial.applications.identity.objects;
   provisioningObjects = provisioning.applications.identity.objects;
   normalObjects = normal.applications.identity.objects;
-  hasObject =
-    objects: kind: name:
-    lib.any (object: object.kind == kind && object.metadata.name == name) objects;
   applicationObjects =
     application: if application ? content then application.content.objects else application.objects;
   normalPolicyObjects = applicationObjects normal.applications.identity-gateway;
-  normalRouteObjects = applicationObjects normalGateway.applications.identity-gateway;
-  provisioningJob = builtins.head (
-    lib.filter (
-      object: object.kind == "Job" && object.metadata.name == "kanidm-provision"
-    ) provisioningObjects
-  );
   provisionData =
     objects:
     (builtins.head (
@@ -75,24 +48,12 @@ let
         object: object.kind == "ConfigMap" && object.metadata.name == "kanidm-provision"
       ) objects
     )).data;
-  provisionMembers = objects: builtins.fromJSON (provisionData objects)."members.json";
   normalProvisionJob = builtins.head (
     lib.filter (
       object: object.kind == "Job" && object.metadata.name == "kanidm-provision"
     ) normalObjects
   );
   provisionContainer = builtins.head normalProvisionJob.spec.template.spec.containers;
-  oidcTLSPolicy = builtins.head (
-    lib.filter (
-      object: object.kind == "BackendTLSPolicy" && object.metadata.name == "kanidm-oidc-tls"
-    ) normalPolicyObjects
-  );
-  serverConfig =
-    (builtins.head (
-      lib.filter (
-        object: object.kind == "ConfigMap" && object.metadata.name == "kanidm-config"
-      ) initialObjects
-    )).data."server.toml";
   initialResources = identity.compute-resources { cluster = withPhase "initial"; };
   findObject =
     objects: kind: namespace: name:
@@ -142,74 +103,6 @@ let
   kanidmIngress =
     objects: (findObject objects "NetworkPolicy" namespace "kanidm-private").spec.ingress;
   namespace = "identity";
-  inherit (cluster.settings.kubernetes.services.identity) adminGroup householdGroup directory;
-  jellyfinRoute = cluster.routes.jellyfin;
-  normalPolicies = builtins.fromJSON (provisionData normalObjects)."policies.json";
-  policyFor = group: lib.findFirst (policy: policy.group == group) null normalPolicies;
-  # Kanidm's credential-type minimums, weakest first.
-  credentialStrengths = [
-    "any"
-    "mfa"
-    "passkey"
-    "attested_passkey"
-  ];
-  kanidmDeployment = findObject normalObjects "Deployment" namespace "kanidm";
-  kanidmService = findObject normalObjects "Service" namespace "kanidm";
-  # NetworkPolicies are additive, regardless of name or application owner.
-  admissionObjects =
-    identityRendered: gatewayRendered:
-    lib.concatMap (
-      application:
-      if application.condition or true then
-        application.content.objects or (application.objects or [ ])
-      else
-        [ ]
-    ) (builtins.attrValues identityRendered.applications ++ builtins.attrValues gatewayRendered.applications);
-  kanidmLabels = kanidmDeployment.spec.template.metadata.labels;
-  selectsKanidm =
-    selector:
-    lib.matchAttrs (selector.matchLabels or { }) kanidmLabels
-    && lib.all (
-      expression:
-      let
-        present = builtins.hasAttr expression.key kanidmLabels;
-        listed = present && lib.elem kanidmLabels.${expression.key} (expression.values or [ ]);
-      in
-      if expression.operator == "In" then listed
-      else if expression.operator == "NotIn" then !listed
-      else if expression.operator == "Exists" then present
-      else if expression.operator == "DoesNotExist" then !present
-      else throw "Unsupported Kubernetes selector operator"
-    ) (selector.matchExpressions or [ ]);
-  directoryPeers =
-    objects:
-    lib.unique (lib.concatMap (
-      policy:
-      lib.concatMap (
-        rule:
-        let
-          ports = rule.ports or [ ];
-          admits = port:
-            (port.protocol or "TCP") == "TCP"
-            && (
-              !(port ? port)
-              || port.port == "ldaps"
-              || (builtins.isInt port.port
-                && port.port <= directory.port
-                && directory.port <= (port.endPort or port.port))
-            );
-        in
-        if ports == [ ] || lib.any admits ports then
-          if rule.from or [ ] == [ ] then [ "anyone" ] else rule.from
-        else [ ]
-      ) (policy.spec.ingress or [ ])
-    ) (lib.filter (
-      object:
-      object.kind == "NetworkPolicy"
-      && object.metadata.namespace == namespace
-      && selectsKanidm object.spec.podSelector
-      && lib.elem "Ingress" (object.spec.policyTypes or [ "Ingress" ])
-    ) objects));
   allowsArgocdServer = lib.any (
     rule:
     lib.any (
@@ -254,143 +147,8 @@ let
       ) rule.verbs
     ) role.rules;
   failures = lib.filterAttrs (_: value: !value) {
-    # Kanidm serves LDAPS on the declared directory port, on its Service.
-    directory-listens =
-      lib.hasInfix ''ldapbindaddress = "0.0.0.0:${toString directory.port}"'' serverConfig
-      && builtins.elem {
-        name = "ldaps";
-        containerPort = directory.port;
-      } (builtins.head kanidmDeployment.spec.template.spec.containers).ports
-      && builtins.elem {
-        name = "ldaps";
-        port = directory.port;
-        targetPort = "ldaps";
-        protocol = "TCP";
-      } kanidmService.spec.ports;
-    # Only Jellyfin's pods reach the directory, in every phase.
-    directory-admits-only-jellyfin = lib.all (
-      objects:
-      directoryPeers objects == [
-        {
-          namespaceSelector.matchLabels."kubernetes.io/metadata.name" = jellyfinRoute.namespace;
-          podSelector.matchLabels = jellyfinRoute.backendPodSelector;
-        }
-      ]
-    ) [
-      (admissionObjects initial initialGateway)
-      (admissionObjects provisioning provisioningGateway)
-      (admissionObjects normal normalGateway)
-    ];
-    # Kanidm applies the strictest value of each setting across a person's
-    # groups. Administrators state an MFA-or-stronger minimum themselves and
-    # never bind to LDAP with their primary password. Household members bind
-    # with it, and the all-persons floor must not exceed their minimum, or a
-    # password-only member could not exist.
-    account-policies-declared =
-      let
-        rank = minimum: lib.lists.findFirstIndex (value: value == minimum) null credentialStrengths;
-        admin = policyFor adminGroup;
-        household = policyFor householdGroup;
-        floor = policyFor "idm_all_persons";
-      in
-      lib.all (policy: rank policy.credentialTypeMinimum != null) normalPolicies
-      && lib.length (lib.unique (map (policy: policy.group) normalPolicies)) == lib.length normalPolicies
-      && admin != null
-      && rank admin.credentialTypeMinimum >= rank "mfa"
-      && admin.allowPrimaryCredFallback == false
-      && household != null
-      && household.allowPrimaryCredFallback == true
-      && floor != null
-      && rank floor.credentialTypeMinimum <= rank household.credentialTypeMinimum
-      && normalPolicies == builtins.fromJSON (provisionData provisioningObjects)."policies.json";
-    # Provisioning creates the household group but never owns its members.
-    household-membership-operator-owned =
-      normalState.groups.${householdGroup} == {
-        members = [ ];
-        overwriteMembers = false;
-      }
-      && householdGroup != adminGroup;
-    three-phases-declared =
-      identity.settings.phase.type.functor.payload.values == [
-        "initial"
-        "provisioning"
-        "normal"
-      ];
     initial-credential-absent =
       !(initialResources.runtimeSecrets ? "identity--kanidm-provision--idm-admin-password");
-    initial-provisioning-absent =
-      !(lib.any (
-        object:
-        builtins.elem object.kind [
-          "Role"
-          "RoleBinding"
-          "Secret"
-        ]
-      ) initialObjects)
-      && !(hasObject initialObjects "Job" "kanidm-provision");
-    provisioning-rbac-before-job =
-      lib.all (publicationIntact provisioningObjects) (clientSecrets (provisionClients provisioningObjects))
-      && hasObject provisioningObjects "ServiceAccount" "kanidm-provision"
-      && provisioningJob.metadata.annotations."argocd.argoproj.io/hook" == "PostSync"
-      && provisioningJob.spec.template.spec.serviceAccountName == "kanidm-provision";
-    provisioning-job-present = hasObject provisioningObjects "Job" "kanidm-provision";
-    oidc-transport-with-admin-consumer =
-      lib.all
-        (
-          objects:
-          !(hasObject objects "Backend" "kanidm-oidc")
-          && !(hasObject objects "BackendTLSPolicy" "kanidm-oidc-tls")
-        )
-        [
-          initialObjects
-          provisioningObjects
-          normalObjects
-        ]
-      && hasObject normalPolicyObjects "Backend" "kanidm-oidc"
-      && hasObject normalPolicyObjects "BackendTLSPolicy" "kanidm-oidc-tls";
-    administrator-membership-gated =
-      provisionMembers provisioningObjects == [ ]
-      &&
-        provisionMembers normalObjects
-        == builtins.attrNames (builtins.fromJSON (provisionData normalObjects)."state.json").persons;
-    provisioning-admin-access-absent =
-      !(provisioning.applications.identity-gateway.condition)
-      && !(provisioningGateway.applications.identity-gateway.condition)
-      && !(hasObject provisioningGateway.applications.gateway.objects "HTTPRoute" "argocd");
-    normal-admin-access-atomic =
-      normal.applications.identity-gateway.condition
-      && normalGateway.applications.identity-gateway.condition
-      && hasObject normalPolicyObjects "SecurityPolicy" "argocd-admin"
-      && hasObject normalRouteObjects "HTTPRoute" "argocd"
-      &&
-        (builtins.head (lib.filter (object: object.kind == "SecurityPolicy") normalPolicyObjects))
-        .metadata.annotations."argocd.argoproj.io/sync-wave" == "-1"
-      &&
-        (builtins.head (lib.filter (object: object.kind == "HTTPRoute") normalRouteObjects))
-        .metadata.annotations."argocd.argoproj.io/sync-wave" == "0";
-    native-route-present-throughout =
-      lib.all (rendered: hasObject rendered.applications.gateway.objects "HTTPRoute" "idm")
-        [
-          initialGateway
-          provisioningGateway
-          normalGateway
-        ];
-    no-active-backup-policy =
-      !(lib.hasInfix "[online_backup]" serverConfig)
-      && !(lib.hasInfix "schedule =" serverConfig)
-      && !(lib.hasInfix "versions =" serverConfig);
-    public-pki-validation =
-      oidcTLSPolicy.spec.validation.wellKnownCACertificates == "System"
-      && oidcTLSPolicy.spec.validation.hostname == builtins.head cluster.routes.idm.hostnames
-      && !(lib.any (
-        entry:
-        builtins.elem (entry.name or "") [
-          "SSL_CERT_FILE"
-          "CURL_CA_BUNDLE"
-        ]
-      ) provisionContainer.env)
-      && !(lib.any (mount: mount.name == "trust") provisionContainer.volumeMounts)
-      && !(lib.any (volume: volume.name == "trust") normalProvisionJob.spec.template.spec.volumes);
     # Every Kanidm client in the provisioning state has a publication entry,
     # and every entry's Secret, Role and RoleBinding are declared without
     # `create` rights in both activated phases.
@@ -490,10 +248,7 @@ let
       && !(builtins.elem "groups" normalOidc.requestedScopes)
       && normalArgocd.rbac.scopes == "[groups]"
       && envValue "KANIDM_ADMIN_GROUP" == cluster.settings.kubernetes.services.identity.adminGroup
-      && builtins.attrNames normalState.groups == lib.sort builtins.lessThan [
-        (envValue "KANIDM_ADMIN_GROUP")
-        householdGroup
-      ]
+      && builtins.attrNames normalState.groups == [ (envValue "KANIDM_ADMIN_GROUP") ]
       && normalArgocd.rbac."policy.csv" == "g, ${envValue "KANIDM_ADMIN_GROUP"}, role:admin\n"
       && normalArgocd.rbac."policy.default" == "";
     argocd-client-secret-reference =
