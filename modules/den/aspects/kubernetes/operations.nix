@@ -110,7 +110,10 @@ in
         mounts.
 
         Wait for `retained-storage` to become Healthy before syncing stateful
-        applications.
+        applications. Its `retained-directories` hook creates the declared
+        directories and refuses, rather than creating substitute data, when the
+        persistent state root is missing. The hook survives pruning and
+        Application deletion.
 
         ## Runtime-secret references
 
