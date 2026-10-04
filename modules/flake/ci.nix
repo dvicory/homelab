@@ -1,5 +1,4 @@
 {
-  config,
   self,
   withSystem,
   lib,
@@ -47,100 +46,66 @@ let
         self.${output} or { }
       )
     );
-  checksFor =
-    system:
-    let
-      checks = self.checks.${system};
-    in
-    assert lib.assertMsg (lib.all lib.isDerivation (
-      lib.attrValues checks
-    )) "CI checks.${system} must contain only derivations";
-    checks;
-
-  requiredFeaturesFor =
-    check:
-    # Read the lazy test's feature declarations without forcing its raw derivation.
-    if check ? config.requiredFeatures then
-      builtins.attrNames (lib.filterAttrs (_: enabled: enabled) check.config.requiredFeatures)
-    else
-      check.requiredSystemFeatures or [ ];
-
-  isRuntime =
-    check:
-    lib.elem "kvm" (requiredFeaturesFor check)
-    || lib.elem "uid-range" (requiredFeaturesFor check)
-    || lib.isDerivation (check.driver or (check.driverInteractive or (check.config.driver or null)));
-
-  checkInventory =
-    system:
-    let
-      checks = checksFor system;
-      inventory = lib.mapAttrsToList (
-        name: check:
-        let
-          requiredSystemFeatures = requiredFeaturesFor check;
-          linux = lib.hasSuffix "-linux" system;
-          requirements = {
-            kvm = lib.elem "kvm" requiredSystemFeatures;
-            uidRange = lib.elem "uid-range" requiredSystemFeatures;
-            cgroups = lib.elem "uid-range" requiredSystemFeatures;
-          };
-          supportedFeatures = [
-            "benchmark"
-            "big-parallel"
-            "nixos-test"
-          ]
-          ++ lib.optional (system == "x86_64-linux") "kvm"
-          ++ lib.optional linux "uid-range";
-          unsupportedFeatures = lib.subtractLists supportedFeatures requiredSystemFeatures;
-          hosted = unsupportedFeatures == [ ];
-        in
-        {
-          inherit
-            name
-            requiredSystemFeatures
-            requirements
-            hosted
-            ;
-          # Unsupported Linux tests on Darwin must remain inspectable, not evaluated.
-          drvPath = if hosted then check.drvPath else null;
-          runtime = isRuntime check;
-          reason = lib.concatMapStringsSep "; " (
-            feature:
-            if feature == "kvm" then
-              "hosted runner has no KVM"
-            else if feature == "uid-range" then
-              "hosted runner cannot run Linux UID-range containers"
-            else
-              "hosted runner lacks required system feature ${feature}"
-          ) unsupportedFeatures;
-        }
-      ) checks;
-      fast = builtins.filter (entry: !entry.runtime && entry.hosted) inventory;
-      runtime = builtins.filter (entry: entry.runtime && entry.hosted) inventory;
-      unsupported = builtins.filter (entry: !entry.hosted) inventory;
-    in
-    assert lib.assertMsg (
-      builtins.length (fast ++ runtime ++ unsupported) == builtins.length inventory
-      &&
-        lib.sort builtins.lessThan (map (entry: entry.name) (fast ++ runtime ++ unsupported))
-        == builtins.attrNames checks
-    ) "Hosted CI must partition every checks.${system} registration exactly once";
-    {
-      inherit
-        inventory
-        fast
-        runtime
-        unsupported
-        ;
-    };
-
+  checksFor = system: (self.checks or { }).${system} or { };
+  requiredFastChecks = [
+    "den-semantics"
+    "compute-contracts"
+    "placement-contracts"
+    "storage-roots-contracts"
+    "mergerfs-contracts"
+    "identity-contracts"
+    "public-edge-contracts"
+    "compute-runtime"
+    "household-bootstrap-generated"
+    "prod-home-manifests-fresh"
+    "prod-home-manifests-schema"
+    "prod-home-manifests-policy"
+    "argocd-application-health"
+  ];
+  # Runtime-Secret API, Argo and Gateway controller coverage runs natively
+  # through the separately required verify-kubernetes-api app below.
+  requiredKubernetesApplications = [
+    "public-edge-runtime"
+    "media-runtime"
+    "media-ingress-runtime"
+  ];
+  requiredHostRecovery = [
+    "agenix-restart-guard"
+    "classify-legacy-media"
+    "mergerfs-capability"
+    "runtime-secret-k3s"
+    "compute-ingress-runtime"
+    "prod-home-replacement"
+  ];
+  # Native NixOS tests expose .driver; requiredSystemFeatures also catches
+  # other checks that actually require KVM, regardless of Hestia display groups.
+  needsVm = check: check ? driver || lib.elem "kvm" (check.requiredSystemFeatures or [ ]);
   hostedChecksFor =
     system:
     let
-      names = map (entry: entry.name) (checkInventory system).fast;
+      checks = checksFor system;
+      fastRequired = requiredFastChecks ++ lib.optional (lib.hasSuffix "-linux" system) "prepare-luks-storage";
+      required = fastRequired ++ lib.optionals (system == "x86_64-linux") (
+        requiredKubernetesApplications ++ requiredHostRecovery
+      );
+      missing = lib.filter (name: !(builtins.hasAttr name checks)) required;
+      select = names: lib.genAttrs names (name: checks.${name});
     in
-    lib.filterAttrs (name: _: lib.elem name names) (checksFor system);
+    assert lib.assertMsg (missing == [ ])
+      "Missing required CI checks for ${system}: ${lib.concatStringsSep ", " missing}";
+    assert lib.assertMsg (lib.all (name: lib.isDerivation checks.${name}) required)
+      "Required CI checks for ${system} must be derivations";
+    assert lib.assertMsg (lib.all (name: !(needsVm checks.${name})) fastRequired)
+      "Required fast CI checks for ${system} must not require a VM";
+    {
+      fastChecks = select fastRequired // lib.filterAttrs (_: check: !(needsVm check)) checks;
+    }
+    // lib.optionalAttrs (system == "x86_64-linux") {
+      kubernetesApplications = select requiredKubernetesApplications;
+      hostRecovery = select requiredHostRecovery // lib.filterAttrs (
+        name: check: needsVm check && !(lib.elem name requiredKubernetesApplications)
+      ) checks;
+    };
 
   ciJobs = lib.genAttrs ciSystems (
     system:
@@ -165,61 +130,11 @@ let
       }
     )
   );
-
-  nativeApplicationsFor =
-    system:
-    lib.optionals (system == "x86_64-linux") [
-      {
-        name = "media-live-acceptance";
-        package = "packages.${system}.media-live-acceptance";
-        arguments = [
-          "--docker-host"
-          "unix:///var/run/docker.sock"
-          "--platform"
-          "linux/amd64"
-        ];
-        timeoutSeconds = 2700;
-        requirements.docker = true;
-        cleanupPrefix = "homelab-media-live-";
-      }
-      {
-        name = "household-sign-in-runtime";
-        package = "packages.${system}.household-sign-in-runtime";
-        arguments = [ ];
-        timeoutSeconds = 3000;
-        requirements = {
-          docker = true;
-          root = true;
-          ownedStorage = true;
-        };
-        loopbackHost = builtins.head config.den.clusters."prod-home".routes.idm.hostnames;
-        cleanupPrefix = "household";
-      }
-    ];
-
-  hostedPlanFor =
-    system:
-    let
-      nativeApplications = nativeApplicationsFor system;
-      names = builtins.attrNames (checksFor system) ++ map (app: app.name) nativeApplications;
-    in
-    assert lib.assertMsg (
-      builtins.length names == builtins.length (lib.unique names)
-    ) "Hosted CI checks and native applications must be uniquely registered on ${system}";
-    {
-      inventory = builtins.mapAttrs (_: map (entry: builtins.removeAttrs entry [ "drvPath" ])) (
-        checkInventory system
-      );
-      groups = builtins.attrNames ciJobs.${system};
-      inherit nativeApplications;
-    };
 in
 {
   flake = {
     # Pick up standard flake outputs without duplicating their inventory in CI.
     inherit ciJobs;
-    hostedCiInventory = lib.genAttrs ciSystems checkInventory;
-    hostedCiPlan = lib.genAttrs ciSystems hostedPlanFor;
     ciBundles = lib.mapAttrs (
       system: jobs: withSystem system ({ pkgs, ... }: pkgs.linkFarm "ci-${system}" jobs)
     ) ciJobs;
@@ -227,9 +142,16 @@ in
       system:
       withSystem system (
         { pkgs, ... }:
-        {
-          checks = pkgs.linkFarm "ci-checks-hosted" (project system "checks" (hostedChecksFor system));
-        }
+        lib.mapAttrs (name: entries: pkgs.linkFarm "ci-${name}-hosted" (project system "checks" entries)) (
+          hostedChecksFor system
+          // lib.optionalAttrs (system == "x86_64-linux") {
+            kubernetesApplications =
+              assert lib.assertMsg (self.apps.${system} ? verify-kubernetes-api)
+                "Missing required CI app: verify-kubernetes-api";
+              (hostedChecksFor system).kubernetesApplications
+              // { verify-kubernetes-api = self.packages.${system}.verify-kubernetes-api; };
+          }
+        )
       )
     );
   };
