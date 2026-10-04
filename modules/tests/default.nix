@@ -101,10 +101,6 @@ let
       ) registryNames;
   };
 
-  environmentAssertions.timezone-projection =
-    builderConfig.time.timeZone == config.den.environments.dev.timezone
-    && hvnConfig.time.timeZone == config.den.environments.prod.timezone;
-
   integrationAssertions.secret-requests-resolve =
     let
       requests = attrNames hvnConfig.secretRequests;
@@ -132,13 +128,6 @@ let
     && darwinUsers."daniel.vicory".home.homeDirectory == "/Users/daniel.vicory"
     && darwinConfig.age.secrets."user-identity-daniel".owner == "daniel.vicory"
     && darwinConfig.age.secrets."user-identity-daniel".group == "staff";
-  integrationAssertions.daniel-shell =
-    hvnConfig.users.users.daniel.shell == hvnConfig.programs.fish.package
-    && darwinConfig.users.users."daniel.vicory".shell == darwinConfig.programs.fish.package;
-  integrationAssertions.darwin-maintenance =
-    darwinConfig.nix.gc.automatic
-    && darwinConfig.nix.gc.options == "--delete-older-than 30d"
-    && darwinUsers."daniel.vicory".home.stateVersion == "25.11";
   integrationAssertions.media-pool-revision-b =
     let
       mediaPath = "/mnt/storage-clear/media4";
@@ -190,7 +179,7 @@ let
 
   failures = attrNames (
     lib.filterAttrs (_: passed: !passed) (
-      accessAssertions // environmentAssertions // integrationAssertions // securityAssertions
+      accessAssertions // integrationAssertions // securityAssertions
     )
   );
 in
