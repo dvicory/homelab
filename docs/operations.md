@@ -180,4 +180,5 @@ over the replacement.
 - [`identity`](operations/identity.md)
 - [`jellyfin`](operations/jellyfin.md)
 - [`luks-storage-migration`](operations/luks-storage-migration.md)
+- [`media`](operations/media.md)
 
