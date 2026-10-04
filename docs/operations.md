@@ -12,7 +12,7 @@
 
 ## Deploy configuration
 
-Argo tracks `feat/kanidm-provisioning` from `https://github.com/dvicory/homelab.git`.
+Argo tracks `main` from `https://github.com/dvicory/homelab.git`.
 Publishing to that ref can change running services.
 
 ```sh

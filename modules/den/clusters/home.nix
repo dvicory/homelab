@@ -38,7 +38,7 @@ in
     inherit kubeVersion;
     k8sVersion = lib.versions.majorMinor kubeVersion;
     repository = "https://github.com/dvicory/homelab.git";
-    branch = "feat/kanidm-provisioning";
+    branch = "main";
     ingress = {
       mode = "direct";
       nodePort = 30443;
