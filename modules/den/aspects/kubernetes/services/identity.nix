@@ -92,6 +92,8 @@
                   name = "kanidm-oidc";
                   inherit namespace;
                   port = 443;
+                  # Envoy Gateway's CRD default; Argo owns this list whole.
+                  weight = 1;
                 }
               ];
             };

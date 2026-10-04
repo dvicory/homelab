@@ -56,7 +56,17 @@
             timeouts = if route.timeouts == null then defaultTimeouts else route.timeouts;
           in
           object "gateway.networking.k8s.io/v1" "HTTPRoute" name namespace {
-            parentRefs = [ { name = "household"; } ];
+            # Argo CD owns parentRefs, rules and backendRefs as whole atomic
+            # lists and compares them without CRD defaults. Spell out every
+            # Gateway API v1.6.1 default inside them (group, kind, weight), or
+            # the API server's defaults show up as permanent OutOfSync.
+            parentRefs = [
+              {
+                group = "gateway.networking.k8s.io";
+                kind = "Gateway";
+                name = "household";
+              }
+            ];
             inherit (route) hostnames;
             rules = [
               {
@@ -85,8 +95,11 @@
                 ];
                 backendRefs = [
                   {
+                    group = "";
+                    kind = "Service";
                     name = route.service;
                     inherit (route) namespace port;
+                    weight = 1;
                   }
                 ];
               }
