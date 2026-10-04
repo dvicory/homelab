@@ -1,0 +1,12 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: gateway-access-error-log-privacy
+spec:
+  timeouts:
+    exec: 600s
+  steps:
+    - name: deny-spoofed-auth-and-forbid-synthetic-and-real-credentials-in-all-envoy-logs
+      try:
+        - script:
+            content: exec gateway-case privacy

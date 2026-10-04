@@ -1,0 +1,12 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: gateway-referencegrant-deny-restore
+spec:
+  timeouts:
+    exec: 900s
+  steps:
+    - name: current-generation-ref-not-permitted-and-500-then-recovery
+      try:
+        - script:
+            content: exec gateway-case grant
