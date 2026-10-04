@@ -1,0 +1,26 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: gateway-trusted-cni-source-boundary
+spec:
+  timeouts:
+    exec: 600s
+  steps:
+    - name: apply-trusted-edge-policy
+      try:
+        - script:
+            content: exec gateway-case cni-prepare
+    - name: wait-for-real-cni-negative-enforcement
+      try:
+        # Bound real negative enforcement at 120s.
+        - script:
+            timeout: 120s
+            content: exec gateway-case cni-enforce
+    - name: trusted-bridge-peer-allowed-stranger-spoof-denied
+      try:
+        - script:
+            content: exec gateway-case cni-proof
+    - name: trusted-edge-forwarded-metadata-converges
+      try:
+        - script:
+            content: exec gateway-case cni-forwarded
