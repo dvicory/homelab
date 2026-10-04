@@ -237,270 +237,143 @@ in
 
       checks.runtime-secret-k3s =
         let
-          guestScript =
-            self.nixosConfigurations.compute-1.config.systemd.services.kubernetes-runtime-secrets.script;
-          k3sPackage = self.nixosConfigurations.compute-1.config.services.k3s.package;
+          configurations = import ./_compute-configurations.nix {
+            inherit self lib;
+            system = pkgs.stdenv.hostPlatform.system;
+            hostName = config.den.clusters.prod-home.hostName;
+          };
+          guest = configurations.guest.config;
+          service = guest.systemd.services.kubernetes-runtime-secrets;
+          k3sPackage = guest.services.k3s.package;
           k3s = "${k3sPackage}/bin/k3s";
           test = pkgs.testers.runNixOSTest {
             name = "runtime-secret-k3s";
             requiredFeatures.kvm = true;
-            nodes.machine =
-              { pkgs, ... }:
-              {
-                systemd.tmpfiles.rules = [
-                  "d /srv/secrets 0755 root root -"
-                  "d /var/lib/homelab-runtime-secrets 0700 root root -"
-                ];
-                services.k3s = {
-                  enable = true;
-                  role = "server";
-                  package = k3sPackage;
-                  disable = [ "traefik" ];
-                  images = [ k3sPackage.airgap-images ];
-                };
-                systemd.services.kubernetes-runtime-secrets = {
-                  path = [
-                    pkgs.coreutils
-                    pkgs.diffutils
-                    pkgs.gawk
-                    pkgs.gnugrep
-                  ];
-                  script = guestScript;
-                  serviceConfig = {
-                    Type = "oneshot";
-                    TimeoutStartSec = "5min";
-                    StateDirectory = "homelab-runtime-secrets";
-                    StateDirectoryMode = "0700";
-                  };
-                };
+            nodes.machine = {
+              system.stateVersion = "26.05";
+              virtualisation.memorySize = 2048;
+              virtualisation.cores = 2;
+              virtualisation.diskSize = 8192;
+              systemd.tmpfiles.rules = [ "d /srv/secrets 0700 root root -" ];
+              services.k3s = {
+                enable = true;
+                role = "server";
+                package = k3sPackage;
+                disable = [ "traefik" ];
+                images = [ k3sPackage.airgap-images ];
               };
+              systemd.services.kubernetes-runtime-secrets = {
+                # ExecStart is the evaluated production script, not a fixture
+                # wrapper. Keep its dependencies, condition, retries and state.
+                inherit (service)
+                  description
+                  wantedBy
+                  after
+                  requires
+                  unitConfig
+                  serviceConfig
+                  environment
+                  path
+                  ;
+                # The evaluated path already contains NixOS's default entries.
+                enableDefaultPath = false;
+              };
+            };
             testScript = ''
+              import hashlib
+              import json
+              import shlex
+
               start_all()
-              kubectl = "${k3s} kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml"
+              kubectl = "${k3s} kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml --context default --request-timeout=10s"
               machine.wait_until_succeeds(f"{kubectl} get --raw=/readyz", timeout=180)
               machine.succeed(f"{kubectl} create namespace media")
-              machine.succeed(
-                  "set -o pipefail; "
-                  f"{kubectl} create secret generic shared --namespace media --type=Opaque "
-                  "--from-literal=source-one=one --from-literal=source-two=two "
-                  "--dry-run=client -o yaml | "
-                  f"{kubectl} label --local -f - homelab.danielvicory/runtime-secret=true -o yaml | "
-                  f"{kubectl} apply --server-side --force-conflicts "
-                  "--field-manager=homelab-runtime-secrets -f -"
+              unit = "kubernetes-runtime-secrets.service"
+              state = "/var/lib/homelab-runtime-secrets"
+
+              def write_file(path, content):
+                  machine.succeed(f"printf %s {shlex.quote(content)} > {shlex.quote(path)}")
+
+              def stage(resources, *, complete=True):
+                  yaml = "\n---\n".join(json.dumps(resource, sort_keys=True) for resource in resources)
+                  yaml = yaml + "\n" if yaml else ""
+                  names = "".join(sorted(
+                      f"media\t{item['metadata']['name']}\t{item['type']}\t{','.join(sorted(item['data']))}\n"
+                      for item in resources
+                  ))
+                  yaml_hash = hashlib.sha256(yaml.encode()).hexdigest()
+                  names_hash = hashlib.sha256(names.encode()).hexdigest()
+                  generation = hashlib.sha256(f"{yaml_hash}\n{names_hash}\n".encode()).hexdigest()
+                  write_file("/srv/secrets/runtime-secrets.yaml", yaml)
+                  if complete:
+                      write_file("/srv/secrets/runtime-secrets.names", names)
+                  else:
+                      machine.succeed("rm /srv/secrets/runtime-secrets.names")
+                  # Publish last: consumption must refuse an incomplete delivery.
+                  write_file("/srv/secrets/runtime-secrets.commit",
+                             f"generation={generation} yaml-sha256={yaml_hash} names-sha256={names_hash}\n")
+                  return generation
+
+              def tls_secret(name, certificate="Y2VydA=="):
+                  return {
+                      "apiVersion": "v1",
+                      "kind": "Secret",
+                      "metadata": {
+                          "name": name,
+                          "namespace": "media",
+                          "labels": {"homelab.danielvicory/runtime-secret": "true"},
+                      },
+                      "type": "kubernetes.io/tls",
+                      "data": {"tls.crt": certificate, "tls.key": "a2V5"},
+                  }
+
+              def get_secret(name):
+                  return json.loads(machine.succeed(f"{kubectl} get secret {name} --namespace media -o json"))
+
+              def assert_ack(generation):
+                  assert machine.succeed(f"cat {state}/applied-generation") == generation + "\n"
+
+              # Real unit startup consumes the delivered files through its
+              # production ExecStart/PATH and creates the systemd state directory.
+              initial = stage([tls_secret("tls"), tls_secret("sole-tls")])
+              machine.succeed("test ! -e /var/lib/homelab-runtime-secrets/applied-generation")
+              machine.succeed(f"systemctl restart {unit}")
+              assert_ack(initial)
+              shared = get_secret("tls")
+              sole = get_secret("sole-tls")
+              for resource in (shared, sole):
+                  assert resource["type"] == "kubernetes.io/tls"
+                  assert resource["data"] == {"tls.crt": "Y2VydA==", "tls.key": "a2V5"}
+              owned = machine.succeed(f"cat {state}/owned")
+              assert sorted(owned.splitlines()) == sorted(
+                  f"media\t{item['metadata']['name']}\t{item['metadata']['uid']}"
+                  for item in (shared, sole)
               )
               machine.succeed(
-                  "set -o pipefail; "
-                  f"{kubectl} create secret generic shared --namespace media --type=Opaque "
-                  "--from-literal=application=app --dry-run=client -o yaml | "
-                  f"{kubectl} apply --server-side --force-conflicts "
-                  "--field-manager=application -f -"
+                  f"test $(stat -c %a {state}) = 700 && "
+                  f"test $(stat -c %a {state}/applied-generation) = 600"
               )
+
+              incomplete = stage([tls_secret("tls", "bmV3")], complete=False)
+              assert incomplete != initial
+              machine.fail(f"systemctl restart {unit}")
               machine.succeed(
-                  "set -o pipefail; "
-                  f"{kubectl} create secret generic forged --namespace media --type=Opaque "
-                  "--from-literal=FORGED=forged --dry-run=client -o yaml | "
-                  f"{kubectl} label --local -f - homelab.danielvicory/runtime-secret=true -o yaml | "
-                  f"{kubectl} apply --server-side --force-conflicts "
-                  "--field-manager=application -f -"
+                  f"test $(systemctl show {unit} --property=ExecMainStatus --value) -ne 0 && "
+                  f"test $(systemctl show {unit} --property=Result --value) = exit-code"
               )
-              machine.succeed(
-                  "set -o pipefail; "
-                  f"{kubectl} create secret generic replaced --namespace media --type=Opaque "
-                  "--from-literal=REPLACED=old --dry-run=client -o yaml | "
-                  f"{kubectl} label --local -f - homelab.danielvicory/runtime-secret=true -o yaml | "
-                  f"{kubectl} apply --server-side --force-conflicts "
-                  "--field-manager=application -f -"
-              )
-              replaced_uid = machine.succeed(
-                  f"{kubectl} get secret replaced --namespace media -o jsonpath='{{.metadata.uid}}'"
-              ).strip()
-              machine.succeed(f"{kubectl} delete secret replaced --namespace media")
-              machine.succeed(
-                  "set -o pipefail; "
-                  f"{kubectl} create secret generic replaced --namespace media --type=Opaque "
-                  "--from-literal=REPLACED=new --dry-run=client -o yaml | "
-                  f"{kubectl} label --local -f - homelab.danielvicory/runtime-secret=true -o yaml | "
-                  f"{kubectl} apply --server-side --force-conflicts "
-                  "--field-manager=application -f -"
-              )
-              replacement_uid = machine.succeed(
-                  f"{kubectl} get secret replaced --namespace media -o jsonpath='{{.metadata.uid}}'"
-              ).strip()
-              assert replaced_uid != replacement_uid
-              machine.succeed(
-                  f"shared_uid=$({kubectl} get secret shared --namespace media -o jsonpath='{{.metadata.uid}}'); "
-                  f"printf 'media\\tshared\\t%s\\nmedia\\treplaced\\t%s\\n' "
-                  f"\"$shared_uid\" \"{replaced_uid}\" > /var/lib/homelab-runtime-secrets/owned"
-              )
-              machine.succeed(
-                  """cat > /srv/secrets/runtime-secrets.yaml <<'EOF'
-              apiVersion: v1
-              kind: Secret
-              metadata:
-                name: shared
-                namespace: media
-                labels:
-                  homelab.danielvicory/runtime-secret: "true"
-              type: Opaque
-              data:
-                source-one: b25l
-              EOF
-              printf 'media\\tshared\\tOpaque\\tsource-one\\n' > /srv/secrets/runtime-secrets.names
-              yaml_checksum=$(sha256sum /srv/secrets/runtime-secrets.yaml | cut -d ' ' -f 1)
-              names_checksum=$(sha256sum /srv/secrets/runtime-secrets.names | cut -d ' ' -f 1)
-              generation=$(printf '%s\\n%s\\n' "$yaml_checksum" "$names_checksum" | sha256sum | cut -d ' ' -f 1)
-              printf 'generation=%s yaml-sha256=%s names-sha256=%s\\n' "$generation" "$yaml_checksum" "$names_checksum" > /srv/secrets/runtime-secrets.commit
-              """
-              )
-              machine.succeed("systemctl restart kubernetes-runtime-secrets.service")
-              machine.succeed(
-                  f"test \"$({kubectl} get secret shared --namespace media -o jsonpath='{{.type}}')\" = Opaque"
-              )
-              machine.succeed(
-                  f"test \"$({kubectl} get secret shared --namespace media -o jsonpath='{{.data.source-one}}')\" = b25l"
-              )
-              machine.succeed(
-                  f"test -z \"$({kubectl} get secret shared --namespace media -o jsonpath='{{.data.source-two}}')\""
-              )
-              machine.succeed(
-                  f"test \"$({kubectl} get secret shared --namespace media -o jsonpath='{{.data.application}}')\" = YXBw"
-              )
-              machine.succeed(
-                  f"test \"$({kubectl} get secret forged --namespace media -o jsonpath='{{.data.FORGED}}')\" = Zm9yZ2Vk"
-              )
-              machine.succeed(
-                  f"test \"$({kubectl} get secret replaced --namespace media -o jsonpath='{{.data.REPLACED}}')\" = bmV3"
-              )
-              machine.succeed(
-                  """printf 'media\tshared\tOpaque\tmalformed key\n' > /srv/secrets/runtime-secrets.names
-              yaml_checksum=$(sha256sum /srv/secrets/runtime-secrets.yaml | cut -d ' ' -f 1)
-              names_checksum=$(sha256sum /srv/secrets/runtime-secrets.names | cut -d ' ' -f 1)
-              generation=$(printf '%s\n%s\n' "$yaml_checksum" "$names_checksum" | sha256sum | cut -d ' ' -f 1)
-              printf 'generation=%s yaml-sha256=%s names-sha256=%s\n' "$generation" "$yaml_checksum" "$names_checksum" > /srv/secrets/runtime-secrets.commit
-              """
-              )
-              machine.fail("systemctl restart kubernetes-runtime-secrets.service")
-              machine.succeed(
-                  f"test \"$({kubectl} get secret shared --namespace media -o jsonpath='{{.data.source-one}}')\" = b25l"
-              )
-              machine.succeed(
-                  f"test \"$({kubectl} get secret shared --namespace media -o jsonpath='{{.data.application}}')\" = YXBw"
-              )
-              machine.succeed(
-                  """ : > /srv/secrets/runtime-secrets.yaml
-              : > /srv/secrets/runtime-secrets.names
-              yaml_checksum=$(sha256sum /srv/secrets/runtime-secrets.yaml | cut -d ' ' -f 1)
-              names_checksum=$(sha256sum /srv/secrets/runtime-secrets.names | cut -d ' ' -f 1)
-              generation=$(printf '%s\\n%s\\n' "$yaml_checksum" "$names_checksum" | sha256sum | cut -d ' ' -f 1)
-              printf 'generation=%s yaml-sha256=%s names-sha256=%s\\n' "$generation" "$yaml_checksum" "$names_checksum" > /srv/secrets/runtime-secrets.commit
-              """
-              )
-              machine.succeed("systemctl restart kubernetes-runtime-secrets.service")
-              machine.succeed(
-                  f"test -z \"$({kubectl} get secret shared --namespace media -o jsonpath='{{.data.source-one}}')\""
-              )
-              machine.succeed(
-                  f"test \"$({kubectl} get secret shared --namespace media -o jsonpath='{{.data.application}}')\" = YXBw"
-              )
-              machine.succeed(
-                  f"test \"$({kubectl} get secret forged --namespace media -o jsonpath='{{.data.FORGED}}')\" = Zm9yZ2Vk"
-              )
-              machine.succeed(
-                  f"test \"$({kubectl} get secret replaced --namespace media -o jsonpath='{{.data.REPLACED}}')\" = bmV3"
-              )
-              machine.succeed(
-                  """cat > /srv/secrets/runtime-secrets.yaml <<'EOF'
-              apiVersion: v1
-              kind: Secret
-              metadata:
-                name: tls
-                namespace: media
-                labels:
-                  homelab.danielvicory/runtime-secret: "true"
-              type: kubernetes.io/tls
-              data:
-                tls.crt: Y2VydA==
-                tls.key: a2V5
-              EOF
-              printf 'media\ttls\tkubernetes.io/tls\ttls.crt,tls.key\n' > /srv/secrets/runtime-secrets.names
-              yaml_checksum=$(sha256sum /srv/secrets/runtime-secrets.yaml | cut -d ' ' -f 1)
-              names_checksum=$(sha256sum /srv/secrets/runtime-secrets.names | cut -d ' ' -f 1)
-              generation=$(printf '%s\n%s\n' "$yaml_checksum" "$names_checksum" | sha256sum | cut -d ' ' -f 1)
-              printf 'generation=%s yaml-sha256=%s names-sha256=%s\n' "$generation" "$yaml_checksum" "$names_checksum" > /srv/secrets/runtime-secrets.commit
-              """
-              )
-              machine.succeed("systemctl restart kubernetes-runtime-secrets.service")
-              machine.succeed(
-                  "set -o pipefail; "
-                  f"{kubectl} create secret generic tls --namespace media --type=kubernetes.io/tls "
-                  "--from-literal=tls.crt=cert --from-literal=tls.key=key "
-                  "--from-literal=application=app --dry-run=client -o yaml | "
-                  f"{kubectl} apply --server-side --force-conflicts "
-                  "--field-manager=application -f -"
-              )
-              machine.succeed(
-                  f"test \"$({kubectl} get secret tls --namespace media -o jsonpath='{{.type}}')\" = kubernetes.io/tls"
-              )
-              machine.succeed(
-                  """ : > /srv/secrets/runtime-secrets.yaml
-              : > /srv/secrets/runtime-secrets.names
-              yaml_checksum=$(sha256sum /srv/secrets/runtime-secrets.yaml | cut -d ' ' -f 1)
-              names_checksum=$(sha256sum /srv/secrets/runtime-secrets.names | cut -d ' ' -f 1)
-              generation=$(printf '%s\n%s\n' "$yaml_checksum" "$names_checksum" | sha256sum | cut -d ' ' -f 1)
-              printf 'generation=%s yaml-sha256=%s names-sha256=%s\n' "$generation" "$yaml_checksum" "$names_checksum" > /srv/secrets/runtime-secrets.commit
-              """
-              )
-              machine.succeed("systemctl restart kubernetes-runtime-secrets.service")
-              machine.succeed(
-                  f"test \"$({kubectl} get secret tls --namespace media -o jsonpath='{{.type}}')\" = kubernetes.io/tls"
-              )
-              machine.succeed(
-                  f"test \"$({kubectl} get secret tls --namespace media -o jsonpath='{{.data.tls\\.crt}}')\" = Y2VydA=="
-              )
-              machine.succeed(
-                  f"test \"$({kubectl} get secret tls --namespace media -o jsonpath='{{.data.tls\\.key}}')\" = a2V5"
-              )
-              machine.succeed(
-                  f"test \"$({kubectl} get secret tls --namespace media -o jsonpath='{{.data.application}}')\" = YXBw"
-              )
-              machine.succeed(
-                  """cat > /srv/secrets/runtime-secrets.yaml <<'EOF'
-              apiVersion: v1
-              kind: Secret
-              metadata:
-                name: sole-tls
-                namespace: media
-                labels:
-                  homelab.danielvicory/runtime-secret: "true"
-              type: kubernetes.io/tls
-              data:
-                tls.crt: Y2VydA==
-                tls.key: a2V5
-              EOF
-              printf 'media\tsole-tls\tkubernetes.io/tls\ttls.crt,tls.key\n' > /srv/secrets/runtime-secrets.names
-              yaml_checksum=$(sha256sum /srv/secrets/runtime-secrets.yaml | cut -d ' ' -f 1)
-              names_checksum=$(sha256sum /srv/secrets/runtime-secrets.names | cut -d ' ' -f 1)
-              generation=$(printf '%s\n%s\n' "$yaml_checksum" "$names_checksum" | sha256sum | cut -d ' ' -f 1)
-              printf 'generation=%s yaml-sha256=%s names-sha256=%s\n' "$generation" "$yaml_checksum" "$names_checksum" > /srv/secrets/runtime-secrets.commit
-              """
-              )
-              machine.succeed("systemctl restart kubernetes-runtime-secrets.service")
-              machine.succeed(
-                  f"test \"$({kubectl} get secret sole-tls --namespace media -o jsonpath='{{.type}}')\" = kubernetes.io/tls"
-              )
-              machine.succeed(
-                  """ : > /srv/secrets/runtime-secrets.yaml
-              : > /srv/secrets/runtime-secrets.names
-              yaml_checksum=$(sha256sum /srv/secrets/runtime-secrets.yaml | cut -d ' ' -f 1)
-              names_checksum=$(sha256sum /srv/secrets/runtime-secrets.names | cut -d ' ' -f 1)
-              generation=$(printf '%s\n%s\n' "$yaml_checksum" "$names_checksum" | sha256sum | cut -d ' ' -f 1)
-              printf 'generation=%s yaml-sha256=%s names-sha256=%s\n' "$generation" "$yaml_checksum" "$names_checksum" > /srv/secrets/runtime-secrets.commit
-              """
-              )
-              machine.succeed("systemctl restart kubernetes-runtime-secrets.service")
-              machine.succeed(
-                  f"test -z \"$({kubectl} get secret sole-tls --namespace media --ignore-not-found -o name)\""
-              )
+              assert_ack(initial)
+              assert machine.succeed(f"cat {state}/owned") == owned
+              assert get_secret("tls") == shared and get_secret("sole-tls") == sole
+              # Cancel the production on-failure retry while repairing delivery.
+              machine.succeed(f"systemctl stop {unit}")
+
+              # After repaired delivery, the same real unit succeeds again and
+              # acknowledges the exact generation. Same-UID shared and sole-owner
+              # TLS retirement API behavior is covered by the native
+              # runtime-secret-matching-uid-* scenarios in verify-kubernetes-api.
+              empty = stage([])
+              machine.succeed(f"systemctl restart {unit}")
+              assert_ack(empty)
             '';
           };
         in

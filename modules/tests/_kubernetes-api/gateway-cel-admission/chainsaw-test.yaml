@@ -1,0 +1,70 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: gateway-cel-admission
+  labels:
+    verification.homelab/layer: api-admission
+spec:
+  steps:
+    - name: admission-and-preservation
+      try:
+        - apply:
+            resource: &gateway
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: admission-probe
+              spec:
+                gatewayClassName: envoy
+                listeners:
+                  - name: https
+                    port: 443
+                    protocol: HTTPS
+                    tls:
+                      mode: Terminate
+                      certificateRefs:
+                        - group: ""
+                          kind: Secret
+                          name: disposable-tls
+            outputs:
+              - name: originalUid
+                value: (metadata.uid)
+              - name: originalGeneration
+                value: (metadata.generation)
+              - name: originalSpec
+                value: (spec)
+        - assert:
+            resource:
+              <<: *gateway
+              metadata:
+                name: admission-probe
+                uid: ($originalUid)
+                generation: ($originalGeneration)
+        - apply:
+            resource:
+              <<: *gateway
+              spec:
+                gatewayClassName: envoy
+                listeners:
+                  - name: https
+                    port: 443
+                    protocol: HTTP
+                    tls:
+                      mode: Terminate
+                      certificateRefs:
+                        - group: ""
+                          kind: Secret
+                          name: disposable-tls
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error || '', 'tls must not be specified')): true
+        - assert:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: Gateway
+              metadata:
+                name: admission-probe
+                uid: ($originalUid)
+                generation: ($originalGeneration)
+              (spec == $originalSpec): true
