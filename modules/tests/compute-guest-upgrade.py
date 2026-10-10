@@ -172,7 +172,11 @@ def run_scenario(args) -> None:
         target.write_bytes(lib.fixture_secret_value(entry))
         target.chmod(0o400)
 
-    # A media tree with the capability GID, as media-namespace leaves it.
+    # A media tree with the capability GID, as media-namespace leaves it. As
+    # on the host, /srv/media/data is its own mount below the attached
+    # /srv/media (MergerFS there, tmpfs here).
+    Path("/srv/media/data").mkdir(parents=True)
+    lib.run("mount", "-t", "tmpfs", "-o", "mode=2750,size=16m", "tmpfs", "/srv/media/data")
     media_dir = Path(MEDIA_FILE).parent
     media_dir.mkdir(parents=True)
     for path in (Path("/srv/media/data"), Path("/srv/media/data/library"), media_dir):
@@ -304,10 +308,22 @@ def run_scenario(args) -> None:
     check(replace.returncode != 0 and "incompatible effective ID map; refusing mutation" in replace.stderr,
           "replacement is refused under the same guard before the restart")
 
+    def incus_mounts():
+        return [line for line in Path("/proc/self/mountinfo").read_text().splitlines()
+                if "/var/lib/incus" in line or "/srv/media" in line]
+
+    check(lib.completed("systemctl", "is-active", "--quiet", "incus-mount-isolation.service").returncode == 0,
+          "activation starts the Incus mount isolation and it succeeds")
+    observe("preseeded.incus_mounts", incus_mounts())
+    observe("preseeded.incus_mount_isolation", lib.completed("journalctl", "-u", "incus-mount-isolation", "--no-pager", "-o", "cat").stdout.splitlines())
     with lib.phase("guest restart under the current map"):
         with Availability(lib, project, name) as availability:
             started = time.monotonic()
-            lib.run("sh", "-c", f"exec 9>{lock}; flock -n 9; incus --force-local --project {project} restart {name} --timeout=120", timeout=900)
+            result = lib.completed("sh", "-c", f"exec 9>{lock}; flock -n 9; incus --force-local --project {project} restart {name} --timeout=120", timeout=900)
+            if result.returncode:
+                observe("restart.failure", (result.stdout + result.stderr).strip()[-600:])
+                observe("restart.incus_mounts", incus_mounts())
+            check(result.returncode == 0, "the guest restarts under the current map")
             restarted = time.monotonic()
             lib.wait_for("restarted K3s node", runtime.node_ready, timeout=600)
             lib.wait_for("sentinel ConfigMap", lambda: runtime.kubectl("get", "configmap", "upgrade-sentinel", "-o", "jsonpath={.data.value}", namespace="default") == "keep", timeout=300)
@@ -355,6 +371,22 @@ def run_scenario(args) -> None:
         check(stage.returncode == 0, "compute-stage-secrets succeeds after the restart")
         check("jellyfin\tjellyfin-admin" in runtime.guest("cat", "/srv/secrets/runtime-secrets.names"),
               "the current credential inventory is staged in the guest")
+
+    def persistent_copies():
+        persist = lib.run("systemctl", "show", "--property", "What", "--value", "var-lib-incus.mount")
+        return [line for line in lib.run("findmnt", "--raw", "--noheadings", "--output", "TARGET").splitlines()
+                if line.startswith(persist + "/")]
+
+    with lib.phase("guest restarts again with the media device attached"):
+        observe("restart_again.persistent_copies_before", persistent_copies())
+        check(persistent_copies() == [], "no Incus mount is mirrored under the persistent copy of /var/lib/incus")
+        result = lib.completed("sh", "-c", f"exec 9>{lock}; flock -w 60 9; incus --force-local --project {project} restart {name} --timeout=120", timeout=900)
+        observe("restart_again.result", {"returncode": result.returncode, "output": (result.stdout + result.stderr).strip()[-600:]})
+        check(result.returncode == 0, "a second restart starts the guest again")
+        lib.wait_for("K3s node after the second restart", runtime.node_ready, timeout=600)
+        check(guest_exec(lib, project, name, "cat", MEDIA_FILE, user=751, group=505).stdout == "media-capability\n",
+              "the media file is readable after the second restart")
+        check(persistent_copies() == [], "the second start leaves no copy under the persistent store")
 
     with lib.phase("helper images and Argo's jellyfin namespace"):
         # docs/operations/jellyfin.md, "Deliver helper images".

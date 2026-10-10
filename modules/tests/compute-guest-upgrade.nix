@@ -81,6 +81,12 @@
         # Replace the old map's override with a narrower one so the upgraded
         # declaration wins over the base declaration it inherits.
         upgraded = lib.mkOverride 40;
+        # Production persists /var/lib/incus as a bind mount of its /persist
+        # copy; the fixture reproduces that peer relationship.
+        incusPersist = lib.findFirst (
+          mount: mount.where == "/var/lib/incus"
+        ) (throw "hvn-hyp1 does not bind /var/lib/incus from persistent storage") hostConfig.systemd.mounts;
+        isolation = hostConfig.systemd.services.incus-mount-isolation;
 
         test = pkgs.testers.runNixOSTest {
           name = "compute-guest-upgrade";
@@ -146,6 +152,15 @@
                 };
               };
 
+              systemd.mounts = [
+                {
+                  inherit (incusPersist) what where type options;
+                  wantedBy = [ "local-fs.target" ];
+                  before = [ "local-fs.target" ];
+                  unitConfig.DefaultDependencies = false;
+                }
+              ];
+
               # The earlier declaration, verbatim from the aspect.
               environment.etc."homelab/compute.json" = before.environment.etc."homelab/compute.json";
               users.users.root.subGidRanges = before.users.users.root.subGidRanges;
@@ -176,6 +191,16 @@
                   path = upgraded stageUnit.path;
                   script = upgraded stageUnit.script;
                 };
+                systemd.services.incus-mount-isolation = {
+                  inherit (isolation)
+                    description
+                    wantedBy
+                    before
+                    after
+                    unitConfig
+                    serviceConfig
+                    ;
+                };
               };
 
               environment.systemPackages = [
@@ -203,6 +228,7 @@
               networking.nftables.enable = true;
 
               systemd.tmpfiles.rules = [
+                "d ${incusPersist.what} 0755 root root -"
                 "d /var/lib/incus-storage-pools 0755 root root -"
                 "d /var/lib/incus-storage-pools/incus-compute 0755 root root -"
               ];
