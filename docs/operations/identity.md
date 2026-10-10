@@ -3,6 +3,24 @@
 Kanidm runs in the `identity` namespace. The Gateway protects administrator
 routes with OIDC from Kanidm. Argo CD also signs users in through Kanidm.
 
+## Administrator applications in Kanidm
+
+Each administrator route has its own Kanidm OAuth2 client, named after the
+route. Kanidm lists the clients a person may use as applications on its
+home page, so members of `homelab-admin` see one entry per administrator
+application, under the route's `displayName`. Each entry opens its
+application. People outside `homelab-admin` see none of them.
+
+The Gateway's sign-in for a route uses that route's client and the Secret
+`gateway/oidc-<route>`. Argo CD's own sign-in shares the `argocd` client,
+so Argo CD appears once; its entry starts Argo CD's Kanidm sign-in. The
+`kanidm-provision` Job also publishes that client's secret to
+`argocd/argocd-kanidm-oidc`.
+
+The declaration owns every Kanidm OAuth2 client. On each run the Job
+deletes clients it does not declare, including any created by hand.
+Declare a new client in Nix instead.
+
 ## Bootstrap
 
 Administrator routes remain disabled during `initial` and `provisioning`.
@@ -32,17 +50,20 @@ sign-in, so it cannot help when Kanidm is down. Recover with kubectl on
 the host instead.
 
 1. After Argo syncs, confirm that the `kanidm-provision` Job completed
-   and that the client Secret holds its key. The command prints only key
-   names:
+   and that both client Secrets hold their key. The commands print only
+   key names:
 
    ```sh
    kubectl -n identity get job kanidm-provision
+   kubectl -n gateway get secret oidc-argocd -o jsonpath='{.data}' | jq 'keys'
    kubectl -n argocd get secret argocd-kanidm-oidc -o jsonpath='{.data}' | jq 'keys'
    ```
 
-   Expect `["clientSecret"]`. If it is empty, check the Job's logs.
-2. Open the canonical Argo CD URL, pass the Gateway sign-in, and choose
-   **Log in via Kanidm**. Approve the one-time Kanidm consent.
+   Expect `["client-secret"]` and `["clientSecret"]`. If either is empty,
+   check the Job's logs.
+2. Open the Argo CD entry on Kanidm's home page, or open the canonical
+   Argo CD URL and choose **Log in via Kanidm**. Approve the one-time
+   Kanidm consent.
 3. Open **User Info** and confirm that the groups include
    `homelab-admin`. Confirm admin rights by refreshing or syncing an
    Application.

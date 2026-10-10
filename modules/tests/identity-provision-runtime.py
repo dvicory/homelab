@@ -92,12 +92,17 @@ def short(spn):
     return spn.split("@")[0]
 
 
+def registered():
+    return sorted(entry["attrs"]["name"][0] for entry in get("/v1/oauth2"))
+
+
 def state(clients):
     group = get("/v1/group/homelab-admin")["attrs"]
     result = {
         "members": sorted(short(member) for member in group.get("member", [])),
         "credential_type_minimum": group.get("credential_type_minimum", []),
         "clients": {},
+        "registered": registered(),
     }
     for name in clients:
         attrs = get(f"/v1/oauth2/{name}")["attrs"]
@@ -130,7 +135,15 @@ def secret_matches(client, namespace, name, key):
     return hmac.compare_digest(published, basic_secret(client).encode())
 
 
-def oidc_groups(person, client, redirect, scopes):
+def create_client(name, landing):
+    # A client the declaration does not name, as the previous release left.
+    call("POST", "/v1/oauth2/_basic", {"attrs": {
+        "name": [name], "displayname": [name], "oauth2_rs_origin_landing": [landing],
+    }}, ADMIN)
+    return True
+
+
+def oidc_groups(person, client, requests):
     # Enrol password and TOTP so the person meets homelab-admin's MFA minimum.
     intent = get(f"/v1/person/{person}/_credential/_update_intent")["token"]
     session, _ = json.loads(call("POST", "/v1/credential/_exchange_intent", intent, ADMIN)[1])
@@ -151,7 +164,10 @@ def oidc_groups(person, client, redirect, scopes):
     # Use a fresh TOTP step for sign-in rather than the enrolment code.
     time.sleep(otp["step"] - time.time() % otp["step"] + 1)
     user = login(person, password, otp)
+    return [authorise(user, client, **request) for request in requests]
 
+
+def authorise(user, client, redirect, scopes):
     verifier = secrets.token_urlsafe(48)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=")
     request = {
@@ -195,6 +211,10 @@ if command == "state":
     print(json.dumps(state(**arguments)))
 elif command == "secret-matches":
     print(json.dumps(secret_matches(**arguments)))
+elif command == "registered":
+    print(json.dumps(registered()))
+elif command == "create-client":
+    print(json.dumps(create_client(**arguments)))
 elif command == "oidc-groups":
     print(json.dumps(oidc_groups(**arguments)))
 else:

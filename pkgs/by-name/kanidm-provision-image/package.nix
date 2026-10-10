@@ -25,7 +25,7 @@ let
       test -s /desired/state.json
       test -s /desired/members.json
       test -s /desired/clients.json
-      trap 'rm -f auth.json headers response request.json provision.log client.json client-spec.json client-secret.json groups secret-publish.log' EXIT
+      trap 'rm -f auth.json headers response request.json provision.log client.json client-spec.json client-secret.json groups undeclared secret-publish.log' EXIT
 
       # Authenticate using runtime body files. The upstream provisioner calls
       # this password a TOKEN, but it is the idm_admin recovery password.
@@ -91,7 +91,7 @@ let
       api PUT "/v1/group/$KANIDM_ADMIN_GROUP/_attr/credential_type_minimum" --data-binary @request.json
 
       # clients.json lists each OAuth2 client, the scopes the administrator
-      # group receives, and the declared Secret that receives its credential.
+      # group receives, and the declared Secrets that receive its credential.
       client_count=$(jq -er 'length' /desired/clients.json)
       for ((index = 0; index < client_count; index++)); do
         jq -e --argjson index "$index" '.[$index]' /desired/clients.json > client-spec.json
@@ -118,17 +118,32 @@ let
 
         # Unpatched Kanidm generates this secret; the Job is its only Kubernetes
         # publisher. Never put a configured basicSecretFile into the state.
-        # The Secret is declared without data by GitOps. This apply sets only
-        # `data`; RBAC allows patching that one Secret and creating none.
+        # Each Secret is declared without data by GitOps. This apply sets only
+        # `data`; RBAC allows patching those Secrets and creating none.
         api GET "/v1/oauth2/$client/_basic_secret"
-        jq -e --slurpfile spec client-spec.json '($spec[0].secret) as $secret
-          | {apiVersion:"v1",kind:"Secret",metadata:{name:$secret.name,namespace:$secret.namespace},
-             data:{($secret.key):(. | select(type == "string" and length > 0) | @base64)}}' response > client-secret.json
+        jq -e --slurpfile spec client-spec.json '(select(type == "string" and length > 0) | @base64) as $value
+          | $spec[0].secrets | select(type == "array" and length > 0)
+          | {apiVersion:"v1",kind:"List",items:map(
+              {apiVersion:"v1",kind:"Secret",metadata:{name:.name,namespace:.namespace},data:{(.key):$value}})}' \
+          response > client-secret.json
         if ! kubectl apply --server-side --field-manager=identity-provisioner -f client-secret.json > secret-publish.log 2>&1; then
           echo "Kanidm client Secret publication for $client failed (credential-bearing diagnostics withheld)" >&2
           exit 1
         fi
       done
+
+      # The declaration owns every OAuth2 client. Delete the ones it no longer
+      # names, such as a retired route's client, before granting membership.
+      api GET /v1/oauth2
+      jq -r --slurpfile declared /desired/clients.json \
+        '.[].attrs.name[0] | select(. as $name | [$declared[0][].name] | any(. == $name) | not)' \
+        response > undeclared
+      while IFS= read -r client; do
+        # Kanidm's own name syntax; it allows `.`, which hand-made clients may use.
+        [[ "$client" =~ ^[a-z][a-z0-9_.-]{0,63}$ ]]
+        api DELETE "/v1/oauth2/$client"
+        echo "Removed undeclared Kanidm client $client"
+      done < undeclared
       api PUT "/v1/group/$KANIDM_ADMIN_GROUP/_attr/member" --data-binary @/desired/members.json
       echo 'Kanidm household administrator policy applied'
     '';

@@ -19,8 +19,8 @@
 
 ## 4. Live acceptance (operator)
 
-- [ ] 4.1 After sync, confirm the `kanidm-provision` Job completed and both client Secrets hold their key; verify with `kubectl -n argocd get secret argocd-kanidm-oidc -o jsonpath='{.data}' | jq 'keys'`, which prints only the key name `clientSecret`, and an `argocd.argoproj.io/tracking-id` annotation on both Secrets
-- [ ] 4.2 Sign in to Argo CD through Kanidm as an administrator-group member and confirm the admin role; verify that **User Info** lists `homelab-admin` and that an Application sync succeeds
-- [ ] 4.3 Confirm that a Kanidm account outside `homelab-admin` cannot sign in to Argo CD; verify that Kanidm shows access denied, or that Argo CD shows no Applications
-- [ ] 4.4 Keep an Argo CD page open for more than 15 minutes; verify that the Gateway renews the session without a 302 on API or stream requests
-- [ ] 4.5 Confirm that local `admin` sign-in is rejected; verify that `argocd-cm` has `admin.enabled: "false"` and that signing in as `admin` with the local password fails
+- [x] 4.1 After sync, confirm the `kanidm-provision` Job completed and both client Secrets hold their key; verify with `kubectl -n argocd get secret argocd-kanidm-oidc -o jsonpath='{.data}' | jq 'keys'`, which prints only the key name `clientSecret`, and an `argocd.argoproj.io/tracking-id` annotation on both Secrets
+- [x] 4.2 Sign in to Argo CD through Kanidm as an administrator-group member and confirm the admin role; verify that **User Info** lists `homelab-admin` and that an Application sync succeeds
+- [x] 4.3 Confirm that a Kanidm account outside `homelab-admin` cannot sign in to Argo CD; verify that Kanidm shows access denied, or that Argo CD shows no Applications
+- [x] 4.4 Keep an Argo CD page open for more than 15 minutes; verify that the Gateway renews the session without a 302 on API or stream requests
+- [x] 4.5 Confirm that local `admin` sign-in is rejected; verify that `argocd-cm` has `admin.enabled: "false"` and that signing in as `admin` with the local password fails

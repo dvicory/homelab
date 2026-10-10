@@ -28,6 +28,9 @@ let
   argocdCallbacks = map (
     hostname: "https://${hostname}/auth/callback"
   ) cluster.routes.argocd.hostnames;
+  gatewayCallbacks = map (
+    hostname: "https://${hostname}/oauth2/callback"
+  ) cluster.routes.argocd.hostnames;
   manifests = ../../generated/manifests/prod-home;
   k3sPackage = self.nixosConfigurations.${instance}.config.services.k3s.package;
 in
@@ -95,12 +98,15 @@ in
               kubectl = "${k3sPackage}/bin/k3s kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml"
               identity = "${manifests}/identity"
               callbacks = sorted(json.loads(${builtins.toJSON (builtins.toJSON argocdCallbacks)}))
-              clients = {
-                  "household-admin": dict(namespace="gateway", name="oidc-client", key="client-secret",
-                                          scopes=["email", "homelab_admin", "openid", "profile"]),
-                  "argocd": dict(namespace="argocd", name="argocd-kanidm-oidc", key="clientSecret",
-                                 scopes=["email", "groups_name", "openid", "profile"]),
-              }
+              gateway_callbacks = sorted(json.loads(${builtins.toJSON (builtins.toJSON gatewayCallbacks)}))
+              # One client per administrator route. Argo CD's Gateway sign-in and
+              # its own sign-in share client argocd, which publishes to both Secrets.
+              scopes = {"argocd": ["email", "groups_name", "homelab_admin", "openid", "profile"]}
+              clients = sorted(scopes)
+              secrets = [
+                  ("argocd", dict(namespace="gateway", name="oidc-argocd", key="client-secret")),
+                  ("argocd", dict(namespace="argocd", name="argocd-kanidm-oidc", key="clientSecret")),
+              ]
               provisioner = "system:serviceaccount:identity:kanidm-provision"
 
               def evidence(label, value):
@@ -126,11 +132,11 @@ in
               def digests():
                   # Hashes of the published values, for equality checks only.
                   return {
-                      client: cluster.succeed(
+                      spec["name"]: cluster.succeed(
                           f"{kubectl} get secret --namespace {spec['namespace']} {spec['name']} --output json "
                           f"| jq -er --arg key {spec['key']} '.data[$key]' | sha256sum"
                       ).split()[0]
-                      for client, spec in clients.items()
+                      for _, spec in secrets
                   }
 
               def managers(namespace, name):
@@ -143,7 +149,7 @@ in
                   }
 
               def assert_published():
-                  for client, spec in clients.items():
+                  for client, spec in secrets:
                       published = secret(spec["namespace"], spec["name"])
                       keys = sorted(published.get("data", {}))
                       assert keys == [spec["key"]], (client, keys)
@@ -154,16 +160,17 @@ in
                   assert labels.get("app.kubernetes.io/part-of") == "argocd", labels
 
               def assert_kanidm(members):
-                  state = probe("state", clients=list(clients))
+                  state = probe("state", clients=clients)
                   evidence("kanidm-state", state)
                   assert state["members"] == members, state["members"]
                   assert state["credential_type_minimum"] == ["mfa"], state["credential_type_minimum"]
-                  for client, spec in clients.items():
+                  assert state["registered"] == clients, state["registered"]
+                  for client in clients:
                       found = state["clients"][client]
-                      assert found["scope_maps"] == {"homelab-admin": spec["scopes"]}, (client, found)
+                      assert found["scope_maps"] == {"homelab-admin": scopes[client]}, (client, found)
                       assert found["sup_scope_maps"] == [], (client, found)
                       assert found["strict_redirect"] == ["true"], (client, found)
-                  assert state["clients"]["argocd"]["redirects"] == callbacks, state["clients"]["argocd"]
+                  assert state["clients"]["argocd"]["redirects"] == sorted(gateway_callbacks + callbacks), state["clients"]["argocd"]
 
               def run_job(expect):
                   cluster.succeed(f"{kubectl} delete job --namespace identity kanidm-provision --ignore-not-found --wait")
@@ -254,19 +261,24 @@ in
               assert members, "the committed state declares no administrators"
 
               with subtest("the provisioner can patch only its declared Secrets and create none"):
-                  for spec in clients.values():
+                  for _, spec in secrets:
                       cluster.fail(f"{kubectl} auth can-i create secrets --namespace {spec['namespace']} --as={provisioner}")
                       cluster.succeed(
                           f"{kubectl} auth can-i patch secret/{spec['name']} --namespace {spec['namespace']} --as={provisioner}"
                       )
 
-              with subtest("1: the Job publishes each client secret into its declared Secret"):
+              with subtest("1: the Job publishes each client secret into its declared Secrets and removes undeclared clients"):
+                  # The previous release's shared client, and a hand-made one using
+                  # the `.` that Kanidm names allow.
+                  for leftover in ("household-admin", "hand.made"):
+                      assert probe("create-client", name=leftover, landing=gateway_callbacks[0]) is True
+                  assert probe("registered") == ["hand.made", "household-admin"]
                   run_job("Complete")
                   assert_published()
                   assert_kanidm(members)
                   first = digests()
                   # A later Argo CD sync of the declared Secrets keeps the data.
-                  argo_apply(f"{identity}/Secret-oidc-client.yaml")
+                  argo_apply(f"{identity}/Secret-oidc-argocd.yaml")
                   argo_apply(f"{identity}/Secret-argocd-kanidm-oidc.yaml")
                   assert_published()
                   assert digests() == first
@@ -278,30 +290,30 @@ in
                   assert digests() == first
 
               with subtest("4: a Secret the old Job created and Argo CD adopted keeps working"):
-                  cluster.succeed(f"{kubectl} delete secret --namespace gateway oidc-client")
+                  cluster.succeed(f"{kubectl} delete secret --namespace gateway oidc-argocd")
                   cluster.succeed(
-                      "printf '%s' '{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"name\":\"oidc-client\","
+                      "printf '%s' '{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"name\":\"oidc-argocd\","
                       "\"namespace\":\"gateway\"},\"type\":\"Opaque\",\"data\":{\"client-secret\":\"c3RhbGU=\"}}' "
                       f"| {kubectl} apply --server-side --field-manager=identity-provisioner -f -"
                   )
-                  argo_apply(f"{identity}/Secret-oidc-client.yaml")
-                  before = managers("gateway", "oidc-client")
+                  argo_apply(f"{identity}/Secret-oidc-argocd.yaml")
+                  before = managers("gateway", "oidc-argocd")
                   evidence("migration-managers-before", sorted(before))
                   assert '"f:client-secret"' in before["identity-provisioner"], before
                   assert '"f:type"' in before["argocd-controller"], before
                   run_job("Complete")
                   assert_published()
                   assert digests() == first
-                  after = managers("gateway", "oidc-client")
+                  after = managers("gateway", "oidc-argocd")
                   assert '"f:client-secret"' in after["identity-provisioner"], after
-                  argo_apply(f"{identity}/Secret-oidc-client.yaml")
+                  argo_apply(f"{identity}/Secret-oidc-argocd.yaml")
                   assert_published()
 
               with subtest("2: without its declared Secret the Job fails, creates nothing and grants nothing"):
                   cluster.succeed(f"{kubectl} delete secret --namespace argocd argocd-kanidm-oidc")
                   logs = run_job("Failed")
                   cluster.fail(f"{kubectl} get secret --namespace argocd argocd-kanidm-oidc")
-                  state = probe("state", clients=list(clients))
+                  state = probe("state", clients=clients)
                   evidence("no-create-members", state["members"])
                   assert state["members"] == [], state["members"]
                   assert "Kanidm client Secret publication for argocd failed" in logs, logs
@@ -313,13 +325,18 @@ in
                   assert_published()
                   assert_kanidm(members)
 
-              with subtest("5: an administrator's Argo CD ID token names the group homelab-admin"):
-                  claims = probe("oidc-groups", person=members[0], client="argocd", redirect=callbacks[0],
-                                 scopes=["openid", "profile", "email", "groups_name"])
-                  evidence("argocd-id-token", claims)
-                  assert claims["iss"] == "https://${domain}/oauth2/openid/argocd", claims
-                  assert "homelab-admin" in claims["groups"], claims
-                  assert all("@" not in group for group in claims["groups"]), claims
+              with subtest("5: the Gateway and Argo CD both sign an administrator in through client argocd"):
+                  gateway, argocd = probe("oidc-groups", person=members[0], client="argocd", requests=[
+                      dict(redirect=gateway_callbacks[0], scopes=["openid", "profile", "email", "homelab_admin"]),
+                      dict(redirect=callbacks[0], scopes=["openid", "profile", "email", "groups_name"]),
+                  ])
+                  evidence("gateway-id-token", gateway)
+                  evidence("argocd-id-token", argocd)
+                  for claims in (gateway, argocd):
+                      assert claims["iss"] == "https://${domain}/oauth2/openid/argocd", claims
+                      assert claims["aud"] in ("argocd", ["argocd"]), claims
+                  assert "homelab-admin" in argocd["groups"], argocd
+                  assert all("@" not in group for group in argocd["groups"]), argocd
             '';
           }).overrideTestDerivation
             (_: {

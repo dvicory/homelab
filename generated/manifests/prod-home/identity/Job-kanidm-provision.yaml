@@ -23,7 +23,7 @@ spec:
               value: homelab-admin
             - name: HOME
               value: /work
-          image: homelab/kanidm-provision:nlda4c44zmqk8dzbr3an8m7fzx282lxj
+          image: homelab/kanidm-provision:8xzmvqzgbmd5hafa7m4gcrq6mjyggakg
           imagePullPolicy: Never
           name: provision
           resources:

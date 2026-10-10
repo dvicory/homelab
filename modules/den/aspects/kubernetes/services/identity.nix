@@ -64,10 +64,49 @@
       provisionObjectNames = [ "kanidm-provision" ];
       domain = builtins.head cluster.routes.idm.hostnames;
       inherit (cluster.settings.kubernetes.services.identity) adminGroup;
-      # Argo CD signs users in itself; its aspect owns the client settings.
+      adminRoutes = lib.filterAttrs (_: route: route.auth == "admin") cluster.routes;
+      routeUrls =
+        route:
+        map (hostname: "https://${hostname}${lib.removeSuffix "/" route.pathPrefix}") route.hostnames;
+      # Every requested scope is restricted by its client's admin scope map.
+      gatewayScopes = [
+        "openid"
+        "profile"
+        "email"
+        "homelab_admin"
+      ];
+      gatewaySecret = name: {
+        namespace = "gateway";
+        name = "oidc-${name}";
+        key = "client-secret";
+        labels = { };
+      };
+      # One Kanidm client per administrator route, named after the route.
+      # Kanidm lists each client a person may use as an application, so the
+      # display name and landing make it that application's entry.
+      routeClients = lib.mapAttrs (
+        name: route:
+        # The route name becomes a Kanidm client name and part of Kubernetes
+        # object names, so it must satisfy both: a DNS label starting with a letter.
+        assert lib.assertMsg (
+          builtins.match "[a-z]([a-z0-9-]{0,61}[a-z0-9])?" name != null
+        ) "Administrator route name ${name} must be a lowercase DNS label starting with a letter";
+        assert lib.assertMsg (
+          route.displayName != null
+        ) "Administrator route ${name} needs a displayName for its Kanidm application entry";
+        {
+          inherit (route) displayName;
+          landing = "${builtins.head (routeUrls route)}/";
+          redirects = map (url: "${url}/oauth2/callback") (routeUrls route);
+          scopes = gatewayScopes;
+          secrets = [ (gatewaySecret name) ];
+        }
+      ) adminRoutes;
+      # Argo CD signs users in itself; its aspect owns those settings. It
+      # shares its route's client, so Kanidm lists Argo CD once.
       argocdOidc = cluster.settings.kubernetes.services.argocd.oidc;
       argocdRoute = cluster.routes.argocd;
-      argocdUrls = map (hostname: "https://${hostname}") argocdRoute.hostnames;
+      argocdUrls = routeUrls argocdRoute;
       # Argo CD's callback path is fixed at /auth/callback, so Argo CD must
       # be served at the hostname root.
       argocdCallbacks =
@@ -75,68 +114,63 @@
           argocdRoute.pathPrefix == "/"
         ) "Argo CD must be served at the hostname root for its /auth/callback path";
         map (url: "${url}/auth/callback") argocdUrls;
-      clientName = "household-admin";
-      clientSecretName = "oidc-client";
-      # Every requested scope is restricted by this service's admin scope map.
-      adminScopes = [
-        "openid"
-        "profile"
-        "email"
-        "homelab_admin"
-      ];
-      # The provisioning Job grants each client's scopes to adminGroup only
-      # and publishes each Kanidm-generated client secret to its consumer.
-      oauth2Clients = [
-        {
-          name = clientName;
-          scopes = adminScopes;
-          secret = {
-            namespace = "gateway";
-            name = clientSecretName;
-            key = "client-secret";
-            labels = { };
+      clients =
+        assert lib.assertMsg (
+          adminRoutes ? argocd
+        ) "Argo CD's sign-in shares the Kanidm client of its administrator route";
+        routeClients
+        // {
+          argocd = routeClients.argocd // {
+            # Starts Argo CD's Kanidm sign-in, which returns to Argo CD's root.
+            landing = "${builtins.head argocdUrls}/auth/login";
+            redirects = routeClients.argocd.redirects ++ argocdCallbacks;
+            scopes = lib.unique (gatewayScopes ++ argocdOidc.scopes);
+            # Argo CD reads `$<name>:<key>` only from its own namespace and
+            # only from a Secret labeled `app.kubernetes.io/part-of: argocd`.
+            secrets = routeClients.argocd.secrets ++ [
+              {
+                inherit (argocdRoute) namespace;
+                name = argocdOidc.secretName;
+                key = argocdOidc.secretKey;
+                labels."app.kubernetes.io/part-of" = "argocd";
+              }
+            ];
           };
-        }
-        {
-          name = argocdOidc.clientName;
-          inherit (argocdOidc) scopes;
-          # Argo CD reads `$<name>:<key>` only from its own namespace and
-          # only from a Secret labeled `app.kubernetes.io/part-of: argocd`.
-          secret = {
-            inherit (argocdRoute) namespace;
-            name = argocdOidc.secretName;
-            key = argocdOidc.secretKey;
-            labels."app.kubernetes.io/part-of" = "argocd";
-          };
-        }
-      ];
+        };
+      # The provisioning Job grants each client's scopes to adminGroup only,
+      # publishes each Kanidm-generated client secret to every listed Secret,
+      # and deletes Kanidm clients that this list does not name.
+      oauth2Clients = lib.mapAttrsToList (name: client: {
+        inherit name;
+        inherit (client) scopes secrets;
+      }) clients;
       # This Application declares each client Secret without data, so the
       # Job never needs `create`, which Kubernetes cannot limit by name.
       # Argo's server-side apply owns only metadata and type; the Job's
       # server-side apply (field manager identity-provisioner) owns `data`.
       # Fields owned by another manager produce no Argo drift.
-      secretPublication = lib.concatMap (client: [
+      secretPublication = lib.concatMap (secret: [
         {
           apiVersion = "v1";
           kind = "Secret";
           metadata = {
-            inherit (client.secret) name namespace;
+            inherit (secret) name namespace;
           }
-          // lib.optionalAttrs (client.secret.labels != { }) { inherit (client.secret) labels; };
+          // lib.optionalAttrs (secret.labels != { }) { inherit (secret) labels; };
           type = "Opaque";
         }
         {
           apiVersion = "rbac.authorization.k8s.io/v1";
           kind = "Role";
           metadata = {
-            name = "kanidm-client-secret-${client.name}";
-            inherit (client.secret) namespace;
+            name = "kanidm-client-secret-${secret.name}";
+            inherit (secret) namespace;
           };
           rules = [
             {
               apiGroups = [ "" ];
               resources = [ "secrets" ];
-              resourceNames = [ client.secret.name ];
+              resourceNames = [ secret.name ];
               verbs = [
                 "get"
                 "patch"
@@ -148,13 +182,13 @@
           apiVersion = "rbac.authorization.k8s.io/v1";
           kind = "RoleBinding";
           metadata = {
-            name = "kanidm-client-secret-${client.name}";
-            inherit (client.secret) namespace;
+            name = "kanidm-client-secret-${secret.name}";
+            inherit (secret) namespace;
           };
           roleRef = {
             apiGroup = "rbac.authorization.k8s.io";
             kind = "Role";
-            name = "kanidm-client-secret-${client.name}";
+            name = "kanidm-client-secret-${secret.name}";
           };
           subjects = [
             {
@@ -164,7 +198,7 @@
             }
           ];
         }
-      ]) oauth2Clients;
+      ]) (lib.concatMap (client: client.secrets) oauth2Clients);
       adminPolicies = lib.mapAttrsToList (name: route: {
         apiVersion = "gateway.envoyproxy.io/v1alpha1";
         kind = "SecurityPolicy";
@@ -182,7 +216,7 @@
           ];
           oidc = {
             provider = {
-              issuer = "https://${domain}/oauth2/openid/${clientName}";
+              issuer = "https://${domain}/oauth2/openid/${name}";
               authorizationEndpoint = "https://${domain}/ui/oauth2";
               tokenEndpoint = "https://${domain}/oauth2/token";
               backendRefs = [
@@ -197,9 +231,9 @@
                 }
               ];
             };
-            clientID = clientName;
-            clientSecret.name = clientSecretName;
-            scopes = adminScopes;
+            clientID = name;
+            clientSecret.name = (gatewaySecret name).name;
+            scopes = gatewayScopes;
             redirectURL = "https://%REQ(:authority)%${lib.removeSuffix "/" route.pathPrefix}/oauth2/callback";
             logoutPath = "${lib.removeSuffix "/" route.pathPrefix}/logout";
             # Kanidm access tokens last 15 minutes. Renewing with the refresh
@@ -210,7 +244,7 @@
             passThroughAuthHeader = false;
           };
         };
-      }) (lib.filterAttrs (_: route: route.auth == "admin") cluster.routes);
+      }) adminRoutes;
       # The image runs on the selected compute node, not on the renderer.
       linuxSystem =
         inputs.self.nixosConfigurations.${computeResources.instance}.pkgs.stdenv.hostPlatform.system;
@@ -221,15 +255,6 @@
         builtins.elem "admins"
           (config.fleet.acl.get "env:${cluster.environment}" "resolveUser" name).allGroups
       ) registry;
-      adminRoutes = builtins.attrValues (
-        lib.filterAttrs (_: route: route.auth == "admin") cluster.routes
-      );
-      callbacks = lib.concatMap (
-        route:
-        map (
-          hostname: "https://${hostname}${lib.removeSuffix "/" route.pathPrefix}/oauth2/callback"
-        ) route.hostnames
-      ) adminRoutes;
       # First-ever bootstrap is intentionally not a Job: the supported
       # recover-account flow runs in a private interactive session, prints
       # generated credentials there, and requires immediate escrow/encryption.
@@ -248,31 +273,17 @@
           mailAddresses = lib.optional (user.identity.email != null) user.identity.email;
         }) administrators;
         # Scope maps stay empty here; the Job replaces them after this state.
-        systems.oauth2 = {
-          ${clientName} = {
-            displayName = "Household administration";
-            public = false;
-            originUrl = callbacks;
-            originLanding = "https://${builtins.head (builtins.head adminRoutes).hostnames}/";
-            allowInsecureClientDisablePkce = false;
-            preferShortUsername = true;
-            scopeMaps = { };
-            supplementaryScopeMaps = { };
-            removeOrphanedClaimMaps = true;
-          };
-          # Argo CD signs users in itself; the Gateway gate stays in front.
-          ${argocdOidc.clientName} = {
-            displayName = "Argo CD";
-            public = false;
-            originUrl = argocdCallbacks;
-            originLanding = "${builtins.head argocdUrls}/";
-            allowInsecureClientDisablePkce = false;
-            preferShortUsername = true;
-            scopeMaps = { };
-            supplementaryScopeMaps = { };
-            removeOrphanedClaimMaps = true;
-          };
-        };
+        systems.oauth2 = lib.mapAttrs (_: client: {
+          inherit (client) displayName;
+          public = false;
+          originUrl = client.redirects;
+          originLanding = client.landing;
+          allowInsecureClientDisablePkce = false;
+          preferShortUsername = true;
+          scopeMaps = { };
+          supplementaryScopeMaps = { };
+          removeOrphanedClaimMaps = true;
+        }) clients;
       };
       provisionLabels = {
         "app.kubernetes.io/name" = "kanidm-provision";

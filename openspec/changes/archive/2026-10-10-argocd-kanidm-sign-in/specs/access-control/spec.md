@@ -2,7 +2,7 @@
 
 ### Requirement: GitOps administration requires central sign-in by the administrator group
 
-Once identity reaches its normal phase, the GitOps control plane SHALL grant administration only to an identity that signs in to it through the central identity service and is a member of the central administrator group. That group's membership SHALL derive from the fleet administrative role. Group membership SHALL map to full GitOps administration. Authentication at an entrance in front of the control plane SHALL NOT by itself grant GitOps administration.
+Once central sign-in to the GitOps control plane is declared, the control plane SHALL grant administration only to an identity that signs in to it through the central identity service and belongs to the central administrator group. That group's membership SHALL derive from the fleet administrative role. Authentication at an entrance in front of the control plane SHALL NOT by itself grant GitOps administration.
 
 #### Scenario: An administrator signs in
 
@@ -28,21 +28,21 @@ The GitOps control plane SHALL deny every action, including read-only views, to 
 - **WHEN** the fleet administrative role no longer includes a user and provisioning reconciles the central administrator group
 - **THEN** a new sign-in by that user yields no GitOps access
 
-### Requirement: The local GitOps administrator exists only before central sign-in
+### Requirement: The local GitOps administrator is disabled once central sign-in is declared
 
-The GitOps control plane's built-in local administrator SHALL be enabled only while identity is not yet in its normal phase, when central sign-in to the control plane is not declared. Once identity is normal, the declaration SHALL disable the local administrator. The local administrator SHALL NOT be treated as a recovery path, because it sits behind the same central identity service. Recovery when central sign-in fails SHALL remain available through the cluster API on the host, which does not depend on the central identity service.
+The GitOps control plane's built-in local administrator SHALL be disabled whenever central sign-in to the control plane is declared, and SHALL NOT serve as a recovery path. Administering the control plane SHALL remain possible through a path that does not depend on the central identity service.
 
 #### Scenario: Central sign-in is not yet declared
 
-- **WHEN** identity is initial or provisioning
-- **THEN** the local administrator is enabled
+- **WHEN** central sign-in to the control plane is not declared
+- **THEN** the local administrator may be enabled
 
-#### Scenario: Identity is normal
+#### Scenario: Central sign-in is declared
 
-- **WHEN** identity is normal
+- **WHEN** central sign-in to the control plane is declared
 - **THEN** the control plane rejects local administrator sign-in
 
-#### Scenario: Central sign-in fails
+#### Scenario: The central identity service fails
 
 - **WHEN** central sign-in to the control plane fails or the central identity service is down
-- **THEN** the operator can still administer the control plane through the cluster API on the host
+- **THEN** the operator can still administer the control plane through a path that does not depend on the central identity service

@@ -29,7 +29,7 @@ None.
 
 ### Modified Capabilities
 
-- `access-control`: adds requirements that GitOps administration comes only from central sign-in by the administrator group, that other identities get no GitOps access, and that the local GitOps administrator exists only before central sign-in.
+- `access-control`: adds requirements that GitOps administration comes only from central sign-in by the administrator group, that other identities get no GitOps access, and that the local GitOps administrator is disabled once central sign-in is declared. It extends the capability's purpose to cover access to administrator applications.
 
 ## Impact
 
