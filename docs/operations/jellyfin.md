@@ -30,6 +30,88 @@ The administrator name may use ASCII letters, digits, spaces (not leading or
 trailing), and `_ . ' @ + -`. Evaluation rejects other names. If the password
 secret is missing, provisioning fails and Jellyfin does not start.
 
+## Add media to an existing guest
+
+Do this once, before the merge that deploys Jellyfin, on a guest created
+without the `media` storage capability. A guest created with it skips this
+section.
+
+The capability changes the guest's group ID map so that the host's media
+group keeps its ID inside the guest. Incus applies the project's ID-map
+restriction before the profile's map and checks each against the other, so
+the old and new values block each other. Host activation therefore leaves
+Incus unchanged until you bridge them, and the new map applies only when the
+guest restarts. The restart keeps the guest's root filesystem, K3s data and
+retained state.
+
+Run these steps in Bash on the Incus host. `jq` runs as your user; `sudo`
+runs only the Incus and systemd commands.
+
+1. Check the guest before activation:
+
+   ```sh
+   spec=/etc/homelab/compute.json
+   project=$(jq -r .project "$spec") instance=$(jq -r .instance "$spec")
+   sudo compute-guest inspect >/dev/null && echo inspect-ok
+   sudo incus --project "$project" config get "$instance" volatile.last_state.idmap
+   ```
+
+   Expect `inspect-ok` and `[]`. `[]` means the root filesystem uses
+   idmapped mounts, so the restart does not rewrite file ownership. If it
+   prints a map instead, stop: the restart would rewrite ownership across the
+   whole root filesystem.
+2. Activate the host revision with `switch-to-configuration test`. Expect
+   exit status 4 with only `incus-preseed.service` failed, and
+   `journalctl -u incus-preseed -n 5 -o cat` shows
+   `Conflict detected … raw.idmap … is forbidden`. The guest keeps running.
+3. Under the guest's lifecycle lock, permit both maps for one step and move
+   the profile to the declared map:
+
+   ```sh
+   spec=/etc/homelab/compute.json
+   project=$(jq -r .project "$spec") instance=$(jq -r .instance "$spec")
+   profile=$(jq -r .profile "$spec") map=$(jq -r '.config."raw.idmap"' "$spec")
+   gids=$(jq -r '[.capabilityGids[] | tostring]
+     + ["\(.idmapBase)-\(.idmapBase + .idmapSize - 1)"] | join(",")' "$spec")
+   sudo flock -n "/run/lock/compute-$project-$instance.lock" sh -ec \
+     'incus project set "$1" restricted.idmap.gid="$2"
+      incus --project "$1" profile set "$3" raw.idmap="$4"' \
+     sh "$project" "$gids" "$profile" "$map"
+   ```
+
+4. Reapply the declaration. The preseed narrows the project's restriction
+   back to the declared value:
+
+   ```sh
+   sudo systemctl restart incus-preseed.service
+   systemctl --failed
+   ```
+
+   Expect no failed units. `compute-guest inspect` still refuses the guest
+   with `incompatible effective ID map` until the restart.
+5. Restart the guest. In testing the Kubernetes API was unavailable for
+   under 30 seconds; workloads take longer to become Ready:
+
+   ```sh
+   sudo flock -n "/run/lock/compute-$project-$instance.lock" \
+     incus --project "$project" restart "$instance" --timeout=120
+   ```
+
+6. Confirm the result, then stage runtime secrets again:
+
+   ```sh
+   sudo compute-guest inspect >/dev/null && echo inspect-ok
+   sudo incus --project "$project" exec "$instance" -- cat /proc/self/gid_map
+   sudo incus --project "$project" exec "$instance" --user 751 --group 505 -- \
+     ls /srv/media/data/library
+   sudo incus --project "$project" exec "$instance" -- k3s kubectl get nodes
+   sudo systemctl restart compute-stage-secrets.service
+   ```
+
+   Expect `inspect-ok`, a `gid_map` row mapping 505 to 505, the library
+   listing, and the node `Ready`.
+7. Deliver the helper images below, then merge.
+
 ## Deliver helper images
 
 Kubernetes never pulls the provisioner and Jellarr images. Import each new
