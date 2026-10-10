@@ -46,10 +46,14 @@ in
     };
     settings.kubernetes.services.identity.phase = "normal";
     routes = {
-      argocd = route "argocd" "argocd" "argocd-server" 80 "admin" "public" {
-        "app.kubernetes.io/instance" = "argocd";
-        "app.kubernetes.io/name" = "argocd-server";
-      };
+      argocd =
+        (route "argocd" "argocd" "argocd-server" 80 "admin" "public" {
+          "app.kubernetes.io/instance" = "argocd";
+          "app.kubernetes.io/name" = "argocd-server";
+        })
+        // {
+          displayName = "Argo CD";
+        };
       idm =
         (route "idm" "identity" "kanidm" 443 "native" "public" {
           "app.kubernetes.io/name" = "kanidm";

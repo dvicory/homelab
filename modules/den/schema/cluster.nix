@@ -11,6 +11,11 @@ let
     options = {
       namespace = mkOption { type = types.str; };
       service = mkOption { type = types.str; };
+      displayName = mkOption {
+        type = types.nullOr types.nonEmptyStr;
+        default = null;
+        description = "Name people see for the routed application, such as its entry in the identity service's application list.";
+      };
       backendPodSelector = mkOption {
         type = types.addCheck (types.attrsOf types.str) (value: value != { });
         description = "Non-empty pod labels selecting the routed backend workload.";

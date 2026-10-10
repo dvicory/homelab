@@ -7,9 +7,9 @@ metadata:
   namespace: gateway
 spec:
   oidc:
-    clientID: household-admin
+    clientID: argocd
     clientSecret:
-      name: oidc-client
+      name: oidc-argocd
     forwardAccessToken: false
     logoutPath: /logout
     passThroughAuthHeader: false
@@ -22,7 +22,7 @@ spec:
           namespace: identity
           port: 443
           weight: 1
-      issuer: https://idm.plus2.danielvicory.dev/oauth2/openid/household-admin
+      issuer: https://idm.plus2.danielvicory.dev/oauth2/openid/argocd
       tokenEndpoint: https://idm.plus2.danielvicory.dev/oauth2/token
     redirectURL: https://%REQ(:authority)%/oauth2/callback
     refreshToken: true

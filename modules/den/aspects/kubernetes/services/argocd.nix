@@ -7,11 +7,6 @@ in
     settings.oidc = mkOption {
       type = types.submodule {
         options = {
-          clientName = mkOption {
-            type = types.str;
-            default = "argocd";
-            description = "Kanidm OAuth2 client name, also used as Argo CD's client ID.";
-          };
           # Kanidm refuses an authorization request unless every requested
           # scope is in a scope map of a group the user belongs to.
           # `groups_name` makes Kanidm 1.11 emit the `groups` claim as short
@@ -39,7 +34,7 @@ in
         };
       };
       default = { };
-      description = "Argo CD's Kanidm OAuth2 client. Identity provisioning creates the client and publishes its secret from these values.";
+      description = "Argo CD's sign-in through Kanidm. Identity provisioning adds these values to the Kanidm client of the `argocd` route, which the Gateway also uses.";
     };
     compute-resources.runtimeSecrets = {
       "argocd--argocd-secret--admin.password" = {
@@ -72,13 +67,16 @@ in
         identityNormal = identity.phase == "normal";
         idmHostname = builtins.head cluster.routes.idm.hostnames;
         urls = map (hostname: "https://${hostname}") cluster.routes.argocd.hostnames;
+        # Identity names each administrator route's Kanidm client after the
+        # route, so Argo CD and its Gateway sign-in share one client.
+        clientName = "argocd";
         # Argo CD parses oidc.config as YAML; JSON is valid YAML.
         # Kanidm 1.11 requires PKCE; Argo CD 3.5 performs it server-side
         # and still authenticates with the client secret.
         oidcConfig = {
           name = "Kanidm";
-          issuer = "https://${idmHostname}/oauth2/openid/${oidc.clientName}";
-          clientID = oidc.clientName;
+          issuer = "https://${idmHostname}/oauth2/openid/${clientName}";
+          clientID = clientName;
           clientSecret = "$" + oidc.secretName + ":" + oidc.secretKey;
           requestedScopes = oidc.scopes;
           enablePKCEAuthentication = true;

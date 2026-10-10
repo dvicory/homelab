@@ -107,7 +107,34 @@ let
   normalArgocd = argocdConfigs (withPhase "normal");
   normalOidc = builtins.fromJSON normalArgocd.cm."oidc.config";
   argocdClient = lib.findFirst (client: client.name == normalOidc.clientID) null normalClients;
+  argocdSecret = lib.findFirst (
+    secret: "$" + secret.name + ":" + secret.key == normalOidc.clientSecret
+  ) null argocdClient.secrets;
   argocdRoute = cluster.routes.argocd;
+  adminRoutes = lib.filterAttrs (_: route: route.auth == "admin") cluster.routes;
+  routeUrls =
+    route:
+    map (hostname: "https://${hostname}${lib.removeSuffix "/" route.pathPrefix}") route.hostnames;
+  clientSecrets = clients: lib.concatMap (client: client.secrets) clients;
+  normalSecurityPolicies = lib.filter (object: object.kind == "SecurityPolicy") normalPolicyObjects;
+  # An administrator route without a display name has no Kanidm entry name.
+  extraAdminRoute =
+    name: displayName:
+    lib.recursiveUpdate (withPhase "normal") {
+      routes.${name} = argocdRoute // {
+        inherit displayName;
+        hostnames = [ "extra.example.test" ];
+        pathPrefix = "/extra/";
+      };
+    };
+  renderedState =
+    inventory:
+    builtins.fromJSON (provisionData (renderIdentity inventory).applications.identity.objects)."state.json";
+  rendersIdentity =
+    inventory:
+    (builtins.tryEval (
+      builtins.deepSeq (provisionData (renderIdentity inventory).applications.identity.objects) true
+    )).success;
   kanidmIngress =
     objects: (findObject objects "NetworkPolicy" namespace "kanidm-private").spec.ingress;
   namespace = "identity";
@@ -120,18 +147,16 @@ let
     ) (rule.from or [ ])
   );
   publicationIntact =
-    objects: client:
+    objects: declared:
     let
-      secret = findObject objects "Secret" client.secret.namespace client.secret.name;
-      role = findObject objects "Role" client.secret.namespace "kanidm-client-secret-${client.name}";
-      binding =
-        findObject objects "RoleBinding" client.secret.namespace
-          "kanidm-client-secret-${client.name}";
+      secret = findObject objects "Secret" declared.namespace declared.name;
+      role = findObject objects "Role" declared.namespace "kanidm-client-secret-${declared.name}";
+      binding = findObject objects "RoleBinding" declared.namespace "kanidm-client-secret-${declared.name}";
     in
     secret != null
     && !(secret ? data)
     && !(secret ? stringData)
-    && (secret.metadata.labels or { }) == client.secret.labels
+    && (secret.metadata.labels or { }) == declared.labels
     && role != null
     && binding != null
     && binding.roleRef.name == role.metadata.name
@@ -147,7 +172,7 @@ let
     && lib.all (
       rule:
       rule.resources == [ "secrets" ]
-      && (rule.resourceNames or [ ]) == [ client.secret.name ]
+      && (rule.resourceNames or [ ]) == [ declared.name ]
       && lib.all (
         verb:
         builtins.elem verb [
@@ -176,7 +201,7 @@ let
       ) initialObjects)
       && !(hasObject initialObjects "Job" "kanidm-provision");
     provisioning-rbac-before-job =
-      lib.all (publicationIntact provisioningObjects) (provisionClients provisioningObjects)
+      lib.all (publicationIntact provisioningObjects) (clientSecrets (provisionClients provisioningObjects))
       && hasObject provisioningObjects "ServiceAccount" "kanidm-provision"
       && provisioningJob.metadata.annotations."argocd.argoproj.io/hook" == "PostSync"
       && provisioningJob.spec.template.spec.serviceAccountName == "kanidm-provision";
@@ -244,7 +269,58 @@ let
     client-secrets-declared-without-create =
       lib.sort builtins.lessThan (map (client: client.name) normalClients)
       == builtins.attrNames normalState.systems.oauth2
-      && lib.all (publicationIntact normalObjects) normalClients;
+      && lib.all (publicationIntact normalObjects) (clientSecrets normalClients);
+    # Kanidm lists each client a person may use as an application. Each
+    # administrator route has exactly one client, named after the route,
+    # whose display name and landing are that application's.
+    one-client-per-admin-route =
+      builtins.attrNames normalState.systems.oauth2 == builtins.attrNames adminRoutes
+      && lib.all (
+        name:
+        let
+          route = adminRoutes.${name};
+          client = normalState.systems.oauth2.${name};
+        in
+        client.displayName == route.displayName
+        && lib.hasPrefix "${builtins.head (routeUrls route)}/" client.originLanding
+        && lib.all (url: builtins.elem "${url}/oauth2/callback" client.originUrl) (routeUrls route)
+      ) (builtins.attrNames adminRoutes)
+      && rendersIdentity (extraAdminRoute "extra" "Extra")
+      && !(rendersIdentity (extraAdminRoute "extra" null))
+      && !(rendersIdentity (extraAdminRoute "extra.app" "Extra"))
+      && (renderedState (extraAdminRoute "extra" "Extra")).systems.oauth2.extra.originUrl == [
+        "https://extra.example.test/extra/oauth2/callback"
+      ];
+    # Each administrator route's Gateway sign-in uses that route's client and
+    # a Gateway Secret the Job publishes for it.
+    admin-policy-uses-route-client =
+      builtins.length normalSecurityPolicies == builtins.length (builtins.attrNames adminRoutes)
+      && lib.all (
+        name:
+        let
+          policy = findObject normalPolicyObjects "SecurityPolicy" "gateway" "${name}-admin";
+          client = lib.findFirst (client: client.name == name) null normalClients;
+        in
+        policy != null
+        && client != null
+        && policy.spec.oidc.clientID == name
+        && policy.spec.oidc.provider.issuer
+          == "https://${builtins.head cluster.routes.idm.hostnames}/oauth2/openid/${name}"
+        && builtins.elem {
+          namespace = "gateway";
+          name = policy.spec.oidc.clientSecret.name;
+          key = "client-secret";
+          labels = { };
+        } client.secrets
+        && lib.all (scope: builtins.elem scope client.scopes) policy.spec.oidc.scopes
+      ) (builtins.attrNames adminRoutes);
+    # Argo CD's own sign-in uses its route's client, so Kanidm lists Argo CD
+    # once, and that entry starts Argo CD's sign-in.
+    argocd-shares-route-client =
+      (findObject normalPolicyObjects "SecurityPolicy" "gateway" "argocd-admin").spec.oidc.clientID
+      == normalOidc.clientID
+      && normalState.systems.oauth2.${normalOidc.clientID}.originLanding
+        == "${builtins.head (routeUrls argocdRoute)}/auth/login";
     admin-gateway-session-renews = lib.all (policy: policy.spec.oidc.refreshToken) (
       lib.filter (object: object.kind == "SecurityPolicy") normalPolicyObjects
     );
@@ -268,7 +344,8 @@ let
     # declared route hostnames, and Argo CD knows every one of those URLs.
     argocd-redirects-match-route =
       normalState.systems.oauth2.${normalOidc.clientID}.originUrl
-      == map (hostname: "https://${hostname}/auth/callback") argocdRoute.hostnames
+      == map (url: "${url}/oauth2/callback") (routeUrls argocdRoute)
+      ++ map (url: "${url}/auth/callback") (routeUrls argocdRoute)
       &&
         [ normalArgocd.cm.url ] ++ builtins.fromJSON normalArgocd.cm.additionalUrls
         == map (hostname: "https://${hostname}") argocdRoute.hostnames
@@ -280,7 +357,7 @@ let
     # claim. The RBAC group must be the one group the Job maps scopes to.
     argocd-admin-group-matches-kanidm =
       argocdClient != null
-      && normalOidc.requestedScopes == argocdClient.scopes
+      && lib.all (scope: builtins.elem scope argocdClient.scopes) normalOidc.requestedScopes
       && builtins.elem "groups_name" normalOidc.requestedScopes
       && !(builtins.elem "groups" normalOidc.requestedScopes)
       && normalArgocd.rbac.scopes == "[groups]"
@@ -289,9 +366,9 @@ let
       && normalArgocd.rbac."policy.csv" == "g, ${envValue "KANIDM_ADMIN_GROUP"}, role:admin\n"
       && normalArgocd.rbac."policy.default" == "";
     argocd-client-secret-reference =
-      normalOidc.clientSecret == "$" + argocdClient.secret.name + ":" + argocdClient.secret.key
-      && argocdClient.secret.namespace == argocdRoute.namespace
-      && argocdClient.secret.labels == { "app.kubernetes.io/part-of" = "argocd"; }
+      argocdSecret != null
+      && argocdSecret.namespace == argocdRoute.namespace
+      && argocdSecret.labels == { "app.kubernetes.io/part-of" = "argocd"; }
       && normalOidc.enablePKCEAuthentication
       && !normalState.systems.oauth2.${normalOidc.clientID}.allowInsecureClientDisablePkce
       && !normalState.systems.oauth2.${normalOidc.clientID}.public;
