@@ -256,18 +256,14 @@ def run_scenario(args) -> None:
         journal = lib.completed("journalctl", f"_SYSTEMD_INVOCATION_ID={invocation}", "--no-pager", "-o", "cat").stdout
         if "Conflict detected" in journal:
             return "idmap-conflict"
-        # The wrapper's non-blocking flock exits 1 without a message when
-        # compute-stage-secrets holds the lifecycle lock at that moment.
-        if "adoption check" not in journal:
+        if "lifecycle lock is held" in journal:
             return "lifecycle-lock-busy"
         return "other"
 
     failure = preseed_failure()
     observe("activation.incus_preseed_failure", failure)
-    if failure == "lifecycle-lock-busy":
-        lib.completed("systemctl", "restart", "incus-preseed.service", timeout=600)
-        failure = preseed_failure()
-        observe("activation.incus_preseed_failure_after_retry", failure)
+    # The preseed waits for the lock that compute-stage-secrets holds during
+    # activation, so the only expected failure is the ID-map conflict.
     check(failure in (None, "idmap-conflict"), f"incus-preseed fails only for a recognized reason: {failure}")
     if failure == "idmap-conflict":
         with lib.phase("bridge the project ID-map restriction"):
