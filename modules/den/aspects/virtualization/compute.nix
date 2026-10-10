@@ -426,7 +426,12 @@ in
           umask 077
           export INCUS_SOCKET=/var/lib/incus/unix.socket
           exec 9>${lib.escapeShellArg lifecycleLock}
-          ${pkgs.util-linux}/bin/flock -n 9
+          # Activation restarts compute-stage-secrets beside this unit; it
+          # holds the lock for seconds. A lifecycle operation holds it longer.
+          if ! ${pkgs.util-linux}/bin/flock -w 120 9; then
+            echo "compute lifecycle lock is held; refusing preseed before mutation." >&2
+            exit 1
+          fi
           result="$(${computeRuntime}/bin/compute-guest --spec /etc/homelab/compute.json --lock-fd 9 adopt)"
           echo "$result; applying native preseed."
           ${config.systemd.services.incus-preseed.script}
