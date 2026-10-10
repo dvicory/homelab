@@ -25,7 +25,7 @@ spec:
       issuer: https://idm.plus2.danielvicory.dev/oauth2/openid/household-admin
       tokenEndpoint: https://idm.plus2.danielvicory.dev/oauth2/token
     redirectURL: https://%REQ(:authority)%/oauth2/callback
-    refreshToken: false
+    refreshToken: true
     scopes:
       - openid
       - profile

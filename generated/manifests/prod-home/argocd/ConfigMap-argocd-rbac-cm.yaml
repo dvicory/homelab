@@ -1,6 +1,7 @@
 apiVersion: v1
 data:
-  policy.csv: ""
+  policy.csv: |
+    g, homelab-admin, role:admin
   policy.default: ""
   policy.matchMode: glob
   scopes: '[groups]'
