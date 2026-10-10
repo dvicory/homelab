@@ -354,6 +354,8 @@
           };
         }
       );
+      # Seerr phase PodSpec checks are native (media-configuration-state/inventory);
+      # the phase matrix remains only for the coordination PersistentVolume.
       configurationPhases = lib.genAttrs [ "initial" "ready" ] (
         phase:
         (config.den.aspects.kubernetes.services.media.configuration."k8s-manifests" {
@@ -439,6 +441,7 @@
                 "sonarr-anime.json": "docs/json/sonarr/quality-size/anime.json",
             }
             assert set(upstream) == set(source["files"])
+            # Local policy must match independently fetched, hash-pinned upstream inputs.
             for name, file in source["files"].items():
                 assert set(file) == {"upstream", "sha256"}
                 actual = pathlib.Path(upstream[name]).read_bytes()
@@ -460,6 +463,8 @@
                 hashlib.sha256((policy_dir / "conflicts.json").read_bytes()).digest()
             ).decode()
 
+            # Rendered manifests are read only for facts no native rule covers;
+            # see media-private-storage, media-acquisition-* and media-configuration-*.
             resources = []
             for path in environment.rglob("*.yaml"):
                 resources.extend(
@@ -473,19 +478,8 @@
                     if resource["kind"] == kind and resource["metadata"]["name"] == name
                 )
 
-            local_pvs = {
-                resource["metadata"]["name"]: resource
-                for resource in resources
-                if resource.get("kind") == "PersistentVolume"
-                and "local" in resource.get("spec", {})
-            }
             media_gid = str(storage["mediaGid"])
-            media_root = pathlib.PurePosixPath(storage["media"])
             sabnzbd_identity = storage["retainedPaths"]["sabnzbd"]
-
-            def under_media(path):
-                candidate = pathlib.PurePosixPath(path)
-                return candidate == media_root or media_root in candidate.parents
 
             fixture_instances = fixture["instances"]
             fixture_apps = fixture["applications"]
@@ -497,27 +491,6 @@
             assert (coordination["uid"], coordination["gid"], coordination["mode"], coordination["readOnly"]) == (1000, 1000, "0700", False)
             assert coordination["guestPath"] != storage["retainedPaths"]["seerr"]["guestPath"]
             for phase, applications in fixture["configurationPhases"].items():
-                objects = applications["media-configuration"]["objects"]
-                accounts = {item["metadata"]["name"] for item in objects if item["kind"] == "ServiceAccount"}
-                assert ("media-config-seerr-bootstrap" in accounts) == (phase == "initial")
-                for item in objects:
-                    if item["metadata"]["name"] != "media-config-seerr" or item["kind"] not in ("Job", "CronJob"):
-                        continue
-                    spec = item["spec"] if item["kind"] == "Job" else item["spec"]["jobTemplate"]["spec"]
-                    pod = spec["template"]["spec"]
-                    bootstrap = phase == "initial" and item["kind"] == "Job"
-                    assert pod["automountServiceAccountToken"] is False
-                    assert pod["serviceAccountName"] == ("media-config-seerr-bootstrap" if bootstrap else "media-config-seerr")
-                    container, = pod["containers"]
-                    env = {entry["name"]: entry["value"] for entry in container["env"]}
-                    assert (env.get("SEERR_INITIAL_OWNER") == "true") == bootstrap
-                    assert ("NODE_EXTRA_CA_CERTS" in env) == bootstrap
-                    assert any("serviceAccountToken" in source for volume in pod["volumes"]
-                               for source in volume.get("projected", {}).get("sources", [])) == bootstrap
-                    assert "fsGroup" not in pod["securityContext"]
-                    assert {volume["persistentVolumeClaim"]["claimName"] for volume in pod["volumes"] if "persistentVolumeClaim" in volume} == ({"media-seerr", "media-seerr-configuration"} if bootstrap else {"media-seerr-configuration"})
-                    state_mounts = [mount for mount in container["volumeMounts"] if mount["name"] == "seerr-state"]
-                    assert state_mounts == ([{"name": "seerr-state", "mountPath": "/seerr-state", "readOnly": True}] if bootstrap else [])
                 claim_objects = applications["media-seerr-configuration-storage"]["objects"]
                 volume, = [item for item in claim_objects if item["kind"] == "PersistentVolume"]
                 assert volume["spec"]["local"]["path"] == coordination["guestPath"]
@@ -589,44 +562,15 @@
                 != fixture["mutatedInstances"]["radarr"]["uhd"]
             )
 
-            # Private retained state is distinct from the host-owned media namespace.
-            for resource in local_pvs.values():
-                assert not under_media(resource["spec"]["local"]["path"]), resource["metadata"]["name"]
-            for resource in resources:
-                if resource.get("kind") != "PersistentVolumeClaim":
-                    continue
-                volume_name = resource.get("spec", {}).get("volumeName")
-                if volume_name in local_pvs:
-                    assert not under_media(
-                        local_pvs[volume_name]["spec"]["local"]["path"]
-                    ), resource["metadata"]["name"]
-
-            # Acquisition applications write the host-owned media namespace at /data.
+            # Native media-acquisition-mounts covers the /data hostPath and mounts;
+            # the media group membership is not covered natively.
             for name in ("radarr", "sonarr", "sabnzbd"):
-                deployment = find("Deployment", name)
-                pod = deployment["spec"]["template"]["spec"]
-                data = next(volume for volume in pod["volumes"] if volume["name"] == "data")
-                assert data["hostPath"] == {
-                    "path": storage["media"],
-                    "type": "Directory",
-                }, name
+                pod = find("Deployment", name)["spec"]["template"]["spec"]
                 assert media_gid in pod["securityContext"]["supplementalGroups"], name
-                for container in pod["containers"] + pod.get("initContainers", []):
-                    mounts = [mount for mount in container["volumeMounts"] if mount["name"] == "data"]
-                    assert len(mounts) == 1
-                    mount = mounts[0]
-                    assert mount["mountPath"] == "/data" and not mount.get("readOnly", False), name
 
-            sabnzbd_pod = find("Deployment", "sabnzbd")["spec"]["template"]["spec"]
-            sabnzbd_env = {
-                item["name"]: item["value"]
-                for item in sabnzbd_pod["containers"][0]["env"]
-            }
+            # Native media-acquisition-identity compares SABnzbd PUID/PGID and the
+            # initializer uid/gid with the trusted retained identity; this pins that identity.
             assert sabnzbd_identity["uid"] == sabnzbd_identity["gid"] == 757
-            assert sabnzbd_env["PUID"] == sabnzbd_env["PGID"] == "757"
-            sabnzbd_init_security = sabnzbd_pod["initContainers"][0]["securityContext"]
-            assert int(sabnzbd_init_security["runAsUser"]) == sabnzbd_identity["uid"]
-            assert int(sabnzbd_init_security["runAsGroup"]) == sabnzbd_identity["gid"]
             jellyfin_security = find("Deployment", "jellyfin")["spec"]["template"]["spec"]["securityContext"]
             assert media_gid in jellyfin_security["supplementalGroups"]
 
@@ -738,6 +682,8 @@
             class ConfigarrLoader(yaml.SafeLoader):
                 pass
             ConfigarrLoader.add_constructor("!env", lambda loader, node: loader.construct_scalar(node))
+            # Seerr/Configarr state, coordination, hostPath and fsGroup boundaries are
+            # native: media-configuration-state, media-configuration-inventory, pod-pvc-no-fsgroup.
             for path in (environment / "media-configuration").rglob("*.yaml"):
                 for resource in yaml.safe_load_all(path.read_text()):
                     if resource and resource["kind"] in {"Job", "CronJob"}:
@@ -745,22 +691,6 @@
                         if resource["kind"] == "CronJob":
                             spec = spec["jobTemplate"]["spec"]
                         pod = spec["template"]["spec"]
-                        state_mounts = [mount for container in pod["containers"] for mount in container.get("volumeMounts", [])
-                                        if mount["name"] == "seerr-state"]
-                        state_volumes = [volume for volume in pod.get("volumes", []) if "persistentVolumeClaim" in volume]
-                        if resource["metadata"]["name"] == "media-config-seerr":
-                            bootstrap = any(entry["name"] == "SEERR_INITIAL_OWNER" and entry["value"] == "true"
-                                            for container in pod["containers"] for entry in container.get("env", []))
-                            assert state_mounts == ([{"name": "seerr-state", "mountPath": "/seerr-state", "readOnly": True}] if bootstrap else [])
-                            assert {volume["persistentVolumeClaim"]["claimName"] for volume in state_volumes} == ({"media-seerr", "media-seerr-configuration"} if bootstrap else {"media-seerr-configuration"})
-                            assert "fsGroup" not in pod.get("securityContext", {})
-                        elif resource["metadata"]["name"] == "media-configarr":
-                            assert not state_mounts
-                            assert {volume["persistentVolumeClaim"]["claimName"] for volume in state_volumes} == {"media-seerr-configuration"}
-                            assert "fsGroup" not in pod.get("securityContext", {})
-                        else:
-                            assert not state_mounts and not state_volumes
-                        assert all("hostPath" not in volume for volume in pod.get("volumes", []))
                         for container in pod["containers"] + pod.get("initContainers", []):
                             assert isinstance(container["image"], str), resource["metadata"]["name"]
                             assert isinstance(container.get("env", []), list), resource["metadata"]["name"]
@@ -781,16 +711,16 @@
                             assert set(configarr[kind]) == set(names), (kind, configarr[kind])
                             assert all(isinstance(instance, dict) and "base_url" in instance
                                        for instance in configarr[kind].values())
+            # Native media-periodic-inventory/media-periodic-safety cover the inventory,
+            # suspend and concurrencyPolicy; the schedules are not covered natively.
             periodic = {
                 resource["metadata"]["name"]: resource["spec"]
                 for resource in resources
                 if resource["kind"] == "CronJob" and resource["metadata"]["namespace"] == "media"
             }
-            assert set(periodic) == {"media-configarr", "media-config-seerr"}
             for name, minute in (("media-configarr", 7), ("media-config-seerr", 37)):
                 schedule = periodic[name]
                 assert schedule["schedule"] == f"{minute} */6 * * *"
-                assert schedule["suspend"] == "false" and schedule["concurrencyPolicy"] == "Forbid"
             assert configarr is not None, "Missing media configuration"
             assert configarr_env["LOG_LEVEL"] == "warn"
             assert configarr_env["STOP_ON_ERROR"] == "true"

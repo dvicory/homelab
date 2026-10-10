@@ -1,0 +1,9 @@
+# Native offline API context, not an evaluated production resource population.
+# Transport adds only fixture-labeled namespaces missing from the raw Test streams.
+# Declared Namespace metadata stays intact; policy-facts remains separate paramResources.
+apiVersion: cli.kyverno.io/v1alpha1
+kind: ClusterResource
+metadata:
+  name: offline-policy-context
+spec:
+  resources: []

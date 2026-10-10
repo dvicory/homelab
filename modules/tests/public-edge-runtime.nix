@@ -136,7 +136,9 @@
                       sslCertificateKey = "/run/origin-tls/server.key";
                       locations."/".return = "200 origin";
                       locations."/headers".return =
-                        "200 $remote_addr|$http_x_forwarded_for|$http_x_forwarded_host|$http_forwarded|$http_x_forwarded_user|$http_x_auth_request_user|$http_x_forwarded_email|$http_x_auth_request_email|$http_remote_user";
+                        "200 $remote_addr|$http_x_forwarded_for|$http_x_forwarded_host|$http_forwarded|$http_x_forwarded_user|$http_x_auth_request_user|$http_x_forwarded_email|$http_x_auth_request_email|$http_remote_user|$http_host|$http_x_forwarded_proto|$http_x_forwarded_port|$ssl_server_name";
+                      locations."/privacy".return =
+                        "200 $request_uri|$args|$http_authorization|$http_cookie|$http_x_request_id";
                     };
                   };
                 };
@@ -191,6 +193,24 @@
                 };
             };
             testScript = ''
+              import json
+              import re
+              import shlex
+              import time
+
+              def access_log(edge, path):
+                  for _ in range(30):
+                      logs = edge.succeed("cat /var/log/nginx/access.log")
+                      for secret in ("query-secret-", "code-secret-", "credential-canary-", "cookie-secret-"):
+                          assert secret not in logs, "sensitive request data reached the edge access log"
+                      entries = [json.loads(line) for line in logs.splitlines()]
+                      matches = [entry for entry in entries if entry.get("path") == path]
+                      if matches:
+                          assert len(matches) == 1, "expected one log entry for the unique request"
+                          return matches[0]
+                      time.sleep(1)
+                  raise AssertionError(f"no queryless edge access log entry for {path}")
+
               start_all()
               origin.wait_for_unit("nginx.service")
               remote.wait_for_unit("nginx.service")
@@ -212,13 +232,52 @@
                 "then exit 1; else test $? -eq 35; fi"
               )
               client.succeed("test $(curl --cacert ${certificates}/edge.crt -sS -o /dev/null -w '%{http_code}' -H 'Host: unknown.primary.test' --resolve service.primary.test:443:10.0.0.11 https://service.primary.test/) = 404")
-              client.succeed(
-                "curl --cacert ${certificates}/edge.crt -sSf -H 'X-Forwarded-For: 198.51.100.99' -H 'Forwarded: for=198.51.100.99' "
-                "-H 'X-Forwarded-User: forged' -H 'X-Auth-Request-User: forged' -H 'X-Forwarded-Email: forged@example.test' "
-                "-H 'X-Auth-Request-Email: forged@example.test' -H 'Remote-User: forged' "
-                "--resolve service.primary.test:443:10.0.0.11 https://service.primary.test/headers "
-                "| grep -qx '10.0.0.11|10.0.0.13|service.primary.test||||||'"
-              )
+              for edge, role, hostname, address in (
+                  (remote, "remote", "service.primary.test", "10.0.0.11"),
+                  (home, "home", "service.backup.test", "10.0.0.12"),
+              ):
+                  with subtest(f"{role} edge replaces spoofed forwarding metadata and sends origin SNI"):
+                      headers = client.succeed(
+                          "curl --cacert ${certificates}/edge.crt -sSf -H 'X-Forwarded-For: 198.51.100.99' "
+                          "-H 'X-Forwarded-Host: forged.test' -H 'X-Forwarded-Proto: http' -H 'X-Forwarded-Port: 81' "
+                          "-H 'Forwarded: for=198.51.100.99' -H 'X-Forwarded-User: forged' "
+                          "-H 'X-Auth-Request-User: forged' -H 'X-Forwarded-Email: forged@example.test' "
+                          "-H 'X-Auth-Request-Email: forged@example.test' -H 'Remote-User: forged' "
+                          f"--resolve {hostname}:443:{address} https://{hostname}/headers"
+                      ).strip()
+                      assert headers == f"{address}|10.0.0.13|{hostname}|||||||{hostname}|https|443|origin.test", headers
+
+                  with subtest(f"{role} edge logs only paths and preserves its fresh request ID to the origin"):
+                      request_ids = set()
+                      for label, supplied_id in (
+                          ("valid", "1234567890abcdef1234567890abcdef"),
+                          ("malformed", 'forged"request-id'),
+                          ("absent", None),
+                      ):
+                          path = f"/privacy-{role}-{label}"
+                          query = f"token=query-secret-{role}-{label}&code=code-secret-{role}-{label}"
+                          authorization = "Bearer " + f"credential-canary-{role}-{label}"
+                          cookie = f"session=cookie-secret-{role}-{label}"
+                          request_id_header = (
+                              "-H " + shlex.quote(f"X-Request-ID: {supplied_id}") if supplied_id is not None else ""
+                          )
+                          response = client.succeed(
+                              "curl --cacert ${certificates}/edge.crt -sSf "
+                              f"-H {shlex.quote('Authorization: ' + authorization)} "
+                              f"-H {shlex.quote('Cookie: ' + cookie)} {request_id_header} "
+                              f"--resolve {hostname}:443:{address} {shlex.quote(f'https://{hostname}{path}?{query}')}"
+                          ).strip().split("|")
+                          assert response[:4] == [f"{path}?{query}", query, authorization, cookie], response
+                          assert len(response) == 5, response
+                          request_id = response[4]
+                          assert re.fullmatch(r"[0-9a-f]{32}", request_id), "origin did not receive an edge-generated ID"
+                          assert request_id != supplied_id, "client request ID was trusted"
+                          assert request_id not in request_ids, "distinct requests reused an ID"
+                          request_ids.add(request_id)
+                          entry = access_log(edge, path)
+                          assert entry["request_id"] == request_id, "edge log and upstream request IDs differ"
+                          assert entry["client"] == "10.0.0.13", entry
+                          assert entry["host"] == hostname and entry["method"] == "GET" and entry["status"] == 200, entry
               client.fail("curl -ksSf --connect-timeout 3 https://origin:8443/")
 
               for certificate in ("untrusted", "wrong-name", "origin"):

@@ -1,0 +1,382 @@
+# Native Kyverno scenarios for this policy family. transport.py generate turns each scenario into a
+# kyverno-test.yaml and, for single-object scenarios, a resources.yaml derived from the genuine render.
+# Expected results are the declared fails plus Pass for every other in-scope rule that applies, as listed
+# by the explicit complete-population positive below. Identities are apiVersion/kind/namespace/name.
+policy: verification-gitops
+policyFile: gitops.yaml
+rules:
+  admission-candidates: [application-lifecycle, application-directory-source, application-source-confinement, root-project-ownership,
+    project-repository-destination-authority, bootstrap-default-authority, argocd-server-network-ingress]
+  repository-only: [gitops-population, application-source-inventory, application-source-coverage, resource-retention,
+    resource-effective-identity, project-cluster-authority, application-lifecycle-order, bootstrap-provenance, root-project-source-ownership,
+    project-destination-coverage, bootstrap-seed-identity]
+values:
+  apiVersion: cli.kyverno.io/v1alpha1
+  kind: Values
+  metadata:
+    name: gitops-values
+  globalValues:
+    request.operation: CREATE
+test:
+  variables: ../values.yaml
+positive:
+  name: positive-{variant}
+  applies:
+    argoproj.io/v1alpha1/AppProject/argocd/default: [bootstrap-default-authority]
+    argoproj.io/v1alpha1/AppProject/argocd/prod-home: [root-project-ownership, project-repository-destination-authority]
+    argoproj.io/v1alpha1/Application/argocd/apps: [application-lifecycle, application-directory-source, application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/argocd: [application-lifecycle, application-directory-source, application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/argocd-retained: [application-lifecycle, application-directory-source,
+      application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/cert-manager: [application-lifecycle, application-directory-source,
+      application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/cert-manager-issuance: [application-lifecycle, application-directory-source,
+      application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/cluster-dns: [application-lifecycle, application-directory-source, application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/gateway: [application-lifecycle, application-directory-source, application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/gateway-controller: [application-lifecycle, application-directory-source,
+      application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/gateway-crds: [application-lifecycle, application-directory-source,
+      application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/gateway-retained: [application-lifecycle, application-directory-source,
+      application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/identity: [application-lifecycle, application-directory-source, application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/identity-retained: [application-lifecycle, application-directory-source,
+      application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/jellyfin: [application-lifecycle, application-directory-source, application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/jellyfin-configuration: [application-lifecycle, application-directory-source,
+      application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/jellyfin-retained: [application-lifecycle, application-directory-source,
+      application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/local-path-provisioner: [application-lifecycle, application-directory-source,
+      application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/media-access: [application-lifecycle, application-directory-source,
+      application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/media-configuration: [application-lifecycle, application-directory-source,
+      application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/media-seerr-configuration-storage: [application-lifecycle, application-directory-source,
+      application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/media-storage: [application-lifecycle, application-directory-source,
+      application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/prowlarr: [application-lifecycle, application-directory-source, application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/prowlarr-storage: [application-lifecycle, application-directory-source,
+      application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/radarr: [application-lifecycle, application-directory-source, application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/radarr-storage: [application-lifecycle, application-directory-source,
+      application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/retained-storage: [application-lifecycle, application-directory-source,
+      application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/sabnzbd: [application-lifecycle, application-directory-source, application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/sabnzbd-storage: [application-lifecycle, application-directory-source,
+      application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/seerr: [application-lifecycle, application-directory-source, application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/seerr-storage: [application-lifecycle, application-directory-source,
+      application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/sonarr: [application-lifecycle, application-directory-source, application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/sonarr-storage: [application-lifecycle, application-directory-source,
+      application-source-confinement]
+    networking.k8s.io/v1/NetworkPolicy/argocd/argocd-application-controller: [argocd-server-network-ingress]
+    networking.k8s.io/v1/NetworkPolicy/argocd/argocd-redis: [argocd-server-network-ingress]
+    networking.k8s.io/v1/NetworkPolicy/argocd/argocd-repo-server: [argocd-server-network-ingress]
+    v1/ConfigMap/verification/verification-bundle: [gitops-population, application-source-inventory, application-source-coverage,
+      resource-retention, resource-effective-identity, project-cluster-authority, application-lifecycle-order, bootstrap-provenance,
+      root-project-source-ownership, project-destination-coverage, bootstrap-seed-identity]
+  when:
+  - if: {identity: [normal]}
+    applies:
+      argoproj.io/v1alpha1/Application/argocd/identity-gateway: [application-lifecycle, application-directory-source,
+        application-source-confinement]
+      networking.k8s.io/v1/NetworkPolicy/argocd/gateway-argocd-backend-ingress: [argocd-server-network-ingress]
+scenarios:
+- name: valid-application
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+- name: valid-root-project
+  base: argoproj.io/v1alpha1/AppProject/argocd/prod-home
+- name: valid-bootstrap-default-authority
+  base: argoproj.io/v1alpha1/AppProject/argocd/default
+- name: valid-argocd-server-network-ingress
+  base: networking.k8s.io/v1/NetworkPolicy/argocd/argocd-repo-server
+- name: missing-root
+  mutate: .bundle.resources |= map(select((.object.kind == "Application" and .object.metadata.name == "apps") |
+    not))
+  fail: [bootstrap-provenance, gitops-population]
+- name: missing-project
+  mutate: .bundle.resources |= map(select((.object.kind == "AppProject" and .object.metadata.name == "prod-home")
+    | not))
+  fail: [application-source-inventory, gitops-population, root-project-source-ownership]
+- name: unsupported-apps-file
+  mutate: .bundle["files"] += ["apps/hidden.txt"]
+  fail: [application-source-inventory, gitops-population]
+- name: apps-subdirectory
+  mutate: .bundle["directories"] += ["apps/hidden"]
+  fail: [gitops-population]
+- name: wrong-project-filename
+  mutate: (.bundle.resources[] | select(.object.kind == "AppProject" and .object.metadata.name == "prod-home") |
+    .object["metadata"]["name"]) = "wrong-project"
+  fail: [gitops-population, root-project-source-ownership]
+- name: cascading-prune-disabled
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: .spec.syncPolicy.automated.prune = false
+  fail: [application-lifecycle]
+- name: retained-prune-enabled
+  base: argoproj.io/v1alpha1/Application/argocd/argocd-retained
+  mutate: .spec.syncPolicy.automated.prune = true
+  fail: [application-lifecycle]
+- name: foreign-finalizer
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: .metadata.finalizers[0] = "foreign.example/finalizer"
+  fail: [application-lifecycle]
+- name: retry-disabled
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: .spec.syncPolicy.retry.limit = 0
+  fail: [application-lifecycle]
+- name: sharing-enabled
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: del(.spec.syncPolicy.syncOptions[0])
+  fail: [application-lifecycle]
+- name: wrong-child-project
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: .spec.project = "default"
+  fail: [application-lifecycle]
+- name: wrong-destination
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: .spec.destination.server = "https://foreign.invalid"
+  fail: [application-lifecycle]
+- name: invalid-wave
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: .metadata.annotations["argocd.argoproj.io/sync-wave"] = "later"
+  fail: [application-lifecycle]
+- name: alternate-multisource
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: .spec.sources = []
+  fail: [application-directory-source]
+- name: alternate-renderer-helm
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: .spec.source.helm = {}
+  fail: [application-directory-source]
+- name: alternate-renderer-kustomize
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: .spec.source.kustomize = {}
+  fail: [application-directory-source]
+- name: alternate-renderer-jsonnet
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: .spec.source.jsonnet = {}
+  fail: [application-directory-source]
+- name: alternate-renderer-plugin
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: .spec.source.plugin = {}
+  fail: [application-directory-source]
+- name: alternate-renderer-chart
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: .spec.source.chart = "untrusted"
+  fail: [application-directory-source]
+- name: operation-override-sources
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: '.operation = {"sync": {"sources": []}}'
+  fail: [application-directory-source]
+- name: operation-override-source
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: '.operation = {"sync": {"source": {}}}'
+  fail: [application-directory-source]
+- name: operation-override-manifests
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: '.operation = {"sync": {"manifests": ["kind: ConfigMap"]}}'
+  fail: [application-directory-source]
+- name: operation-override-revision
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: '.operation = {"sync": {"revision": "untrusted"}}'
+  fail: [application-directory-source]
+- name: operation-override-revisions
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: '.operation = {"sync": {"revisions": ["untrusted"]}}'
+  fail: [application-directory-source]
+- name: directory-exclusion
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: '.spec.source.directory = {"exclude": "*"}'
+  fail: [application-directory-source]
+- name: foreign-repository
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: .spec.source.repoURL = "https://foreign.invalid/repo.git"
+  fail: [application-directory-source]
+- name: foreign-revision
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: .spec.source.targetRevision = "foreign"
+  fail: [application-directory-source]
+- name: path-traversal
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: .spec.source.path = "./generated/manifests/prod-home/../outside"
+  fail: [application-source-confinement]
+- name: path-alias
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: .spec.source.path = "./generated/manifests/prod-home/./argocd"
+  fail: [application-source-confinement]
+- name: source-directory-absent
+  mutate: (.bundle.resources[] | select(.object.kind == "Application" and .object.metadata.name == "argocd") | .object["spec"]["source"]["path"])
+    = "./generated/manifests/prod-home/absent"
+  fail: [application-source-coverage, resource-retention]
+- name: recursive-bootstrap
+  base: argoproj.io/v1alpha1/Application/argocd/apps
+  mutate: '.spec.source.directory = {"recurse": true}'
+  fail: [application-source-confinement]
+- name: renderer-marker-inventory
+  mutate: .bundle["files"] += ["argocd/Chart.yaml"]
+  fail: [application-source-inventory]
+- name: jsonnet-inventory
+  mutate: .bundle["files"] += ["argocd/hidden.jsonnet"]
+  fail: [application-source-inventory]
+- name: unsupported-source-file
+  mutate: .bundle["files"] += ["argocd/hidden.txt"]
+  fail: [application-source-inventory]
+- name: unconsumed-manifest
+  mutate: .bundle["files"] += ["argocd/empty.yaml"]
+  fail: [application-source-inventory]
+- name: unreferenced-source-directory
+  mutate: .bundle["directories"] += ["unreferenced"]
+  fail: [application-source-coverage]
+- name: shared-source-directory
+  mutate: (.bundle.resources[] | select(.object.kind == "Application" and .object.metadata.name == "cluster-dns")
+    | .object["spec"]["source"]["path"]) = "./generated/manifests/prod-home/argocd"
+  fail: [application-source-coverage, resource-retention]
+- name: empty-cascading-source
+  mutate: .bundle.resources |= map(select((.object.kind == "ConfigMap" and .object.metadata.name == "coredns-custom")
+    | not))
+  fail: [application-source-coverage, application-source-inventory]
+- name: retained-delete-token-removed
+  mutate: (.bundle.resources[] | select(.object.kind == "Namespace" and .object.metadata.name == "argocd") | .object["metadata"]["annotations"]["argocd.argoproj.io/sync-options"])
+    = "Prune=false"
+  fail: [resource-retention]
+- name: retained-delete-substring
+  mutate: (.bundle.resources[] | select(.object.kind == "Namespace" and .object.metadata.name == "argocd") | .object["metadata"]["annotations"]["argocd.argoproj.io/sync-options"])
+    = "Prune=false,NotDelete=false"
+  fail: [resource-retention]
+- name: cascading-delete-token
+  mutate: (.bundle.resources[] | select(.object.kind == "ConfigMap" and .object.metadata.name == "coredns-custom")
+    | .object["metadata"]["annotations"]) = {"argocd.argoproj.io/sync-options":"Delete=false"}
+  fail: [resource-retention]
+- name: retention-token-whitespace
+  mutate: (.bundle.resources[] | select(.object.kind == "Namespace" and .object.metadata.name == "argocd") | .object["metadata"]["annotations"]["argocd.argoproj.io/sync-options"])
+    = " Prune=false , Delete=false "
+- name: unknown-groupkind-scope
+  mutate: (.bundle.resources[] | select(.object.kind == "ConfigMap" and .object.metadata.name == "coredns-custom")
+    | .object["apiVersion"]) = "unregistered.example/v1"
+  fail: [resource-effective-identity]
+- name: duplicate-implicit-destination
+  mutate: |-
+    .bundle["resources"] += [{"file":"cluster-dns/ConfigMap-duplicate-implicit-destination.yaml","document":0,"object":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"coredns-custom"},"data":{"mutation":"duplicate"}},"content":""}] |
+    .bundle["files"] += ["cluster-dns/ConfigMap-duplicate-implicit-destination.yaml"]
+  fail: [resource-effective-identity]
+- name: duplicate-cross-version
+  mutate: |-
+    .bundle["resources"] += [{"file":"cluster-dns/ConfigMap-duplicate-cross-version.yaml","document":0,"object":{"apiVersion":"v2","kind":"ConfigMap","metadata":{"name":"coredns-custom","namespace":"kube-system"},"data":{"mutation":"duplicate"}},"content":""}] |
+    .bundle["files"] += ["cluster-dns/ConfigMap-duplicate-cross-version.yaml"]
+  fail: [resource-effective-identity]
+- name: project-wrong-name
+  base: argoproj.io/v1alpha1/AppProject/argocd/prod-home
+  mutate: .metadata.name = "foreign"
+  fail: [root-project-ownership]
+  applies: [root-project-ownership]
+- name: project-delete-unprotected
+  base: argoproj.io/v1alpha1/AppProject/argocd/prod-home
+  mutate: .metadata.annotations["argocd.argoproj.io/sync-options"] = "Prune=false"
+  fail: [root-project-ownership]
+- name: project-too-late
+  mutate: (.bundle.resources[] | select(.object.kind == "AppProject" and .object.metadata.name == "prod-home") |
+    .object["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"]) = "100"
+  fail: [application-lifecycle-order]
+- name: project-repository-widened
+  base: argoproj.io/v1alpha1/AppProject/argocd/prod-home
+  mutate: .spec.sourceRepos[0] = "*"
+  fail: [project-repository-destination-authority]
+- name: project-destination-widened
+  base: argoproj.io/v1alpha1/AppProject/argocd/prod-home
+  mutate: '.spec.destinations += [{"server": "https://kubernetes.default.svc", "namespace": "*"}]'
+  fail: [project-repository-destination-authority]
+- name: project-destination-insufficient
+  mutate: (.bundle.resources[] | select(.object.kind == "AppProject" and .object.metadata.name == "prod-home") |
+    .object["spec"]["destinations"]) = []
+  fail: [project-destination-coverage]
+- name: project-alternate-authority
+  base: argoproj.io/v1alpha1/AppProject/argocd/prod-home
+  mutate: .spec.sourceNamespaces = ["*"]
+  fail: [project-repository-destination-authority]
+- name: project-cluster-wildcard
+  mutate: (.bundle.resources[] | select(.object.kind == "AppProject" and .object.metadata.name == "prod-home") |
+    .object["spec"]["clusterResourceWhitelist"]) += [{"group":"*","kind":"*"}]
+  fail: [project-cluster-authority]
+- name: project-cluster-unused
+  mutate: (.bundle.resources[] | select(.object.kind == "AppProject" and .object.metadata.name == "prod-home") |
+    .object["spec"]["clusterResourceWhitelist"]) += [{"group":"","kind":"Node"}]
+  fail: [project-cluster-authority]
+- name: project-cluster-insufficient
+  mutate: (.bundle.resources[] | select(.object.kind == "AppProject" and .object.metadata.name == "prod-home") |
+    .object["spec"]["clusterResourceWhitelist"]) = []
+  fail: [project-cluster-authority]
+- name: dependency-wave-reversed
+  mutate: (.bundle.resources[] | select(.object.kind == "Application" and .object.metadata.name == "argocd-retained")
+    | .object["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"]) = "100"
+  fail: [application-lifecycle-order]
+- name: dependency-population-missing
+  mutate: .bundle.resources |= map(select((.object.kind == "Application" and .object.metadata.name == "gateway-controller")
+    | not))
+  fail: [application-lifecycle-order, application-source-coverage, application-source-inventory, gitops-population,
+    resource-retention]
+- name: bootstrap-population-missing
+  mutate: .bundle["bootstrap"] = []
+  fail: [bootstrap-provenance, bootstrap-seed-identity]
+- name: bootstrap-object-drift
+  mutate: (.bundle.resources[] | select(.object.kind == "Application" and .object.metadata.name == "apps") | .object["metadata"]["annotations"])
+    = {"harmless":"drift"}
+  fail: [bootstrap-provenance]
+- name: bootstrap-seed-content-drift
+  mutate: |-
+    .bundle["bootstrap"][0]["content"] = "independent-seed-drift" |
+    .bundle["bootstrap"][1]["content"] = "independent-seed-drift"
+  fail: [bootstrap-provenance]
+- name: bootstrap-default-repository-widened
+  base: argoproj.io/v1alpha1/AppProject/argocd/default
+  mutate: .spec.sourceRepos[0] = "*"
+  fail: [bootstrap-default-authority]
+- name: bootstrap-default-cluster-widened
+  base: argoproj.io/v1alpha1/AppProject/argocd/default
+  mutate: '.spec.clusterResourceWhitelist = [{"group": "", "kind": "Namespace"}]'
+  fail: [bootstrap-default-authority]
+- name: bootstrap-default-namespace-widened
+  base: argoproj.io/v1alpha1/AppProject/argocd/default
+  mutate: .spec.destinations[0].namespace = "*"
+  fail: [bootstrap-default-authority]
+- name: synthetic-server-constrained
+  base: networking.k8s.io/v1/NetworkPolicy/argocd/gateway-argocd-backend-ingress
+  mutate: '.metadata.name = "verification-server" | .spec.ingress = [{"from": [{"podSelector": {"matchLabels": {"app.kubernetes.io/name":
+    "allowed-client"}}}]}]'
+  applies: [argocd-server-network-ingress]
+- name: synthetic-server-open
+  base: networking.k8s.io/v1/NetworkPolicy/argocd/gateway-argocd-backend-ingress
+  mutate: .metadata.name = "verification-server" | .spec.ingress = [{}]
+  fail: [argocd-server-network-ingress]
+  applies: [argocd-server-network-ingress]
+- name: alternate-source-hydrator
+  base: argoproj.io/v1alpha1/Application/argocd/argocd
+  mutate: '.spec.sourceHydrator = {"drySource": {"repoURL": "https://foreign.invalid/repo.git", "targetRevision":
+    "main", "path": "outside"}}'
+  fail: [application-directory-source]
+- name: project-child-owned
+  mutate: .bundle.resources += [{"file":"argocd/AppProject-foreign.yaml","document":0,"content":"","object":{"apiVersion":"argoproj.io/v1alpha1","kind":"AppProject","metadata":{"annotations":{"argocd.argoproj.io/sync-options":"Prune=false,Delete=false","argocd.argoproj.io/sync-wave":"-4"},"name":"foreign","namespace":"argocd"},"spec":{"clusterResourceWhitelist":[{"group":"","kind":"Namespace"},{"group":"","kind":"PersistentVolume"},{"group":"apiextensions.k8s.io","kind":"CustomResourceDefinition"},{"group":"cert-manager.io","kind":"ClusterIssuer"},{"group":"admissionregistration.k8s.io","kind":"MutatingWebhookConfiguration"},{"group":"admissionregistration.k8s.io","kind":"ValidatingAdmissionPolicy"},{"group":"admissionregistration.k8s.io","kind":"ValidatingAdmissionPolicyBinding"},{"group":"admissionregistration.k8s.io","kind":"ValidatingWebhookConfiguration"},{"group":"rbac.authorization.k8s.io","kind":"ClusterRole"},{"group":"rbac.authorization.k8s.io","kind":"ClusterRoleBinding"},{"group":"storage.k8s.io","kind":"StorageClass"},{"group":"gateway.networking.k8s.io","kind":"GatewayClass"}],"destinations":[{"namespace":"argocd","server":"https://kubernetes.default.svc"},{"namespace":"cert-manager","server":"https://kubernetes.default.svc"},{"namespace":"kube-system","server":"https://kubernetes.default.svc"},{"namespace":"local-path-storage","server":"https://kubernetes.default.svc"},{"namespace":"gateway","server":"https://kubernetes.default.svc"},{"namespace":"identity","server":"https://kubernetes.default.svc"},{"namespace":"jellyfin","server":"https://kubernetes.default.svc"},{"namespace":"media","server":"https://kubernetes.default.svc"}],"sourceRepos":["https://github.com/dvicory/homelab.git"]}}}]
+  fail: [resource-retention, root-project-source-ownership]
+- name: project-destination-extra-explicit
+  mutate: (.bundle.resources[] | select(.object.kind == "AppProject") | .object.spec.destinations) += [{"namespace":"unowned","server":"https://kubernetes.default.svc"}]
+  fail: [project-destination-coverage]
+- name: bootstrap-seed-renamed
+  mutate: (.bundle.bootstrap[] | select(.object.kind == "AppProject") | .object.metadata.name) = "prod-home"
+  fail: [bootstrap-seed-identity]
+- name: cluster-resource-explicit-namespace
+  mutate: (.bundle.resources[] | select(.object.apiVersion == "gateway.networking.k8s.io/v1" and .object.kind ==
+    "GatewayClass" and .object.metadata.name == "envoy") | .object.metadata.namespace) = "default"
+  fail: [resource-effective-identity]
+- name: media-coordination-pv-delete-protection-missing
+  mutate: (.bundle.resources[] | select(.file == "media-seerr-configuration-storage/PersistentVolume-media-seerr-configuration.yaml")
+    | .object.metadata.annotations."argocd.argoproj.io/sync-options") = "Prune=false"
+  fail: [resource-retention]
+- name: media-coordination-pvc-delete-protection-missing
+  mutate: (.bundle.resources[] | select(.file == "media-seerr-configuration-storage/PersistentVolumeClaim-media-seerr-configuration.yaml")
+    | .object.metadata.annotations."argocd.argoproj.io/sync-options") = "Prune=false"
+  fail: [resource-retention]

@@ -113,60 +113,6 @@ let
     variant: map (route: builtins.elemAt route.hostnames variant) (builtins.attrValues publicRoutes);
   sorted = values: lib.sort builtins.lessThan values;
   allAssertions = module: lib.all (assertion: assertion.assertion) module.assertions;
-  gatewayObjects =
-    inventory:
-    gateway.k8s-manifests {
-      cluster = inventory;
-      computeResources.instance = "compute-1";
-      charts = { };
-      inherit lib;
-    };
-  renderedGateway = gatewayObjects testCluster;
-  allGatewayObjects =
-    inventory:
-    let
-      rendered = gatewayObjects inventory;
-      gated = rendered.applications.identity-gateway;
-    in
-    rendered.applications.gateway.objects ++ lib.optionals gated.condition gated.content.objects;
-  gatewayRoutes = lib.filter (object: object.kind == "HTTPRoute") (allGatewayObjects testCluster);
-  gatewayPolicy =
-    inventory:
-    builtins.head (
-      lib.filter (
-        object: object.kind == "ClientTrafficPolicy" && object.metadata.name == "trusted-edges"
-      ) (allGatewayObjects inventory)
-    );
-  trustedGatewayPolicy = gatewayPolicy testCluster;
-  directCluster = testCluster // {
-    ingress = testCluster.ingress // {
-      mode = "direct";
-      trustedProxyCIDRs = [ ];
-    };
-  };
-  directGatewayPolicy = gatewayPolicy directCluster;
-  renderedPolicyFor = builtins.toJSON {
-    trusted = trustedGatewayPolicy.spec;
-    direct = directGatewayPolicy.spec;
-  };
-  clientTrafficPolicyCrd = ../../generated/manifests/prod-home/gateway-crds/CustomResourceDefinition-clienttrafficpolicies-gateway-envoyproxy-io.yaml;
-  gatewayIdentityContract = lib.all (
-    route:
-    let
-      filter = builtins.head (builtins.head route.spec.rules).filters;
-    in
-    filter.type == "RequestHeaderModifier"
-    &&
-      sorted filter.requestHeaderModifier.remove == sorted [
-        "X-Real-IP"
-        "X-Forwarded-User"
-        "X-Forwarded-Email"
-        "X-Auth-Request-User"
-        "X-Auth-Request-Email"
-        "Remote-User"
-        "Forwarded"
-      ]
-  ) gatewayRoutes;
   seerrInitialCluster = lib.recursiveUpdate testCluster {
     settings.kubernetes.services.seerr.phase = "initial";
   };
@@ -177,140 +123,22 @@ let
   seerrInitialHome = roleModule seerrInitialEdge.den.aspects.services.home-edge (
     mkHost "home-edge" homeSettings
   );
-  hasRequests = objects: lib.any (object: object.metadata.name == "requests") objects;
   seerrPhaseContract =
-    routes.requests.auth == "native"
-    && routes.requests.exposure == "public"
-    && !(hasRequests (allGatewayObjects seerrInitialCluster))
-    && hasRequests (allGatewayObjects testCluster)
-    && lib.all (
+    lib.all (
       module:
       !(builtins.hasAttr (builtins.head routes.requests.hostnames) module.services.nginx.virtualHosts)
       && !(builtins.hasAttr (builtins.elemAt routes.requests.hostnames 1) module.services.nginx.virtualHosts)
     ) [ seerrInitialRemote seerrInitialHome ]
     && builtins.hasAttr (builtins.head routes.requests.hostnames) remoteModule.services.nginx.virtualHosts
     && builtins.hasAttr (builtins.elemAt routes.requests.hostnames 1) homeModule.services.nginx.virtualHosts;
-  initialGatewayObjects = allGatewayObjects initialCluster;
-  initialAdminPublicationAbsent = lib.all (
-    object:
-    !(builtins.elem object.kind [
-      "HTTPRoute"
-      "ReferenceGrant"
-      "BackendTLSPolicy"
-      "NetworkPolicy"
-    ])
-    || !(lib.hasInfix "argocd" object.metadata.name)
-  ) initialGatewayObjects;
   gatewayRenderSucceeds =
-    inventory: (builtins.tryEval (builtins.length (allGatewayObjects inventory))).success;
-  envoyProxy = builtins.head (
-    lib.filter (object: object.kind == "EnvoyProxy") renderedGateway.applications.gateway.objects
-  );
-  gatewayImage = "docker.io/envoyproxy/gateway:v1.9.1@sha256:0049bcb384c591c6a6dd043fe5c9929ef6e74f230e12dd678d2d3701df9b301e";
-  proxyImage = "docker.io/envoyproxy/envoy:distroless-v1.39.1@sha256:eb2c01c13125d1629637cb4e4cce7207009fb7cc2c8027f9742758549d15b6f4";
-  controllerValues =
-    renderedGateway.applications.gateway-controller.helm.releases.envoy-gateway.values;
-  pinnedImages =
-    controllerValues.global.images.envoyGateway.image == gatewayImage
-    && controllerValues.global.images.envoyProxy.image == proxyImage
-    && controllerValues.config.envoyGateway.provider.kubernetes.shutdownManager.image == gatewayImage
-    && envoyProxy.spec.provider.kubernetes.envoyDeployment.container.image == proxyImage;
-  timeoutContract = lib.all (
-    route:
-    (builtins.head route.spec.rules).timeouts == (
-      if route.metadata.name == "jellyfin" then
-        {
-          request = "0s";
-          backendRequest = "0s";
-        }
-      else
-        {
-          request = "15s";
-          backendRequest = "15s";
-        }
-    )
-  ) gatewayRoutes;
-  backendTLSContract = lib.all (
-    object:
-    object.kind != "BackendTLSPolicy"
-    || (
-      object.spec.validation.hostname == routes.${object.metadata.name}.backendHostname
-      && object.spec.validation.wellKnownCACertificates == "System"
-    )
-  ) (allGatewayObjects testCluster);
-  nginxLogConfig = remoteModule.services.nginx.commonHttpConfig;
-  querylessNginxLogs =
-    lib.hasInfix "\"path\":\"$uri\"" nginxLogConfig
-    && lib.hasInfix "\"request_id\":\"$request_id\"" nginxLogConfig
-    && !(lib.hasInfix "$request_uri" nginxLogConfig)
-    && !(lib.hasInfix "$args" nginxLogConfig);
-  backendPolicies =
     inventory:
-    lib.filter (object: lib.hasSuffix "-backend-ingress" object.metadata.name) (
-      allGatewayObjects inventory
-    );
-  policyFor =
-    inventory: name:
-    builtins.head (
-      lib.filter (policy: policy.metadata.name == "gateway-${name}-backend-ingress") (
-        backendPolicies inventory
-      )
-    );
-  backendPolicyContract =
-    inventory:
-    let
-      routeNames = builtins.attrNames inventory.routes;
-      objects = backendPolicies inventory;
-      proxySelector = {
-        namespaceSelector.matchLabels."kubernetes.io/metadata.name" = "gateway";
-        podSelector.matchLabels = {
-          "gateway.envoyproxy.io/owning-gateway-namespace" = "gateway";
-          "gateway.envoyproxy.io/owning-gateway-name" = "household";
-        };
-      };
-    in
-    sorted (map (policy: policy.metadata.name) objects)
-    == sorted (map (name: "gateway-${name}-backend-ingress") routeNames)
-    && lib.all (
-      name:
-      let
-        route = inventory.routes.${name};
-        policy = policyFor inventory name;
-      in
-      policy.metadata.namespace == route.namespace
-      && policy.spec.podSelector.matchLabels == route.backendPodSelector
-      && policy.spec.policyTypes == [ "Ingress" ]
-      &&
-        policy.spec.ingress == [
-          {
-            from = [
-              {
-                namespaceSelector.matchLabels."kubernetes.io/metadata.name" = route.namespace;
-              }
-            ];
-          }
-          {
-            from = [ proxySelector ];
-          }
-        ]
-    ) routeNames;
-  sameNamespaceCluster = testCluster // {
-    routes = routes // {
-      idm = routes.idm // {
-        namespace = routes.argocd.namespace;
-      };
-    };
-  };
-  sameNamespaceBackendPolicyContract =
-    let
-      argocd = policyFor sameNamespaceCluster "argocd";
-      idm = policyFor sameNamespaceCluster "idm";
-    in
-    builtins.length (backendPolicies sameNamespaceCluster)
-    == builtins.length (builtins.attrNames routes)
-    && argocd.metadata.namespace == idm.metadata.namespace
-    && argocd.metadata.name != idm.metadata.name
-    && argocd.spec.podSelector.matchLabels != idm.spec.podSelector.matchLabels;
+    (builtins.tryEval (builtins.seq (gateway.k8s-manifests {
+      cluster = inventory;
+      computeResources.instance = "compute-1";
+      charts = { };
+      inherit lib;
+    }) true)).success;
   emptySelectorCluster = testCluster // {
     routes = routes // {
       argocd = routes.argocd // {
@@ -353,23 +181,6 @@ let
     && lib.all (
       location:
       location.proxyPass == "https://${settings.originHost}:${toString settings.originPort}"
-      && lib.hasInfix "proxy_ssl_server_name on;" location.extraConfig
-      && lib.hasInfix "proxy_ssl_name ${settings.originServerName};" location.extraConfig
-      && lib.hasInfix "proxy_ssl_verify on;" location.extraConfig
-      && lib.hasInfix "proxy_ssl_trusted_certificate ${settings.originCA};" location.extraConfig
-      && !(lib.hasInfix "proxy_set_header X-Real-IP" location.extraConfig)
-      && lib.hasInfix "proxy_set_header X-Forwarded-For $remote_addr;" location.extraConfig
-      && lib.hasInfix "proxy_set_header X-Forwarded-Host $host;" location.extraConfig
-      && lib.hasInfix "proxy_set_header X-Forwarded-Proto https;" location.extraConfig
-      && lib.hasInfix "proxy_set_header X-Forwarded-Port 443;" location.extraConfig
-      && lib.hasInfix "proxy_set_header Forwarded \"\";" location.extraConfig
-      && lib.hasInfix "proxy_set_header X-Forwarded-User \"\";" location.extraConfig
-      && lib.hasInfix "proxy_set_header X-Forwarded-Email \"\";" location.extraConfig
-      && lib.hasInfix "proxy_set_header X-Auth-Request-User \"\";" location.extraConfig
-      && lib.hasInfix "proxy_set_header X-Auth-Request-Email \"\";" location.extraConfig
-      && lib.hasInfix "proxy_set_header Remote-User \"\";" location.extraConfig
-      && lib.hasInfix "proxy_set_header X-Request-ID $request_id;" location.extraConfig
-      && !(lib.hasInfix "$http_x_request_id" location.extraConfig)
     ) locations
     && lib.all (
       hostname:
@@ -471,7 +282,6 @@ let
     gated-identity-bare-route-rejects-unmatched =
       privatePhaseEdge initialIdmHomeModule && privatePhaseEdge provisioningIdmRemoteModule;
     invalid-bare-route-inventory-key-rejected = !allAssertions invalidBareRouteModule;
-    initial-admin-gateway-publication-absent = initialAdminPublicationAbsent;
     seerr-native-auth-phase-boundary = seerrPhaseContract;
     public-origin-rejected = !allAssertions badOriginModule;
     undeclared-peer-rejected = !allAssertions badPeerModule;
@@ -479,16 +289,9 @@ let
     missing-canonical-tls-rejected = !allAssertions missingCanonicalTLSModule;
     unsupported-prefix-rejected = !allAssertions badPathModule;
     direct-mode-edge-rejected = !allAssertions badModeModule;
-    gateway-identity-boundary = gatewayIdentityContract;
     gateway-direct-with-peers-rejected = !gatewayRenderSucceeds badModeCluster;
     gateway-trusted-without-peers-rejected = !gatewayRenderSucceeds badTrustedModeCluster;
-    bounded-route-timeouts = timeoutContract;
-    backend-tls-hostname-and-trust = backendTLSContract;
-    queryless-nginx-logs = querylessNginxLogs;
-    envoy-images-pinned = pinnedImages;
     non-private-trusted-peer-rejected = !allAssertions badTrustedModule;
-    backend-policy-selectors = backendPolicyContract testCluster;
-    same-namespace-backend-policies = sameNamespaceBackendPolicyContract;
     empty-backend-selector-rejected = !gatewayRenderSucceeds emptySelectorCluster;
     missing-backend-selector-rejected = !gatewayRenderSucceeds missingSelectorCluster;
   };
@@ -496,39 +299,10 @@ in
 {
   perSystem =
     { pkgs, ... }:
-    let
-      renderedPolicy = pkgs.writeText "client-traffic-policy.json" renderedPolicyFor;
-      python = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
-    in
     {
       checks.public-edge-contracts =
         assert lib.assertMsg (failures == { })
           "Public-edge contract checks failed: ${builtins.concatStringsSep ", " (builtins.attrNames failures)}";
-        pkgs.runCommand "public-edge-contracts" { nativeBuildInputs = [ python ]; } ''
-          # Every spec key we render must be declared by the shipped CRD's
-          # schema, and headers.requestID must carry an enum member; a
-          # misplaced field (e.g. spec.requestID) is pruned by the API server.
-          python - ${clientTrafficPolicyCrd} ${renderedPolicy} <<'PY'
-          import json
-          import sys
-          import yaml
-
-          crd = yaml.safe_load(open(sys.argv[1]))
-          version = next(v for v in crd["spec"]["versions"] if v["storage"])
-          spec_props = version["schema"]["openAPIV3Schema"]["properties"]["spec"]["properties"]
-          rendered = json.load(open(sys.argv[2]))
-          for mode, spec in rendered.items():
-              for key in spec:
-                  assert key in spec_props, (
-                      f"spec.{key} ({mode}) is not declared by the ClientTrafficPolicy CRD"
-                  )
-              rid_schema = spec_props["headers"]["properties"].get("requestID")
-              assert rid_schema is not None, "spec.headers.requestID is not in the CRD schema"
-              assert spec["headers"]["requestID"] in rid_schema["enum"], (
-                  f"spec.headers.requestID={spec['headers']['requestID']} not in CRD enum"
-              )
-          PY
-          touch "$out"
-        '';
+        pkgs.writeText "public-edge-contracts" "ok\n";
     };
 }

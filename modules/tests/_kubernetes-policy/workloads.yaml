@@ -1,0 +1,770 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verification-workloads
+  annotations:
+    policies.kyverno.io/title: Offline workload and storage contracts
+    pod-policies.kyverno.io/autogen-controllers: none
+    verification.homelab/classification: admission-and-repository-only
+spec:
+  background: false
+  rules:
+  - name: pod-secret-readable
+    match: &id001
+      any:
+      - resources:
+          kinds:
+          - v1/Pod
+          - apps/v1/Deployment
+          - apps/v1/DaemonSet
+          - apps/v1/StatefulSet
+          - apps/v1/ReplicaSet
+          - v1/ReplicationController
+          - batch/v1/Job
+          - batch/v1/CronJob
+    validate:
+      failureAction: Enforce
+      cel:
+        variables:
+        - &id002
+          name: pod
+          expression: 'object.kind == ''Pod'' ? object.spec : object.kind == ''CronJob'' ? object.spec.jobTemplate.spec.template.spec
+            : object.spec.template.spec'
+        - &id003
+          name: pods
+          expression: '[variables.pod]'
+        expressions:
+        - expression: 'variables.pods.all(p, ((has(p.containers) ? p.containers : []) + (has(p.initContainers) ?
+            p.initContainers : []) + (has(p.ephemeralContainers) ? p.ephemeralContainers : [])).all(c, (has(c.securityContext)
+            && has(c.securityContext.runAsUser) ? int(c.securityContext.runAsUser) : has(p.securityContext) && has(p.securityContext.runAsUser)
+            ? int(p.securityContext.runAsUser) : -1) == 0 || (has(c.volumeMounts) ? c.volumeMounts : []).all(m,
+            (has(p.volumes) ? p.volumes : []).filter(v, v.name == m.name).all(v, (!has(v.secret) || (has(v.secret.items)
+            && size(v.secret.items) > 0 ? v.secret.items : [{}]).map(i, has(i.mode) ? int(i.mode) : has(v.secret.defaultMode)
+            ? int(v.secret.defaultMode) : 420).all(mode, mode % 8 >= 4 || (has(p.securityContext) && has(p.securityContext.fsGroup))))
+            && (!has(v.projected) || (has(v.projected.sources) && v.projected.sources.all(s, (has(s.secret) && has(s.secret.items)
+            && size(s.secret.items) > 0 ? s.secret.items : has(s.configMap) && has(s.configMap.items) && size(s.configMap.items)
+            > 0 ? s.configMap.items : has(s.downwardAPI) && has(s.downwardAPI.items) && size(s.downwardAPI.items)
+            > 0 ? s.downwardAPI.items : [{}]).map(i, has(i.mode) ? int(i.mode) : has(v.projected.defaultMode) ?
+            int(v.projected.defaultMode) : 420).all(mode, mode % 8 >= 4 || (has(p.securityContext) && has(p.securityContext.fsGroup))))))))))'
+          message: Every non-root container must read each mounted Secret/projected key. Kubelet fsGroup ownership
+            adds the read-only 0440 mask, independently of runAsGroup and even when the original per-key mode is
+            zero.
+  - name: pod-pvc-no-fsgroup
+    match: *id001
+    validate:
+      failureAction: Enforce
+      cel:
+        variables:
+        - *id002
+        - *id003
+        expressions:
+        - expression: 'variables.pods.all(p, !(has(p.securityContext) && has(p.securityContext.fsGroup) && (has(p.volumes)
+            ? p.volumes : []).exists(v, has(v.persistentVolumeClaim))))'
+          message: PVC workloads must not set fsGroup, which recursively changes retained ownership.
+  - name: jellyfin-runtime
+    match:
+      any:
+      - resources:
+          kinds:
+          - apps/v1/Deployment
+          names:
+          - jellyfin
+          namespaces:
+          - jellyfin
+    validate:
+      failureAction: Enforce
+      cel:
+        variables:
+        - name: jellyDeployment
+          expression: object
+        - &id004
+          name: jellyPod
+          expression: object.spec.template.spec
+        - &id005
+          name: runtime
+          expression: variables.jellyPod.containers.filter(c, c.name == 'jellyfin')
+        expressions:
+        - expression: size(variables.runtime) == 1 && variables.jellyDeployment.spec.strategy.type == 'Recreate'
+            && variables.jellyPod.securityContext.runAsNonRoot == true && int(variables.jellyPod.securityContext.runAsUser)
+            == int(params.metadata.annotations.jellyfinUid) && int(variables.jellyPod.securityContext.runAsGroup) == int(params.metadata.annotations.jellyfinGid)
+            && variables.runtime.all(c, has(c.readinessProbe) && has(c.startupProbe) && has(c.livenessProbe) &&
+            c.securityContext.allowPrivilegeEscalation == false && 'ALL' in c.securityContext.capabilities.drop
+            && (!has(c.ports) || size(c.ports) == 0))
+          message: The long-lived Jellyfin runtime retains its identity, hardening, probes, no declared ports, and
+            Recreate lifecycle.
+        paramKind:
+          apiVersion: v1
+          kind: Namespace
+        paramRef:
+          name: policy-facts
+          parameterNotFoundAction: Deny
+  - name: jellyfin-provisioner
+    match:
+      any:
+      - resources:
+          kinds:
+          - apps/v1/Deployment
+          names:
+          - jellyfin
+          namespaces:
+          - jellyfin
+    validate:
+      failureAction: Enforce
+      cel:
+        variables:
+        - *id004
+        - *id005
+        - &id006
+          name: provision
+          expression: 'has(variables.jellyPod.initContainers) ? variables.jellyPod.initContainers.filter(c, c.name
+            == ''provision'') : []'
+        expressions:
+        - expression: size(variables.runtime) == 1 && size(variables.provision) == 1 && variables.provision.all(c,
+            c.image != variables.runtime[0].image && !has(c.readinessProbe) && (!has(c.ports) || size(c.ports) ==
+            0) && c.volumeMounts.filter(m, m.mountPath == '/config').size() == 1 && c.volumeMounts.filter(m, m.mountPath
+            == '/run/provision').size() == 1 && c.volumeMounts.filter(m, m.mountPath == '/run/secrets/password').size()
+            == 1 && c.volumeMounts.filter(m, m.mountPath == '/run/secrets/password').all(m, m.readOnly == true)
+            && c.volumeMounts.filter(m, m.mountPath == '/config').all(m, variables.runtime[0].volumeMounts.filter(r,
+            r.mountPath == '/config').size() == 1 && variables.runtime[0].volumeMounts.exists(r, r.mountPath ==
+            '/config' && r.name == m.name) && !c.volumeMounts.exists(r, r.mountPath == '/run/provision' && r.name
+            == m.name)) && c.volumeMounts.filter(m, m.mountPath == '/run/provision').all(m, variables.jellyPod.volumes.filter(v,
+            v.name == m.name).size() == 1 && variables.jellyPod.volumes.exists(v, v.name == m.name && has(v.emptyDir)
+            && has(v.emptyDir.medium) && v.emptyDir.medium == 'Memory')))
+          message: The patched provisioner is isolated from runtime, shares config, uses a separate memory-only
+            workspace and read-only password, and has no runtime probes/ports.
+  - name: jellyfin-media
+    match:
+      any:
+      - resources:
+          kinds:
+          - apps/v1/Deployment
+          names:
+          - jellyfin
+          namespaces:
+          - jellyfin
+    validate:
+      failureAction: Enforce
+      cel:
+        variables:
+        - *id004
+        - *id005
+        - *id006
+        expressions:
+        - expression: 'size(variables.runtime) == 1 && size(variables.provision) == 1 && variables.provision.all(c,
+            !c.volumeMounts.exists(m, m.mountPath == ''/media'')) && variables.runtime.all(c, c.volumeMounts.filter(m,
+            m.mountPath == ''/media'').size() == 1 && c.volumeMounts.filter(m, m.mountPath == ''/media'').all(m,
+            m.readOnly == true && variables.jellyPod.volumes.filter(v, v.name == m.name).size() == 1 && variables.jellyPod.volumes.exists(v,
+            v.name == m.name && has(v.hostPath) && v.hostPath == {''path'':dyn(params.metadata.annotations.mediaLibrary),''type'':dyn(''Directory'')})))'
+          message: Jellyfin runtime consumes the semantic library hostPath read-only; the provisioner has no media
+            access.
+        paramKind:
+          apiVersion: v1
+          kind: Namespace
+        paramRef:
+          name: policy-facts
+          parameterNotFoundAction: Deny
+  - name: jellyfin-cache
+    match:
+      any:
+      - resources:
+          kinds:
+          - apps/v1/Deployment
+          names:
+          - jellyfin
+          namespaces:
+          - jellyfin
+    validate:
+      failureAction: Enforce
+      cel:
+        variables:
+        - *id004
+        - *id005
+        expressions:
+        - expression: size(variables.runtime) == 1 && variables.runtime.all(c, c.volumeMounts.filter(m, m.mountPath
+            == '/cache').size() == 1 && c.volumeMounts.filter(m, m.mountPath == '/cache').all(m, variables.jellyPod.volumes.filter(v,
+            v.name == m.name).size() == 1 && variables.jellyPod.volumes.filter(v, v.name == m.name).all(v, has(v.emptyDir)
+            && quantity(v.emptyDir.sizeLimit).compareTo(quantity(c.resources.requests['ephemeral-storage'])) <=
+            0 && quantity(c.resources.requests['ephemeral-storage']).compareTo(quantity(c.resources.limits['ephemeral-storage']))
+            < 0)))
+          message: Jellyfin ephemeral storage reserves cache capacity with headroom; Kubernetes quantities are compared
+            natively.
+  - name: jellyfin-retained-storage
+    match:
+      any:
+      - resources:
+          kinds:
+          - v1/PersistentVolume
+          names:
+          - jellyfin-config
+      - resources:
+          kinds:
+          - v1/PersistentVolumeClaim
+          names:
+          - jellyfin-config
+          namespaces:
+          - jellyfin
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: 'object.kind == ''PersistentVolume'' ? (object.spec.storageClassName == '''' && object.spec.persistentVolumeReclaimPolicy
+            == ''Retain'' && object.spec.claimRef == {''namespace'':dyn(params.metadata.annotations.jellyfinNamespace),''name'':dyn(''jellyfin-config'')})
+            : (object.spec.storageClassName == '''' && object.spec.volumeName == ''jellyfin-config'')'
+          message: Jellyfin config binds its retained classless PV/PVC explicitly.
+        paramKind:
+          apiVersion: v1
+          kind: Namespace
+        paramRef:
+          name: policy-facts
+          parameterNotFoundAction: Deny
+  - name: jellyfin-runtime-credentials
+    match:
+      any:
+      - resources:
+          kinds:
+          - apps/v1/Deployment
+          names:
+          - jellyfin
+          namespaces:
+          - jellyfin
+      - resources:
+          kinds:
+          - v1/ConfigMap
+          - v1/Secret
+          namespaces:
+          - jellyfin
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: 'object.kind == ''Deployment'' ? (object.spec.template.spec.volumes.exists(v, has(v.secret)
+            && v.secret.secretName == ''jellyfin-admin'') && !object.spec.template.spec.volumes.exists(v, v.name
+            == ''network'')) : object.kind == ''ConfigMap'' ? (object.metadata.name != ''network'' && (!has(object.data)
+            || !(''network.xml'' in object.data))) : (!(object.metadata.name.lowerAscii().contains(''jellarr'')
+            || object.metadata.name.lowerAscii().contains(''api-key'') || object.metadata.name.lowerAscii().contains(''apikey''))
+            && (object.metadata.name != ''jellyfin-admin'' || ((!has(object.data) || size(object.data) == 0) &&
+            (!has(object.stringData) || size(object.stringData) == 0))))'
+          message: Password bytes are runtime-only; generated network.xml writers and durable Jellarr API-key Secrets
+            are forbidden.
+  - name: jellyfin-configuration-job
+    match:
+      any:
+      - resources:
+          kinds:
+          - batch/v1/Job
+          names:
+          - jellyfin-configuration
+          namespaces:
+          - jellyfin
+    validate:
+      failureAction: Enforce
+      cel:
+        variables:
+        - name: configurationJob
+          expression: object
+        - name: jobPod
+          expression: object.spec.template.spec
+        - name: jellarr
+          expression: variables.jobPod.containers.filter(c, c.name == 'jellarr')
+        - name: bootstrap
+          expression: 'has(variables.jobPod.initContainers) ? variables.jobPod.initContainers.filter(c, c.name ==
+            ''bootstrap'') : []'
+        expressions:
+        - expression: variables.configurationJob.metadata.annotations['argocd.argoproj.io/hook'] == 'PostSync' &&
+            size(variables.bootstrap) == 1 && size(variables.jellarr) == 1 && variables.jobPod.volumes.exists(v,
+            has(v.secret) && v.secret.secretName == 'jellyfin-admin') && variables.jobPod.volumes.filter(v, has(v.secret)
+            && v.secret.secretName == 'jellyfin-admin').all(v, variables.bootstrap[0].volumeMounts.exists(m, m.name
+            == v.name) && !variables.jellarr[0].volumeMounts.exists(m, m.name == v.name)) && variables.jellarr[0].volumeMounts.filter(m,
+            m.mountPath == '/run/jellarr').size() == 1 && variables.bootstrap[0].volumeMounts.filter(m, m.mountPath
+            == '/run/jellarr').size() == 1 && variables.jellarr[0].volumeMounts.filter(m, m.mountPath == '/run/jellarr').all(m,
+            variables.bootstrap[0].volumeMounts.exists(b, b.mountPath == '/run/jellarr' && b.name == m.name) &&
+            variables.jobPod.volumes.filter(v, v.name == m.name).size() == 1 && variables.jobPod.volumes.exists(v,
+            v.name == m.name && has(v.emptyDir) && has(v.emptyDir.medium) && v.emptyDir.medium == 'Memory'))
+          message: PostSync configuration bootstraps credentials in memory; only bootstrap mounts admin password
+            and both containers share the memory-only API-key workspace.
+  - name: jellyfin-configuration-no-startup
+    match:
+      any:
+      - resources:
+          kinds:
+          - v1/ConfigMap
+          names:
+          - jellarr-configuration
+          namespaces:
+          - jellyfin
+    validate:
+      failureAction: Enforce
+      message: Jellarr requires config.yml and must not own startup provisioning.
+      deny:
+        conditions:
+          any:
+          - key: '{{ contains(keys(request.object.data || `{}`), ''config.yml'') }}'
+            operator: Equals
+            value: false
+          - key: '{{ request.object.data."config.yml" || '''' }}'
+            operator: Equals
+            value: ''
+          - key: '{{ contains(keys(parse_yaml(request.object.data."config.yml" || ''{}'')), ''startup'') }}'
+            operator: Equals
+            value: true
+  - name: jellyfin-configuration-ingress
+    match: &id007
+      any:
+      - resources:
+          kinds:
+          - v1/ConfigMap
+          names:
+          - verification-bundle
+          namespaces:
+          - verification
+    validate:
+      failureAction: Enforce
+      cel:
+        variables:
+        - &id008
+          name: bundle
+          expression: object.bundle
+        - &id009
+          name: objects
+          expression: variables.bundle.resources.map(r, r.object)
+        - &id010
+          name: jellyNamespace
+          expression: variables.bundle.expected.cluster.routes.jellyfin.namespace
+        - &id011
+          name: jellyDeployments
+          expression: variables.objects.filter(o, o.apiVersion == 'apps/v1' && o.kind == 'Deployment' && o.metadata.name
+            == 'jellyfin' && has(o.metadata.namespace) && o.metadata.namespace == variables.jellyNamespace)
+        - name: jellyDeployment
+          expression: 'size(variables.jellyDeployments) == 1 ? variables.jellyDeployments[0] : {}'
+        - &id012
+          name: configurationJobs
+          expression: variables.objects.filter(o, o.apiVersion == 'batch/v1' && o.kind == 'Job' && o.metadata.name
+            == 'jellyfin-configuration' && has(o.metadata.namespace) && o.metadata.namespace == variables.jellyNamespace)
+        - name: configurationJob
+          expression: 'size(variables.configurationJobs) == 1 ? variables.configurationJobs[0] : {}'
+        - name: jellyPolicies
+          expression: variables.bundle.resources.filter(r, r.file.startsWith('jellyfin/') && r.object.apiVersion
+            == 'networking.k8s.io/v1' && r.object.kind == 'NetworkPolicy' && r.object.metadata.namespace == variables.jellyNamespace).map(r,
+            r.object)
+        expressions:
+        - expression: 'size(variables.jellyDeployments) == 1 && size(variables.configurationJobs) == 1 && (!variables.jellyPolicies.exists(np,
+            (!has(np.spec.podSelector.matchLabels) || np.spec.podSelector.matchLabels.all(k, k in variables.jellyDeployment.spec.template.metadata.labels
+            && variables.jellyDeployment.spec.template.metadata.labels[k] == np.spec.podSelector.matchLabels[k]))
+            && (!has(np.spec.podSelector.matchExpressions) || np.spec.podSelector.matchExpressions.all(e, e.operator
+            == ''In'' ? (e.key in variables.jellyDeployment.spec.template.metadata.labels && variables.jellyDeployment.spec.template.metadata.labels[e.key]
+            in e.values) : e.operator == ''NotIn'' ? (!(e.key in variables.jellyDeployment.spec.template.metadata.labels)
+            || !(variables.jellyDeployment.spec.template.metadata.labels[e.key] in e.values)) : e.operator == ''Exists''
+            ? e.key in variables.jellyDeployment.spec.template.metadata.labels : e.operator == ''DoesNotExist''
+            && !(e.key in variables.jellyDeployment.spec.template.metadata.labels)))) || variables.jellyPolicies.exists(np,
+            ((!has(np.spec.podSelector.matchLabels) || np.spec.podSelector.matchLabels.all(k, k in variables.jellyDeployment.spec.template.metadata.labels
+            && variables.jellyDeployment.spec.template.metadata.labels[k] == np.spec.podSelector.matchLabels[k]))
+            && (!has(np.spec.podSelector.matchExpressions) || np.spec.podSelector.matchExpressions.all(e, e.operator
+            == ''In'' ? (e.key in variables.jellyDeployment.spec.template.metadata.labels && variables.jellyDeployment.spec.template.metadata.labels[e.key]
+            in e.values) : e.operator == ''NotIn'' ? (!(e.key in variables.jellyDeployment.spec.template.metadata.labels)
+            || !(variables.jellyDeployment.spec.template.metadata.labels[e.key] in e.values)) : e.operator == ''Exists''
+            ? e.key in variables.jellyDeployment.spec.template.metadata.labels : e.operator == ''DoesNotExist''
+            && !(e.key in variables.jellyDeployment.spec.template.metadata.labels)))) && has(np.spec.ingress) &&
+            np.spec.ingress.exists(i, (!has(i.ports) || size(i.ports) == 0 || i.ports.exists(port, (!has(port.protocol)
+            || port.protocol == ''TCP'') && port.port == variables.bundle.expected.cluster.routes.jellyfin.port))
+            && (!has(i.from) || size(i.from) == 0 || i.from.exists(s, !has(s.ipBlock) && (!has(s.namespaceSelector)
+            || ((!has(s.namespaceSelector.matchLabels) || s.namespaceSelector.matchLabels.all(k, k in {''kubernetes.io/metadata.name'':variables.jellyNamespace}
+            && {''kubernetes.io/metadata.name'':variables.jellyNamespace}[k] == s.namespaceSelector.matchLabels[k]))
+            && (!has(s.namespaceSelector.matchExpressions) || s.namespaceSelector.matchExpressions.all(e, e.operator
+            == ''In'' ? (e.key in {''kubernetes.io/metadata.name'':variables.jellyNamespace} && {''kubernetes.io/metadata.name'':variables.jellyNamespace}[e.key]
+            in e.values) : e.operator == ''NotIn'' ? (!(e.key in {''kubernetes.io/metadata.name'':variables.jellyNamespace})
+            || !({''kubernetes.io/metadata.name'':variables.jellyNamespace}[e.key] in e.values)) : e.operator ==
+            ''Exists'' ? e.key in {''kubernetes.io/metadata.name'':variables.jellyNamespace} : e.operator == ''DoesNotExist''
+            && !(e.key in {''kubernetes.io/metadata.name'':variables.jellyNamespace}))))) && (!has(s.podSelector)
+            || ((!has(s.podSelector.matchLabels) || s.podSelector.matchLabels.all(k, k in variables.configurationJob.spec.template.metadata.labels
+            && variables.configurationJob.spec.template.metadata.labels[k] == s.podSelector.matchLabels[k])) &&
+            (!has(s.podSelector.matchExpressions) || s.podSelector.matchExpressions.all(e, e.operator == ''In''
+            ? (e.key in variables.configurationJob.spec.template.metadata.labels && variables.configurationJob.spec.template.metadata.labels[e.key]
+            in e.values) : e.operator == ''NotIn'' ? (!(e.key in variables.configurationJob.spec.template.metadata.labels)
+            || !(variables.configurationJob.spec.template.metadata.labels[e.key] in e.values)) : e.operator == ''Exists''
+            ? e.key in variables.configurationJob.spec.template.metadata.labels : e.operator == ''DoesNotExist''
+            && !(e.key in variables.configurationJob.spec.template.metadata.labels))))))))))'
+          message: A selecting policy in the Jellyfin application must admit its configuration Job; a policy in
+            another application cannot cover it.
+  - name: jellyfin-service-route
+    match:
+      any:
+      - resources:
+          kinds:
+          - v1/Service
+          names:
+          - jellyfin
+          namespaces:
+          - jellyfin
+      - resources:
+          kinds:
+          - gateway.networking.k8s.io/v1/HTTPRoute
+          names:
+          - jellyfin
+          namespaces:
+          - gateway
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: 'object.kind == ''Service'' ? ((!has(object.spec.type) || object.spec.type == ''ClusterIP'')
+            && (!has(object.spec.externalIPs) || size(object.spec.externalIPs) == 0) && (!has(object.spec.loadBalancerIP)
+            || object.spec.loadBalancerIP == '''') && object.spec.ports.all(p, !has(p.nodePort))) : (size(object.spec.rules)
+            > 0 && object.spec.rules[0].timeouts == {''request'':''0s'',''backendRequest'':''0s''})'
+          message: Jellyfin is ClusterIP-only; HTTPRoute streaming request/backend timeouts remain disabled.
+  - name: media-private-storage
+    match:
+      any:
+      - resources:
+          kinds:
+          - v1/PersistentVolume
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: '!has(object.spec.local) || ((object.spec.local.path.startsWith(''/'') && !object.spec.local.path.contains(''//'')
+            && object.spec.local.path.split(''/'').all(c, c != ''.'' && c != ''..'') && (object.spec.local.path
+            == ''/'' || !object.spec.local.path.endsWith(''/''))) && object.spec.local.path != params.metadata.annotations.mediaData
+            && !object.spec.local.path.startsWith(params.metadata.annotations.mediaData + ''/''))'
+          message: Local PV paths must be canonical absolute paths outside the host-owned media namespace. Dot components
+            and repeated separators cannot bypass containment.
+        paramKind:
+          apiVersion: v1
+          kind: Namespace
+        paramRef:
+          name: policy-facts
+          parameterNotFoundAction: Deny
+  - name: media-private-storage-bindings
+    match: *id007
+    validate:
+      failureAction: Enforce
+      cel:
+        variables:
+        - *id008
+        - *id009
+        - name: localPVs
+          expression: variables.objects.filter(o, o.apiVersion == 'v1' && o.kind == 'PersistentVolume' && has(o.spec.local))
+        expressions:
+        - expression: variables.objects.filter(o, o.apiVersion == 'v1' && o.kind == 'PersistentVolumeClaim' && has(o.spec.volumeName)).all(c,
+            variables.localPVs.filter(v, v.metadata.name == c.spec.volumeName).all(v, v.spec.local.path.startsWith('/')
+            && !v.spec.local.path.contains('//') && v.spec.local.path.split('/').all(component, component != '.' && component != '..')
+            && (v.spec.local.path == '/' || !v.spec.local.path.endsWith('/'))
+            && !(v.spec.local.path == variables.bundle.expected.computeResources.mediaPaths.data
+            || v.spec.local.path.startsWith(variables.bundle.expected.computeResources.mediaPaths.data + '/'))))
+          message: No local PV, nor any PVC bound to one, may represent the host-owned media namespace or any descendant.
+  - name: media-acquisition-mounts
+    match:
+      any:
+      - resources:
+          kinds:
+          - apps/v1/Deployment
+          names:
+          - radarr
+          - radarr-*
+          - sonarr
+          - sonarr-*
+          - sabnzbd
+          namespaces:
+          - media
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: 'object.spec.template.spec.volumes.filter(v, v.name == ''data'').size() == 1 && object.spec.template.spec.volumes.filter(v,
+            v.name == ''data'').all(v, has(v.hostPath) && v.hostPath == {''path'':dyn(params.metadata.annotations.mediaData),''type'':dyn(''Directory'')})
+            && (object.spec.template.spec.containers + (has(object.spec.template.spec.initContainers) ? object.spec.template.spec.initContainers
+            : [])).all(c, c.volumeMounts.filter(m, m.name == ''data'').size() == 1 && c.volumeMounts.filter(m, m.name
+            == ''data'').all(m, m.mountPath == ''/data'' && (!has(m.readOnly) || m.readOnly == false)))'
+          message: Acquisition runtime/init containers share a writable /data hostPath at the trusted media root.
+        paramKind:
+          apiVersion: v1
+          kind: Namespace
+        paramRef:
+          name: policy-facts
+          parameterNotFoundAction: Deny
+  - name: media-acquisition-identity
+    match:
+      any:
+      - resources:
+          kinds:
+          - apps/v1/Deployment
+          names:
+          - sabnzbd
+          namespaces:
+          - media
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: size(object.spec.template.spec.containers) > 0 && object.spec.template.spec.containers[0].env.filter(e,
+            e.name == 'PUID').size() == 1 && object.spec.template.spec.containers[0].env.filter(e, e.name == 'PGID').size()
+            == 1 && object.spec.template.spec.containers[0].env.filter(e, e.name == 'PUID').all(e, int(e.value)
+            == int(params.metadata.annotations.sabnzbdUid)) && object.spec.template.spec.containers[0].env.filter(e, e.name == 'PGID').all(e,
+            int(e.value) == int(params.metadata.annotations.sabnzbdGid)) && size(object.spec.template.spec.initContainers) > 0 &&
+            int(object.spec.template.spec.initContainers[0].securityContext.runAsUser) == int(params.metadata.annotations.sabnzbdUid)
+            && int(object.spec.template.spec.initContainers[0].securityContext.runAsGroup) == int(params.metadata.annotations.sabnzbdGid)
+          message: SABnzbd runtime PUID/PGID and config initializer uid/gid equal its trusted retained identity.
+        paramKind:
+          apiVersion: v1
+          kind: Namespace
+        paramRef:
+          name: policy-facts
+          parameterNotFoundAction: Deny
+  - name: media-configuration-state
+    match:
+      any:
+      - resources:
+          kinds:
+          - batch/v1/Job
+          - batch/v1/CronJob
+          names:
+          - media-config*
+          namespaces:
+          - media
+    validate:
+      failureAction: Enforce
+      cel:
+        variables:
+        - name: mediaJobPods
+          expression: '[{''name'':dyn(object.metadata.name),''namespace'':dyn(object.metadata.namespace),''pod'':dyn(object.kind
+            == ''CronJob'' ? object.spec.jobTemplate.spec.template.spec : object.spec.template.spec),
+            ''bootstrap'':dyn(object.kind == ''Job'' && object.metadata.name == ''media-config-seerr''
+            && params.metadata.annotations.seerrPhase == ''initial'')}]'
+        expressions:
+        - expression: &media-configuration-storage-check 'variables.mediaJobPods.all(j, (has(j.pod.volumes) ? j.pod.volumes
+            : []).all(v, !has(v.hostPath)) && (j.name in [''media-configarr'',''media-config-seerr''] && j.namespace == ''media''
+            ? ((has(j.pod.volumes) ? j.pod.volumes : []).filter(v, has(v.persistentVolumeClaim)).size()
+            == (j.bootstrap ? 2 : 1) && (has(j.pod.volumes) ? j.pod.volumes : []).filter(v,
+            v.name == ''coordination'') == [{''name'':dyn(''coordination''),''persistentVolumeClaim'':dyn({''claimName'':''media-seerr-configuration''})}]
+            && ((has(j.pod.containers) ? j.pod.containers : []) + (has(j.pod.initContainers) ? j.pod.initContainers
+            : []) + (has(j.pod.ephemeralContainers) ? j.pod.ephemeralContainers : [])).filter(c, (has(c.volumeMounts)
+            ? c.volumeMounts : []).exists(m, m.name == ''coordination'')).size() == 1 && ((has(j.pod.containers)
+            ? j.pod.containers : []) + (has(j.pod.initContainers) ? j.pod.initContainers : []) + (has(j.pod.ephemeralContainers)
+            ? j.pod.ephemeralContainers : [])).all(c, (has(c.volumeMounts) ? c.volumeMounts : []).filter(m, m.name
+            == ''coordination'').size() == 0 || (c.name == (j.name == ''media-configarr'' ? ''configarr'' : ''configure'')
+            && (has(c.volumeMounts) ? c.volumeMounts : []).filter(m, m.name == ''coordination'')
+            == [{''name'':dyn(''coordination''),''mountPath'':dyn(''/coordination'')}])) && (j.name != ''media-config-seerr''
+            || (has(j.pod.automountServiceAccountToken) && j.pod.automountServiceAccountToken == false
+            && has(j.pod.serviceAccountName) && j.pod.serviceAccountName == (j.bootstrap ? ''media-config-seerr-bootstrap''
+            : ''media-config-seerr'') && has(j.pod.containers) && j.pod.containers.size() == 1 && j.pod.containers.all(c,
+            (j.bootstrap ? (has(c.env) ? c.env : []).exists(e, e.name == ''SEERR_INITIAL_OWNER'' && has(e.value)
+            && e.value == ''true'') : (has(c.env) ? c.env : []).all(e, e.name != ''SEERR_INITIAL_OWNER'' || (has(e.value)
+            && e.value != ''true''))) && (has(c.env) ? c.env : []).exists(e, e.name == ''NODE_EXTRA_CA_CERTS'') == j.bootstrap)
+            && (has(j.pod.volumes) ? j.pod.volumes : []).exists(v, has(v.projected) && has(v.projected.sources)
+            && v.projected.sources.exists(s, has(s.serviceAccountToken))) == j.bootstrap)) && (j.bootstrap
+            ? ((has(j.pod.volumes) ? j.pod.volumes : []).filter(v, v.name == ''seerr-state'')
+            == [{''name'':dyn(''seerr-state''),''persistentVolumeClaim'':dyn({''claimName'':''media-seerr''})}]
+            && ((has(j.pod.containers) ? j.pod.containers : []) + (has(j.pod.initContainers) ? j.pod.initContainers
+            : []) + (has(j.pod.ephemeralContainers) ? j.pod.ephemeralContainers : [])).filter(c, (has(c.volumeMounts)
+            ? c.volumeMounts : []).exists(m, m.name == ''seerr-state'')).size() == 1 && ((has(j.pod.containers)
+            ? j.pod.containers : []) + (has(j.pod.initContainers) ? j.pod.initContainers : []) + (has(j.pod.ephemeralContainers)
+            ? j.pod.ephemeralContainers : [])).all(c, (has(c.volumeMounts) ? c.volumeMounts : []).filter(m, m.name
+            == ''seerr-state'').size() == 0 || (c.name == ''configure'' && (has(c.volumeMounts) ? c.volumeMounts : []).filter(m, m.name == ''seerr-state'')
+            == [{''name'':dyn(''seerr-state''),''mountPath'':dyn(''/seerr-state''),''readOnly'':dyn(true)}]
+            && (has(c.env) ? c.env : []).filter(e, e.name == ''SEERR_INITIAL_OWNER'')
+            == [{''name'':dyn(''SEERR_INITIAL_OWNER''),''value'':dyn(''true'')}])) )
+            : ((has(j.pod.volumes) ? j.pod.volumes : []).all(v, v.name != ''seerr-state'')
+            && ((has(j.pod.containers) ? j.pod.containers : []) + (has(j.pod.initContainers) ? j.pod.initContainers : [])
+            + (has(j.pod.ephemeralContainers) ? j.pod.ephemeralContainers : [])).all(c,
+            (has(c.volumeMounts) ? c.volumeMounts : []).all(m, m.name != ''seerr-state''))))) : ((has(j.pod.volumes)
+            ? j.pod.volumes : []).all(v, !has(v.persistentVolumeClaim)) && ((has(j.pod.containers) ? j.pod.containers
+            : []) + (has(j.pod.initContainers) ? j.pod.initContainers : []) + (has(j.pod.ephemeralContainers) ?
+            j.pod.ephemeralContainers : [])).all(c, (has(c.volumeMounts) ? c.volumeMounts : []).all(m,
+            !(m.name in [''seerr-state'',''coordination'']))))) && (!(j.name in [''media-configarr'',''media-config-seerr''])
+            || ((has(j.pod.containers) ? j.pod.containers : []) + (has(j.pod.initContainers) ? j.pod.initContainers : [])
+            + (has(j.pod.ephemeralContainers) ? j.pod.ephemeralContainers : [])).all(c, (has(c.envFrom) ? c.envFrom : []).all(e,
+            !has(e.secretRef)) && (j.name != ''media-config-seerr'' || (has(c.env) ? c.env : []).all(e,
+            !has(e.valueFrom) || !has(e.valueFrom.secretKeyRef))) && (has(c.volumeMounts) ? c.volumeMounts : []).all(m, (has(j.pod.volumes) ? j.pod.volumes : [])
+            .filter(v, v.name == m.name && (has(v.secret) || (has(v.projected) && has(v.projected.sources)
+            && v.projected.sources.exists(s, has(s.secret))))).all(v, j.name == ''media-config-seerr'' && c.name == ''configure''
+            && m == {''name'':dyn(''secrets''),''mountPath'':dyn(''/secrets''),''readOnly'':dyn(true)}
+            && has(v.projected) && v.projected.sources.size() == 1 && has(v.projected.sources[0].secret)
+            && v.projected.sources[0].secret.name == ''media-runtime'' && has(v.projected.sources[0].secret.items)
+            && v.projected.sources[0].secret.items.size() > 0 && v.projected.sources[0].secret.items.all(i,
+            i.key == i.path))))))'
+          message: Only Configarr and Seerr mount the integration-owned coordination claim at /coordination;
+            only the initial Seerr bootstrap Job reads private state; Seerr uses explicitly selected credentials read-only;
+            no hostPath or whole-Secret envFrom. Every Seerr pod has one container and automountServiceAccountToken
+            false; only the initial bootstrap Job uses media-config-seerr-bootstrap, SEERR_INITIAL_OWNER=true,
+            NODE_EXTRA_CA_CERTS and a projected ServiceAccount token, and it must have all of them.
+        paramKind:
+          apiVersion: v1
+          kind: Namespace
+        paramRef:
+          name: policy-facts
+          parameterNotFoundAction: Deny
+  - name: media-configuration-inventory
+    match: *id007
+    validate:
+      failureAction: Enforce
+      cel:
+        variables:
+        - *id008
+        - name: mediaJobEntries
+          expression: variables.bundle.resources.filter(r, r.file.startsWith('media-configuration/') && r.object.apiVersion
+            == 'batch/v1' && r.object.kind in ['Job','CronJob'])
+        - name: mediaJobs
+          expression: variables.mediaJobEntries.map(r, r.object)
+        - name: children
+          expression: variables.bundle.resources.filter(r, r.file.startsWith('apps/') && r.object.apiVersion
+            == 'argoproj.io/v1alpha1' && r.object.kind == 'Application').map(r, r.object)
+        - name: mediaOwnership
+          expression: >-
+            variables.mediaJobEntries.map(e, {'entry':dyn(e), 'owners':dyn(variables.children.filter(a,
+            e.file.startsWith(a.spec.source.path.substring(variables.bundle.expected.prefix.size()) + '/')
+            && ((has(a.spec.source.directory) && has(a.spec.source.directory.recurse) && a.spec.source.directory.recurse)
+            || !e.file.substring(a.spec.source.path.substring(variables.bundle.expected.prefix.size()).size()+1).contains('/'))))})
+        - name: mediaJobPods
+          expression: >-
+            variables.mediaOwnership.map(x, {'name':dyn(x.entry.object.metadata.name),
+            'namespace':dyn(has(x.entry.object.metadata.namespace) && x.entry.object.metadata.namespace != ''
+            ? x.entry.object.metadata.namespace : (x.owners.size() == 1 ? x.owners[0].spec.destination.namespace : '')),
+            'pod':dyn(x.entry.object.kind == 'CronJob' ? x.entry.object.spec.jobTemplate.spec.template.spec
+            : x.entry.object.spec.template.spec), 'bootstrap':dyn(x.entry.object.kind == 'Job'
+            && x.entry.object.metadata.name == 'media-config-seerr' && params.metadata.annotations.seerrPhase == 'initial')})
+        expressions:
+        - expression: '[''Job'',''CronJob''].all(kind, [''media-configarr'',''media-config-seerr''].all(name, variables.mediaJobs.filter(j,
+            j.kind == kind && j.metadata.name == name && j.metadata.namespace == ''media'').size() == 1))'
+          message: Both Configarr and Seerr require one Job and one CronJob in the original configuration source.
+        - expression: variables.mediaOwnership.all(x, x.owners.size() == 1) && variables.mediaJobPods.all(j, j.namespace != '')
+          message: Every configuration-source Job/CronJob has one original Application owner and resolves an effective namespace.
+        - expression: *media-configuration-storage-check
+          message: Every Job/CronJob in the configuration source obeys the storage prohibition, regardless of name;
+            omitted namespace resolves through its sole Application destination.
+        - expression: variables.bundle.resources.exists(r, r.file.startsWith('media-configuration/') && r.object.apiVersion
+            == 'v1' && r.object.kind == 'ServiceAccount' && r.object.metadata.name == 'media-config-seerr-bootstrap')
+            == (params.metadata.annotations.seerrPhase == 'initial')
+          message: The configuration source declares the Seerr bootstrap ServiceAccount exactly when Seerr is in the
+            initial phase.
+        paramKind:
+          apiVersion: v1
+          kind: Namespace
+        paramRef:
+          name: policy-facts
+          parameterNotFoundAction: Deny
+  - name: media-periodic-inventory
+    match: *id007
+    validate:
+      failureAction: Enforce
+      cel:
+        variables:
+        - *id008
+        - *id009
+        - name: periodic
+          expression: variables.objects.filter(o, o.apiVersion == 'batch/v1' && o.kind == 'CronJob' && has(o.metadata.namespace)
+            && o.metadata.namespace == 'media')
+        expressions:
+        - expression: size(variables.periodic) == 2 && ['media-configarr','media-config-seerr'].all(name, variables.periodic.filter(j,
+            j.metadata.name == name).size() == 1)
+          message: The complete periodic media inventory is exactly Configarr and Seerr.
+  - name: media-periodic-safety
+    match:
+      any:
+      - resources:
+          kinds:
+          - batch/v1/CronJob
+          namespaces:
+          - media
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: has(object.spec.suspend) && string(object.spec.suspend) == 'false' && object.spec.concurrencyPolicy
+            == 'Forbid'
+          message: Periodic media jobs must be enabled and forbid concurrent reconciliation.
+  - name: media-storage-ingress
+    match:
+      any:
+      - resources:
+          kinds:
+          - networking.k8s.io/v1/NetworkPolicy
+          names:
+          - media-jellyfin-ingress
+          namespaces:
+          - jellyfin
+    validate:
+      failureAction: Enforce
+      cel:
+        expressions:
+        - expression: object.metadata.namespace == params.metadata.annotations.jellyfinNamespace && object.spec.podSelector.matchLabels
+            == {'app.kubernetes.io/controller':'main','app.kubernetes.io/instance':'jellyfin','app.kubernetes.io/name':'jellyfin'}
+            && object.spec.ingress == [{'from':dyn([{'namespaceSelector':{'matchLabels':{'kubernetes.io/metadata.name':'media'}},'podSelector':{'matchLabels':{'app.kubernetes.io/controller':'main','app.kubernetes.io/instance':'seerr','app.kubernetes.io/name':'seerr'}}}]),'ports':dyn([{'protocol':dyn('TCP'),'port':dyn(int(params.metadata.annotations.jellyfinPort))}])}]
+          message: The media access application admits exactly the Seerr identity to the trusted Jellyfin service
+            port.
+        paramKind:
+          apiVersion: v1
+          kind: Namespace
+        paramRef:
+          name: policy-facts
+          parameterNotFoundAction: Deny
+  - name: media-storage-lifecycle
+    match: *id007
+    validate:
+      failureAction: Enforce
+      cel:
+        variables:
+        - *id008
+        - *id009
+        - name: applications
+          expression: variables.objects.filter(o, o.apiVersion == 'argoproj.io/v1alpha1' && o.kind == 'Application')
+        - name: applicationSuffix
+          expression: 'variables.bundle.expected.appendNameWithEnv ? ''-'' + variables.bundle.expected.project :
+            '''''
+        expressions:
+        - expression: '[''media-storage'',''sabnzbd-storage'',''sabnzbd''].all(name, variables.applications.filter(a,
+            a.metadata.name == name + variables.applicationSuffix).size() == 1) && variables.applications.filter(a,
+            a.metadata.name in [''media-storage'' + variables.applicationSuffix,''sabnzbd-storage'' + variables.applicationSuffix]).all(a,
+            int(a.metadata.annotations[''argocd.argoproj.io/sync-wave'']) < int(variables.applications.filter(w,
+            w.metadata.name == ''sabnzbd'' + variables.applicationSuffix)[0].metadata.annotations[''argocd.argoproj.io/sync-wave'']))'
+          message: Shared namespace and retained SABnzbd provisioning both precede the workload without pinning
+            incidental wave numbers.
+  - name: workload-population
+    match: *id007
+    validate:
+      failureAction: Enforce
+      cel:
+        variables:
+        - *id008
+        - *id009
+        - *id010
+        - *id011
+        - *id012
+        - name: configurationMaps
+          expression: variables.objects.filter(o, o.apiVersion == 'v1' && o.kind == 'ConfigMap' && o.metadata.name
+            == 'jellarr-configuration' && has(o.metadata.namespace) && o.metadata.namespace == variables.jellyNamespace)
+        - name: configurationMap
+          expression: 'size(variables.configurationMaps) == 1 ? variables.configurationMaps[0] : {}'
+        - name: jellyPVs
+          expression: variables.objects.filter(o, o.apiVersion == 'v1' && o.kind == 'PersistentVolume' && o.metadata.name
+            == 'jellyfin-config')
+        - name: jellyPVCs
+          expression: variables.objects.filter(o, o.apiVersion == 'v1' && o.kind == 'PersistentVolumeClaim' && o.metadata.name
+            == 'jellyfin-config' && has(o.metadata.namespace) && o.metadata.namespace == variables.jellyNamespace)
+        - name: jellyServices
+          expression: variables.objects.filter(o, o.apiVersion == 'v1' && o.kind == 'Service' && o.metadata.name
+            == 'jellyfin' && has(o.metadata.namespace) && o.metadata.namespace == variables.jellyNamespace)
+        - name: jellyRoutes
+          expression: variables.objects.filter(o, o.apiVersion == 'gateway.networking.k8s.io/v1' && o.kind == 'HTTPRoute'
+            && o.metadata.name == 'jellyfin' && has(o.metadata.namespace) && o.metadata.namespace == 'gateway')
+        - name: sabDeployments
+          expression: variables.objects.filter(o, o.apiVersion == 'apps/v1' && o.kind == 'Deployment' && o.metadata.name
+            == 'sabnzbd' && has(o.metadata.namespace) && o.metadata.namespace == 'media')
+        - name: mediaIngresss
+          expression: variables.objects.filter(o, o.apiVersion == 'networking.k8s.io/v1' && o.kind == 'NetworkPolicy'
+            && o.metadata.name == 'media-jellyfin-ingress' && has(o.metadata.namespace) && o.metadata.namespace
+            == variables.jellyNamespace)
+        - name: acquisitionNames
+          expression: 'variables.bundle.expected.cluster.settings.kubernetes.services.media.radarr.map(k, k == ''radarr''
+            ? k : ''radarr-'' + k) + variables.bundle.expected.cluster.settings.kubernetes.services.media.sonarr.map(k,
+            k == ''sonarr'' ? k : ''sonarr-'' + k) + [''sabnzbd'']'
+        expressions:
+        - expression: size(variables.jellyDeployments) == 1 && size(variables.configurationJobs) == 1 && size(variables.configurationMaps)
+            == 1 && has(variables.configurationMap.data) && 'config.yml' in variables.configurationMap.data && size(variables.jellyPVs)
+            == 1 && size(variables.jellyPVCs) == 1 && size(variables.jellyServices) == 1 && size(variables.jellyRoutes)
+            == 1 && size(variables.sabDeployments) == 1 && size(variables.mediaIngresss) == 1 && variables.acquisitionNames.all(name,
+            variables.objects.filter(o, o.apiVersion == 'apps/v1' && o.kind == 'Deployment' && o.metadata.name ==
+            name && has(o.metadata.namespace) && o.metadata.namespace == 'media').size() == 1)
+          message: All required workload/storage/configuration identities must exist exactly once; Jellarr configuration
+            and config.yml are mandatory.
+        - expression: variables.bundle.expected.computeResources.runtimeSecrets['jellyfin--jellyfin-admin--password']
+            == {'namespace':dyn(variables.jellyNamespace),'name':dyn('jellyfin-admin'),'key':dyn('password')}
+          message: The trusted runtime password source must retain the declared namespace/name/key.

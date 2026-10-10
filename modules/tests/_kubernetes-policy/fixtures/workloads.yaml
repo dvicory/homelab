@@ -1,0 +1,1429 @@
+# Native Kyverno scenarios for this policy family. transport.py generate turns each scenario into a
+# kyverno-test.yaml and, for single-object scenarios, a resources.yaml derived from the genuine render.
+# Expected results are the declared fails plus Pass for every other in-scope rule that applies, as listed
+# by the explicit complete-population positive below. Identities are apiVersion/kind/namespace/name.
+policy: verification-workloads
+policyFile: workloads.yaml
+rules:
+  admission-candidates: [pod-secret-readable, pod-pvc-no-fsgroup, jellyfin-runtime, jellyfin-provisioner, jellyfin-media,
+    jellyfin-cache, jellyfin-retained-storage, jellyfin-runtime-credentials, jellyfin-configuration-job, jellyfin-configuration-no-startup,
+    jellyfin-service-route, media-private-storage, media-acquisition-mounts, media-acquisition-identity, media-configuration-state,
+    media-periodic-safety, media-storage-ingress]
+  repository-only: [jellyfin-configuration-ingress, media-private-storage-bindings, media-configuration-inventory,
+    media-periodic-inventory, media-storage-lifecycle, workload-population]
+positive:
+  name: complete-{variant}
+  applies:
+    apps/v1/Deployment/argocd/argocd-applicationset-controller: [pod-secret-readable, pod-pvc-no-fsgroup]
+    apps/v1/Deployment/argocd/argocd-redis: [pod-secret-readable, pod-pvc-no-fsgroup]
+    apps/v1/Deployment/argocd/argocd-repo-server: [pod-secret-readable, pod-pvc-no-fsgroup]
+    apps/v1/Deployment/argocd/argocd-server: [pod-secret-readable, pod-pvc-no-fsgroup]
+    apps/v1/Deployment/cert-manager/cert-manager: [pod-secret-readable, pod-pvc-no-fsgroup]
+    apps/v1/Deployment/cert-manager/cert-manager-cainjector: [pod-secret-readable, pod-pvc-no-fsgroup]
+    apps/v1/Deployment/cert-manager/cert-manager-webhook: [pod-secret-readable, pod-pvc-no-fsgroup]
+    apps/v1/Deployment/gateway/envoy-gateway: [pod-secret-readable, pod-pvc-no-fsgroup]
+    apps/v1/Deployment/identity/kanidm: [pod-secret-readable, pod-pvc-no-fsgroup]
+    apps/v1/Deployment/jellyfin/jellyfin: [pod-secret-readable, pod-pvc-no-fsgroup, jellyfin-runtime, jellyfin-provisioner,
+      jellyfin-media, jellyfin-cache, jellyfin-runtime-credentials]
+    apps/v1/Deployment/local-path-storage/local-path-provisioner: [pod-secret-readable, pod-pvc-no-fsgroup]
+    apps/v1/Deployment/media/prowlarr: [pod-secret-readable, pod-pvc-no-fsgroup]
+    apps/v1/Deployment/media/radarr: [pod-secret-readable, pod-pvc-no-fsgroup, media-acquisition-mounts]
+    apps/v1/Deployment/media/sabnzbd: [pod-secret-readable, pod-pvc-no-fsgroup, media-acquisition-mounts, media-acquisition-identity]
+    apps/v1/Deployment/media/sonarr: [pod-secret-readable, pod-pvc-no-fsgroup, media-acquisition-mounts]
+    apps/v1/StatefulSet/argocd/argocd-application-controller: [pod-secret-readable, pod-pvc-no-fsgroup]
+    apps/v1/StatefulSet/media/seerr: [pod-secret-readable, pod-pvc-no-fsgroup]
+    batch/v1/CronJob/media/media-config-seerr: [pod-secret-readable, pod-pvc-no-fsgroup, media-configuration-state,
+      media-periodic-safety]
+    batch/v1/CronJob/media/media-configarr: [pod-secret-readable, pod-pvc-no-fsgroup, media-configuration-state,
+      media-periodic-safety]
+    batch/v1/Job/argocd/argocd-redis-secret-init: [pod-secret-readable, pod-pvc-no-fsgroup]
+    batch/v1/Job/gateway/envoy-gateway-gateway-helm-certgen: [pod-secret-readable, pod-pvc-no-fsgroup]
+    batch/v1/Job/jellyfin/jellyfin-configuration: [pod-secret-readable, pod-pvc-no-fsgroup, jellyfin-configuration-job]
+    batch/v1/Job/local-path-storage/retained-directories: [pod-secret-readable, pod-pvc-no-fsgroup]
+    batch/v1/Job/media/media-config-seerr: [pod-secret-readable, pod-pvc-no-fsgroup, media-configuration-state]
+    batch/v1/Job/media/media-configarr: [pod-secret-readable, pod-pvc-no-fsgroup, media-configuration-state]
+    gateway.networking.k8s.io/v1/HTTPRoute/gateway/jellyfin: [jellyfin-service-route]
+    networking.k8s.io/v1/NetworkPolicy/jellyfin/media-jellyfin-ingress: [media-storage-ingress]
+    v1/ConfigMap/jellyfin/jellarr-configuration: [jellyfin-runtime-credentials, jellyfin-configuration-no-startup]
+    v1/ConfigMap/verification/verification-bundle: [jellyfin-configuration-ingress, media-private-storage-bindings,
+      media-configuration-inventory, media-periodic-inventory, media-storage-lifecycle, workload-population]
+    v1/PersistentVolume//identity-kanidm: [media-private-storage]
+    v1/PersistentVolume//jellyfin-config: [jellyfin-retained-storage, media-private-storage]
+    v1/PersistentVolume//media-prowlarr: [media-private-storage]
+    v1/PersistentVolume//media-radarr: [media-private-storage]
+    v1/PersistentVolume//media-sabnzbd: [media-private-storage]
+    v1/PersistentVolume//media-seerr: [media-private-storage]
+    v1/PersistentVolume//media-seerr-configuration: [media-private-storage]
+    v1/PersistentVolume//media-sonarr: [media-private-storage]
+    v1/PersistentVolumeClaim/jellyfin/jellyfin-config: [jellyfin-retained-storage]
+    v1/Service/jellyfin/jellyfin: [jellyfin-service-route]
+  when:
+  - if: {identity: [normal, provisioning]}
+    applies:
+      batch/v1/Job/identity/kanidm-provision: [pod-secret-readable, pod-pvc-no-fsgroup]
+objects:
+  credential-reader-pod:
+    applies: [pod-secret-readable, pod-pvc-no-fsgroup]
+    object:
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: credential-reader
+        namespace: verification
+      spec:
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 3000
+        containers:
+        - name: reader
+          image: registry.k8s.io/pause:3.10
+          volumeMounts:
+          - name: credential
+            mountPath: /credential
+        volumes:
+        - name: credential
+          secret:
+            secretName: fixture-password
+            items:
+            - key: password
+              path: password
+            defaultMode: 420
+        - name: retained
+          persistentVolumeClaim:
+            claimName: fixture-retained
+        restartPolicy: Never
+  credential-reader-deployment:
+    applies: [pod-secret-readable, pod-pvc-no-fsgroup]
+    object:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: credential-reader
+        namespace: verification
+      spec:
+        template:
+          spec:
+            securityContext:
+              runAsUser: 1000
+              runAsGroup: 3000
+            containers:
+            - name: reader
+              image: registry.k8s.io/pause:3.10
+              volumeMounts:
+              - name: credential
+                mountPath: /credential
+            volumes:
+            - name: credential
+              projected:
+                sources:
+                - secret:
+                    name: fixture-password
+                    items:
+                    - key: password
+                      path: password
+                defaultMode: 256
+            restartPolicy: Always
+          metadata:
+            labels:
+              app: credential-reader
+        selector:
+          matchLabels:
+            app: credential-reader
+  credential-reader-cronjob:
+    applies: [pod-secret-readable, pod-pvc-no-fsgroup]
+    object:
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: credential-reader
+        namespace: verification
+      spec:
+        jobTemplate:
+          spec:
+            template:
+              spec:
+                securityContext:
+                  runAsUser: 1000
+                  runAsGroup: 3000
+                containers:
+                - name: reader
+                  image: registry.k8s.io/pause:3.10
+                  volumeMounts:
+                  - name: credential
+                    mountPath: /credential
+                volumes:
+                - name: credential
+                  projected:
+                    sources:
+                    - secret:
+                        name: fixture-password
+                        items:
+                        - key: password
+                          path: password
+                    defaultMode: 256
+                restartPolicy: Never
+        schedule: 0 * * * *
+  jellyfin-admin:
+    applies: [jellyfin-runtime-credentials]
+    object:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: jellyfin-admin
+        namespace: jellyfin
+      stringData:
+        password: fixture-only
+  media-host-namespace:
+    applies: [media-private-storage]
+    object:
+      apiVersion: v1
+      kind: PersistentVolume
+      metadata:
+        name: media-host-namespace
+      spec:
+        local:
+          path: /srv/media/data/library
+scenarios:
+- name: pod-containers-secret-0400-denied
+  object: credential-reader-pod
+  mutate: del(.spec.volumes[1]) | .spec.volumes[0].secret.defaultMode = 256
+  fail: [pod-secret-readable]
+- name: pod-containers-secret-fsgroup-supplementary-accepted
+  object: credential-reader-pod
+  mutate: .spec.securityContext.fsGroup = 2000 | del(.spec.volumes[1]) | .spec.volumes[0].secret.defaultMode = 256
+- name: pod-containers-projected-0400-denied
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password"}]}}], "defaultMode": 256}}]'
+  fail: [pod-secret-readable]
+- name: pod-containers-projected-fsgroup-supplementary-accepted
+  object: credential-reader-pod
+  mutate: '.spec.securityContext.fsGroup = 2000 | .spec.volumes = [{"name": "credential", "projected": {"sources":
+    [{"secret": {"name": "fixture-password", "items": [{"key": "password", "path": "password"}]}}], "defaultMode":
+    256}}]'
+- name: pod-initcontainers-secret-0400-denied
+  object: credential-reader-pod
+  mutate: 'del(.spec.containers[0].volumeMounts) | .spec.containers[0].name = "runtime" | del(.spec.volumes[1])
+    | .spec.volumes[0].secret.defaultMode = 256 | .spec.initContainers = [{"name": "reader", "image": "registry.k8s.io/pause:3.10",
+    "volumeMounts": [{"name": "credential", "mountPath": "/credential"}]}]'
+  fail: [pod-secret-readable]
+- name: pod-initcontainers-secret-fsgroup-supplementary-accepted
+  object: credential-reader-pod
+  mutate: '.spec.securityContext.fsGroup = 2000 | del(.spec.containers[0].volumeMounts) | .spec.containers[0].name
+    = "runtime" | del(.spec.volumes[1]) | .spec.volumes[0].secret.defaultMode = 256 | .spec.initContainers = [{"name":
+    "reader", "image": "registry.k8s.io/pause:3.10", "volumeMounts": [{"name": "credential", "mountPath": "/credential"}]}]'
+- name: pod-initcontainers-projected-0400-denied
+  object: credential-reader-pod
+  mutate: 'del(.spec.containers[0].volumeMounts) | .spec.containers[0].name = "runtime" | .spec.volumes = [{"name":
+    "credential", "projected": {"sources": [{"secret": {"name": "fixture-password", "items": [{"key": "password",
+    "path": "password"}]}}], "defaultMode": 256}}] | .spec.initContainers = [{"name": "reader", "image": "registry.k8s.io/pause:3.10",
+    "volumeMounts": [{"name": "credential", "mountPath": "/credential"}]}]'
+  fail: [pod-secret-readable]
+- name: pod-initcontainers-projected-fsgroup-supplementary-accepted
+  object: credential-reader-pod
+  mutate: '.spec.securityContext.fsGroup = 2000 | del(.spec.containers[0].volumeMounts) | .spec.containers[0].name
+    = "runtime" | .spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password"}]}}], "defaultMode": 256}}] | .spec.initContainers = [{"name":
+    "reader", "image": "registry.k8s.io/pause:3.10", "volumeMounts": [{"name": "credential", "mountPath": "/credential"}]}]'
+- name: pod-ephemeralcontainers-secret-0400-denied
+  object: credential-reader-pod
+  mutate: 'del(.spec.containers[0].volumeMounts) | .spec.containers[0].name = "runtime" | del(.spec.volumes[1])
+    | .spec.volumes[0].secret.defaultMode = 256 | .spec.ephemeralContainers = [{"name": "reader", "image": "registry.k8s.io/pause:3.10",
+    "volumeMounts": [{"name": "credential", "mountPath": "/credential"}]}]'
+  fail: [pod-secret-readable]
+- name: pod-ephemeralcontainers-secret-fsgroup-supplementary-accepted
+  object: credential-reader-pod
+  mutate: '.spec.securityContext.fsGroup = 2000 | del(.spec.containers[0].volumeMounts) | .spec.containers[0].name
+    = "runtime" | del(.spec.volumes[1]) | .spec.volumes[0].secret.defaultMode = 256 | .spec.ephemeralContainers
+    = [{"name": "reader", "image": "registry.k8s.io/pause:3.10", "volumeMounts": [{"name": "credential", "mountPath":
+    "/credential"}]}]'
+- name: pod-ephemeralcontainers-projected-0400-denied
+  object: credential-reader-pod
+  mutate: 'del(.spec.containers[0].volumeMounts) | .spec.containers[0].name = "runtime" | .spec.volumes = [{"name":
+    "credential", "projected": {"sources": [{"secret": {"name": "fixture-password", "items": [{"key": "password",
+    "path": "password"}]}}], "defaultMode": 256}}] | .spec.ephemeralContainers = [{"name": "reader", "image": "registry.k8s.io/pause:3.10",
+    "volumeMounts": [{"name": "credential", "mountPath": "/credential"}]}]'
+  fail: [pod-secret-readable]
+- name: pod-ephemeralcontainers-projected-fsgroup-supplementary-accepted
+  object: credential-reader-pod
+  mutate: '.spec.securityContext.fsGroup = 2000 | del(.spec.containers[0].volumeMounts) | .spec.containers[0].name
+    = "runtime" | .spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password"}]}}], "defaultMode": 256}}] | .spec.ephemeralContainers = [{"name":
+    "reader", "image": "registry.k8s.io/pause:3.10", "volumeMounts": [{"name": "credential", "mountPath": "/credential"}]}]'
+- name: deployment-containers-secret-0400-denied
+  object: credential-reader-deployment
+  mutate: 'del(.spec.template.spec.volumes[0].projected) | .spec.template.spec.volumes[0].secret = {"secretName":
+    "fixture-password", "items": [{"key": "password", "path": "password"}], "defaultMode": 256}'
+  fail: [pod-secret-readable]
+- name: deployment-containers-secret-fsgroup-supplementary-accepted
+  object: credential-reader-deployment
+  mutate: '.spec.template.spec.securityContext.fsGroup = 2000 | del(.spec.template.spec.volumes[0].projected) |
+    .spec.template.spec.volumes[0].secret = {"secretName": "fixture-password", "items": [{"key": "password", "path":
+    "password"}], "defaultMode": 256}'
+- name: deployment-containers-projected-0400-denied
+  object: credential-reader-deployment
+  fail: [pod-secret-readable]
+- name: deployment-containers-projected-fsgroup-supplementary-accepted
+  object: credential-reader-deployment
+  mutate: .spec.template.spec.securityContext.fsGroup = 2000
+- name: deployment-initcontainers-secret-0400-denied
+  object: credential-reader-deployment
+  mutate: 'del(.spec.template.spec.containers[0].volumeMounts) | .spec.template.spec.containers[0].name = "runtime"
+    | del(.spec.template.spec.volumes[0].projected) | .spec.template.spec.volumes[0].secret = {"secretName": "fixture-password",
+    "items": [{"key": "password", "path": "password"}], "defaultMode": 256} | .spec.template.spec.initContainers
+    = [{"name": "reader", "image": "registry.k8s.io/pause:3.10", "volumeMounts": [{"name": "credential", "mountPath":
+    "/credential"}]}]'
+  fail: [pod-secret-readable]
+- name: deployment-initcontainers-secret-fsgroup-supplementary-accepted
+  object: credential-reader-deployment
+  mutate: '.spec.template.spec.securityContext.fsGroup = 2000 | del(.spec.template.spec.containers[0].volumeMounts)
+    | .spec.template.spec.containers[0].name = "runtime" | del(.spec.template.spec.volumes[0].projected) | .spec.template.spec.volumes[0].secret
+    = {"secretName": "fixture-password", "items": [{"key": "password", "path": "password"}], "defaultMode": 256}
+    | .spec.template.spec.initContainers = [{"name": "reader", "image": "registry.k8s.io/pause:3.10", "volumeMounts":
+    [{"name": "credential", "mountPath": "/credential"}]}]'
+- name: deployment-initcontainers-projected-0400-denied
+  object: credential-reader-deployment
+  mutate: 'del(.spec.template.spec.containers[0].volumeMounts) | .spec.template.spec.containers[0].name = "runtime"
+    | .spec.template.spec.initContainers = [{"name": "reader", "image": "registry.k8s.io/pause:3.10", "volumeMounts":
+    [{"name": "credential", "mountPath": "/credential"}]}]'
+  fail: [pod-secret-readable]
+- name: deployment-initcontainers-projected-fsgroup-supplementary-accepted
+  object: credential-reader-deployment
+  mutate: '.spec.template.spec.securityContext.fsGroup = 2000 | del(.spec.template.spec.containers[0].volumeMounts)
+    | .spec.template.spec.containers[0].name = "runtime" | .spec.template.spec.initContainers = [{"name": "reader",
+    "image": "registry.k8s.io/pause:3.10", "volumeMounts": [{"name": "credential", "mountPath": "/credential"}]}]'
+- name: deployment-ephemeralcontainers-secret-0400-denied
+  object: credential-reader-deployment
+  mutate: 'del(.spec.template.spec.containers[0].volumeMounts) | .spec.template.spec.containers[0].name = "runtime"
+    | del(.spec.template.spec.volumes[0].projected) | .spec.template.spec.volumes[0].secret = {"secretName": "fixture-password",
+    "items": [{"key": "password", "path": "password"}], "defaultMode": 256} | .spec.template.spec.ephemeralContainers
+    = [{"name": "reader", "image": "registry.k8s.io/pause:3.10", "volumeMounts": [{"name": "credential", "mountPath":
+    "/credential"}]}]'
+  fail: [pod-secret-readable]
+- name: deployment-ephemeralcontainers-secret-fsgroup-supplementary-accepted
+  object: credential-reader-deployment
+  mutate: '.spec.template.spec.securityContext.fsGroup = 2000 | del(.spec.template.spec.containers[0].volumeMounts)
+    | .spec.template.spec.containers[0].name = "runtime" | del(.spec.template.spec.volumes[0].projected) | .spec.template.spec.volumes[0].secret
+    = {"secretName": "fixture-password", "items": [{"key": "password", "path": "password"}], "defaultMode": 256}
+    | .spec.template.spec.ephemeralContainers = [{"name": "reader", "image": "registry.k8s.io/pause:3.10", "volumeMounts":
+    [{"name": "credential", "mountPath": "/credential"}]}]'
+- name: deployment-ephemeralcontainers-projected-0400-denied
+  object: credential-reader-deployment
+  mutate: 'del(.spec.template.spec.containers[0].volumeMounts) | .spec.template.spec.containers[0].name = "runtime"
+    | .spec.template.spec.ephemeralContainers = [{"name": "reader", "image": "registry.k8s.io/pause:3.10", "volumeMounts":
+    [{"name": "credential", "mountPath": "/credential"}]}]'
+  fail: [pod-secret-readable]
+- name: deployment-ephemeralcontainers-projected-fsgroup-supplementary-accepted
+  object: credential-reader-deployment
+  mutate: '.spec.template.spec.securityContext.fsGroup = 2000 | del(.spec.template.spec.containers[0].volumeMounts)
+    | .spec.template.spec.containers[0].name = "runtime" | .spec.template.spec.ephemeralContainers = [{"name": "reader",
+    "image": "registry.k8s.io/pause:3.10", "volumeMounts": [{"name": "credential", "mountPath": "/credential"}]}]'
+- name: cronjob-containers-secret-0400-denied
+  object: credential-reader-cronjob
+  mutate: 'del(.spec.jobTemplate.spec.template.spec.volumes[0].projected) | .spec.jobTemplate.spec.template.spec.volumes[0].secret
+    = {"secretName": "fixture-password", "items": [{"key": "password", "path": "password"}], "defaultMode": 256}'
+  fail: [pod-secret-readable]
+- name: cronjob-containers-secret-fsgroup-supplementary-accepted
+  object: credential-reader-cronjob
+  mutate: '.spec.jobTemplate.spec.template.spec.securityContext.fsGroup = 2000 | del(.spec.jobTemplate.spec.template.spec.volumes[0].projected)
+    | .spec.jobTemplate.spec.template.spec.volumes[0].secret = {"secretName": "fixture-password", "items": [{"key":
+    "password", "path": "password"}], "defaultMode": 256}'
+- name: cronjob-containers-projected-0400-denied
+  object: credential-reader-cronjob
+  fail: [pod-secret-readable]
+- name: cronjob-containers-projected-fsgroup-supplementary-accepted
+  object: credential-reader-cronjob
+  mutate: .spec.jobTemplate.spec.template.spec.securityContext.fsGroup = 2000
+- name: cronjob-initcontainers-secret-0400-denied
+  object: credential-reader-cronjob
+  mutate: 'del(.spec.jobTemplate.spec.template.spec.containers[0].volumeMounts) | .spec.jobTemplate.spec.template.spec.containers[0].name
+    = "runtime" | del(.spec.jobTemplate.spec.template.spec.volumes[0].projected) | .spec.jobTemplate.spec.template.spec.volumes[0].secret
+    = {"secretName": "fixture-password", "items": [{"key": "password", "path": "password"}], "defaultMode": 256}
+    | .spec.jobTemplate.spec.template.spec.initContainers = [{"name": "reader", "image": "registry.k8s.io/pause:3.10",
+    "volumeMounts": [{"name": "credential", "mountPath": "/credential"}]}]'
+  fail: [pod-secret-readable]
+- name: cronjob-initcontainers-secret-fsgroup-supplementary-accepted
+  object: credential-reader-cronjob
+  mutate: '.spec.jobTemplate.spec.template.spec.securityContext.fsGroup = 2000 | del(.spec.jobTemplate.spec.template.spec.containers[0].volumeMounts)
+    | .spec.jobTemplate.spec.template.spec.containers[0].name = "runtime" | del(.spec.jobTemplate.spec.template.spec.volumes[0].projected)
+    | .spec.jobTemplate.spec.template.spec.volumes[0].secret = {"secretName": "fixture-password", "items": [{"key":
+    "password", "path": "password"}], "defaultMode": 256} | .spec.jobTemplate.spec.template.spec.initContainers
+    = [{"name": "reader", "image": "registry.k8s.io/pause:3.10", "volumeMounts": [{"name": "credential", "mountPath":
+    "/credential"}]}]'
+- name: cronjob-initcontainers-projected-0400-denied
+  object: credential-reader-cronjob
+  mutate: 'del(.spec.jobTemplate.spec.template.spec.containers[0].volumeMounts) | .spec.jobTemplate.spec.template.spec.containers[0].name
+    = "runtime" | .spec.jobTemplate.spec.template.spec.initContainers = [{"name": "reader", "image": "registry.k8s.io/pause:3.10",
+    "volumeMounts": [{"name": "credential", "mountPath": "/credential"}]}]'
+  fail: [pod-secret-readable]
+- name: cronjob-initcontainers-projected-fsgroup-supplementary-accepted
+  object: credential-reader-cronjob
+  mutate: '.spec.jobTemplate.spec.template.spec.securityContext.fsGroup = 2000 | del(.spec.jobTemplate.spec.template.spec.containers[0].volumeMounts)
+    | .spec.jobTemplate.spec.template.spec.containers[0].name = "runtime" | .spec.jobTemplate.spec.template.spec.initContainers
+    = [{"name": "reader", "image": "registry.k8s.io/pause:3.10", "volumeMounts": [{"name": "credential", "mountPath":
+    "/credential"}]}]'
+- name: cronjob-ephemeralcontainers-secret-0400-denied
+  object: credential-reader-cronjob
+  mutate: 'del(.spec.jobTemplate.spec.template.spec.containers[0].volumeMounts) | .spec.jobTemplate.spec.template.spec.containers[0].name
+    = "runtime" | del(.spec.jobTemplate.spec.template.spec.volumes[0].projected) | .spec.jobTemplate.spec.template.spec.volumes[0].secret
+    = {"secretName": "fixture-password", "items": [{"key": "password", "path": "password"}], "defaultMode": 256}
+    | .spec.jobTemplate.spec.template.spec.ephemeralContainers = [{"name": "reader", "image": "registry.k8s.io/pause:3.10",
+    "volumeMounts": [{"name": "credential", "mountPath": "/credential"}]}]'
+  fail: [pod-secret-readable]
+- name: cronjob-ephemeralcontainers-secret-fsgroup-supplementary-accepted
+  object: credential-reader-cronjob
+  mutate: '.spec.jobTemplate.spec.template.spec.securityContext.fsGroup = 2000 | del(.spec.jobTemplate.spec.template.spec.containers[0].volumeMounts)
+    | .spec.jobTemplate.spec.template.spec.containers[0].name = "runtime" | del(.spec.jobTemplate.spec.template.spec.volumes[0].projected)
+    | .spec.jobTemplate.spec.template.spec.volumes[0].secret = {"secretName": "fixture-password", "items": [{"key":
+    "password", "path": "password"}], "defaultMode": 256} | .spec.jobTemplate.spec.template.spec.ephemeralContainers
+    = [{"name": "reader", "image": "registry.k8s.io/pause:3.10", "volumeMounts": [{"name": "credential", "mountPath":
+    "/credential"}]}]'
+- name: cronjob-ephemeralcontainers-projected-0400-denied
+  object: credential-reader-cronjob
+  mutate: 'del(.spec.jobTemplate.spec.template.spec.containers[0].volumeMounts) | .spec.jobTemplate.spec.template.spec.containers[0].name
+    = "runtime" | .spec.jobTemplate.spec.template.spec.ephemeralContainers = [{"name": "reader", "image": "registry.k8s.io/pause:3.10",
+    "volumeMounts": [{"name": "credential", "mountPath": "/credential"}]}]'
+  fail: [pod-secret-readable]
+- name: cronjob-ephemeralcontainers-projected-fsgroup-supplementary-accepted
+  object: credential-reader-cronjob
+  mutate: '.spec.jobTemplate.spec.template.spec.securityContext.fsGroup = 2000 | del(.spec.jobTemplate.spec.template.spec.containers[0].volumeMounts)
+    | .spec.jobTemplate.spec.template.spec.containers[0].name = "runtime" | .spec.jobTemplate.spec.template.spec.ephemeralContainers
+    = [{"name": "reader", "image": "registry.k8s.io/pause:3.10", "volumeMounts": [{"name": "credential", "mountPath":
+    "/credential"}]}]'
+- name: projected-item-0-without-world-bit-denied
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password", "mode": 0}]}}], "defaultMode": 420}}]'
+  fail: [pod-secret-readable]
+- name: projected-item-1-without-world-bit-denied
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password", "mode": 1}]}}], "defaultMode": 420}}]'
+  fail: [pod-secret-readable]
+- name: projected-item-2-without-world-bit-denied
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password", "mode": 2}]}}], "defaultMode": 420}}]'
+  fail: [pod-secret-readable]
+- name: projected-item-3-without-world-bit-denied
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password", "mode": 3}]}}], "defaultMode": 420}}]'
+  fail: [pod-secret-readable]
+- name: projected-item-8-without-world-bit-denied
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password", "mode": 8}]}}], "defaultMode": 420}}]'
+  fail: [pod-secret-readable]
+- name: projected-item-32-without-world-bit-denied
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password", "mode": 32}]}}], "defaultMode": 420}}]'
+  fail: [pod-secret-readable]
+- name: projected-item-256-without-world-bit-denied
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password", "mode": 256}]}}], "defaultMode": 420}}]'
+  fail: [pod-secret-readable]
+- name: projected-item-288-without-world-bit-denied
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password", "mode": 288}]}}], "defaultMode": 420}}]'
+  fail: [pod-secret-readable]
+- name: projected-item-448-without-world-bit-denied
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password", "mode": 448}]}}], "defaultMode": 420}}]'
+  fail: [pod-secret-readable]
+- name: projected-item-4-world-bit-accepted
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password", "mode": 4}]}}], "defaultMode": 0}}]'
+- name: projected-item-5-world-bit-accepted
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password", "mode": 5}]}}], "defaultMode": 0}}]'
+- name: projected-item-6-world-bit-accepted
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password", "mode": 6}]}}], "defaultMode": 0}}]'
+- name: projected-item-7-world-bit-accepted
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password", "mode": 7}]}}], "defaultMode": 0}}]'
+- name: projected-item-12-world-bit-accepted
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password", "mode": 12}]}}], "defaultMode": 0}}]'
+- name: projected-item-36-world-bit-accepted
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password", "mode": 36}]}}], "defaultMode": 0}}]'
+- name: projected-item-260-world-bit-accepted
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password", "mode": 260}]}}], "defaultMode": 0}}]'
+- name: projected-item-292-world-bit-accepted
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password", "mode": 292}]}}], "defaultMode": 0}}]'
+- name: projected-item-452-world-bit-accepted
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password", "mode": 452}]}}], "defaultMode": 0}}]'
+- name: projected-item-zero-fsgroup-adds-group-read
+  object: credential-reader-pod
+  mutate: '.spec.securityContext.fsGroup = 2000 | .spec.volumes = [{"name": "credential", "projected": {"sources":
+    [{"secret": {"name": "fixture-password", "items": [{"key": "password", "path": "password", "mode": 0}]}}], "defaultMode":
+    0}}]'
+- name: secret-item-zero-overrides-readable-default
+  object: credential-reader-pod
+  mutate: del(.spec.volumes[1]) | .spec.volumes[0].secret.items[0].mode = 0
+  fail: [pod-secret-readable]
+- name: secret-root-can-read-zero-mode
+  object: credential-reader-pod
+  mutate: .spec.securityContext.runAsUser = 0 | del(.spec.volumes[1]) | .spec.volumes[0].secret.items[0].mode =
+    0 | .spec.volumes[0].secret.defaultMode = 0
+- name: projected-root-can-read-zero-mode
+  object: credential-reader-pod
+  mutate: '.spec.securityContext.runAsUser = 0 | .spec.volumes = [{"name": "credential", "projected": {"sources":
+    [{"secret": {"name": "fixture-password", "items": [{"key": "password", "path": "password", "mode": 0}]}}], "defaultMode":
+    0}}]'
+- name: secret-omitted-default-mode-is-0644
+  object: credential-reader-pod
+  mutate: del(.spec.volumes[1]) | del(.spec.volumes[0].secret.defaultMode)
+- name: projected-omitted-default-mode-is-0644
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password"}]}}]}}]'
+- name: unknown-uid-not-assumed-root
+  object: credential-reader-pod
+  mutate: del(.spec.securityContext.runAsUser) | del(.spec.volumes[1]) | .spec.volumes[0].secret.defaultMode = 256
+  fail: [pod-secret-readable]
+- name: container-nonroot-overrides-root-pod
+  object: credential-reader-pod
+  mutate: '.spec.securityContext.runAsUser = 0 | .spec.containers[0].securityContext = {"runAsUser": 1000} | del(.spec.volumes[1])
+    | .spec.volumes[0].secret.defaultMode = 0'
+  fail: [pod-secret-readable]
+- name: container-root-overrides-nonroot-pod
+  object: credential-reader-pod
+  mutate: '.spec.containers[0].securityContext = {"runAsUser": 0} | del(.spec.volumes[1]) | .spec.volumes[0].secret.defaultMode
+    = 0'
+- name: projected-checks-every-key-not-first
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"secret": {"name": "fixture-password",
+    "items": [{"key": "password", "path": "password"}, {"key": "second", "path": "second", "mode": 0}]}}], "defaultMode":
+    420}}]'
+  fail: [pod-secret-readable]
+- name: projected-configmap-default-zero-denied
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"configMap": {"name": "fixture", "items":
+    [{"key": "value", "path": "value", "mode": 0}]}}], "defaultMode": 0}}]'
+  fail: [pod-secret-readable]
+- name: projected-configmap-fsgroup-zero-accepted
+  object: credential-reader-pod
+  mutate: '.spec.securityContext.fsGroup = 2000 | .spec.volumes = [{"name": "credential", "projected": {"sources":
+    [{"configMap": {"name": "fixture", "items": [{"key": "value", "path": "value", "mode": 0}]}}], "defaultMode":
+    0}}]'
+- name: projected-downwardapi-default-zero-denied
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"downwardAPI": {"items": [{"fieldRef":
+    {"apiVersion": "v1", "fieldPath": "metadata.name"}, "path": "value", "mode": 0}]}}], "defaultMode": 0}}]'
+  fail: [pod-secret-readable]
+- name: projected-downwardapi-fsgroup-zero-accepted
+  object: credential-reader-pod
+  mutate: '.spec.securityContext.fsGroup = 2000 | .spec.volumes = [{"name": "credential", "projected": {"sources":
+    [{"downwardAPI": {"items": [{"fieldRef": {"apiVersion": "v1", "fieldPath": "metadata.name"}, "path": "value",
+    "mode": 0}]}}], "defaultMode": 0}}]'
+- name: projected-serviceaccounttoken-default-zero-denied
+  object: credential-reader-pod
+  mutate: '.spec.volumes = [{"name": "credential", "projected": {"sources": [{"serviceAccountToken": {"path": "token"}}],
+    "defaultMode": 0}}]'
+  fail: [pod-secret-readable]
+- name: projected-serviceaccounttoken-fsgroup-zero-accepted
+  object: credential-reader-pod
+  mutate: '.spec.securityContext.fsGroup = 2000 | .spec.volumes = [{"name": "credential", "projected": {"sources":
+    [{"serviceAccountToken": {"path": "token"}}], "defaultMode": 0}}]'
+- name: unmounted-secret-zero-mode-not-rejected
+  object: credential-reader-pod
+  mutate: .spec.containers[0].volumeMounts = [] | del(.spec.volumes[1]) | .spec.volumes[0].secret.defaultMode =
+    0
+- name: pod-pvc-with-fsgroup-denied
+  object: credential-reader-pod
+  mutate: .spec.securityContext.fsGroup = 2000
+  fail: [pod-pvc-no-fsgroup]
+- name: pod-pvc-without-fsgroup-accepted
+  object: credential-reader-pod
+- name: deployment-pvc-with-fsgroup-denied
+  object: credential-reader-deployment
+  mutate: '.spec.template.spec.securityContext.fsGroup = 2000 | .spec.template.spec.volumes = [{"name": "credential",
+    "secret": {"secretName": "fixture-password", "items": [{"key": "password", "path": "password"}], "defaultMode":
+    420}}, {"name": "retained", "persistentVolumeClaim": {"claimName": "fixture-retained"}}]'
+  fail: [pod-pvc-no-fsgroup]
+- name: deployment-pvc-without-fsgroup-accepted
+  object: credential-reader-deployment
+  mutate: '.spec.template.spec.volumes = [{"name": "credential", "secret": {"secretName": "fixture-password", "items":
+    [{"key": "password", "path": "password"}], "defaultMode": 420}}, {"name": "retained", "persistentVolumeClaim":
+    {"claimName": "fixture-retained"}}]'
+- name: cronjob-pvc-with-fsgroup-denied
+  object: credential-reader-cronjob
+  mutate: '.spec.jobTemplate.spec.template.spec.securityContext.fsGroup = 2000 | .spec.jobTemplate.spec.template.spec.volumes
+    = [{"name": "credential", "secret": {"secretName": "fixture-password", "items": [{"key": "password", "path":
+    "password"}], "defaultMode": 420}}, {"name": "retained", "persistentVolumeClaim": {"claimName": "fixture-retained"}}]'
+  fail: [pod-pvc-no-fsgroup]
+- name: cronjob-pvc-without-fsgroup-accepted
+  object: credential-reader-cronjob
+  mutate: '.spec.jobTemplate.spec.template.spec.volumes = [{"name": "credential", "secret": {"secretName": "fixture-password",
+    "items": [{"key": "password", "path": "password"}], "defaultMode": 420}}, {"name": "retained", "persistentVolumeClaim":
+    {"claimName": "fixture-retained"}}]'
+- name: jellyfin-runtime-rolling-update
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: .spec.strategy.type = "RollingUpdate"
+  fail: [jellyfin-runtime]
+- name: jellyfin-runtime-root-allowed
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: .spec.template.spec.securityContext.runAsNonRoot = false
+  fail: [jellyfin-runtime]
+- name: jellyfin-runtime-wrong-uid
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: .spec.template.spec.securityContext.runAsUser = 999
+  fail: [jellyfin-runtime]
+- name: jellyfin-runtime-wrong-gid
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: .spec.template.spec.securityContext.runAsGroup = 999
+  fail: [jellyfin-runtime]
+- name: jellyfin-runtime-privilege-escalation
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: .spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation = true
+  fail: [jellyfin-runtime]
+- name: jellyfin-runtime-missing-drop-all
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: .spec.template.spec.containers[0].securityContext.capabilities.drop = []
+  fail: [jellyfin-runtime]
+- name: jellyfin-runtime-declared-port
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: '.spec.template.spec.containers[0].ports = [{"containerPort": 8096}]'
+  fail: [jellyfin-runtime]
+- name: jellyfin-runtime-missing-readinessprobe
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: del(.spec.template.spec.containers[0].readinessProbe)
+  fail: [jellyfin-runtime]
+- name: jellyfin-runtime-missing-startupprobe
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: del(.spec.template.spec.containers[0].startupProbe)
+  fail: [jellyfin-runtime]
+- name: jellyfin-runtime-missing-livenessprobe
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: del(.spec.template.spec.containers[0].livenessProbe)
+  fail: [jellyfin-runtime]
+- name: jellyfin-runtime-duplicate-container
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: '.spec.template.spec.containers += [{"name": "jellyfin", "image": "registry.k8s.io/pause:3.10"}]'
+  fail: [jellyfin-cache, jellyfin-media, jellyfin-provisioner, jellyfin-runtime]
+- name: jellyfin-provisioner-same-runtime
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: .spec.template.spec.containers[0].image = "same-runtime-image" | .spec.template.spec.initContainers[0].image
+    = "same-runtime-image"
+  fail: [jellyfin-provisioner]
+- name: jellyfin-provisioner-config-disconnected
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: .spec.template.spec.initContainers[0].volumeMounts[0].name = "cache"
+  fail: [jellyfin-provisioner]
+- name: jellyfin-provisioner-workspace-aliases-config
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: .spec.template.spec.initContainers[0].volumeMounts[2].name = "config"
+  fail: [jellyfin-provisioner]
+- name: jellyfin-provisioner-writable-password
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: .spec.template.spec.initContainers[0].volumeMounts[3].readOnly = false
+  fail: [jellyfin-provisioner]
+- name: jellyfin-provisioner-disk-workspace
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: .spec.template.spec.volumes[3].emptyDir.medium = ""
+  fail: [jellyfin-provisioner]
+- name: jellyfin-provisioner-runtime-probe
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: '.spec.template.spec.initContainers[0].readinessProbe = {"exec": {"command": ["true"]}}'
+  fail: [jellyfin-provisioner]
+- name: jellyfin-provisioner-declared-port
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: '.spec.template.spec.initContainers[0].ports = [{"containerPort": 8096}]'
+  fail: [jellyfin-provisioner]
+- name: jellyfin-provisioner-distinct-image-accepted
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: .spec.template.spec.initContainers[0].image = "homelab/jellyfin-provisioner:fixture-distinct"
+- name: jellyfin-runtime-media-writable
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: .spec.template.spec.containers[0].volumeMounts[2].readOnly = false
+  fail: [jellyfin-media]
+- name: jellyfin-media-path-not-library
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: .spec.template.spec.volumes[2].hostPath.path = "/srv/media/data"
+  fail: [jellyfin-media]
+- name: jellyfin-provisioner-media-access
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: '.spec.template.spec.initContainers[0].volumeMounts += [{"name": "media", "mountPath": "/media", "readOnly":
+    true}]'
+  fail: [jellyfin-media]
+- name: jellyfin-cache-request-below-capacity
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: .spec.template.spec.containers[0].resources.requests["ephemeral-storage"] = "3Gi"
+  fail: [jellyfin-cache]
+- name: jellyfin-cache-no-limit-headroom
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: .spec.template.spec.containers[0].resources.limits["ephemeral-storage"] = "4Gi"
+  fail: [jellyfin-cache]
+- name: jellyfin-cache-equivalent-quantity-accepted
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: .spec.template.spec.volumes[1].emptyDir.sizeLimit = "4096Mi"
+- name: jellyfin-storage-pv-dynamic-class
+  base: v1/PersistentVolume//jellyfin-config
+  mutate: .spec.storageClassName = "local-path"
+  fail: [jellyfin-retained-storage]
+- name: jellyfin-storage-pv-delete
+  base: v1/PersistentVolume//jellyfin-config
+  mutate: .spec.persistentVolumeReclaimPolicy = "Delete"
+  fail: [jellyfin-retained-storage]
+- name: jellyfin-storage-wrong-claim-namespace
+  base: v1/PersistentVolume//jellyfin-config
+  mutate: .spec.claimRef.namespace = "media"
+  fail: [jellyfin-retained-storage]
+- name: jellyfin-storage-pvc-dynamic-class
+  base: v1/PersistentVolumeClaim/jellyfin/jellyfin-config
+  mutate: .spec.storageClassName = "local-path"
+  fail: [jellyfin-retained-storage]
+- name: jellyfin-storage-pvc-wrong-binding
+  base: v1/PersistentVolumeClaim/jellyfin/jellyfin-config
+  mutate: .spec.volumeName = "other"
+  fail: [jellyfin-retained-storage]
+- name: jellyfin-admin-password-generated
+  object: jellyfin-admin
+  fail: [jellyfin-runtime-credentials]
+- name: jellyfin-admin-empty-secret-accepted
+  object: jellyfin-admin
+  mutate: del(.stringData) | .data = {}
+- name: jellyfin-durable-jellarr-api-denied
+  object:
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: jellarr-api
+      namespace: jellyfin
+  fail: [jellyfin-runtime-credentials]
+  applies: [jellyfin-runtime-credentials]
+- name: jellyfin-durable-api-key-denied
+  object:
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: api-key
+      namespace: jellyfin
+  fail: [jellyfin-runtime-credentials]
+  applies: [jellyfin-runtime-credentials]
+- name: jellyfin-durable-apikey-denied
+  object:
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: apikey
+      namespace: jellyfin
+  fail: [jellyfin-runtime-credentials]
+  applies: [jellyfin-runtime-credentials]
+- name: jellyfin-generated-network-map
+  base: v1/ConfigMap/jellyfin/jellarr-configuration
+  mutate: del(.data) | .metadata.name = "network"
+  fail: [jellyfin-runtime-credentials]
+  applies: [jellyfin-runtime-credentials]
+- name: jellyfin-network-xml-renamed-map
+  object:
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: renamed-network
+      namespace: jellyfin
+    data:
+      network.xml: <NetworkConfiguration/>
+  fail: [jellyfin-runtime-credentials]
+  applies: [jellyfin-runtime-credentials]
+- name: jellyfin-network-writer-volume
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  mutate: '.spec.template.spec.volumes += [{"name": "network", "emptyDir": {}}]'
+  fail: [jellyfin-runtime-credentials]
+- name: jellyfin-configuration-startup-json
+  base: v1/ConfigMap/jellyfin/jellarr-configuration
+  mutate: .data["config.yml"] = "{\"version\":1,\"startup\":{}}"
+  fail: [jellyfin-configuration-no-startup]
+- name: jellyfin-configuration-startup-yaml
+  base: v1/ConfigMap/jellyfin/jellarr-configuration
+  mutate: '.data["config.yml"] = "version: 1\nstartup: {}\n"'
+  fail: [jellyfin-configuration-no-startup]
+- name: jellyfin-configuration-startup-absent-yaml
+  base: v1/ConfigMap/jellyfin/jellarr-configuration
+  mutate: '.data["config.yml"] = "version: 1\nsystem:\n  enableMetrics: true\n"'
+- name: jellyfin-configuration-wrong-hook
+  base: batch/v1/Job/jellyfin/jellyfin-configuration
+  mutate: .metadata.annotations["argocd.argoproj.io/hook"] = "PreSync"
+  fail: [jellyfin-configuration-job]
+- name: jellyfin-configuration-jellarr-admin-access
+  base: batch/v1/Job/jellyfin/jellyfin-configuration
+  mutate: '.spec.template.spec.containers[0].volumeMounts += [{"name": "admin-password", "mountPath": "/stolen-password",
+    "readOnly": true}]'
+  fail: [jellyfin-configuration-job]
+- name: jellyfin-configuration-bootstrap-without-admin
+  base: batch/v1/Job/jellyfin/jellyfin-configuration
+  mutate: .spec.template.spec.initContainers[0].volumeMounts[1].name = "configuration"
+  fail: [jellyfin-configuration-job]
+- name: jellyfin-configuration-workspace-disconnected
+  base: batch/v1/Job/jellyfin/jellyfin-configuration
+  mutate: .spec.template.spec.containers[0].volumeMounts[1].name = "configuration"
+  fail: [jellyfin-configuration-job]
+- name: jellyfin-configuration-api-key-on-disk
+  base: batch/v1/Job/jellyfin/jellyfin-configuration
+  mutate: .spec.template.spec.volumes[2].emptyDir.medium = ""
+  fail: [jellyfin-configuration-job]
+- name: jellyfin-configuration-ingress-blocked
+  mutate: (.bundle.resources[] | select(.object.kind == "NetworkPolicy" and .object.metadata.name == "jellyfin-configuration-ingress"
+    and .object.metadata.namespace == "jellyfin" and .object.apiVersion == "networking.k8s.io/v1")) |= (.object["spec"]["ingress"]
+    = [])
+  scope: population
+  fail: [jellyfin-configuration-ingress]
+- name: jellyfin-configuration-ingress-wrong-port
+  mutate: (.bundle.resources[] | select(.object.kind == "NetworkPolicy" and .object.metadata.name == "jellyfin-configuration-ingress"
+    and .object.metadata.namespace == "jellyfin" and .object.apiVersion == "networking.k8s.io/v1")) |= (.object["spec"]["ingress"][0]["ports"][0]["port"]
+    = 1234)
+  scope: population
+  fail: [jellyfin-configuration-ingress]
+- name: jellyfin-configuration-ingress-wrong-job-identity
+  mutate: (.bundle.resources[] | select(.object.kind == "NetworkPolicy" and .object.metadata.name == "jellyfin-configuration-ingress"
+    and .object.metadata.namespace == "jellyfin" and .object.apiVersion == "networking.k8s.io/v1")) |= (.object["spec"]["ingress"][0]["from"][0]["podSelector"]["matchLabels"]["app.kubernetes.io/name"]
+    = "not-jellarr")
+  scope: population
+  fail: [jellyfin-configuration-ingress]
+- name: jellyfin-configuration-ingress-wrong-namespace
+  mutate: (.bundle.resources[] | select(.object.kind == "NetworkPolicy" and .object.metadata.name == "jellyfin-configuration-ingress"
+    and .object.metadata.namespace == "jellyfin" and .object.apiVersion == "networking.k8s.io/v1")) |= (.object["spec"]["ingress"][0]["from"][0]["namespaceSelector"]["matchLabels"]["kubernetes.io/metadata.name"]
+    = "media")
+  scope: population
+  fail: [jellyfin-configuration-ingress]
+- name: jellyfin-configuration-ingress-unrestricted-port-accepted
+  mutate: (.bundle.resources[] | select(.object.kind == "NetworkPolicy" and .object.metadata.name == "jellyfin-configuration-ingress"
+    and .object.metadata.namespace == "jellyfin" and .object.apiVersion == "networking.k8s.io/v1")) |= (.object["spec"]["ingress"][0]["ports"]
+    = [])
+  scope: population
+- name: jellyfin-configuration-ingress-job-label-superset-accepted
+  mutate: (.bundle.resources[] | select(.object.kind == "Job" and .object.metadata.name == "jellyfin-configuration"
+    and .object.metadata.namespace == "jellyfin" and .object.apiVersion == "batch/v1")) |= (.object["spec"]["template"]["metadata"]["labels"]["fixture-extra"]
+    = "preserved")
+  scope: population
+- name: jellyfin-configuration-ingress-other-application-not-cover
+  mutate: |-
+    (.bundle.resources[] | select(.object.kind == "NetworkPolicy" and .object.metadata.name == "jellyfin-configuration-ingress" and .object.metadata.namespace == "jellyfin" and .object.apiVersion == "networking.k8s.io/v1")) |= (.object["spec"]["ingress"] = []) |
+    .bundle.resources += [{"file": "gateway/NetworkPolicy-external-config-cover.yaml", "document": 0, "object": {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": {"name": "external-config-cover", "namespace": "jellyfin"}, "spec": {"podSelector": {"matchLabels": {"app.kubernetes.io/name": "jellyfin"}}, "ingress": [{"from": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "jellyfin"}}, "podSelector": {"matchLabels": {"app.kubernetes.io/name": "jellarr"}}}], "ports": [{"port": 8096, "protocol": "TCP"}]}]}}}]
+  scope: population
+  fail: [jellyfin-configuration-ingress]
+- name: jellyfin-service-nodeport-type
+  base: v1/Service/jellyfin/jellyfin
+  mutate: .spec.type = "NodePort"
+  fail: [jellyfin-service-route]
+- name: jellyfin-service-external-ip
+  base: v1/Service/jellyfin/jellyfin
+  mutate: .spec.externalIPs = ["192.0.2.1"]
+  fail: [jellyfin-service-route]
+- name: jellyfin-service-loadbalancer-ip
+  base: v1/Service/jellyfin/jellyfin
+  mutate: .spec.loadBalancerIP = "192.0.2.2"
+  fail: [jellyfin-service-route]
+- name: jellyfin-service-nodeport-field
+  base: v1/Service/jellyfin/jellyfin
+  mutate: .spec.ports[0].nodePort = 30096
+  fail: [jellyfin-service-route]
+- name: jellyfin-streaming-request-deadline
+  base: gateway.networking.k8s.io/v1/HTTPRoute/gateway/jellyfin
+  mutate: .spec.rules[0].timeouts.request = "30s"
+  fail: [jellyfin-service-route]
+- name: jellyfin-streaming-backendrequest-deadline
+  base: gateway.networking.k8s.io/v1/HTTPRoute/gateway/jellyfin
+  mutate: .spec.rules[0].timeouts.backendRequest = "30s"
+  fail: [jellyfin-service-route]
+- name: media-local-pv-under-media
+  object: media-host-namespace
+  fail: [media-private-storage]
+- name: media-local-pv-at-media-root
+  object: media-host-namespace
+  mutate: .spec.local.path = "/srv/media/data"
+  fail: [media-private-storage]
+- name: media-pvc-bound-to-media-local-pv
+  mutate: |-
+    .bundle.resources += [{"file": "verification-fixtures/PersistentVolume-media-host-namespace.yaml", "document": 0, "object": {"apiVersion": "v1", "kind": "PersistentVolume", "metadata": {"name": "media-host-namespace"}, "spec": {"local": {"path": "/srv/media/data/library"}}}}] |
+    .bundle.resources += [{"file": "verification-fixtures/PersistentVolumeClaim-media-host-namespace.yaml", "document": 0, "object": {"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": {"name": "media-host-namespace", "namespace": "media"}, "spec": {"volumeName": "media-host-namespace"}}}]
+  scope: population
+  fail: [{media-private-storage: v1/PersistentVolume//media-host-namespace}, media-private-storage-bindings]
+- name: media-local-pv-sibling-path-accepted
+  object: media-host-namespace
+  mutate: .spec.local.path = "/srv/media/data-sibling"
+- name: media-acquisition-wrong-host-path
+  base: apps/v1/Deployment/media/sabnzbd
+  mutate: .spec.template.spec.volumes[1].hostPath.path = "/wrong-data"
+  fail: [media-acquisition-mounts]
+- name: media-acquisition-creates-host-path
+  base: apps/v1/Deployment/media/sabnzbd
+  mutate: .spec.template.spec.volumes[1].hostPath.type = "DirectoryOrCreate"
+  fail: [media-acquisition-mounts]
+- name: media-acquisition-runtime-read-only
+  base: apps/v1/Deployment/media/sabnzbd
+  mutate: .spec.template.spec.containers[0].volumeMounts[1].readOnly = true
+  fail: [media-acquisition-mounts]
+- name: media-acquisition-runtime-wrong-path
+  base: apps/v1/Deployment/media/sabnzbd
+  mutate: .spec.template.spec.containers[0].volumeMounts[1].mountPath = "/other-data"
+  fail: [media-acquisition-mounts]
+- name: media-acquisition-init-read-only
+  base: apps/v1/Deployment/media/sabnzbd
+  mutate: .spec.template.spec.initContainers[0].volumeMounts[1].readOnly = true
+  fail: [media-acquisition-mounts]
+- name: media-acquisition-wrong-pgid
+  base: apps/v1/Deployment/media/sabnzbd
+  mutate: .spec.template.spec.containers[0].env[0].value = "999"
+  fail: [media-acquisition-identity]
+- name: media-acquisition-wrong-puid
+  base: apps/v1/Deployment/media/sabnzbd
+  mutate: .spec.template.spec.containers[0].env[1].value = "999"
+  fail: [media-acquisition-identity]
+- name: media-acquisition-wrong-init-uid
+  base: apps/v1/Deployment/media/sabnzbd
+  mutate: .spec.template.spec.initContainers[0].securityContext.runAsUser = 999
+  fail: [media-acquisition-identity]
+- name: media-acquisition-wrong-init-gid
+  base: apps/v1/Deployment/media/sabnzbd
+  mutate: .spec.template.spec.initContainers[0].securityContext.runAsGroup = 999
+  fail: [media-acquisition-identity]
+- name: media-job-seerr-state-writable
+  variant: normal-initial-trustedEdges
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: .spec.template.spec.containers[0].volumeMounts[3].readOnly = false
+  fail: [media-configuration-state]
+- name: media-job-seerr-state-missing
+  variant: normal-initial-trustedEdges
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: del(.spec.template.spec.containers[0].volumeMounts[3]) | del(.spec.template.spec.volumes[2])
+  fail: [media-configuration-state]
+- name: media-job-seerr-bootstrap-accepted
+  variant: normal-initial-trustedEdges
+  base: batch/v1/Job/media/media-config-seerr
+- name: media-job-seerr-bootstrap-owner-missing
+  variant: normal-initial-trustedEdges
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: del(.spec.template.spec.containers[0].env[0])
+  fail: [media-configuration-state]
+- name: media-job-seerr-bootstrap-service-account
+  variant: normal-initial-trustedEdges
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: .spec.template.spec.serviceAccountName = "media-config-seerr"
+  fail: [media-configuration-state]
+- name: media-job-seerr-state-ready-phase
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: '.spec.template.spec.containers[0].volumeMounts += [{"mountPath": "/seerr-state", "name": "seerr-state",
+    "readOnly": true}] | del(.spec.template.spec.volumes[2].projected) | .spec.template.spec.volumes[2].name = "seerr-state"
+    | .spec.template.spec.volumes[2].persistentVolumeClaim = {"claimName": "media-seerr"} | .spec.template.spec.volumes
+    += [{"name": "secrets", "projected": {"defaultMode": 292, "sources": [{"secret": {"items": [{"key": "RADARR_API_KEY",
+    "path": "RADARR_API_KEY"}, {"key": "SONARR_API_KEY", "path": "SONARR_API_KEY"}, {"key": "SEERR_API_KEY", "path":
+    "SEERR_API_KEY"}], "name": "media-runtime"}}]}}]'
+  fail: [media-configuration-state]
+- name: media-cronjob-seerr-state-initial-phase
+  variant: normal-initial-trustedEdges
+  base: batch/v1/CronJob/media/media-config-seerr
+  mutate: '.spec.jobTemplate.spec.template.spec.containers[0].volumeMounts += [{"mountPath": "/seerr-state", "name":
+    "seerr-state", "readOnly": true}] | del(.spec.jobTemplate.spec.template.spec.volumes[2].projected) | .spec.jobTemplate.spec.template.spec.volumes[2].name
+    = "seerr-state" | .spec.jobTemplate.spec.template.spec.volumes[2].persistentVolumeClaim = {"claimName": "media-seerr"}
+    | .spec.jobTemplate.spec.template.spec.volumes += [{"name": "secrets", "projected": {"defaultMode": 292, "sources":
+    [{"secret": {"items": [{"key": "RADARR_API_KEY", "path": "RADARR_API_KEY"}, {"key": "SONARR_API_KEY", "path":
+    "SONARR_API_KEY"}, {"key": "SEERR_API_KEY", "path": "SEERR_API_KEY"}], "name": "media-runtime"}}]}}]'
+  fail: [media-configuration-state]
+- name: media-job-seerr-ready-bootstrap-service-account
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: .spec.template.spec.serviceAccountName = "media-config-seerr-bootstrap"
+  fail: [media-configuration-state]
+- name: media-job-seerr-ready-ca-env
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: '.spec.template.spec.containers[0].env = [{"name": "NODE_EXTRA_CA_CERTS", "value": "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"}]'
+  fail: [media-configuration-state]
+- name: media-job-seerr-ready-token-projection
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: '.spec.template.spec.containers[0].volumeMounts += [{"mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+    "name": "kubernetes-api", "readOnly": true}] | .spec.template.spec.volumes[2].name = "kubernetes-api" | .spec.template.spec.volumes[2].projected.sources
+    = [{"serviceAccountToken": {"expirationSeconds": 600, "path": "token"}}, {"configMap": {"items": [{"key": "ca.crt",
+    "path": "ca.crt"}], "name": "kube-root-ca.crt"}}] | .spec.template.spec.volumes += [{"name": "secrets", "projected":
+    {"defaultMode": 292, "sources": [{"secret": {"items": [{"key": "RADARR_API_KEY", "path": "RADARR_API_KEY"},
+    {"key": "SONARR_API_KEY", "path": "SONARR_API_KEY"}, {"key": "SEERR_API_KEY", "path": "SEERR_API_KEY"}], "name":
+    "media-runtime"}}]}}]'
+  fail: [media-configuration-state]
+- name: media-job-seerr-extra-container
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: '.spec.template.spec.containers += [{"image": "registry.k8s.io/pause:3.10", "name": "extra-sidecar"}]'
+  fail: [media-configuration-state]
+- name: media-cronjob-seerr-initial-owner
+  base: batch/v1/CronJob/media/media-config-seerr
+  mutate: '.spec.jobTemplate.spec.template.spec.containers[0].env = [{"name": "SEERR_INITIAL_OWNER", "value": "true"}]'
+  fail: [media-configuration-state]
+- name: media-cronjob-seerr-automount-token
+  base: batch/v1/CronJob/media/media-config-seerr
+  mutate: .spec.jobTemplate.spec.template.spec.automountServiceAccountToken = true
+  fail: [media-configuration-state]
+- name: media-job-seerr-bootstrap-state-init-container
+  variant: normal-initial-trustedEdges
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: '.spec.template.spec.initContainers = [{"image": "registry.k8s.io/pause:3.10", "name": "extra-state-reader",
+    "volumeMounts": [{"mountPath": "/seerr-state", "name": "seerr-state", "readOnly": true}]}]'
+  fail: [media-configuration-state]
+- name: media-seerr-bootstrap-account-ready-phase
+  mutate: |-
+    .bundle.resources += [{"file":"media-configuration/ServiceAccount-media-config-seerr-bootstrap.yaml","document":0,"object":{"apiVersion":"v1","kind":"ServiceAccount","metadata":{"name":"media-config-seerr-bootstrap","namespace":"media"},"automountServiceAccountToken":false}}] |
+    .bundle.files += ["media-configuration/ServiceAccount-media-config-seerr-bootstrap.yaml"]
+  scope: population
+  fail: [media-configuration-inventory]
+- name: media-job-configarr-private-pvc
+  base: batch/v1/Job/media/media-configarr
+  mutate: '.spec.template.spec.containers[0].volumeMounts += [{"name": "private-state", "mountPath": "/private-state"}]
+    | .spec.template.spec.volumes += [{"name": "private-state", "persistentVolumeClaim": {"claimName": "media-seerr"}}]'
+  fail: [media-configuration-state]
+- name: media-job-configarr-hostpath
+  base: batch/v1/Job/media/media-configarr
+  mutate: '.spec.template.spec.containers[0].volumeMounts += [{"name": "private-state", "mountPath": "/private-state"}]
+    | .spec.template.spec.volumes += [{"name": "private-state", "hostPath": {"path": "/srv/state/seerr", "type":
+    "Directory"}}]'
+  fail: [media-configuration-state]
+- name: media-job-inventory-missing-configarr
+  mutate: (.bundle.resources[] | select(.object.kind == "Job" and .object.metadata.name == "media-configarr" and
+    .object.metadata.namespace == "media" and .object.apiVersion == "batch/v1")) |= (.object["metadata"]["name"]
+    = "renamed-configarr")
+  scope: population
+  fail: [media-configuration-inventory]
+  applies:
+    batch/v1/Job/media/media-configarr: []
+    batch/v1/Job/media/renamed-configarr: [pod-secret-readable, pod-pvc-no-fsgroup]
+- name: media-cronjob-seerr-state-writable
+  base: batch/v1/CronJob/media/media-config-seerr
+  mutate: '.spec.jobTemplate.spec.template.spec.containers[0].volumeMounts += [{"mountPath": "/seerr-state", "name":
+    "seerr-state", "readOnly": false}] | .spec.jobTemplate.spec.template.spec.volumes = [{"configMap": {"name":
+    "media-configuration"}, "name": "configuration"}, {"name": "seerr-state", "persistentVolumeClaim": {"claimName":
+    "media-seerr"}}, {"name": "coordination", "persistentVolumeClaim": {"claimName": "media-seerr-configuration"}},
+    {"name": "secrets", "projected": {"defaultMode": 292, "sources": [{"secret": {"items": [{"key": "RADARR_API_KEY",
+    "path": "RADARR_API_KEY"}, {"key": "SONARR_API_KEY", "path": "SONARR_API_KEY"}, {"key": "SEERR_API_KEY", "path":
+    "SEERR_API_KEY"}], "name": "media-runtime"}}]}}]'
+  fail: [media-configuration-state]
+- name: media-cronjob-configarr-private-pvc
+  base: batch/v1/CronJob/media/media-configarr
+  mutate: '.spec.jobTemplate.spec.template.spec.containers[0].volumeMounts += [{"name": "private-state", "mountPath":
+    "/private-state"}] | .spec.jobTemplate.spec.template.spec.volumes += [{"name": "private-state", "persistentVolumeClaim":
+    {"claimName": "media-seerr"}}]'
+  fail: [media-configuration-state]
+- name: media-cronjob-configarr-hostpath
+  base: batch/v1/CronJob/media/media-configarr
+  mutate: '.spec.jobTemplate.spec.template.spec.containers[0].volumeMounts += [{"name": "private-state", "mountPath":
+    "/private-state"}] | .spec.jobTemplate.spec.template.spec.volumes += [{"name": "private-state", "hostPath":
+    {"path": "/srv/state/seerr", "type": "Directory"}}]'
+  fail: [media-configuration-state]
+- name: media-cronjob-inventory-missing-configarr
+  mutate: (.bundle.resources[] | select(.object.kind == "CronJob" and .object.metadata.name == "media-configarr"
+    and .object.metadata.namespace == "media" and .object.apiVersion == "batch/v1")) |= (.object["metadata"]["name"]
+    = "renamed-configarr")
+  scope: population
+  fail: [media-configuration-inventory, media-periodic-inventory]
+  applies:
+    batch/v1/CronJob/media/media-configarr: []
+    batch/v1/CronJob/media/renamed-configarr: [pod-secret-readable, pod-pvc-no-fsgroup, media-periodic-safety]
+- name: media-configarr-suspended
+  base: batch/v1/CronJob/media/media-configarr
+  mutate: .spec.suspend = true
+  fail: [media-periodic-safety]
+- name: media-configarr-concurrent
+  base: batch/v1/CronJob/media/media-configarr
+  mutate: .spec.concurrencyPolicy = "Allow"
+  fail: [media-periodic-safety]
+- name: media-config-seerr-suspended
+  base: batch/v1/CronJob/media/media-config-seerr
+  mutate: .spec.suspend = true
+  fail: [media-periodic-safety]
+- name: media-config-seerr-concurrent
+  base: batch/v1/CronJob/media/media-config-seerr
+  mutate: .spec.concurrencyPolicy = "Allow"
+  fail: [media-periodic-safety]
+- name: media-unexpected-periodic-job
+  mutate: '.bundle.resources += [{"file": "verification-fixtures/CronJob-unexpected-periodic.yaml", "document":
+    0, "object": {"apiVersion": "batch/v1", "kind": "CronJob", "metadata": {"name": "unexpected-periodic", "namespace":
+    "media"}, "spec": {"schedule": "0 * * * *", "suspend": false, "concurrencyPolicy": "Forbid", "jobTemplate":
+    {"spec": {"template": {"spec": {"containers": [{"name": "fixture", "image": "registry.k8s.io/pause:3.10"}]}}}}}}}]'
+  scope: population
+  fail: [media-periodic-inventory]
+  applies:
+    batch/v1/CronJob/media/unexpected-periodic: [pod-secret-readable, pod-pvc-no-fsgroup, media-periodic-safety]
+- name: media-duplicate-periodic-identity
+  mutate: '.bundle.resources += [{"file": "verification-fixtures/CronJob-media-configarr.yaml", "document": 0, "object":
+    {"apiVersion": "batch/v1", "kind": "CronJob", "metadata": {"name": "media-configarr", "namespace": "media"},
+    "spec": {"schedule": "0 * * * *", "suspend": false, "concurrencyPolicy": "Forbid", "jobTemplate": {"spec": {"template":
+    {"spec": {"containers": [{"name": "fixture", "image": "registry.k8s.io/pause:3.10"}]}}}}}}}]'
+  scope: population
+  fail: [media-periodic-inventory]
+- name: media-storage-ingress-wrong-target
+  base: networking.k8s.io/v1/NetworkPolicy/jellyfin/media-jellyfin-ingress
+  mutate: .spec.podSelector.matchLabels["app.kubernetes.io/name"] = "other"
+  fail: [media-storage-ingress]
+- name: media-storage-ingress-wrong-source
+  base: networking.k8s.io/v1/NetworkPolicy/jellyfin/media-jellyfin-ingress
+  mutate: .spec.ingress[0].from[0].podSelector.matchLabels["app.kubernetes.io/name"] = "radarr"
+  fail: [media-storage-ingress]
+- name: media-storage-ingress-wrong-port
+  base: networking.k8s.io/v1/NetworkPolicy/jellyfin/media-jellyfin-ingress
+  mutate: .spec.ingress[0].ports[0].port = 1234
+  fail: [media-storage-ingress]
+- name: media-storage-ingress-wrong-namespace
+  base: networking.k8s.io/v1/NetworkPolicy/jellyfin/media-jellyfin-ingress
+  mutate: .spec.ingress[0].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"] = "jellyfin"
+  fail: [media-storage-ingress]
+- name: media-storage-does-not-precede-workload
+  mutate: (.bundle.resources[] | select(.object.kind == "Application" and .object.metadata.name == "media-storage"
+    and .object.metadata.namespace == "argocd" and .object.apiVersion == "argoproj.io/v1alpha1")) |= (.object["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"]
+    = "1")
+  scope: population
+  fail: [media-storage-lifecycle]
+- name: sabnzbd-storage-does-not-precede-workload
+  mutate: (.bundle.resources[] | select(.object.kind == "Application" and .object.metadata.name == "sabnzbd-storage"
+    and .object.metadata.namespace == "argocd" and .object.apiVersion == "argoproj.io/v1alpha1")) |= (.object["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"]
+    = "1")
+  scope: population
+  fail: [media-storage-lifecycle]
+- name: media-storage-incidental-waves-accepted
+  mutate: |-
+    (.bundle.resources[] | select(.object.kind == "Application" and .object.metadata.name == "media-storage" and .object.metadata.namespace == "argocd" and .object.apiVersion == "argoproj.io/v1alpha1")) |= (.object["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] = "-8") |
+    (.bundle.resources[] | select(.object.kind == "Application" and .object.metadata.name == "sabnzbd-storage" and .object.metadata.namespace == "argocd" and .object.apiVersion == "argoproj.io/v1alpha1")) |= (.object["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] = "-3") |
+    (.bundle.resources[] | select(.object.kind == "Application" and .object.metadata.name == "sabnzbd" and .object.metadata.namespace == "argocd" and .object.apiVersion == "argoproj.io/v1alpha1")) |= (.object["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"] = "4")
+  scope: population
+- name: jellarr-configuration-map-missing
+  mutate: |-
+    (.bundle.resources |= map(select(.file != "jellyfin-configuration/ConfigMap-jellarr-configuration.yaml"))) |
+    (.bundle.files |= map(select(. != "jellyfin-configuration/ConfigMap-jellarr-configuration.yaml")))
+  scope: population
+  fail: [workload-population]
+  applies:
+    v1/ConfigMap/jellyfin/jellarr-configuration: []
+- name: jellarr-configuration-key-missing-admission
+  base: v1/ConfigMap/jellyfin/jellarr-configuration
+  mutate: del(.data["config.yml"])
+  fail: [jellyfin-configuration-no-startup]
+- name: jellarr-configuration-key-missing-population
+  mutate: (.bundle.resources[] | select(.object.apiVersion == "v1" and .object.kind == "ConfigMap" and .object.metadata.name
+    == "jellarr-configuration" and .object.metadata.namespace == "jellyfin")) |= del(.object.data["config.yml"])
+  scope: population
+  fail: [{jellyfin-configuration-no-startup: v1/ConfigMap/jellyfin/jellarr-configuration}, workload-population]
+- name: media-local-pv-dot-alias
+  base: v1/PersistentVolume//media-sabnzbd
+  mutate: .spec.local.path = "/srv/media/./data/library"
+  fail: [media-private-storage]
+- name: media-bound-pvc-dot-alias
+  mutate: (.bundle.resources[] | select(.object.apiVersion == "v1" and .object.kind == "PersistentVolume" and .object.metadata.name
+    == "media-sabnzbd")) |= (.object.spec.local.path = "/srv/media/./data/library")
+  scope: population
+  fail: [{media-private-storage: v1/PersistentVolume//media-sabnzbd}, media-private-storage-bindings]
+- name: media-local-pv-repeated-separator-alias
+  base: v1/PersistentVolume//media-sabnzbd
+  mutate: .spec.local.path = "/srv/media//data/library"
+  fail: [media-private-storage]
+- name: media-bound-pvc-repeated-separator-alias
+  mutate: (.bundle.resources[] | select(.object.apiVersion == "v1" and .object.kind == "PersistentVolume" and .object.metadata.name
+    == "media-sabnzbd")) |= (.object.spec.local.path = "/srv/media//data/library")
+  scope: population
+  fail: [{media-private-storage: v1/PersistentVolume//media-sabnzbd}, media-private-storage-bindings]
+- name: media-local-pv-parent-alias
+  base: v1/PersistentVolume//media-sabnzbd
+  mutate: .spec.local.path = "/srv/media/other/../data/library"
+  fail: [media-private-storage]
+- name: media-bound-pvc-parent-alias
+  mutate: (.bundle.resources[] | select(.object.apiVersion == "v1" and .object.kind == "PersistentVolume" and .object.metadata.name
+    == "media-sabnzbd")) |= (.object.spec.local.path = "/srv/media/other/../data/library")
+  scope: population
+  fail: [{media-private-storage: v1/PersistentVolume//media-sabnzbd}, media-private-storage-bindings]
+- name: media-local-pv-trailing-slash
+  base: v1/PersistentVolume//media-sabnzbd
+  mutate: .spec.local.path = "/srv/media/data/library/"
+  fail: [media-private-storage]
+- name: media-bound-pvc-trailing-slash
+  mutate: (.bundle.resources[] | select(.object.apiVersion == "v1" and .object.kind == "PersistentVolume" and .object.metadata.name
+    == "media-sabnzbd")) |= (.object.spec.local.path = "/srv/media/data/library/")
+  scope: population
+  fail: [{media-private-storage: v1/PersistentVolume//media-sabnzbd}, media-private-storage-bindings]
+- name: jellyfin-required-native-parameters-missing
+  reject: native-evaluation-error
+  base: apps/v1/Deployment/jellyfin/jellyfin
+  params: false
+- name: jellarr-configuration-key-empty-admission
+  base: v1/ConfigMap/jellyfin/jellarr-configuration
+  mutate: .data["config.yml"] = ""
+  fail: [jellyfin-configuration-no-startup]
+- name: media-source-maintenance-hostpath
+  mutate: |-
+    .bundle.resources += [{"file":"media-configuration/Job-maintenance.yaml","document":0,"object":{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"maintenance","namespace":"media"},"spec":{"template":{"spec":{"restartPolicy":"Never","securityContext":{"runAsUser":1000,"runAsGroup":1000,"runAsNonRoot":true},"containers":[{"name":"maintenance","image":"registry.k8s.io/pause:3.10","volumeMounts":[{"name":"state","mountPath":"/state","readOnly":false}]}],"volumes":[{"name":"state","hostPath":{"path":"/srv/media/data","type":"Directory"}}]}}}}}] |
+    .bundle.files += ["media-configuration/Job-maintenance.yaml"]
+  scope: population
+  fail: [media-configuration-inventory]
+  applies:
+    batch/v1/Job/media/maintenance: [pod-secret-readable, pod-pvc-no-fsgroup]
+- name: media-source-maintenance-private-pvc
+  mutate: |-
+    .bundle.resources += [{"file":"media-configuration/Job-maintenance.yaml","document":0,"object":{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"maintenance","namespace":"media"},"spec":{"template":{"spec":{"restartPolicy":"Never","securityContext":{"runAsUser":1000,"runAsGroup":1000,"runAsNonRoot":true},"containers":[{"name":"maintenance","image":"registry.k8s.io/pause:3.10","volumeMounts":[{"name":"state","mountPath":"/state","readOnly":false}]}],"volumes":[{"name":"state","persistentVolumeClaim":{"claimName":"media-radarr"}}]}}}}}] |
+    .bundle.files += ["media-configuration/Job-maintenance.yaml"]
+  scope: population
+  fail: [media-configuration-inventory]
+  applies:
+    batch/v1/Job/media/maintenance: [pod-secret-readable, pod-pvc-no-fsgroup]
+- name: media-source-maintenance-hostpath-implicit-namespace
+  mutate: |-
+    .bundle.resources += [{"file":"media-configuration/Job-maintenance.yaml","document":0,"object":{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"maintenance"},"spec":{"template":{"spec":{"restartPolicy":"Never","securityContext":{"runAsUser":1000,"runAsGroup":1000,"runAsNonRoot":true},"containers":[{"name":"maintenance","image":"registry.k8s.io/pause:3.10","volumeMounts":[{"name":"state","mountPath":"/state","readOnly":false}]}],"volumes":[{"name":"state","hostPath":{"path":"/srv/media/data","type":"Directory"}}]}}}}}] |
+    .bundle.files += ["media-configuration/Job-maintenance.yaml"]
+  scope: population
+  fail: [media-configuration-inventory]
+  applies:
+    batch/v1/Job/default/maintenance: [pod-secret-readable, pod-pvc-no-fsgroup]
+- name: media-source-maintenance-private-pvc-implicit-namespace
+  mutate: |-
+    .bundle.resources += [{"file":"media-configuration/Job-maintenance.yaml","document":0,"object":{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"maintenance"},"spec":{"template":{"spec":{"restartPolicy":"Never","securityContext":{"runAsUser":1000,"runAsGroup":1000,"runAsNonRoot":true},"containers":[{"name":"maintenance","image":"registry.k8s.io/pause:3.10","volumeMounts":[{"name":"state","mountPath":"/state","readOnly":false}]}],"volumes":[{"name":"state","persistentVolumeClaim":{"claimName":"media-radarr"}}]}}}}}] |
+    .bundle.files += ["media-configuration/Job-maintenance.yaml"]
+  scope: population
+  fail: [media-configuration-inventory]
+  applies:
+    batch/v1/Job/default/maintenance: [pod-secret-readable, pod-pvc-no-fsgroup]
+- name: media-source-maintenance-storage-free
+  mutate: |-
+    .bundle.resources += [{"file":"media-configuration/Job-maintenance.yaml","document":0,"object":{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"maintenance","namespace":"media"},"spec":{"template":{"spec":{"restartPolicy":"Never","securityContext":{"runAsUser":1000,"runAsGroup":1000,"runAsNonRoot":true},"containers":[{"name":"maintenance","image":"registry.k8s.io/pause:3.10"}]}}}}}] |
+    .bundle.files += ["media-configuration/Job-maintenance.yaml"]
+  scope: population
+  applies:
+    batch/v1/Job/media/maintenance: [pod-secret-readable, pod-pvc-no-fsgroup]
+- name: media-source-maintenance-storage-free-implicit-namespace
+  mutate: |-
+    .bundle.resources += [{"file":"media-configuration/Job-maintenance.yaml","document":0,"object":{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"maintenance"},"spec":{"template":{"spec":{"restartPolicy":"Never","securityContext":{"runAsUser":1000,"runAsGroup":1000,"runAsNonRoot":true},"containers":[{"name":"maintenance","image":"registry.k8s.io/pause:3.10"}]}}}}}] |
+    .bundle.files += ["media-configuration/Job-maintenance.yaml"]
+  scope: population
+  applies:
+    batch/v1/Job/default/maintenance: [pod-secret-readable, pod-pvc-no-fsgroup]
+- name: media-job-configarr-coordination-accepted
+  base: batch/v1/Job/media/media-configarr
+- name: media-job-configarr-coordination-missing
+  base: batch/v1/Job/media/media-configarr
+  mutate: del(.spec.template.spec.volumes[0])
+  fail: [media-configuration-state]
+- name: media-job-configarr-coordination-private-pvc
+  base: batch/v1/Job/media/media-configarr
+  mutate: .spec.template.spec.volumes[0].persistentVolumeClaim.claimName = "media-seerr"
+  fail: [media-configuration-state]
+- name: media-job-configarr-coordination-unlisted-pvc
+  base: batch/v1/Job/media/media-configarr
+  mutate: .spec.template.spec.volumes[0].persistentVolumeClaim.claimName = "media-unlisted"
+  fail: [media-configuration-state]
+- name: media-job-configarr-coordination-wrong-mount
+  base: batch/v1/Job/media/media-configarr
+  mutate: .spec.template.spec.containers[0].volumeMounts[3].mountPath = "/private-state"
+  fail: [media-configuration-state]
+- name: media-job-configarr-coordination-read-only
+  base: batch/v1/Job/media/media-configarr
+  mutate: .spec.template.spec.containers[0].volumeMounts[3].readOnly = true
+  fail: [media-configuration-state]
+- name: media-job-configarr-coordination-init-container
+  base: batch/v1/Job/media/media-configarr
+  mutate: '.spec.template.spec.initContainers += [{"name": "extra-coordination-reader", "image": "registry.k8s.io/pause:3.10",
+    "volumeMounts": [{"name": "coordination", "mountPath": "/coordination"}]}]'
+  fail: [media-configuration-state]
+- name: media-job-configarr-coordination-fsgroup
+  base: batch/v1/Job/media/media-configarr
+  mutate: .spec.template.spec.securityContext.fsGroup = 1000
+  fail: [pod-pvc-no-fsgroup]
+- name: media-job-seerr-coordination-accepted
+  base: batch/v1/Job/media/media-config-seerr
+- name: media-job-seerr-coordination-missing
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: del(.spec.template.spec.volumes[1])
+  fail: [media-configuration-state]
+- name: media-job-seerr-coordination-private-pvc
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: .spec.template.spec.volumes[1].persistentVolumeClaim.claimName = "media-seerr"
+  fail: [media-configuration-state]
+- name: media-job-seerr-coordination-unlisted-pvc
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: .spec.template.spec.volumes[1].persistentVolumeClaim.claimName = "media-unlisted"
+  fail: [media-configuration-state]
+- name: media-job-seerr-coordination-wrong-mount
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: .spec.template.spec.containers[0].volumeMounts[2].mountPath = "/private-state"
+  fail: [media-configuration-state]
+- name: media-job-seerr-coordination-read-only
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: .spec.template.spec.containers[0].volumeMounts[2].readOnly = true
+  fail: [media-configuration-state]
+- name: media-job-seerr-coordination-init-container
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: '.spec.template.spec.initContainers = [{"name": "extra-coordination-reader", "image": "registry.k8s.io/pause:3.10",
+    "volumeMounts": [{"name": "coordination", "mountPath": "/coordination"}]}]'
+  fail: [media-configuration-state]
+- name: media-job-seerr-coordination-fsgroup
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: .spec.template.spec.securityContext.fsGroup = 1000
+  fail: [pod-pvc-no-fsgroup]
+- name: media-cronjob-configarr-coordination-accepted
+  base: batch/v1/CronJob/media/media-configarr
+- name: media-cronjob-configarr-coordination-missing
+  base: batch/v1/CronJob/media/media-configarr
+  mutate: del(.spec.jobTemplate.spec.template.spec.volumes[0])
+  fail: [media-configuration-state]
+- name: media-cronjob-configarr-coordination-private-pvc
+  base: batch/v1/CronJob/media/media-configarr
+  mutate: .spec.jobTemplate.spec.template.spec.volumes[0].persistentVolumeClaim.claimName = "media-seerr"
+  fail: [media-configuration-state]
+- name: media-cronjob-configarr-coordination-unlisted-pvc
+  base: batch/v1/CronJob/media/media-configarr
+  mutate: .spec.jobTemplate.spec.template.spec.volumes[0].persistentVolumeClaim.claimName = "media-unlisted"
+  fail: [media-configuration-state]
+- name: media-cronjob-configarr-coordination-wrong-mount
+  base: batch/v1/CronJob/media/media-configarr
+  mutate: .spec.jobTemplate.spec.template.spec.containers[0].volumeMounts[3].mountPath = "/private-state"
+  fail: [media-configuration-state]
+- name: media-cronjob-configarr-coordination-read-only
+  base: batch/v1/CronJob/media/media-configarr
+  mutate: .spec.jobTemplate.spec.template.spec.containers[0].volumeMounts[3].readOnly = true
+  fail: [media-configuration-state]
+- name: media-cronjob-configarr-coordination-init-container
+  base: batch/v1/CronJob/media/media-configarr
+  mutate: '.spec.jobTemplate.spec.template.spec.initContainers += [{"name": "extra-coordination-reader", "image":
+    "registry.k8s.io/pause:3.10", "volumeMounts": [{"name": "coordination", "mountPath": "/coordination"}]}]'
+  fail: [media-configuration-state]
+- name: media-cronjob-configarr-coordination-fsgroup
+  base: batch/v1/CronJob/media/media-configarr
+  mutate: .spec.jobTemplate.spec.template.spec.securityContext.fsGroup = 1000
+  fail: [pod-pvc-no-fsgroup]
+- name: media-cronjob-seerr-coordination-accepted
+  base: batch/v1/CronJob/media/media-config-seerr
+- name: media-cronjob-seerr-coordination-missing
+  base: batch/v1/CronJob/media/media-config-seerr
+  mutate: del(.spec.jobTemplate.spec.template.spec.volumes[1])
+  fail: [media-configuration-state]
+- name: media-cronjob-seerr-coordination-private-pvc
+  base: batch/v1/CronJob/media/media-config-seerr
+  mutate: .spec.jobTemplate.spec.template.spec.volumes[1].persistentVolumeClaim.claimName = "media-seerr"
+  fail: [media-configuration-state]
+- name: media-cronjob-seerr-coordination-unlisted-pvc
+  base: batch/v1/CronJob/media/media-config-seerr
+  mutate: .spec.jobTemplate.spec.template.spec.volumes[1].persistentVolumeClaim.claimName = "media-unlisted"
+  fail: [media-configuration-state]
+- name: media-cronjob-seerr-coordination-wrong-mount
+  base: batch/v1/CronJob/media/media-config-seerr
+  mutate: .spec.jobTemplate.spec.template.spec.containers[0].volumeMounts[2].mountPath = "/private-state"
+  fail: [media-configuration-state]
+- name: media-cronjob-seerr-coordination-read-only
+  base: batch/v1/CronJob/media/media-config-seerr
+  mutate: .spec.jobTemplate.spec.template.spec.containers[0].volumeMounts[2].readOnly = true
+  fail: [media-configuration-state]
+- name: media-cronjob-seerr-coordination-init-container
+  base: batch/v1/CronJob/media/media-config-seerr
+  mutate: '.spec.jobTemplate.spec.template.spec.initContainers = [{"name": "extra-coordination-reader", "image":
+    "registry.k8s.io/pause:3.10", "volumeMounts": [{"name": "coordination", "mountPath": "/coordination"}]}]'
+  fail: [media-configuration-state]
+- name: media-cronjob-seerr-coordination-fsgroup
+  base: batch/v1/CronJob/media/media-config-seerr
+  mutate: .spec.jobTemplate.spec.template.spec.securityContext.fsGroup = 1000
+  fail: [pod-pvc-no-fsgroup]
+- name: media-job-seerr-credentials-writable
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: .spec.template.spec.containers[0].volumeMounts[1].readOnly = false
+  fail: [media-configuration-state]
+- name: media-job-seerr-credentials-whole-secret
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: del(.spec.template.spec.volumes[2].projected.sources[0].secret.items)
+  fail: [media-configuration-state]
+- name: media-job-seerr-credentials-init-container
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: '.spec.template.spec.initContainers = [{"name": "extra-credential-reader", "image": "registry.k8s.io/pause:3.10",
+    "volumeMounts": [{"name": "secrets", "mountPath": "/secrets", "readOnly": true}]}]'
+  fail: [media-configuration-state]
+- name: media-job-seerr-credentials-envfrom
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: '.spec.template.spec.containers[0].envFrom = [{"secretRef": {"name": "media-runtime"}}]'
+  fail: [media-configuration-state]
+- name: media-job-seerr-credentials-env-secret
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: '.spec.template.spec.containers[0].env = [{"name": "SABNZBD_PASSWORD", "valueFrom": {"secretKeyRef": {"name":
+    "media-runtime", "key": "SABNZBD_PASSWORD"}}}]'
+  fail: [media-configuration-state]
+- name: media-job-seerr-hostpath
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: '.spec.template.spec.volumes += [{"name": "private-host", "hostPath": {"path": "/srv/state/seerr", "type":
+    "Directory"}}]'
+  fail: [media-configuration-state]
+- name: media-job-seerr-credentials-owner-only
+  base: batch/v1/Job/media/media-config-seerr
+  mutate: .spec.template.spec.volumes[2].projected.defaultMode = 256
+  fail: [pod-secret-readable]
+- name: media-job-configarr-credentials-secret-mount
+  base: batch/v1/Job/media/media-configarr
+  mutate: '.spec.template.spec.containers[0].volumeMounts += [{"name": "credentials", "mountPath": "/credentials",
+    "readOnly": true}] | .spec.template.spec.volumes += [{"name": "credentials", "secret": {"secretName": "media-runtime",
+    "defaultMode": 292}}]'
+  fail: [media-configuration-state]
+- name: media-job-configarr-credentials-envfrom
+  base: batch/v1/Job/media/media-configarr
+  mutate: '.spec.template.spec.containers[0].envFrom = [{"secretRef": {"name": "media-runtime"}}]'
+  fail: [media-configuration-state]
+- name: media-cronjob-seerr-credentials-writable
+  base: batch/v1/CronJob/media/media-config-seerr
+  mutate: .spec.jobTemplate.spec.template.spec.containers[0].volumeMounts[1].readOnly = false
+  fail: [media-configuration-state]
+- name: media-cronjob-seerr-credentials-whole-secret
+  base: batch/v1/CronJob/media/media-config-seerr
+  mutate: del(.spec.jobTemplate.spec.template.spec.volumes[2].projected.sources[0].secret.items)
+  fail: [media-configuration-state]
+- name: media-cronjob-seerr-credentials-init-container
+  base: batch/v1/CronJob/media/media-config-seerr
+  mutate: '.spec.jobTemplate.spec.template.spec.initContainers = [{"name": "extra-credential-reader", "image": "registry.k8s.io/pause:3.10",
+    "volumeMounts": [{"name": "secrets", "mountPath": "/secrets", "readOnly": true}]}]'
+  fail: [media-configuration-state]
+- name: media-cronjob-seerr-credentials-envfrom
+  base: batch/v1/CronJob/media/media-config-seerr
+  mutate: '.spec.jobTemplate.spec.template.spec.containers[0].envFrom = [{"secretRef": {"name": "media-runtime"}}]'
+  fail: [media-configuration-state]
+- name: media-cronjob-seerr-credentials-env-secret
+  base: batch/v1/CronJob/media/media-config-seerr
+  mutate: '.spec.jobTemplate.spec.template.spec.containers[0].env = [{"name": "SABNZBD_PASSWORD", "valueFrom": {"secretKeyRef":
+    {"name": "media-runtime", "key": "SABNZBD_PASSWORD"}}}]'
+  fail: [media-configuration-state]
+- name: media-cronjob-seerr-hostpath
+  base: batch/v1/CronJob/media/media-config-seerr
+  mutate: '.spec.jobTemplate.spec.template.spec.volumes += [{"name": "private-host", "hostPath": {"path": "/srv/state/seerr",
+    "type": "Directory"}}]'
+  fail: [media-configuration-state]
+- name: media-cronjob-seerr-credentials-owner-only
+  base: batch/v1/CronJob/media/media-config-seerr
+  mutate: .spec.jobTemplate.spec.template.spec.volumes[2].projected.defaultMode = 256
+  fail: [pod-secret-readable]
+- name: media-cronjob-configarr-credentials-secret-mount
+  base: batch/v1/CronJob/media/media-configarr
+  mutate: '.spec.jobTemplate.spec.template.spec.containers[0].volumeMounts += [{"name": "credentials", "mountPath":
+    "/credentials", "readOnly": true}] | .spec.jobTemplate.spec.template.spec.volumes += [{"name": "credentials",
+    "secret": {"secretName": "media-runtime", "defaultMode": 292}}]'
+  fail: [media-configuration-state]
+- name: media-cronjob-configarr-credentials-envfrom
+  base: batch/v1/CronJob/media/media-configarr
+  mutate: '.spec.jobTemplate.spec.template.spec.containers[0].envFrom = [{"secretRef": {"name": "media-runtime"}}]'
+  fail: [media-configuration-state]
+- name: media-source-maintenance-coordination-pvc
+  mutate: |-
+    .bundle.resources += [{"file":"media-configuration/Job-maintenance.yaml","document":0,"object":{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"maintenance","namespace":"media"},"spec":{"template":{"spec":{"restartPolicy":"Never","securityContext":{"runAsUser":1000,"runAsGroup":1000,"runAsNonRoot":true},"containers":[{"name":"maintenance","image":"registry.k8s.io/pause:3.10","volumeMounts":[{"name":"coordination","mountPath":"/coordination","readOnly":false}]}],"volumes":[{"name":"coordination","persistentVolumeClaim":{"claimName":"media-seerr-configuration"}}]}}}}}] |
+    .bundle.files += ["media-configuration/Job-maintenance.yaml"]
+  scope: population
+  fail: [media-configuration-inventory]
+  applies:
+    batch/v1/Job/media/maintenance: [pod-secret-readable, pod-pvc-no-fsgroup]
+- name: media-source-maintenance-coordination-pvc-implicit-namespace
+  mutate: |-
+    .bundle.resources += [{"file":"media-configuration/Job-maintenance.yaml","document":0,"object":{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"maintenance"},"spec":{"template":{"spec":{"restartPolicy":"Never","securityContext":{"runAsUser":1000,"runAsGroup":1000,"runAsNonRoot":true},"containers":[{"name":"maintenance","image":"registry.k8s.io/pause:3.10","volumeMounts":[{"name":"coordination","mountPath":"/coordination","readOnly":false}]}],"volumes":[{"name":"coordination","persistentVolumeClaim":{"claimName":"media-seerr-configuration"}}]}}}}}] |
+    .bundle.files += ["media-configuration/Job-maintenance.yaml"]
+  scope: population
+  fail: [media-configuration-inventory]
+  applies:
+    batch/v1/Job/default/maintenance: [pod-secret-readable, pod-pvc-no-fsgroup]
