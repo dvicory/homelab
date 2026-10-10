@@ -1,8 +1,9 @@
 Host-owned roots, pooling, placement, permissions and fail-closed behavior are
 implemented and checked in disposable environments, and the player reads the
-namespace read-only. Writer repointing (3.1) lands with the media cut. Still
-open: declaration conflict checks (1.2), the physical-path check (4.1), the
-capacity-exhaustion half of 5.3, movement (5.6), and production acceptance.
+namespace read-only while the acquisition writers share one `/data`
+filesystem. Still open: declaration conflict checks (1.2), the physical-path check (4.1),
+the capacity-exhaustion half of 5.3, movement (5.6), and production
+acceptance.
 
 ## 1. Declare host-owned semantic roots
 
@@ -42,8 +43,11 @@ capacity-exhaustion half of 5.3, movement (5.6), and production acceptance.
 The later workload cut owns consumer manifests and runtime evidence. It must
 restore these tasks without claiming them in the platform cut:
 
-- [ ] 3.1 Point link-dependent writers at the common namespace and use the
-  semantic layout rather than a compute-state path.
+- [x] 3.1 Point link-dependent writers at the common namespace and use the
+  semantic layout rather than a compute-state path. Radarr, Sonarr and
+  SABnzbd mount the one `/data` filesystem with roots under
+  `/data/library/...` and `/data/downloads/...` (`media-contracts`), and
+  `media-live-acceptance` runs them against pinned images.
 - [x] 3.2 Give read-only consumers access only to the required semantic
   subtree. Jellyfin mounts `library` read-only at `/media` (`jellyfin-contracts`
   checks the hostPath and `readOnly`; the replacement scenario shows its pod

@@ -34,6 +34,7 @@
                     "gateway"
                     "identity"
                     "jellyfin"
+                    "media"
                   ];
               clusterResourceWhitelist = [
                 {

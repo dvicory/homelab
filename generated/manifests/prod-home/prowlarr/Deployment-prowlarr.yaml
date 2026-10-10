@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/controller: main
+    app.kubernetes.io/instance: prowlarr
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: prowlarr
+    helm.sh/chart: app-template-5.1.0
+  name: prowlarr
+  namespace: media
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/controller: main
+      app.kubernetes.io/instance: prowlarr
+      app.kubernetes.io/name: prowlarr
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/controller: main
+        app.kubernetes.io/instance: prowlarr
+        app.kubernetes.io/name: prowlarr
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - env:
+            - name: PGID
+              value: "755"
+            - name: PROWLARR__AUTH__APIKEY
+              valueFrom:
+                secretKeyRef:
+                  key: PROWLARR_API_KEY
+                  name: media-runtime
+            - name: PROWLARR__SERVER__URLBASE
+              value: ""
+            - name: PUID
+              value: "755"
+            - name: TZ
+              value: UTC
+            - name: UMASK
+              value: "007"
+          image: ghcr.io/linuxserver/prowlarr:2.5.2.5491-ls159@sha256:c7502a75b021d964481c129c84590b9cbc40f83aadd4e553f173871bc0deaa3c
+          livenessProbe:
+            failureThreshold: 6
+            httpGet:
+              path: /ping
+              port: 9696
+            periodSeconds: 10
+            timeoutSeconds: 5
+          name: main
+          readinessProbe:
+            failureThreshold: 6
+            httpGet:
+              path: /ping
+              port: 9696
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            limits:
+              cpu: "2"
+              memory: 1Gi
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            seccompProfile:
+              type: RuntimeDefault
+          startupProbe:
+            failureThreshold: 60
+            httpGet:
+              path: /ping
+              port: 9696
+            periodSeconds: 10
+            timeoutSeconds: 5
+          volumeMounts:
+            - mountPath: /config
+              name: config
+      dnsPolicy: ClusterFirst
+      enableServiceLinks: false
+      hostIPC: false
+      hostNetwork: false
+      hostPID: false
+      nodeSelector:
+        kubernetes.io/hostname: compute-1
+      serviceAccountName: prowlarr
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: media-prowlarr

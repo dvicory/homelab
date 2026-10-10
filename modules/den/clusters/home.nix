@@ -45,6 +45,7 @@ in
       trustedProxyCIDRs = [ ];
     };
     settings.kubernetes.services.identity.phase = "normal";
+    settings.kubernetes.services.seerr.phase = "initial";
     routes = {
       argocd =
         (route "argocd" "argocd" "argocd-server" 80 "admin" "public" {
@@ -54,6 +55,47 @@ in
         // {
           displayName = "Argo CD";
         };
+      radarr =
+        (route "radarr" "media" "radarr" 7878 "admin" "public" {
+          "app.kubernetes.io/controller" = "main";
+          "app.kubernetes.io/instance" = "radarr";
+          "app.kubernetes.io/name" = "radarr";
+        })
+        // {
+          displayName = "Radarr";
+        };
+      sonarr =
+        (route "sonarr" "media" "sonarr" 8989 "admin" "public" {
+          "app.kubernetes.io/controller" = "main";
+          "app.kubernetes.io/instance" = "sonarr";
+          "app.kubernetes.io/name" = "sonarr";
+        })
+        // {
+          displayName = "Sonarr";
+        };
+      prowlarr =
+        (route "prowlarr" "media" "prowlarr" 9696 "admin" "public" {
+          "app.kubernetes.io/controller" = "main";
+          "app.kubernetes.io/instance" = "prowlarr";
+          "app.kubernetes.io/name" = "prowlarr";
+        })
+        // {
+          displayName = "Prowlarr";
+        };
+      sabnzbd =
+        (route "sabnzbd" "media" "sabnzbd" 8080 "admin" "public" {
+          "app.kubernetes.io/controller" = "main";
+          "app.kubernetes.io/instance" = "sabnzbd";
+          "app.kubernetes.io/name" = "sabnzbd";
+        })
+        // {
+          displayName = "SABnzbd";
+        };
+      requests = route "requests" "media" "seerr" 5055 "native" "public" {
+        "app.kubernetes.io/controller" = "main";
+        "app.kubernetes.io/instance" = "seerr";
+        "app.kubernetes.io/name" = "seerr";
+      };
       jellyfin =
         (route "jellyfin" "jellyfin" "jellyfin" 8096 "native" "private" {
           "app.kubernetes.io/controller" = "main";
@@ -75,6 +117,10 @@ in
           backendHostname = builtins.head (hosts "idm");
         };
     };
+    # The existing Arr instances intentionally share the host-owned media
+    # namespace. Private configuration remains on each instance's own claim.
+    settings.kubernetes.services.media.radarr.radarr.sharedWritablePaths = [ "/data" ];
+    settings.kubernetes.services.media.sonarr.sonarr.sharedWritablePaths = [ "/data" ];
   };
 
   den.aspects.prod-home = {

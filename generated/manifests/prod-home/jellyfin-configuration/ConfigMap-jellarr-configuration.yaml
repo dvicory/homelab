@@ -78,23 +78,7 @@ data:
         // A failed logout must not hide a key-bootstrap failure.
       }
     }
-  config.yml: |
-    version: 1
-    base_url: http://jellyfin.jellyfin.svc.cluster.local:8096
-    system:
-      enableMetrics: true
-    library:
-      virtualFolders:
-        - name: Movies
-          collectionType: movies
-          libraryOptions:
-            pathInfos:
-              - path: /media/movies
-        - name: Shows
-          collectionType: tvshows
-          libraryOptions:
-            pathInfos:
-              - path: /media/tv
+  config.yml: '{"base_url":"http://jellyfin.jellyfin.svc.cluster.local:8096","library":{"virtualFolders":[{"collectionType":"movies","libraryOptions":{"pathInfos":[{"path":"/media/movies"}]},"name":"Movies"},{"collectionType":"tvshows","libraryOptions":{"pathInfos":[{"path":"/media/tv"}]},"name":"Shows"}]},"system":{"enableMetrics":true},"version":1}'
 kind: ConfigMap
 metadata:
   name: jellarr-configuration
