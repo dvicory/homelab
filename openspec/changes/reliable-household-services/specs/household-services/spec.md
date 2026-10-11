@@ -64,7 +64,7 @@ Exactly one Radarr and one Sonarr instance SHALL be selected by semantic role as
 
 ### Requirement: Media exposure preserves native user authentication
 
-The household-facing Seerr request route SHALL be absent while first-owner setup is claimable. It MAY be published only after Seerr reports initialized, its intended Jellyfin library has synchronized, and selected Arr defaults are verified. Once published, the route SHALL admit users to Seerr's native Jellyfin/local sign-in while Seerr governs application roles. Radarr, Sonarr, Prowlarr and SABnzbd browser administration SHALL remain administrator-only at the edge; internal automation SHALL use authenticated native APIs. Runtime credentials SHALL NOT appear in rendered manifests or policy assets.
+The household-facing Seerr request route SHALL be absent while first-owner setup is claimable. It MAY be published only after Seerr reports initialized, its intended Jellyfin library has synchronized, and selected Arr defaults are verified. Once published, the route SHALL admit users to Seerr's native Jellyfin/local sign-in while Seerr governs application roles. Runtime credentials SHALL NOT appear in rendered manifests or policy assets.
 
 #### Scenario: A non-administrator opens the request UI
 - **WHEN** a household user accesses Seerr but lacks the edge administrator role
@@ -73,6 +73,22 @@ The household-facing Seerr request route SHALL be absent while first-owner setup
 #### Scenario: Fresh Seerr cannot yet authenticate a household user
 - **WHEN** a retained Seerr instance has no owner or its Jellyfin library integration is incomplete
 - **THEN** no public requests route exists, and an API key alone cannot bypass first-owner authentication
+
+### Requirement: Administrator media apps sign in only through the Gateway
+
+Radarr, Sonarr, Prowlarr and SABnzbd SHALL have no local browser login. The Gateway's sign-in through the central identity service, limited to the central administrator group, SHALL be the normal browser authorization boundary for them, and every route to them SHALL be an administrator route. Their APIs SHALL still require each app's API key. In-cluster network access to their ports SHALL be limited by NetworkPolicy to the Gateway proxy and the callers declared for each app; any other pod, in the same namespace or elsewhere, SHALL be refused. When the Gateway or the identity service is unavailable, recovery access SHALL be a cluster administrator's `kubectl port-forward`, not a local app login.
+
+#### Scenario: A pod that is not a declared caller tries to reach an admin app
+- **WHEN** a pod in the media namespace that is not a declared caller of Radarr, Sonarr, Prowlarr or SABnzbd connects to that app's port
+- **THEN** NetworkPolicy refuses the connection, while the Gateway proxy and the declared callers still connect
+
+#### Scenario: A route to an admin app lacks administrator sign-in
+- **WHEN** a route to Radarr, Sonarr, Prowlarr or SABnzbd is declared without administrator sign-in, or its Gateway policy admits the whole namespace
+- **THEN** configuration evaluation rejects it
+
+#### Scenario: Central sign-in is unavailable
+- **WHEN** the Gateway or the identity service is down
+- **THEN** a cluster administrator reaches the app through `kubectl port-forward`, and the app's API still requires its API key
 
 ### Requirement: Runtime acceptance covers actual pinned application behavior
 

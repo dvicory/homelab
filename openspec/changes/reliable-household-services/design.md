@@ -4,7 +4,7 @@ See proposal.md for the media-family boundary. `reproducible-application-compute
 
 ## Goals / Non-Goals
 
-**Goals:** Keep media workloads independently retained, native authentication and managed configuration explicit; prove initial convergence and repeatability with actual pinned APIs; state the coarse filesystem capability truthfully.
+**Goals:** Keep media workloads independently retained, their sign-in and network boundaries and managed configuration explicit; prove initial convergence and repeatability with actual pinned APIs; state the coarse filesystem capability truthfully.
 
 **Non-Goals:** Rebuild platform/Helm/secret transport, edge or identity infrastructure, Jellyfin account/library setup, general backup/restore, Immich or monitoring. Do not provision live indexers/providers, production credentials or a production 4K instance.
 
@@ -19,6 +19,10 @@ Keep separate thin Radarr, Sonarr, Prowlarr, SABnzbd and Seerr aspects. Reuse an
 Use pinned Configarr 1.32 plus locally vendored, content-verified selected TRaSH profiles and custom formats for offline reconstruction. Configarr is the sole writer of declared Arr root records, semantic quality profiles, scored custom formats and SAB download-client settings; it also owns only the named managed Prowlarr application registrations. Unlisted Arr root records may be removed, but that API operation must leave filesystem media intact. Preserve unrelated Arr accounts/media and UI-owned Prowlarr applications. SAB's own native initializer owns its providers, categories and every declared root directory; no custom Arr-root or Prowlarr-registration writer remains. Configuration must fail visibly on malformed inputs or rejected API writes without initiating search, upgrades or deletion of media.
 
 Select Seerr's Radarr and Sonarr defaults with an instance-local standard media role. Optional 4K instances retain independent state and semantic policy but are not selected by naming or sort order. Reject zero or multiple defaults. This is a media-family setting, not a global registry. Give initialized Seerr the household-facing native-auth route; retain administrator-only edge routes for Arr, Prowlarr and SAB with native API-key authentication for internal automation.
+
+### Administrator app sign-in
+
+Radarr, Sonarr and Prowlarr use Servarr's External authentication, and SABnzbd has its local username and password disabled. A second local login behind the Gateway's administrator sign-in adds a password to keep and recover without narrowing who may administer the apps. The cost is that anything reaching their ports can use the UI, and the Servarr UI shows the API key. So the media aspect declares, per app, the in-cluster callers that its configuration points at it: Configarr and Prowlarr for each Arr instance, plus Seerr and its helper for instances with a Seerr role; Configarr and every Arr instance for Prowlarr; every Arr instance for SABnzbd. A NetworkPolicy per app admits those callers on the app's port. The Gateway backend policy for these routes admits only the Gateway proxy, not the whole namespace, and evaluation rejects a route to them that is not an administrator route or admits the namespace. A cluster administrator's `kubectl port-forward` is the recovery path when the Gateway or the identity service is down; it is not subject to NetworkPolicy.
 
 ### Dependency and Jellyfin integration
 
