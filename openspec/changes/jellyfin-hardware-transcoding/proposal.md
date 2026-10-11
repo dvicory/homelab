@@ -19,34 +19,45 @@ widening the boundary. This change is that decision.
   with workloads:
   - The physical host owns the accelerator, its kernel driver, and its
     firmware. Guests and workloads only consume it.
+  - On the host, only declared host users and granted guests can use the
+    render interface.
   - Access is an explicit, reviewable grant at two levels: host to compute
     domain, then compute domain to a named workload. A workload cannot grant
     itself access.
-  - Grants are limited to media-processing workloads. Jellyfin is the first
-    and only grant in this change.
+  - Any workload the owner explicitly declares may hold a grant; nothing else
+    may. Eligibility is not limited to media. Jellyfin is the first and only
+    grant in this change; Immich is expected later.
   - Access is the GPU's render interface only, held through a stable group
-    capability, like the media storage capability. No privileged containers,
-    no display or modesetting interface, and no broad device access.
-  - Losing the accelerator does not stop the compute domain, unrelated
-    workloads, or the media workload itself.
+    capability (`gpu-render`, GID 506), like the media storage capability. No
+    privileged containers, no display or modesetting interface, and no broad
+    device access.
+  - Losing the accelerator affects only accelerated work. The compute domain,
+    unrelated workloads, and the granted workload keep running, and playback
+    that needs no transcode keeps working.
   - Replacement compute regains the grant from declared configuration.
   - Device and group plumbing is verified without real hardware. Real
     hardware use is verified by operator acceptance on the target host.
-- Decide failure behavior for Jellyfin: when acceleration is unavailable,
-  transcoding continues in software, and the degraded state is reported where
-  an operator can see it without reproducing a failed playback. Jellyfin has
-  no built-in fallback (upstream issues #4389 and #17108), so Homelab must
-  select the encoding mode from a runtime probe.
+- Decide failure behavior for Jellyfin: fail hard, with no automatic
+  fallback. The transcoding mode is declared. The existing Jellarr `PostSync`
+  Job sets hardware (QSV) encoding statically, and Jellarr stays the only
+  settings writer. If the GPU or driver fails, hardware transcodes fail
+  visibly. A documented check detects the degraded state without a playback
+  attempt. Switching to software is a declared operator change.
 - Current behavior: no accelerator reaches the compute guest
   (`restricted.devices.gpu` and `restricted.devices.unix-char` are `block`),
-  and Jellyfin's encoding settings are application defaults (software).
+  Jellyfin's encoding settings are application defaults (software), and the
+  host render node is mode `0666`, so any host process can use the GPU.
   Target behavior: the render interface reaches Jellyfin through the grant,
-  and Jellyfin uses hardware transcoding when a probe proves it works.
+  Jellyfin is declared to use QSV, and the host render node is `0660`, group
+  `render`.
 
 ### Non-goals
 
-- GPU access for non-media workloads such as LLM inference or general GPU
-  compute. That needs a separate decision.
+- Granting any workload other than Jellyfin. Immich or any other workload
+  needs its own declared grant in a later change.
+- Automatic software fallback. Jellyfin has none (upstream issues #4389 and
+  #17108), and the owner chose a visible failure over a second settings
+  writer.
 - Converting the compute guest to a VM, or using VFIO, `mdev` (GVT-g), or
   SR-IOV. None applies to the current container, and the card supports
   neither `mdev` nor SR-IOV. See design.md.
@@ -56,16 +67,20 @@ widening the boundary. This change is that decision.
   available on this platform).
 - Exclusive GPU scheduling, quotas, or multi-node GPU placement.
 - Monitoring or alerting infrastructure. This change requires that the
-  degraded state be observable, not that a pager exists.
+  degraded state be detectable by a documented check. Alerting on it is a
+  follow-up for the `monitoring-and-alerting` change (PR #54); this change
+  does not depend on it.
+- Changing Jellyfin's resource limits. The CPU limit stays until
+  real-hardware acceptance measures use.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `hardware-acceleration`: ownership, grant, scope, failure, recovery, and
-  verification contract for host hardware accelerators delegated through the
-  compute boundary to media workloads, including Jellyfin's software
-  fallback.
+- `hardware-acceleration`: ownership, host access, grant, eligibility, scope,
+  failure, detection, recovery, and verification contract for host hardware
+  accelerators delegated through the compute boundary to owner-declared
+  workloads, including Jellyfin's declared transcoding mode.
 
 ### Modified Capabilities
 
@@ -73,28 +88,32 @@ None. `compute-recovery` (active change `reproducible-application-compute`)
 already requires an unprivileged compute domain to declare its host-granted
 devices and to reject undeclared ones. `jellyfin-lifecycle` (active change
 `reproducible-jellyfin-compute`) already requires steady-state settings to go
-through supported APIs. This change adds a contract that depends on both
-without changing their requirements. If the chosen fallback mechanism adds a
-second encoding-settings writer, `jellyfin-lifecycle`'s ownership list must be
-updated in coordination with that change. See design.md, Open questions.
+through supported APIs, with Jellarr as the only writer. Jellarr stays the
+only writer here, so neither requirement changes.
+
+Dependency: implementation lands after `reproducible-jellyfin-compute` is
+archived. Its last open item is owner acceptance task 4.1.
 
 ## Impact
 
-- `hvn-hyp1` host configuration: explicit driver and firmware ownership, and
-  the device grant declared in the compute envelope.
+- `hvn-hyp1` host configuration: explicit driver and firmware ownership, a
+  udev rule that sets the render node to `0660`, group `render`, and the
+  device grant declared in the compute envelope.
 - Compute envelope (`modules/den/aspects/virtualization/compute.nix`): project
   restrictions and descriptor change to admit exactly the declared render
   device; adoption drift checks cover it.
-- Fleet groups (`modules/den/groups/default.nix`): a new stable POSIX group
-  for the accelerator capability.
+- Fleet groups (`modules/den/groups/default.nix`): a new stable POSIX group,
+  `gpu-render` (GID 506).
 - Jellyfin manifests (`modules/den/aspects/kubernetes/services/jellyfin.nix`):
-  device mount, supplementary group, a probe, and encoding selection through
-  Jellarr.
-- Checks: evaluation checks for grant scope; the `prod-home-replacement` VM
-  test gains a stand-in render node; a new operator acceptance procedure in
+  device mount, supplementary group, a declared transcoding mode, and the
+  matching `encoding:` settings in the existing Jellarr Job.
+- Checks: evaluation checks for grant scope, single settings writer, and the
+  host render-node rule; the `prod-home-replacement` VM test gains a stand-in
+  render node; a new acceleration check and operator acceptance procedure in
   `docs/operations/jellyfin.md`.
 - Security: a granted workload can reach the host's i915 kernel driver
   through the render node. This is a real increase in kernel attack surface
-  for Jellyfin, accepted as narrow and recorded in design.md.
-- Decisions the owner must confirm are listed in design.md under "Open
-  questions".
+  for Jellyfin, accepted as narrow and recorded in design.md. Tightening the
+  host node removes GPU access from undeclared host processes.
+- The owner's decisions on the first draft's open questions are recorded in
+  design.md under "Resolved decisions".

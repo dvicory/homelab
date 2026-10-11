@@ -2,7 +2,8 @@
 
 See proposal.md, "Why". The requirements are in
 `specs/hardware-acceleration/spec.md`. This document records the facts the
-design rests on, the mechanisms chosen, and what the owner must confirm.
+design rests on, the mechanisms chosen, and the owner's decisions on the
+questions the first draft left open (see "Resolved decisions").
 
 ### Host facts (read-only inspection of `hvn-hyp1`, 2026-10-10)
 
@@ -41,7 +42,13 @@ design rests on, the mechanisms chosen, and what the owner must confirm.
   identity-mapped hole for GID 505.
 - The Jellyfin container runs as UID/GID 751 with supplementary group 505,
   drops all capabilities, uses `RuntimeDefault` seccomp, and is limited to
-  2 CPUs and 2 GiB memory (`modules/den/aspects/kubernetes/services/jellyfin.nix`).
+  2 CPUs (`modules/den/aspects/kubernetes/services/jellyfin.nix`). Its memory
+  limit is 4Gi since PR #49 (merged). PR #53 (open) sizes the transcode cache
+  at 64Gi.
+- Jellarr runs as an Argo CD `PostSync` hook Job
+  (`argocd.argoproj.io/hook = PostSync`) and is the only writer of
+  Jellyfin's declared steady-state settings, as `jellyfin-lifecycle` in the
+  active change `reproducible-jellyfin-compute` requires.
 - K3s runs with `KubeletInUserNamespace`. runc ignores failures to load its
   eBPF device filter inside a user namespace
   (`opencontainers/cgroups`, `devices/v2.go`, `canSkipEBPFError`). In this
@@ -68,10 +75,13 @@ design rests on, the mechanisms chosen, and what the owner must confirm.
 
 - Give Jellyfin the Arc GPU's render node through the unprivileged compute
   boundary without widening that boundary beyond one declared device.
-- Keep the compute guest, its management path, and Jellyfin running when the
-  GPU is missing.
-- Pick hardware or software transcoding from a runtime probe, and make the
-  choice visible.
+- Keep the compute guest, its management path, other workloads, Jellyfin, and
+  playback that needs no transcode working when the GPU is missing.
+- Declare the transcoding mode statically. When the GPU fails, hardware
+  transcodes fail visibly and a documented check detects it. Switching to
+  software is a declared operator change.
+- Limit host access to the render node to declared host users and the granted
+  guest.
 - Prove the plumbing in existing checks and leave hardware proof to a short
   operator acceptance.
 
@@ -97,11 +107,14 @@ existing or proposed capabilities owns that:
   receive a device, how it reaches a Pod, or what happens when it is missing.
   This change relies on it and does not modify it.
 - `jellyfin-lifecycle` (active change) owns Jellyfin startup and settings
-  ownership. Fallback is a Jellyfin behavior, but it follows from the device
-  contract, and future media workloads will need the same rules.
+  ownership. The transcoding-mode rule is a Jellyfin behavior, but it follows
+  from the device contract, and later grant holders (Immich is expected) need
+  the same rules.
 
-The capability is therefore new, and its single Jellyfin-specific rule
-(playback falls back to software) is phrased for "a media server".
+The capability is therefore new. Its one media-specific rule (the declared
+transcoding mode and visible failure) is phrased for "a granted media server".
+Eligibility is not limited to media: any workload the owner explicitly
+declares may hold a grant (see "Resolved decisions", item 2).
 
 ### D2. `mdev` and SR-IOV do not apply; render-node sharing does
 
@@ -136,20 +149,33 @@ it with a different mechanism.
 - Do not enable host graphics userspace (`hardware.graphics`). The host only
   needs the kernel driver and firmware. The media userspace ships in
   Jellyfin's official image.
-- Do not change the host's render node mode (see Open questions, item 8).
+- Tighten the host's render node from `0666` to `0660`, group `render`
+  (nixpkgs GID 303), with a host udev rule ordered after systemd's default
+  rule, for example
+  `SUBSYSTEM=="drm", KERNEL=="renderD*", GROUP="render", MODE="0660"`.
+  systemd's default rules set render nodes to `0666`, which lets every host
+  process use the GPU. This meets the spec requirement "Host access to the
+  render interface is limited to declared users and granted guests".
+- Host processes that need the GPU join `render` in host configuration. None
+  is known today: host graphics userspace is off, and Incus runs as root.
+- The guest is unaffected. Incus does not pass the host node's inode. It
+  creates the container's own node and shifts its owner through the guest ID
+  map (see D5), so the guest node has group `gpu-render` (506) and mode
+  `0660` whatever the host node's group and mode are.
 
 ### D4. Attach only the render node with an Incus `unix-char` device
 
+Owner decision (item 4): render node only, `unix-char`, `required=false`.
 Declare one device in the compute envelope:
 
 ```nix
-devices.media-accel = {
+devices.gpu-render = {
   type = "unix-char";
   source = "/dev/dri/by-path/pci-0000:85:00.0-render";
   path = "/dev/dri/renderD128";
   required = "false";   # guest starts without it; hotplug when it appears
   uid = "0";
-  gid = "<media-acceleration GID>";
+  gid = "506";          # gpu-render
   mode = "0660";
 };
 ```
@@ -162,8 +188,7 @@ Why `unix-char` over `gpu` with `gputype=physical`:
 - Incus fails to start a container whose `gpu` device matches no GPU
   ("Failed to detect requested GPU device", `gpu_physical.go`). A missing or
   unbound GPU would stop the whole compute guest and every workload in it,
-  which breaks "Accelerator loss does not gate compute or unrelated
-  workloads".
+  which breaks "Accelerator loss affects only accelerated work".
 - `gpu` passes the card and control nodes too, with the same group and mode.
   That exposes modesetting on the card's display outputs to the guest.
   `unix-char` passes only the render node.
@@ -196,46 +221,54 @@ VM test confirms the guest-visible owner.
 
 ### D6. A dedicated fleet group is the capability
 
-Add a POSIX fleet group, proposed name `media-acceleration`, GID 506, in
+Owner decision (item 3): add the POSIX fleet group `gpu-render`, GID 506, in
 `modules/den/groups/default.nix`. Jellyfin's Pod lists it in
-`supplementalGroups`. The Incus device uses it as the node's group.
+`supplementalGroups`. The Incus device uses it as the guest node's group. The
+name is generic because grants are not limited to media workloads; a later
+grant holder such as Immich joins the same group through its own declared
+grant.
 
 Alternatives: the guest's NixOS `render` GID (303) is a nixpkgs internal
 number, not a fleet identity, and it means "any render user" rather than "has
 this grant". Reusing the `media` group would give the GPU to every
-media-storage holder, which is broader than the grant.
+media-storage holder, which is broader than the grant. The host keeps its own
+`render` group (303) for declared host users (D3); `gpu-render` is the
+guest-side grant capability.
 
 ### D7. Pods see the guest's `/dev/dri` directory, not a device plugin
 
 - The guest creates an empty `/dev/dri` at boot (tmpfiles), so the path
   exists whether or not the GPU is present.
-- The Jellyfin container and its probe mount `hostPath: /dev/dri`
+- The Jellyfin container mounts `hostPath: /dev/dri`
   (`type: Directory`) at `/dev/dri`. Because only the render node is passed
   into the guest, the Pod sees only `renderD128`, and only when the GPU is
   present when the Pod starts.
 - The Pod keeps `runAsNonRoot`, drops all capabilities, keeps
-  `allowPrivilegeEscalation = false`, and adds only the capability GID to
+  `allowPrivilegeEscalation = false`, and adds only GID 506 (`gpu-render`) to
   `supplementalGroups`.
 
 Alternatives:
 
 - `hostPath` of the node with `type: CharDevice` fails Pod start when the node
-  is missing, which takes Jellyfin down instead of falling back.
+  is missing, which takes all of Jellyfin down, including playback that needs
+  no transcode.
 - The Intel GPU device plugin or a DRA driver adds a node-level DaemonSet that
   needs broad `/dev/dri` and sysfs access. With the GPU missing, the resource
-  count is zero and a Pod that requests it stays Pending, which also breaks
-  fallback. Their value is scheduling and accounting across Pods and nodes.
+  count is zero and a Pod that requests it stays Pending, which also takes all
+  of Jellyfin down. Their value is scheduling and accounting across Pods and
+  nodes.
   This is one consumer on one node. Reconsider when a second workload is
   granted or the cluster gains nodes.
 
 Because the in-guest device cgroup is not enforced (see Context), the boundary
 inside the guest is which Pods mount `/dev/dri` and the node's group and mode.
 All manifests are rendered from Nix, so an evaluation check rejects any
-`/dev` hostPath or use of the capability GID outside declared grants.
+`/dev` hostPath or use of GID 506 outside declared grants.
 
 ### D8. QSV on the render node, with conservative codec settings
 
-Desired hardware variant, applied through Jellarr:
+Owner decision (item 8): accepted as proposed. The hardware variant is the
+declared default and is applied by the existing Jellarr Job:
 
 ```yaml
 encoding:
@@ -253,94 +286,104 @@ encoding:
 ```
 
 Software variant: `hardwareAccelerationType: none`,
-`enableHardwareEncoding: false`.
+`enableHardwareEncoding: false`. It is used only when an operator declares
+software mode (D9).
 
 - QSV over VA-API: Jellyfin recommends QSV on Arc. It uses oneVPL, supports
-  AV1 encode, and uses VA-API underneath. VA-API remains the fallback if a
-  QSV regression appears.
+  AV1 encode, and uses VA-API underneath. VA-API remains an alternative
+  setting if a QSV regression appears.
 - VP8 is omitted because Gen12 media engines have no VP8 decoder.
 - HEVC and AV1 output stay off at first for client compatibility. This is a
   setting, not a contract.
 - Tone mapping and the low-power encoder toggles are not in Jellarr v0.1.0.
   Jellyfin uses low-power encoding by default on Arc. Tone mapping stays
-  application-owned until Jellarr supports it (Open questions, item 5).
+  application-owned until Jellarr supports it (see "Deferrable unknowns").
 - Because Jellarr's codec diff never removes entries, the software variant
   leaves the codec list as it was. It has no effect while the acceleration
   type is `none`.
 
-### D9. Fallback: probe at Pod start, apply encoding through Jellarr per start
+### D9. Fail hard: a static encoding mode, set by the existing Jellarr Job
 
-The spec requires software fallback no later than the media server's next
-start. Jellyfin has no fallback of its own, and `jellyfin-lifecycle` forbids
-writing its XML or SQLite. The encoding mode must therefore be chosen at run
-time and applied through the API after each start. Recommended mechanism:
+Owner decision (item 1): no automatic fallback. The transcoding mode is a
+declared setting with two values, `hardware` (the default) and `software`. The
+existing `PostSync` Jellarr Job renders the matching `encoding:` variant from
+D8 into its configuration and applies it through Jellyfin's API. There is no
+probe initContainer and no encoding sidecar. Jellarr stays the only settings
+writer.
 
-1. **Probe.** An `accel-probe` initContainer in the Jellyfin Pod uses the
-   pinned stock runtime image (same digest, no new image). It runs as UID 751
-   with the capability group, so it tests the same permission path as the
-   server. It runs a bounded `jellyfin-ffmpeg` check: open the render node,
-   initialize VA-API and derive QSV, and encode a few frames of a generated
-   test source with `h264_qsv` to a null sink, with a timeout of about 20
-   seconds. It always exits 0. It writes `hardware` or
-   `software: <reason>` to a memory-backed `emptyDir` and to its termination
-   message.
-2. **Apply.** A native sidecar (an initContainer with
-   `restartPolicy: Always`) in the same Pod runs the existing Jellarr image and
-   bootstrap. It waits for `/health`, reads the verdict, reconciles a Jellarr
-   config that contains only the matching `encoding:` variant, logs the
-   result, and then idles. It reuses the `jellyfin-admin` Secret already
-   mounted in the Pod for the provisioner, and it uses its own API key name
-   (for example `Jellarr encoding`) so it cannot race the Job's
-   find-or-create of the `Jellarr` key.
-3. **Ownership.** The PostSync Jellarr Job keeps every other declared field
-   and its config must not contain `encoding:`. The per-start reconciliation
-   owns only the encoding fields. An evaluation check enforces the split.
+Behavior when the GPU or driver fails while `hardware` is declared:
 
-Observable places, documented in `docs/operations/jellyfin.md`:
+- The compute guest, its management path, K3s, and other workloads keep
+  running (D4, `required=false`).
+- The Jellyfin Pod starts. `/dev/dri` exists but holds no render node, or the
+  node cannot be initialized.
+- Playback that needs no video transcode (direct play) works, because
+  Jellyfin does not initialize the GPU for it. Direct stream (remux) does not
+  transcode video and is expected to behave the same.
+- A transcode that needs the GPU fails. The client shows a playback error,
+  and Jellyfin's ffmpeg transcode log records the device or initialization
+  error.
+- Nothing changes the declared mode. When the GPU returns, Incus hotplugs the
+  node into the guest. The Jellyfin Pod sees it no later than its next start
+  (D7), and hardware transcodes work again with no configuration change.
 
-- the probe's termination message on the current Jellyfin Pod;
-- the sidecar's log line naming the applied variant;
-- Jellyfin's Dashboard, Playback, Transcoding page.
+Switching to software is an operator change: set the declared mode to
+`software`, commit, and let Argo sync. The Jellarr Job then applies the
+software variant. Switching back is the same change in reverse.
+
+Detection. A documented check in `docs/operations/jellyfin.md` reports the
+state without a playback attempt:
+
+1. the declared mode, read from the rendered Jellarr configuration;
+2. whether `/dev/dri/renderD128` exists in the Jellyfin container and is
+   group `gpu-render`, mode `0660`;
+3. whether Jellyfin's own `vainfo` (shipped with `jellyfin-ffmpeg`) opens the
+   node as UID 751 and lists the iHD driver and its profiles;
+4. if any step fails, host-side facts for the reason: the `by-path` source on
+   `hvn-hyp1`, the bound driver, and the Incus device state.
+
+If the mode is `software`, the check reports "software by declaration" and
+stops. The check is the minimum the spec requires. Alerting on the same
+signal is a follow-up for the `monitoring-and-alerting` change (PR #54). This
+change does not depend on it.
 
 Alternatives considered:
 
-- **Fail visibly, switch by hand.** A declared setting selects `hardware` or
-  `software`; the probe only reports. No second writer, but transcoding stays
-  broken until an operator changes the setting. Direct play still works.
-  Simpler, and the fallback if the owner rejects a second writer.
+- **Probe at Pod start and apply the mode with a second, encoding-only
+  Jellarr writer** (the first draft's recommendation). Rejected by the owner:
+  it adds a second settings writer, two more containers, and an API key, and
+  it hides a GPU failure behind slower software transcoding.
 - **Probe and select inside the Jellarr Job.** The Job runs only on an Argo
-  sync, so a GPU lost across a host reboot would not be detected. It would
-  also need its own device grant.
+  sync, so a GPU lost across a host reboot would not be noticed. It would also
+  need its own device grant.
 - **Write `encoding.xml` before start.** Forbidden by `jellyfin-lifecycle`.
-- **Wait for upstream fallback.** No date.
-- **Restart Jellyfin on probe failure.** Restarting does not change its
-  settings.
+- **Wait for upstream fallback** (jellyfin/jellyfin#17108). No date.
 
-This adds a second Jellarr writer, scoped to encoding fields. The
-`jellyfin-lifecycle` ownership requirement in the active
-`reproducible-jellyfin-compute` change describes Jellarr as one one-shot Job.
-That text must be reconciled with this design before implementation (Open
-questions, item 7).
+Because Jellarr remains the only writer, `jellyfin-lifecycle`'s writer and
+ownership rules need no amendment (owner decision, item 6). This change adds
+`encoding:` fields to the Jellarr configuration that rule already governs.
 
 ### D10. Resources stay as they are until acceptance measures them
 
-- With QSV, the GPU decodes, scales, overlays, and encodes. The CPU still
+Owner decision (item 5):
+
+- Keep Jellyfin's 2-CPU limit until real-hardware acceptance measures use.
+  With QSV, the GPU decodes, scales, overlays, and encodes. The CPU still
   demuxes, transcodes audio, renders text subtitles (libass), and uploads
-  frames. The 2-CPU limit should be enough for several hardware streams;
-  acceptance records actual CPU use.
-- Memory stays at 2 GiB until acceptance shows QSV or tone mapping needs more
-  (Open questions, item 6).
-- In software fallback, 2 CPUs give roughly one 1080p stream. The spec accepts
-  that as degraded service.
+  frames. 2 CPUs should be enough for several hardware streams.
+- Memory is 4Gi since PR #49. The transcode cache becomes 64Gi with PR #53
+  (open). This change does not change either.
+- If an operator declares software mode, 2 CPUs give roughly one 1080p
+  stream.
 - The guest's `limits.cpu = 4` does not change.
 
 ### D11. Verification layers
 
 | Layer | What it proves | Where |
 | --- | --- | --- |
-| Evaluation | Device declared once with `required=false`, `0660`, the capability GID; project admits it; no `gpu` device; only granted Pods mount `/dev/dri` or hold the GID; no privileged Pods; Job config has no `encoding:`; both encoding variants pass Jellarr's strict schema; host firmware enabled | `compute-contracts`, `jellyfin-contracts` |
-| VM with stand-in | `vgem` provides a real, openable render node with no media engine. The guest sees it with the declared group and mode; Jellyfin's Pod can open it; an ungranted Pod cannot see it; a non-holder cannot open it; with `vgem` unloaded the guest and Jellyfin start, the probe reports `software`, and the software variant is applied; loading `vgem` later hotplugs the node into the guest; replacement keeps the grant | `prod-home-replacement` |
-| Operator acceptance | `vainfo` in the Pod shows the iHD driver and DG2 profiles; a forced 4K HEVC 10-bit to 1080p H.264 transcode shows hardware in Jellyfin's playback info; the host's Video engine is busy (`intel_gpu_top`, operator `sudo`); CPU stays within the limit; a subtitle burn-in plays smoothly | `docs/operations/jellyfin.md` |
+| Evaluation | Device declared once with `required=false`, `0660`, GID 506; project admits it; no `gpu` device; only declared grant holders mount `/dev/dri` or hold GID 506; no privileged Pods; the Jellarr Job config holds exactly the `encoding:` variant for the declared mode, and both variants pass Jellarr's strict schema; no other rendered workload runs Jellarr; host firmware enabled; host render-node rule sets group `render`, mode `0660` | `compute-contracts`, `jellyfin-contracts` |
+| VM with stand-in | `vgem` provides a real, openable render node with no media engine. On the host VM it is group `render`, mode `0660`, and an undeclared host user cannot open it. The guest sees it as group `gpu-render`, mode `0660`; Jellyfin's Pod can open it; an ungranted Pod cannot see it; a non-holder cannot open it. With `vgem` unloaded, the guest and Jellyfin start, Jellyfin's encoding settings still say QSV, and the documented check reports the node missing. Loading `vgem` later hotplugs the node into the guest. Replacement keeps the grant. | `prod-home-replacement` |
+| Operator acceptance | The documented check reports hardware usable; `vainfo` in the Pod shows the iHD driver and DG2 profiles; a forced 4K HEVC 10-bit to 1080p H.264 transcode shows hardware in Jellyfin's playback info; the host's Video engine is busy (`intel_gpu_top`, operator `sudo`); CPU stays within the limit; a subtitle burn-in plays smoothly | `docs/operations/jellyfin.md` |
 
 `vkms` is not used: it provides a card node but no render node. The VM test
 uses the stand-in's own node path as the device source; that path is a host
@@ -350,8 +393,9 @@ fact and does not change the contract.
 
 - [Kernel attack surface] The render node exposes i915 ioctls to Jellyfin. A
   compromised Jellyfin could try a driver bug to reach the host kernel. →
-  Only one workload, non-root, no capabilities, `RuntimeDefault` seccomp, no
-  card or control node, host kernel kept current. ADR-0001 allows narrow
+  Only owner-declared grant holders (Jellyfin alone today), non-root, no
+  capabilities, `RuntimeDefault` seccomp, no card or control node, host
+  kernel kept current. ADR-0001 allows narrow
   hardware delegation; record this grant there.
 - [Coarse project restriction] `restricted.devices.unix-char = "allow"`
   admits any character device in the project. → NixOS owns the profile; the
@@ -363,12 +407,25 @@ fact and does not change the contract.
 - [Hotplug through `by-path`] Unproven. → VM test; fallback described in D4.
 - [Render minor renumbering] Another render-capable driver could take
   `renderD128`. → `by-path` source pins the PCI address.
-- [Second settings writer] Two Jellarr runs could conflict. → Disjoint field
-  sets, separate API key names, and an evaluation check.
+- [GPU loss goes unnoticed] With no alerting, a lost GPU shows up only as
+  failed transcodes or when someone runs the check. → The documented check
+  detects it without a playback. Alerting is a follow-up for
+  `monitoring-and-alerting` (PR #54).
+- [Transcodes fail until an operator acts] With no automatic fallback, a GPU
+  outage breaks transcoding until the GPU returns or an operator declares
+  software mode. Direct play keeps working. → Accepted by the owner in
+  exchange for one settings writer and a visible failure.
+- [Hardware decoding in background tasks] If Jellyfin's application-owned
+  settings use hardware decoding for trickplay or thumbnail extraction, those
+  tasks also fail while the GPU is missing. → The operations document names
+  this effect; the settings stay application-owned.
+- [Host render-node tightening] A host process that relied on the `0666`
+  default loses GPU access. → None is known; such a process joins `render` in
+  host configuration. The guest node is created separately by Incus and is
+  unaffected (D3).
 - [Rollback leaves QSV configured] Removing the grant while Jellyfin's
-  settings still say QSV breaks transcodes, because Jellyfin does not fall
-  back. → Rollback applies the software variant first, then removes the
-  device (see Migration Plan).
+  settings still say QSV breaks transcodes. → Rollback declares software mode
+  first, then removes the device (see Migration Plan).
 - [Upstream image changes] A Jellyfin release bump changes ffmpeg and the
   iHD driver. → Add hardware acceptance to the coupled-release upgrade
   checklist.
@@ -377,65 +434,80 @@ fact and does not change the contract.
 - [Driver transition] Intel is moving to `xe`. → Host-owned; rerun acceptance
   after kernel changes; the render node path is unchanged.
 - [Engine hang] A GPU hang resets the engine and fails running streams. →
-  The next Pod start re-probes; no automatic restart is added.
+  i915 recovers the engine; later transcodes use it again. If it does not
+  recover, the documented check reports it. No automatic restart is added.
 
 ## Migration Plan
 
-1. Host: make firmware ownership explicit (no runtime change).
-2. Fleet: add the `media-acceleration` group.
+Dependency: implementation starts only after `reproducible-jellyfin-compute`
+is archived. Its last open item is owner acceptance task 4.1. This change
+needs no amendment to that change (D9).
+
+1. Host: make firmware ownership explicit, and add the udev rule that sets the
+   render node to group `render`, mode `0660`. Add any host user that needs
+   the GPU to `render`.
+2. Fleet: add the `gpu-render` group (GID 506).
 3. Guest image: create `/dev/dri` at boot. Deliver with the normal guest
    upgrade.
 4. Compute envelope: add the `unix-char` device and project restriction.
    Native preseed updates the profile; Incus hotplugs a `unix-char` device
    into the running container, so no guest restart is needed.
-5. Jellyfin manifests: add the probe, the `/dev/dri` mount, the group, the
-   per-start encoding reconciliation, and remove any `encoding:` from the Job.
-   Argo sync recreates the Pod (`Recreate` strategy).
+5. Jellyfin manifests: add the `/dev/dri` mount, the `gpu-render` group, and
+   the declared mode (`hardware`) with its `encoding:` variant in the Jellarr
+   configuration. Argo sync recreates the Pod (`Recreate` strategy), and the
+   `PostSync` Jellarr Job applies the encoding settings.
 6. Operator acceptance on `hvn-hyp1`.
 
-Rollback: first deploy manifests that pin the software variant, or set
-Jellyfin's acceleration to `none` through Jellarr. Then remove the Pod mount
-and group, then the Incus device and project restriction. Never remove the
-device first.
+Rollback: first declare software mode and let the Jellarr Job apply it. Then
+remove the Pod mount and group, then the Incus device and project restriction.
+Never remove the device first. The host render-node rule can be reverted on
+its own; it does not affect the guest.
+
+## Resolved decisions
+
+The first draft listed eight questions for the owner. All are decided:
+
+1. **Fallback (D9).** Fail hard, with no automatic fallback. The Jellarr Job
+   sets QSV statically; no probe and no encoding sidecar. GPU loss fails
+   hardware transcodes visibly and affects nothing else. A documented check
+   detects the degraded state; alerting is a `monitoring-and-alerting`
+   (PR #54) follow-up. Switching to software is a declared operator change.
+2. **Eligibility (spec).** Explicit owner grants, not limited to media.
+   Jellyfin is the first grant; Immich is expected later. Nothing else
+   receives access.
+3. **Group (D6).** `gpu-render`, GID 506.
+4. **Attachment (D4).** Render node only, `unix-char`, `required=false`.
+5. **Resources (D10).** Keep the CPU limit until real-hardware acceptance
+   measures use. Memory is 4Gi (PR #49); transcode cache 64Gi (PR #53,
+   pending).
+6. **Ordering.** No amendment to `reproducible-jellyfin-compute`'s writer
+   rules, because Jellarr remains the only settings writer. This change lands
+   after that change is archived; its last open item is owner acceptance
+   task 4.1.
+7. **Host render node (D3).** Tighten from `0666` to `0660`, group `render`
+   (host GID 303). Host processes that need the GPU join `render`. The guest
+   is unaffected.
+8. **Encoding defaults (D8).** QSV with HEVC and AV1 output off at first, as
+   proposed. Tone mapping stays application-owned.
 
 ## Open questions
 
-### Decisions the owner must confirm
-
-Each item has a recommendation in this design. Changing one changes the
-named decision and its tasks.
-
-1. **Fallback mechanism (D9).** Automatic per-start selection with a second,
-   encoding-only Jellarr run (recommended), or fail-visible with a manual
-   switch.
-2. **Who may be granted (spec).** Media-processing workloads only
-   (recommended), with Jellyfin as the only grant now. Is any second consumer
-   expected soon (for example a media analysis tool), or should non-media use
-   such as LLM inference be considered now?
-3. **Capability group (D6).** Name `media-acceleration` and GID 506?
-4. **Guest attachment (D4).** `unix-char` render-only with hotplug
-   (recommended), or `gpu` `physical` with `pci=` (simpler selection, but the
-   guest will not start when the GPU is missing and the card node is
-   exposed).
-5. **Encoding defaults (D8).** Keep HEVC and AV1 output off at first? Should
-   tone mapping stay application-owned, or should Jellarr be extended so
-   Homelab declares it?
-6. **Resource limits (D10).** Keep 2 CPUs and 2 GiB until acceptance, or
-   raise memory now?
-7. **Coordination with `reproducible-jellyfin-compute`.** Implement after
-   that change is archived, and amend its `jellyfin-lifecycle` ownership
-   requirement to name the per-start encoding reconciliation?
-8. **Host render node mode.** The host's render node is `0666` (systemd
-   default), so any host process can use the GPU. This does not affect the
-   guest, whose node Incus creates as `0660`. Tighten it to `0660` on the
-   host?
+None block planning. The items below are decided during implementation or
+later.
 
 ### Deferrable unknowns
 
 - Whether Incus hotplug follows the `by-path` symlink. The VM test decides,
   and D4 names the fallback.
 - When the host should move DG2 from `i915` to `xe`.
-- Exporting the probe verdict as a metric once a monitoring stack exists.
+- How `monitoring-and-alerting` (PR #54) turns the documented check into an
+  alert. Not a dependency of this change.
+- Whether Jellyfin's CPU limit changes after real-hardware acceptance
+  (task 8.4).
+- Whether Jellarr should gain tone-mapping fields so Homelab can declare
+  them. Until then tone mapping stays application-owned.
+- How a second grant holder (Immich) receives the render node, and whether
+  that is the point to adopt a device plugin or DRA driver (D7).
 - Whether trickplay and thumbnail extraction should use hardware decoding.
   This is a Jellyfin setting and stays application-owned.
 
