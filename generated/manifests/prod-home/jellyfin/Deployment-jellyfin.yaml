@@ -75,6 +75,9 @@ spec:
               mountPropagation: HostToContainer
               name: media
               readOnly: true
+            - mountPath: /dev/dri
+              mountPropagation: HostToContainer
+              name: dri
       enableServiceLinks: false
       initContainers:
         - command:
@@ -124,6 +127,7 @@ spec:
           type: RuntimeDefault
         supplementalGroups:
           - 505
+          - 506
       volumes:
         - name: config
           persistentVolumeClaim:
@@ -135,6 +139,10 @@ spec:
             path: /srv/media/data/library
             type: Directory
           name: media
+        - hostPath:
+            path: /dev/dri
+            type: Directory
+          name: dri
         - emptyDir:
             medium: Memory
             sizeLimit: 16Mi

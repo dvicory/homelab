@@ -42,6 +42,7 @@ let
     gid = 751;
   };
   mediaGid = (config.den.groups or { }).media.gid;
+  gpuRenderGid = (config.den.groups or { }).gpu-render.gid;
 in
 {
   den.aspects.kubernetes.services.jellyfin.settings.integration = lib.mkOption {
@@ -319,7 +320,10 @@ in
                   enableServiceLinks = false;
                   nodeSelector."kubernetes.io/hostname" = computeResources.instance;
                   securityContext = podSecurity // {
-                    supplementalGroups = [ mediaGid ];
+                    supplementalGroups = [
+                      mediaGid
+                      gpuRenderGid
+                    ];
                   };
                   initContainers = [
                     {
@@ -442,6 +446,12 @@ in
                           readOnly = true;
                           mountPropagation = "HostToContainer";
                         }
+                        {
+                          # Lets a running Pod see a node Incus adds later.
+                          name = "dri";
+                          mountPath = "/dev/dri";
+                          mountPropagation = "HostToContainer";
+                        }
                       ];
                     }
                   ];
@@ -469,6 +479,15 @@ in
                       name = "media";
                       hostPath = {
                         path = mediaPath;
+                        type = "Directory";
+                      };
+                    }
+                    {
+                      # The guest creates /dev/dri at boot, so a missing GPU
+                      # never blocks the Pod.
+                      name = "dri";
+                      hostPath = {
+                        path = "/dev/dri";
                         type = "Directory";
                       };
                     }

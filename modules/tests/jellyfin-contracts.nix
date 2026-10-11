@@ -161,6 +161,7 @@ in
       contractInputs = pkgs.writeText "jellyfin-contract-inputs.json" (
         builtins.toJSON {
           administrator = cluster.settings.kubernetes.services.jellyfin.administrator;
+          gpuRenderGid = config.den.groups.gpu-render.gid;
         }
       );
       runtimeSecrets = pkgs.writeText "jellyfin-runtime-secrets-contract.json" (
@@ -460,7 +461,64 @@ in
                 "backendRequest": "0s",
             }, "Jellyfin request and backend deadlines remain streaming-safe"
 
+            # Only declared grant holders mount /dev/dri or hold gpu-render.
+            cluster_resources = []
+            for path in sorted(environment.rglob("*.yaml")):
+                if path.name.startswith("CustomResourceDefinition-"):
+                    continue
+                cluster_resources.extend(resource for resource in yaml.safe_load_all(path.read_text()) if resource)
+
+            def workloads(items):
+                for resource in items:
+                    spec = resource.get("spec") or {}
+                    if resource.get("kind") == "Pod":
+                        yield resource, spec
+                        continue
+                    template = spec.get("template") or spec.get("jobTemplate", {}).get("spec", {}).get("template")
+                    if isinstance(template, dict) and isinstance(template.get("spec"), dict):
+                        yield resource, template["spec"]
+
+            def containers_of(spec):
+                return spec.get("containers", []) + spec.get("initContainers", []) + spec.get("ephemeralContainers", [])
+
+            def owner_of(resource):
+                return (resource["kind"], resource["metadata"].get("namespace"), resource["metadata"]["name"])
+
+            # Adding a holder is a reviewed edit here and in its manifests.
+            declared_grant_holders = {("Deployment", "jellyfin", "jellyfin"): {"jellyfin"}}
+
+            def accelerator_grants(items):
+                gid = contract_inputs["gpuRenderGid"]
+                holders = set()
+                for resource, spec in workloads(items):
+                    owner = owner_of(resource)
+                    security = spec.get("securityContext", {})
+                    claims = gid in security.get("supplementalGroups", []) or gid in (
+                        security.get("fsGroup"), security.get("runAsGroup"))
+                    device_volumes = set()
+                    for volume in spec.get("volumes", []):
+                        path = volume.get("hostPath", {}).get("path", "").rstrip("/")
+                        if path == "/dev" or path.startswith("/dev/"):
+                            assert volume["hostPath"] == {"path": "/dev/dri", "type": "Directory"}, (
+                                f"{owner} mounts {path}; a grant mounts only /dev/dri"
+                            )
+                            device_volumes.add(volume["name"])
+                    for container in containers_of(spec):
+                        container_security = container.get("securityContext", {})
+                        assert not container_security.get("privileged"), f"{owner} {container['name']} is privileged"
+                        claims = claims or container_security.get("runAsGroup") == gid
+                        if any(m["name"] in device_volumes for m in container.get("volumeMounts", [])):
+                            assert container["name"] in declared_grant_holders.get(owner, set()), (
+                                f"{owner} {container['name']} mounts /dev/dri without a declared grant"
+                            )
+                    if claims or device_volumes:
+                        assert owner in declared_grant_holders, f"{owner} claims the accelerator without a declared grant"
+                        holders.add(owner)
+                assert holders == set(declared_grant_holders), f"declared grant holders: {sorted(holders)}"
+
+            accelerator_grants(cluster_resources)
             PY
+
             node ${./jellyfin-bootstrap.mjs} bootstrap.mjs
 
             # Partial-state preflight: run the script the provisioner image runs

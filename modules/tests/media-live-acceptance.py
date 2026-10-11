@@ -257,8 +257,9 @@ def main():
         security = {**pods[app].get("securityContext", {}), **container.get("securityContext", {})}
         identities[app] = (int(security.get("runAsUser", declared.get("PUID", 0))), int(security.get("runAsGroup", declared.get("PGID", 0))), security.get("supplementalGroups", []))
     media_gid, = identities["radarr"][2]
-    for app in ("sonarr", "sabnzbd", "jellyfin"):
+    for app in ("sonarr", "sabnzbd"):
         require(identities[app][2] == [media_gid], "shared media group declarations differ")
+    require(identities["jellyfin"][2] == [media_gid, 506], "Jellyfin holds media and its gpu-render accelerator grant")
     expected_profiles = {app: json.loads((ROOT / "assets/media-policy" / f"{app}-{policy['arr'][app]['standard']['bundle']}.json").read_text()) for app in ("radarr", "sonarr")}
     expected_formats = {app: {value["trash_id"]: value for name, text in inputs.items() if name.startswith(app + "-cf-") for value in [json.loads(text)]} for app in ("radarr", "sonarr")}
     libraries = json.loads(manifest("jellyfin-configuration", "ConfigMap-jellarr-configuration.yaml")["data"]["config.yml"])["library"]["virtualFolders"]
