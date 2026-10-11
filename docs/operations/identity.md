@@ -187,8 +187,10 @@ Kanidm's pod health and logs for the same time window.
 
 Inspect the OAuth success and failure counters on the private
 `/stats/prometheus` endpoint. Counters show OAuth outcomes, not the cause
-of a failure. The declared stack does not configure a scraper or alerts;
-inspect these counters manually.
+of a failure. Monitoring does not scrape them by design: Kanidm's
+application metrics are out of its scope, so inspect these counters
+manually. Monitoring probes Kanidm's `/status` through the Gateway and
+alerts when it stops answering ([`monitoring.md`](monitoring.md)).
 
 Keep the OAuth2 text logger at `critical`. Do not enable verbose OAuth2
 logging or add `%RESPONSE_CODE_DETAILS%` to access logs: both can expose
