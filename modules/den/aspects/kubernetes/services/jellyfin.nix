@@ -285,6 +285,11 @@ in
               template = {
                 metadata.labels = labels;
                 spec = {
+                  # With ServerName empty in system.xml, Jellyfin names itself
+                  # after Environment.MachineName (ApplicationHost.FriendlyName),
+                  # which is the pod hostname. A fixed hostname keeps that name
+                  # stable across rollouts instead of jellyfin-<hash>-<suffix>.
+                  hostname = "jellyfin";
                   automountServiceAccountToken = false;
                   enableServiceLinks = false;
                   nodeSelector."kubernetes.io/hostname" = computeResources.instance;
