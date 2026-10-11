@@ -342,15 +342,17 @@ in
                       name = "jellyfin";
                       image = runtimeImage;
                       imagePullPolicy = "IfNotPresent";
+                      # ffmpeg probing a new library alongside playback
+                      # exceeded 2Gi and the kernel killed the server.
                       resources = {
                         requests = {
                           cpu = "500m";
-                          memory = "512Mi";
+                          memory = "1Gi";
                           ephemeral-storage = "4Gi";
                         };
                         limits = {
                           cpu = "2";
-                          memory = "2Gi";
+                          memory = "4Gi";
                           ephemeral-storage = "5Gi";
                         };
                       };
