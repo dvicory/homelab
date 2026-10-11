@@ -11,10 +11,18 @@
     nixos =
       { config, pkgs, ... }:
       let
-        # The persistence root that binds /var/lib/incus, if impermanence does.
-        incusPersistence = lib.findFirst (
-          persistence: lib.any (entry: entry.directory == "/var/lib/incus") persistence.directories
-        ) null (lib.attrValues (lib.attrByPath [ "environment" "persistence" ] { } config));
+        stateDirectory = "/var/lib/incus";
+        # Directories impermanence binds from persistent storage, if any.
+        persisted = lib.concatMap (persistence: lib.catAttrs "dirPath" persistence.directories) (
+          lib.filter (persistence: persistence.enable or true) (
+            lib.attrValues (config.environment.persistence or { })
+          )
+        );
+        # Binds that provide the state directory: itself or a parent.
+        covering = lib.filter (
+          path: path == stateDirectory || lib.hasPrefix "${lib.removeSuffix "/" path}/" stateDirectory
+        ) persisted;
+        inside = lib.filter (lib.hasPrefix "${stateDirectory}/") persisted;
       in
       {
         virtualisation.incus = {
@@ -51,61 +59,67 @@
 
         systemd.services.incus.serviceConfig.TimeoutStopSecond = lib.mkForce "330s";
 
-        # Impermanence binds /var/lib/incus from its persistent copy, which makes
-        # the two mount peers: every mount Incus makes below /var/lib/incus also
-        # appears below the persistent copy. Linux keeps such a copy while it has
-        # a child mount, so a disk device whose source contains a mount leaves a
-        # busy copy behind and the instance cannot start again. Make
-        # /var/lib/incus private, so nothing propagates in either direction, and
-        # drop copies earlier runs left. Private comes first: unmounting a copy
-        # propagates to the peers and slaves of its parent mount.
-        systemd.services.incus-mount-isolation = lib.mkIf (incusPersistence != null) {
-          description = "Keep Incus runtime mounts out of the persistent store view";
+        # A bind mount that provides /var/lib/incus, such as impermanence's
+        # persistence bind, is a mount peer of the filesystem it came from:
+        # every mount Incus makes below /var/lib/incus also appears below the
+        # persistent copy. Linux keeps such a copy while it has a child mount,
+        # so a disk device whose source contains a mount leaves a busy copy
+        # behind and the instance cannot start again. Before Incus starts, the
+        # script finds these copies in the kernel mount table, makes the bind
+        # private, removes the copies and checks the result. It changes nothing
+        # where /var/lib/incus is not shared with another view.
+        systemd.services.incus-mount-isolation = {
+          description = "Keep Incus runtime mounts out of other views of /var/lib/incus";
           wantedBy = [
             "multi-user.target"
             "incus.service"
           ];
+          # incus.socket starts before basic.target, so default dependencies
+          # would order this unit after it and form a cycle.
+          after = [ "sysinit.target" ];
           before = [
             "incus.service"
             "incus.socket"
+            "shutdown.target"
           ];
-          after = [ "var-lib-incus.mount" ];
-          unitConfig.ConditionPathIsMountPoint = "/var/lib/incus";
+          conflicts = [ "shutdown.target" ];
+          unitConfig = {
+            DefaultDependencies = false;
+            RequiresMountsFor = stateDirectory;
+          };
           serviceConfig = {
             Type = "oneshot";
             RemainAfterExit = true;
-            ExecStart = lib.getExe (
-              pkgs.writeShellApplication {
-                name = "incus-mount-isolation";
-                runtimeInputs = [
-                  pkgs.coreutils
-                  pkgs.gnugrep
-                  pkgs.util-linux
+            ExecStart = "${
+              pkgs.writers.writePython3Bin "incus-mount-isolation" {
+                flakeIgnore = [
+                  "E501"
+                  "W503"
                 ];
-                text = ''
-                  persist=${lib.escapeShellArg "${incusPersistence.persistentStoragePath}/var/lib/incus"}
-                  mount --make-private /var/lib/incus
-                  mapfile -t targets < <(findmnt --raw --noheadings --output TARGET | grep -F "$persist/" | sort)
-                  last=""
-                  for target in "''${targets[@]}"; do
-                    [[ "$target" == "$persist"/* ]] || continue
-                    # Removing a copy removes everything mounted below it.
-                    if [ -n "$last" ] && [[ "$target" == "$last"/* ]]; then
-                      continue
-                    fi
-                    last=$target
-                    # Private first, so the unmount cannot propagate to the
-                    # live mounts the copy mirrors. Lazy, because an open file
-                    # can hold the copy; the live mount stays in place.
-                    mount --make-rprivate "$target"
-                    umount --recursive --lazy "$target"
-                    echo "removed propagated copy $target"
-                  done
-                '';
-              }
-            );
+                makeWrapperArgs = [
+                  "--prefix"
+                  "PATH"
+                  ":"
+                  (lib.makeBinPath [ pkgs.util-linux ])
+                ];
+              } ./incus-mount-isolation.py
+            }/bin/incus-mount-isolation ${stateDirectory}";
           };
         };
+
+        # The script handles one bind that provides /var/lib/incus. A second,
+        # nested bind hides copies below the inner bind, and a bind below
+        # /var/lib/incus is a separate peer the script does not look at.
+        assertions = [
+          {
+            assertion = lib.length covering <= 1;
+            message = "incus-mount-isolation handles one persistence bind that provides ${stateDirectory}, but impermanence binds ${lib.concatStringsSep " and " covering}.";
+          }
+          {
+            assertion = inside == [ ];
+            message = "incus-mount-isolation does not isolate persistence binds below ${stateDirectory}, but impermanence binds ${lib.concatStringsSep ", " inside}.";
+          }
+        ];
 
         networking.firewall.allowedTCPPorts = [ 8443 ];
       };

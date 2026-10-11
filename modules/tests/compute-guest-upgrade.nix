@@ -154,7 +154,12 @@
 
               systemd.mounts = [
                 {
-                  inherit (incusPersist) what where type options;
+                  inherit (incusPersist)
+                    what
+                    where
+                    type
+                    options
+                    ;
                   wantedBy = [ "local-fs.target" ];
                   before = [ "local-fs.target" ];
                   unitConfig.DefaultDependencies = false;
@@ -197,6 +202,7 @@
                     wantedBy
                     before
                     after
+                    conflicts
                     unitConfig
                     serviceConfig
                     ;
