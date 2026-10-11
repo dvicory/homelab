@@ -1,8 +1,9 @@
 # Reproducible Jellyfin compute tasks
 
-Checked tasks have repository implementation or recorded evidence. Disposable
-Linux runtime acceptance remains open. Deployment, credentials, destructive
-replacement, and target-runtime inspection remain operator-gated.
+Checked tasks have repository implementation or recorded evidence. The owner
+accepted Jellyfin on the production host `hvn-hyp1` on 2026-10-11 (task 4.1),
+and the native replacement gate passed (task 4.2). The first exercise of the
+coupled-upgrade procedure belongs to the next real upgrade (see task 1.5).
 
 ## 1. Release identity and bounded provisioner spike
 
@@ -24,10 +25,16 @@ replacement, and target-runtime inspection remain operator-gated.
 - [x] 1.4 Make manifests consume the single release declaration and reject
   provisioner/runtime version or digest drift during evaluation/build. Do not
   permit an image-only updater or an independent provisioner bump.
-- [ ] 1.5 Document and exercise coupled Jellyfin upgrades: source, runtime
-  image/digest, patch compatibility, and fresh/repeat/stock-runtime evidence
-  move in one reviewed change. A later upstream equivalent may remove the
-  downstream patch without changing the lifecycle ownership contract.
+- [x] 1.5 Document coupled Jellyfin upgrades: source, runtime image/digest,
+  patch compatibility, and fresh/repeat/stock-runtime evidence move in one
+  reviewed change. A later upstream equivalent may remove the downstream
+  patch without changing the lifecycle ownership contract. "Upgrade
+  Jellyfin" in `docs/operations/jellyfin.md` gives the coupled procedure, and
+  evaluation rejects version or digest drift between provisioner and runtime
+  (task 3.3). Exercising the procedure needs a new upstream release, so it is
+  not a task here: the `jellyfin-lifecycle` scenario "Jellyfin is upgraded"
+  requires that evidence in the upgrade's own change, and the runbook's
+  "First real upgrade" checklist lists it.
 
 ## 2. Jellyfin workload baseline and ownership
 
@@ -133,17 +140,47 @@ Production inspection, credential provisioning, deployment, and destructive
 operations remain separately authorized. A Linux VM run must demonstrate the
 Jellyfin startup and recovery boundary before its acceptance task is checked.
 
-- [ ] 4.1 With read-only host inspection permission, verify the intended media
+- [x] 4.1 With read-only host inspection permission, verify the intended media
   source is readable without relying on a bare mountpoint directory. Obtain
   separate permission for Jellyfin credentials and deployment, check resource
   conflicts, then verify the initContainer-to-stock-runtime gate, private
   Jellarr reconciliation, real playback, and denied Jellyfin media writes.
   Do not infer production readiness from local fixtures.
-- [ ] 4.2 On an x86_64 Linux/KVM runner, execute
+  Owner acceptance on production host `hvn-hyp1`, 2026-10-11 UTC:
+  - Media source: host `/srv/media/data` is `fuse.mergerfs`, not a bare
+    mountpoint directory. In the Jellyfin Pod, `/media` is mounted
+    `fuse.mergerfs ro`, the process runs as `uid=751 gid=751
+    groups=751,505`, and `/media` lists the 2 library entries.
+  - Credentials and initContainer gate: the declared administrator `daniel`
+    signs in. It is the only account, has `admin=true`, and the server reports
+    `startupWizardCompleted=true`. On the first start the provisioner logged
+    "Created administrator daniel." and "Provisioning complete."; on later
+    starts it logged "This server has already been set up. Nothing to
+    provision." The stock 12.1.0 server then started.
+  - Private Jellarr reconciliation: the PostSync Job `jellyfin-configuration`
+    completed. It set `EnableMetrics` and created the Movies and Shows
+    virtual folders.
+  - Real playback: the owner played movies.
+  - Denied media writes: `touch` in `/media`, `/media/movies`, and
+    `/media/tv` fails with "Read-only file system".
+  - Resource conflicts found during acceptance: the server was killed for
+    exceeding its 2Gi memory limit during the first library scan (fixed in
+    #49, limit 4Gi, merged); Kubernetes evicted the Pod during playback when
+    transcodes filled the 4Gi `cache` volume (fix in #53, 64Gi, still open
+    at archive time); a retained directory was missing after merge because
+    the directory Job did not rerun (fixed in #48, retained-directories
+    ConfigMap, merged).
+- [x] 4.2 On an x86_64 Linux/KVM runner, execute
   `checks.prod-home-replacement` through `prod-home-replacement.py` and
   `jellyfin_smoke.py`. Verify both Argo reconciliations, the Jellyfin
   provisioner and stock server, the same user, library, playback and retained
   state after compute replacement, Jellyfin's read-only library mount, and
-  media loss/return without substitute storage. Native recovery and all 22
-  hosted jobs passed at 81e8418e; re-accept this gate after the diagnostic
-  guard correction has current-head native and required hosted proof.
+  media loss/return without substitute storage.
+  Native: `checks.prod-home-replacement` passed 266/266 checks on `hvn-hyp1`
+  at `e166dd0e`, the head of #48 (main `81502101`, which merged this change's
+  PR #24, plus #48). Because the check sets `__noChroot`, it ran through its
+  `.driver`; the log is `~/agent/retained-sync/console.log` on `hvn-hyp1`.
+  Hosted: Nix CI run 38100546853 for #48 passed all 22 jobs at the same
+  head, including `checks (x86_64-linux)`. Earlier native and hosted passes
+  at `81e8418e` predate the diagnostic guard correction and are superseded
+  by this evidence.
