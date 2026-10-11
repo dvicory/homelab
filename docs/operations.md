@@ -233,4 +233,5 @@ over the replacement.
 - [`jellyfin`](operations/jellyfin.md)
 - [`luks-storage-migration`](operations/luks-storage-migration.md)
 - [`media`](operations/media.md)
+- [`monitoring`](operations/monitoring.md)
 
