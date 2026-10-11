@@ -10,6 +10,10 @@ spec:
             matchLabels:
               app.kubernetes.io/name: vmalert
               app.kubernetes.io/part-of: monitoring
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: grafana
+              app.kubernetes.io/name: grafana
       ports:
         - port: 8428
           protocol: TCP

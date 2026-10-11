@@ -2,7 +2,8 @@
 #
 # VictoriaMetrics scrapes every source every 30 s and keeps 90 days on a
 # host-retained path. The `alerting` sub-aspect (alerting.nix) evaluates
-# rules and routes alerts.
+# rules and routes alerts; the `dashboards` sub-aspect (dashboards.nix)
+# serves Grafana behind administrator sign-in.
 #
 # Monitoring never gates the platform: its Applications sync after every
 # other Application (waves 5 and 6), it defines no CRDs, and alerting depends
@@ -49,7 +50,10 @@ let
 in
 {
   den.aspects.kubernetes.services.monitoring = {
-    includes = [ den.aspects.kubernetes.services.monitoring.alerting ];
+    includes = [
+      den.aspects.kubernetes.services.monitoring.alerting
+      den.aspects.kubernetes.services.monitoring.dashboards
+    ];
 
     compute-resources = _: {
       retainedPaths.monitoring-metrics = metricsIdentity // {

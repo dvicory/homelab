@@ -17,7 +17,7 @@ spec:
   template:
     metadata:
       annotations:
-        homelab.danielvicory/config-sha256: 3488c1c8bf27ff50eb65c13b7a3ac73f574d9e731931e5ddea6d6475ed14fed5
+        homelab.danielvicory/config-sha256: 728f5c04883fef103b17f5cfb4291126310a758bf90216926aa12a2209ed51d2
       labels:
         app.kubernetes.io/name: victoriametrics
         app.kubernetes.io/part-of: monitoring

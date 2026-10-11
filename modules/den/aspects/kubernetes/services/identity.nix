@@ -130,11 +130,42 @@
           argocdRoute.pathPrefix == "/"
         ) "Argo CD must be served at the hostname root for its /auth/callback path";
         map (url: "${url}/auth/callback") argocdUrls;
+      # Grafana signs users in itself as well; the monitoring aspect owns
+      # those settings. It shares its route's client the same way, so Kanidm
+      # lists Grafana once.
+      hasGrafana = adminRoutes ? grafana;
+      grafanaOidc = cluster.settings.kubernetes.services.monitoring.grafana.oidc;
+      grafanaRoute = cluster.routes.grafana;
+      grafanaUrls = routeUrls grafanaRoute;
+      # Grafana's generic OAuth callback path is fixed at /login/generic_oauth.
+      grafanaCallbacks =
+        assert lib.assertMsg (
+          grafanaRoute.pathPrefix == "/"
+        ) "Grafana must be served at the hostname root for its /login/generic_oauth path";
+        map (url: "${url}/login/generic_oauth") grafanaUrls;
+      grafanaClient = lib.optionalAttrs hasGrafana {
+        grafana = routeClients.grafana // {
+          # Starts Grafana's Kanidm sign-in.
+          landing = "${builtins.head grafanaUrls}/login/generic_oauth";
+          redirects = routeClients.grafana.redirects ++ grafanaCallbacks;
+          scopes = lib.unique (gatewayScopes ++ grafanaOidc.scopes);
+          # Grafana reads the secret from a file mounted from its namespace.
+          secrets = routeClients.grafana.secrets ++ [
+            {
+              inherit (grafanaRoute) namespace;
+              name = grafanaOidc.secretName;
+              key = grafanaOidc.secretKey;
+              labels = { };
+            }
+          ];
+        };
+      };
       clients =
         assert lib.assertMsg (
           adminRoutes ? argocd
         ) "Argo CD's sign-in shares the Kanidm client of its administrator route";
         routeClients
+        // grafanaClient
         // {
           argocd = routeClients.argocd // {
             # Starts Argo CD's Kanidm sign-in, which returns to Argo CD's root.
@@ -723,6 +754,21 @@
                     {
                       namespaceSelector.matchLabels."kubernetes.io/metadata.name" = argocdRoute.namespace;
                       podSelector.matchLabels = argocdRoute.backendPodSelector;
+                    }
+                  ];
+                  ports = [
+                    {
+                      protocol = "TCP";
+                      port = 8443;
+                    }
+                  ];
+                }
+                # Grafana redeems codes and reads user information the same way.
+                ++ lib.optional (normal && hasGrafana) {
+                  from = [
+                    {
+                      namespaceSelector.matchLabels."kubernetes.io/metadata.name" = grafanaRoute.namespace;
+                      podSelector.matchLabels = grafanaRoute.backendPodSelector;
                     }
                   ];
                   ports = [
