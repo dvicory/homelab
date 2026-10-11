@@ -36,7 +36,7 @@
   - a missing host source fires `TelemetrySourceDown` and does not resolve the storage alerts.
 
   Verify the flake check passes.
-- [ ] 4.2 Render vmalert and the Alertmanager config: severity routes, the Watchdog heartbeat route, cross-channel `AlertDeliveryFailing` routes, inhibition rules, grouping, `send_resolved`, and file-based credential fields. Verify with `amtool check-config` and `amtool config routes test` in a flake check, covering:
+- [ ] 4.2 Render vmalert and the Alertmanager config: severity routes, the Watchdog heartbeat route, cross-channel `AlertDeliveryFailing` routes, inhibition rules, grouping, `send_resolved`, and file-based credential fields. Verify with `amtool check-config` and `amtool config routes test` in a flake check. The tests pin the current routing from design.md Decision 6 and also assert the spec floor (every critical reaches both channels, at a Pushover priority of at least 1 so quiet hours do not hold it; every warning reaches at least one channel; resolutions are sent), so a later routing change in Nix updates the first set and must still pass the second. They cover:
   - critical → Pushover at priority 1 and Telegram;
   - warning → Pushover at priority 0 and Telegram;
   - Watchdog → heartbeat only;
@@ -81,7 +81,7 @@
   - the one-time external account setup in section 9, with exact settings (the Pushover app; the dedicated Telegram bot and chat; the healthchecks.io check period, grace and integrations);
   - what lives in Nix and what doesn't, as in design.md;
   - `agenix edit` for each secret, and credential rotation;
-  - severity routing: what reaches Pushover at which priority, and why warnings respect quiet hours;
+  - severity routing: which channel gets which severity at which priority, that this is Nix configuration the owner can change, that Pushover quiet hours are set in the Pushover app, and why the Telegram alert chat should not be muted;
   - reaching Grafana from outside the household network, and the two sign-in layers;
   - silences, and why they are lost on guest replacement;
   - reading a heartbeat-down notice;

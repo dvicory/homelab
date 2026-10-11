@@ -74,7 +74,7 @@ This section is a plain summary for the owner.
 | smartctl_exporter | host | Reports SMART and SCSI health for every physical disk, including unused ones. USB and virtual devices are excluded. |
 | healthchecks.io | outside the fleet | Expects a heartbeat every 5 minutes. If the heartbeat stops, it alerts you through Pushover and Telegram. |
 
-**Example alerts** (C means critical: Pushover at priority 1, which bypasses quiet hours, and Telegram. W means warning: Pushover at normal priority, which respects quiet hours, and Telegram.)
+**Example alerts** (C means critical: Pushover at priority 1, which bypasses quiet hours, and Telegram. W means warning: Pushover at normal priority, which respects quiet hours, and Telegram. This is the current routing, which the owner can change in Nix; see Decision 6.)
 
 - C `KubeContainerOOMKilled`: "jellyfin/jellyfin container `jellyfin` was OOMKilled (limit 4Gi) and restarted." This is the alert the Jellyfin incident would have produced. A single kill is critical.
 - C `KubePodCrashLooping`, C `KubePodNotReady`, W `KubeContainerRestarted`, W `KubeJobFailed`.
@@ -248,7 +248,10 @@ Lowering Jellyfin's limit in a scratch namespace reproduces the motivating incid
   3. `severity="critical"` goes to the receiver `critical`, which holds a Pushover config at priority 1 and a Telegram config.
   4. The default (`severity="warning"`) goes to the receiver `warning`, which holds a Pushover config at priority 0 and a Telegram config.
   - One receiver with two integrations, rather than two routes with `continue: true`, keeps each alert on a single route, so grouping, repeats and resolution notices stay in step across both channels. Alertmanager still counts failures per integration, which `AlertDeliveryFailing` needs.
-- **Pushover priorities.** Critical alerts use priority 1, which bypasses the owner's quiet hours. Warnings use priority 0 (normal), which respects them. Emergency priority 2 is not used, because it needs acknowledgement and retry settings. Sending warnings to Pushover is the owner's current choice; Telegram-only warnings would need a change to the `fleet-monitoring` delivery requirement.
+- **This routing is configuration, not contract.** The `fleet-monitoring` spec requires only that critical alerts reach both channels without being held by quiet hours, that warnings reach at least one channel, that resolutions are sent, and that each channel's failures are reported through the other. Which channel gets which severity, and at what priority, is concrete desired state in the Alertmanager config that Nix renders. The owner can change it there, for example to send warnings to Telegram only, without a spec change. Task 4.2's route tests are the guard that the config still meets the spec.
+- **Quiet hours and priorities.**
+  - **Pushover.** The owner sets quiet hours in the Pushover app, not in Homelab. The sender only chooses each message's priority. Priority 1 (high) bypasses quiet hours and always alerts audibly; priority 0 (normal) respects them, so a warning during quiet hours arrives silently. Critical alerts use priority 1 and warnings priority 0. Emergency priority 2 is not used, because it needs acknowledgement and retry settings.
+  - **Telegram.** The Bot API has no sender-side quiet hours. Every message, warning or critical, notifies when it arrives, unless the owner mutes the chat in the Telegram app. Muting the alert chat would also silence critical alerts there, so the runbook advises against it; Pushover priority 1 still covers critical alerts if the owner does mute it.
 - **Messages.** Both channels use a short template: alert name, severity, object, summary and a Grafana link.
 - **Inhibition:**
   - critical inhibits warning with the same `alertname` and object labels (for example free space at 5% versus 10%);
@@ -437,7 +440,7 @@ The following dead code was found while planning. It is recorded for a follow-up
 - [Monitoring dies with the guest, so a guest outage arrives as "heartbeat down" with no detail.] → Accepted. The watchdog guarantees notice. Retained metrics history lets the cause be read after recovery. Revisit placement when the fleet gains a second host.
 - [Probes start inside the guest, so they miss failures in the host DNAT, LAN DNS, router or public edges.] → Accepted for this change and documented. External probing of the public routes (`idm`, `argocd`, `grafana`) is a follow-up change, as the owner decided.
 - [Grafana is published on the internet, so its sign-in and its software are exposed to attackers.] → Two layers, both admin-only through Kanidm (Decision 9). The Gateway SecurityPolicy stops every unauthenticated request before it reaches Grafana, so Grafana's own attack surface is visible only to signed-in admins. The image is pinned and updated through Git. No other monitoring endpoint is published. Argo CD already runs this way.
-- [Pushover now receives warnings too, so noisy warnings cost attention on the primary channel.] → Warnings use normal priority and respect quiet hours, and repeat at most every 24 hours. Tune or retire noisy warning rules in the first two weeks. Moving warnings off Pushover later is a spec change (Decision 6).
+- [Pushover receives warnings too, so noisy warnings cost attention on the primary channel.] → Warnings use normal priority and respect quiet hours, and repeat at most every 24 hours. Tune or retire noisy warning rules in the first two weeks.
 - [Binding to the bridge address fails if the bridge does not exist yet. If a unit failure at switch time counts as activation failure, deploy-rs could roll back.] → Order after Incus network creation, restart on failure, and keep the units outside activation dependencies. Task 2.4 proves activation succeeds with the bridge absent.
 - [Wave 5–6 placement must stay last as Applications are added (PR #25).] → An evaluation check fails on any non-monitoring wave ≥ 5.
 - [Upstream dashboards may assume Prometheus Operator labels.] → Pin them, and adjust the label selectors once in the vendored JSON. The overview dashboard is ours.
@@ -460,7 +463,7 @@ The following dead code was found while planning. It is recorded for a follow-up
 The owner answered every open question in the first draft. Each answer is folded into the decision named.
 
 1. **Second channel:** Telegram, with a dedicated bot. Discord stays the recorded alternative. (Decision 7)
-2. **Warnings on Pushover:** yes, for now. Warnings go to Pushover at normal priority, respecting quiet hours, and to Telegram. Critical alerts go to Pushover at priority 1, bypassing quiet hours, and to Telegram. Cross-channel failure reporting stays. The `fleet-monitoring` delivery requirement now says every alert goes to both channels. (Decision 6)
+2. **Warnings on Pushover:** yes, for now. Warnings go to Pushover at normal priority, respecting quiet hours, and to Telegram. Critical alerts go to Pushover at priority 1, bypassing quiet hours, and to Telegram. Cross-channel failure reporting stays. This assignment is Nix configuration; the `fleet-monitoring` delivery requirement states only the durable behavior, so changing the assignment later needs no spec change. (Decision 6)
 3. **Severity of a single OOM kill:** critical. The `fleet-monitoring` workload requirement now says so. (Decision 5)
 4. **Time bounds:** confirmed as proposed. (Decision 5)
 5. **Grafana exposure:** `public`, behind Kanidm, like Argo CD. The Gateway requires admin sign-in before any request reaches Grafana, and Grafana signs in through the same client with strict role mapping and no local or anonymous sign-in. `access-control` gains a requirement for the entrance layer. (Decision 9)
