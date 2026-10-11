@@ -1,0 +1,9 @@
+apiVersion: v1
+data:
+  directories.json: '{"identity-kanidm":{"gid":1000,"mode":"0700","uid":1000},"jellyfin-config":{"gid":751,"mode":"0750","uid":751},"kubernetes-volumes":{"gid":0,"mode":"0700","uid":0}}'
+kind: ConfigMap
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+  name: retained-directories
+  namespace: local-path-storage

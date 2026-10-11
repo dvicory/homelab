@@ -41,6 +41,38 @@ let
       });
     in
     rendered.success;
+  retainedObjects =
+    paths:
+    (retainedStorageRenderer {
+      computeResources = rendererFixture // {
+        retainedPaths = rendererFixture.retainedPaths // paths;
+      };
+      inherit lib;
+    }).applications.retained-storage.objects;
+  isHook = object: (object.metadata.annotations or { }) ? "argocd.argoproj.io/hook";
+  directoriesJob = lib.findFirst (
+    object: object.kind == "Job" && object.metadata.name == "retained-directories"
+  ) null;
+  # Argo CD does not compare hook resources with Git. A retained path added
+  # only to the hook Job would never make the Application OutOfSync, so the
+  # Job would never run again to create the directory.
+  retainedDirectoriesAssertions =
+    let
+      base = retainedObjects { };
+      extended = retainedObjects {
+        added = {
+          path = "/host-only/state/added";
+          guestPath = "/srv/state/added";
+          uid = 751;
+          gid = 751;
+          mode = "0750";
+          readOnly = false;
+        };
+      };
+    in
+    isHook (directoriesJob base)
+    && lib.filter (object: !isHook object) base != lib.filter (object: !isHook object) extended
+    && (directoriesJob base).spec == (directoriesJob extended).spec;
   policiesFor =
     declared:
     (import ../den/policies/clusters.nix {
@@ -89,6 +121,8 @@ in
       checks.placement-contracts =
         assert lib.assertMsg rendererBoundaryAssertions
           "Kubernetes consumers must tolerate unrelated projected capabilities";
+        assert lib.assertMsg retainedDirectoriesAssertions
+          "A retained path must change a compared resource, not only the retained-directories hook Job";
         assert lib.assertMsg policyAssertions
           "Cluster policies must reject undeclared environments, hosts and application aspects";
         pkgs.runCommand "placement-contracts"
