@@ -42,8 +42,12 @@ in
         storageCapabilities = [ "media" ];
         instanceConfig = {
           "boot.autostart" = "true";
-          "limits.cpu" = "4";
-          "limits.memory" = "12GiB";
+          # Room for the media workloads (SABnzbd unpacking, Jellyfin
+          # transcoding) beside the platform services. Incus applies both
+          # limits to a running container; K3s reports the new node capacity
+          # only after it restarts.
+          "limits.cpu" = "12";
+          "limits.memory" = "32GiB";
           "limits.processes" = "8192";
           "security.guestapi" = "false";
           "security.idmap.isolated" = "true";

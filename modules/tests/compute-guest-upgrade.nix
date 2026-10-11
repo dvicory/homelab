@@ -28,8 +28,14 @@
         current = hostEntity.settings.virtualization.compute;
         mediaSecret = "jellyfin--jellyfin-admin--password";
         # The declaration before the media capability: no identity-mapped
-        # GID, no media attachment, no Jellyfin retained path or credential.
+        # GID, no media attachment, no Jellyfin retained path or credential,
+        # and the smaller resource limits of that time, which activation must
+        # raise on the running guest.
         previous = current // {
+          instanceConfig = current.instanceConfig // {
+            "limits.cpu" = "4";
+            "limits.memory" = "12GiB";
+          };
           storageCapabilities = [ ];
           devices = removeAttrs current.devices [ "media" ];
           retainedPaths = removeAttrs current.retainedPaths [ "jellyfin-config" ];
