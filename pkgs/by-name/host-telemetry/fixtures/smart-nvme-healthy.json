@@ -1,0 +1,64 @@
+{
+  "json_format_version": [
+    1,
+    0
+  ],
+  "smartctl": {
+    "version": [
+      7,
+      5
+    ],
+    "pre_release": false,
+    "platform_info": "x86_64-linux-6.18.0",
+    "build_info": "(local build)",
+    "argv": [
+      "smartctl",
+      "--json=c",
+      "--all",
+      "@PATH@"
+    ],
+    "exit_status": 0
+  },
+  "local_time": {
+    "time_t": 1791600000,
+    "asctime": "Sat Oct 10 12:00:00 2026 UTC"
+  },
+  "device": {
+    "name": "@PATH@",
+    "info_name": "@PATH@",
+    "type": "nvme",
+    "protocol": "NVMe"
+  },
+  "model_name": "INTEL SSDPELKX010T8L",
+  "firmware_version": "VCV10300",
+  "nvme_total_capacity": 960197124096,
+  "smart_support": {
+    "available": true,
+    "enabled": true
+  },
+  "smart_status": {
+    "passed": true,
+    "nvme": {
+      "value": 0
+    }
+  },
+  "nvme_smart_health_information_log": {
+    "critical_warning": 0,
+    "temperature": 36,
+    "available_spare": 100,
+    "available_spare_threshold": 10,
+    "percentage_used": 3,
+    "data_units_read": 1,
+    "data_units_written": 1,
+    "power_on_hours": 41000,
+    "unsafe_shutdowns": 12,
+    "media_errors": 0,
+    "num_err_log_entries": 0
+  },
+  "temperature": {
+    "current": 36
+  },
+  "power_on_time": {
+    "hours": 41000
+  }
+}

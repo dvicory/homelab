@@ -129,6 +129,22 @@ in
         fsType = "xfs";
         provisioned = true;
       };
+      # Every physical disk, including unused ones, must keep reporting SMART
+      # health. SAS and SATA disks are named by WWN. These NVMe drives have no
+      # EUI, and their by-id names embed the serial number, so they are named
+      # by PCI path. USB (IDSDM) and virtual (iDRAC) devices are excluded.
+      services.host-telemetry.expectedDisks = {
+        rpool-a = "/dev/disk/by-path/pci-0000:88:00.0-nvme-1";
+        rpool-b = "/dev/disk/by-path/pci-0000:87:00.0-nvme-1";
+        media1 = "/dev/disk/by-id/wwn-0x5000cca270846370";
+        media2 = "/dev/disk/by-id/wwn-0x5000cca270607128";
+        media3 = "/dev/disk/by-id/wwn-0x5000cca26f7c1a74";
+        media4 = "/dev/disk/by-id/wwn-0x5000cca27061f6b4";
+        # Unused: former ZFS pool members (bulk-2, bulk-3) and a blank SATA disk.
+        spare-a = "/dev/disk/by-id/wwn-0x5000cca200080000";
+        spare-b = "/dev/disk/by-id/wwn-0x5000cca26f7cf7cc";
+        spare-c = "/dev/disk/by-id/wwn-0x5000cca253dd0dc5";
+      };
     };
 
     zfs = {
@@ -172,6 +188,7 @@ in
       den.aspects.core.network.tailscale
       den.aspects.services.hermes
       den.aspects.workloads.hermes.deploy
+      den.aspects.services.host-telemetry
     ];
 
     nixos =

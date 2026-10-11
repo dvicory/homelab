@@ -1,0 +1,72 @@
+{
+  "json_format_version": [
+    1,
+    0
+  ],
+  "smartctl": {
+    "version": [
+      7,
+      5
+    ],
+    "pre_release": false,
+    "platform_info": "x86_64-linux-6.18.0",
+    "build_info": "(local build)",
+    "argv": [
+      "smartctl",
+      "--json=c",
+      "--all",
+      "@PATH@"
+    ],
+    "exit_status": 0
+  },
+  "local_time": {
+    "time_t": 1791600000,
+    "asctime": "Sat Oct 10 12:00:00 2026 UTC"
+  },
+  "device": {
+    "name": "@PATH@",
+    "info_name": "@PATH@",
+    "type": "scsi",
+    "protocol": "SCSI"
+  },
+  "scsi_vendor": "HGST",
+  "scsi_product": "HUH721212AL4200",
+  "scsi_model_name": "HGST HUH721212AL4200",
+  "scsi_revision": "A3D0",
+  "user_capacity": {
+    "blocks": 2929721344,
+    "bytes": 11999338618880
+  },
+  "logical_block_size": 4096,
+  "rotation_rate": 7200,
+  "form_factor": {
+    "scsi_value": 2,
+    "name": "3.5 inches"
+  },
+  "smart_support": {
+    "available": true,
+    "enabled": true
+  },
+  "temperature_warning": {
+    "enabled": true
+  },
+  "smart_status": {
+    "passed": true
+  },
+  "temperature": {
+    "current": 34,
+    "drive_trip": 85
+  },
+  "power_on_time": {
+    "hours": 41000
+  },
+  "scsi_grown_defect_list": 17,
+  "scsi_error_counter_log": {
+    "read": {
+      "total_uncorrected_errors": 0
+    },
+    "write": {
+      "total_uncorrected_errors": 0
+    }
+  }
+}
