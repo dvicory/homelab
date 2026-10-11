@@ -14,14 +14,18 @@ let
   releaseCompute =
     config.den.hosts.${releaseCluster.hostSystem}.${releaseCluster.hostName}.settings.virtualization.compute;
   releaseComputeResources = {
-    inherit (releaseCompute) instance retainedPaths;
+    inherit (releaseCompute) accelerator instance retainedPaths;
     inherit (config.flake.clusterResources.prod-home) mediaPaths;
   };
   releaseSystem =
     inputs.self.nixosConfigurations.${releaseComputeResources.instance}.pkgs.stdenv.hostPlatform.system;
   provisionerPackage = inputs.self.packages.${releaseSystem}.jellyfin-provisioner-image;
-  renderJellyfin =
-    provisioner:
+  renderJellyfin = provisioner: renderJellyfinWith { inherit provisioner; };
+  renderJellyfinWith =
+    {
+      provisioner ? provisionerPackage,
+      cluster ? releaseCluster,
+    }:
     (import ../den/aspects/kubernetes/services/jellyfin.nix {
       inherit config lib;
       inputs = inputs // {
@@ -35,9 +39,23 @@ let
       };
     }).den.aspects.kubernetes.services.jellyfin.k8s-manifests
       {
-        cluster = releaseCluster;
+        inherit cluster;
         computeResources = releaseComputeResources;
       };
+  # Jellarr configuration rendered for a declared transcoding mode.
+  jellarrConfigFor =
+    transcoding:
+    let
+      rendered = renderJellyfinWith {
+        cluster = lib.recursiveUpdate releaseCluster {
+          settings.kubernetes.services.jellyfin = { inherit transcoding; };
+        };
+      };
+      configMap = lib.findFirst (
+        object: object.kind == "ConfigMap" && object.metadata.name == "jellarr-configuration"
+      ) (throw "Jellyfin render has no Jellarr ConfigMap") rendered.applications.jellyfin-configuration.objects;
+    in
+    configMap.data."config.yml";
   # One side of the release moves; everything else is the shipped package.
   drift =
     {
@@ -140,7 +158,7 @@ let
 in
 {
   perSystem =
-    { pkgs, ... }:
+    { pkgs, system, ... }:
     let
       environment = ../../generated/manifests/prod-home;
       cluster = config.den.clusters.prod-home;
@@ -163,6 +181,17 @@ in
           administrator = cluster.settings.kubernetes.services.jellyfin.administrator;
           gpuRenderGid = config.den.groups.gpu-render.gid;
         }
+      );
+      encodingVariants = pkgs.writeText "jellyfin-encoding-variants.json" (
+        builtins.toJSON {
+          hardware = jellarrConfigFor "hardware";
+          software = jellarrConfigFor "software";
+        }
+      );
+      # Jellarr validates its whole configuration against a strict schema
+      # before it reads the API key, so the pinned CLI checks a file offline.
+      jellarrCli = lib.optionalString pkgs.stdenv.hostPlatform.isLinux (
+        lib.getExe self.packages.${system}.jellarr-image.passthru.jellarr
       );
       runtimeSecrets = pkgs.writeText "jellyfin-runtime-secrets-contract.json" (
         builtins.toJSON config.flake.clusterResources.prod-home.runtimeSecrets
@@ -189,7 +218,8 @@ in
             ];
           }
           ''
-            python - ${environment} ${storage} ${release} ${runtimeSecrets} ${jellarrRelease} ${contractInputs} ${renderedImages} <<'PY'
+            python - ${environment} ${storage} ${release} ${runtimeSecrets} ${jellarrRelease} ${contractInputs} ${renderedImages} ${encodingVariants} <<'PY'
+            import copy
             import json
             import pathlib
             import sys
@@ -202,6 +232,7 @@ in
             jellarr_release = json.loads(pathlib.Path(sys.argv[5]).read_text())
             contract_inputs = json.loads(pathlib.Path(sys.argv[6]).read_text())
             release_render = json.loads(pathlib.Path(sys.argv[7]).read_text())
+            encoding_variants = json.loads(pathlib.Path(sys.argv[8]).read_text())
             resources = []
             application_objects = {}
             for application in ("jellyfin-retained", "jellyfin", "jellyfin-configuration", "gateway"):
@@ -367,6 +398,13 @@ in
             assert len({paths[0] for paths in library_paths.values()}) == len(library_paths), library_paths
             assert "startup" not in jellarr_config
 
+            variants = {mode: yaml.safe_load(text) for mode, text in encoding_variants.items()}
+            pathlib.Path("jellarr-hardware.yml").write_text(encoding_variants["hardware"])
+            pathlib.Path("jellarr-software.yml").write_text(encoding_variants["software"])
+            unknown = copy.deepcopy(variants["hardware"])
+            unknown["encoding"]["enableToneMapping"] = True
+            pathlib.Path("jellarr-unknown-key.yml").write_text(yaml.safe_dump(unknown))
+
             job = find("Job", "jellyfin-configuration")
             annotations = job["metadata"].get("annotations", {})
             assert annotations.get("argocd.argoproj.io/hook") == "PostSync"
@@ -519,6 +557,22 @@ in
             accelerator_grants(cluster_resources)
             PY
 
+            # Both transcoding variants pass Jellarr's strict schema; an
+            # unknown encoding key does not. A valid file gets as far as the
+            # missing API key.
+            ${lib.optionalString (jellarrCli != "") ''
+              schema() {
+                env -u JELLARR_API_KEY HOME="$PWD" ${jellarrCli} --configFile "$1" > "$1.out" 2>&1 || true
+              }
+              for variant in jellarr-hardware.yml jellarr-software.yml; do
+                schema "$variant"
+                grep -q "JELLARR_API_KEY required" "$variant.out" || { cat "$variant.out" >&2; exit 1; }
+                if grep -q "Configuration validation failed" "$variant.out"; then cat "$variant.out" >&2; exit 1; fi
+              done
+              schema jellarr-unknown-key.yml
+              grep -q "Configuration validation failed" jellarr-unknown-key.yml.out \
+                || { cat jellarr-unknown-key.yml.out >&2; exit 1; }
+            ''}
             node ${./jellyfin-bootstrap.mjs} bootstrap.mjs
 
             # Partial-state preflight: run the script the provisioner image runs

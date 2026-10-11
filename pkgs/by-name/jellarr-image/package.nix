@@ -106,6 +106,8 @@ let
 in
 image.overrideAttrs (old: {
   passthru = (old.passthru or { }) // {
+    # For offline checks against Jellarr's strict schema.
+    inherit jellarr;
     release = {
       inherit
         version

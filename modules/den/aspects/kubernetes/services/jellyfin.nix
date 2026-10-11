@@ -43,6 +43,36 @@ let
   };
   mediaGid = (config.den.groups or { }).media.gid;
   gpuRenderGid = (config.den.groups or { }).gpu-render.gid;
+  # Jellarr writes only these keys; throttling, segment deletion, tone mapping
+  # and every other encoding setting stay application-owned. Its codec-list
+  # diff never removes an entry, so software mode leaves the list alone;
+  # nothing reads it while the acceleration type is `none`.
+  hardwareEncoding = renderNode: {
+    intel = {
+      enableHardwareEncoding = true;
+      hardwareAccelerationType = "qsv";
+      qsvDevice = renderNode;
+      vaapiDevice = renderNode;
+      hardwareDecodingCodecs = [
+        "h264"
+        "hevc"
+        "mpeg2video"
+        "vc1"
+        "vp9"
+        "av1"
+      ];
+      enableDecodingColorDepth10Hevc = true;
+      enableDecodingColorDepth10Vp9 = true;
+      enableDecodingColorDepth10HevcRext = true;
+      enableDecodingColorDepth12HevcRext = true;
+      allowHevcEncoding = false;
+      allowAv1Encoding = false;
+    };
+  };
+  softwareEncoding = {
+    enableHardwareEncoding = false;
+    hardwareAccelerationType = "none";
+  };
 in
 {
   den.aspects.kubernetes.services.jellyfin.settings.integration = lib.mkOption {
@@ -67,6 +97,21 @@ in
     description = ''
       Initial declarative Jellyfin administrator name: ASCII letters, digits,
       spaces (not leading or trailing), and `_ . ' @ + -`, other than `.` or `..`.
+    '';
+  };
+
+  den.aspects.kubernetes.services.jellyfin.settings.transcoding = lib.mkOption {
+    type = lib.types.enum [
+      "hardware"
+      "software"
+    ];
+    default = "hardware";
+    description = ''
+      Declared transcoding mode. `hardware` uses the compute guest's
+      accelerator through its vendor's API (QSV on Intel); when the GPU is
+      missing, transcodes fail visibly and direct play keeps working.
+      `software` is the operator's fallback. Nothing changes the mode at
+      runtime.
     '';
   };
 
@@ -113,6 +158,15 @@ in
       runtimeImage = "${provisionerRelease.runtimeImage}@${provisionerRelease.runtimeDigest}";
       jellarrImage = "${jellarrRelease.imageName}:${jellarrRelease.imageTag}";
       administrator = cluster.settings.kubernetes.services.jellyfin.administrator;
+      transcoding = cluster.settings.kubernetes.services.jellyfin.transcoding;
+      inherit (computeResources) accelerator;
+      encoding =
+        if transcoding == "software" then
+          softwareEncoding
+        else if accelerator == null then
+          throw "Jellyfin declares hardware transcoding, but ${computeResources.instance} has no accelerator"
+        else
+          (hardwareEncoding accelerator.path).${accelerator.vendor};
       mediaPath = computeResources.mediaPaths.library;
       initialSeerr = cluster.settings.kubernetes.services.seerr.phase == "initial";
       route = cluster.routes.jellyfin;
@@ -141,6 +195,7 @@ in
         version = 1;
         base_url = "http://${integration.host}:${toString integration.port}";
         system.enableMetrics = true;
+        inherit encoding;
         library.virtualFolders = map (library: {
           inherit (library) name collectionType;
           libraryOptions.pathInfos = [ { path = "/media/${library.directory}"; } ];
