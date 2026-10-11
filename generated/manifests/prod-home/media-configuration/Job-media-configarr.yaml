@@ -61,16 +61,6 @@ spec:
                 secretKeyRef:
                   key: SABNZBD_API_KEY
                   name: media-runtime
-            - name: SABNZBD_USERNAME
-              valueFrom:
-                secretKeyRef:
-                  key: SABNZBD_USERNAME
-                  name: media-runtime
-            - name: SABNZBD_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  key: SABNZBD_PASSWORD
-                  name: media-runtime
             - name: PROWLARR_API_KEY
               valueFrom:
                 secretKeyRef:

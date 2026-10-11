@@ -52,6 +52,24 @@ in
             ) rest
             || unapprovedRootOverlap rest;
         sharedDataDeclared = lib.all (cfg: lib.elem "/data" cfg.sharedWritablePaths) instances;
+        # Arr, Prowlarr and SABnzbd have no browser login of their own: the
+        # Gateway's Kanidm sign-in is the only one. Any route that reaches
+        # one of them must therefore be an administrator route.
+        loginlessServices =
+          map (name: if name == "radarr" then name else "radarr-${name}") (builtins.attrNames settings.radarr)
+          ++ map (name: if name == "sonarr" then name else "sonarr-${name}") (
+            builtins.attrNames settings.sonarr
+          )
+          ++ [
+            "prowlarr"
+            "sabnzbd"
+          ];
+        nonAdminLoginlessRoutes = builtins.attrNames (
+          lib.filterAttrs (
+            _: route:
+            route.namespace == "media" && lib.elem route.service loginlessServices && route.auth != "admin"
+          ) cluster.routes
+        );
         reserved = [
           "prowlarr"
           "sabnzbd"
@@ -194,6 +212,8 @@ in
       ) stateKeys) "Media instance state mappings may not reuse shared or fixed media claims.";
       assert lib.assertMsg sharedDataDeclared
         "Every media instance must declare its shared writable /data path.";
+      assert lib.assertMsg (nonAdminLoginlessRoutes == [ ])
+        "Routes to media apps without their own login must use auth = \"admin\": ${lib.concatStringsSep ", " nonAdminLoginlessRoutes}";
       assert lib.assertMsg (
         lib.unique allClaims == allClaims
       ) "Media retained storage claims must be unique.";

@@ -106,8 +106,6 @@
                 config_path = root / 'sabnzbd.ini'
                 values = {
                     'SABNZBD_API_KEY': 'fixture-key',
-                    'SABNZBD_USERNAME': 'fixture-user',
-                    'SABNZBD_PASSWORD': 'fixture-password',
                 }
                 before = os.environ.copy()
                 os.environ.update(values)

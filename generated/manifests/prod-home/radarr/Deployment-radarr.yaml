@@ -40,6 +40,10 @@ spec:
                 secretKeyRef:
                   key: RADARR_API_KEY
                   name: media-runtime
+            - name: RADARR__AUTH__METHOD
+              value: External
+            - name: RADARR__AUTH__REQUIRED
+              value: Enabled
             - name: RADARR__SERVER__URLBASE
               value: ""
             - name: TZ

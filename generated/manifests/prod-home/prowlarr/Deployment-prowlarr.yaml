@@ -36,6 +36,10 @@ spec:
                 secretKeyRef:
                   key: PROWLARR_API_KEY
                   name: media-runtime
+            - name: PROWLARR__AUTH__METHOD
+              value: External
+            - name: PROWLARR__AUTH__REQUIRED
+              value: Enabled
             - name: PROWLARR__SERVER__URLBASE
               value: ""
             - name: PUID

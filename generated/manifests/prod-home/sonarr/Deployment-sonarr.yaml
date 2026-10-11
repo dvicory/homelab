@@ -40,6 +40,10 @@ spec:
                 secretKeyRef:
                   key: SONARR_API_KEY
                   name: media-runtime
+            - name: SONARR__AUTH__METHOD
+              value: External
+            - name: SONARR__AUTH__REQUIRED
+              value: Enabled
             - name: SONARR__SERVER__URLBASE
               value: ""
             - name: TZ

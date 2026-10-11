@@ -8,6 +8,17 @@ and its CronJobs repeat both every six hours.
 Do not relax media directory permissions. Arr and SABnzbd get media access
 from the media group that their startup hook adds, not from wider modes.
 
+## Sign-in
+
+Open Radarr, Sonarr, Prowlarr and SABnzbd from their Kanidm tiles. The
+Gateway asks for Kanidm sign-in as a member of `homelab-admin`; the apps
+themselves have no login. Their APIs still require each app's API key.
+
+If the Gateway or Kanidm is down, reach an app with
+`kubectl -n media port-forward svc/<app> <port>` from the host's cluster
+access. The forwarded port has no login, so treat that access like the
+cluster access it comes from.
+
 ## Records the household may change
 
 Managed records end in `(Homelab)`: the `SABnzbd (Homelab)` download client

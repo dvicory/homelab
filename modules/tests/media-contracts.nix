@@ -270,6 +270,29 @@
           ) true
         );
       mediaBase = mediaWith { };
+      # Arr, Prowlarr and SABnzbd have no login of their own, so any route to
+      # them, including an extra one, must be an administrator route.
+      mediaWithRoutes =
+        routes:
+        builtins.tryEval (
+          builtins.deepSeq (mediaManifests (
+            fixtureCluster
+            // {
+              routes = fixtureCluster.routes // routes;
+            }
+          )) true
+        );
+      withAuth = auth: route: route // { inherit auth; };
+      nativeRouteRejected = lib.all (
+        name: !(mediaWithRoutes { ${name} = withAuth "native" fixtureCluster.routes.${name}; }).success
+      ) [ "sonarr" "prowlarr" "sabnzbd" ];
+      extraRoute =
+        auth:
+        (mediaWithRoutes {
+          radarr-uhd-extra = withAuth auth (fixtureCluster.routes.sonarr // { service = "radarr-uhd"; });
+        }).success;
+      extraNativeRouteRejected = !(extraRoute "native");
+      extraAdminRouteAccepted = extraRoute "admin";
       mediaNoStandard = configurationWith {
         radarr.radarr.role = null;
         sonarr.sonarr.role = null;
@@ -374,6 +397,7 @@
           runtimeSecrets = fixtureRuntimeSecrets;
           inherit configurationPhases;
           positive = mediaBase.success;
+          inherit nativeRouteRejected extraNativeRouteRejected extraAdminRouteAccepted;
           seerrRoleAccepted = (configurationWith { }).success;
           noStandardRejected = !mediaNoStandard.success;
           ambiguousStandardRejected = !mediaAmbiguousStandard.success;
@@ -536,7 +560,29 @@
             assert fixture["nestedRootRejected"]
             assert fixture["oneSidedSharingRejected"]
             assert fixture["explicitRootSharingAccepted"]
+            assert fixture["nativeRouteRejected"]
+            assert fixture["extraNativeRouteRejected"]
+            assert fixture["extraAdminRouteAccepted"]
             assert storage["mediaInstances"] == {"radarr": ["radarr"], "sonarr": ["sonarr"]}
+
+            # Browser sign-in to Arr, Prowlarr and SABnzbd is the Gateway's
+            # Kanidm sign-in only: each app sits behind an admin route and
+            # asks for no login of its own. The API keys stay.
+            routes = {r["metadata"]["name"]: r for r in resources if r["kind"] == "HTTPRoute"}
+            policies = {p["spec"]["targetRefs"][0]["name"] for p in resources if p["kind"] == "SecurityPolicy"}
+            for app, port in (("radarr", 7878), ("sonarr", 8989), ("prowlarr", 9696), ("sabnzbd", 8080)):
+                backend, = routes[app]["spec"]["rules"][0]["backendRefs"]
+                assert (backend["namespace"], backend["name"], int(backend["port"])) == ("media", app, port), app
+                assert app in policies, app
+            for app in ("radarr", "sonarr", "prowlarr"):
+                env = {
+                    item["name"]: item
+                    for item in find("Deployment", app)["spec"]["template"]["spec"]["containers"][0]["env"]
+                }
+                prefix = app.upper()
+                assert env[prefix + "__AUTH__METHOD"]["value"] == "External", app
+                assert env[prefix + "__AUTH__REQUIRED"]["value"] == "Enabled", app
+                assert env[prefix + "__AUTH__APIKEY"]["valueFrom"]["secretKeyRef"]["key"] == prefix + "_API_KEY", app
 
             def validate_instance_group(kind, instances):
                 expected_names = {"radarr", "uhd"} if kind == "radarr" else {"sonarr", "anime"}
@@ -648,8 +694,6 @@
 
             runtime_values = {
                 "SABNZBD_API_KEY": "api-key-fixture",
-                "SABNZBD_USERNAME": "admin-fixture",
-                "SABNZBD_PASSWORD": "admin-password-fixture",
                 "USENET_FIXTURE_USERNAME": "provider-user-fixture",
                 "USENET_FIXTURE_PASSWORD": "provider-password-fixture",
             }
