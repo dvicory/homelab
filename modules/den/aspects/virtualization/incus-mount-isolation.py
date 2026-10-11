@@ -31,7 +31,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Optional
+from typing import Iterable, Optional
 
 
 class Refusal(Exception):
@@ -53,22 +53,27 @@ def unescape(field: str) -> str:
     return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), field)
 
 
-def read_mounts() -> list[Mount]:
+def parse_mounts(lines: Iterable[str]) -> list[Mount]:
+    """Mounts from lines in the format of /proc/self/mountinfo."""
     mounts = []
-    with open("/proc/self/mountinfo", encoding="utf-8") as mountinfo:
-        for line in mountinfo:
-            fields = line.split()
-            optional = fields[6:fields.index("-", 6)]
-            groups = [tag.split(":", 1)[1] for tag in optional if tag.startswith("shared:")]
-            mounts.append(Mount(
-                id=int(fields[0]),
-                parent=int(fields[1]),
-                device=fields[2],
-                root=unescape(fields[3]),
-                target=unescape(fields[4]),
-                peer_group=groups[0] if groups else None,
-            ))
+    for line in lines:
+        fields = line.split()
+        optional = fields[6:fields.index("-", 6)]
+        groups = [tag.split(":", 1)[1] for tag in optional if tag.startswith("shared:")]
+        mounts.append(Mount(
+            id=int(fields[0]),
+            parent=int(fields[1]),
+            device=fields[2],
+            root=unescape(fields[3]),
+            target=unescape(fields[4]),
+            peer_group=groups[0] if groups else None,
+        ))
     return mounts
+
+
+def read_mounts() -> list[Mount]:
+    with open("/proc/self/mountinfo", encoding="utf-8") as mountinfo:
+        return parse_mounts(mountinfo)
 
 
 def below(path: str, base: str) -> bool:
@@ -118,13 +123,6 @@ def copy_locations(mounts: list[Mount], provider: Mount, state: str) -> list[tup
     ]
 
 
-def run(*command: str) -> bool:
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        print(f"{' '.join(command)} failed: {(result.stdout + result.stderr).strip()}", file=sys.stderr)
-    return result.returncode == 0
-
-
 def copies_below(mounts: list[Mount], locations: list[str]) -> list[str]:
     return sorted({
         mount.target for mount in mounts
@@ -132,17 +130,32 @@ def copies_below(mounts: list[Mount], locations: list[str]) -> list[str]:
     })
 
 
-def isolate(state: str) -> None:
-    mounts = read_mounts()
+def outermost(targets: list[str]) -> list[str]:
+    """The targets not below another; unmounting these removes the rest."""
+    return [target for target in targets if not any(below(target, other) for other in targets)]
+
+
+@dataclass(frozen=True)
+class Plan:
+    provider: Mount
+    locations: list[str]
+
+
+def plan(mounts: list[Mount], state: str) -> Optional[Plan]:
+    """What isolate would change in this mount table, or None for nothing.
+
+    Raises Refusal for the layouts it must not change. Decides only; mounts
+    nothing.
+    """
     provider = providing_mount(mounts, state)
     described = f"{state} is on mount {provider.id} at {provider.target} (root {provider.root})"
     if provider.peer_group is None:
         print(f"{described}, which is not shared; nothing propagates out of it")
-        return
+        return None
     peers = copy_locations(mounts, provider, state)
     if not peers:
         print(f"{described}, which no other mount shows; nothing to isolate")
-        return
+        return None
     shown = ", ".join(location for _, location in peers)
     if provider.root == "/" or provider.target == "/":
         raise Refusal(
@@ -158,24 +171,34 @@ def isolate(state: str) -> None:
                 f"mount {holder.id} at {holder.target} covers that path, so copies "
                 "there cannot be reached by path; refusing to change anything."
             )
-
     print(f"{described} and also appears at {shown}")
+    return Plan(provider, [location for _, location in peers])
+
+
+def run(*command: str) -> bool:
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        print(f"{' '.join(command)} failed: {(result.stdout + result.stderr).strip()}", file=sys.stderr)
+    return result.returncode == 0
+
+
+def isolate(state: str) -> None:
+    found = plan(read_mounts(), state)
+    if found is None:
+        return
+    provider, locations = found.provider, found.locations
+
     if not run("mount", "--make-private", provider.target):
         raise Refusal(f"could not make {provider.target} private")
     print(f"made {provider.target} private")
 
-    locations = [location for _, location in peers]
     # A stacked mount point needs one pass per layer; stop after a few.
     for _ in range(8):
         remaining = copies_below(read_mounts(), locations)
         if not remaining:
             break
-        removed: list[str] = []
-        for target in remaining:
-            # Unmounting a copy also removes everything mounted below it.
-            if any(at_or_below(target, done) for done in removed):
-                continue
-            removed.append(target)
+        # Unmounting a copy also removes everything mounted below it.
+        for target in outermost(remaining):
             # Private first, so this unmount cannot propagate anywhere. Lazy,
             # because an open file can hold the copy.
             if run("mount", "--make-rprivate", target) and run("umount", "--recursive", "--lazy", target):
