@@ -145,6 +145,7 @@ in
       jellyfin
       gateway
       identity
+      monitoring
     ];
   };
 }

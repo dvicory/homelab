@@ -114,6 +114,13 @@ in
               global.networkPolicy.create = false;
               controller.networkPolicy.create = true;
               redis.networkPolicy.create = true;
+              # Application health and sync status for monitoring, plus
+              # source comparison errors as argocd_app_condition.
+              controller.metrics.enabled = true;
+              controller.extraArgs = [
+                "--metrics-application-conditions"
+                "ComparisonError"
+              ];
               repoServer.networkPolicy.create = true;
               crds = {
                 install = true;
