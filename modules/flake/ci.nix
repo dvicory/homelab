@@ -72,6 +72,7 @@ let
   requiredHostRecovery = [
     "agenix-restart-guard"
     "classify-legacy-media"
+    "prepare-luks-storage-runtime"
     "mergerfs-capability"
     "runtime-secret-k3s"
     "compute-ingress-runtime"
