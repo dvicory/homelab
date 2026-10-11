@@ -47,6 +47,8 @@ spec:
         - args:
             - /usr/local/bin/argocd-application-controller
             - --metrics-port=8082
+            - --metrics-application-conditions
+            - ComparisonError
           env:
             - name: ARGOCD_CONTROLLER_REPLICAS
               value: "1"
