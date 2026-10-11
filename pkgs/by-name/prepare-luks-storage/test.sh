@@ -2,7 +2,9 @@
 # Disposable coverage for the direct-source migration gates. It sources the
 # real gate logic and fakes only block-device and mount probes and the format
 # mutators. Copy and verify run the real rsync and python3 on a small fixture
-# tree. It never opens a block device or claims real partition/LUKS formatting.
+# tree. It never opens a block device or claims real partition/LUKS formatting;
+# the prepare-luks-storage-runtime VM check runs every production call of the
+# block, partition, LUKS and measurement tools against the real binaries.
 set -Eeuo pipefail
 trap 'echo "test.sh: failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 

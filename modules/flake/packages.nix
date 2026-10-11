@@ -113,7 +113,9 @@
           pkgs.runCommand "prepare-luks-storage-check"
             {
               # Real filesystem transfer/verification; block probes and format
-              # mutators remain isolated fakes in the refusal scenarios.
+              # mutators remain isolated fakes in the refusal scenarios. The
+              # prepare-luks-storage-runtime VM check runs every production
+              # call of those tools against the real binaries.
               nativeBuildInputs = [
                 pkgs.bash
                 pkgs.coreutils
