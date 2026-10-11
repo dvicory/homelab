@@ -103,6 +103,28 @@ the provisioner source, changes. `jellyfin-contracts` passes and
 Pod recreation, the stock-server image check, Jellarr key reuse, and the
 provisioning-failure scenario.
 
+### First real upgrade
+
+Nobody has run this procedure yet. Jellyfin 12.1 was the first release
+deployed, and the owner deferred the exercise to the next real upgrade (task
+1.5 of the archived change `reproducible-jellyfin-compute`). At that upgrade,
+record each item below in the upgrade pull request:
+
+- [ ] The new `version`, `sourceRev`, `runtimeImage`, `runtimeDigest`, and
+  `provisionPatchRev` all name the same upstream release, and they change in
+  one reviewed change.
+- [ ] `provision.patch` applies to the new source, or an upstream Provision
+  mode replaced it and the patch is removed.
+- [ ] On the upgrade branch, a temporary edit that changes only the server
+  image or digest, or only the provisioner source, fails evaluation.
+- [ ] `prod-home-replacement` passes fresh provisioning, repeat provisioning,
+  and the stock-server image check at the upgrade's head.
+- [ ] After the Argo sync, the `provision` log on the production host reports
+  that `/config` is initialized and left unchanged, the server reports the
+  new version, and the administrator, libraries, and playback still work.
+
+When every item is recorded, remove this subsection.
+
 ## Provisioning failures
 
 If the `provision` initContainer fails, the Pod stays in `Init:Error` or
