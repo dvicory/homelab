@@ -98,7 +98,7 @@ The fleet SHALL alert within 15 minutes when a declared telemetry source stops r
 
 ### Requirement: Loss of monitoring alerts from outside the fleet
 
-Monitoring SHALL continuously emit a heartbeat that leaves the fleet only when alert evaluation and delivery work end to end. A service outside the fleet SHALL notify the fleet owner through both delivery channels within 30 minutes after heartbeats stop arriving, whatever the cause, including loss of the compute guest, the host, power or network connectivity. A notification channel that only relays messages it receives SHALL NOT be counted as this external watchdog.
+Monitoring SHALL continuously emit a heartbeat that leaves the fleet only when alert evaluation and delivery work end to end. An external heartbeat service, running outside the fleet, SHALL notify the fleet owner through both delivery channels within 30 minutes after heartbeats stop arriving, whatever the cause, including loss of the compute guest, the host, power or network connectivity. A notification channel that only relays messages it receives SHALL NOT be counted as this external watchdog.
 
 #### Scenario: The whole host goes down
 - **WHEN** the host running the compute guest loses power
@@ -114,19 +114,19 @@ Monitoring SHALL continuously emit a heartbeat that leaves the fleet only when a
 
 ### Requirement: Alerts reach the fleet owner through two independent channels
 
-Alerts SHALL be delivered to the fleet owner through two independent third-party delivery channels. Every alert delivered to the fleet owner SHALL carry a severity, either critical or warning, and SHALL be delivered through both channels, whatever its severity. Where a channel lets the fleet owner set quiet hours, a critical alert SHALL override them, and a warning SHALL respect them. Delivery SHALL report both firing and resolution. When delivery through one channel fails, an alert about that failure SHALL be delivered through the other channel only; this is the one exception to delivery through both channels.
+Alerts SHALL be delivered to the fleet owner through two independent third-party delivery channels. Every alert delivered to the fleet owner SHALL carry a severity, either critical or warning. Every critical alert SHALL be delivered through both channels. Every warning SHALL be delivered through at least one channel. Quiet hours that the fleet owner sets on a channel SHALL NOT silence, suppress or delay a critical alert. During quiet hours a warning MAY be delivered silently or held until they end, but SHALL NOT be dropped because of them. Delivery SHALL report resolution as well as firing. When delivery through one channel fails, an alert about that failure SHALL be delivered through the other channel; it need not also be sent to the failed channel.
 
 #### Scenario: A critical alert fires
 - **WHEN** a critical alert fires
-- **THEN** the fleet owner receives it through both delivery channels, even during the owner's quiet hours, and receives a resolution notice when it clears
+- **THEN** the fleet owner receives it through both delivery channels, unsilenced even during quiet hours, and receives a resolution notice when it clears
 
 #### Scenario: A warning fires during quiet hours
-- **WHEN** a warning alert fires during the fleet owner's quiet hours
-- **THEN** the fleet owner receives it through both delivery channels, and the channel with quiet hours delivers it without overriding them
+- **WHEN** a warning alert fires during quiet hours the fleet owner has set
+- **THEN** the fleet owner receives it through at least one delivery channel, possibly silently or after quiet hours end, and receives a resolution notice when it clears
 
 #### Scenario: One channel's credential is revoked
 - **WHEN** notifications through one delivery channel fail
-- **THEN** the fleet owner receives an alert about the failed channel through the other channel, and that alert is not sent to the failed channel
+- **THEN** the fleet owner receives an alert about the failed channel through the other channel
 
 ### Requirement: Alert notifications contain no secrets
 
