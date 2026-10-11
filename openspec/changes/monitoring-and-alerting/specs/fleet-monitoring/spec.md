@@ -6,11 +6,11 @@ Define which fleet failures must be detected and how quickly, how alerts reach t
 
 ### Requirement: Workload failures produce alerts
 
-The fleet SHALL alert when a cluster workload container is killed for exceeding its memory limit, or restarts for any other reason, within 5 minutes of the event. It SHALL alert when a workload pod stays not ready, or keeps restarting in a crash loop, for 15 minutes, and SHALL do so within 20 minutes of onset. It SHALL alert within 15 minutes after a Job fails. An application's reported GitOps health SHALL NOT suppress these alerts.
+The fleet SHALL alert when a cluster workload container is killed for exceeding its memory limit, or restarts for any other reason, within 5 minutes of the event. A single out-of-memory kill SHALL raise a critical alert. It SHALL alert when a workload pod stays not ready, or keeps restarting in a crash loop, for 15 minutes, and SHALL do so within 20 minutes of onset. It SHALL alert within 15 minutes after a Job fails. An application's reported GitOps health SHALL NOT suppress these alerts.
 
 #### Scenario: A container is killed at its memory limit
 - **WHEN** a workload container is terminated because it exceeded its memory limit and Kubernetes restarts it
-- **THEN** an alert naming the workload, its namespace and the out-of-memory reason is delivered within 5 minutes, even if the GitOps control plane reports the application as Healthy
+- **THEN** a critical alert naming the workload, its namespace and the out-of-memory reason is delivered within 5 minutes, even if this is the container's first such kill and even if the GitOps control plane reports the application as Healthy
 
 #### Scenario: A pod crash-loops
 - **WHEN** a workload pod keeps restarting and never becomes ready for 15 minutes
@@ -114,15 +114,19 @@ Monitoring SHALL continuously emit a heartbeat that leaves the fleet only when a
 
 ### Requirement: Alerts reach the fleet owner through two independent channels
 
-Alerts SHALL be delivered to the fleet owner. Every alert SHALL carry a severity. A critical alert SHALL be delivered through two independent third-party delivery channels. A lower-severity alert SHALL be delivered through at least one of them. Delivery SHALL report both firing and resolution. When delivery through one channel fails, an alert about that failure SHALL be delivered through the other channel.
+Alerts SHALL be delivered to the fleet owner through two independent third-party delivery channels. Every alert delivered to the fleet owner SHALL carry a severity, either critical or warning, and SHALL be delivered through both channels, whatever its severity. Where a channel lets the fleet owner set quiet hours, a critical alert SHALL override them, and a warning SHALL respect them. Delivery SHALL report both firing and resolution. When delivery through one channel fails, an alert about that failure SHALL be delivered through the other channel only; this is the one exception to delivery through both channels.
 
 #### Scenario: A critical alert fires
 - **WHEN** a critical alert fires
-- **THEN** the fleet owner receives it through both delivery channels, and receives a resolution notice when it clears
+- **THEN** the fleet owner receives it through both delivery channels, even during the owner's quiet hours, and receives a resolution notice when it clears
+
+#### Scenario: A warning fires during quiet hours
+- **WHEN** a warning alert fires during the fleet owner's quiet hours
+- **THEN** the fleet owner receives it through both delivery channels, and the channel with quiet hours delivers it without overriding them
 
 #### Scenario: One channel's credential is revoked
 - **WHEN** notifications through one delivery channel fail
-- **THEN** the fleet owner receives an alert about the failed channel through the other channel
+- **THEN** the fleet owner receives an alert about the failed channel through the other channel, and that alert is not sent to the failed channel
 
 ### Requirement: Alert notifications contain no secrets
 
