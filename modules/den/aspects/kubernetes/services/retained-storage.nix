@@ -58,6 +58,11 @@ in
           memory = "128Mi";
         };
       };
+      # Argo CD does not compare hook resources with Git. The directory list
+      # lives in a compared ConfigMap, so adding a retained path makes this
+      # Application OutOfSync, and the sync that follows reruns the hook Job.
+      directoriesConfig = "retained-directories";
+      directoriesKey = "directories.json";
       helperResources = {
         requests = {
           cpu = "10m";
@@ -88,6 +93,20 @@ in
             };
           }
           {
+            apiVersion = "v1";
+            kind = "ConfigMap";
+            metadata = {
+              name = directoriesConfig;
+              inherit namespace;
+              annotations = protect;
+            };
+            data.${directoriesKey} = builtins.toJSON (
+              lib.mapAttrs (_: entry: {
+                inherit (entry) uid gid mode;
+              }) computeResources.retainedPaths
+            );
+          }
+          {
             apiVersion = "batch/v1";
             kind = "Job";
             metadata = {
@@ -110,14 +129,19 @@ in
                     name = "retained-directories";
                     image = directories.imageReference;
                     imagePullPolicy = "Never";
+                    env = [
+                      {
+                        name = "RETAINED_DIRECTORIES";
+                        valueFrom.configMapKeyRef = {
+                          name = directoriesConfig;
+                          key = directoriesKey;
+                        };
+                      }
+                    ];
                     args = [
                       "/srv/state"
                       computeResources.stateRoot.marker
-                      (builtins.toJSON (
-                        lib.mapAttrs (_: entry: {
-                          inherit (entry) uid gid mode;
-                        }) computeResources.retainedPaths
-                      ))
+                      "$(RETAINED_DIRECTORIES)"
                     ];
                     securityContext = {
                       runAsUser = 0;
