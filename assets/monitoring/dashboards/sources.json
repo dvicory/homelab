@@ -1,0 +1,22 @@
+{
+  "homelab-overview.json": {
+    "revision": "local",
+    "sha256": "1d9ad0eeda1f1a3eb706344e865c4886f0537d1d3ded93775960c6552555d625",
+    "source": "written in this repository"
+  },
+  "k8s-resources-namespace.json": {
+    "revision": "97c701c0918b211a1d33791cf9d70c4fdb57a2cb",
+    "sha256": "0eabfe13e1c57add946c25cff9b24d8e4210b791d1f05e04cfaaf0f3260e6d72",
+    "source": "https://raw.githubusercontent.com/monitoring-mixins/website/97c701c0918b211a1d33791cf9d70c4fdb57a2cb/assets/kubernetes/dashboards/k8s-resources-namespace.json"
+  },
+  "k8s-resources-pod.json": {
+    "revision": "97c701c0918b211a1d33791cf9d70c4fdb57a2cb",
+    "sha256": "d96bfa64a435ac7a394b79488292088b741fdd30da1647507f0bf5c7d4a8caee",
+    "source": "https://raw.githubusercontent.com/monitoring-mixins/website/97c701c0918b211a1d33791cf9d70c4fdb57a2cb/assets/kubernetes/dashboards/k8s-resources-pod.json"
+  },
+  "node-exporter-full.json": {
+    "revision": "45",
+    "sha256": "184c6b7409f306da75525d7772f71945b10cea23ad16b5d78c4698ea0ea51986",
+    "source": "https://grafana.com/api/dashboards/1860/revisions/45/download"
+  }
+}

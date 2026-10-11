@@ -229,6 +229,16 @@ in
         "the Gateway's backend policy admits more than the Gateway proxy to Grafana" = lib.all (
           rule: lib.all (peer: peer ? podSelector && peer ? namespaceSelector) rule.from
         ) (find gatewayObjects "NetworkPolicy" "gateway-grafana-backend-ingress").spec.ingress;
+        "Grafana's administrator password is stored rather than generated in memory at Pod start" =
+          let
+            spec = (find objects "Deployment" "grafana").spec.template.spec;
+            env = (lib.findFirst (c: c.name == "grafana") { } spec.containers).env or [ ];
+            password = lib.findFirst (e: e.name == "GF_SECURITY_ADMIN_PASSWORD") { } env;
+            volume = lib.findFirst (v: v.name == "admin-password") { } spec.volumes;
+          in
+          password.value or "" == "$__file{/run/grafana-admin/password}"
+          && volume.emptyDir.medium or "" == "Memory"
+          && builtins.length (spec.initContainers or [ ]) == 1;
         "Grafana grants access other than through Kanidm sign-in by the administrator group" =
           lib.all (line: lib.hasInfix line grafanaIni) [
             "client_id = grafana"
