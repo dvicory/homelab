@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/instance: blackbox
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: prometheus-blackbox-exporter
+    app.kubernetes.io/version: v0.28.0
+    helm.sh/chart: prometheus-blackbox-exporter-11.18.0
+  name: blackbox
+  namespace: monitoring
+spec:
+  ports:
+    - name: http
+      port: 9115
+      protocol: TCP
+      targetPort: http
+  selector:
+    app.kubernetes.io/instance: blackbox
+    app.kubernetes.io/name: prometheus-blackbox-exporter
+  type: ClusterIP

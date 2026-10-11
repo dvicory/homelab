@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/part-of: monitoring
+  name: alertmanager
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alertmanager
+      app.kubernetes.io/part-of: monitoring
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        homelab.danielvicory/config-sha256: ae196944d88b6da655fd219f4538e00d3ae94045b1b823e70f3f0edfbcb09763
+      labels:
+        app.kubernetes.io/name: alertmanager
+        app.kubernetes.io/part-of: monitoring
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - args:
+            - --config.file=/etc/alertmanager/config/alertmanager.yaml
+            - --storage.path=/alertmanager
+            - --web.listen-address=:9093
+            - --cluster.listen-address=
+          image: quay.io/prometheus/alertmanager:v0.33.1@sha256:9e082985f56f4c8c9f724e18f2288c6708f472e56a5286b8863d080434ea065d
+          imagePullPolicy: IfNotPresent
+          name: alertmanager
+          ports:
+            - containerPort: 9093
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9093
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: 250m
+              memory: 128Mi
+            requests:
+              cpu: 25m
+              memory: 48Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - mountPath: /etc/alertmanager/config
+              name: config
+              readOnly: true
+            - mountPath: /etc/alertmanager/templates
+              name: templates
+              readOnly: true
+            - mountPath: /etc/alertmanager/delivery
+              name: delivery
+              readOnly: true
+            - mountPath: /alertmanager
+              name: storage
+      enableServiceLinks: false
+      nodeSelector:
+        kubernetes.io/hostname: compute-1
+      securityContext:
+        runAsGroup: 65534
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - configMap:
+            items:
+              - key: alertmanager.yaml
+                path: alertmanager.yaml
+            name: alertmanager-config
+          name: config
+        - configMap:
+            items:
+              - key: homelab.tmpl
+                path: homelab.tmpl
+            name: alertmanager-config
+          name: templates
+        - name: delivery
+          secret:
+            defaultMode: 292
+            optional: true
+            secretName: alertmanager-delivery
+        - emptyDir:
+            sizeLimit: 64Mi
+          name: storage
