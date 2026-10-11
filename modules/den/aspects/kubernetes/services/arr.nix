@@ -159,12 +159,13 @@ let
                 "${apiKeyEnv}" = secretRef secretName cfg.apiSecretKey;
                 "${envPrefix}__SERVER__URLBASE" = prefix;
                 # Browser sign-in is the Gateway's Kanidm sign-in: the admin
-                # route's SecurityPolicy requires homelab-admin, and only the
-                # Gateway reaches this port. External makes the UI trust that
-                # and skips Servarr's first-visit local account; /api still
-                # needs the key. Environment wins over config.xml, so the UI
-                # cannot switch it back. REQUIRED pins intent if METHOD
-                # ever changes.
+                # route's SecurityPolicy requires homelab-admin. NetworkPolicy
+                # admits only the Gateway proxy and the declared in-cluster
+                # clients to this port (media.nix). External makes the UI
+                # trust that and skips Servarr's first-visit local account;
+                # /api still needs the key. Environment wins over config.xml,
+                # so the UI cannot switch it back. REQUIRED pins intent if
+                # METHOD ever changes.
                 "${envPrefix}__AUTH__METHOD" = "External";
                 "${envPrefix}__AUTH__REQUIRED" = "Enabled";
               };

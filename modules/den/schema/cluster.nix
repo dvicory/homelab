@@ -20,6 +20,11 @@ let
         type = types.addCheck (types.attrsOf types.str) (value: value != { });
         description = "Non-empty pod labels selecting the routed backend workload.";
       };
+      sameNamespaceIngress = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Whether the Gateway's backend NetworkPolicy also admits every pod in the route's namespace. Set false when the backend's owner admits its in-cluster clients with its own NetworkPolicy; the Gateway policy then admits only the Gateway proxy.";
+      };
       port = mkOption { type = types.port; };
       hostnames = mkOption {
         type = types.addCheck (types.listOf types.str) (

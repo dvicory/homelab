@@ -53,23 +53,101 @@ in
             || unapprovedRootOverlap rest;
         sharedDataDeclared = lib.all (cfg: lib.elem "/data" cfg.sharedWritablePaths) instances;
         # Arr, Prowlarr and SABnzbd have no browser login of their own: the
-        # Gateway's Kanidm sign-in is the only one. Any route that reaches
-        # one of them must therefore be an administrator route.
-        loginlessServices =
-          map (name: if name == "radarr" then name else "radarr-${name}") (builtins.attrNames settings.radarr)
-          ++ map (name: if name == "sonarr" then name else "sonarr-${name}") (
-            builtins.attrNames settings.sonarr
-          )
+        # Gateway's Kanidm sign-in is the only one. Anyone who reaches their
+        # port can open the UI, and the Servarr UI hands out the API key. So
+        # a route to one of them must be an administrator route whose Gateway
+        # policy admits only the proxy, and media-ingress below admits only
+        # the in-cluster clients each app is configured to serve.
+        serviceName = kind: name: if name == kind then kind else "${kind}-${name}";
+        # Ports match arr.nix, prowlarr.nix and sabnzbd.nix.
+        arrPorts = {
+          radarr = 7878;
+          sonarr = 8989;
+        };
+        arrInstances = lib.concatMap (
+          kind:
+          lib.mapAttrsToList (name: cfg: {
+            service = serviceName kind name;
+            port = arrPorts.${kind};
+            inherit cfg;
+          }) settings.${kind}
+        ) [ "radarr" "sonarr" ];
+        appPods = service: {
+          "app.kubernetes.io/controller" = "main";
+          "app.kubernetes.io/instance" = service;
+          "app.kubernetes.io/name" = service;
+        };
+        # Pod labels of the in-cluster clients; the Job labels come from
+        # media-configuration.nix.
+        clients = {
+          configarr."app.kubernetes.io/name" = "media-configarr";
+          seerrHelper."app.kubernetes.io/name" = "media-config-seerr";
+          seerr = appPods "seerr";
+          prowlarr = appPods "prowlarr";
+        };
+        arrClients = map (instance: appPods instance.service) arrInstances;
+        # Who calls whom, from the media configuration:
+        # - Configarr writes every Arr instance and Prowlarr.
+        # - Prowlarr pushes indexers to every Arr instance (fullSync).
+        # - Seerr and its helper use the Arr instances that have a Seerr role.
+        # - Every Arr instance searches through Prowlarr and sends downloads
+        #   to SABnzbd.
+        loginlessApps =
+          map (instance: {
+            inherit (instance) service port;
+            consumers = [
+              clients.configarr
+              clients.prowlarr
+            ]
+            ++ lib.optionals (instance.cfg.role != null) [
+              clients.seerr
+              clients.seerrHelper
+            ];
+          }) arrInstances
           ++ [
-            "prowlarr"
-            "sabnzbd"
+            {
+              service = "prowlarr";
+              port = 9696;
+              consumers = [ clients.configarr ] ++ arrClients;
+            }
+            {
+              service = "sabnzbd";
+              port = 8080;
+              consumers = arrClients;
+            }
           ];
-        nonAdminLoginlessRoutes = builtins.attrNames (
+        loginlessServices = map (app: app.service) loginlessApps;
+        openLoginlessRoutes = builtins.attrNames (
           lib.filterAttrs (
             _: route:
-            route.namespace == "media" && lib.elem route.service loginlessServices && route.auth != "admin"
+            route.namespace == "media"
+            && lib.elem route.service loginlessServices
+            && (route.auth != "admin" || route.sameNamespaceIngress)
           ) cluster.routes
         );
+        ingressPolicy = app: {
+          apiVersion = "networking.k8s.io/v1";
+          kind = "NetworkPolicy";
+          metadata = {
+            name = "media-${app.service}-ingress";
+            namespace = "media";
+          };
+          spec = {
+            podSelector.matchLabels = appPods app.service;
+            policyTypes = [ "Ingress" ];
+            ingress = [
+              {
+                from = map (labels: { podSelector.matchLabels = labels; }) app.consumers;
+                ports = [
+                  {
+                    protocol = "TCP";
+                    inherit (app) port;
+                  }
+                ];
+              }
+            ];
+          };
+        };
         reserved = [
           "prowlarr"
           "sabnzbd"
@@ -212,8 +290,8 @@ in
       ) stateKeys) "Media instance state mappings may not reuse shared or fixed media claims.";
       assert lib.assertMsg sharedDataDeclared
         "Every media instance must declare its shared writable /data path.";
-      assert lib.assertMsg (nonAdminLoginlessRoutes == [ ])
-        "Routes to media apps without their own login must use auth = \"admin\": ${lib.concatStringsSep ", " nonAdminLoginlessRoutes}";
+      assert lib.assertMsg (openLoginlessRoutes == [ ])
+        "Routes to media apps without their own login must use auth = \"admin\" and sameNamespaceIngress = false: ${lib.concatStringsSep ", " openLoginlessRoutes}";
       assert lib.assertMsg (
         lib.unique allClaims == allClaims
       ) "Media retained storage claims must be unique.";
@@ -259,6 +337,14 @@ in
                 };
               }
             ];
+          };
+          # Selecting each app's pods also refuses every other in-cluster
+          # client, including other pods in media. Wave 0 puts the policies
+          # in place before the wave-1 workloads start.
+          media-ingress = {
+            namespace = "media";
+            annotations."argocd.argoproj.io/sync-wave" = "0";
+            objects = map ingressPolicy loginlessApps;
           };
           media-storage = {
             namespace = "media";

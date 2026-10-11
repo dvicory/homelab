@@ -99,8 +99,9 @@ spec:
               # With no login, SABnzbd checks the Host header against
               # host_whitelist (DNS-rebinding guard). inet_exposure 4 gives the full
               # web interface to every address, including Gateway requests whose
-              # X-Forwarded-For names an outside client; the NetworkPolicy, not
-              # SABnzbd, decides who reaches the port.
+              # X-Forwarded-For names an outside client. NetworkPolicy, not
+              # SABnzbd, decides who reaches the port: the Gateway proxy and the
+              # Arr instances (media.nix).
               misc.update({
                   'host': '0.0.0.0', 'port': '8080',
                   'api_key': os.environ['SABNZBD_API_KEY'],

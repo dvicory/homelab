@@ -1,0 +1,28 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: media-sabnzbd-ingress
+  namespace: media
+spec:
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/controller: main
+              app.kubernetes.io/instance: radarr
+              app.kubernetes.io/name: radarr
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/controller: main
+              app.kubernetes.io/instance: sonarr
+              app.kubernetes.io/name: sonarr
+      ports:
+        - port: 8080
+          protocol: TCP
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/controller: main
+      app.kubernetes.io/instance: sabnzbd
+      app.kubernetes.io/name: sabnzbd
+  policyTypes:
+    - Ingress

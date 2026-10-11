@@ -14,10 +14,23 @@ Open Radarr, Sonarr, Prowlarr and SABnzbd from their Kanidm tiles. The
 Gateway asks for Kanidm sign-in as a member of `homelab-admin`; the apps
 themselves have no login. Their APIs still require each app's API key.
 
+Inside the cluster, NetworkPolicy admits only the Gateway proxy and, on the
+app's port, each app's declared callers:
+
+| App | Callers besides the Gateway proxy |
+| --- | --- |
+| Radarr, Sonarr | Configarr, Prowlarr; Seerr and the Seerr helper for instances with a Seerr role |
+| Prowlarr | Configarr, every Radarr and Sonarr instance |
+| SABnzbd | Every Radarr and Sonarr instance |
+
+Any other pod, in `media` or elsewhere, is refused. A new caller must first
+be added to `modules/den/aspects/kubernetes/services/media.nix`.
+
 If the Gateway or Kanidm is down, reach an app with
 `kubectl -n media port-forward svc/<app> <port>` from the host's cluster
-access. The forwarded port has no login, so treat that access like the
-cluster access it comes from.
+access. Port-forwarding is not subject to NetworkPolicy, and the forwarded
+port has no login, so treat that access like the cluster access it comes
+from.
 
 ## Records the household may change
 

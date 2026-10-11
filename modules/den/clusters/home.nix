@@ -55,6 +55,9 @@ in
         // {
           displayName = "Argo CD";
         };
+      # Radarr, Sonarr, Prowlarr and SABnzbd have no login of their own.
+      # The media aspect admits their declared in-cluster clients, so their
+      # Gateway policies admit only the Gateway proxy.
       radarr =
         (route "radarr" "media" "radarr" 7878 "admin" "public" {
           "app.kubernetes.io/controller" = "main";
@@ -63,6 +66,7 @@ in
         })
         // {
           displayName = "Radarr";
+          sameNamespaceIngress = false;
         };
       sonarr =
         (route "sonarr" "media" "sonarr" 8989 "admin" "public" {
@@ -72,6 +76,7 @@ in
         })
         // {
           displayName = "Sonarr";
+          sameNamespaceIngress = false;
         };
       prowlarr =
         (route "prowlarr" "media" "prowlarr" 9696 "admin" "public" {
@@ -81,6 +86,7 @@ in
         })
         // {
           displayName = "Prowlarr";
+          sameNamespaceIngress = false;
         };
       sabnzbd =
         (route "sabnzbd" "media" "sabnzbd" 8080 "admin" "public" {
@@ -90,6 +96,7 @@ in
         })
         // {
           displayName = "SABnzbd";
+          sameNamespaceIngress = false;
         };
       requests = route "requests" "media" "seerr" 5055 "native" "public" {
         "app.kubernetes.io/controller" = "main";
