@@ -159,6 +159,27 @@ With `KUBECONFIG` selecting the guest's cluster:
 `--check-ready` covers the node, Argo seed, and bootstrap Jobs.
 Also verify service routes, TLS, and native login.
 
+### NetworkPolicy enforcement after a reboot
+
+After every host reboot, guest restart or guest replacement, check that
+K3s's network-policy controller is applying policy. On the host, as
+root:
+
+```sh
+incus --project compute exec compute-1 -- \
+  journalctl -u k3s -b --no-pager -o cat |
+  grep -E 'Aborting sync|Failed to run iptables-restore|Message too long'
+```
+
+This must print nothing. Any line means the controller has stopped
+updating the firewall: rules stay as they were at the last good sync,
+and Pods started since then, including every Pod after a restart, are
+not protected by their NetworkPolicies. `Message too long` in the line
+means the guest's filter table no longer fits the netlink send buffer
+that the host's `net.core.wmem_default` gives it; see the
+`virtualization.compute` aspect. Restarting Pods can change the
+symptoms but does not restore enforcement.
+
 ## Failure and retry
 
 Fix the reported preflight prerequisite and start a new explicit
