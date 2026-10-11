@@ -84,6 +84,9 @@ questions the first draft left open (see "Resolved decisions").
   guest.
 - Prove the plumbing in existing checks and leave hardware proof to a short
   operator acceptance.
+- Keep the contract neutral between container and VM compute guests, so a
+  later cutover of `compute-1` to a VM changes mechanisms, not requirements
+  (D12).
 
 **Non-Goals:**
 
@@ -92,6 +95,7 @@ questions the first draft left open (see "Resolved decisions").
 - Tuning Jellyfin's encoding quality, tone mapping, or trickplay. These remain
   application-owned unless Jellarr gains the fields.
 - Changing the host's display console or BMC VGA.
+- Performing the VM cutover, or choosing replacement GPU hardware.
 
 ## Decisions
 
@@ -116,29 +120,34 @@ transcoding mode and visible failure) is phrased for "a granted media server".
 Eligibility is not limited to media: any workload the owner explicitly
 declares may hold a grant (see "Resolved decisions", item 2).
 
-### D2. `mdev` and SR-IOV do not apply; render-node sharing does
+### D2. With this card and a container guest, render-node sharing is the mechanism
 
-Incus `gpu` device types:
+The spec is written so that a container or a VM compute guest can meet it
+(see D12). This section picks the mechanism for today: `compute-1` is a
+container, and the card is an Arc Pro A40/A50 (DG2, `8086:56b1`).
+
+Incus `gpu` device types ([Incus GPU device reference][incus-gpu]):
 
 | Type | Instance | What it does | Fit for this host |
 | --- | --- | --- | --- |
-| `physical` | container | Bind-mounts the GPU's DRM nodes (card, render, control) into the container. The host keeps the driver; the GPU stays shared. | Works. |
-| `physical` | VM | VFIO passthrough of the whole PCI device. The host loses the GPU. | Needs IOMMU (off today) and the whole IOMMU group, including the card's internal bridges and its HDMI audio function `86:00.0`. Exclusive to one VM. |
-| `mdev` | VM only | A mediated vGPU, for Intel this is GVT-g (`i915-GVTg_V5_*`). | GVT-g supports only integrated GPUs from Broadwell to Comet Lake. DG2 has no mdev types; the host confirms `mdev_supported_types` is absent. |
-| `sriov` | VM only | Passes a virtual function of an SR-IOV GPU. | Intel ships graphics SR-IOV for Gen12+ integrated GPUs (out-of-tree) and for data-center and newer Pro cards. Not for Alchemist A40/A50; the host shows no `sriov_totalvfs`. |
+| `physical` | container | Bind-mounts the GPU's DRM nodes (card, render, control) into the container. The host keeps the driver; the GPU stays shared. | Works, but exposes the card node and fails container start when the GPU is missing (D4). |
+| `physical` | VM | VFIO passthrough of the whole PCI device. The host loses the GPU. No hotplug. | Needs IOMMU (off today) and the whole IOMMU group, including the card's internal bridges and its HDMI audio function `86:00.0`. Exclusive to one VM. |
+| `mdev` | VM only | A mediated vGPU. For Intel this is GVT-g. No hotplug. | Intel lists GVT-g only for integrated graphics up to 11th Gen Core, and lists Arc Pro A-Series as "Not Supported" for any graphics virtualization ([Intel 000093216][intel-gvt]). The host confirms `mdev_supported_types` is absent. |
+| `sriov` | VM only | Passes a virtual function of an SR-IOV GPU. No hotplug. | Not for this card: Intel lists Arc Pro A-Series as "Not Supported" ([Intel 000093216][intel-gvt]), upstream `xe` does not set `has_sriov` for DG2 ([xe_pci.c][xe-pci]), and the host shows no `sriov_totalvfs`. |
 | `mig` | container only | NVIDIA MIG instances. | Not applicable. |
-| `native-context` | VM only | virtio-gpu DRM native context; no passthrough. | Not evaluated. Video decode and encode through native context on Intel is experimental. |
+| `native-context` | VM only | virtio-gpu DRM native context; the host keeps the driver and shares the GPU. No hotplug. | Not evaluated. Incus says Intel support needs about `virglrenderer` 1.3 and QEMU 11.0 ([Incus GPU device reference][incus-gpu]). Whether VA-API and QSV media work through it on DG2 is not established. |
 
-The owner's note ("we can use incus's mdev if VM") does not hold for this
-card. In the current container, the right mechanism is sharing the render
-node: the host keeps the i915 driver, the GPU stays usable by more than one
-consumer, and no IOMMU change is needed. If compute ever became a VM, the
-practical option would be whole-GPU VFIO passthrough, which needs
-`intel_iommu=on`, a clean IOMMU group, and gives up host and multi-guest use.
-The spec says "render interface" and "grant", so a VM design could still meet
-it with a different mechanism.
+For the current container, sharing the render node is the right mechanism:
+the host keeps the i915 driver, the GPU stays usable by more than one
+consumer, and no IOMMU change is needed. The owner's earlier note ("we can
+use incus's mdev if VM") does not hold for this card; D12 records what a VM
+cutover would need.
 
-### D3. The host keeps i915 and makes firmware ownership explicit
+### D3. The host drives the whole device and makes firmware ownership explicit
+
+In the container design the host is the declared driving domain for the whole
+DG2 device (spec: "The owner declares which domain drives an accelerator or
+each share of it"). The guest receives only the render interface.
 
 - Keep `i915` for DG2. On this kernel `xe` binds DG2 only with
   `force_probe`, and i915 is Intel's supported driver for Alchemist.
@@ -154,8 +163,9 @@ it with a different mechanism.
   rule, for example
   `SUBSYSTEM=="drm", KERNEL=="renderD*", GROUP="render", MODE="0660"`.
   systemd's default rules set render nodes to `0666`, which lets every host
-  process use the GPU. This meets the spec requirement "Host access to the
-  render interface is limited to declared users and granted guests".
+  process use the GPU. This meets the spec requirement "Host access to a
+  host-driven render interface is limited to declared users and granted
+  guests".
 - Host processes that need the GPU join `render` in host configuration. None
   is known today: host graphics userspace is off, and Incus runs as root.
 - The guest is unaffected. Incus does not pass the host node's inode. It
@@ -166,7 +176,8 @@ it with a different mechanism.
 ### D4. Attach only the render node with an Incus `unix-char` device
 
 Owner decision (item 4): render node only, `unix-char`, `required=false`.
-Declare one device in the compute envelope:
+These are container mechanisms and stay in this design; the spec does not
+name them. Declare one device in the compute envelope:
 
 ```nix
 devices.gpu-render = {
@@ -227,6 +238,11 @@ Owner decision (item 3): add the POSIX fleet group `gpu-render`, GID 506, in
 name is generic because grants are not limited to media workloads; a later
 grant holder such as Immich joins the same group through its own declared
 grant.
+
+`gpu-render` (506) is a guest-level contract. In the container, Incus sets it
+on the node it creates. In a VM guest, the guest's own udev would set it on
+the render node its driver creates (D12). Pods and Jellyfin see the same
+group either way.
 
 Alternatives: the guest's NixOS `render` GID (303) is a nixpkgs internal
 number, not a fleet identity, and it means "any render user" rather than "has
@@ -389,6 +405,120 @@ Owner decision (item 5):
 uses the stand-in's own node path as the device source; that path is a host
 fact and does not change the contract.
 
+### D12. VM cutover path
+
+The owner wants to keep open a clean cutover of `compute-1` to a VM, with the
+GPU shared through mediated devices or virtual functions. This change does
+not do that cutover. It keeps the contract neutral so the cutover needs a new
+mechanism, not a new contract. Storage, ID mapping, and the rest of a VM
+cutover belong to `compute-recovery`; this section covers acceleration only.
+
+**What changes in a VM cutover**
+
+- *Attachment.* The `unix-char` render-node device (D4) is replaced by an
+  Incus `gpu` device on the VM: `gputype=sriov` (a virtual function),
+  `gputype=mdev` (a mediated device), or `gputype=physical` (whole-device
+  VFIO passthrough). The project restriction changes from
+  `restricted.devices.unix-char` to `restricted.devices.gpu`. None of these
+  types hotplugs into a VM ([Incus GPU device reference][incus-gpu]).
+- *Driving domain.* For a VF, mdev, or whole device, the guest kernel drives
+  its share. The host still owns the physical device and its partitioning:
+  it drives the physical function, creates the VFs or mdevs from declared
+  configuration, and binds an attached VF or whole device to `vfio-pci`.
+- *Guest image.* The `compute-1` NixOS image gains the guest-side kernel
+  driver (`xe` for current SR-IOV-capable Intel cards; Battlemage SR-IOV
+  support landed in Linux 6.17 ([Phoronix][phoronix-pro])) and
+  redistributable firmware where its driver needs
+  it. Whether a VF driver needs its own GuC/HuC files or relies on the host's
+  physical-function firmware must be checked for the chosen card. The guest
+  image also gains a udev rule that sets group `gpu-render` (506) and mode
+  `0660` on the granted render node only, and gives it a stable path. The
+  render node's number may differ inside a VM, because a virtual display
+  adapter can also register DRM nodes.
+- *Host.* IOMMU must be on. On `hvn-hyp1`, `CONFIG_INTEL_IOMMU=y` but
+  `intel_iommu=on` is not on the command line and `/sys/kernel/iommu_groups`
+  is empty; VT-d may also need enabling in firmware. SR-IOV also needs a
+  host driver with PF support for the card.
+- *Kubernetes.* The pod-level grant is the same: a declared grant holder, the
+  `gpu-render` supplementary group, render node only. Only where the node
+  comes from changes. One mechanism probably changes too: K3s in the
+  container runs with `KubeletInUserNamespace`, so the in-guest device cgroup
+  is not enforced and a `hostPath` mount of `/dev/dri` works (D7). In a VM,
+  K3s would not need a user namespace, so runc's device cgroup would be
+  enforced and an unprivileged Pod could not open a `hostPath`-mounted render
+  node. Device delivery would then need a device plugin, CDI, or DRA. That is
+  stronger isolation, and it is the point D7 already names for reconsidering
+  a device plugin. Confirm this during the cutover.
+- *Missing device.* A VM cannot hotplug its GPU, and Incus is expected to
+  refuse to start an instance whose `gpu` device matches nothing, as in the
+  container case (D4); this needs confirming for VMs. To keep "Accelerator
+  loss affects only accelerated work", the VM design needs a declared way to
+  start without the share, for example a host preflight that leaves the
+  device off when its function is absent. Regaining access may then need a
+  VM restart, which the spec allows.
+
+**What stays the same**
+
+- The spec's grant model: explicit host-to-domain and domain-to-workload
+  grants, owner-declared grant holders, render interface only.
+- The `gpu-render` group and GID 506.
+- Jellyfin's declared transcoding mode and the Jellarr `encoding:` settings.
+  QSV and the render-node path are set inside the guest, so they are
+  unaffected as long as the guest presents the node at the same stable path.
+- The acceleration check and the operator acceptance procedure (D9, D11).
+- Detection, replacement, and verification requirements.
+
+**Hardware finding: this card cannot be shared with a VM**
+
+The Arc Pro A40/A50 in `hvn-hyp1` (DG2, `8086:56b1`) exposes no mdev types
+and no SR-IOV virtual functions:
+
+- Intel's graphics-virtualization table lists both Arc A-Series and Arc Pro
+  A-Series (Alchemist) as "Not Supported". It lists GVT-g, the Intel mdev
+  type, only for integrated graphics up to 11th Gen Core ([Intel
+  000093216][intel-gvt]).
+- In upstream Linux, `drivers/gpu/drm/xe/xe_pci.c` (commit `8b2d3bb7`, the
+  file's latest change on `master`, which is at 7.3-rc6 as of this writing),
+  `dg2_desc` does not set `has_sriov` and still sets
+  `require_force_probe`. `8086:56b1` is in `INTEL_DG2_IDS`, which maps to
+  `dg2_desc` ([xe_pci.c][xe-pci]). So moving this card to `xe` does not add
+  SR-IOV.
+- On the host: no `mdev_supported_types` and no `sriov_totalvfs` on
+  `0000:85:00.0` (Context).
+
+With this card, a VM could only take the whole GPU through VFIO passthrough.
+The host and every other guest would lose it. Sharing one GPU between a VM
+and anything else needs different hardware. Options, with the support
+claims we could verify:
+
+- *Intel Arc Pro B-Series (Battlemage).* Intel lists SR-IOV as supported
+  ([Intel 000093216][intel-gvt]). Its supported configurations are 2 VFs for
+  the B50 and 4 VFs for the B70 ([Intel 000103382][intel-vfs]). Upstream
+  `xe` sets `has_sriov` for Battlemage without `force_probe`
+  ([xe_pci.c][xe-pci]), and the support landed in Linux 6.17. Intel told
+  Phoronix that consumer Arc B-Series cards will not get SR-IOV
+  ([Phoronix][phoronix-pro]). Intel's B50 SR-IOV article names Ubuntu as the
+  supported Linux host ([Intel 000102857][intel-b50]); NixOS is not a
+  validated configuration.
+- *Intel Data Center GPU Flex (Arctic Sound-M).* Intel lists SR-IOV as
+  supported ([Intel 000093216][intel-gvt]). Intel's GPU documentation says
+  Flex needs the out-of-tree `intel-i915-dkms` module ([Intel dGPU
+  docs][intel-i915]). Upstream `xe` sets `has_sriov` for ATS-M but still
+  requires `force_probe` ([xe_pci.c][xe-pci]).
+- *virtio-gpu native context* (`gputype=native-context`) keeps the host
+  driving this same card and shares it with a VM without IOMMU or SR-IOV.
+  Media acceleration through it on DG2 is not established (D2).
+
+**Keeping the cutover cheap now**
+
+- The compute aspect's grant setting declares the attachment as a kind
+  (render node today), so a VM kind can be added later without renaming the
+  grant or the group.
+- Pod-side declarations name the grant and `gpu-render`, not the
+  device-origin mechanism.
+- Evaluation checks that reject `gpu` devices (task 3.3) say that they apply
+  to container guests, so a VM cutover change relaxes them in one place.
+
 ## Risks / Trade-offs
 
 - [Kernel attack surface] The render node exposes i915 ioctls to Jellyfin. A
@@ -465,7 +595,8 @@ its own; it does not affect the guest.
 
 ## Resolved decisions
 
-The first draft listed eight questions for the owner. All are decided:
+The first draft listed eight questions for the owner. All are decided, and
+the owner added a ninth decision:
 
 1. **Fallback (D9).** Fail hard, with no automatic fallback. The Jellarr Job
    sets QSV statically; no probe and no encoding sidecar. GPU loss fails
@@ -489,6 +620,12 @@ The first draft listed eight questions for the owner. All are decided:
    is unaffected.
 8. **Encoding defaults (D8).** QSV with HEVC and AV1 output off at first, as
    proposed. Tone mapping stays application-owned.
+9. **VM cutover (spec, D12).** Keep a clean cutover of `compute-1` to a VM
+   with GPU sharing possible; at least, do not make it harder than needed.
+   The spec no longer assumes a container: the owner declares which domain
+   drives the device or each share, the render interface and `gpu-render`
+   hold whichever way the guest obtains the node, and sharing is allowed but
+   not required. Container mechanisms stay in this design.
 
 ## Open questions
 
@@ -500,6 +637,10 @@ later.
 - Whether Incus hotplug follows the `by-path` symlink. The VM test decides,
   and D4 names the fallback.
 - When the host should move DG2 from `i915` to `xe`.
+- Whether and when `compute-1` becomes a VM, and on which GPU. Sharing with
+  a VM needs an SR-IOV-capable card (D12). The VM-specific points D12 marks
+  for confirmation: Incus start behavior with a missing `gpu` device, the
+  Kubernetes device-delivery mechanism, and VF firmware needs.
 - How `monitoring-and-alerting` (PR #54) turns the documented check into an
   alert. Not a dependency of this change.
 - Whether Jellyfin's CPU limit changes after real-hardware acceptance
@@ -517,3 +658,11 @@ The task brief named an active change `reliable-household-services`. No such
 change exists at `main@origin` (18ecf7f9). The active changes are
 `independent-service-exposure-contract`, `reproducible-application-compute`,
 `reproducible-jellyfin-compute`, and `storage-placement-contract`.
+
+[incus-gpu]: https://linuxcontainers.org/incus/docs/main/reference/devices_gpu/
+[intel-gvt]: https://www.intel.com/content/www/us/en/support/articles/000093216/graphics/processor-graphics.html
+[intel-vfs]: https://www.intel.com/content/www/us/en/support/articles/000103382/graphics/intel-arc-pro-dedicated-graphics-family.html
+[xe-pci]: https://github.com/torvalds/linux/blob/8b2d3bb766c69976da4767fb3b7299a909367f58/drivers/gpu/drm/xe/xe_pci.c
+[intel-b50]: https://www.intel.com/content/www/us/en/support/articles/000102857/graphics.html
+[phoronix-pro]: https://www.phoronix.com/news/Intel-SR-IOV-Only-For-Arc-Pro
+[intel-i915]: https://dgpu-docs.intel.com/overview/supported-hardware/i915-driver-gpus.html

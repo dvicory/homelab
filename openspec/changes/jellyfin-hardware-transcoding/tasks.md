@@ -16,9 +16,9 @@
 
 ## 3. Compute envelope
 
-- [ ] 3.1 Add an accelerator-grant setting to `den.aspects.virtualization.compute` that renders exactly one `unix-char` device (render node source, guest path `/dev/dri/renderD128`, `required=false`, `uid=0`, GID 506 `gpu-render`, mode `0660`) and sets `restricted.devices.unix-char = "allow"` while `restricted.devices.gpu` stays `block`; verify by evaluating the preseed profile and `/etc/homelab/compute.json` for `hvn-hyp1`.
+- [ ] 3.1 Add an accelerator-grant setting to `den.aspects.virtualization.compute` that declares the driving domain (host) and an attachment kind (only `render-node` accepted now, so a VM kind can be added later; design D12), and for `render-node` renders exactly one `unix-char` device (render node source, guest path `/dev/dri/renderD128`, `required=false`, `uid=0`, GID 506 `gpu-render`, mode `0660`) and sets `restricted.devices.unix-char = "allow"` while `restricted.devices.gpu` stays `block`; verify by evaluating the preseed profile and `/etc/homelab/compute.json` for `hvn-hyp1`.
 - [ ] 3.2 Do not add the capability to `storageCapabilities`; verify with a `compute-contracts` assertion that `raw.idmap` is unchanged by the grant.
-- [ ] 3.3 Extend `compute-contracts` so evaluation fails when a second `unix-char` device, any `gpu` device, or a grant without `required=false`, mode `0660`, and GID 506 is declared; verify each rejected fixture fails and the real configuration passes.
+- [ ] 3.3 Extend `compute-contracts` so evaluation fails, for container compute guests, when a second `unix-char` device, any `gpu` device, or a grant without `required=false`, mode `0660`, and GID 506 is declared; verify each rejected fixture fails and the real configuration passes.
 - [ ] 3.4 Extend the compute-runtime adoption tests so an undeclared `unix-char` device on the profile is reported as drift; verify with `go test ./...` in `pkgs/by-name/compute-runtime`.
 - [ ] 3.5 Declare the grant on `hvn-hyp1` with the `by-path` render source; verify the evaluated device source is `/dev/dri/by-path/pci-0000:85:00.0-render`.
 
@@ -49,6 +49,7 @@
 - [ ] 7.2 Add hardware acceptance to the Jellyfin coupled-release upgrade steps in `docs/operations/jellyfin.md`; verify the upgrade section lists it.
 - [ ] 7.3 Record the render-node grant as the accepted narrow hardware delegation in ADR-0001 (or a new ADR that modifies it); verify the ADR front matter links this change.
 - [ ] 7.4 Open a follow-up for `monitoring-and-alerting` (PR #54) to alert on the acceleration check's degraded state; verify the follow-up links this change. This change does not wait for it.
+- [ ] 7.5 Record in ADR-0001 (or the new ADR from 7.3) that the delegation contract is neutral between container and VM guests, and cite design D12 for the VM cutover path and the hardware finding; verify the ADR links D12.
 
 ## 8. Operator acceptance on `hvn-hyp1` (separately authorized)
 

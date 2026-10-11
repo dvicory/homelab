@@ -17,8 +17,16 @@ widening the boundary. This change is that decision.
 
 - Introduce a `hardware-acceleration` contract for host accelerators shared
   with workloads:
-  - The physical host owns the accelerator, its kernel driver, and its
-    firmware. Guests and workloads only consume it.
+  - The host owns the physical device and its partitioning. The owner
+    declares which domain drives the device or each share of it: the host,
+    or the one guest that holds that share. Workloads never load drivers or
+    firmware. Today the host drives the whole device and the guest gets the
+    render interface.
+  - The contract does not assume the compute guest is a container. A later
+    cutover of `compute-1` to a VM, with a shared or whole GPU, needs a new
+    mechanism but no contract change (design D12).
+  - Sharing one GPU among the host and several guests is allowed, not
+    required. Each grant is explicit, and no grant reaches beyond its share.
   - On the host, only declared host users and granted guests can use the
     render interface.
   - Access is an explicit, reviewable grant at two levels: host to compute
@@ -58,9 +66,10 @@ widening the boundary. This change is that decision.
 - Automatic software fallback. Jellyfin has none (upstream issues #4389 and
   #17108), and the owner chose a visible failure over a second settings
   writer.
-- Converting the compute guest to a VM, or using VFIO, `mdev` (GVT-g), or
-  SR-IOV. None applies to the current container, and the card supports
-  neither `mdev` nor SR-IOV. See design.md.
+- Converting the compute guest to a VM now, or using VFIO, `mdev`, or
+  SR-IOV. The contract keeps that cutover open. This card supports neither
+  `mdev` nor SR-IOV, so a VM could only take the whole GPU; sharing with a
+  VM needs different hardware. See design.md, D12.
 - Rebuilding or patching Jellyfin's runtime image, ffmpeg, or GPU userspace.
   These stay upstream-owned, as `jellyfin-lifecycle` already requires.
 - Changing the host kernel, firmware source, or BIOS (Resizable BAR is not
@@ -77,9 +86,10 @@ widening the boundary. This change is that decision.
 
 ### New Capabilities
 
-- `hardware-acceleration`: ownership, host access, grant, eligibility, scope,
-  failure, detection, recovery, and verification contract for host hardware
-  accelerators delegated through the compute boundary to owner-declared
+- `hardware-acceleration`: ownership, driving domain, sharing, host access,
+  grant, eligibility, scope, failure, detection, recovery, and verification
+  contract for host hardware accelerators delegated through the compute
+  boundary, whether the guest is a container or a VM, to owner-declared
   workloads, including Jellyfin's declared transcoding mode.
 
 ### Modified Capabilities
