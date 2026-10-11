@@ -36,19 +36,19 @@ questions the first draft left open (see "Resolved decisions").
   adoption gate in `pkgs/by-name/compute-runtime/internal/adoption` reports
   any undeclared project key or profile device as a conflict.
 - `compute-1` is an unprivileged container with `security.idmap.isolated`,
-  nesting, `limits.cpu = 4`, and `limits.memory = 12GiB`
+  nesting, `limits.cpu = 12`, and `limits.memory = 32GiB` (PR #52)
   (`modules/den/hosts/hvn-hyp1/default.nix`). `raw.idmap` is derived from
   `storageCapabilities = [ "media" ]` by `_idmap.nix`, which punches one
   identity-mapped hole for GID 505.
 - The Jellyfin container runs as UID/GID 751 with supplementary group 505,
   drops all capabilities, uses `RuntimeDefault` seccomp, and is limited to
   2 CPUs (`modules/den/aspects/kubernetes/services/jellyfin.nix`). Its memory
-  limit is 4Gi since PR #49 (merged). PR #53 (open) sizes the transcode cache
-  at 64Gi.
+  limit is 4Gi (PR #49). Its transcode cache is 64Gi, with an 8Gi
+  ephemeral-storage request and a 65Gi limit (PR #53).
 - Jellarr runs as an Argo CD `PostSync` hook Job
   (`argocd.argoproj.io/hook = PostSync`) and is the only writer of
-  Jellyfin's declared steady-state settings, as `jellyfin-lifecycle` in the
-  active change `reproducible-jellyfin-compute` requires.
+  Jellyfin's declared steady-state settings, as the current
+  `jellyfin-lifecycle` spec requires.
 - K3s runs with `KubeletInUserNamespace`. runc ignores failures to load its
   eBPF device filter inside a user namespace
   (`opencontainers/cgroups`, `devices/v2.go`, `canSkipEBPFError`). In this
@@ -110,7 +110,7 @@ existing or proposed capabilities owns that:
   host-granted devices and rejects undeclared ones. It does not say who may
   receive a device, how it reaches a Pod, or what happens when it is missing.
   This change relies on it and does not modify it.
-- `jellyfin-lifecycle` (active change) owns Jellyfin startup and settings
+- `jellyfin-lifecycle` (current spec) owns Jellyfin startup and settings
   ownership. The transcoding-mode rule is a Jellyfin behavior, but it follows
   from the device contract, and later grant holders (Immich is expected) need
   the same rules.
@@ -150,11 +150,18 @@ DG2 device (spec: "The owner declares which domain drives an accelerator or
 each share of it"). The guest receives only the render interface.
 
 - Keep `i915` for DG2. On this kernel `xe` binds DG2 only with
-  `force_probe`, and i915 is Intel's supported driver for Alchemist.
-- State `hardware.enableRedistributableFirmware = true` in host
-  configuration instead of relying on the facter default, and add an
-  evaluation check that it stays on. GuC and HuC are required for low-power
-  encoding on DG2.
+  `force_probe`, and i915 is Intel's supported driver for Alchemist. Open
+  finding, tracked separately: in 8 of 24 recorded boots since May, udev's
+  load of i915 failed silently and only `xe` loaded, leaving the GPU without
+  a driver. Replaying the device's add event loads i915 normally. The host
+  does not force a driver while the cause is unknown; the guest tolerates the
+  missing node (D9), and the runbook gives the recovery command.
+- The host includes `compute.provides.accelerator`. That sub-aspect is the
+  declaration that the host drives the device: it sets
+  `hardware.enableRedistributableFirmware = true` instead of relying on the
+  facter default (GuC and HuC are required for low-power encoding on DG2),
+  owns the host render-node rule and the source check, and installs the
+  vendor's diagnostic tools (`intel-gpu-tools` for `intel_gpu_top`).
 - Do not enable host graphics userspace (`hardware.graphics`). The host only
   needs the kernel driver and firmware. The media userspace ships in
   Jellyfin's official image.
@@ -177,22 +184,25 @@ each share of it"). The guest receives only the render interface.
 
 Owner decision (item 4): render node only, `unix-char`, `required=false`.
 These are container mechanisms and stay in this design; the spec does not
-name them. Declare one device in the compute envelope:
+name them. The host declares its accelerator in its compute settings
+(`accelerator`: vendor `intel`, PCI address `0000:85:00.0`, source
+`/dev/dri/renderD128`) and includes `compute.provides.accelerator` (D3). The
+compute aspect renders exactly one device:
 
 ```nix
 devices.gpu-render = {
   type = "unix-char";
-  source = "/dev/dri/by-path/pci-0000:85:00.0-render";
+  source = "/dev/dri/renderD128";
   path = "/dev/dri/renderD128";
-  required = "false";   # guest starts without it; hotplug when it appears
+  required = "false";   # guest starts without it; Incus adds it when it appears
   uid = "0";
   gid = "506";          # gpu-render
   mode = "0660";
 };
 ```
 
-and set `restricted.devices.unix-char = "allow"` in the project, keeping
-`restricted.devices.gpu = "block"`.
+It sets `restricted.devices.unix-char = "allow"` in the project only while a
+grant is declared, and keeps `restricted.devices.gpu = "block"`.
 
 Why `unix-char` over `gpu` with `gputype=physical`:
 
@@ -211,13 +221,28 @@ Costs of this choice:
 - Incus project restrictions are all-or-nothing per device type. `allow`
   admits any character device in the project. Scope is enforced instead by the
   NixOS-owned profile, the adoption gate that rejects undeclared devices, and
-  a new evaluation check that the only `unix-char` device is the declared
-  render node.
-- Selection is by path, not PCI address. The `by-path` source pins the PCI
-  address. Whether Incus hotplug matches udev events on a `by-path` symlink is
-  not proven (it matches the event path against `source`). The VM test must
-  show it. If it does not work, use `/dev/dri/renderD128` as the source and
-  add a host check that the node belongs to `0000:85:00.0`.
+  an evaluation check that no declared device is `unix-char` or `gpu`: the
+  grant is the only way one enters the profile.
+- Selection is by path, not PCI address. The first draft used the `by-path`
+  link to pin the PCI address. Implementation tested it and took the fallback
+  this section named:
+  - Incus 7.4 watches the source path with fanotify and reacts only to create
+    and delete events (`internal/server/fsmonitor/drivers/driver_fanotify.go`).
+    systemd 261's udev creates `by-path` links atomically, by rename
+    (`symlinkat_atomic_full` in `src/udev/udev-node.c`), which fanotify reports
+    as a move, not a create.
+  - A throwaway VM test with Incus 7.4, the pinned nixpkgs and `vgem` showed
+    it: with the `by-path` source, a node that appeared after the container
+    started never reached the container; with `/dev/dri/renderD128`, it did.
+    Both sources worked at container start and when the device was added to a
+    running container, and both were removed when the node disappeared.
+  - The source is therefore `/dev/dri/renderD128`. It is the only render node
+    on `hvn-hyp1`; the BMC's `mgag200` has none. A host unit,
+    `compute-accelerator-source.service`, runs at boot and whenever a render
+    node appears (udev `SYSTEMD_WANTS`). It fails with a `DRIFT` message when
+    `renderD128` does not belong to the declared PCI address. That reports a
+    grant reaching beyond its share as drift, which the spec allows; it
+    changes nothing itself.
 
 ### D5. No `raw.idmap` change for the render group
 
@@ -228,7 +253,7 @@ ownership through the instance's ID map (`unixDeviceSetup`, mount entry with
 static owner shift). A `gid` of G in the device config appears as GID G inside
 the guest without an identity mapping. The render capability therefore does
 not join `storageCapabilities` and costs no hole in the guest's GID map. The
-VM test confirms the guest-visible owner.
+VM tests confirm the guest-visible owner.
 
 ### D6. A dedicated fleet group is the capability
 
@@ -256,9 +281,12 @@ guest-side grant capability.
 - The guest creates an empty `/dev/dri` at boot (tmpfiles), so the path
   exists whether or not the GPU is present.
 - The Jellyfin container mounts `hostPath: /dev/dri`
-  (`type: Directory`) at `/dev/dri`. Because only the render node is passed
-  into the guest, the Pod sees only `renderD128`, and only when the GPU is
-  present when the Pod starts.
+  (`type: Directory`) at `/dev/dri` with `mountPropagation: HostToContainer`.
+  Because only the render node is passed into the guest, the Pod sees only
+  `renderD128`. Incus adds a node to a running guest with a bind mount, and
+  propagation lets a running Pod receive it; the spec only requires that the
+  Pod see it no later than its next start, and the VM test records which
+  happened.
 - The Pod keeps `runAsNonRoot`, drops all capabilities, keeps
   `allowPrivilegeEscalation = false`, and adds only GID 506 (`gpu-render`) to
   `supplementalGroups`.
@@ -305,6 +333,11 @@ Software variant: `hardwareAccelerationType: none`,
 `enableHardwareEncoding: false`. It is used only when an operator declares
 software mode (D9).
 
+- The hardware variant is chosen by the accelerator's declared `vendor`
+  (D4), and the device path comes from the guest's grant. The mode setting
+  stays `hardware` or `software`; another vendor adds an enum value, its host
+  tools and its own variant (VA-API on AMD, for example). Declaring
+  `hardware` without an accelerator fails evaluation.
 - QSV over VA-API: Jellyfin recommends QSV on Arc. It uses oneVPL, supports
   AV1 encode, and uses VA-API underneath. VA-API remains an alternative
   setting if a QSV regression appears.
@@ -317,6 +350,19 @@ software mode (D9).
 - Because Jellarr's codec diff never removes entries, the software variant
   leaves the codec list as it was. It has no effect while the acceleration
   type is `none`.
+- Jellarr patches only the keys it declares. In the pinned source
+  (`f94c24f`, `src/apply/encoding-options.ts` and
+  `src/mappers/encoding-options.ts`) it reads Jellyfin's whole encoding
+  configuration, maps only the declared fields, diffs, drops every removal,
+  applies the remaining changes to the configuration it read, and posts that.
+  Settings it does not declare, such as throttling and segment deletion,
+  which the owner sets by hand (`docs/operations/jellyfin.md`, "Storage"),
+  survive every run. The `prod-home-replacement` VM test sets them, reruns
+  the delivered Jellarr Job, and checks that they survive while a changed
+  declared key is restored.
+- Jellarr validates the whole file against its strict schema before it reads
+  its API key. `jellyfin-contracts` runs the pinned CLI on both variants
+  (accepted) and on a variant with an unknown encoding key (rejected).
 
 ### D9. Fail hard: a static encoding mode, set by the existing Jellarr Job
 
@@ -347,16 +393,23 @@ Switching to software is an operator change: set the declared mode to
 `software`, commit, and let Argo sync. The Jellarr Job then applies the
 software variant. Switching back is the same change in reverse.
 
-Detection. A documented check in `docs/operations/jellyfin.md` reports the
-state without a playback attempt:
+Detection. A documented check, `docs/operations/jellyfin-acceleration-check.sh`
+(described in `docs/operations/jellyfin.md`), reports the state without a
+playback attempt. Run as root on the host, it reports:
 
 1. the declared mode, read from the rendered Jellarr configuration;
 2. whether `/dev/dri/renderD128` exists in the Jellyfin container and is
    group `gpu-render`, mode `0660`;
 3. whether Jellyfin's own `vainfo` (shipped with `jellyfin-ffmpeg`) opens the
    node as UID 751 and lists the iHD driver and its profiles;
-4. if any step fails, host-side facts for the reason: the `by-path` source on
-   `hvn-hyp1`, the bound driver, and the Incus device state.
+4. if any step fails, host-side facts for the reason: the host's render
+   nodes, the PCI device and driver behind `renderD128`, the result of
+   `compute-accelerator-source.service`, the Incus device, and the guest's
+   `/dev/dri`.
+
+It prints `STATE` (`usable`, `degraded` or `software`) and `REASON`, and
+exits 1 only when degraded. `--transcode` adds a 5-second QSV test encode of a
+generated pattern.
 
 If the mode is `software`, the check reports "software by declaration" and
 stops. The check is the minimum the spec requires. Alerting on the same
@@ -387,23 +440,26 @@ Owner decision (item 5):
   With QSV, the GPU decodes, scales, overlays, and encodes. The CPU still
   demuxes, transcodes audio, renders text subtitles (libass), and uploads
   frames. 2 CPUs should be enough for several hardware streams.
-- Memory is 4Gi since PR #49. The transcode cache becomes 64Gi with PR #53
-  (open). This change does not change either.
+- Memory is 4Gi (PR #49). The transcode cache is 64Gi (PR #53). This change
+  does not change either.
 - If an operator declares software mode, 2 CPUs give roughly one 1080p
   stream.
-- The guest's `limits.cpu = 4` does not change.
+- The guest's limits (`limits.cpu = 12`, `limits.memory = 32GiB`) do not
+  change.
 
 ### D11. Verification layers
 
 | Layer | What it proves | Where |
 | --- | --- | --- |
-| Evaluation | Device declared once with `required=false`, `0660`, GID 506; project admits it; no `gpu` device; only declared grant holders mount `/dev/dri` or hold GID 506; no privileged Pods; the Jellarr Job config holds exactly the `encoding:` variant for the declared mode, and both variants pass Jellarr's strict schema; no other rendered workload runs Jellarr; host firmware enabled; host render-node rule sets group `render`, mode `0660` | `compute-contracts`, `jellyfin-contracts` |
-| VM with stand-in | `vgem` provides a real, openable render node with no media engine. On the host VM it is group `render`, mode `0660`, and an undeclared host user cannot open it. The guest sees it as group `gpu-render`, mode `0660`; Jellyfin's Pod can open it; an ungranted Pod cannot see it; a non-holder cannot open it. With `vgem` unloaded, the guest and Jellyfin start, Jellyfin's encoding settings still say QSV, and the documented check reports the node missing. Loading `vgem` later hotplugs the node into the guest. Replacement keeps the grant. | `prod-home-replacement` |
+| Evaluation | No declared device is `unix-char` or `gpu`; the grant leaves the guest's ID map alone; only declared grant holders mount `/dev/dri` or hold GID 506; both encoding variants pass Jellarr's strict schema | `compute-contracts`, `jellyfin-contracts` |
+| VM with stand-in | `vgem` provides a real, openable render node with no media engine. On the host VM it is group `render`, mode `0660`; an undeclared host user cannot open it and a user in `render` can. The guest sees it as group `gpu-render`, mode `0660`; Jellyfin's Pod can open it; an ungranted Pod cannot see it; a non-holder cannot open it. With `vgem` unloaded, the guest and Jellyfin start, Jellyfin's encoding settings still say QSV, and the documented check reports the node missing. Loading `vgem` later adds the node to the running guest; unloading and reloading it removes and restores it. The source check reports `vgem` as drift. A Jellarr rerun keeps owner-set throttling and segment deletion. Replacement keeps the grant. | `prod-home-replacement` |
+| VM upgrade | A guest created under the earlier declaration (no grant, character devices blocked) receives the device through host activation and native preseed without a restart, and keeps it through restart and replacement. | `compute-guest-upgrade` |
 | Operator acceptance | The documented check reports hardware usable; `vainfo` in the Pod shows the iHD driver and DG2 profiles; a forced 4K HEVC 10-bit to 1080p H.264 transcode shows hardware in Jellyfin's playback info; the host's Video engine is busy (`intel_gpu_top`, operator `sudo`); CPU stays within the limit; a subtitle burn-in plays smoothly | `docs/operations/jellyfin.md` |
 
-`vkms` is not used: it provides a card node but no render node. The VM test
-uses the stand-in's own node path as the device source; that path is a host
-fact and does not change the contract.
+`vkms` is not used: it provides a card node but no render node. The fixture
+VMs have no other render node, so `vgem`'s node is `/dev/dri/renderD128`, the
+production source. The VM tests therefore run the production descriptor and
+the exact locked preseed command unchanged.
 
 ### D12. VM cutover path
 
@@ -529,14 +585,16 @@ claims we could verify:
   hardware delegation; record this grant there.
 - [Coarse project restriction] `restricted.devices.unix-char = "allow"`
   admits any character device in the project. → NixOS owns the profile; the
-  adoption gate rejects undeclared devices; an evaluation check pins the one
-  allowed device.
+  adoption gate rejects undeclared devices; the compute aspect refuses any
+  other character or GPU device at evaluation.
 - [No in-guest device cgroup] Any Pod that mounts `/dev/dri` and claims the
   GID could open the node. → Manifests come only from Nix through Argo, and
   an evaluation check limits `/dev` hostPaths and the GID to declared grants.
-- [Hotplug through `by-path`] Unproven. → VM test; fallback described in D4.
+- [Hotplug through `by-path`] Does not work with Incus 7.4 (D4). → The
+  source is `renderD128`.
 - [Render minor renumbering] Another render-capable driver could take
-  `renderD128`. → `by-path` source pins the PCI address.
+  `renderD128`. → `compute-accelerator-source.service` reports it as drift
+  (D4).
 - [GPU loss goes unnoticed] With no alerting, a lost GPU shows up only as
   failed transcodes or when someone runs the check. → The documented check
   detects it without a playback. Alerting is a follow-up for
@@ -569,29 +627,34 @@ claims we could verify:
 
 ## Migration Plan
 
-Dependency: implementation starts only after `reproducible-jellyfin-compute`
-is archived. Its last open item is owner acceptance task 4.1. This change
-needs no amendment to that change (D9).
+`reproducible-jellyfin-compute` is archived (PR #57), and `jellyfin-lifecycle`
+is a current spec. This change needs no amendment to it (D9).
 
-1. Host: make firmware ownership explicit, and add the udev rule that sets the
-   render node to group `render`, mode `0660`. Add any host user that needs
-   the GPU to `render`.
-2. Fleet: add the `gpu-render` group (GID 506).
-3. Guest image: create `/dev/dri` at boot. Deliver with the normal guest
-   upgrade.
-4. Compute envelope: add the `unix-char` device and project restriction.
-   Native preseed updates the profile; Incus hotplugs a `unix-char` device
-   into the running container, so no guest restart is needed.
-5. Jellyfin manifests: add the `/dev/dri` mount, the `gpu-render` group, and
-   the declared mode (`hardware`) with its `encoding:` variant in the Jellarr
-   configuration. Argo sync recreates the Pod (`Recreate` strategy), and the
-   `PostSync` Jellarr Job applies the encoding settings.
-6. Operator acceptance on `hvn-hyp1`.
+One merge carries all of it. Argo syncs `main` automatically, so steps 1
+and 2 run from the pull request's revision before the merge; otherwise Argo
+can recreate Jellyfin with the `/dev/dri` mount before the guest has that
+directory. Deploy in this order (the procedure is in
+`docs/operations/jellyfin.md`, "Deploy the accelerator grant"):
+
+1. Host activation. It installs the render-node rule and the source check,
+   and native preseed allows character devices in the project and adds the
+   device to the running guest without a restart (`compute-guest-upgrade`
+   proves this). The rule applies to the existing host node after
+   `udevadm trigger --subsystem-match=drm` or the next boot.
+2. Guest update with the new bundle. It creates `/dev/dri` at boot and
+   carries the new `retained-directories` image, whose tag changed because
+   the compute-runtime sources changed. If the update waits, import that
+   image before the merge, as for the Jellyfin helper images.
+3. Merge and Argo sync. The `Recreate` strategy recreates the Jellyfin Pod
+   with the mount and the group, and the `PostSync` Jellarr Job applies QSV.
+4. Operator acceptance on `hvn-hyp1`.
 
 Rollback: first declare software mode and let the Jellarr Job apply it. Then
-remove the Pod mount and group, then the Incus device and project restriction.
-Never remove the device first. The host render-node rule can be reverted on
-its own; it does not affect the guest.
+remove the Pod mount and group. Then remove the Incus device by hand under
+the lifecycle lock (preseed removes nothing, and the adoption gate refuses an
+undeclared device) and remove the grant, so preseed blocks character devices
+again. Never remove the device first. The host render-node rule can be
+reverted on its own; it does not affect the guest.
 
 ## Resolved decisions
 
@@ -609,12 +672,11 @@ the owner added a ninth decision:
 3. **Group (D6).** `gpu-render`, GID 506.
 4. **Attachment (D4).** Render node only, `unix-char`, `required=false`.
 5. **Resources (D10).** Keep the CPU limit until real-hardware acceptance
-   measures use. Memory is 4Gi (PR #49); transcode cache 64Gi (PR #53,
-   pending).
+   measures use. Memory is 4Gi (PR #49); transcode cache 64Gi (PR #53).
 6. **Ordering.** No amendment to `reproducible-jellyfin-compute`'s writer
-   rules, because Jellarr remains the only settings writer. This change lands
-   after that change is archived; its last open item is owner acceptance
-   task 4.1.
+   rules, because Jellarr remains the only settings writer. That change is
+   archived (PR #57), so its writer rules are the current `jellyfin-lifecycle`
+   spec.
 7. **Host render node (D3).** Tighten from `0666` to `0660`, group `render`
    (host GID 303). Host processes that need the GPU join `render`. The guest
    is unaffected.
@@ -634,8 +696,9 @@ later.
 
 ### Deferrable unknowns
 
-- Whether Incus hotplug follows the `by-path` symlink. The VM test decides,
-  and D4 names the fallback.
+- ~~Whether Incus hotplug follows the `by-path` symlink.~~ Decided during
+  implementation: it does not, and the source is `renderD128` with a
+  PCI-ownership drift check (D4).
 - When the host should move DG2 from `i915` to `xe`.
 - Whether and when `compute-1` becomes a VM, and on which GPU. Sharing with
   a VM needs an SR-IOV-capable card (D12). The VM-specific points D12 marks
@@ -654,10 +717,11 @@ later.
 
 ### Note on sources
 
-The task brief named an active change `reliable-household-services`. No such
-change exists at `main@origin` (18ecf7f9). The active changes are
+The first task brief named an active change `reliable-household-services`. No
+such change existed at `main@origin` (18ecf7f9), where the active changes were
 `independent-service-exposure-contract`, `reproducible-application-compute`,
-`reproducible-jellyfin-compute`, and `storage-placement-contract`.
+`reproducible-jellyfin-compute`, and `storage-placement-contract`. The last of
+these has since been archived (PR #57).
 
 [incus-gpu]: https://linuxcontainers.org/incus/docs/main/reference/devices_gpu/
 [intel-gvt]: https://www.intel.com/content/www/us/en/support/articles/000093216/graphics/processor-graphics.html

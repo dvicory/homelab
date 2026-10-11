@@ -96,13 +96,14 @@ widening the boundary. This change is that decision.
 
 None. `compute-recovery` (active change `reproducible-application-compute`)
 already requires an unprivileged compute domain to declare its host-granted
-devices and to reject undeclared ones. `jellyfin-lifecycle` (active change
-`reproducible-jellyfin-compute`) already requires steady-state settings to go
+devices and to reject undeclared ones. `jellyfin-lifecycle` (current spec,
+archived from `reproducible-jellyfin-compute`) already requires steady-state
+settings to go
 through supported APIs, with Jellarr as the only writer. Jellarr stays the
 only writer here, so neither requirement changes.
 
-Dependency: implementation lands after `reproducible-jellyfin-compute` is
-archived. Its last open item is owner acceptance task 4.1.
+Dependency: `reproducible-jellyfin-compute` is archived (PR #57), so
+implementation could start.
 
 ## Impact
 
