@@ -5,9 +5,10 @@ The fixture host boots with the declaration from before the media storage
 capability and creates the guest under it. The scenario then activates the
 current declaration with switch-to-configuration test, records what each host
 unit and the lifecycle helper report while the old guest is still running,
-applies the operator procedure, and verifies the guest, its retained state and
-its staged credentials, delivers the Jellyfin helper images into the existing
-guest as docs/operations/jellyfin.md describes, and finishes with the
+checks that the raised memory limit reaches the running guest without a
+restart, applies the operator procedure, and verifies the guest, its retained
+state and its staged credentials, delivers the Jellyfin helper images into the
+existing guest as docs/operations/jellyfin.md describes, and finishes with the
 documented guest replacement onto the current bundle.
 
 Runs only inside the disposable fixture-host VM of checks.compute-guest-upgrade.
@@ -91,6 +92,26 @@ def rootfs_gid_counts(lib, rootfs: str) -> dict:
     return counts
 
 
+def memory_bytes(value: str) -> int:
+    """Convert an Incus limits.memory value with a binary suffix to bytes."""
+    for suffix, factor in (("KiB", 1 << 10), ("MiB", 1 << 20), ("GiB", 1 << 30), ("TiB", 1 << 40)):
+        if value.endswith(suffix):
+            return int(value[: -len(suffix)]) * factor
+    return int(value)
+
+
+def guest_limits(lib, project: str, name: str) -> dict:
+    """The running guest's own cgroup limits, as Incus last applied them."""
+    read = lambda path: guest_exec(lib, project, name, "cat", path).stdout.strip()
+    return {"memory.max": read("/sys/fs/cgroup/memory.max"), "cpuset.cpus.effective": read("/sys/fs/cgroup/cpuset.cpus.effective")}
+
+
+def guest_init_pid(lib, project: str, name: str) -> int:
+    """The guest's init process as a host PID; a restart gives it a new one."""
+    state = json.loads(lib.run("incus", "--force-local", "query", f"/1.0/instances/{name}/state?project={project}"))
+    return state["pid"]
+
+
 class Availability:
     """Poll the guest's Kubernetes API once a second and record outages."""
 
@@ -139,6 +160,8 @@ def run_scenario(args) -> None:
     old = json.loads(Path("/etc/homelab/compute.json").read_text())
     new = json.loads((args.upgraded / "etc/homelab/compute.json").read_text())
     check("media" not in old["devices"] and "media" in new["devices"], "fixture boots the pre-capability declaration")
+    old_memory, new_memory = (memory_bytes(spec["config"]["limits.memory"]) for spec in (old, new))
+    check(old_memory != new_memory, "the earlier declaration has a different memory limit for activation to apply")
     project, name = old["project"], old["instance"]
     lock = LOCK.format(project=project, instance=name)
     lib.wait_for("Incus API", lambda: lib.completed("incus", "--force-local", "query", "/1.0").returncode == 0)
@@ -223,6 +246,13 @@ def run_scenario(args) -> None:
         observe("before.rootfs_owner", lib.run("stat", "-c", "%u:%g", f"{rootfs}/etc"))
         observe("before.rootfs_gid_counts", rootfs_gid_counts(lib, rootfs))
         k3s_before = runtime.guest("systemctl", "show", "--value", "-p", "MainPID", "k3s")
+        # The guest's init as a host PID. A restarted container gets a new
+        # init process; inside the guest, PIDs can repeat after a restart.
+        init_before = guest_init_pid(lib, project, name)
+        observe("before.guest_init_pid", init_before)
+        limits = guest_limits(lib, project, name)
+        observe("before.guest_limits", limits)
+        check(limits["memory.max"] == str(old_memory), "the old guest runs under the earlier memory limit")
 
     with lib.phase("host activation with the old guest running"):
         started = time.monotonic()
@@ -294,6 +324,14 @@ def run_scenario(args) -> None:
           "project restrictions equal the current declaration")
     check(lib.query_incus(f"/1.0/profiles/{old['profile']}", project=project)["config"] == new["config"],
           "profile equals the current declaration")
+    # The fixture host has no more CPUs than either limits.cpu, so Incus gives
+    # the guest all of them before and after; only memory.max shows the change.
+    # The init-process check below shows the guest was not restarted to apply it.
+    limits = guest_limits(lib, project, name)
+    observe("preseeded.guest_limits", limits)
+    check(limits["memory.max"] == str(new_memory), "preseed applies the current memory limit to the running guest")
+    check(guest_init_pid(lib, project, name) == init_before,
+          "the guest keeps the same init process, so applying the limit did not restart it")
     observe("preseeded.volatile", volatile(lib, project, name))
     observe("preseeded.media_mount", guest_exec(lib, project, name, "findmnt", "-n", "-o", "TARGET,OPTIONS", "/srv/media").stdout.strip())
     probe = guest_exec(lib, project, name, "sh", "-c", f"id; stat -c '%u:%g %a' /srv/media/data; cat {MEDIA_FILE}", user=751, group=505)
