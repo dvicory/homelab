@@ -22,6 +22,14 @@
           ;
         descriptor = builtins.fromJSON hostConfig.environment.etc."homelab/compute.json".text;
         poolPath = descriptor.poolPath;
+        renderNodeRule =
+          let
+            rule = ''SUBSYSTEM=="drm", KERNEL=="renderD*", GROUP="render", MODE="0660"'';
+          in
+          assert lib.assertMsg (lib.hasInfix rule hostConfig.services.udev.extraRules)
+            "hvn-hyp1 no longer carries the render-node rule the fixture reproduces";
+          rule;
+        accelerationCheck = ../../docs/operations/jellyfin-acceleration-check.sh;
         mergerfs = import ../den/aspects/services/_mergerfs.nix { inherit lib; };
         cluster = config.den.clusters.prod-home;
         mediaPoolPath = "${descriptor.devices.media.source}/data";
@@ -68,6 +76,8 @@
             stateMarkerScript = hostConfig.systemd.services.compute-state-marker.script;
             secretStageScript = hostConfig.systemd.services.compute-stage-secrets.script;
             secretStagePath = lib.makeBinPath hostConfig.systemd.services.compute-stage-secrets.path;
+            acceleratorSourceCheck =
+              hostConfig.systemd.services.compute-accelerator-source.serviceConfig.ExecStart;
           }
         );
         scenario = ./prod-home-replacement.py;
@@ -132,6 +142,20 @@
                 # installs paths owned by group media (GID 505, see
                 # modules/den/groups/default.nix).
                 users.groups.media.gid = 505;
+
+                # Host render-node access: one host user production would
+                # declare in `render`, and one it would not.
+                services.udev.extraRules = renderNodeRule;
+                users.groups.render-probe = { };
+                users.users.render-declared = {
+                  isSystemUser = true;
+                  group = "render-probe";
+                  extraGroups = [ "render" ];
+                };
+                users.users.render-undeclared = {
+                  isSystemUser = true;
+                  group = "render-probe";
+                };
 
                 # Keep the fixture's subordinate authorization explicit for
                 # the compute range and identity-mapped capability GIDs.
@@ -276,6 +300,7 @@
               fixture_host.copy_from_host("${scenario}", "/tmp/prod-home-replacement.py")
               fixture_host.copy_from_host("${smoke}", "/tmp/jellyfin_smoke.py")
               fixture_host.copy_from_host("${fixtureMedia}", "/tmp/recovery.mkv")
+              fixture_host.copy_from_host("${accelerationCheck}", "/tmp/jellyfin-acceleration-check.sh")
               # The driver streams the VM console while execute waits for exit.
               (status, _) = fixture_host.execute(
                   "python3 -u /tmp/prod-home-replacement.py"
@@ -285,6 +310,7 @@
                   " --seed ${testSeed}"
                   " --smoke /tmp/jellyfin_smoke.py"
                   " --fixture-media /tmp/recovery.mkv"
+                  " --acceleration-check /tmp/jellyfin-acceleration-check.sh"
                   " --bootstrap-host ${bootstrapHost}/bin/household-bootstrap-host"
                   " --helper ${computeGuest}/bin/compute-guest"
                   f" < /dev/null > {console} 2>&1",

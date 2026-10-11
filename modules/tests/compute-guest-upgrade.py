@@ -162,6 +162,15 @@ def run_scenario(args) -> None:
     check("media" not in old["devices"] and "media" in new["devices"], "fixture boots the pre-capability declaration")
     old_memory, new_memory = (memory_bytes(spec["config"]["limits.memory"]) for spec in (old, new))
     check(old_memory != new_memory, "the earlier declaration has a different memory limit for activation to apply")
+    check("gpu-render" not in old["devices"] and new["devices"]["gpu-render"]["type"] == "unix-char"
+          and old["projectConfig"]["restricted.devices.unix-char"] == "block"
+          and new["projectConfig"]["restricted.devices.unix-char"] == "allow",
+          "the earlier declaration predates the accelerator grant")
+    # vgem stands in for the host GPU at the declared source path, so the
+    # preseed adds a present render node to the running guest.
+    lib.run("modprobe", "vgem")
+    lib.run("udevadm", "settle")
+    lib.wait_for("stand-in render node", lambda: Path(new["devices"]["gpu-render"]["source"]).is_char_device())
     project, name = old["project"], old["instance"]
     lock = LOCK.format(project=project, instance=name)
     lib.wait_for("Incus API", lambda: lib.completed("incus", "--force-local", "query", "/1.0").returncode == 0)
@@ -324,6 +333,12 @@ def run_scenario(args) -> None:
           "project restrictions equal the current declaration")
     check(lib.query_incus(f"/1.0/profiles/{old['profile']}", project=project)["config"] == new["config"],
           "profile equals the current declaration")
+    check(lib.query_incus(f"/1.0/profiles/{old['profile']}", project=project)["devices"] == new["devices"],
+          "profile devices equal the current declaration, including the render-node grant")
+    render_node = new["devices"]["gpu-render"]["path"]
+    render = lambda: guest_exec(lib, project, name, "stat", "-c", "%F %g %a", render_node).stdout.strip()
+    lib.wait_for("render node added to the running pre-capability guest", lambda: render() == "character special file 506 660")
+    observe("preseeded.render_node", render())
     # The fixture host has no more CPUs than either limits.cpu, so Incus gives
     # the guest all of them before and after; only memory.max shows the change.
     # The init-process check below shows the guest was not restarted to apply it.
@@ -467,6 +482,8 @@ def run_scenario(args) -> None:
         check("jellyfin\tjellyfin-admin" in runtime.guest("cat", "/srv/secrets/runtime-secrets.names"),
               "replacement attaches the staged credentials")
         check(len(helper_images(lib, project, name)) == 2, "the current guest bundle imports the helper images at boot")
+        check(guest_exec(lib, project, name, "stat", "-c", "%F %g %a", render_node).stdout.strip() == "character special file 506 660",
+              "the replacement guest receives the render-node grant")
 
 
 def main() -> int:

@@ -31,6 +31,7 @@ import base64
 from contextlib import contextmanager
 import copy
 import fcntl
+import grp
 import hashlib
 import importlib.util
 import ipaddress
@@ -44,6 +45,7 @@ import shlex
 import shutil
 import socket
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -76,6 +78,11 @@ PROVISION_FAULT_OBSERVATION = 60
 PREFLIGHT_FRESH = "is empty; provisioning fresh state"
 PREFLIGHT_INITIALIZED = "is initialized; Provision mode leaves it unchanged"
 PREFLIGHT_REFUSAL = "refusing partial provisioning state"
+# vgem stands in for the GPU: a real, openable render node with no media
+# engine, at the production source path.
+RENDER_NODE = "/dev/dri/renderD128"
+GPU_RENDER_GID = 506
+CHARACTER_NODE = f"character special file {GPU_RENDER_GID} 660"
 
 
 class ScenarioError(RuntimeError):
@@ -1232,6 +1239,216 @@ def verify_post_preflight_provision_failure(runtime: Runtime, kubeconfig: Path, 
     check(runtime.app_ready(), "the delivered Jellyfin stays ready while a separate provisioner fails")
 
 
+def ready_jellyfin_pod(runtime: Runtime) -> dict:
+    pods = runtime.kubectl_json("get", "pods", "-l", "app.kubernetes.io/name=jellyfin", "-o", "json",
+                                namespace="jellyfin")["items"]
+    ready = [
+        pod for pod in pods
+        if not pod["metadata"].get("deletionTimestamp")
+        and any(condition.get("type") == "Ready" and condition.get("status") == "True"
+                for condition in pod.get("status", {}).get("conditions", []))
+    ]
+    check(len(ready) == 1, "one Ready Jellyfin Pod")
+    return ready[0]
+
+
+def restart_jellyfin(runtime: Runtime, kubeconfig: Path) -> None:
+    """Recreate the Jellyfin Pod and move the test port-forward to it."""
+    old = ready_jellyfin_pod(runtime)["metadata"]["uid"]
+    runtime.kubectl("delete", "pod", "-l", "app.kubernetes.io/name=jellyfin", "--wait=false", namespace="jellyfin")
+    wait_for("a fresh Jellyfin Pod", lambda: runtime.app_ready() and ready_jellyfin_pod(runtime)["metadata"]["uid"] != old,
+             timeout=600)
+    forward_start(runtime, kubeconfig)
+
+
+def in_jellyfin(runtime: Runtime, *command: str) -> subprocess.CompletedProcess[str]:
+    return completed("incus", "--force-local", "--project", runtime.project, "exec", runtime.instance,
+                     "--mode=non-interactive", "--", "k3s", "kubectl", "-n", "jellyfin", "exec",
+                     "deployment/jellyfin", "-c", "jellyfin", "--", *command)
+
+
+def guest_render_node(runtime: Runtime) -> str:
+    return runtime.guest("stat", "-c", "%F %g %a", RENDER_NODE, check_result=False)
+
+
+def guest_opens_render_node(runtime: Runtime, user: int, group: int) -> bool:
+    result = completed("incus", "--force-local", "--project", runtime.project, "exec", runtime.instance,
+                       "--user", str(user), "--group", str(group), "--mode=non-interactive", "--",
+                       "sh", "-c", f"exec 3<>{RENDER_NODE}")
+    return result.returncode == 0
+
+
+def host_opens_render_node(user: str) -> bool:
+    return completed("runuser", "-u", user, "--", "sh", "-c", f"exec 3<>{RENDER_NODE}").returncode == 0
+
+
+def jellyfin_encoding(smoke, base: str, token: str) -> dict:
+    return smoke.api_request(base, "GET", "/System/Configuration/encoding", token=token)[1]
+
+
+def acceleration_check(script: Path) -> subprocess.CompletedProcess[str]:
+    result = completed("bash", str(script), timeout=600)
+    print(f"ACCELERATION CHECK exit={result.returncode}\n{result.stdout}{result.stderr}", flush=True)
+    return result
+
+
+def rerun_jellarr(runtime: Runtime, kubeconfig: Path, workspace: Path) -> None:
+    """Run the delivered Jellarr Job's exact Pod template once more."""
+    job = runtime.kubectl_json("get", "job/jellyfin-configuration", "-o", "json", namespace="jellyfin")
+    template = copy.deepcopy(job["spec"]["template"])
+    for key in ("controller-uid", "job-name", "batch.kubernetes.io/controller-uid", "batch.kubernetes.io/job-name"):
+        template["metadata"].get("labels", {}).pop(key, None)
+    rerun = {
+        "apiVersion": "batch/v1", "kind": "Job",
+        "metadata": {"name": "jellarr-rerun", "namespace": "jellyfin"},
+        "spec": {"backoffLimit": 0, "activeDeadlineSeconds": 600, "template": template},
+    }
+    manifest = workspace / "jellarr-rerun.json"
+    manifest.write_text(json.dumps(rerun))
+    kubectl_outer(kubeconfig, "apply", "-f", str(manifest))
+    try:
+        runtime.kubectl("wait", "--for=condition=complete", "job/jellarr-rerun", "--timeout=420s",
+                        namespace="jellyfin", timeout=480)
+    finally:
+        logs = completed("incus", "--force-local", "--project", runtime.project, "exec", runtime.instance,
+                         "--mode=non-interactive", "--", "k3s", "kubectl", "-n", "jellyfin", "logs",
+                         "job/jellarr-rerun", "-c", "jellarr", "--tail=40")
+        print(f"JELLARR RERUN:\n{logs.stdout}{logs.stderr}", flush=True)
+        kubectl_outer(kubeconfig, "delete", "job/jellarr-rerun", "-n", "jellyfin", "--wait=true")
+
+
+def probe_pod(runtime: Runtime, kubeconfig: Path, workspace: Path, name: str, *, groups: list[int], mount_dri: bool) -> str:
+    """A disposable Pod with Jellyfin's identity; it holds no declared grant."""
+    jellyfin = ready_jellyfin_pod(runtime)
+    container = {
+        "name": "probe", "image": jellyfin["spec"]["containers"][0]["image"],
+        "command": ["sleep", "infinity"],
+        "securityContext": {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]}},
+    }
+    spec = {
+        "automountServiceAccountToken": False, "restartPolicy": "Never",
+        "nodeSelector": jellyfin["spec"]["nodeSelector"],
+        "securityContext": {"runAsUser": 751, "runAsGroup": 751, "runAsNonRoot": True, "supplementalGroups": groups},
+        "containers": [container],
+    }
+    if mount_dri:
+        spec["volumes"] = [{"name": "dri", "hostPath": {"path": "/dev/dri", "type": "Directory"}}]
+        container["volumeMounts"] = [{"name": "dri", "mountPath": "/dev/dri"}]
+    manifest = workspace / f"{name}.json"
+    manifest.write_text(json.dumps({"apiVersion": "v1", "kind": "Pod",
+                                    "metadata": {"name": name, "namespace": "jellyfin"}, "spec": spec}))
+    kubectl_outer(kubeconfig, "apply", "-f", str(manifest))
+    runtime.kubectl("wait", "--for=condition=Ready", f"pod/{name}", "--timeout=120s", namespace="jellyfin", timeout=180)
+    return name
+
+
+def verify_accelerator(runtime: Runtime, kubeconfig: Path, workspace: Path, smoke, base: str, token: str,
+                       check_script: Path, source_check: str) -> None:
+    with phase("accelerator-absent"):
+        check(not Path(RENDER_NODE).exists(), "the fixture host has no render node yet")
+        check(runtime.guest("stat", "-c", "%F %a", "/dev/dri") == "directory 755"
+              and runtime.guest("ls", "-A", "/dev/dri") == "",
+              "the guest's /dev/dri exists and is empty without the accelerator")
+        check(runtime.node_ready() and runtime.unrelated_ready() and runtime.app_ready(),
+              "the guest, K3s, an unrelated workload and Jellyfin are ready without the accelerator")
+        encoding = jellyfin_encoding(smoke, base, token)
+        check(encoding["HardwareAccelerationType"] == "qsv" and encoding["EnableHardwareEncoding"] is True
+              and encoding["QsvDevice"] == RENDER_NODE and encoding["AllowHevcEncoding"] is False,
+              "Jellyfin's encoding settings keep the declared QSV mode while the accelerator is missing")
+        result = acceleration_check(check_script)
+        check(result.returncode == 1 and "STATE: degraded" in result.stdout
+              and "missing in the Jellyfin container" in result.stdout,
+              "the documented acceleration check reports the render node missing")
+
+    with phase("jellarr-writes-only-declared-encoding-keys"):
+        # The owner set throttling and segment deletion by hand. A rerun of the
+        # same Jellarr Job must keep them and restore only declared keys.
+        changed = dict(jellyfin_encoding(smoke, base, token), EnableThrottling=True,
+                       EnableSegmentDeletion=True, AllowHevcEncoding=True)
+        smoke.api_request(base, "POST", "/System/Configuration/encoding", token=token, payload=changed,
+                          expected=(200, 204))
+        rerun_jellarr(runtime, kubeconfig, workspace)
+        after = jellyfin_encoding(smoke, base, token)
+        check(after["EnableThrottling"] is True and after["EnableSegmentDeletion"] is True,
+              "Jellarr leaves undeclared encoding settings as the owner set them")
+        check(after["AllowHevcEncoding"] is False and after["HardwareAccelerationType"] == "qsv",
+              "Jellarr restores the declared encoding settings")
+
+    with phase("accelerator-arrives-while-the-guest-runs"):
+        init_before = runtime.guest("cat", "/proc/1/stat").split()[21]
+        run("modprobe", "vgem")
+        run("udevadm", "settle")
+        wait_for("host render node", lambda: Path(RENDER_NODE).exists() and stat.S_ISCHR(os.stat(RENDER_NODE).st_mode))
+        node = os.stat(RENDER_NODE)
+        check(node.st_gid == grp.getgrnam("render").gr_gid and stat.S_IMODE(node.st_mode) == 0o660,
+              "the host render node is group render, mode 0660")
+        check(not host_opens_render_node("render-undeclared"), "an undeclared host user cannot open the render node")
+        check(host_opens_render_node("render-declared"), "a host user declared in render can open the render node")
+        wait_for("render node hotplugged into the running guest", lambda: guest_render_node(runtime) == CHARACTER_NODE)
+        check(runtime.guest("cat", "/proc/1/stat").split()[21] == init_before,
+              "the guest received the render node without a restart")
+        check(not guest_opens_render_node(runtime, 751, 751), "a guest identity without gpu-render cannot open the node")
+        check(guest_opens_render_node(runtime, 751, GPU_RENDER_GID), "a guest identity holding gpu-render can open the node")
+        live = in_jellyfin(runtime, "stat", "-c", "%F %g %a", RENDER_NODE)
+        print(f"ACCELERATOR_HOTPLUG running_pod_sees_node={live.returncode == 0 and live.stdout.strip() == CHARACTER_NODE}"
+              f" output={(live.stdout + live.stderr).strip()!r}", flush=True)
+        restart_jellyfin(runtime, kubeconfig)
+
+    with phase("granted-workload-holds-only-the-render-interface"):
+        check(in_jellyfin(runtime, "stat", "-c", "%F %g %a", RENDER_NODE).stdout.strip() == CHARACTER_NODE,
+              "the Jellyfin container sees the render node as gpu-render, mode 0660")
+        check(in_jellyfin(runtime, "ls", "-A", "/dev/dri").stdout.split() == ["renderD128"],
+              "the Jellyfin container sees no card or control node")
+        check(str(GPU_RENDER_GID) in in_jellyfin(runtime, "id", "-G").stdout.split(),
+              "the Jellyfin process holds gpu-render")
+        check(in_jellyfin(runtime, "sh", "-c", f"exec 3<>{RENDER_NODE}").returncode == 0,
+              "the Jellyfin process opens the render node as its own non-root identity")
+        ungranted = probe_pod(runtime, kubeconfig, workspace, "accelerator-ungranted", groups=[505], mount_dri=False)
+        nonholder = probe_pod(runtime, kubeconfig, workspace, "accelerator-nonholder", groups=[505], mount_dri=True)
+        try:
+            check(completed("incus", "--force-local", "--project", runtime.project, "exec", runtime.instance,
+                            "--mode=non-interactive", "--", "k3s", "kubectl", "-n", "jellyfin", "exec", ungranted,
+                            "--", "test", "-e", RENDER_NODE).returncode != 0,
+                  "an ungranted Pod has no render node")
+            denied = completed("incus", "--force-local", "--project", runtime.project, "exec", runtime.instance,
+                               "--mode=non-interactive", "--", "k3s", "kubectl", "-n", "jellyfin", "exec", nonholder,
+                               "--", "sh", "-c", f"exec 3<>{RENDER_NODE}")
+            check(denied.returncode != 0 and "ermission denied" in denied.stdout + denied.stderr,
+                  "a process without gpu-render that sees the node gets permission denied")
+        finally:
+            kubectl_outer(kubeconfig, "delete", "pod", ungranted, nonholder, "-n", "jellyfin", "--wait=false")
+        result = acceleration_check(check_script)
+        check(result.returncode == 1 and "NODE: /dev/dri/renderD128 group=506 mode=660" in result.stdout
+              and "iHD VA-API driver did not initialize" in result.stdout,
+              "the acceleration check finds the granted node and reports that the stand-in has no media engine")
+        drift = completed("/bin/sh", "-c", source_check)
+        check(drift.returncode != 0 and "DRIFT" in drift.stderr and "0000:85:00.0" in drift.stderr,
+              "the host source check reports a render node that is not the declared PCI device")
+
+    with phase("accelerator-loss-and-return-while-running"):
+        run("modprobe", "-r", "vgem")
+        wait_for("render node removed from the guest", lambda: guest_render_node(runtime) == "")
+        check(runtime.node_ready() and runtime.unrelated_ready() and runtime.app_ready(),
+              "losing the accelerator leaves the guest, K3s, unrelated work and Jellyfin running")
+        check(jellyfin_encoding(smoke, base, token)["HardwareAccelerationType"] == "qsv",
+              "losing the accelerator does not change the declared mode")
+        run("modprobe", "vgem")
+        wait_for("render node returns to the guest", lambda: guest_render_node(runtime) == CHARACTER_NODE)
+        check(runtime.guest("cat", "/proc/1/stat").split()[21] == init_before,
+              "the accelerator returned without a guest restart")
+        # The spec allows a workload restart; record whether one was needed.
+        deadline = time.monotonic() + 60
+        live = False
+        while time.monotonic() < deadline and not live:
+            live = in_jellyfin(runtime, "stat", "-c", "%F %g %a", RENDER_NODE).stdout.strip() == CHARACTER_NODE
+            time.sleep(2)
+        print(f"ACCELERATOR_RETURN running_pod_sees_node={live}", flush=True)
+        if not live:
+            restart_jellyfin(runtime, kubeconfig)
+        check(in_jellyfin(runtime, "sh", "-c", f"exec 3<>{RENDER_NODE}").returncode == 0,
+              "Jellyfin opens the returned render node no later than its next start")
+
+
 def run_scenario(args: argparse.Namespace) -> None:
     fixture_architecture = platform.machine()
     spec = importlib.util.spec_from_file_location("jellyfin_smoke", args.smoke)
@@ -1604,6 +1821,8 @@ def run_scenario(args: argparse.Namespace) -> None:
             item_id = item["Id"]
             smoke.set_played(base, token, user_id, item_id, True)
             check(smoke.is_played(base, token, user_id, item_id), "Jellyfin records meaningful playback state")
+            verify_accelerator(runtime, kubeconfig, workspace, smoke, base, token,
+                               args.acceleration_check, fixture["acceleratorSourceCheck"])
             marker = Path(descriptor["retainedPaths"]["jellyfin-config"]["path"]) / ".compute-recovery-marker"
             runtime.kubectl("exec", "deployment/jellyfin", "--",
                             "sh", "-ec", "printf 'retained-state\\n' > /config/.compute-recovery-marker",
@@ -1832,6 +2051,11 @@ def run_scenario(args: argparse.Namespace) -> None:
             check(marker.stat().st_uid == marker_stat.st_uid and marker.stat().st_gid == marker_stat.st_gid and marker.stat().st_mode == marker_stat.st_mode, "guest replacement preserves retained data ownership and mode")
             smoke.verify_state(base, username, password, "Movies", item_id)
             check(runtime.node_ready(), "replacement node is healthy")
+            with phase("replacement-regains-the-accelerator-grant"):
+                check(guest_render_node(runtime) == CHARACTER_NODE,
+                      "the replacement guest has the granted render node as gpu-render, mode 0660")
+                check(in_jellyfin(runtime, "sh", "-c", f"exec 3<>{RENDER_NODE}").returncode == 0,
+                      "Jellyfin opens the render node in the replacement guest with no manual device steps")
             check(runtime.unrelated_ready(), "replacement keeps unrelated workload available")
             replacement_pool_mount = run("findmnt", "-n", "-o", "FSTYPE,SOURCE,TARGET", "-M", str(pool_path))
             check(replacement_pool_mount == pool_mount,
@@ -1920,6 +2144,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--seed", required=True, type=Path, help="bootstrap seed tree; the shipped wrapper is pointed at it")
     result.add_argument("--smoke", required=True, type=Path, help="Jellyfin application smoke helper")
     result.add_argument("--fixture-media", required=True, type=Path, help="Nix-built media fixture placed in the Jellyfin library")
+    result.add_argument("--acceleration-check", required=True, type=Path, help="docs/operations/jellyfin-acceleration-check.sh")
     result.add_argument("--bootstrap-host", required=True, type=Path, help="shipped household-bootstrap-host executable")
     result.add_argument("--helper", type=Path, default=Path("/run/current-system/sw/bin/compute-guest"), help="generic compute lifecycle executable")
     return result
