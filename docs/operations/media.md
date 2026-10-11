@@ -50,7 +50,7 @@ setup page lets anyone who reaches it claim the server.
 
 3. Through the forwarded port, sign in as the Jellyfin administrator and
    check:
-   - Under Jellyfin settings, the `Movies` library is enabled.
+   - Under Jellyfin settings, the `Movies` and `Shows` libraries are enabled.
    - Under Services, `Radarr (Homelab)` and `Sonarr (Homelab)` use the
      profiles declared in `seerr.json`:
 
