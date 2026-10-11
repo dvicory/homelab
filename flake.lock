@@ -1546,6 +1546,22 @@
         "type": "github"
       }
     },
+    "nixpkgs-multiverse": {
+      "locked": {
+        "lastModified": 1790395362,
+        "narHash": "sha256-/jjcf0M9MSwiohTGsdZ0SG26t1CQuJcc1DfyZPvUQOQ=",
+        "owner": "fzakaria",
+        "repo": "nixpkgs-multiverse",
+        "rev": "9e89229225547747c0150f396ffa413d80bc1427",
+        "type": "github"
+      },
+      "original": {
+        "owner": "fzakaria",
+        "repo": "nixpkgs-multiverse",
+        "rev": "9e89229225547747c0150f396ffa413d80bc1427",
+        "type": "github"
+      }
+    },
     "nixpkgs_2": {
       "locked": {
         "lastModified": 1770073757,
@@ -1867,6 +1883,7 @@
         "nixos-anywhere": "nixos-anywhere",
         "nixos-facter-modules": "nixos-facter-modules",
         "nixpkgs": "nixpkgs_7",
+        "nixpkgs-multiverse": "nixpkgs-multiverse",
         "quadlet-nix": "quadlet-nix",
         "secure-hermes-nix": "secure-hermes-nix",
         "systems": "systems_8"

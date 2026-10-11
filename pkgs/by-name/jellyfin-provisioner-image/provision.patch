@@ -1,0 +1,844 @@
+--- a/Jellyfin.Server/Configuration/StartupMode.cs
++++ b/Jellyfin.Server/Configuration/StartupMode.cs
+@@ -20,5 +20,11 @@
+     /// <summary>
+     /// Runs the Database seed function regardless of <see cref="BaseApplicationConfiguration.IsStartupWizardCompleted"/> state.
+     /// </summary>
+-    SeedSystem = 2
++    SeedSystem = 2,
++
++    /// <summary>
++    /// Provisions an unconfigured system from the file given by <see cref="StartupOptions.ProvisionFile"/>
++    /// then shuts down. Does nothing if the system is already configured.
++    /// </summary>
++    Provision = 3
+ }
+--- a/Jellyfin.Server/Program.cs
++++ b/Jellyfin.Server/Program.cs
+@@ -5,6 +5,7 @@
+ using System.IO;
+ using System.Linq;
+ using System.Reflection;
++using System.Text.Json;
+ using System.Threading;
+ using System.Threading.Tasks;
+ using CommandLine;
+@@ -20,6 +21,7 @@
+ using Jellyfin.Server.Implementations.SystemBackupService;
+ using Jellyfin.Server.Migrations;
+ using Jellyfin.Server.Migrations.Stages;
++using Jellyfin.Server.Provisioning;
+ using Jellyfin.Server.ServerSetupApp;
+ using MediaBrowser.Common.Configuration;
+ using MediaBrowser.Common.Net;
+@@ -63,6 +65,7 @@
+         private static IStartupLogger<JellyfinMigrationService>? _migrationLogger;
+         private static bool _optimizeDatabaseAfterMigration;
+         private static string? _restoreFromBackup;
++        private static ProvisionManifest? _provisionManifest;
+ 
+         /// <summary>
+         /// The entry point of the application.
+@@ -116,6 +119,12 @@
+ 
+             StartupHelpers.LogEnvironmentInfo(_logger, appPaths);
+ 
++            if (!await TryLoadProvisionManifestAsync(options).ConfigureAwait(false))
++            {
++                Environment.ExitCode = 1;
++                return;
++            }
++
+             // If hosting the web client, validate the client content path
+             if (startupConfig.HostWebClient())
+             {
+@@ -217,6 +226,14 @@
+                 _optimizeDatabaseAfterMigration |= await jellyfinMigrationService.MigrateStepAsync(JellyfinMigrationStageTypes.AppInitialisation, appHost.ServiceProvider).ConfigureAwait(false);
+                 await jellyfinMigrationService.CleanupSystemAfterMigration(_logger).ConfigureAwait(false);
+                 await OptimizeDatabaseAfterMigrationAsync(appHost.ServiceProvider).ConfigureAwait(false);
++
++                if (_provisionManifest is not null)
++                {
++                    SetupServer.ReportActivity(StartupActivity.Provisioning);
++                    var provisioner = ActivatorUtilities.CreateInstance<ServerProvisioner>(appHost.ServiceProvider);
++                    await provisioner.ProvisionAsync(_provisionManifest).ConfigureAwait(false);
++                }
++
+                 try
+                 {
+                     configurationCompleted = true;
+@@ -254,6 +271,13 @@
+             catch (Exception ex)
+             {
+                 _restartOnShutdown = false;
++                if (_provisionManifest is not null)
++                {
++                    // Provisioning is a one-shot batch operation, so a failure has to be visible to
++                    // whatever invoked it rather than only in the log.
++                    Environment.ExitCode = 1;
++                }
++
+                 _logger.LogCritical(ex, "Error while starting server");
+                 if (_setupServer!.IsAlive && !configurationCompleted)
+                 {
+@@ -390,6 +414,47 @@
+                 .AddInMemoryCollection(commandLineOpts.ConvertToConfig());
+         }
+ 
++        /// <summary>
++        /// Validates the provisioning options and, in <see cref="Configuration.StartupMode.Provision"/>
++        /// mode, loads the manifest into <c>_provisionManifest</c>.
++        /// </summary>
++        /// <remarks>
++        /// Reading the file here rather than once the server is up means a malformed manifest fails
++        /// immediately instead of after the migration and service startup work has been done.
++        /// </remarks>
++        /// <param name="options">The startup options.</param>
++        /// <returns><c>true</c> if startup may continue.</returns>
++        private static async Task<bool> TryLoadProvisionManifestAsync(StartupOptions options)
++        {
++            if (options.StartupMode is not Configuration.StartupMode.Provision)
++            {
++                if (options.ProvisionFile is not null)
++                {
++                    _logger.LogCritical("--provision-file has no effect without '--mode {Mode}'.", Configuration.StartupMode.Provision);
++                    return false;
++                }
++
++                return true;
++            }
++
++            if (string.IsNullOrEmpty(options.ProvisionFile))
++            {
++                _logger.LogCritical("'--mode {Mode}' requires --provision-file.", Configuration.StartupMode.Provision);
++                return false;
++            }
++
++            try
++            {
++                _provisionManifest = await ProvisionManifestReader.ReadAsync(options.ProvisionFile).ConfigureAwait(false);
++                return true;
++            }
++            catch (Exception ex) when (ex is IOException or JsonException or InvalidOperationException or NotSupportedException or UnauthorizedAccessException)
++            {
++                _logger.LogCritical("Could not read the provision file {Path}: {Message}", options.ProvisionFile, ex.Message);
++                return false;
++            }
++        }
++
+         private static void PrepareDatabaseProvider(IServiceProvider services)
+         {
+             var factory = services.GetRequiredService<IDbContextFactory<JellyfinDbContext>>();
+--- a/Jellyfin.Server/ServerSetupApp/StartupActivity.cs
++++ b/Jellyfin.Server/ServerSetupApp/StartupActivity.cs
+@@ -30,6 +30,9 @@
+     /// <summary>Refreshing the database statistics after migrations have run.</summary>
+     public const string OptimizingDatabase = "Optimizing database";
+ 
++    /// <summary>Provisioning an unconfigured server from a file.</summary>
++    public const string Provisioning = "Provisioning server";
++
+     /// <summary>Running the final startup tasks.</summary>
+     public const string FinishingStartup = "Finishing startup";
+ 
+--- a/Jellyfin.Server/StartupOptions.cs
++++ b/Jellyfin.Server/StartupOptions.cs
+@@ -80,6 +80,13 @@
+         [Option("restore-archive", Required = false, HelpText = "Path to a Jellyfin backup archive to restore from")]
+         public string? RestoreArchive { get; set; }
+ 
++        /// <summary>
++        /// Gets or sets the path to the file describing how to provision an unconfigured server.
++        /// Required by, and only used with, <see cref="Configuration.StartupMode.Provision"/>.
++        /// </summary>
++        [Option("provision-file", Required = false, HelpText = "Path to a JSON file describing how to provision an unconfigured server. Requires --mode Provision.")]
++        public string? ProvisionFile { get; set; }
++
+         /// <summary>
+         /// Gets or sets the mode of operation the server should perform when started.
+         /// Defaults to: <see cref="StartupMode.MediaServer"/>.
+--- /dev/null
++++ b/Jellyfin.Server/Provisioning/ProvisionAdministrator.cs
+@@ -0,0 +1,17 @@
++namespace Jellyfin.Server.Provisioning;
++
++/// <summary>
++/// The initial administrator account described by a <see cref="ProvisionManifest"/>.
++/// </summary>
++public sealed class ProvisionAdministrator
++{
++    /// <summary>
++    /// Gets or sets the username.
++    /// </summary>
++    public required string Name { get; set; }
++
++    /// <summary>
++    /// Gets or sets the password.
++    /// </summary>
++    public required string Password { get; set; }
++}
+--- /dev/null
++++ b/Jellyfin.Server/Provisioning/ProvisionLibrary.cs
+@@ -0,0 +1,32 @@
++using System.Collections.Generic;
++using MediaBrowser.Model.Configuration;
++using MediaBrowser.Model.Entities;
++
++namespace Jellyfin.Server.Provisioning;
++
++/// <summary>
++/// A library described by a <see cref="ProvisionManifest"/>.
++/// </summary>
++public sealed class ProvisionLibrary
++{
++    /// <summary>
++    /// Gets or sets the library name as shown to clients.
++    /// </summary>
++    public required string Name { get; set; }
++
++    /// <summary>
++    /// Gets or sets the paths the library is built from.
++    /// </summary>
++    public required IReadOnlyList<string> Paths { get; set; }
++
++    /// <summary>
++    /// Gets or sets the type of content the library holds. A null value creates a library with no
++    /// declared type, which the web UI presents as "Other".
++    /// </summary>
++    public CollectionTypeOptions? CollectionType { get; set; }
++
++    /// <summary>
++    /// Gets or sets the library options. Server defaults apply when omitted.
++    /// </summary>
++    public LibraryOptions? LibraryOptions { get; set; }
++}
+--- /dev/null
++++ b/Jellyfin.Server/Provisioning/ProvisionManifest.cs
+@@ -0,0 +1,50 @@
++using System.Collections.Generic;
++
++namespace Jellyfin.Server.Provisioning;
++
++/// <summary>
++/// The contents of the file passed to <c>--provision-file</c>, describing the state a fresh
++/// server should be brought up in by <see cref="Configuration.StartupMode.Provision"/>.
++/// </summary>
++/// <remarks>
++/// Every member except <see cref="Administrator"/> is optional. An omitted member leaves the
++/// server default alone rather than resetting it to empty, so a manifest only has to name the
++/// settings the operator actually cares about.
++/// </remarks>
++public sealed class ProvisionManifest
++{
++    /// <summary>
++    /// Gets or sets the administrator account to create.
++    /// </summary>
++    public required ProvisionAdministrator Administrator { get; set; }
++
++    /// <summary>
++    /// Gets or sets the friendly name the server reports to clients.
++    /// </summary>
++    public string? ServerName { get; set; }
++
++    /// <summary>
++    /// Gets or sets the culture used for the server's own UI strings, for example <c>en-US</c>.
++    /// </summary>
++    public string? UICulture { get; set; }
++
++    /// <summary>
++    /// Gets or sets the two letter country code used when fetching metadata, for example <c>US</c>.
++    /// </summary>
++    public string? MetadataCountryCode { get; set; }
++
++    /// <summary>
++    /// Gets or sets the preferred metadata language, for example <c>en</c>.
++    /// </summary>
++    public string? PreferredMetadataLanguage { get; set; }
++
++    /// <summary>
++    /// Gets or sets a value indicating whether the server accepts connections from outside the local network.
++    /// </summary>
++    public bool? EnableRemoteAccess { get; set; }
++
++    /// <summary>
++    /// Gets or sets the libraries to create.
++    /// </summary>
++    public IReadOnlyList<ProvisionLibrary> Libraries { get; set; } = [];
++}
+--- /dev/null
++++ b/Jellyfin.Server/Provisioning/ProvisionManifestReader.cs
+@@ -0,0 +1,93 @@
++using System;
++using System.IO;
++using System.Text.Json;
++using System.Threading;
++using System.Threading.Tasks;
++using Jellyfin.Extensions.Json;
++
++namespace Jellyfin.Server.Provisioning;
++
++/// <summary>
++/// Reads and validates the file passed to <c>--provision-file</c>.
++/// </summary>
++public static class ProvisionManifestReader
++{
++    /// <remarks>
++    /// Derived from <see cref="JsonDefaults"/> so enums and GUIDs are spelled the way they are in
++    /// the API models, then loosened for a file a human maintains: comments, trailing commas and
++    /// either casing of the property names are all accepted.
++    /// </remarks>
++    private static readonly JsonSerializerOptions _serializerOptions = new(JsonDefaults.Options)
++    {
++        PropertyNameCaseInsensitive = true,
++        AllowTrailingCommas = true,
++        ReadCommentHandling = JsonCommentHandling.Skip
++    };
++
++    /// <summary>
++    /// Reads the manifest at the given path.
++    /// </summary>
++    /// <param name="path">Path to the manifest file.</param>
++    /// <param name="cancellationToken">The cancellation token.</param>
++    /// <returns>The parsed manifest.</returns>
++    /// <exception cref="FileNotFoundException">No file exists at <paramref name="path"/>.</exception>
++    /// <exception cref="JsonException">The file is not valid JSON or is missing a required member.</exception>
++    /// <exception cref="InvalidOperationException">The file parsed but describes an unusable server.</exception>
++    public static async Task<ProvisionManifest> ReadAsync(string path, CancellationToken cancellationToken = default)
++    {
++        if (!File.Exists(path))
++        {
++            throw new FileNotFoundException($"No provision file exists at '{path}'.", path);
++        }
++
++        ProvisionManifest? manifest;
++        var stream = File.OpenRead(path);
++        await using (stream.ConfigureAwait(false))
++        {
++            manifest = await JsonSerializer.DeserializeAsync<ProvisionManifest>(stream, _serializerOptions, cancellationToken).ConfigureAwait(false);
++        }
++
++        if (manifest is null)
++        {
++            throw new InvalidOperationException($"The provision file '{path}' is empty.");
++        }
++
++        Validate(manifest);
++        return manifest;
++    }
++
++    private static void Validate(ProvisionManifest manifest)
++    {
++        if (string.IsNullOrWhiteSpace(manifest.Administrator.Name))
++        {
++            throw new InvalidOperationException("Administrator.Name must not be empty.");
++        }
++
++        if (string.IsNullOrEmpty(manifest.Administrator.Password))
++        {
++            throw new InvalidOperationException("Administrator.Password must not be empty.");
++        }
++
++        for (var i = 0; i < manifest.Libraries.Count; i++)
++        {
++            var library = manifest.Libraries[i];
++            if (string.IsNullOrWhiteSpace(library.Name))
++            {
++                throw new InvalidOperationException($"Libraries[{i}].Name must not be empty.");
++            }
++
++            if (library.Paths.Count == 0)
++            {
++                throw new InvalidOperationException($"Library '{library.Name}' must declare at least one path.");
++            }
++
++            foreach (var libraryPath in library.Paths)
++            {
++                if (string.IsNullOrWhiteSpace(libraryPath))
++                {
++                    throw new InvalidOperationException($"Library '{library.Name}' declares an empty path.");
++                }
++            }
++        }
++    }
++}
+--- /dev/null
++++ b/Jellyfin.Server/Provisioning/ServerProvisioner.cs
+@@ -0,0 +1,160 @@
++using System;
++using System.Collections.Generic;
++using System.IO;
++using System.Linq;
++using System.Threading.Tasks;
++using MediaBrowser.Common.Net;
++using MediaBrowser.Controller.Configuration;
++using MediaBrowser.Controller.Library;
++using MediaBrowser.Model.Configuration;
++using MediaBrowser.Model.Entities;
++using Microsoft.Extensions.Logging;
++
++namespace Jellyfin.Server.Provisioning;
++
++/// <summary>
++/// Applies a <see cref="ProvisionManifest"/> to a server that has not been set up yet, performing
++/// the same operations the startup wizard performs so the server can be brought up without a browser.
++/// </summary>
++public sealed class ServerProvisioner
++{
++    private readonly IServerConfigurationManager _configurationManager;
++    private readonly IUserManager _userManager;
++    private readonly ILibraryManager _libraryManager;
++    private readonly ILogger<ServerProvisioner> _logger;
++
++    /// <summary>
++    /// Initializes a new instance of the <see cref="ServerProvisioner"/> class.
++    /// </summary>
++    /// <param name="configurationManager">The server configuration manager.</param>
++    /// <param name="userManager">The user manager.</param>
++    /// <param name="libraryManager">The library manager.</param>
++    /// <param name="logger">The logger.</param>
++    public ServerProvisioner(
++        IServerConfigurationManager configurationManager,
++        IUserManager userManager,
++        ILibraryManager libraryManager,
++        ILogger<ServerProvisioner> logger)
++    {
++        _configurationManager = configurationManager;
++        _userManager = userManager;
++        _libraryManager = libraryManager;
++        _logger = logger;
++    }
++
++    /// <summary>
++    /// Provisions the server, or does nothing if it has already been set up.
++    /// </summary>
++    /// <param name="manifest">The manifest to apply.</param>
++    /// <returns>A task representing the provisioning operation.</returns>
++    public async Task ProvisionAsync(ProvisionManifest manifest)
++    {
++        ArgumentNullException.ThrowIfNull(manifest);
++
++        // Re-running provisioning against a configured server would reset the administrator's
++        // password, so configuration management that reruns on every rebuild gets a no-op instead.
++        if (_configurationManager.Configuration.IsStartupWizardCompleted)
++        {
++            _logger.LogInformation("This server has already been set up. Nothing to provision.");
++            return;
++        }
++
++        _logger.LogInformation("Provisioning server.");
++
++        // Checked before anything is written so a manifest naming a path that is not mounted yet
++        // leaves the server untouched and the run can simply be repeated.
++        EnsureLibraryPathsExist(manifest.Libraries);
++
++        ApplyServerConfiguration(manifest);
++        ApplyRemoteAccess(manifest.EnableRemoteAccess);
++        await ApplyAdministratorAsync(manifest.Administrator).ConfigureAwait(false);
++        await ApplyLibrariesAsync(manifest.Libraries).ConfigureAwait(false);
++
++        _configurationManager.Configuration.IsStartupWizardCompleted = true;
++        _configurationManager.SaveConfiguration();
++
++        _logger.LogInformation("Provisioning complete.");
++    }
++
++    private void ApplyServerConfiguration(ProvisionManifest manifest)
++    {
++        var configuration = _configurationManager.Configuration;
++
++        if (manifest.ServerName is not null)
++        {
++            configuration.ServerName = manifest.ServerName;
++        }
++
++        if (manifest.UICulture is not null)
++        {
++            configuration.UICulture = manifest.UICulture;
++        }
++
++        if (manifest.MetadataCountryCode is not null)
++        {
++            configuration.MetadataCountryCode = manifest.MetadataCountryCode;
++        }
++
++        if (manifest.PreferredMetadataLanguage is not null)
++        {
++            configuration.PreferredMetadataLanguage = manifest.PreferredMetadataLanguage;
++        }
++    }
++
++    private void ApplyRemoteAccess(bool? enableRemoteAccess)
++    {
++        if (enableRemoteAccess is null)
++        {
++            return;
++        }
++
++        var networkConfiguration = _configurationManager.GetNetworkConfiguration();
++        networkConfiguration.EnableRemoteAccess = enableRemoteAccess.Value;
++        _configurationManager.SaveConfiguration(NetworkConfigurationStore.StoreKey, networkConfiguration);
++    }
++
++    private async Task ApplyAdministratorAsync(ProvisionAdministrator administrator)
++    {
++        // InitializeAsync creates the default administrator the wizard then renames, which is
++        // still the only supported way to get the initial account and its permissions.
++        await _userManager.InitializeAsync().ConfigureAwait(false);
++        var user = _userManager.GetFirstUser()
++            ?? throw new InvalidOperationException("No user exists after initialization.");
++
++        if (!string.Equals(user.Username, administrator.Name, StringComparison.OrdinalIgnoreCase))
++        {
++            await _userManager.RenameUser(user.Id, user.Username, administrator.Name).ConfigureAwait(false);
++        }
++
++        await _userManager.ChangePassword(user.Id, administrator.Password).ConfigureAwait(false);
++
++        _logger.LogInformation("Created administrator {Name}.", administrator.Name);
++    }
++
++    private static void EnsureLibraryPathsExist(IReadOnlyList<ProvisionLibrary> libraries)
++    {
++        var missingPaths = libraries
++            .SelectMany(library => library.Paths)
++            .Where(path => !Directory.Exists(path))
++            .ToArray();
++
++        if (missingPaths.Length > 0)
++        {
++            throw new InvalidOperationException(
++                "These library paths do not exist: " + string.Join(", ", missingPaths));
++        }
++    }
++
++    private async Task ApplyLibrariesAsync(IReadOnlyList<ProvisionLibrary> libraries)
++    {
++        foreach (var library in libraries)
++        {
++            var libraryOptions = library.LibraryOptions ?? new LibraryOptions();
++            libraryOptions.PathInfos = Array.ConvertAll(library.Paths.ToArray(), path => new MediaPathInfo(path));
++
++            await _libraryManager.AddVirtualFolder(library.Name, library.CollectionType, libraryOptions, refreshLibrary: false).ConfigureAwait(false);
++
++            _logger.LogInformation("Created library {Name}.", library.Name);
++        }
++    }
++}
+--- /dev/null
++++ b/tests/Jellyfin.Server.Tests/Provisioning/ProvisionManifestReaderTests.cs
+@@ -0,0 +1,135 @@
++using System;
++using System.IO;
++using System.Text.Json;
++using System.Threading.Tasks;
++using Jellyfin.Server.Provisioning;
++using MediaBrowser.Model.Entities;
++using Xunit;
++
++namespace Jellyfin.Server.Tests.Provisioning;
++
++public sealed class ProvisionManifestReaderTests : IDisposable
++{
++    private readonly string _directory = Directory.CreateTempSubdirectory("provision-tests").FullName;
++
++    public void Dispose()
++    {
++        Directory.Delete(_directory, true);
++        GC.SuppressFinalize(this);
++    }
++
++    [Fact]
++    public async Task ReadAsync_FullManifest_ParsesEveryMember()
++    {
++        var manifest = await ReadAsync(
++            """
++            {
++              "ServerName": "provisioned",
++              "UICulture": "en-GB",
++              "MetadataCountryCode": "DK",
++              "PreferredMetadataLanguage": "da",
++              "EnableRemoteAccess": true,
++              "Administrator": { "Name": "admin", "Password": "hunter2" },
++              "Libraries": [
++                { "Name": "Movies", "CollectionType": "movies", "Paths": ["/media/movies"] }
++              ]
++            }
++            """);
++
++        Assert.Equal("provisioned", manifest.ServerName);
++        Assert.Equal("en-GB", manifest.UICulture);
++        Assert.Equal("DK", manifest.MetadataCountryCode);
++        Assert.Equal("da", manifest.PreferredMetadataLanguage);
++        Assert.True(manifest.EnableRemoteAccess);
++        Assert.Equal("admin", manifest.Administrator.Name);
++        Assert.Equal("hunter2", manifest.Administrator.Password);
++
++        var library = Assert.Single(manifest.Libraries);
++        Assert.Equal("Movies", library.Name);
++        Assert.Equal(CollectionTypeOptions.movies, library.CollectionType);
++        Assert.Equal(["/media/movies"], library.Paths);
++    }
++
++    [Fact]
++    public async Task ReadAsync_MinimalManifest_LeavesEverythingElseUnset()
++    {
++        var manifest = await ReadAsync(
++            """
++            { "Administrator": { "Name": "admin", "Password": "hunter2" } }
++            """);
++
++        Assert.Null(manifest.ServerName);
++        Assert.Null(manifest.UICulture);
++        Assert.Null(manifest.MetadataCountryCode);
++        Assert.Null(manifest.PreferredMetadataLanguage);
++        Assert.Null(manifest.EnableRemoteAccess);
++        Assert.Empty(manifest.Libraries);
++    }
++
++    [Fact]
++    public async Task ReadAsync_CamelCaseCommentsAndTrailingCommas_AreAccepted()
++    {
++        var manifest = await ReadAsync(
++            """
++            {
++              // the account the operator logs in with
++              "administrator": { "name": "admin", "password": "hunter2" },
++              "serverName": "provisioned",
++            }
++            """);
++
++        Assert.Equal("admin", manifest.Administrator.Name);
++        Assert.Equal("provisioned", manifest.ServerName);
++    }
++
++    [Fact]
++    public async Task ReadAsync_LibraryWithoutCollectionType_IsUntyped()
++    {
++        var manifest = await ReadAsync(
++            """
++            {
++              "Administrator": { "Name": "admin", "Password": "hunter2" },
++              "Libraries": [ { "Name": "Other", "Paths": ["/media/other"] } ]
++            }
++            """);
++
++        Assert.Null(Assert.Single(manifest.Libraries).CollectionType);
++    }
++
++    [Fact]
++    public async Task ReadAsync_MissingFile_Throws()
++    {
++        var path = Path.Combine(_directory, "absent.json");
++        await Assert.ThrowsAsync<FileNotFoundException>(() => ProvisionManifestReader.ReadAsync(path, TestContext.Current.CancellationToken));
++    }
++
++    [Theory]
++    [InlineData("{}")] // no administrator at all
++    [InlineData("""{ "Administrator": { "Name": "admin" } }""")] // no password
++    [InlineData("""{ "Administrator": { "Password": "hunter2" } }""")] // no name
++    [InlineData("not json")]
++    public async Task ReadAsync_UnusableJson_ThrowsJsonException(string content)
++    {
++        await Assert.ThrowsAsync<JsonException>(() => ReadAsync(content));
++    }
++
++    [Theory]
++    [InlineData("null", "empty")]
++    [InlineData("""{ "Administrator": { "Name": " ", "Password": "hunter2" } }""", "Administrator.Name")]
++    [InlineData("""{ "Administrator": { "Name": "admin", "Password": "" } }""", "Administrator.Password")]
++    [InlineData("""{ "Administrator": { "Name": "a", "Password": "b" }, "Libraries": [ { "Name": " ", "Paths": ["/m"] } ] }""", "Libraries[0].Name")]
++    [InlineData("""{ "Administrator": { "Name": "a", "Password": "b" }, "Libraries": [ { "Name": "Movies", "Paths": [] } ] }""", "at least one path")]
++    [InlineData("""{ "Administrator": { "Name": "a", "Password": "b" }, "Libraries": [ { "Name": "Movies", "Paths": [" "] } ] }""", "empty path")]
++    public async Task ReadAsync_UnusableManifest_ThrowsWithActionableMessage(string content, string expectedInMessage)
++    {
++        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => ReadAsync(content));
++        Assert.Contains(expectedInMessage, exception.Message, StringComparison.Ordinal);
++    }
++
++    private async Task<ProvisionManifest> ReadAsync(string content)
++    {
++        var path = Path.Combine(_directory, "provision.json");
++        await File.WriteAllTextAsync(path, content, TestContext.Current.CancellationToken);
++        return await ProvisionManifestReader.ReadAsync(path, TestContext.Current.CancellationToken);
++    }
++}
+--- /dev/null
++++ b/tests/Jellyfin.Server.Tests/Provisioning/ServerProvisionerTests.cs
+@@ -0,0 +1,177 @@
++using System;
++using System.Collections.Generic;
++using System.IO;
++using System.Threading.Tasks;
++using Jellyfin.Database.Implementations.Entities;
++using Jellyfin.Server.Provisioning;
++using MediaBrowser.Common.Net;
++using MediaBrowser.Controller.Configuration;
++using MediaBrowser.Controller.Library;
++using MediaBrowser.Model.Configuration;
++using MediaBrowser.Model.Entities;
++using Microsoft.Extensions.Logging.Abstractions;
++using Moq;
++using Xunit;
++
++namespace Jellyfin.Server.Tests.Provisioning;
++
++public sealed class ServerProvisionerTests
++{
++    private readonly ServerConfiguration _serverConfiguration = new();
++    private readonly NetworkConfiguration _networkConfiguration = new();
++    private readonly Mock<IServerConfigurationManager> _configurationManager = new(MockBehavior.Loose);
++    private readonly Mock<IUserManager> _userManager = new(MockBehavior.Loose);
++    private readonly Mock<ILibraryManager> _libraryManager = new(MockBehavior.Loose);
++    private readonly User _firstUser = new("MyJellyfinUser", "provider", "resetProvider");
++
++    public ServerProvisionerTests()
++    {
++        _configurationManager.SetupGet(m => m.Configuration).Returns(_serverConfiguration);
++        _configurationManager
++            .Setup(m => m.GetConfiguration(NetworkConfigurationStore.StoreKey))
++            .Returns(_networkConfiguration);
++        _userManager.Setup(m => m.GetFirstUser()).Returns(_firstUser);
++    }
++
++    private ServerProvisioner Provisioner => new(
++        _configurationManager.Object,
++        _userManager.Object,
++        _libraryManager.Object,
++        NullLogger<ServerProvisioner>.Instance);
++
++    [Fact]
++    public async Task ProvisionAsync_AlreadySetUp_DoesNothing()
++    {
++        _serverConfiguration.IsStartupWizardCompleted = true;
++
++        await Provisioner.ProvisionAsync(Manifest());
++
++        _userManager.Verify(m => m.InitializeAsync(), Times.Never);
++        _userManager.Verify(m => m.ChangePassword(It.IsAny<Guid>(), It.IsAny<string>()), Times.Never);
++        _configurationManager.Verify(m => m.SaveConfiguration(), Times.Never);
++    }
++
++    [Fact]
++    public async Task ProvisionAsync_CreatesAdministratorAndCompletesWizard()
++    {
++        var manifest = Manifest();
++        manifest.Administrator.Name = "admin";
++        manifest.Administrator.Password = "hunter2";
++
++        await Provisioner.ProvisionAsync(manifest);
++
++        _userManager.Verify(m => m.InitializeAsync(), Times.Once);
++        _userManager.Verify(m => m.RenameUser(_firstUser.Id, "MyJellyfinUser", "admin"), Times.Once);
++        _userManager.Verify(m => m.ChangePassword(_firstUser.Id, "hunter2"), Times.Once);
++        Assert.True(_serverConfiguration.IsStartupWizardCompleted);
++        _configurationManager.Verify(m => m.SaveConfiguration(), Times.Once);
++    }
++
++    [Fact]
++    public async Task ProvisionAsync_AdministratorKeepsDefaultName_DoesNotRename()
++    {
++        var manifest = Manifest();
++        manifest.Administrator.Name = "MyJellyfinUser";
++
++        await Provisioner.ProvisionAsync(manifest);
++
++        _userManager.Verify(m => m.RenameUser(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>()), Times.Never);
++        _userManager.Verify(m => m.ChangePassword(_firstUser.Id, It.IsAny<string>()), Times.Once);
++    }
++
++    [Fact]
++    public async Task ProvisionAsync_SetMembers_AreApplied()
++    {
++        var manifest = Manifest();
++        manifest.ServerName = "provisioned";
++        manifest.UICulture = "en-GB";
++        manifest.MetadataCountryCode = "DK";
++        manifest.PreferredMetadataLanguage = "da";
++        manifest.EnableRemoteAccess = true;
++
++        await Provisioner.ProvisionAsync(manifest);
++
++        Assert.Equal("provisioned", _serverConfiguration.ServerName);
++        Assert.Equal("en-GB", _serverConfiguration.UICulture);
++        Assert.Equal("DK", _serverConfiguration.MetadataCountryCode);
++        Assert.Equal("da", _serverConfiguration.PreferredMetadataLanguage);
++        Assert.True(_networkConfiguration.EnableRemoteAccess);
++        _configurationManager.Verify(m => m.SaveConfiguration(NetworkConfigurationStore.StoreKey, _networkConfiguration), Times.Once);
++    }
++
++    [Fact]
++    public async Task ProvisionAsync_OmittedMembers_LeaveDefaultsAlone()
++    {
++        _serverConfiguration.ServerName = "existing";
++        _serverConfiguration.UICulture = "en-US";
++        _serverConfiguration.MetadataCountryCode = "US";
++        _serverConfiguration.PreferredMetadataLanguage = "en";
++
++        await Provisioner.ProvisionAsync(Manifest());
++
++        Assert.Equal("existing", _serverConfiguration.ServerName);
++        Assert.Equal("en-US", _serverConfiguration.UICulture);
++        Assert.Equal("US", _serverConfiguration.MetadataCountryCode);
++        Assert.Equal("en", _serverConfiguration.PreferredMetadataLanguage);
++        _configurationManager.Verify(
++            m => m.SaveConfiguration(NetworkConfigurationStore.StoreKey, It.IsAny<NetworkConfiguration>()),
++            Times.Never);
++    }
++
++    [Fact]
++    public async Task ProvisionAsync_Libraries_AreCreatedWithTheirPaths()
++    {
++        var mediaPath = Directory.CreateTempSubdirectory("provision-media").FullName;
++        try
++        {
++            var manifest = Manifest();
++            manifest.Libraries =
++            [
++                new ProvisionLibrary
++                {
++                    Name = "Movies",
++                    CollectionType = CollectionTypeOptions.movies,
++                    Paths = [mediaPath]
++                }
++            ];
++
++            await Provisioner.ProvisionAsync(manifest);
++
++            _libraryManager.Verify(
++                m => m.AddVirtualFolder(
++                    "Movies",
++                    CollectionTypeOptions.movies,
++                    It.Is<LibraryOptions>(o => o.PathInfos.Length == 1 && o.PathInfos[0].Path == mediaPath),
++                    false),
++                Times.Once);
++        }
++        finally
++        {
++            Directory.Delete(mediaPath, true);
++        }
++    }
++
++    [Fact]
++    public async Task ProvisionAsync_LibraryPathDoesNotExist_FailsBeforeChangingAnything()
++    {
++        var missingPath = Path.Combine(Path.GetTempPath(), $"provision-missing-{Guid.NewGuid()}");
++        var manifest = Manifest();
++        manifest.Libraries = [new ProvisionLibrary { Name = "Movies", Paths = [missingPath] }];
++
++        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
++            () => Provisioner.ProvisionAsync(manifest));
++
++        Assert.Contains(missingPath, exception.Message, StringComparison.Ordinal);
++        Assert.False(_serverConfiguration.IsStartupWizardCompleted);
++        _userManager.Verify(m => m.InitializeAsync(), Times.Never);
++        _libraryManager.Verify(
++            m => m.AddVirtualFolder(It.IsAny<string>(), It.IsAny<CollectionTypeOptions?>(), It.IsAny<LibraryOptions>(), It.IsAny<bool>()),
++            Times.Never);
++    }
++
++    private static ProvisionManifest Manifest() => new()
++    {
++        Administrator = new ProvisionAdministrator { Name = "admin", Password = "hunter2" },
++        Libraries = new List<ProvisionLibrary>()
++    };
++}

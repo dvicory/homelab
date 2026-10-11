@@ -91,5 +91,5 @@ Revisit this decision if one or more of these become true:
 
 ## References
 
-- OpenSpec change: [disposable-control-plane-recovery](../../../openspec/changes/disposable-control-plane-recovery/proposal.md).
+- OpenSpec change: [disposable-control-plane-recovery](../../../openspec/changes/archive/2026-09-27-disposable-control-plane-recovery/proposal.md).
 - Related ADR: [ADR-0002](0002-declarative-application-delivery.md).

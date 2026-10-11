@@ -54,6 +54,18 @@ in
         // {
           displayName = "Argo CD";
         };
+      jellyfin =
+        (route "jellyfin" "jellyfin" "jellyfin" 8096 "native" "private" {
+          "app.kubernetes.io/controller" = "main";
+          "app.kubernetes.io/instance" = "jellyfin";
+          "app.kubernetes.io/name" = "jellyfin";
+        })
+        // {
+          timeouts = {
+            request = "0s";
+            backendRequest = "0s";
+          };
+        };
       idm =
         (route "idm" "identity" "kanidm" 443 "native" "public" {
           "app.kubernetes.io/name" = "kanidm";
@@ -71,6 +83,8 @@ in
       cert-manager
       cluster-dns
       retained-storage
+      media
+      jellyfin
       gateway
       identity
     ];

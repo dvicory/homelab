@@ -74,7 +74,10 @@ The state root carries a marker that exists only on the persistent side.
 Retained directories are created only when the marker is present, so a
 missing or unmounted root leaves workloads unable to start instead of
 initializing data in its place. Creation never recurses, and an existing
-directory with the wrong owner or mode is reported, not repaired.
+directory with the wrong owner or mode is reported, not repaired. The
+creating hook orders only its own Application's waves: another Application's
+consumer may be declared while it refuses, but cannot start against a missing
+directory. Each sync replaces the hook Job without removing retained data.
 
 Changing how a runtime Secret is delivered, such as moving decryption into
 the cluster, must first give the new writer ownership of the same values and
