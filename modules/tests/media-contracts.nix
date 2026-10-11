@@ -270,6 +270,62 @@
           ) true
         );
       mediaBase = mediaWith { };
+      # Arr, Prowlarr and SABnzbd have no login of their own, so any route to
+      # them, including an extra one, must be an administrator route.
+      mediaWithRoutes =
+        routes:
+        builtins.tryEval (
+          builtins.deepSeq (mediaManifests (
+            fixtureCluster
+            // {
+              routes = fixtureCluster.routes // routes;
+            }
+          )) true
+        );
+      withAuth = auth: route: route // { inherit auth; };
+      nativeRouteRejected = lib.all (
+        name: !(mediaWithRoutes { ${name} = withAuth "native" fixtureCluster.routes.${name}; }).success
+      ) [ "sonarr" "prowlarr" "sabnzbd" ];
+      extraRoute =
+        auth:
+        (mediaWithRoutes {
+          radarr-uhd-extra = withAuth auth (fixtureCluster.routes.sonarr // { service = "radarr-uhd"; });
+        }).success;
+      extraNativeRouteRejected = !(extraRoute "native");
+      extraAdminRouteAccepted = extraRoute "admin";
+      # The Gateway policy of such a route must not also admit the whole
+      # media namespace.
+      namespaceWideRouteRejected = lib.all (
+        name:
+        !(mediaWithRoutes {
+          ${name} = fixtureCluster.routes.${name} // {
+            sameNamespaceIngress = true;
+          };
+        }).success
+      ) [ "radarr" "sonarr" "prowlarr" "sabnzbd" ];
+      # Ingress and client configuration for every instance, including those
+      # without a route, and for an instance without a Seerr role.
+      ingressFixture =
+        overrides:
+        let
+          target = fixtureCluster // {
+            settings = lib.recursiveUpdate fixtureCluster.settings {
+              kubernetes.services.media = overrides;
+            };
+          };
+        in
+        {
+          ingress = (mediaManifests target).applications.media-ingress.objects;
+          configuration =
+            (config.den.aspects.kubernetes.services.media.configuration."k8s-manifests" {
+              cluster = target;
+              computeResources = fixtureCompute;
+            }).applications.media-configuration.objects;
+        };
+      ingressFixtures = {
+        roles = ingressFixture { };
+        animeWithoutRole = ingressFixture { sonarr.anime.role = null; };
+      };
       mediaNoStandard = configurationWith {
         radarr.radarr.role = null;
         sonarr.sonarr.role = null;
@@ -374,6 +430,13 @@
           runtimeSecrets = fixtureRuntimeSecrets;
           inherit configurationPhases;
           positive = mediaBase.success;
+          inherit
+            nativeRouteRejected
+            extraNativeRouteRejected
+            extraAdminRouteAccepted
+            namespaceWideRouteRejected
+            ingressFixtures
+            ;
           seerrRoleAccepted = (configurationWith { }).success;
           noStandardRejected = !mediaNoStandard.success;
           ambiguousStandardRejected = !mediaAmbiguousStandard.success;
@@ -536,7 +599,29 @@
             assert fixture["nestedRootRejected"]
             assert fixture["oneSidedSharingRejected"]
             assert fixture["explicitRootSharingAccepted"]
+            assert fixture["nativeRouteRejected"]
+            assert fixture["extraNativeRouteRejected"]
+            assert fixture["extraAdminRouteAccepted"]
             assert storage["mediaInstances"] == {"radarr": ["radarr"], "sonarr": ["sonarr"]}
+
+            # Browser sign-in to Arr, Prowlarr and SABnzbd is the Gateway's
+            # Kanidm sign-in only: each app sits behind an admin route and
+            # asks for no login of its own. The API keys stay.
+            routes = {r["metadata"]["name"]: r for r in resources if r["kind"] == "HTTPRoute"}
+            policies = {p["spec"]["targetRefs"][0]["name"] for p in resources if p["kind"] == "SecurityPolicy"}
+            for app, port in (("radarr", 7878), ("sonarr", 8989), ("prowlarr", 9696), ("sabnzbd", 8080)):
+                backend, = routes[app]["spec"]["rules"][0]["backendRefs"]
+                assert (backend["namespace"], backend["name"], int(backend["port"])) == ("media", app, port), app
+                assert app in policies, app
+            for app in ("radarr", "sonarr", "prowlarr"):
+                env = {
+                    item["name"]: item
+                    for item in find("Deployment", app)["spec"]["template"]["spec"]["containers"][0]["env"]
+                }
+                prefix = app.upper()
+                assert env[prefix + "__AUTH__METHOD"]["value"] == "External", app
+                assert env[prefix + "__AUTH__REQUIRED"]["value"] == "Enabled", app
+                assert env[prefix + "__AUTH__APIKEY"]["valueFrom"]["secretKeyRef"]["key"] == prefix + "_API_KEY", app
 
             def validate_instance_group(kind, instances):
                 expected_names = {"radarr", "uhd"} if kind == "radarr" else {"sonarr", "anime"}
@@ -648,8 +733,6 @@
 
             runtime_values = {
                 "SABNZBD_API_KEY": "api-key-fixture",
-                "SABNZBD_USERNAME": "admin-fixture",
-                "SABNZBD_PASSWORD": "admin-password-fixture",
                 "USENET_FIXTURE_USERNAME": "provider-user-fixture",
                 "USENET_FIXTURE_PASSWORD": "provider-password-fixture",
             }
@@ -824,6 +907,161 @@
                     ["git", "-C", str(trash_repo), "rev-parse", "HEAD"], text=True
                 ).strip()
                 assert synthetic_head != source["revision"]
+
+            # Radarr, Sonarr, Prowlarr and SABnzbd have no login of their own,
+            # and the Servarr UI hands out the API key. So what reaches their
+            # ports must be exactly the Gateway proxy plus the in-cluster
+            # clients that the media configuration points at them. Derive who
+            # calls whom from the rendered configuration, then compare it with
+            # what every NetworkPolicy selecting each app admits.
+            from urllib.parse import urlsplit
+
+            def endpoint(url):
+                parts = urlsplit(url)
+                service, namespace, _ = parts.hostname.split(".", 2)
+                assert namespace == "media", url
+                return service, int(parts.port)
+
+            def declared_calls(configuration):
+                """(client workload, server Service, port) for each in-cluster call."""
+                config = yaml.load(configuration["config.yml"], Loader=ConfigarrLoader)
+                seerr = json.loads(configuration["seerr.json"])
+                calls = set()
+                for kind in ("radarr", "sonarr"):
+                    for instance in config[kind].values():
+                        arr, port = endpoint(instance["base_url"])
+                        calls.add(("media-configarr", arr, port))
+                        # The Arr instance calls its download client.
+                        for client in instance["download_clients"]["data"]:
+                            host, namespace, _ = client["fields"]["host"].split(".", 2)
+                            assert namespace == "media", client
+                            calls.add((arr, host, int(client["fields"]["port"])))
+                prowlarr = config["prowlarr"]["main"]
+                indexer, port = endpoint(prowlarr["base_url"])
+                calls.add(("media-configarr", indexer, port))
+                for application in prowlarr["applications"]["data"]:
+                    # Prowlarr pushes indexers to the Arr instance, which then
+                    # searches through Prowlarr.
+                    arr, arr_port = endpoint(application["fields"]["baseUrl"])
+                    calls.add((indexer, arr, arr_port))
+                    calls.add((arr, *endpoint(application["fields"]["prowlarrUrl"])))
+                for kind in ("radarr", "sonarr"):
+                    for fact in seerr["arr"][kind].values():
+                        # The helper reads the Arr instance and registers it in
+                        # Seerr, which then calls it.
+                        arr, port = endpoint(fact["url"])
+                        calls.add(("media-config-seerr", arr, port))
+                        calls.add(("seerr", arr, port))
+                return calls
+
+            def pod_templates(objects):
+                templates = {}
+                for item in objects:
+                    if item["metadata"].get("namespace") != "media":
+                        continue
+                    spec = item.get("spec", {})
+                    if item["kind"] == "CronJob":
+                        spec = spec["jobTemplate"]["spec"]
+                    elif item["kind"] not in ("Deployment", "StatefulSet", "Job"):
+                        continue
+                    templates.setdefault(item["metadata"]["name"], []).append(spec["template"]["metadata"]["labels"])
+                return templates
+
+            def app_labels(name):
+                return {"app.kubernetes.io/controller": "main", "app.kubernetes.io/instance": name, "app.kubernetes.io/name": name}
+
+            gateway_peer = {
+                "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "gateway"}},
+                "podSelector": {"matchLabels": {
+                    "gateway.envoyproxy.io/owning-gateway-name": "household",
+                    "gateway.envoyproxy.io/owning-gateway-namespace": "gateway",
+                }},
+            }
+
+            def selects(selector, labels):
+                return all(labels.get(key) == value for key, value in selector.items())
+
+            def admitted(server, policies, templates):
+                """(workload or "gateway", port or None for every port) that reach the server's pods."""
+                selecting = [
+                    policy for policy in policies
+                    if policy["metadata"]["namespace"] == "media"
+                    and any(selects(policy["spec"]["podSelector"]["matchLabels"], labels) for labels in templates[server])
+                ]
+                assert selecting, f"{server}: no NetworkPolicy selects it, so every pod reaches it"
+                result = set()
+                for policy in selecting:
+                    name = policy["metadata"]["name"]
+                    assert set(policy["spec"]["podSelector"]) == {"matchLabels"}, name
+                    assert "Ingress" in policy["spec"]["policyTypes"], name
+                    for rule in policy["spec"].get("ingress", []):
+                        assert "from" in rule, f"{name} admits every source"
+                        ports = rule.get("ports")
+                        for port in ports or []:
+                            assert port.get("protocol", "TCP") == "TCP" and "endPort" not in port, name
+                        port_values = [None] if ports is None else [int(port["port"]) for port in ports]
+                        for peer in rule["from"]:
+                            if peer == gateway_peer:
+                                who = {"gateway"}
+                            else:
+                                assert set(peer) == {"podSelector"} and set(peer["podSelector"]) == {"matchLabels"}, \
+                                    f"{name}: {peer} admits more than named media workloads"
+                                who = {
+                                    workload for workload, labels in templates.items()
+                                    if any(selects(peer["podSelector"]["matchLabels"], each) for each in labels)
+                                }
+                                assert who, f"{name}: {peer} selects no media workload"
+                            result |= {(workload, port) for workload in who for port in port_values}
+                return result
+
+            # Production: the committed manifests, Gateway policies included.
+            templates = pod_templates(resources)
+            # The fixtures below rely on this app-template labelling.
+            for item in resources:
+                if item["kind"] in ("Deployment", "StatefulSet") and item["metadata"].get("namespace") == "media":
+                    name = item["metadata"]["name"]
+                    assert selects(app_labels(name), item["spec"]["template"]["metadata"]["labels"]), name
+            calls = declared_calls(find("ConfigMap", "media-configuration")["data"])
+            loginless = {"radarr", "sonarr", "prowlarr", "sabnzbd"}
+            assert {server for _, server, _ in calls} == loginless, calls
+            media_policies = [r for r in resources if r["kind"] == "NetworkPolicy" and r["metadata"]["namespace"] == "media"]
+            routed = {
+                backend["name"]
+                for route in routes.values()
+                for rule in route["spec"]["rules"]
+                for backend in rule["backendRefs"]
+                if backend.get("namespace") == "media"
+            }
+            assert loginless <= routed
+            matrix = {}
+            for server in sorted(loginless):
+                expected = {(client, port) for client, target, port in calls if target == server} | {("gateway", None)}
+                actual = admitted(server, media_policies, templates)
+                assert actual == expected, (server, sorted(actual, key=str), sorted(expected, key=str))
+                matrix[server] = sorted(client for client, _ in actual)
+            print("media ingress:", json.dumps(matrix, sort_keys=True))
+
+            # Fixtures: instances without a route still admit only their
+            # clients, and Seerr reaches only instances with a Seerr role.
+            assert fixture["namespaceWideRouteRejected"]
+            for case, data in fixture["ingressFixtures"].items():
+                configuration = next(
+                    item for item in data["configuration"]
+                    if item["kind"] == "ConfigMap" and item["metadata"]["name"] == "media-configuration"
+                )["data"]
+                calls = declared_calls(configuration)
+                servers = {"radarr", "radarr-uhd", "sonarr", "sonarr-anime", "prowlarr", "sabnzbd"}
+                assert {server for _, server, _ in calls} == servers, (case, calls)
+                assert (("seerr", "sonarr-anime", 8989) in calls) == (case == "roles"), case
+                templates = pod_templates(data["configuration"])
+                assert set(templates) == {"media-configarr", "media-config-seerr"}, case
+                for name in servers | {"seerr"}:
+                    templates[name] = [app_labels(name)]
+                assert {item["kind"] for item in data["ingress"]} == {"NetworkPolicy"}
+                for server in sorted(servers):
+                    expected = {(client, port) for client, target, port in calls if target == server}
+                    actual = admitted(server, data["ingress"], templates)
+                    assert actual == expected, (case, server, sorted(actual), sorted(expected))
             PY
             touch "$out"
           '';

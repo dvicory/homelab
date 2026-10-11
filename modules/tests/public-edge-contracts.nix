@@ -281,19 +281,25 @@ let
       && policy.spec.podSelector.matchLabels == route.backendPodSelector
       && policy.spec.policyTypes == [ "Ingress" ]
       &&
-        policy.spec.ingress == [
-          {
+        policy.spec.ingress
+        ==
+          lib.optional route.sameNamespaceIngress {
             from = [
               {
                 namespaceSelector.matchLabels."kubernetes.io/metadata.name" = route.namespace;
               }
             ];
           }
-          {
-            from = [ proxySelector ];
-          }
-        ]
-    ) routeNames;
+          ++ [
+            {
+              from = [ proxySelector ];
+            }
+          ]
+    ) routeNames
+    # Both shapes are in use: a route that leaves its in-cluster clients to
+    # the backend owner admits only the proxy.
+    && lib.any (route: route.sameNamespaceIngress) (builtins.attrValues inventory.routes)
+    && lib.any (route: !route.sameNamespaceIngress) (builtins.attrValues inventory.routes);
   sameNamespaceCluster = testCluster // {
     routes = routes // {
       idm = routes.idm // {

@@ -86,6 +86,33 @@ except (URLError, OSError):
     return raw if binary else (json.loads(raw) if raw else None)
 
 
+def page_from_container(docker, client, endpoint, path, headers):
+    """GET a browser page without following redirects; return status, Location and body."""
+    result = json.loads(docker("exec", client, "/lsiopy/bin/python", "-c", '''
+import base64, json, sys
+from urllib.error import HTTPError, URLError
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+class Keep(HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+value = json.loads(sys.argv[1])
+try:
+    try:
+        response = build_opener(ProxyHandler({}), Keep()).open(Request(value["url"], headers=value["headers"]), timeout=15)
+    except HTTPError as error:
+        response = error
+    with response:
+        print(json.dumps({"status": response.status, "location": response.headers.get("Location"),
+                          "body": base64.b64encode(response.read()).decode()}))
+except (URLError, OSError):
+    print(json.dumps({"transportError": True}))
+''', json.dumps({"url": f"http://{endpoint}{path}", "headers": headers})))
+    if result.get("transportError"):
+        raise OSError("isolated browser transport unavailable")
+    result["body"] = base64.b64decode(result["body"])
+    return result
+
+
 def ready(request, port, path, *, key=None):
     deadline = time.monotonic() + 180
     while time.monotonic() < deadline:
@@ -238,7 +265,16 @@ def main():
     keys = {app: secrets.token_hex(32) for app in ("radarr", "sonarr", "prowlarr", "seerr")}
     sab_init = pods["sabnzbd"]["initContainers"][0]["command"][-1]
     runtime = {app.upper() + "_API_KEY": value for app, value in keys.items()}
-    runtime.update({"SABNZBD_API_KEY": secrets.token_hex(32), "SABNZBD_USERNAME": secrets.token_hex(24), "SABNZBD_PASSWORD": secrets.token_hex(24)})
+    runtime["SABNZBD_API_KEY"] = secrets.token_hex(32)
+    # Each admin app sits behind its Gateway route; its own login is off.
+    gateway_hosts = {}
+    for app in ("radarr", "sonarr", "prowlarr", "sabnzbd"):
+        route = manifest("identity-gateway", f"HTTPRoute-{app}.yaml")["spec"]
+        backend, = route["rules"][0]["backendRefs"]
+        require((backend["namespace"], backend["name"]) == ("media", app), f"{app} route does not reach the {app} Service")
+        require(manifest("identity-gateway", f"SecurityPolicy-{app}-admin.yaml")["spec"]["targetRefs"][0]["name"] == app,
+                f"{app} route has no Kanidm sign-in policy")
+        gateway_hosts[app] = route["hostnames"][0]
     for name in json.loads(re.search(r"for key in (\[.*?\]):", sab_init).group(1)):
         runtime.setdefault(name, "synthetic-provider-credential")
     network = "homelab-media-live-" + secrets.token_hex(6)
@@ -295,6 +331,14 @@ def main():
             # daemons retain production entrypoints, IDs and supplemental groups.
             keeper = run("fixture", apps["sabnzbd"]["image"], "-v", volume + ":/fixture", "--entrypoint", "/lsiopy/bin/python", argv=("-c", "import time; time.sleep(86400)"), detached=True)
             request = partial(request_from_container, docker, keeper)
+            page = partial(page_from_container, docker, keeper)
+
+            def gateway_headers(app):
+                # The HTTP shape of a request the Gateway forwards after Kanidm
+                # sign-in: the route's public Host and an outside client in
+                # X-Forwarded-For. Who may reach the port is the NetworkPolicy's
+                # job, proven by gateway-runtime, not by this Docker network.
+                return {"Host": gateway_hosts[app], "X-Forwarded-For": "203.0.113.7", "X-Forwarded-Proto": "https"}
             setup = {
                 "identities": identities, "media_gid": media_gid,
                 "directories": [policy["arr"][app]["standard"]["root"].removeprefix("/data/") for app in ("radarr", "sonarr")]
@@ -367,6 +411,20 @@ for name in ['seerr-drift-inputs', 'seerr-failure-secrets']:
                 start(app, port)
                 ready(request, ports[app], f"/api/v{1 if app == 'prowlarr' else 3}/system/status", key=keys[app])
                 denied(lambda app=app: api(app, "/system/status", key=keys["sonarr" if app != "sonarr" else "radarr"]))
+                # Browser sign-in is the Gateway's alone. A request shaped like
+                # one the Gateway forwards gets the app shell, not /login, and
+                # the browser receives the API key; the API itself still
+                # refuses a request without a key.
+                version = 1 if app == "prowlarr" else 3
+                require(api(app, "/system/status")["authentication"] == "external", f"{app} does not use External authentication")
+                shell = page(ports[app], "/", gateway_headers(app))
+                require(shell["status"] == 200 and not shell["location"] and b"<html" in shell["body"].lower(),
+                        f"{app} web UI asked for its own login (HTTP {shell['status']} -> {shell['location']})")
+                initialize = page(ports[app], "/initialize.json", gateway_headers(app))
+                require(initialize["status"] == 200 and json.loads(initialize["body"])["apiKey"] == keys[app],
+                        f"{app} web UI did not start without a login")
+                require(page(ports[app], f"/api/v{version}/system/status", gateway_headers(app))["status"] == 401,
+                        f"{app} API answered without a key")
             unmanaged_application = api("prowlarr", "/applications", "POST", {
                 "name": "UI-owned Radarr", "implementation": "Radarr", "configContract": "RadarrSettings", "syncLevel": "addOnly", "tags": [],
                 "fields": [{"name": "prowlarrUrl", "value": "http://prowlarr.media.svc:9696"}, {"name": "baseUrl", "value": policy["arr"]["radarr"]["standard"]["url"]}, {"name": "apiKey", "value": keys["radarr"]}],
@@ -408,6 +466,17 @@ for name in ['seerr-drift-inputs', 'seerr-failure-secrets']:
                 actual_dir = one(sab_config["categories"], "name", category)["dir"]
                 require(actual_dir == category, f"SAB category {category!r}: native directory {actual_dir!r}, expected {category!r}")
             denied(lambda: request(ports["sabnzbd"], "/api?" + urlencode({"mode": "get_config", "output": "json", "apikey": keys["radarr"]})), statuses=(403,))
+            # SABnzbd's web login is off; the Gateway's Kanidm sign-in is the only one.
+            require(sab_config["misc"]["username"] == "" and sab_config["misc"]["password"] == "", "SAB still has a web login")
+            require(int(sab_config["misc"]["inet_exposure"]) == 4, "SAB does not give Gateway clients its full web interface")
+            sab_home = page(ports["sabnzbd"], "/", gateway_headers("sabnzbd"))
+            require("/login" not in (sab_home["location"] or ""), f"SAB web UI asked for its own login (HTTP {sab_home['status']})")
+            for headers in (gateway_headers("sabnzbd"), {}):
+                # Through the Gateway's Host and the internal Service name alike.
+                sab_main = page(ports["sabnzbd"], "/?skip_wizard=1", headers)
+                require(sab_main["status"] == 200 and b"<html" in sab_main["body"].lower(), f"SAB web UI did not open without a login (HTTP {sab_main['status']})")
+            require(page(ports["sabnzbd"], "/?skip_wizard=1", {"Host": "rebind.example.test"})["status"] == 403, "SAB accepted an unlisted Host without a login")
+            require(page(ports["sabnzbd"], "/api?" + urlencode({"mode": "queue", "output": "json"}), gateway_headers("sabnzbd"))["status"] == 403, "SAB API answered without a key")
 
             def lock_held(name="seerr"):
                 return docker("exec", keeper, "/lsiopy/bin/python", "-c", '''import fcntl, sys
@@ -456,7 +525,7 @@ with open('/fixture/coordination/' + sys.argv[1] + '.lock', 'r') as lock:
                 client = one(call("/downloadclient"), "name", "SABnzbd (Homelab)")
                 require(client["implementation"] == "Sabnzbd" and client["enable"] is True, "native SAB client not enabled")
                 values = fields(client)
-                expected = {"host": policy["sab"]["host"], "port": policy["sab"]["port"], "useSsl": False, "urlBase": "", "username": runtime["SABNZBD_USERNAME"], "movieCategory" if app == "radarr" else "tvCategory": desired["category"]}
+                expected = {"host": policy["sab"]["host"], "port": policy["sab"]["port"], "useSsl": False, "urlBase": "", "username": "", "movieCategory" if app == "radarr" else "tvCategory": desired["category"]}
                 require(all(values.get(name) == value for name, value in expected.items()), "native SAB mapping differs in fields: " + ", ".join(name for name, value in expected.items() if values.get(name) != value))
                 # Native provider APIs redact credentials. Prove their use by
                 # the real handshake and denial with another instance's key.
@@ -613,7 +682,7 @@ console.log(queued);''', waiter_pid)
             verify_arr("sonarr")
             rotated_baseline = arr_snapshot()
             docker("rm", "-f", containers["sabnzbd"])
-            runtime["SABNZBD_USERNAME"] = "rotated-" + secrets.token_hex(12)
+            runtime["SABNZBD_API_KEY"] = secrets.token_hex(32)
             reconcile_configarr(failure=True)
             require(arr_snapshot() == rotated_baseline, "failed SAB handshake persisted rotated credentials")
             initialize_sab("sab-init-rotated")

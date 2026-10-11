@@ -156,17 +156,24 @@
           object "networking.k8s.io/v1" "NetworkPolicy" "gateway-${name}-backend-ingress" route.namespace {
             podSelector.matchLabels = route.backendPodSelector;
             policyTypes = [ "Ingress" ];
-            ingress = [
-              { from = [ { namespaceSelector.matchLabels."kubernetes.io/metadata.name" = route.namespace; } ]; }
-              {
-                from = [
-                  {
-                    namespaceSelector.matchLabels."kubernetes.io/metadata.name" = namespace;
-                    podSelector = proxySelector;
-                  }
-                ];
+            # This policy isolates the backend, so by default it keeps the
+            # backend open to its own namespace, where its in-cluster clients
+            # usually run. A route with sameNamespaceIngress = false leaves
+            # those clients to the backend owner's own policy.
+            ingress =
+              lib.optional route.sameNamespaceIngress {
+                from = [ { namespaceSelector.matchLabels."kubernetes.io/metadata.name" = route.namespace; } ];
               }
-            ];
+              ++ [
+                {
+                  from = [
+                    {
+                      namespaceSelector.matchLabels."kubernetes.io/metadata.name" = namespace;
+                      podSelector = proxySelector;
+                    }
+                  ];
+                }
+              ];
           }
         ) routeSet;
       routes = routeObjects publishedRoutes;

@@ -1,0 +1,34 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: media-sonarr-ingress
+  namespace: media
+spec:
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: media-configarr
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/controller: main
+              app.kubernetes.io/instance: prowlarr
+              app.kubernetes.io/name: prowlarr
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/controller: main
+              app.kubernetes.io/instance: seerr
+              app.kubernetes.io/name: seerr
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: media-config-seerr
+      ports:
+        - port: 8989
+          protocol: TCP
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/controller: main
+      app.kubernetes.io/instance: sonarr
+      app.kubernetes.io/name: sonarr
+  policyTypes:
+    - Ingress

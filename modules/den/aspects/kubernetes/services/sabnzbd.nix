@@ -45,11 +45,9 @@ let
   };
   mediaGid = fleetGroups.media.gid;
   inherit (lib) mkOption types;
-  ownSecretKeys = [
-    "SABNZBD_API_KEY"
-    "SABNZBD_USERNAME"
-    "SABNZBD_PASSWORD"
-  ];
+  # SABnzbd has no web login: the Gateway's Kanidm sign-in is the only one.
+  # The API key stays for Radarr, Sonarr and Configarr.
+  ownSecretKeys = [ "SABNZBD_API_KEY" ];
   providerEnvName = name: lib.toUpper (builtins.replaceStrings [ "-" "." ] [ "_" "_" ] name);
   providerSecretKeys =
     providers:
@@ -126,10 +124,7 @@ in
     let
       settings = cluster.settings.kubernetes.services.media;
       providers = checkedProviders settings.sabnzbd.providers;
-      generators = {
-        SABNZBD_API_KEY = "api-key";
-        SABNZBD_PASSWORD = "alnum-no-newline";
-      };
+      generators.SABNZBD_API_KEY = "api-key";
     in
     {
       # LinuxServer PUID/PGID are guest-local; media is a supplemental capability.
@@ -180,11 +175,18 @@ in
         path = '/config/sabnzbd.ini'
         config = ConfigObj(path, encoding='utf-8')
         misc = config.setdefault('misc', {})
+        # Empty username and password turn off SABnzbd's web login; the
+        # Gateway's Kanidm sign-in is the only one. /api still needs api_key.
+        # With no login, SABnzbd checks the Host header against
+        # host_whitelist (DNS-rebinding guard). inet_exposure 4 gives the full
+        # web interface to every address, including Gateway requests whose
+        # X-Forwarded-For names an outside client. NetworkPolicy, not
+        # SABnzbd, decides who reaches the port: the Gateway proxy and the
+        # Arr instances (media.nix).
         misc.update({
             'host': '0.0.0.0', 'port': '8080',
             'api_key': os.environ['SABNZBD_API_KEY'],
-            'username': os.environ['SABNZBD_USERNAME'],
-            'password': os.environ['SABNZBD_PASSWORD'],
+            'username': "", 'password': "",
             'host_whitelist': ${
               builtins.toJSON (
                 lib.concatStringsSep ", " (

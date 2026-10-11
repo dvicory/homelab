@@ -93,6 +93,10 @@ in
                   UMASK = "007";
                   PROWLARR__AUTH__APIKEY = secretRef secretName apiSecretKey;
                   PROWLARR__SERVER__URLBASE = prefix;
+                  # Gateway-only browser sign-in, as for Radarr and Sonarr
+                  # (see arr.nix).
+                  PROWLARR__AUTH__METHOD = "External";
+                  PROWLARR__AUTH__REQUIRED = "Enabled";
                 };
                 securityContext = {
                   allowPrivilegeEscalation = false;

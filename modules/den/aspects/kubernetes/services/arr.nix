@@ -132,7 +132,8 @@ let
           prefix = routePrefix route;
           service = serviceName kind instanceName;
           secretName = cluster.settings.kubernetes.services.media.configurationSecret;
-          apiKeyEnv = "${lib.toUpper kind}__AUTH__APIKEY";
+          envPrefix = lib.toUpper kind;
+          apiKeyEnv = "${envPrefix}__AUTH__APIKEY";
         in
         assert lib.assertMsg (!state.readOnly) "Media state ${cfg.state} must be writable.";
         assert lib.assertMsg (lib.elem "/data" cfg.sharedWritablePaths)
@@ -156,7 +157,17 @@ let
                 PGID = toString identity.gid;
                 UMASK = "007";
                 "${apiKeyEnv}" = secretRef secretName cfg.apiSecretKey;
-                "${lib.toUpper kind}__SERVER__URLBASE" = prefix;
+                "${envPrefix}__SERVER__URLBASE" = prefix;
+                # Browser sign-in is the Gateway's Kanidm sign-in: the admin
+                # route's SecurityPolicy requires homelab-admin. NetworkPolicy
+                # admits only the Gateway proxy and the declared in-cluster
+                # clients to this port (media.nix). External makes the UI
+                # trust that and skips Servarr's first-visit local account;
+                # /api still needs the key. Environment wins over config.xml,
+                # so the UI cannot switch it back. REQUIRED pins intent if
+                # METHOD ever changes.
+                "${envPrefix}__AUTH__METHOD" = "External";
+                "${envPrefix}__AUTH__REQUIRED" = "Enabled";
               };
               securityContext = {
                 allowPrivilegeEscalation = false;

@@ -94,17 +94,24 @@ spec:
               path = '/config/sabnzbd.ini'
               config = ConfigObj(path, encoding='utf-8')
               misc = config.setdefault('misc', {})
+              # Empty username and password turn off SABnzbd's web login; the
+              # Gateway's Kanidm sign-in is the only one. /api still needs api_key.
+              # With no login, SABnzbd checks the Host header against
+              # host_whitelist (DNS-rebinding guard). inet_exposure 4 gives the full
+              # web interface to every address, including Gateway requests whose
+              # X-Forwarded-For names an outside client. NetworkPolicy, not
+              # SABnzbd, decides who reaches the port: the Gateway proxy and the
+              # Arr instances (media.nix).
               misc.update({
                   'host': '0.0.0.0', 'port': '8080',
                   'api_key': os.environ['SABNZBD_API_KEY'],
-                  'username': os.environ['SABNZBD_USERNAME'],
-                  'password': os.environ['SABNZBD_PASSWORD'],
+                  'username': "", 'password': "",
                   'host_whitelist': "sabnzbd.plus2.danielvicory.dev, sabnzbd.backup.plus2.danielvicory.dev, sabnzbd, sabnzbd.media.svc",
                   'inet_exposure': '4', 'permissions': '770',
                   'download_dir': '/data/downloads/usenet/incomplete',
                   'complete_dir': '/data/downloads/usenet/complete',
               })
-              for key in ["SABNZBD_API_KEY","SABNZBD_USERNAME","SABNZBD_PASSWORD"]:
+              for key in ["SABNZBD_API_KEY"]:
                   if not os.environ[key].strip():
                       raise ValueError('Required runtime secret is empty: ' + key)
               for directory in ["library/movies","library/tv"] + ['downloads/usenet/incomplete', 'downloads/usenet/complete']:
@@ -148,16 +155,6 @@ spec:
               valueFrom:
                 secretKeyRef:
                   key: SABNZBD_API_KEY
-                  name: media-runtime
-            - name: SABNZBD_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  key: SABNZBD_PASSWORD
-                  name: media-runtime
-            - name: SABNZBD_USERNAME
-              valueFrom:
-                secretKeyRef:
-                  key: SABNZBD_USERNAME
                   name: media-runtime
           image: ghcr.io/linuxserver/sabnzbd:5.1.2-ls271@sha256:64c4c2b6ed546237451cbfec33aa8bac1396865c1a266dd247c02b36ffe27c62
           name: config

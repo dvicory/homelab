@@ -216,8 +216,9 @@
                       use_ssl: false
                       url_base: ""
                       api_key: !env SABNZBD_API_KEY
-                      username: !env SABNZBD_USERNAME
-                      password: !env SABNZBD_PASSWORD
+                      # SABnzbd has no web login; clear any stored one.
+                      username: ""
+                      password: ""
                       ${categoryField}: ${yaml cfg.category}
           ''
         ) (builtins.attrNames instances);
@@ -820,8 +821,6 @@
                   )
                   ++ [
                     "SABNZBD_API_KEY"
-                    "SABNZBD_USERNAME"
-                    "SABNZBD_PASSWORD"
                     prowlarrSecretKey
                   ]
                 );
