@@ -52,5 +52,11 @@
       labels = [ "posix" ];
       gid = 505;
     };
+
+    gpu-render = {
+      description = "Accelerator render-interface capability for declared grant holders";
+      labels = [ "posix" ];
+      gid = 506;
+    };
   };
 }

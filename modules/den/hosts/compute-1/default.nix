@@ -42,6 +42,8 @@ in
         # Kubelet must traverse the unshifted root:media (2770) hostPath
         # before it can mount the library for media-capable pods.
         systemd.services.k3s.serviceConfig.SupplementaryGroups = [ (toString mediaGid) ];
+        # Exists without the GPU, so a Pod that mounts it still starts.
+        systemd.tmpfiles.rules = [ "d /dev/dri 0755 root root -" ];
         networking.hostName = "compute-1";
         networking.useHostResolvConf = false;
         networking.firewall.allowedTCPPorts = [

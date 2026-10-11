@@ -519,6 +519,16 @@ func TestOwnedProjectUndeclaredValuesStayConflicts(t *testing.T) {
 			conflict: "profile/compute/compute-1",
 		},
 		{
+			// Project restrictions admit any character device once one is
+			// granted; the profile must still hold only the declared one.
+			name: "undeclared character device",
+			state: func(s State) State {
+				s.Profile.Devices["kvm"] = map[string]string{"type": "unix-char", "source": "/dev/kvm", "path": "/dev/kvm"}
+				return s
+			},
+			conflict: "profile/compute/compute-1",
+		},
+		{
 			name: "undeclared key inside a declared device",
 			state: func(s State) State {
 				s.Profile.Devices["root"]["readonly"] = "false"
@@ -550,6 +560,39 @@ func TestOwnedProjectUndeclaredValuesStayConflicts(t *testing.T) {
 				t.Fatalf("decision=%+v err=%v; want a conflict on %s that preseed cannot remove", decision, err, tc.conflict)
 			}
 		})
+	}
+}
+
+// A running envelope from before the accelerator grant blocks character
+// devices and has no render node. Adding the grant is declared drift that
+// native preseed applies, not a conflict.
+func TestOwnedEnvelopeGainsRenderNodeGrant(t *testing.T) {
+	before := declared()
+	before.ProjectConfig[OwnerKey] = "hvn-hyp1/compute-1"
+	before.ProjectConfig["restricted.devices.unix-char"] = "block"
+	state := matchingState(before)
+
+	desired := declared()
+	desired.ProjectConfig[OwnerKey] = "hvn-hyp1/compute-1"
+	desired.ProjectConfig["restricted.devices.unix-char"] = "allow"
+	desired.ProfileDevices["gpu-render"] = map[string]string{
+		"type": "unix-char", "source": "/dev/dri/renderD128", "path": "/dev/dri/renderD128",
+		"required": "false", "uid": "0", "gid": "506", "mode": "0660",
+	}
+	decision, err := Decide(desired, state)
+	if err != nil || decision.Outcome != Owned || len(decision.Drift) != 2 {
+		t.Fatalf("decision=%+v err=%v; want the grant applied as owned drift", decision, err)
+	}
+
+	// After preseed the envelope matches; a second character device does not.
+	applied := matchingState(desired)
+	if decision, err := Decide(desired, applied); err != nil || decision.Outcome != Matching {
+		t.Fatalf("decision=%+v err=%v; want the granted envelope to match", decision, err)
+	}
+	applied.Profile.Devices["card"] = map[string]string{"type": "unix-char", "source": "/dev/dri/card1", "path": "/dev/dri/card1"}
+	var conflict *ConflictError
+	if _, err := Decide(desired, applied); !errors.As(err, &conflict) || !strings.Contains(conflict.Mismatch, "device card is not declared") {
+		t.Fatalf("err=%v; want the undeclared card node reported", err)
 	}
 }
 
