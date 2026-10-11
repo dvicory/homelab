@@ -29,7 +29,7 @@ Hosted CI uses three directly buildable groups, not Hestia metadata suffixes:
 | --- | --- | --- |
 | `fastChecks` | Nix/Den placement, storage, identity and public-edge contracts; local compute-runtime and generated-bootstrap behavior; canonical manifest freshness, pinned local schemas, and offline Kyverno policy | All three systems |
 | `kubernetesApplications` | `public-edge-runtime`, `media-runtime`, `media-ingress-runtime`, plus the separately executed `verify-kubernetes-api` app (Gateway CEL admission, runtime-Secret API, Argo controller and Gateway controller/CNI/authorization scenarios) | x86-64 Linux |
-| `hostRecovery` | `agenix-restart-guard`, `classify-legacy-media`, `mergerfs-capability`, `runtime-secret-k3s`, `compute-ingress-runtime`, `prod-home-replacement` | x86-64 Linux |
+| `hostRecovery` | `agenix-restart-guard`, `classify-legacy-media`, `prepare-luks-storage-runtime`, `mergerfs-capability`, `runtime-secret-k3s`, `compute-ingress-runtime`, `prod-home-replacement` | x86-64 Linux |
 
 The exact mandatory registrations live in `modules/flake/ci.nix`. Missing
 required checks or non-derivation replacements fail evaluation of every hosted
@@ -43,8 +43,14 @@ outputs and system configurations retain their automatic projection.
 Linux also requires `prepare-luks-storage` in `fastChecks`. It exercises real
 rsync transfers/checksum verification and refuses unsafe operations before
 simulated block/format mutators. It does not prove real partitioning or LUKS
-formatting. Error-wording probes of external utilities are not retained as
-safety evidence; unsupported fixture xattrs are reported as unexercised.
+formatting; `prepare-luks-storage-runtime` does. It runs the packaged tool on
+disposable VM disks through preflight, format, the documented realization,
+quiesce, copy and verify, and refuses an in-use disk and a disk without a WWN.
+Every call of the block, partition, LUKS, measurement and transfer tools in
+the packaged script, found in its syntax tree, must run the real binary and
+succeed; only findmnt's silent "no mount" exit 1 is accepted. Error-wording
+probes of external utilities are not retained as safety evidence; unsupported
+fixture xattrs are reported as unexercised.
 
 Native NixOS tests are identified by their `.driver`, and other KVM-dependent
 checks by `requiredSystemFeatures`, not display metadata. Hosted application
