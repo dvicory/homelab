@@ -29,6 +29,24 @@ data:
           - 302
         prober: http
         timeout: 10s
+      route-grafana:
+        http:
+          fail_if_header_not_matches:
+          - allow_missing: false
+            header: Location
+            regexp: ^https://idm\.plus2\.danielvicory\.dev/
+          fail_if_not_ssl: true
+          follow_redirects: false
+          headers:
+            Host: grafana.plus2.danielvicory.dev
+          method: GET
+          preferred_ip_protocol: ip4
+          tls_config:
+            server_name: grafana.plus2.danielvicory.dev
+          valid_status_codes:
+          - 302
+        prober: http
+        timeout: 10s
       route-idm:
         http:
           fail_if_not_ssl: true

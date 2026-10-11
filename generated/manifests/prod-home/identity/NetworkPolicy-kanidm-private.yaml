@@ -45,6 +45,17 @@ spec:
       ports:
         - port: 8443
           protocol: TCP
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: grafana
+              app.kubernetes.io/name: grafana
+      ports:
+        - port: 8443
+          protocol: TCP
   podSelector:
     matchLabels:
       app.kubernetes.io/name: kanidm
