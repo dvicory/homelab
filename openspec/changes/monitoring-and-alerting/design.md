@@ -70,34 +70,36 @@ This section is a plain summary for the owner.
 | kubelet / cAdvisor | guest (already running) | Reports per-container CPU, memory and OOM events. |
 | Argo CD and cert-manager metrics | cluster (already running) | Report Application health and sync status, and certificate expiry and readiness. |
 | node_exporter | host | Reports host CPU, memory, filesystems, mounts and systemd unit state. |
-| ZFS status check | host | A 2-minute timer that records pool state, device errors and scrub results. |
-| smartctl_exporter | host | Reports SMART and SCSI health for every physical disk, including unused ones. USB and virtual devices are excluded. |
-| healthchecks.io | outside the fleet | Expects a heartbeat every 5 minutes. If the heartbeat stops, it alerts you through Pushover and Telegram. |
+| ZFS status check | host | A 2-minute timer that records pool state, device errors and scrub results for each declared pool. |
+| SMART status check | host | A 15-minute timer that records SMART and SCSI health for each declared physical disk, including unused ones. USB and virtual devices are excluded. |
+| healthchecks.io | outside the fleet | Expects a heartbeat every 5 minutes. The heartbeat is sent only while fresh metrics are still arriving. If it stops, healthchecks.io alerts you through Pushover and Telegram. |
 
 **Example alerts** (C means critical: Pushover at priority 1, which bypasses quiet hours, and Telegram. W means warning: Pushover at normal priority, which respects quiet hours, and Telegram. This is the current routing, which the owner can change in Nix; see Decision 6.)
 
 - C `KubeContainerOOMKilled`: "jellyfin/jellyfin container `jellyfin` was OOMKilled (limit 4Gi) and restarted." This is the alert the Jellyfin incident would have produced. A single kill is critical.
-- C `KubePodCrashLooping`, C `KubePodNotReady`, W `KubeContainerRestarted`, W `KubeJobFailed`.
+- C `KubePodCrashLooping`, C `KubePodNotReady`, W `KubeContainerRestarted`, W `KubeJobFailed`, W `KubePodEvicted`.
 - C `ArgoApplicationDegraded`, W `ArgoApplicationOutOfSync`.
 - C `HostZpoolUnhealthy`: "rpool is DEGRADED."
 - C `HostZpoolDeviceErrors`, C `HostZpoolScrubErrors`, W `HostZpoolScrubOverdue`.
-- C `HostDiskSmartFailing`: "sdd (wwn-0x5000cca27061f6b4) reports SMART FAILED."
+- C `HostDiskSmartFailing`: "media4 (wwn-0x5000cca27061f6b4) reports SMART FAILED."
 - C `HostRequiredMountMissing`: "/srv/media/data (mergerfs) is not mounted."
 - W/C `HostFilesystemLowSpace` (W below 10% free, C below 5%), W `HostSystemdUnitFailed`.
 - C `EndpointDown`: "jellyfin.<domain> has not answered for 5 minutes."
 - W `CertificateExpiringSoon` (21 days left), C at 14 days, W `CertificateNotReady`.
-- W `TelemetrySourceDown`: "host node_exporter on hvn-hyp1 is not reporting."
+- C `TelemetrySourceDown`: "host node_exporter on hvn-hyp1 is not reporting."
+- C `HostZpoolStatusStale`: "zpool.prom on hvn-hyp1 has not been refreshed for 10 minutes."
+- C `HostDiskTelemetryMissing`: "disk media4 (wwn-0x5000cca27061f6b4) was not read in the last two SMART runs."
+- W/C `MonitoringStorageLow`: "rpool has 68 GiB free; metrics ingestion stops at 50 GiB." W `MonitoringStorageGrowth`: "metrics history is 21 GiB, expected under 9 GiB."
 - C `AlertDeliveryFailing`: "Pushover notifications are failing." This one is sent through Telegram, and the reverse for Telegram.
-- Watchdog, through healthchecks.io: "Homelab monitoring heartbeat is down."
+- Watchdog, through healthchecks.io: "Homelab monitoring heartbeat is down." This means monitoring can no longer report faults: the guest or host is down, or metrics stopped arriving, or alert evaluation or routing stopped.
 
-**Example dashboards**
+**Dashboards in this change** (a minimal first set; alerts do not depend on any of them)
 
-- **Homelab overview:** firing alerts, endpoint status, pool and mount state, free space, guest memory, and the pods using the most memory relative to their limit.
-- **Host:** Node Exporter Full, plus ZFS pool and SMART panels.
-- **Kubernetes:** cluster, namespace and pod views of CPU, memory, restarts and OOM events.
-- **Argo CD:** Application health and sync history.
-- **Certificates and endpoints:** probe latency and success, and days until each certificate expires.
-- **Monitoring self:** VictoriaMetrics ingestion, disk use, series count, and rule evaluation.
+- **Homelab overview:** firing alerts, endpoint status, pool, SMART and mount state, free space, guest memory, and the pods using the most memory relative to their limit.
+- **Host:** Node Exporter Full.
+- **Kubernetes workloads:** namespace and pod views of CPU, memory, restarts and OOM events.
+
+Argo CD, cert-manager, SMART, blackbox and VictoriaMetrics dashboards are deferred ("Deferred follow-ups").
 
 ## What lives in Nix and what doesn't
 
@@ -110,9 +112,9 @@ Most of monitoring is declared in this repository and rendered from it. Credenti
 - **Scrape targets.** Host exporters declare themselves through the `prometheus-targets` quirk; cluster targets are derived from the cluster declaration (Decisions 3 and 4).
 - **Alertmanager routing.** Routes, inhibition, grouping and templates (Decision 6). Credentials appear only as file paths.
 - **Grafana data sources and dashboards.** Dashboard JSON lives in the repository under `assets/monitoring/dashboards/` and is provisioned read-only (Decision 9).
-- **Host exporters.** NixOS services on `hvn-hyp1`, plus the firewall rule that admits only the guest (Decision 4).
+- **Host exporters and status timers.** NixOS services on `hvn-hyp1`, the declared pools and disks they must report, and the firewall rule that admits only the guest (Decision 4).
 - **The Kanidm client for Grafana.** Identity derives it from Grafana's route, as for every administrator route (Decision 9).
-- **Retention and sizes.** The retention period, the free-space floor, the claim size and every resource limit (Decisions 12 and 14).
+- **Retention and sizes.** The retained path, the retention period, VictoriaMetrics' free-space floor, the storage alert thresholds and every resource limit (Decisions 12 and 14).
 
 **Encrypted in Git:**
 
@@ -169,7 +171,7 @@ Monitoring runs in the cluster as Argo Applications. An external heartbeat check
 ### 3. Cluster telemetry sources
 
 - **kube-state-metrics** (Deployment, read-only cluster RBAC). Run with `--resources` that exclude `secrets` and `configmaps`, and with no label or annotation allowlist. This keeps cardinality low and keeps Secret metadata out of metrics.
-  - It supplies `kube_pod_container_status_last_terminated_reason`, `kube_pod_container_status_restarts_total`, `kube_pod_container_status_waiting_reason`, `kube_pod_status_ready`, `kube_job_status_failed` and `kube_node_status_condition`.
+  - It supplies `kube_pod_container_status_last_terminated_reason`, `kube_pod_container_status_restarts_total`, `kube_pod_container_status_waiting_reason`, `kube_pod_status_ready`, `kube_pod_status_phase`, `kube_pod_status_reason`, `kube_job_status_condition` (terminal `Failed` and `Complete` conditions) and `kube_node_status_condition`.
 - **kubelet and cAdvisor.** Scrape `https://<node>:10250/metrics` and `/metrics/cadvisor` with the collector's service-account token (RBAC: `nodes/metrics` get). It supplies `container_oom_events_total` and memory working set compared with the limit. The guest firewall already allows 10250 on `cni0`.
   - There is no in-guest node_exporter. Inside an unprivileged LXC guest it reports lxcfs-shaped numbers. Host node_exporter plus cAdvisor cover the real needs.
 - **Argo CD.** Set `controller.metrics.enabled = true` in `argocd.nix` and scrape the application controller's metrics Service on 8082. Its NetworkPolicy already allows this.
@@ -187,15 +189,20 @@ Monitoring runs in the cluster as Argo Applications. An external heartbeat check
 
 ### 4. Host telemetry and the host-to-cluster boundary
 
-- **New host aspect** (working name `services.host-telemetry`, included by `hvn-hyp1`). It adds three sources:
+- **New host aspect** (working name `services.host-telemetry`, included by `hvn-hyp1`). It adds one exporter and two status timers that feed it:
   - `services.prometheus.exporters.node` on port 9100, with the `systemd`, `filesystem`, `zfs` and `textfile` collectors.
-  - `services.prometheus.exporters.smartctl` on port 9633. It polls every 15 minutes. It covers every physical disk, including the unused `sdc`, `sdg` (old ZFS labels) and the blank `sdf`, and excludes USB devices (the IDSDM) and virtual devices (iDRAC). SAS drives report SCSI health and grown defects rather than ATA attributes, so the rules use `smartctl_device_smart_status` and the SCSI counters.
-  - A `zpool-status` oneshot on a 2-minute timer. It runs `zpool status -j -p` (no root needed) and atomically writes `zpool.prom` into node_exporter's textfile directory. That file holds pool state, per-device read, write and checksum errors, scan state, last scrub end time and scrub errors.
-- **Exporter binding.** Both exporters bind to the bridge address from host data (`settings.virtualization.compute`: the network's host address), not to a wildcard.
-  - The units order after Incus has created the bridge, and use `Restart=always` with `RestartSec=10s`.
-  - They are not wanted by any target that activation waits on.
-  - Each has `MemoryMax` (64M) and `CPUQuota`.
-- **Firewall.** One nftables input rule admits only `iifname "<compute network>" ip saddr <guest address>` to the exporter ports. A guest pod's traffic leaves the node with the node address through Flannel masquerading, so the guest address is the only source. The LAN, Tailscale and the internet cannot reach the ports, because the bind address is bridge-only and the firewall checks both interface and source.
+  - A `zpool-status` oneshot on a 2-minute timer. It runs `zpool status -j -p` (no root needed) and atomically writes `zpool.prom` into node_exporter's textfile directory. That file holds pool state, per-device read, write and checksum errors, scan state, last scrub end time and scrub errors, plus `homelab_zpool_present{pool} 1` for each pool that `zpool status` reported. The file is replaced only after a successful run, so a failing or stuck timer leaves an old modification time behind instead of a fresh-looking file.
+  - A `smart-status` oneshot on a 15-minute timer. It runs `smartctl --json -a` on each declared disk and atomically writes `smart.prom` into the same textfile directory: health status, SCSI grown defects and ATA pending and reallocated sectors, and per disk a `homelab_smart_device_up{disk,id}` series that is 1 only if this run read that disk.
+- **Declared pools and disks.** Host data declares what must keep reporting, so a source that stays up but drops an item is caught. The host consumer publishes both lists as read-only options next to `scrapeTargets`, and the cluster monitoring aspect renders one rule per item from them (Decision 5). The rules therefore do not depend on the converter remembering what it should have reported.
+  - **Pools:** derived from host data (`zfs.rootPool.name`, today only `rpool`).
+  - **Disks:** a new `expectedDisks` attribute set in `hvn-hyp1`'s host data, keyed by a readable name (for example `media4`, `rpool-a`), with each disk's stable `/dev/disk/by-id/` path: `wwn-0x…` for the SAS and SATA drives and `nvme-eui.…` for the NVMe drives. That is 9 disks: the 2 rpool NVMe drives and the 7 HGST drives, which include the unused `sdc`, `sdg` and `sdf`. USB devices (the IDSDM) and virtual devices (iDRAC) are not declared, so they are excluded. The IDs come from a read-only inspection of the host (task 2.1).
+  - Using by-id paths rather than `sdX` names keeps each series attached to the same physical disk across reboots and controller reordering. No serial numbers are stored in the repository.
+- **Why a SMART timer instead of `smartctl_exporter`.** The first draft used `services.prometheus.exporters.smartctl`. That exporter polls on its own interval and serves cached values on every scrape, and it exposes no per-device collection time. A disk that stopped reading would keep serving its last good value, which looks fresh to the collector. The timer gives SMART the same freshness model as ZFS: a file modification time, plus an explicit per-disk "read this run" flag. It also removes a second listening port, and raw device access runs in a short-lived oneshot instead of a network-facing service. The cost is one more small converter, which task 2.4 unit-tests against recorded `smartctl --json` output. SAS drives report SCSI health and grown defects rather than ATA attributes; the converter maps both. **Recorded alternative:** `smartctl_exporter` with an explicit `--smartctl.device` list, if a pinned version gains a per-device collection timestamp.
+- **Exporter binding.** node_exporter binds to the bridge address from host data (`settings.virtualization.compute`: the network's host address), not to a wildcard.
+  - The unit orders after Incus has created the bridge, and uses `Restart=always` with `RestartSec=10s`.
+  - Neither the exporter nor the timers are wanted by any target that activation waits on.
+  - Each unit has `MemoryMax` (64M) and `CPUQuota`.
+- **Firewall.** One nftables input rule admits only `iifname "<compute network>" ip saddr <guest address>` to the exporter port. A guest pod's traffic leaves the node with the node address through Flannel masquerading, so the guest address is the only source. The LAN, Tailscale and the internet cannot reach the port, because the bind address is bridge-only and the firewall checks both interface and source.
 - **Quirk producer.** The aspect emits `prometheus-targets` entries: `{ job; port; path; interval; labels }`. This makes it the first real producer of the quirk.
 - **Quirk consumer.** A host consumer aspect, in the style of `persist-collector` and `firewall-collector`, takes `{ prometheus-targets, ... }` and does two things:
   - renders the firewall rule above;
@@ -217,8 +224,9 @@ The owner confirmed the spec's time bounds as proposed, decided that a single OO
 | OOM ≤ 5 min | `KubeContainerOOMKilled` | restarts increased in 10m **and** last terminated reason `OOMKilled`; or `increase(container_oom_events_total[10m]) > 0` | 0 | critical |
 | restart ≤ 5 min | `KubeContainerRestarted` | `increase(kube_pod_container_status_restarts_total[10m]) > 0`, unless OOM | 0 | warning |
 | crash loop ≤ 20 min | `KubePodCrashLooping` | waiting reason `CrashLoopBackOff` | 15m | critical |
-| not ready ≤ 20 min | `KubePodNotReady` | ready = false, excluding `Succeeded` pods | 15m | critical |
-| Job ≤ 15 min | `KubeJobFailed` | `kube_job_status_failed > 0` | 5m | warning |
+| not ready ≤ 20 min | `KubePodNotReady` | `kube_pod_status_ready{condition="true"} == 0`, only for pods whose `kube_pod_status_phase` is `Pending`, `Running` or `Unknown`; `Failed` and `Succeeded` pods are excluded | 15m | critical |
+| eviction ≤ 15 min | `KubePodEvicted` | `kube_pod_status_reason{reason="Evicted"} == 1 unless (kube_pod_status_reason{reason="Evicted"} offset 30m == 1)`: true only during the first 30 minutes after a pod is evicted | 0 | warning |
+| Job ≤ 15 min | `KubeJobFailed` | `kube_job_status_condition{condition="Failed",status="true"} == 1`: the Job's terminal Failed condition, set only after `backoffLimit` or `activeDeadlineSeconds` is exhausted | 0 | warning |
 | degraded ≤ 20 min | `ArgoApplicationDegraded` | `health_status=~"Degraded\|Missing"`, or a `ComparisonError` condition | 15m | critical |
 | out of sync ≤ 40 min | `ArgoApplicationOutOfSync` | `sync_status="OutOfSync"` | 30m | warning |
 | pool ≤ 10 min | `HostZpoolUnhealthy` | pool state ≠ ONLINE | 1m | critical |
@@ -226,24 +234,46 @@ The owner confirmed the spec's time bounds as proposed, decided that a single OO
 | mounts ≤ 10 min | `HostRequiredMountMissing` | `absent(...)` per required mount | 2m | critical |
 | scrub ≤ 1 h | `HostZpoolScrubErrors` | last scrub errors > 0 | 0 | critical |
 | (extra) | `HostZpoolScrubOverdue` | last scrub ended more than 35 days ago | 1h | warning |
-| SMART ≤ 1 h | `HostDiskSmartFailing` | `smartctl_device_smart_status != 1`, or grown defects or pending sectors increased | 0 | critical (status), warning (counters) |
+| SMART ≤ 1 h | `HostDiskSmartFailing` | SMART health status not passed, or grown defects or pending sectors increased (from `smart.prom`) | 0 | critical (status), warning (counters) |
 | space ≤ 1 h | `HostFilesystemLowSpace` | available below 10% (warn) or 5% (crit) of size | 30m | warning / critical |
 | unit ≤ 15 min | `HostSystemdUnitFailed` | `node_systemd_unit_state{state="failed"} == 1` | 10m | warning |
 | endpoint ≤ 10 min | `EndpointDown` | `probe_success == 0` | 5m | critical |
 | cert ≥ 14 d left | `CertificateExpiringSoon` | served or managed expiry under 21 d (warn) or under 14 d (crit) | 1h | warning / critical |
 | cert not ready | `CertificateNotReady` | `certmanager_certificate_ready_status{condition="False"} == 1` | 1h | warning |
-| missing source ≤ 15 min | `TelemetrySourceDown` | `up == 0` per declared job | 10m | warning (critical for host node_exporter) |
-| watchdog | `Watchdog` | `vector(1)` | 0 | none (special route) |
+| missing source ≤ 15 min | `TelemetrySourceDown` | per declared job: `up == 0`, **or** `absent(up{job="…"})` so a target that vanishes from discovery also fires | 5m | critical for the core sources (kubelet, cAdvisor, kube-state-metrics, host node_exporter); warning for the rest |
+| stale data ≤ 15 min | `HostZpoolStatusStale` | `time() - node_textfile_mtime_seconds{file=~"(.*/)?zpool\\.prom"} > 600` (five missed 2-minute runs), or that series is absent, or `node_textfile_scrape_error == 1` | 0 | critical |
+| missing item ≤ 15 min | `HostZpoolMissing` | one rule per declared pool: `absent(homelab_zpool_present{pool="<name>"} == 1)` | 2m | critical |
+| stale data ≤ 1 h | `HostSmartStatusStale` | `time() - node_textfile_mtime_seconds{file=~"(.*/)?smart\\.prom"} > 2700` (three missed 15-minute runs), or that series is absent | 0 | critical |
+| missing item ≤ 1 h | `HostDiskTelemetryMissing` | one rule per declared disk: `absent(homelab_smart_device_up{disk="<name>"} == 1)`, which covers both "not read this run" (0) and "series gone" | 20m (two runs) | critical |
+| watchdog | `Watchdog` | depends on fresh ingestion end to end; see Decision 8 | 0 | none (special route) |
 | delivery | `AlertDeliveryFailing` | `increase(alertmanager_notifications_failed_total{integration=X}[15m]) > 0` | 0 | critical, routed to the other channel |
-| (extra) | `MonitoringStorageLow`, `KubeNodeMemoryPressure` | VictoriaMetrics free disk near its floor; node `MemoryPressure` condition | 15m | warning |
+| storage | `MonitoringStorageLow` | `vm_free_disk_space_bytes` (pool free space, as VictoriaMetrics sees it) below 100 GiB (warn) or 70 GiB (crit); read-only at 50 GiB (Decision 12) | 5m | warning / critical |
+| storage | `MonitoringStorageGrowth` | `sum(vm_data_size_bytes)` above 20 GiB | 30m | warning |
+| (extra) | `KubeNodeMemoryPressure` | node `MemoryPressure` condition | 15m | warning |
 
 Lowering Jellyfin's limit in a scratch namespace reproduces the motivating incident. Acceptance uses exactly that drill (task 10.2).
+
+**Missing telemetry has three layers.** Each catches a failure the one before it cannot see:
+
+1. **Source down.** `TelemetrySourceDown` fires when a declared scrape job fails (`up == 0`) or vanishes from discovery (`absent(up{job=…})`). The `absent` branch matters: a target that disappears produces no `up == 0` sample at all.
+2. **Producer stale behind a live exporter.** node_exporter keeps answering even if the timers behind its textfile collector stop. `HostZpoolStatusStale` and `HostSmartStatusStale` read the file modification time that node_exporter reports, so a stuck or failing timer is visible within its bound. Worst case for ZFS: last good write, plus 600 s, plus about 1.5 minutes for scrape, evaluation and `group_wait`, is about 11.5 minutes, inside the 15-minute bound. For SMART: 45 minutes plus about 1.5 minutes, inside the 1-hour bound.
+3. **Item missing from a fresh source.** `HostZpoolMissing` and `HostDiskTelemetryMissing` fire when a declared pool or disk is absent from an otherwise fresh file. Worst case for a disk: it fails just after a run, is marked unread at the next run 15 minutes later, and fires after 20 more minutes: about 37 minutes, inside the 1-hour bound.
+
+Inhibition (Decision 6) keeps one cause to one alert: a down node_exporter inhibits layers 2 and 3 for that host, and a stale file inhibits its own missing-item alerts.
+
+**Missing data must not resolve a firing storage alert.** If node_exporter stops while `HostZpoolUnhealthy` fires, the series vanish, the rule returns nothing and vmalert would resolve the alert, which reads as "healthy". Inhibition does not prevent that. The host storage rules therefore wrap their inputs in `last_over_time(…[2h])`. When data stops, the last reported state holds for 2 hours while `TelemetrySourceDown` fires. When fresh data arrives, it is the newest sample and wins at once, so a real recovery still resolves immediately. A stale textfile needs no wrapper, because node_exporter keeps serving its last content.
+
+**Finished pods do not count as not ready, and an eviction alerts once.** A finished pod can stay in the API indefinitely. For example, an evicted Jellyfin pod remains in phase `Failed`, with its container in `ContainerStatusUnknown`, after its replacement is Ready, and Kubernetes only garbage-collects such pods at a cluster-wide threshold. A not-ready rule that counted it would fire forever. `KubePodNotReady` therefore joins on `kube_pod_status_phase` and counts only `Pending`, `Running` and `Unknown` pods.
+
+The eviction itself is still worth one notice, so `KubePodEvicted` fires on the rising edge: it is true only while the evicted pod is less than 30 minutes old in that state. That gives one warning, then one resolution, with no daily repeats while the pod object lingers. Rule unit tests cover both: a lingering `Failed` pod raises no not-ready alert, and an eviction fires once and then resolves (task 4.1). If the replacement pod does not become ready, `KubePodNotReady` fires for the replacement as usual.
+
+**Jobs alert on terminal failure only.** `kube_job_status_failed` counts failed pods and becomes non-zero on the first failed attempt, even if a retry then succeeds. The `Failed` Job condition is set only when Kubernetes gives up: `backoffLimit` exhausted or `activeDeadlineSeconds` passed. The alert needs no `for`, because the condition is terminal. It resolves when the Job is deleted, for example by its `ttlSecondsAfterFinished` or by a CronJob's history limit. A rule unit test covers a Job that fails once and then succeeds (task 4.1).
 
 ### 6. Alertmanager routing and inhibition
 
 - **Grouping.** Group by `alertname`, `namespace`, `host` and `instance`. Use `repeat_interval` 4h for critical and 24h for warning. Send resolved notifications.
 - **Routes, in order:**
-  1. `alertname="Watchdog"` goes to `heartbeat` (webhook to the healthchecks.io ping URL), with `group_wait: 0s`, `group_interval: 1m`, `repeat_interval: 5m`, and `continue: false`.
+  1. `alertname="Watchdog"` goes to `heartbeat` (webhook to the healthchecks.io ping URL), with `group_wait: 0s`, `group_interval: 1m`, `repeat_interval: 5m`, and `continue: false`. The `heartbeat` receiver sets `send_resolved: false`. Otherwise the "resolved" message that Alertmanager sends when the Watchdog stops would reach the ping URL and count as one more successful ping.
   2. `AlertDeliveryFailing{integration="pushover"}` goes to the receiver `telegram-only`, and `{integration="telegram"}` goes to `pushover-only` (priority 1). Each failing channel is reported only through the other one.
   3. `severity="critical"` goes to the receiver `critical`, which holds a Pushover config at priority 1 and a Telegram config.
   4. The default (`severity="warning"`) goes to the receiver `warning`, which holds a Pushover config at priority 0 and a Telegram config.
@@ -255,12 +285,15 @@ Lowering Jellyfin's limit in a scratch namespace reproduces the motivating incid
 - **Messages.** Both channels use a short template: alert name, severity, object, summary and a Grafana link.
 - **Inhibition:**
   - critical inhibits warning with the same `alertname` and object labels (for example free space at 5% versus 10%);
-  - `TelemetrySourceDown{job="host-node"}` inhibits `HostRequiredMountMissing` and `HostSystemdUnitFailed` for the same `host`, so one cause raises one alert;
+  - `TelemetrySourceDown{job="host-node"}` inhibits `HostRequiredMountMissing`, `HostSystemdUnitFailed`, `HostZpoolStatusStale`, `HostSmartStatusStale`, `HostZpoolMissing` and `HostDiskTelemetryMissing` for the same `host`, so one cause raises one alert;
+  - `HostZpoolStatusStale` inhibits `HostZpoolMissing`, and `HostSmartStatusStale` inhibits `HostDiskTelemetryMissing`, for the same `host`;
   - `KubePodCrashLooping` inhibits `KubePodNotReady` and `KubeContainerRestarted` for the same pod;
   - `EndpointDown` for a route is not inhibited by pod alerts. They tell different stories.
 - **Credentials from files.** Every credential field uses its `*_file` form, so the rendered config contains only paths: Pushover `user_key_file` and `token_file`, Telegram `bot_token_file`, webhook `url_file`.
   - If the pinned Alertmanager has no file form for Telegram `chat_id`, an init container fills the chat ID into the config inside a memory-backed volume from the mounted Secret. The value is still not in Git.
 - **Missing credentials.** The Secret volume is mounted with `optional: true`. A missing credential then makes that integration fail at send time, which shows up in `alertmanager_notifications_failed_total` and as missing heartbeats. Alertmanager itself still runs and stays Healthy. This keeps the spec's "fails visibly, never a placeholder" rule without Degrading the Application. Task 4.3 verifies the pinned version's behavior.
+- **Delivery failures are seen only on send attempts.** `AlertDeliveryFailing` reads `alertmanager_notifications_failed_total`, which grows only when Alertmanager tries to send through an integration and fails. A channel that breaks while nothing is firing, for example a revoked Pushover token or a bot removed from the chat, goes unnoticed until the next notification through it. That notification is often the important one. The other channel still carries it, and `AlertDeliveryFailing` then reports the broken channel. The heartbeat does not help here: it proves Alertmanager can reach healthchecks.io, not Pushover or Telegram. The spec states this limit.
+- **Active channel checks are deferred.** This change keeps detection on send attempts as the contract. The options and the recommendation (a silent daily probe through Alertmanager) are recorded under "Deferred follow-ups".
 
 ### 7. Second channel: Telegram, with Discord as the recorded alternative
 
@@ -280,9 +313,43 @@ Lowering Jellyfin's limit in a scratch namespace reproduces the motivating incid
 
 ### 8. Watchdog: healthchecks.io, and why Pushover cannot be the watchdog
 
-The always-firing `Watchdog` rule exercises the whole chain: collection → vmalert → Alertmanager → egress → internet. Alertmanager re-sends the alert every 5 minutes to the healthchecks.io ping URL.
+The `Watchdog` rule fires only while fresh telemetry is being stored, so the heartbeat exercises the whole chain: collection → storage → vmalert → Alertmanager → egress → internet. Alertmanager re-sends the alert every 5 minutes to the healthchecks.io ping URL.
 
-The check uses a 5-minute period and a 10-minute grace. If no ping arrives within 15 minutes, healthchecks.io notifies through its own Pushover and Telegram integrations. Notice arrives about 15–20 minutes after the last ping, inside the spec's 30-minute bound. It also reports recovery when pings resume.
+**Why not `vector(1)`.** An always-firing `vector(1)` proves only that vmalert can evaluate and Alertmanager can send. If scraping stopped, or VictoriaMetrics turned read-only because its disk filled, `vector(1)` would keep firing and the heartbeat would keep arriving while no fresh data existed. Every other rule would then evaluate old or missing data, and nothing would say so.
+
+**The expression:**
+
+```promql
+vector(1)
+  and on() (sum(increase(vm_rows_added_to_storage_total[3m])) > 0)
+  and on() (
+    time() - max(
+        timestamp(kubelet_running_pods{job="kubelet"})
+      or timestamp(machine_cpu_cores{job="cadvisor"})
+      or timestamp(kube_node_info{job="kube-state-metrics"})
+      or timestamp(node_time_seconds{job="host-node"})
+    ) < 180
+  )
+```
+
+- **First term: the store is still writing.** `vm_rows_added_to_storage_total` counts rows that reached storage. It stops growing when ingestion stops for any reason, including read-only mode at the free-space floor (Decision 12). VictoriaMetrics' self-scrape is itself stored, so when storage stops, even this counter's own samples stop arriving and the term goes empty. The owner's example, `vm_rows_inserted_total`, counts rows at ingestion, before storage. It would work as well if the pinned version stops it in read-only mode, but the storage-side counter measures the property the spec cares about directly. Task 4.1 confirms the metric names and their read-only behavior against the pinned version, and the VM test in task 4.5 exercises read-only mode.
+- **Second term: data from outside monitoring is still arriving.** Self-scrape alone can keep the first term true even when every other scrape fails, for example after a NetworkPolicy or scrape-config mistake. The second term requires the newest sample from any of the four core sources (kubelet, cAdvisor, kube-state-metrics, host node_exporter) to be under 180 seconds old. Each metric chosen is always present and written only by a successful scrape, unlike `up`, which is also written when a scrape fails.
+- **Bounds.** 180 seconds is six 30-second scrape intervals: long enough to ride through a slow scrape or a pod restart, short enough to keep the total well inside the spec's 30 minutes. The 3-minute `increase` window holds about six self-scrape samples. Worst case: ingestion stops at T; the Watchdog stops firing by about T + 3.5 minutes; the last ping was sent then or earlier; healthchecks.io declares the check down 15 minutes after the last ping (5-minute period plus 10-minute grace). The owner is notified about T + 19 minutes, inside the 30-minute bound.
+- **A stale query path also stops the heartbeat.** If vmalert cannot query VictoriaMetrics, the rule returns nothing and the Watchdog stops.
+
+**One stale core source does not stop the heartbeat.** The heartbeat answers one question: can monitoring still tell the owner about faults? With one core source stale and the rest of the chain working, it can, and it does: `TelemetrySourceDown` is critical for every core source and names the source (Decision 5). Stopping the heartbeat as well would add a second, vaguer notice ("heartbeat down") for the same cause. The owner also could not silence it during known maintenance, because the absence of a heartbeat cannot be silenced in Alertmanager. The heartbeat stops when **all** core sources are stale, because then the scraper itself, or the network path it depends on, is broken.
+
+**How the Watchdog differs from `TelemetrySourceDown`:**
+
+| | `TelemetrySourceDown` | Watchdog heartbeat |
+| --- | --- | --- |
+| Detects | One declared source failing or vanishing | Monitoring as a whole unable to ingest, evaluate or route |
+| Evaluated by | vmalert, inside the fleet | healthchecks.io, outside the fleet, on the absence of pings |
+| Needs working | collection of the other sources, vmalert, Alertmanager, a delivery channel | nothing in the fleet |
+| Tells the owner | which source, on which host | only that monitoring went quiet |
+| Bound | 15 minutes | 30 minutes |
+
+The check uses a 5-minute period and a 10-minute grace. If no ping arrives within 15 minutes, healthchecks.io notifies through its own Pushover and Telegram integrations. It also reports recovery when pings resume.
 
 **Why Pushover alone cannot be the watchdog:**
 
@@ -311,12 +378,15 @@ The check uses a 5-minute period and a 10-minute grace. If no ping arrives withi
   - Passing the entrance alone does not grant Grafana access. This follows the `access-control` rule already applied to Argo CD.
   - Grafana service accounts and API keys are not created. Even if one existed, the entrance would still demand browser sign-in first, so token-only access from outside is not possible.
   - Through its data sources, a signed-in admin can query VictoriaMetrics and view or silence alerts in Alertmanager. That is the only path to monitoring data from outside the cluster. The route forwards only to Grafana; VictoriaMetrics, vmalert, Alertmanager and the exporters are never published (Decision 10).
-- **Shared client.** Generalize the Argo CD special case in `identity.nix` into a declared per-route native sign-in: `{ callbackPaths, landingPath, scopes, secrets }`.
-  - Identity adds those redirects, scopes, landing and secret targets to the route's client.
-  - It adds a Kanidm NetworkPolicy allow for that route's backend pods.
-  - Argo CD moves onto the same mechanism.
-  - Grafana declares callback `/login/generic_oauth`, scopes `openid profile email groups_name`, and secret `monitoring/grafana-oidc:client-secret`.
-  - Kanidm still lists Grafana once, although both the entrance and Grafana sign in through it. That satisfies the existing access-control requirement that each administrator application is offered once.
+- **Shared client: the smallest change.** Identity already creates a Kanidm client named after every `admin` route, for the Gateway's SecurityPolicy. Argo CD extends its route's client through a hard-coded case in `identity.nix` (`identity.nix:105-139`), with a matching Kanidm NetworkPolicy allow for `argocd-server` (`identity.nix:648-664`). Grafana needs the same four things on the `grafana` client:
+  - its callback, `/login/generic_oauth`, added to the redirects;
+  - its landing page, Grafana's sign-in;
+  - scopes `openid profile email groups_name`;
+  - one more Secret target, `monitoring/grafana-oidc:client-secret`;
+  - and a Kanidm NetworkPolicy allow for Grafana's pods.
+- **Default: a Grafana case beside the Argo CD case.** Add a sibling of the Argo CD block for Grafana, with the same shape and its own assertion that the route exists and is served at `/`. This touches nothing Argo CD generates.
+- **Generalize only if it stays small.** A shared per-route helper, `{ callbackPaths, landingPath, scopes, secrets }`, is acceptable in this change only if two conditions hold. First, Argo CD's generated Kanidm client, Secret targets and NetworkPolicy must be byte-for-byte unchanged. Second, `modules/tests/identity-contracts.nix` must pass without any edit to its Argo CD assertions. If either fails, keep the sibling case and leave the generalization to the deferred cleanup ("Deferred follow-ups").
+- Either way, Kanidm lists Grafana once, although both the entrance and Grafana sign in through it. That satisfies the existing access-control requirement that each administrator application is offered once.
 - **Grafana settings.**
   - Sign-in: `auth.generic_oauth` with `client_id = grafana`, the client secret read from file, the Kanidm authorize, token and userinfo URLs on the canonical identity hostname, and `use_pkce = true`.
   - Roles: `role_attribute_path = contains(groups[*], '<adminGroup>') && 'Admin' || ''` with `role_attribute_strict = true`, so non-admins get no access.
@@ -333,8 +403,9 @@ The check uses a 5-minute period and a 10-minute grace. If no ping arrives withi
 - **Dashboards.**
   - JSON files live under `assets/monitoring/dashboards/`. Each records its upstream source, revision and SHA-256.
   - Nix renders them into ConfigMaps and loads them through a file provider with `allowUiUpdates: false` and `disableDeletion: true`.
-  - Upstream sources: Node Exporter Full (grafana.com 1860), kubernetes-mixin views, Argo CD's and cert-manager's own dashboards, blackbox and smartctl exporter dashboards, and VictoriaMetrics single.
-  - "Homelab overview" is written in this repository.
+  - **Minimal first set:** Node Exporter Full (grafana.com 1860) for the host; a Kubernetes workloads view from kubernetes-mixin (namespace and pod CPU, memory, restarts and OOM events); and "Homelab overview", written in this repository.
+  - **Deferred:** the Argo CD, cert-manager, SMART, blackbox and VictoriaMetrics dashboards ("Deferred follow-ups"). No alert depends on any dashboard, so deferring them removes no detection.
+  - "Homelab overview" shows firing alerts, endpoint probe status, pool, SMART and mount state, free space, and the pods using the most memory relative to their limit. That covers the deferred dashboards' most important panels at a glance.
   - Grafana's database lives on an `emptyDir` and is disposable.
 
 ### 10. Network policy and exposure
@@ -361,21 +432,58 @@ The check uses a 5-minute period and a 10-minute grace. If no ping arrives withi
   - The replacement test syncs only its fixture child Applications (`modules/tests/prod-home-replacement.py:597`).
   - A Degraded monitoring child makes the root Application show Degraded. That is visible, not gating.
 - **Retained path side effect.** Adding the retained path changes the `retained-directories` ConfigMap, so `retained-storage` reruns its Job once (PR #48). This is the same path every new retained application takes.
-- **Host exporters** are plain services outside any activation dependency, with restart-on-failure.
+- **Metrics storage does not gate anything.** Monitoring adds no device, mount or boot dependency. Only the VictoriaMetrics pod depends on its retained path, and that pod fails closed (Decision 12).
+- **Host exporters and timers** are plain units outside any activation dependency, with restart-on-failure.
 - **Alerting does not depend on identity, the Gateway or cert-manager.** Only Grafana and endpoint probes involve them, and probes are meant to notice their failure.
 
 ### 12. Retention and persistence
 
-**Decided by the owner:** keep 90 days of history on a retained path, not disposable storage, with a 50 GiB free-space floor. A dedicated dataset may come later.
+**Decided by the owner:** keep 90 days of history on a retained path under the existing state root, bounded by retention and a free-space floor. Per-workload quota-limited datasets are deferred to a future storage change (see "Deferred follow-ups").
 
-- **Why:** guest replacement is the routine recovery action (ADR-0008). Disposable history would erase exactly the trends needed after an incident: memory growth before an OOM, disk fill, error counters. The cost is a few GiB on `rpool/safe/persist`.
-- **Layout.**
-  - Retained path `monitoring-metrics` (uid and gid as the VictoriaMetrics image runs, mode `0700`).
-  - A static PV and PVC like `identity-kanidm`, pinned to the compute instance.
-  - `-retentionPeriod=90d`.
-- **Size estimate.** About 30k active series at 30 s is about 1,000 samples/s, or 86 M samples/day. At about 0.4–0.8 bytes per sample that is 35–70 MB/day, so 90 days is about 3–6 GiB. The claim is sized at 20Gi; local PV capacity is advisory.
-- **Real bound.** `-storage.minFreeDiskSpaceBytes=50GiB` makes VictoriaMetrics stop accepting writes, and alert through `MonitoringStorageLow`, before it can squeeze the pool. Retained paths are directories, not datasets, so there is no per-path ZFS quota today.
-- **Later: a dedicated dataset.** Giving monitoring its own ZFS dataset with a quota is a later change. It would replace the free-space floor as the hard bound; the retained-path contract and the specs stay the same.
+- **Why retained:** guest replacement is the routine recovery action (ADR-0008). Disposable history would erase exactly the trends needed after an incident: memory growth before an OOM, disk fill, error counters.
+
+**Layout**
+
+- Retained path `monitoring-metrics` under the state root `/var/lib/homelab/compute-1/state` on `rpool/safe/persist`. It is owned by the VictoriaMetrics UID and GID as mapped into the guest, with mode `0700`.
+- A static `local` PV and PVC, like `identity-kanidm`, pinned to the compute instance, in the `monitoring-retained` Application with `Prune=false,Delete=false`.
+- `-retentionPeriod=90d`.
+
+**What is bounded, and what is not**
+
+- **The PVC size is advisory.** Kubernetes does not enforce the capacity of a `local` or local-path volume. The claim's size is a label, not a limit, and the design does not present it as one.
+- **The free-space floor is measured on shared storage.** `rpool/safe/persist` has no quota. Inside the guest, `df` on the state root reports that dataset, and its "available" is the pool's free space. `-storage.minFreeDiskSpaceBytes` therefore compares against free space on the whole pool, shared with every other retained path and host dataset.
+- **So the floor bounds monitoring only in one direction.** Monitoring stops writing before it takes the pool's last 50 GiB. Before that point, its own growth is bounded only by retention. And if another workload fills the pool, monitoring stops ingesting, which protects the others, not monitoring. The spec says this plainly.
+
+**Sizing**
+
+- **Estimate.** About 30k active series at 30 s is about 1,000 samples/s, or 86 M samples/day. At about 0.4–0.8 bytes per sample that is 35–70 MB/day.
+- **Retention on disk.** VictoriaMetrics stores data in monthly partitions and deletes a partition only once all of it is older than `-retentionPeriod`. The disk therefore holds up to retention plus one month, about 120 days: 4–8.4 GiB.
+- **Floor.** `-storage.minFreeDiskSpaceBytes=50GiB`. rpool has about 760 GiB in total and 341 GiB free today, so 50 GiB is about 6.5% of the pool. That keeps room for ZFS itself and for other workloads to keep writing.
+
+**Alerts, in the order they fire**
+
+1. **`MonitoringStorageGrowth` (warning):** VictoriaMetrics' own data size (`vm_data_size_bytes`, summed) exceeds 20 GiB, about 2.4 times the upper estimate. This is the only bound on monitoring's *own* growth before the floor; it catches series-cardinality explosions while the pool still has room.
+2. **`MonitoringStorageLow` (warning):** `vm_free_disk_space_bytes` below 100 GiB. The pool is filling, from monitoring or anything else.
+3. **`MonitoringStorageLow` (critical):** below 70 GiB. Ingestion will stop at 50 GiB.
+4. **Read-only at 50 GiB.** VictoriaMetrics refuses new writes, and existing history stays queryable. No new alert can fire from fresh data, because VictoriaMetrics' own metrics can no longer be stored. The fresh-data heartbeat therefore stops (Decision 8), and healthchecks.io notifies the owner about 19 minutes later.
+
+`HostFilesystemLowSpace` (10% and 5%) still applies to the host filesystems, including `/persist`. It reports the pool from the host's point of view. `MonitoringStorageLow` reports how close monitoring is to stopping.
+
+**Fail closed on the existing retained path**
+
+- The `retained-directories` Job creates `monitoring-metrics` only after checking the state-root marker `.homelab-state-root`, which exists only on the persistent side of the state root. This is existing behavior for every retained path.
+- The PV is a static `local` volume. Kubelet does not mount a `local` PV whose path is missing, which has the same effect as hostPath `type: Directory`. Monitoring never uses `DirectoryOrCreate` or a dynamically provisioned volume.
+- The VictoriaMetrics pod also mounts the marker file read-only, with hostPath `type: File`. Kubelet refuses to start the pod if the state root it sees is not the persistent one.
+- Result: if the retained storage is missing, VictoriaMetrics does not start, nothing is written to substitute storage, the heartbeat stops, and healthchecks.io reports it.
+- **Nothing else is gated.** The state root device is already required by the guest for all retained state; monitoring adds no new device, mount or boot dependency. A missing `monitoring-metrics` directory affects only the VictoriaMetrics pod.
+
+**Storage contract check**
+
+- **`storage-foundations` (current): met, no change needed.** The path is under the existing encrypted, persistent state root; nothing is provisioned destructively; the host owns the storage; and history survives guest replacement.
+- **`storage-placement-contract` (active, not yet current).** The retained path follows its fail-closed, does-not-gate, declared-ownership and no-rewrite rules. Per-workload capacity isolation is not part of it today; it is deferred (see "Deferred follow-ups").
+
+**Other state**
+
 - **Disposable state:**
   - Grafana's database (emptyDir). Dashboards and data sources come from Git.
   - Alertmanager's notification log and silences (emptyDir). After a replacement, active alerts re-notify once and silences must be re-created. That is accepted.
@@ -411,7 +519,7 @@ All of these go in `.secrets/hosts/compute-1/` as runtime secrets in namespace `
 | kube-state-metrics | 25m / 64Mi | 250m / 256Mi |
 | blackbox exporter | 10m / 32Mi | 100m / 128Mi |
 | **Guest total** | **≈ 235m / ≈ 0.8Gi** | **≈ 2.9 CPU / ≈ 3.3Gi** |
-| Host: node_exporter, smartctl_exporter, zpool timer | — | 64M `MemoryMax` each |
+| Host: node_exporter, `zpool-status` and `smart-status` timers | — | 64M `MemoryMax` each |
 
 - Against the PR #52 guest (12 CPU / 32 GiB): about 2.5% of memory requested, about 10% at limits.
 - Against today's guest (4 CPU / 12 GiB): about 7% requested, about 27% at limits. It fits, but PR #52 should land first.
@@ -435,28 +543,73 @@ The following dead code was found while planning. It is recorded for a follow-up
 - The `collect-host-addrs` and `collect-ollama-endpoints` policies (`modules/den/policies/pipes.nix:11-17,27-33,46-48`) collect quirks that are never declared (`host-addrs`, `ollama-endpoints`).
 - `compute-runtime` bootstrap still has readiness handling for `Prometheus` and `Alertmanager` objects (`internal/bootstrap/manifests.go:174`, `run.go:286-288`, `modules/den/aspects/kubernetes/bootstrap.nix:68`). The static bootstrap bundle now contains only Argo CD.
 
+## Deferred follow-ups
+
+These are recorded so they are not lost. None is part of this change.
+
+### Per-workload quota-limited retained datasets (a future storage change)
+
+- **What.** Give each retained workload its own ZFS dataset with an enforced capacity limit, instead of a directory under the shared state root on `rpool/safe/persist`. Candidates: Kanidm, Jellyfin config, the Arr databases, Immich, and metrics history.
+- **Why.** Today a runaway workload can fill the pool for all of them, and a free-space floor is not isolation (Decision 12). Once the change lands, metrics moves to its own dataset, and `fleet-monitoring`'s storage requirement can tighten from "bounded" to "isolated".
+- **Relationship to other contracts.** It must keep consumer-visible paths stable, so that a workload sees the same guest path before and after its move (`storage-placement-contract`, "Consumer-visible storage paths are stable and semantic"). It must also keep the fail-closed, does-not-gate, declared-ownership and no-rewrite rules of that change, and the encryption, provisioning and ownership rules of `storage-foundations`.
+- **Open questions for that change:**
+  - **Granularity.** One dataset per workload, per retained path, or per class of data?
+  - **Quota versus reservation.** `quota` or `refquota` caps a workload. A `reservation` protects it from others, but sets space aside up front. Each workload needs one, both, or neither.
+  - **Guest attachment.** Nested mounts do not show through: the state root reaches the guest as one non-recursive Incus disk device, so a dataset mounted inside it is invisible, and the guest would see, and write to, the empty directory underneath. The options are one Incus device per dataset, each with its own `required` and propagation semantics, or a recursive `rslave` state device with per-dataset fail-closed markers.
+  - **ID mapping.** How ownership is set through the guest idmap at provisioning, and how it stays stable across guest replacement.
+  - **Migration of existing retained paths.** Copy or rename, the downtime per workload, changes to static PV paths, and rollback.
+  - **Snapshots and backups.** The snapshot policy per dataset, how snapshots count against `quota` versus `refquota`, and how this fits the backup ownership that `storage-placement-contract` leaves to Preserve.
+  - **Provisioning.** Disko creates datasets only at install time, so live hosts need an explicit, two-phase provisioning step, like `disk.luks-storage`.
+
+### Active channel checks
+
+- **Gap.** Delivery failures are detected only on send attempts (spec, delivery requirement). A channel that breaks while idle is found at its next notification.
+- **Options considered:**
+
+  | Option | How | For | Against |
+  | --- | --- | --- | --- |
+  | **Silent daily probe through Alertmanager (recommended)** | An always-firing `AlertChannelProbe` rule routes, ahead of the severity routes, to a `probe` receiver with `repeat_interval: 24h` and `send_resolved: false`. The receiver holds a Pushover config at priority −2, which Pushover delivers without any notification, and a Telegram config with `disable_notification: true`. A failed send raises `AlertDeliveryFailing` through the other channel. | Exercises the real path: Alertmanager's own integration configs, credential files, egress and the provider. No new component, image or secret handling. A broken channel is found within about 24 hours and 15 minutes. | One silent message per channel per day. The interval trades clutter against detection time. |
+  | Validation CronJob | A CronJob calls Pushover's `users/validate.json` and Telegram's `getMe` and `getChat`, and pushes `homelab_alert_channel_check_success{channel}` into VictoriaMetrics. | No messages in either channel. | A new image, script, NetworkPolicy and write path into the store. It checks credentials, not Alertmanager's configuration. The Telegram token is in the request URL, so nothing may log URLs. |
+
+- **Recommendation.** Add the silent daily probe as the first follow-up. It is a few lines of routing and one rule. It needs no spec change, because the spec's send-attempt wording already covers it.
+
+### Further dashboards
+
+Argo CD (Application health and sync history), cert-manager, SMART, blackbox (probe latency and certificate expiry) and VictoriaMetrics self-monitoring. Each is vendored with its source, revision and hash, as in Decision 9.
+
+### Generalized per-route native sign-in
+
+If Grafana's client is added as a sibling of the Argo CD case (Decision 9), turn both into one declared per-route setting later, with Argo CD's generated objects and identity tests unchanged.
+
+### Already recorded elsewhere
+
+External probing of the public routes, backups and recovery monitoring, and declarative healthchecks.io configuration (Non-Goals; proposal.md, Non-goals).
+
 ## Risks / Trade-offs
 
 - [Monitoring dies with the guest, so a guest outage arrives as "heartbeat down" with no detail.] → Accepted. The watchdog guarantees notice. Retained metrics history lets the cause be read after recovery. Revisit placement when the fleet gains a second host.
 - [Probes start inside the guest, so they miss failures in the host DNAT, LAN DNS, router or public edges.] → Accepted for this change and documented. External probing of the public routes (`idm`, `argocd`, `grafana`) is a follow-up change, as the owner decided.
 - [Grafana is published on the internet, so its sign-in and its software are exposed to attackers.] → Two layers, both admin-only through Kanidm (Decision 9). The Gateway SecurityPolicy stops every unauthenticated request before it reaches Grafana, so Grafana's own attack surface is visible only to signed-in admins. The image is pinned and updated through Git. No other monitoring endpoint is published. Argo CD already runs this way.
 - [Pushover receives warnings too, so noisy warnings cost attention on the primary channel.] → Warnings use normal priority and respect quiet hours, and repeat at most every 24 hours. Tune or retire noisy warning rules in the first two weeks.
-- [Binding to the bridge address fails if the bridge does not exist yet. If a unit failure at switch time counts as activation failure, deploy-rs could roll back.] → Order after Incus network creation, restart on failure, and keep the units outside activation dependencies. Task 2.4 proves activation succeeds with the bridge absent.
+- [Binding to the bridge address fails if the bridge does not exist yet. If a unit failure at switch time counts as activation failure, deploy-rs could roll back.] → Order after Incus network creation, restart on failure, and keep the units outside activation dependencies. Task 2.6 proves activation succeeds with the bridge absent.
 - [Wave 5–6 placement must stay last as Applications are added (PR #25).] → An evaluation check fails on any non-monitoring wave ≥ 5.
 - [Upstream dashboards may assume Prometheus Operator labels.] → Pin them, and adjust the label selectors once in the vendored JSON. The overview dashboard is ours.
 - [Noise from routine restarts or syncs.] → `for` windows, inhibition and grouping. Tune severities during the first two weeks without changing the spec bounds.
-- [The SMART exporter needs raw device access on the host.] → The NixOS module grants only the needed capabilities and device access. It binds to the bridge address only, and the firewall limits it to the guest.
+- [SMART collection needs raw device access on the host.] → It runs in the `smart-status` oneshot, not a listening service. The unit gets only the device access it needs for the declared by-id paths, and it writes only `smart.prom`.
+- [The fresh-data heartbeat depends on chosen metric names (`vm_rows_added_to_storage_total`, `kubelet_running_pods`, `machine_cpu_cores`, `kube_node_info`, `node_time_seconds`). If one is renamed in an upgrade, its term goes empty.] → For the storage counter, that stops the heartbeat: a false alarm that is loud and safe. For a single core-source metric, the other three keep the heartbeat alive, and `TelemetrySourceDown` does not depend on the metric name. Rule unit tests (task 4.1) pin the names, so an upgrade that changes one fails the check before deployment.
+- [Metrics storage is not isolated. Monitoring can grow into shared pool space up to the floor, and another workload filling the pool stops monitoring.] → Accepted for now and stated in the spec. Retention bounds normal growth to about 8.4 GiB; `MonitoringStorageGrowth` catches abnormal growth at 20 GiB; the 50 GiB floor keeps monitoring from taking the pool's last space. Real isolation is the deferred per-workload dataset change.
+- [Missing retained storage silently stops metrics history.] → It does not stay silent: VictoriaMetrics fails closed, the heartbeat stops, and healthchecks.io notifies the owner. The runbook explains how to tell this from other heartbeat losses: the VictoriaMetrics pod is waiting on its volume or its marker file.
 - [The account configuration of healthchecks.io, Pushover and Telegram is outside the declaration.] → The runbook documents the exact check period and grace, the integrations, and how to rotate each credential.
 
 ## Migration Plan
 
-1. **Host.** Add the host telemetry aspect and quirk consumer, deploy `hvn-hyp1` (operator), and confirm the exporters answer from the guest and not from the LAN.
+1. **Host.** Add the host telemetry aspect, the status timers and the quirk consumer, with the disk IDs from task 2.1. The operator deploys `hvn-hyp1`. Confirm the exporter answers from the guest and not from the LAN (task 10.1).
 2. **External accounts and secrets (owner, one time, tasks section 9).** Create the Pushover application, the dedicated Telegram bot and its chat, and the healthchecks.io check (5 min period, 10 min grace, Pushover and Telegram integrations). Run `agenix edit` for the five delivery secrets.
 3. **Alerting core.** Merge `monitoring-retained` and `monitoring` without the Grafana route. Confirm the heartbeat reaches healthchecks.io, that a test critical alert reaches both channels and bypasses Pushover quiet hours, and that a test warning reaches both channels at normal priority.
-4. **Dashboards.** Merge the identity generalization, the public Grafana route and Grafana's sign-in. From outside the household network, confirm that an unauthenticated request is redirected to Kanidm and never reaches Grafana, that an admin gets in, and that a non-admin is denied.
+4. **Dashboards.** Merge Grafana's per-route Kanidm client (Decision 9), the public Grafana route and Grafana's sign-in. From outside the household network, confirm that an unauthenticated request is redirected to Kanidm and never reaches Grafana, that an admin gets in, and that a non-admin is denied.
 5. **Acceptance drills.** Run the drills in tasks section 10.
 
-**Rollback.** Remove the monitoring aspects from `prod-home`. Argo prunes `monitoring`, while the retained namespace and PV stay protected. Revert the host aspect to close the exporter ports. Nothing else depends on monitoring.
+**Rollback.** Remove the monitoring aspects from `prod-home`. Argo prunes `monitoring`, while the retained namespace and PV stay protected. Revert the host aspect to close the exporter port. The retained path and its history stay on the host; rollback never deletes them. Nothing else depends on monitoring.
 
 ## Resolved Questions
 
@@ -467,20 +620,28 @@ The owner answered every open question in the first draft. Each answer is folded
 3. **Severity of a single OOM kill:** critical. The `fleet-monitoring` workload requirement now says so. (Decision 5)
 4. **Time bounds:** confirmed as proposed. (Decision 5)
 5. **Grafana exposure:** `public`, behind Kanidm, like Argo CD. The Gateway requires admin sign-in before any request reaches Grafana, and Grafana signs in through the same client with strict role mapping and no local or anonymous sign-in. `access-control` gains a requirement for the entrance layer. (Decision 9)
-6. **Retention:** 90 days with a 50 GiB free-space floor. A dedicated dataset may come later. (Decision 12)
+6. **Retention:** 90 days on a retained path, with a 50 GiB free-space floor. Per-workload quota-limited datasets are deferred to their own storage change. The spec states plainly that metrics storage is bounded but not isolated. (Decision 12)
 7. **Watchdog provider:** hosted healthchecks.io, free tier. Declarative check configuration may come later. (Decision 8)
-8. **Disk scope:** SMART on all physical disks, including the unused `sdc`, `sdf` and `sdg`, except USB and virtual devices. (Decision 4)
+8. **Disk scope:** SMART on all physical disks, including the unused `sdc`, `sdf` and `sdg`, except USB and virtual devices. After review, the disks are declared in host data by stable by-id path, and each must keep reporting. (Decision 4)
 9. **Legacy gocryptfs mounts (media1–3):** not required mounts. Only media4's LUKS2 and XFS mount and the MergerFS pool `/srv/media/data` are. Others can be added through one declared list. (Decision 4)
 10. **Free-space thresholds:** 10% warning and 5% critical. (Decision 5)
 11. **External probing of the public routes:** a follow-up change. (Non-Goals, Risks)
 12. **Backups and recovery monitoring:** a future change. (proposal.md, Non-goals)
 
+The owner's review of PR #54 then asked for four more changes, folded in as follows:
+
+- **Watchdog correctness:** the heartbeat now requires fresh data end to end. (spec: loss of monitoring; Decision 8)
+- **Storage:** an honest bound instead of a claimed isolation: retention, a free-space floor with alerts before it, a growth alert, and fail-closed behavior on the existing retained path. Dedicated datasets are deferred. (spec: metrics history storage; Decision 12)
+- **Evicted and finished pods:** `KubePodNotReady` excludes `Failed` and `Succeeded` pods, and evictions alert once as a warning. (spec: workload failures; Decision 5)
+- **Scope cuts:** a minimal dashboard set, active channel checks deferred, and the smallest Grafana sign-in change. (Decisions 6 and 9; Deferred follow-ups)
+- **Missing telemetry:** freshness of the textfile producers, and declared pools and disks that must keep reporting. (spec: missing telemetry; Decisions 4 and 5)
+- **Alert semantics:** terminal Job failure only; delivery failures detected on send attempts. (spec: workload failures, delivery; Decisions 5 and 6)
+
 ## Open Questions
 
-None block this change. These are later work, with no decision needed now:
+None block this change.
 
-- The name and scope of the future backups and recovery monitoring change.
-- When to give monitoring its own ZFS dataset with a quota.
-- Whether to declare the healthchecks.io check through its management API.
-- The scope of the follow-up change for external probing of the public routes.
+- **SMART collection by a timer instead of `smartctl_exporter`.** Accepted in principle by the owner (Decision 4). Nothing found since argues against it.
 - Implementation detail to settle in task 4.2: whether the pinned Alertmanager reads the Telegram `chat_id` from a file, or needs the init-container fallback in Decision 6.
+
+Later work, with no decision needed now, is listed under "Deferred follow-ups".
