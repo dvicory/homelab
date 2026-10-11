@@ -36,6 +36,7 @@ independently syncing child Applications.
 | Service | Exposure | Canonical URL | Secondary URL | Backend |
 | --- | --- | --- | --- | --- |
 | `argocd` | `public` | `https://argocd.plus2.danielvicory.dev` | `https://argocd.backup.plus2.danielvicory.dev` | `argocd/argocd-server:80` |
+| `grafana` | `public` | `https://grafana.plus2.danielvicory.dev` | `https://grafana.backup.plus2.danielvicory.dev` | `monitoring/grafana:80` |
 | `idm` | `public` | `https://idm.plus2.danielvicory.dev` | `https://idm.backup.plus2.danielvicory.dev` | `identity/kanidm:443` |
 | `jellyfin` | `private` | `https://jellyfin.plus2.danielvicory.dev` | `https://jellyfin.backup.plus2.danielvicory.dev` | `jellyfin/jellyfin:8096` |
 | `prowlarr` | `public` | `https://prowlarr.plus2.danielvicory.dev` | `https://prowlarr.backup.plus2.danielvicory.dev` | `media/prowlarr:9696` |
@@ -94,6 +95,7 @@ outputs, images, documentation, or logs.
 | `identity/kanidm-provision` | `identity--kanidm-provision--idm-admin-password` → `idm-admin-password` | `Opaque` |
 | `jellyfin/jellyfin-admin` | `jellyfin--jellyfin-admin--password` → `password` | `Opaque` |
 | `media/media-runtime` | `media--media-runtime--PROWLARR_API_KEY` → `PROWLARR_API_KEY`, `media--media-runtime--RADARR_API_KEY` → `RADARR_API_KEY`, `media--media-runtime--SABNZBD_API_KEY` → `SABNZBD_API_KEY`, `media--media-runtime--SEERR_API_KEY` → `SEERR_API_KEY`, `media--media-runtime--SONARR_API_KEY` → `SONARR_API_KEY` | `Opaque` |
+| `monitoring/grafana-admin` | `monitoring--grafana-admin--secret-key` → `secret-key` | `Opaque` |
 
 ## Certificates
 
