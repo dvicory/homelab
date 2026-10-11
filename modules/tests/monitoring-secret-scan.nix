@@ -20,8 +20,8 @@
               echo "generated output above contains a monitoring credential value" >&2
               exit 1
             fi
-            # Grafana's administrator password may come only from a Secret.
-            if grep -rlPz 'GF_SECURITY_ADMIN_PASSWORD\n\s*value:' generated/manifests/prod-home; then
+            # Grafana's administrator password may only be read from a file.
+            if grep -rlPz 'GF_SECURITY_ADMIN_PASSWORD\n\s*value: (?!\$__file\{)' generated/manifests/prod-home; then
               echo "Grafana's administrator password is set inline" >&2
               exit 1
             fi

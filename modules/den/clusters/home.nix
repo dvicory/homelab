@@ -55,6 +55,17 @@ in
         // {
           displayName = "Argo CD";
         };
+      grafana =
+        (route "grafana" "monitoring" "grafana" 80 "admin" "public" {
+          "app.kubernetes.io/instance" = "grafana";
+          "app.kubernetes.io/name" = "grafana";
+        })
+        // {
+          displayName = "Grafana";
+          # Nothing in the monitoring namespace connects to Grafana, so only
+          # the Gateway proxy may.
+          sameNamespaceIngress = false;
+        };
       # Radarr, Sonarr, Prowlarr and SABnzbd have no login of their own.
       # The media aspect admits their declared in-cluster clients, so their
       # Gateway policies admit only the Gateway proxy.
