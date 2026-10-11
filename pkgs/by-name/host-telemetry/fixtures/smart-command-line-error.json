@@ -1,0 +1,22 @@
+{
+  "json_format_version": [
+    1,
+    0
+  ],
+  "smartctl": {
+    "version": [
+      7,
+      5
+    ],
+    "argv": [
+      "smartctl"
+    ],
+    "exit_status": 1,
+    "messages": [
+      {
+        "string": "UNRECOGNIZED OPTION",
+        "severity": "error"
+      }
+    ]
+  }
+}
