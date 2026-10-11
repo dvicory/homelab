@@ -63,27 +63,27 @@ This section is a plain summary for the owner.
 | --- | --- | --- |
 | VictoriaMetrics (single-node) | cluster, `monitoring` namespace | Collects metrics every 30 s from everything below and keeps 90 days of history on host-retained ZFS storage. |
 | vmalert | cluster | Evaluates alert rules every 30 s against the stored metrics. |
-| Alertmanager | cluster | Groups, de-duplicates and routes alerts. Sends to Pushover and Telegram, and pings healthchecks.io with the heartbeat. |
-| Grafana | cluster, `grafana.<domain>` | Dashboards. Admins only, through Kanidm sign-in. |
+| Alertmanager | cluster | Groups, de-duplicates and routes alerts. Sends every alert to Pushover and Telegram, and pings healthchecks.io with the heartbeat. |
+| Grafana | cluster, `grafana.<domain>` | Dashboards, reachable from anywhere like Argo CD. Admins only: the Gateway requires Kanidm admin sign-in first, then Grafana signs the admin in through Kanidm too. |
 | kube-state-metrics | cluster | Reports Kubernetes object state: restarts, OOM kills, readiness, Jobs. |
 | blackbox exporter | cluster | Probes Jellyfin, Kanidm and Argo CD through the gateway, and reads the certificates they serve. |
 | kubelet / cAdvisor | guest (already running) | Reports per-container CPU, memory and OOM events. |
 | Argo CD and cert-manager metrics | cluster (already running) | Report Application health and sync status, and certificate expiry and readiness. |
 | node_exporter | host | Reports host CPU, memory, filesystems, mounts and systemd unit state. |
 | ZFS status check | host | A 2-minute timer that records pool state, device errors and scrub results. |
-| smartctl_exporter | host | Reports SMART and SCSI health for every physical disk. |
+| smartctl_exporter | host | Reports SMART and SCSI health for every physical disk, including unused ones. USB and virtual devices are excluded. |
 | healthchecks.io | outside the fleet | Expects a heartbeat every 5 minutes. If the heartbeat stops, it alerts you through Pushover and Telegram. |
 
-**Example alerts** (C means critical: Pushover and Telegram. W means warning: Telegram only.)
+**Example alerts** (C means critical: Pushover at priority 1, which bypasses quiet hours, and Telegram. W means warning: Pushover at normal priority, which respects quiet hours, and Telegram.)
 
-- C `KubeContainerOOMKilled`: "jellyfin/jellyfin container `jellyfin` was OOMKilled (limit 4Gi) and restarted." This is the alert the Jellyfin incident would have produced.
+- C `KubeContainerOOMKilled`: "jellyfin/jellyfin container `jellyfin` was OOMKilled (limit 4Gi) and restarted." This is the alert the Jellyfin incident would have produced. A single kill is critical.
 - C `KubePodCrashLooping`, C `KubePodNotReady`, W `KubeContainerRestarted`, W `KubeJobFailed`.
 - C `ArgoApplicationDegraded`, W `ArgoApplicationOutOfSync`.
 - C `HostZpoolUnhealthy`: "rpool is DEGRADED."
 - C `HostZpoolDeviceErrors`, C `HostZpoolScrubErrors`, W `HostZpoolScrubOverdue`.
 - C `HostDiskSmartFailing`: "sdd (wwn-0x5000cca27061f6b4) reports SMART FAILED."
 - C `HostRequiredMountMissing`: "/srv/media/data (mergerfs) is not mounted."
-- W/C `HostFilesystemLowSpace`, W `HostSystemdUnitFailed`.
+- W/C `HostFilesystemLowSpace` (W below 10% free, C below 5%), W `HostSystemdUnitFailed`.
 - C `EndpointDown`: "jellyfin.<domain> has not answered for 5 minutes."
 - W `CertificateExpiringSoon` (21 days left), C at 14 days, W `CertificateNotReady`.
 - W `TelemetrySourceDown`: "host node_exporter on hvn-hyp1 is not reporting."
@@ -99,6 +99,31 @@ This section is a plain summary for the owner.
 - **Certificates and endpoints:** probe latency and success, and days until each certificate expires.
 - **Monitoring self:** VictoriaMetrics ingestion, disk use, series count, and rule evaluation.
 
+## What lives in Nix and what doesn't
+
+Most of monitoring is declared in this repository and rendered from it. Credential values are in Git only in encrypted form. A small amount of account setup and runtime state lives outside Nix.
+
+**Declared in Nix and rendered:**
+
+- **Deployments and charts.** Charts and images are pinned (version and hash, `tag@digest`) and rendered to manifests under `generated/manifests/prod-home/`. Argo CD syncs those manifests.
+- **Alert rules.** Rendered as Prometheus-format YAML and unit-tested in a flake check (Decision 5).
+- **Scrape targets.** Host exporters declare themselves through the `prometheus-targets` quirk; cluster targets are derived from the cluster declaration (Decisions 3 and 4).
+- **Alertmanager routing.** Routes, inhibition, grouping and templates (Decision 6). Credentials appear only as file paths.
+- **Grafana data sources and dashboards.** Dashboard JSON lives in the repository under `assets/monitoring/dashboards/` and is provisioned read-only (Decision 9).
+- **Host exporters.** NixOS services on `hvn-hyp1`, plus the firewall rule that admits only the guest (Decision 4).
+- **The Kanidm client for Grafana.** Identity derives it from Grafana's route, as for every administrator route (Decision 9).
+- **Retention and sizes.** The retention period, the free-space floor, the claim size and every resource limit (Decisions 12 and 14).
+
+**Encrypted in Git:**
+
+- **Credential values.** The Pushover token and user key, the Telegram bot token and chat ID, and the heartbeat URL are agenix secrets that the owner supplies with `agenix edit`. Grafana's admin password and secret key are agenix secrets too, but agenix-rekey's `alnum-no-newline` generator creates them, so nobody types them. `compute-stage-secrets` stages all of them into the guest (Decision 13).
+
+**Outside Nix:**
+
+- **One-time manual setup by the owner.** Creating the Pushover application, the dedicated Telegram bot and its chat, and the healthchecks.io check with its Pushover and Telegram integrations. Tasks 9.1–9.4 list the steps, and the runbook records the exact settings. Declaring the healthchecks.io check may come later.
+- **Runtime state.** Metrics data on the retained path, Alertmanager silences and notification log, and Grafana sessions and database. Only metrics data survives guest replacement (Decision 12).
+- **The Grafana OIDC client secret.** Kanidm generates it, and identity provisioning publishes it into `monitoring/grafana-oidc` at runtime, as for Argo CD. The client itself is declared; only its secret value is runtime state.
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -110,9 +135,9 @@ This section is a plain summary for the owner.
 
 **Non-Goals:**
 
-- Probing household hostnames from outside the LAN, and testing the host DNAT path end to end. See Risks.
+- Probing household hostnames from outside the LAN, and testing the host DNAT path end to end. That is a follow-up change. See Risks.
 - Alerts specific to an application, such as Jellyfin's own `/metrics` or Kanidm's `/stats/prometheus`.
-- Managing healthchecks.io, Pushover or Telegram account configuration declaratively.
+- Managing healthchecks.io, Pushover or Telegram account configuration declaratively. Declaring the healthchecks.io check may come later.
 - Cleaning up the dead code listed under "Cleanup note".
 
 ## Decisions
@@ -164,7 +189,7 @@ Monitoring runs in the cluster as Argo Applications. An external heartbeat check
 
 - **New host aspect** (working name `services.host-telemetry`, included by `hvn-hyp1`). It adds three sources:
   - `services.prometheus.exporters.node` on port 9100, with the `systemd`, `filesystem`, `zfs` and `textfile` collectors.
-  - `services.prometheus.exporters.smartctl` on port 9633. It polls every 15 minutes and excludes the USB IDSDM and iDRAC virtual devices. SAS drives report SCSI health and grown defects rather than ATA attributes, so the rules use `smartctl_device_smart_status` and the SCSI counters.
+  - `services.prometheus.exporters.smartctl` on port 9633. It polls every 15 minutes. It covers every physical disk, including the unused `sdc`, `sdg` (old ZFS labels) and the blank `sdf`, and excludes USB devices (the IDSDM) and virtual devices (iDRAC). SAS drives report SCSI health and grown defects rather than ATA attributes, so the rules use `smartctl_device_smart_status` and the SCSI counters.
   - A `zpool-status` oneshot on a 2-minute timer. It runs `zpool status -j -p` (no root needed) and atomically writes `zpool.prom` into node_exporter's textfile directory. That file holds pool state, per-device read, write and checksum errors, scan state, last scrub end time and scrub errors.
 - **Exporter binding.** Both exporters bind to the bridge address from host data (`settings.virtualization.compute`: the network's host address), not to a wildcard.
   - The units order after Incus has created the bridge, and use `Restart=always` with `RestartSec=10s`.
@@ -177,11 +202,15 @@ Monitoring runs in the cluster as Argo Applications. An external heartbeat check
   - exposes the resolved list, with the bridge address filled in, as a read-only NixOS option (for example `homelab.monitoring.scrapeTargets`).
 - **How the cluster reads the targets.** The cluster monitoring aspect reads that option from `inputs.self.nixosConfigurations.${cluster.hostName}`. It is pure evaluation of repository state, as `identity.nix` already does for the guest's `pkgs`, so `fleet-composition`'s independent-evaluation rule holds.
 - **Required mounts.** The host consumer also publishes the list of required mounts derived from host data: each `services.mergerfs.pools` mountpoint and each provisioned `disk.luks-storage` mountpoint. `HostRequiredMountMissing` alerts on `absent(node_filesystem_size_bytes{mountpoint=...})` for each one. New pools and disks are then covered without editing rules.
-  - The legacy gocryptfs mounts (media1–3) are included while they are declared. See Open questions.
+  - On `hvn-hyp1` today the list is exactly `/srv/media/data` (MergerFS) and `/mnt/storage-clear/media4` (LUKS2 and XFS).
+  - The legacy gocryptfs mounts (media1–3) are not required mounts, as the owner decided. They are not in `disk.luks-storage`, so the derivation leaves them out without a special case.
+  - To cover another mount later, add its mountpoint to one declared list in the host telemetry aspect (working name `extraRequiredMounts`, empty today). A legacy disk that is converted to `disk.luks-storage` joins the list by itself.
 
 ### 5. Alert rules and time bounds
 
 Collection runs every 30 s and vmalert evaluates every 30 s. Alertmanager uses `group_wait: 30s` and `group_interval: 2m`. Worst-case delay from condition to notification is therefore `for` + about 3.5 minutes, plus the source's own polling interval for host checks (2 minutes for ZFS status, 15 minutes for SMART). Rule files are Nix-rendered Prometheus YAML, unit-tested with `vmalert-tool unittest` (or `promtool test rules`) in a flake check.
+
+The owner confirmed the spec's time bounds as proposed, decided that a single OOM kill is critical, and set the free-space thresholds at 10% (warning) and 5% (critical) for every monitored filesystem.
 
 | Spec bound | Alert | Expression (sketch) | `for` | Severity |
 | --- | --- | --- | --- | --- |
@@ -198,7 +227,7 @@ Collection runs every 30 s and vmalert evaluates every 30 s. Alertmanager uses `
 | scrub ≤ 1 h | `HostZpoolScrubErrors` | last scrub errors > 0 | 0 | critical |
 | (extra) | `HostZpoolScrubOverdue` | last scrub ended more than 35 days ago | 1h | warning |
 | SMART ≤ 1 h | `HostDiskSmartFailing` | `smartctl_device_smart_status != 1`, or grown defects or pending sectors increased | 0 | critical (status), warning (counters) |
-| space ≤ 1 h | `HostFilesystemLowSpace` | available below declared threshold (default 10% warn, 5% crit) | 30m | warning / critical |
+| space ≤ 1 h | `HostFilesystemLowSpace` | available below 10% (warn) or 5% (crit) of size | 30m | warning / critical |
 | unit ≤ 15 min | `HostSystemdUnitFailed` | `node_systemd_unit_state{state="failed"} == 1` | 10m | warning |
 | endpoint ≤ 10 min | `EndpointDown` | `probe_success == 0` | 5m | critical |
 | cert ≥ 14 d left | `CertificateExpiringSoon` | served or managed expiry under 21 d (warn) or under 14 d (crit) | 1h | warning / critical |
@@ -208,17 +237,19 @@ Collection runs every 30 s and vmalert evaluates every 30 s. Alertmanager uses `
 | delivery | `AlertDeliveryFailing` | `increase(alertmanager_notifications_failed_total{integration=X}[15m]) > 0` | 0 | critical, routed to the other channel |
 | (extra) | `MonitoringStorageLow`, `KubeNodeMemoryPressure` | VictoriaMetrics free disk near its floor; node `MemoryPressure` condition | 15m | warning |
 
-Lowering Jellyfin's limit in a scratch namespace reproduces the motivating incident. Acceptance uses exactly that drill (tasks 9.2).
+Lowering Jellyfin's limit in a scratch namespace reproduces the motivating incident. Acceptance uses exactly that drill (task 10.2).
 
 ### 6. Alertmanager routing and inhibition
 
 - **Grouping.** Group by `alertname`, `namespace`, `host` and `instance`. Use `repeat_interval` 4h for critical and 24h for warning. Send resolved notifications.
 - **Routes, in order:**
   1. `alertname="Watchdog"` goes to `heartbeat` (webhook to the healthchecks.io ping URL), with `group_wait: 0s`, `group_interval: 1m`, `repeat_interval: 5m`, and `continue: false`.
-  2. `AlertDeliveryFailing{integration="pushover"}` goes to `telegram`, and `{integration="telegram"}` goes to `pushover`. Each failing channel is reported only through the other one.
-  3. `severity="critical"` goes to `pushover` and then `telegram` (`continue: true`).
-  4. The default (warning) goes to `telegram`.
-- **Pushover.** Critical alerts use priority 1, which bypasses the owner's quiet hours. Emergency priority 2 is not used, because it needs acknowledgement and retry settings. Messages use a short template: alert name, object, summary and a Grafana link.
+  2. `AlertDeliveryFailing{integration="pushover"}` goes to the receiver `telegram-only`, and `{integration="telegram"}` goes to `pushover-only` (priority 1). Each failing channel is reported only through the other one.
+  3. `severity="critical"` goes to the receiver `critical`, which holds a Pushover config at priority 1 and a Telegram config.
+  4. The default (`severity="warning"`) goes to the receiver `warning`, which holds a Pushover config at priority 0 and a Telegram config.
+  - One receiver with two integrations, rather than two routes with `continue: true`, keeps each alert on a single route, so grouping, repeats and resolution notices stay in step across both channels. Alertmanager still counts failures per integration, which `AlertDeliveryFailing` needs.
+- **Pushover priorities.** Critical alerts use priority 1, which bypasses the owner's quiet hours. Warnings use priority 0 (normal), which respects them. Emergency priority 2 is not used, because it needs acknowledgement and retry settings. Sending warnings to Pushover is the owner's current choice; Telegram-only warnings would need a change to the `fleet-monitoring` delivery requirement.
+- **Messages.** Both channels use a short template: alert name, severity, object, summary and a Grafana link.
 - **Inhibition:**
   - critical inhibits warning with the same `alertname` and object labels (for example free space at 5% versus 10%);
   - `TelemetrySourceDown{job="host-node"}` inhibits `HostRequiredMountMissing` and `HostSystemdUnitFailed` for the same `host`, so one cause raises one alert;
@@ -228,16 +259,16 @@ Lowering Jellyfin's limit in a scratch namespace reproduces the motivating incid
   - If the pinned Alertmanager has no file form for Telegram `chat_id`, an init container fills the chat ID into the config inside a memory-backed volume from the mounted Secret. The value is still not in Git.
 - **Missing credentials.** The Secret volume is mounted with `optional: true`. A missing credential then makes that integration fail at send time, which shows up in `alertmanager_notifications_failed_total` and as missing heartbeats. Alertmanager itself still runs and stays Healthy. This keeps the spec's "fails visibly, never a placeholder" rule without Degrading the Application. Task 4.3 verifies the pinned version's behavior.
 
-### 7. Second channel: Telegram, with Discord as the alternative
+### 7. Second channel: Telegram, with Discord as the recorded alternative
 
-**Recommendation:** Telegram.
+**Decided by the owner:** Telegram, with a dedicated bot.
 
 - The owner already uses it daily for Hermes (`modules/den/aspects/workloads/hermes.nix:620`).
 - Alertmanager has native `telegram_configs`.
 - healthchecks.io has a native Telegram integration.
 - Use a **dedicated bot**, not Hermes's bot. Hermes credentials and outages then stay separate from alerting, and either bot token can be revoked alone.
 
-**Alternative:** Discord.
+**Recorded alternative:** Discord.
 
 - Its webhook URL is a single write-only credential with no bot to create.
 - Alertmanager (`discord_configs`, `webhook_url_file`) and healthchecks.io both support it natively.
@@ -258,24 +289,35 @@ The check uses a 5-minute period and a 10-minute grace. If no ping arrives withi
 
 **Notes on the external service:**
 
-- healthchecks.io's free tier covers this, and its check configuration is operator-owned external state, documented in the runbook.
-- Any equivalent outside the fleet works, for example self-hosted Healthchecks on a VPS, Cronitor or Better Stack heartbeats.
+- **Decided by the owner:** hosted healthchecks.io on the free tier, which covers this one check and its Pushover and Telegram integrations.
+- The owner creates the check by hand (task 9.3), and the runbook records its settings. Declaring the check configuration, for example through the healthchecks.io management API, may come later; this change does not do it.
+- Recorded alternatives outside the fleet: self-hosted Healthchecks on a VPS, Cronitor, or Better Stack heartbeats. Switching changes only the heartbeat URL secret and the runbook.
 - An internet outage at home also triggers the watchdog. That is correct: the fleet cannot alert while it is offline.
 
 ### 9. Grafana, sign-in and provisioning from Git
 
 - **Chart.** The Grafana chart moved to `grafana-community/helm-charts` (OCI on ghcr) in January 2026. Pin it with `downloadHelmChart` (version and hash) rather than the frozen nixhelm `grafana/grafana` 10.5.15. Pin the image as `tag@digest`.
-- **Route.** `routes.grafana`: namespace `monitoring`, service `grafana`, `auth = "admin"`, `displayName = "Grafana"`, `pathPrefix = "/"`. Exposure is `private` (recommended; see Open questions). As an administrator route it exists only in identity phase `normal`, per the service-exposure contract. Alerting does not need the route.
+- **Route.** `routes.grafana`: namespace `monitoring`, service `grafana`, `auth = "admin"`, `exposure = "public"`, `displayName = "Grafana"`, `pathPrefix = "/"`. This is the same shape as `routes.argocd` in `modules/den/clusters/home.nix`.
+  - **Why public:** the owner decided to reach Grafana from anywhere, not only from the LAN and tailnet.
+  - The public edges publish it like Argo CD. `public-edge.nix` serves a public `admin` route only in identity phase `normal`.
+  - The Gateway's HTTPRoute for an `admin` route exists only in that phase too. It ships in the `identity-gateway` Application together with its SecurityPolicy, and the policy syncs first (in-Application wave -1, route at 0; `gateway.nix:180`, `identity.nix:339`). Grafana is therefore never served without entrance sign-in.
+  - Alerting does not need the route.
+- **Two layers of sign-in, both required.** Being public does not weaken access: Grafana stays admin-only, through central sign-in, at both layers.
+  1. **Entrance.** Identity gives every `admin` route a Gateway SecurityPolicy (`grafana-admin` in namespace `gateway`) with Kanidm OIDC, as for `argocd-admin`. The Gateway requires Kanidm sign-in by a member of the admin group before it forwards any request to Grafana. Unauthenticated requests from the internet get a redirect to Kanidm and never reach the Grafana pod. Non-admins cannot complete that sign-in, because provisioning grants the client's scopes to the admin group only.
+  2. **Grafana itself.** Grafana signs the user in again through its own generic OAuth, using the same Kanidm client as the route (the shared client below). Role mapping is strict, so only the admin group gets a role. The login form, basic auth and anonymous access are off, so there is no local or anonymous way in.
+  - Passing the entrance alone does not grant Grafana access. This follows the `access-control` rule already applied to Argo CD.
+  - Grafana service accounts and API keys are not created. Even if one existed, the entrance would still demand browser sign-in first, so token-only access from outside is not possible.
+  - Through its data sources, a signed-in admin can query VictoriaMetrics and view or silence alerts in Alertmanager. That is the only path to monitoring data from outside the cluster. The route forwards only to Grafana; VictoriaMetrics, vmalert, Alertmanager and the exporters are never published (Decision 10).
 - **Shared client.** Generalize the Argo CD special case in `identity.nix` into a declared per-route native sign-in: `{ callbackPaths, landingPath, scopes, secrets }`.
   - Identity adds those redirects, scopes, landing and secret targets to the route's client.
   - It adds a Kanidm NetworkPolicy allow for that route's backend pods.
   - Argo CD moves onto the same mechanism.
   - Grafana declares callback `/login/generic_oauth`, scopes `openid profile email groups_name`, and secret `monitoring/grafana-oidc:client-secret`.
-  - Kanidm still lists Grafana once. That satisfies the existing access-control requirement that each administrator application is offered once.
+  - Kanidm still lists Grafana once, although both the entrance and Grafana sign in through it. That satisfies the existing access-control requirement that each administrator application is offered once.
 - **Grafana settings.**
   - Sign-in: `auth.generic_oauth` with `client_id = grafana`, the client secret read from file, the Kanidm authorize, token and userinfo URLs on the canonical identity hostname, and `use_pkce = true`.
   - Roles: `role_attribute_path = contains(groups[*], '<adminGroup>') && 'Admin' || ''` with `role_attribute_strict = true`, so non-admins get no access.
-  - Other sign-in paths: `auth.disable_login_form = true`, `auth.basic.enabled = false`, `auth.anonymous.enabled = false`, `oauth_auto_login = true`.
+  - Other sign-in paths: `auth.disable_login_form = true`, `auth.basic.enabled = false`, `auth.anonymous.enabled = false`, `oauth_auto_login = true`. Because the entrance sign-in already holds a Kanidm session, Grafana's own sign-in usually completes without a second prompt.
   - Cluster DNS already rewrites the identity hostname to the Kanidm Service, so token exchange stays in the cluster.
 - **Local credentials.**
   - The chart's default admin password would be a `randAlphaNum` rendered into Git by nixidy. Instead, `admin.existingSecret` points at a runtime Secret with `generator = "alnum-no-newline"`, like Argo CD's `server.secretkey`.
@@ -300,7 +342,7 @@ The check uses a 5-minute period and a 10-minute grace. If no ping arrives withi
   - vmalert → VictoriaMetrics and Alertmanager;
   - VictoriaMetrics → its scrape targets: kube-state-metrics, blackbox, and self-scrape of monitoring components.
 - **Allows in other namespaces.** Where a target namespace has an ingress policy that selects the target pods, the monitoring Application owns a narrow `allow-from-monitoring` policy on the metrics port only. NetworkPolicies are additive, so removing monitoring removes only these allows. Today no target needs one: the Argo CD controller already allows all namespaces, and cert-manager has no policies.
-- **No other routes.** No HTTPRoute exists for VictoriaMetrics, vmalert, Alertmanager or the exporters. An evaluation check fails if any route targets a monitoring Service other than Grafana.
+- **No other routes.** No HTTPRoute exists for VictoriaMetrics, vmalert, Alertmanager or the exporters, so neither the Gateway nor the public edges, which serve only declared routes, can publish them. An evaluation check fails if any route targets a monitoring Service other than Grafana, or if the Grafana route is not `auth = "admin"`.
 - **Egress.** Alertmanager needs outbound 443 to `api.pushover.net`, `api.telegram.org` and `hc-ping.com`. No egress policies exist in the cluster today, and this change adds none.
 
 ### 11. Failure domain
@@ -321,7 +363,7 @@ The check uses a 5-minute period and a 10-minute grace. If no ping arrives withi
 
 ### 12. Retention and persistence
 
-**Recommendation:** keep history on a retained path, not disposable storage.
+**Decided by the owner:** keep 90 days of history on a retained path, not disposable storage, with a 50 GiB free-space floor. A dedicated dataset may come later.
 
 - **Why:** guest replacement is the routine recovery action (ADR-0008). Disposable history would erase exactly the trends needed after an incident: memory growth before an OOM, disk fill, error counters. The cost is a few GiB on `rpool/safe/persist`.
 - **Layout.**
@@ -329,7 +371,8 @@ The check uses a 5-minute period and a 10-minute grace. If no ping arrives withi
   - A static PV and PVC like `identity-kanidm`, pinned to the compute instance.
   - `-retentionPeriod=90d`.
 - **Size estimate.** About 30k active series at 30 s is about 1,000 samples/s, or 86 M samples/day. At about 0.4–0.8 bytes per sample that is 35–70 MB/day, so 90 days is about 3–6 GiB. The claim is sized at 20Gi; local PV capacity is advisory.
-- **Real bound.** `-storage.minFreeDiskSpaceBytes=50GiB` makes VictoriaMetrics stop accepting writes, and alert through `MonitoringStorageLow`, before it can squeeze the pool. Retained paths are directories, not datasets, so there is no per-path ZFS quota today. See Open questions.
+- **Real bound.** `-storage.minFreeDiskSpaceBytes=50GiB` makes VictoriaMetrics stop accepting writes, and alert through `MonitoringStorageLow`, before it can squeeze the pool. Retained paths are directories, not datasets, so there is no per-path ZFS quota today.
+- **Later: a dedicated dataset.** Giving monitoring its own ZFS dataset with a quota is a later change. It would replace the free-space floor as the hard bound; the retained-path contract and the specs stay the same.
 - **Disposable state:**
   - Grafana's database (emptyDir). Dashboards and data sources come from Git.
   - Alertmanager's notification log and silences (emptyDir). After a replacement, active alerts re-notify once and silences must be re-created. That is accepted.
@@ -392,7 +435,9 @@ The following dead code was found while planning. It is recorded for a follow-up
 ## Risks / Trade-offs
 
 - [Monitoring dies with the guest, so a guest outage arrives as "heartbeat down" with no detail.] → Accepted. The watchdog guarantees notice. Retained metrics history lets the cause be read after recovery. Revisit placement when the fleet gains a second host.
-- [Probes start inside the guest, so they miss failures in the host DNAT, LAN DNS or router.] → Accepted for this change and documented. External probing of the public routes (`idm`, `argocd`) is a candidate follow-up.
+- [Probes start inside the guest, so they miss failures in the host DNAT, LAN DNS, router or public edges.] → Accepted for this change and documented. External probing of the public routes (`idm`, `argocd`, `grafana`) is a follow-up change, as the owner decided.
+- [Grafana is published on the internet, so its sign-in and its software are exposed to attackers.] → Two layers, both admin-only through Kanidm (Decision 9). The Gateway SecurityPolicy stops every unauthenticated request before it reaches Grafana, so Grafana's own attack surface is visible only to signed-in admins. The image is pinned and updated through Git. No other monitoring endpoint is published. Argo CD already runs this way.
+- [Pushover now receives warnings too, so noisy warnings cost attention on the primary channel.] → Warnings use normal priority and respect quiet hours, and repeat at most every 24 hours. Tune or retire noisy warning rules in the first two weeks. Moving warnings off Pushover later is a spec change (Decision 6).
 - [Binding to the bridge address fails if the bridge does not exist yet. If a unit failure at switch time counts as activation failure, deploy-rs could roll back.] → Order after Incus network creation, restart on failure, and keep the units outside activation dependencies. Task 2.4 proves activation succeeds with the bridge absent.
 - [Wave 5–6 placement must stay last as Applications are added (PR #25).] → An evaluation check fails on any non-monitoring wave ≥ 5.
 - [Upstream dashboards may assume Prometheus Operator labels.] → Pin them, and adjust the label selectors once in the vendored JSON. The overview dashboard is ours.
@@ -403,26 +448,36 @@ The following dead code was found while planning. It is recorded for a follow-up
 ## Migration Plan
 
 1. **Host.** Add the host telemetry aspect and quirk consumer, deploy `hvn-hyp1` (operator), and confirm the exporters answer from the guest and not from the LAN.
-2. **External accounts and secrets.** Create the healthchecks.io check (5 min period, 10 min grace, Pushover and Telegram integrations), the Pushover application and the dedicated Telegram bot. Run `agenix edit` for the five delivery secrets.
-3. **Alerting core.** Merge `monitoring-retained` and `monitoring` without the Grafana route. Confirm the heartbeat reaches healthchecks.io and that a test alert reaches both channels.
-4. **Dashboards.** Merge the identity generalization, the Grafana route and Grafana's sign-in. Confirm admin access and non-admin denial.
-5. **Acceptance drills.** Run the drills in tasks section 9.
+2. **External accounts and secrets (owner, one time, tasks section 9).** Create the Pushover application, the dedicated Telegram bot and its chat, and the healthchecks.io check (5 min period, 10 min grace, Pushover and Telegram integrations). Run `agenix edit` for the five delivery secrets.
+3. **Alerting core.** Merge `monitoring-retained` and `monitoring` without the Grafana route. Confirm the heartbeat reaches healthchecks.io, that a test critical alert reaches both channels and bypasses Pushover quiet hours, and that a test warning reaches both channels at normal priority.
+4. **Dashboards.** Merge the identity generalization, the public Grafana route and Grafana's sign-in. From outside the household network, confirm that an unauthenticated request is redirected to Kanidm and never reaches Grafana, that an admin gets in, and that a non-admin is denied.
+5. **Acceptance drills.** Run the drills in tasks section 10.
 
 **Rollback.** Remove the monitoring aspects from `prod-home`. Argo prunes `monitoring`, while the retained namespace and PV stay protected. Revert the host aspect to close the exporter ports. Nothing else depends on monitoring.
 
+## Resolved Questions
+
+The owner answered every open question in the first draft. Each answer is folded into the decision named.
+
+1. **Second channel:** Telegram, with a dedicated bot. Discord stays the recorded alternative. (Decision 7)
+2. **Warnings on Pushover:** yes, for now. Warnings go to Pushover at normal priority, respecting quiet hours, and to Telegram. Critical alerts go to Pushover at priority 1, bypassing quiet hours, and to Telegram. Cross-channel failure reporting stays. The `fleet-monitoring` delivery requirement now says every alert goes to both channels. (Decision 6)
+3. **Severity of a single OOM kill:** critical. The `fleet-monitoring` workload requirement now says so. (Decision 5)
+4. **Time bounds:** confirmed as proposed. (Decision 5)
+5. **Grafana exposure:** `public`, behind Kanidm, like Argo CD. The Gateway requires admin sign-in before any request reaches Grafana, and Grafana signs in through the same client with strict role mapping and no local or anonymous sign-in. `access-control` gains a requirement for the entrance layer. (Decision 9)
+6. **Retention:** 90 days with a 50 GiB free-space floor. A dedicated dataset may come later. (Decision 12)
+7. **Watchdog provider:** hosted healthchecks.io, free tier. Declarative check configuration may come later. (Decision 8)
+8. **Disk scope:** SMART on all physical disks, including the unused `sdc`, `sdf` and `sdg`, except USB and virtual devices. (Decision 4)
+9. **Legacy gocryptfs mounts (media1–3):** not required mounts. Only media4's LUKS2 and XFS mount and the MergerFS pool `/srv/media/data` are. Others can be added through one declared list. (Decision 4)
+10. **Free-space thresholds:** 10% warning and 5% critical. (Decision 5)
+11. **External probing of the public routes:** a follow-up change. (Non-Goals, Risks)
+12. **Backups and recovery monitoring:** a future change. (proposal.md, Non-goals)
+
 ## Open Questions
 
-Each item has a recommended default. None changes the structure of the specs.
+None block this change. These are later work, with no decision needed now:
 
-1. **Second channel:** Telegram (recommended; already used for Hermes) or Discord.
-2. **Warnings on Pushover:** Telegram only (recommended), or Pushover at priority −1 as well? Should critical alerts use priority 1 to bypass quiet hours (recommended)?
-3. **Severity of a single OOM kill:** critical (recommended, given the incident) or warning?
-4. **Time bounds:** confirm the bounds in `fleet-monitoring` (5 / 15 / 20 / 40 minutes, 10 minutes, 1 hour, 14 days, 30 minutes).
-5. **Grafana exposure:** `private` (recommended; reachable on the LAN and tailnet) or `public` like Argo CD.
-6. **Retention:** 90 days with a 50 GiB free-space floor on rpool. Later, give monitoring its own ZFS dataset with a quota?
-7. **Watchdog provider:** hosted healthchecks.io free tier (recommended) or self-hosted outside the fleet. Should its check config be declarative later?
-8. **Disk scope:** monitor SMART on the unused disks (`sdc`, `sdg` with old ZFS labels, and the blank `sdf`)? Recommended yes: all physical disks except USB and virtual devices.
-9. **Legacy gocryptfs mounts (media1–3):** treat them as required mounts while declared (recommended), or only media4 and the mergerfs pool?
-10. **Free-space thresholds:** 10% warning and 5% critical for every filesystem, or absolute thresholds for the 11 TB media disks?
-11. **External probing of the public routes:** add it in a follow-up change?
-12. **Backups and recovery monitoring:** deferred to a future change, as the owner decided. Its name and scope are open.
+- The name and scope of the future backups and recovery monitoring change.
+- When to give monitoring its own ZFS dataset with a quota.
+- Whether to declare the healthchecks.io check through its management API.
+- The scope of the follow-up change for external probing of the public routes.
+- Implementation detail to settle in task 4.2: whether the pinned Alertmanager reads the Telegram `chat_id` from a file, or needs the init-container fallback in Decision 6.
