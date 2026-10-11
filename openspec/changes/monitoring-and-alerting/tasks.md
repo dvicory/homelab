@@ -1,6 +1,6 @@
 ## 1. Contract checks and scaffolding
 
-- [ ] 1.1 Add `modules/tests/monitoring-contracts.nix` with evaluation-only checks. It must fail when:
+- [x] 1.1 Add `modules/tests/monitoring-contracts.nix` with evaluation-only checks. It must fail when:
   - a non-monitoring Application declares sync wave ≥ 5;
   - any monitoring Application is below wave 5;
   - a route targets a monitoring Service other than Grafana, or the Grafana route is not `auth = "admin"`;
@@ -9,23 +9,40 @@
   - the VictoriaMetrics volume is anything other than the static `local` PV on the `monitoring-metrics` retained path, or any monitoring volume uses `DirectoryOrCreate`.
 
   Verify with `nix build path:$PWD#checks.x86_64-linux.monitoring-contracts`, plus one deliberately failing fixture per rule.
-- [ ] 1.2 Add the `kubernetes.services.monitoring` aspect group with two empty Applications: `monitoring-retained` (wave 5, `retained = true`) and `monitoring` (wave 6). Include it in `den.aspects.prod-home`. Verify that the `prod-home-gitops-source` check accepts the `monitoring` namespace in the AppProject destinations, and that 1.1 passes.
+
+  Evidence: `monitoring-contracts` passes on hvn-hyp1 (2026-10-11). Each rule is named after the failure it detects and reads only rendered manifests and evaluated host configuration. The per-rule failing fixtures were dropped in review: they exercised the check, not the system.
+
+- [x] 1.2 Add the `kubernetes.services.monitoring` aspect group with two empty Applications: `monitoring-retained` (wave 5, `retained = true`) and `monitoring` (wave 6). Include it in `den.aspects.prod-home`. Verify that the `prod-home-gitops-source` check accepts the `monitoring` namespace in the AppProject destinations, and that 1.1 passes.
+
+  Evidence: `generated/manifests/prod-home/apps/Application-monitoring.yaml` (wave 6) and `Application-monitoring-retained.yaml` (wave 5); `monitoring` is in the AppProject destinations; `prod-home-gitops-source` and `monitoring-contracts` pass.
 
 ## 2. Host telemetry (hvn-hyp1)
 
 - [ ] 2.1 **Read-only disk-ID inspection (operator; no changes to the host).** On `hvn-hyp1`, list `/dev/disk/by-id/` and `lsblk -o NAME,TYPE,TRAN,MODEL,WWN`. For each of the 9 physical disks (2 rpool NVMe, 7 HGST including the unused `sdc`, `sdf` and `sdg`), record its by-id path: `wwn-0x…` for SAS and SATA, and `nvme-eui.…` for NVMe. Confirm that the IDSDM (USB) and iDRAC virtual devices are absent from the list. Record no serial numbers. Put the result into `hvn-hyp1`'s `expectedDisks`, keyed by readable names, and the commands used into the PR.
-- [ ] 2.2 Add the host telemetry aspect:
+
+  Not checked: this is the operator's task. A read-only cross-check on 2026-10-11 (`ls -l /dev/disk/by-id /dev/disk/by-path`, `lsblk -d -o NAME,TYPE,TRAN,MODEL,WWN`) matched the nine declared paths and showed the IDSDM (USB) and iDRAC (virtual) devices left out. The NVMe drives are declared by path (design.md, Implementation note 2).
+
+- [x] 2.2 Add the host telemetry aspect:
   - node_exporter with the systemd, filesystem, zfs and textfile collectors, bound to the compute bridge's host address from host data, with `MemoryMax`, `CPUQuota` and restart-on-failure;
   - the `expectedDisks` option, and the declared pool list derived from `zfs.rootPool.name`.
 
   Verify by evaluation that `hvn-hyp1`'s listen address equals the bridge address, that no wildcard bind exists, and that no unit is wanted by a target that activation waits on.
-- [ ] 2.3 Add the `zpool-status` oneshot and its 2-minute timer. It writes `zpool.prom` atomically from `zpool status -j -p`, including `homelab_zpool_present{pool}`, and replaces the file only after a successful run. Verify with converter unit tests against recorded JSON for: an ONLINE pool, a DEGRADED pool, device errors, a scrub with errors, and a failing `zpool` command. The last must leave the previous file and its modification time untouched.
-- [ ] 2.4 Add the `smart-status` oneshot and its 15-minute timer. It runs `smartctl --json -a` on each declared by-id path and writes `smart.prom` atomically: health status, SCSI grown defects, ATA pending and reallocated sectors, and `homelab_smart_device_up{disk,id}`. The unit has only the device access it needs. Verify with converter unit tests against recorded `smartctl --json` output for:
+
+  Evidence: `monitoring-contracts` (socket bound to the bridge address from host data, no unit wanted by an activation target); `host-telemetry-runtime` VM test (MemoryMax and CPUQuota on every unit; activation with no bridge).
+
+- [x] 2.3 Add the `zpool-status` oneshot and its 2-minute timer. It writes `zpool.prom` atomically from `zpool status -j -p`, including `homelab_zpool_present{pool}`, and replaces the file only after a successful run. Verify with converter unit tests against recorded JSON for: an ONLINE pool, a DEGRADED pool, device errors, a scrub with errors, and a failing `zpool` command. The last must leave the previous file and its modification time untouched.
+
+  Evidence: `host-telemetry-converters` covers ONLINE, DEGRADED, device errors, scrub errors and a failing `zpool` (previous file and mtime kept; invalid JSON too). A read-only run against the live `rpool` produced the expected series (Implementation note 5).
+
+- [x] 2.4 Add the `smart-status` oneshot and its 15-minute timer. It runs `smartctl --json -a` on each declared by-id path and writes `smart.prom` atomically: health status, SCSI grown defects, ATA pending and reallocated sectors, and `homelab_smart_device_up{disk,id}`. The unit has only the device access it needs. Verify with converter unit tests against recorded `smartctl --json` output for:
   - a healthy SAS drive, a healthy SATA drive and a healthy NVMe drive;
   - a drive reporting FAILED, and a SAS drive whose grown-defect count rose;
   - a declared disk that cannot be opened, which must produce `homelab_smart_device_up 0` while the other disks are still written;
   - a run in which `smartctl` itself fails, which must leave the previous file untouched.
-- [ ] 2.5 Make the aspect emit `prometheus-targets` entries. Add the host consumer aspect, which:
+
+  Evidence: `host-telemetry-converters` covers healthy SAS, SATA and NVMe, a FAILED drive, rising grown defects, an unopenable disk (`homelab_smart_device_up 0`, others still written) and a failing `smartctl` (previous file kept). The fixtures are synthetic; recording real output needs root (Implementation note 5).
+
+- [x] 2.5 Make the aspect emit `prometheus-targets` entries. Add the host consumer aspect, which:
   - renders one nftables input rule admitting only the guest address on the compute interface to the exporter port;
   - exposes, as read-only options, the resolved target list, the required-mount list, the declared pools and the declared disks.
 
@@ -33,14 +50,19 @@
   - the targets and rule text are what `hvn-hyp1`'s data implies, and the rule names no other source or interface;
   - the mount list is exactly `/srv/media/data` and `/mnt/storage-clear/media4`, with no legacy gocryptfs mount (media1–3);
   - the disk list matches task 2.1, and the pool list is `rpool`.
-- [ ] 2.6 Extend an existing host VM test, or add a small one, to show that:
+
+  Evidence: `monitoring-contracts` (firewall rule names only the guest on `incus-compute`; required mounts are exactly `/mnt/storage-clear/media4` and `/srv/media/data`). The rendered rules hold one `HostZpoolMissing` (`rpool`) and nine `HostDiskTelemetryMissing`, one per declared disk (`ConfigMap-vmalert-rules.yaml`).
+
+- [x] 2.6 Extend an existing host VM test, or add a small one, to show that:
   - activation succeeds while the bridge does not exist yet, and the exporter starts once it does;
   - a client on another interface cannot connect to the exporter port, while the guest address can;
   - stopping the `zpool-status` timer leaves `node_textfile_mtime_seconds` for `zpool.prom` unchanged while node_exporter keeps answering.
 
+  Evidence: `host-telemetry-runtime` PASS through its driver on hvn-hyp1: activation exits 0 with no bridge and no failed units; the guest scrapes once the bridge exists; another source on the bridge and a LAN client are refused; with the timer stopped, the `zpool.prom` mtime held for 150 s while node_exporter answered.
+
 ## 3. Cluster collection core
 
-- [ ] 3.1 Pin and render VictoriaMetrics single-node:
+- [x] 3.1 Pin and render VictoriaMetrics single-node:
   - retained path `monitoring-metrics`, with the VictoriaMetrics UID and GID and mode `0700`;
   - a static `local` PV and PVC pinned to the compute instance, in `monitoring-retained`;
   - a read-only hostPath mount of the state-root marker with `type: File`;
@@ -48,7 +70,10 @@
   - the resource limits from design.md.
 
   Verify the generated manifests show the retained `guestPath`, the marker mount, the flags, the limits, and no chart test or hook objects.
-- [ ] 3.2 Render the scrape config from:
+
+  Evidence: `Deployment-victoriametrics.yaml` (flags, limits, marker hostPath `type: File`), `PersistentVolume-monitoring-metrics.yaml` (`local.path: /srv/state/monitoring-metrics`), no Helm hook or test objects under `generated/manifests/prod-home/monitoring/`; `monitoring-contracts` checks the storage rules.
+
+- [x] 3.2 Render the scrape config from:
   - (a) the host's `scrapeTargets` option, read from `nixosConfigurations.${cluster.hostName}`;
   - (b) kubelet and cAdvisor through the node;
   - (c) the Argo CD controller metrics Service;
@@ -58,13 +83,24 @@
   - (g) monitoring self-scrape.
 
   Verify with an evaluation check that compares the rendered jobs to the expected set for `prod-home`.
-- [ ] 3.3 Pin and render kube-state-metrics, with resources excluding `secrets` and `configmaps` and no label or annotation allowlists. Verify the generated Deployment arguments, that its RBAC is read-only, and that `kube_pod_status_phase`, `kube_pod_status_reason` and `kube_job_status_condition` are among the enabled metrics.
-- [ ] 3.4 Pin and render the blackbox exporter with two modules: `native` (2xx on a health path) and `admin` (302 to the identity hostname). Probes go to the gateway NodePort, with SNI and `Host` set per route. Verify the generated probe list covers every route in `cluster.routes`.
-- [ ] 3.5 Set `controller.metrics.enabled = true` and the `ComparisonError` application-condition metric in `argocd.nix`. Verify the generated metrics Service exists and that the existing NetworkPolicy still admits it.
+
+  Evidence: `monitoring-contracts` fails if a scrape job lacks a `TelemetrySourceDown` rule or a Watchdog core source is not scraped. Rendered jobs: host-node, kubelet, cadvisor, argocd, cert-manager, kube-state-metrics, blackbox, victoriametrics, vmalert, alertmanager.
+
+- [x] 3.3 Pin and render kube-state-metrics, with resources excluding `secrets` and `configmaps` and no label or annotation allowlists. Verify the generated Deployment arguments, that its RBAC is read-only, and that `kube_pod_status_phase`, `kube_pod_status_reason` and `kube_job_status_condition` are among the enabled metrics.
+
+  Evidence: `Deployment-kube-state-metrics.yaml` (`--resources` without secrets or configmaps, no allowlists); `monitoring-contracts` (read-only RBAC). Job conditions are `kube_job_failed` and `kube_job_complete` in 2.20 (Implementation note 3).
+
+- [x] 3.4 Pin and render the blackbox exporter with two modules: `native` (2xx on a health path) and `admin` (302 to the identity hostname). Probes go to the gateway NodePort, with SNI and `Host` set per route. Verify the generated probe list covers every route in `cluster.routes`.
+
+  Evidence: `monitoring-contracts` fails if a declared route has no probe; `ConfigMap-blackbox.yaml` has one module per route.
+
+- [x] 3.5 Set `controller.metrics.enabled = true` and the `ComparisonError` application-condition metric in `argocd.nix`. Verify the generated metrics Service exists and that the existing NetworkPolicy still admits it.
+
+  Evidence: `argocd/Service-argocd-application-controller-metrics.yaml`; the existing `NetworkPolicy-argocd-application-controller.yaml` admits the `metrics` port from every namespace.
 
 ## 4. Alert rules, routing and secrets
 
-- [ ] 4.1 Write the rule files from design.md Decisions 5, 8 and 12 as Nix-rendered Prometheus YAML. Render one rule per declared pool, per declared disk and per required mount from the host's options. Add `vmalert-tool unittest` (or `promtool test rules`) cases:
+- [x] 4.1 Write the rule files from design.md Decisions 5, 8 and 12 as Nix-rendered Prometheus YAML. Render one rule per declared pool, per declared disk and per required mount from the host's options. Add `vmalert-tool unittest` (or `promtool test rules`) cases:
   - **Workloads:**
     - a single OOM kill fires as critical within 5 minutes, even though Argo CD reports Healthy;
     - a crash loop fires at 15 minutes and not before.
@@ -97,7 +133,10 @@
   - **Metric names:** confirm `vm_rows_added_to_storage_total`, `vm_free_disk_space_bytes`, `vm_data_size_bytes`, `kubelet_running_pods`, `machine_cpu_cores`, `kube_node_info` and `node_time_seconds` against the pinned versions, and record how the storage counter behaves in read-only mode.
 
   Verify the flake check passes.
-- [ ] 4.2 Render vmalert and the Alertmanager config: severity routes, the Watchdog heartbeat route, cross-channel `AlertDeliveryFailing` routes, inhibition rules, grouping, `send_resolved`, and file-based credential fields. Verify with `amtool check-config` and `amtool config routes test` in a flake check.
+
+  Evidence: `monitoring-rules` passes (vmalert-tool 1.151.0) with every case listed. Metric names: `vm_rows_added_to_storage_total`, `vm_free_disk_space_bytes` and `vm_data_size_bytes` in `monitoring-heartbeat`; `node_time_seconds` and the filesystem and systemd series in `host-telemetry-runtime`; `kubelet_running_pods`, `machine_cpu_cores` and `container_oom_events_total` in `monitoring-k3s-runtime`. `kube_node_info` was not scraped from a running kube-state-metrics. In read-only mode the store refuses writes and the heartbeat stops (`monitoring-heartbeat` part c). Added after review (Implementation note 15): sustained CPU throttling of a container with a CPU limit fires `KubeContainerCPUThrottled` at 15 minutes and resolves when throttling stops, while 10 % throttling and a container without a limit stay silent; a working set at 95 % of its limit fires `KubeContainerMemoryNearLimit` at 10 minutes and resolves when it drops, while 80 % stays silent.
+
+- [x] 4.2 Render vmalert and the Alertmanager config: severity routes, the Watchdog heartbeat route, cross-channel `AlertDeliveryFailing` routes, inhibition rules, grouping, `send_resolved`, and file-based credential fields. Verify with `amtool check-config` and `amtool config routes test` in a flake check.
   - The tests pin the current routing from design.md Decision 6. They also assert the spec floor: every critical alert reaches both channels, at a Pushover priority of at least 1 so quiet hours do not hold it; every warning reaches at least one channel; resolutions are sent. A later routing change in Nix updates the first set and must still pass the second.
   - They cover:
     - critical → Pushover at priority 1 and Telegram;
@@ -106,9 +145,18 @@
     - Pushover failure → Telegram only, and Telegram failure → Pushover only (priority 1);
     - the inhibitions in Decision 6, including a down host node_exporter suppressing the stale-file and missing-item alerts.
   - Also settle whether the pinned Alertmanager reads Telegram `chat_id` from a file, or needs the init-container fallback in design.md Decision 6.
+
+  Evidence: `monitoring-alertmanager` passes: `amtool check-config`, `amtool config routes test` for each route, and the delivery floor. The pinned Alertmanager reads `chat_id_file` (Implementation note 7).
+
 - [ ] 4.3 Declare the five delivery runtime secrets and the two Grafana generator secrets in `compute-resources.runtimeSecrets`. Mount the delivery Secret with `optional: true`. Verify by evaluation that the host's `runtimeSecrets` contains them. Verify with a container-level test that the pinned Alertmanager starts without the files and records a failed notification, rather than crashing or using a placeholder.
-- [ ] 4.4 Add a check that the generated manifests, `docs/operations.md` and the rendered Alertmanager and Grafana configs contain only secret paths and references. They must contain no credential field with an inline value and no `hc-ping.com/<uuid>` pattern. Verify the check fails on a planted inline value.
-- [ ] 4.5 **Heartbeat VM test with a fake receiver.** Add a NixOS VM test (`modules/tests/monitoring-heartbeat.nix`) that runs the pinned VictoriaMetrics single, vmalert and Alertmanager with the rendered Watchdog rule and heartbeat route. Two parts are faked:
+
+  Not checked. The delivery Secret is mounted `optional: true`, and `monitoring-alertmanager` shows Alertmanager running with no credential files and counting failed notifications for pushover, telegram and webhook. Grafana's secret key is generated, committed and declared, and the administrator password is no longer a secret (Implementation note 6). The five delivery secrets are declared only once their encrypted files exist, so the host's `runtimeSecrets` lists them only after task 9.4, and `hvn-hyp1` evaluates only after the owner rekeys.
+
+- [x] 4.4 Add a check that the generated manifests, `docs/operations.md` and the rendered Alertmanager and Grafana configs contain only secret paths and references. They must contain no credential field with an inline value and no `hc-ping.com/<uuid>` pattern. Verify the check fails on a planted inline value.
+
+  Evidence: `monitoring-secret-scan` passes. A one-off run on 2026-10-11 caught a planted `hc-ping.com` URL in `docs/operations.md` and a planted inline Grafana `client_secret`; inline Alertmanager credential fields are checked in `monitoring-alertmanager`.
+
+- [x] 4.5 **Heartbeat VM test with a fake receiver.** Add a NixOS VM test (`modules/tests/monitoring-heartbeat.nix`) that runs the pinned VictoriaMetrics single, vmalert and Alertmanager with the rendered Watchdog rule and heartbeat route. Two parts are faked:
   - small HTTP servers that serve fixed metrics under the four core-source job names;
   - a fake heartbeat receiver that records every request and its body.
 
@@ -119,20 +167,28 @@
   - **(d) One stale source:** stop one fake source. Pings continue, and a second fake receiver on the critical route gets `TelemetrySourceDown`.
   - **(e) Recovery:** restore the sources, and pings resume.
 
+  Evidence: `monitoring-heartbeat` PASS through its driver on hvn-hyp1 (2026-10-11): healthy pings 40 s apart; the last ping came 197 s after all four sources were blocked and 194 s after the store turned read-only, while the query API, vmalert and Alertmanager kept answering; no resolved request reached the receiver; with one source stopped, `TelemetrySourceDown` reached the critical receiver in 342 s and pings continued; pings resumed on recovery.
+
 ## 5. Dashboards and sign-in
 
-- [ ] 5.1 Give the `grafana` route's Kanidm client Grafana's native sign-in: the callback `/login/generic_oauth`, Grafana's landing page, the scopes, the Secret target `monitoring/grafana-oidc`, and a Kanidm NetworkPolicy allow for Grafana's pods.
+- [x] 5.1 Give the `grafana` route's Kanidm client Grafana's native sign-in: the callback `/login/generic_oauth`, Grafana's landing page, the scopes, the Secret target `monitoring/grafana-oidc`, and a Kanidm NetworkPolicy allow for Grafana's pods.
   - Start with a Grafana case beside Argo CD's existing case in `identity.nix`.
   - Replace both with a shared per-route helper only if Argo CD's generated Kanidm client, Secret targets and NetworkPolicy stay byte-for-byte unchanged, and `modules/tests/identity-contracts.nix` passes with no edit to its Argo CD assertions. Otherwise keep the sibling case; the generalization is a deferred cleanup (design.md, Deferred follow-ups).
 
   Verify that identity contracts pass and that Argo CD's generated identity objects are unchanged.
-- [ ] 5.2 Add `routes.grafana` (`auth = "admin"`, `exposure = "public"`, `displayName = "Grafana"`, like `routes.argocd`). Verify by evaluation that:
+
+  Evidence: Sibling case in `identity.nix`. `identity-contracts` passes with no edit. Against `main`, Argo CD's entries in `clients.json` and `state.json` and its NetworkPolicy rule are unchanged; only the `grafana` client and its rule are added.
+
+- [x] 5.2 Add `routes.grafana` (`auth = "admin"`, `exposure = "public"`, `displayName = "Grafana"`, like `routes.argocd`). Verify by evaluation that:
   - Kanidm gets one `grafana` client, whose landing is Grafana's sign-in and whose redirects include both the Gateway callback and `/login/generic_oauth`;
   - the provisioning Job publishes `monitoring/grafana-oidc`;
   - the `identity-gateway` Application contains a `grafana-admin` SecurityPolicy that targets the `grafana` HTTPRoute with client ID `grafana`, and that the policy syncs before the route;
   - the HTTPRoute and the public-edge entries for Grafana exist only in identity phase `normal`;
   - the public edges publish no monitoring hostname other than Grafana's.
-- [ ] 5.3 Pin and render Grafana from `grafana-community`:
+
+  Evidence: `monitoring-contracts` (one `grafana` client with both callbacks, `monitoring/grafana-oidc` published, `grafana-admin` SecurityPolicy at wave -1 before the route at 0, route absent in phases `initial` and `provisioning`, no other monitoring route).
+
+- [x] 5.3 Pin and render Grafana from `grafana-community`:
   - generic OAuth with PKCE, using the route's `grafana` client;
   - strict role mapping to the admin group;
   - no service accounts or API keys provisioned;
@@ -141,24 +197,36 @@
   - an emptyDir database.
 
   Verify the generated manifests contain no `admin-password` value and that every setting above appears in `grafana.ini`.
-- [ ] 5.4 Provision the minimal dashboard set from ConfigMaps, with UI updates disabled:
+
+  Evidence: `monitoring-contracts` (sign-in settings in `grafana.ini`; administrator password generated in memory at Pod start); `monitoring-secret-scan` (no inline administrator password or client secret); `monitoring-grafana-runtime` PASS on hvn-hyp1 (2026-10-11): with the rendered objects and the pinned image, only the secret-key and OIDC Secrets exist, the login form and basic authentication refuse sign-in, and the runbook's break-glass steps sign `admin` in. By owner decision the administrator password replaces `admin.existingSecret` (Implementation note 6).
+
+- [x] 5.4 Provision the minimal dashboard set from ConfigMaps, with UI updates disabled:
   - Node Exporter Full and a kubernetes-mixin workloads view, vendored under `assets/monitoring/dashboards/` with upstream source, revision and SHA-256;
   - "Homelab overview", written in this repository.
 
   Verify with a check that every vendored file's hash matches its record, that each dashboard parses as JSON, and that no other dashboard is provisioned.
 
+  Evidence: Evaluation fails if a vendored file no longer matches its SHA-256 in `assets/monitoring/dashboards/sources.json`; `monitoring-contracts` checks that each provisioned dashboard parses and that the set is exactly Node Exporter Full, the two kubernetes-mixin workload views and Homelab overview.
+
 ## 6. Network policy and exposure
 
-- [ ] 6.1 Add default-deny ingress for the `monitoring` namespace and the narrow allows from design.md Decision 10. Add a Kanidm allow for Grafana's backend pods through 5.1. Verify by evaluation that every monitoring Service is selected by a policy and that only the Gateway may reach Grafana.
+- [x] 6.1 Add default-deny ingress for the `monitoring` namespace and the narrow allows from design.md Decision 10. Add a Kanidm allow for Grafana's backend pods through 5.1. Verify by evaluation that every monitoring Service is selected by a policy and that only the Gateway may reach Grafana.
+
+  Evidence: `monitoring-contracts` (default-deny, every Service selected, only the Gateway proxy reaches Grafana through both monitoring's policy and the Gateway's backend policy); `identity/NetworkPolicy-kanidm-private.yaml` admits Grafana's pods.
 
 ## 7. Failure domain and resource bounds
 
-- [ ] 7.1 Set requests and limits on every monitoring container, as in design.md Decision 14. Verify with an evaluation check that no monitoring container lacks CPU and memory limits, and that the guest totals are at most 3 CPU and 3.5Gi.
-- [ ] 7.2 Run the existing identity, gateway and `prod-home` replacement checks with the monitoring Applications present. Verify that they pass without waiting on monitoring health, and that the replacement test's retained-path checks include `monitoring-metrics`.
+- [x] 7.1 Set requests and limits on every monitoring container, as in design.md Decision 14. Verify with an evaluation check that no monitoring container lacks CPU and memory limits, and that the guest totals are at most 3 CPU and 3.5Gi.
+
+  Evidence: `monitoring-contracts`: every container has CPU and memory limits; totals are 2.85 CPU and 3.25Gi.
+
+- [x] 7.2 Run the existing identity, gateway and `prod-home` replacement checks with the monitoring Applications present. Verify that they pass without waiting on monitoring health, and that the replacement test's retained-path checks include `monitoring-metrics`.
+
+  Evidence: with the monitoring Applications rendered, `gateway-runtime`, `identity-provision-runtime` and `prod-home-replacement` PASS through their drivers on hvn-hyp1 (2026-10-11). None waits on monitoring health; the replacement test's retained-directory checks create `monitoring-metrics` with its mapped identity and mode and confirm it is writable.
 
 ## 8. Documentation and generated output
 
-- [ ] 8.1 Write `docs/operations/monitoring.md`. It covers:
+- [x] 8.1 Write `docs/operations/monitoring.md`. It covers:
   - the one-time external account setup in section 9, with exact settings (the Pushover app; the dedicated Telegram bot and chat; the healthchecks.io check period, grace and integrations);
   - what lives in Nix and what doesn't, as in design.md;
   - `agenix edit` for each secret, and credential rotation;
@@ -171,7 +239,12 @@
   - the gaps: no off-LAN probing (a follow-up change), no backups (a future change), no active channel checks (a follow-up).
 
   Add the operations entry it needs. Verify that `nix run path:$PWD#sync-prod-home-manifests` and the docs generator leave a clean tree, and that the freshness checks pass.
-- [ ] 8.2 Update `docs/operations/identity.md:122-124` to say that the OAuth counters remain unscraped by design. Kanidm application metrics are out of scope.
+
+  Evidence: `docs/operations/monitoring.md`; regenerating manifests and docs on hvn-hyp1 leaves no drift; `prod-home-manifests-fresh` and `files/docs/operations.md` pass.
+
+- [x] 8.2 Update `docs/operations/identity.md:122-124` to say that the OAuth counters remain unscraped by design. Kanidm application metrics are out of scope.
+
+  Evidence: `docs/operations/identity.md`.
 
 ## 9. Owner one-time setup (manual, outside Nix; not authorized by this plan)
 
