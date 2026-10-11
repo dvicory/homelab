@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/name: vmalert
+    app.kubernetes.io/part-of: monitoring
+  name: vmalert
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vmalert
+      app.kubernetes.io/part-of: monitoring
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        homelab.danielvicory/config-sha256: 42715802a42bada0ef0a37cf3cb6c9504e8be7c365bbf7d09c916265862f2497
+      labels:
+        app.kubernetes.io/name: vmalert
+        app.kubernetes.io/part-of: monitoring
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - args:
+            - -datasource.url=http://victoriametrics.monitoring.svc:8428
+            - -remoteWrite.url=http://victoriametrics.monitoring.svc:8428
+            - -remoteRead.url=http://victoriametrics.monitoring.svc:8428
+            - -notifier.url=http://alertmanager.monitoring.svc:9093
+            - -rule=/etc/vmalert/rules.json
+            - -evaluationInterval=30s
+            - -httpListenAddr=:8880
+          image: docker.io/victoriametrics/vmalert:v1.151.0@sha256:e519f14c31f4d68015702e684a0fc3f1b4e559aa985d8f4462768f07f55b05c9
+          imagePullPolicy: IfNotPresent
+          name: vmalert
+          ports:
+            - containerPort: 8880
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8880
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: 250m
+              memory: 256Mi
+            requests:
+              cpu: 25m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - mountPath: /etc/vmalert
+              name: rules
+              readOnly: true
+      enableServiceLinks: false
+      nodeSelector:
+        kubernetes.io/hostname: compute-1
+      securityContext:
+        runAsGroup: 65534
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - configMap:
+            name: vmalert-rules
+          name: rules
