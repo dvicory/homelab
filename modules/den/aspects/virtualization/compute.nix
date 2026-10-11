@@ -582,6 +582,15 @@ in
           "net.bridge.bridge-nf-call-iptables" = 0;
           "net.bridge.bridge-nf-call-ip6tables" = 0;
           "net.bridge.bridge-nf-call-arptables" = 0;
+          # K3s's network-policy controller rewrites the guest's whole iptables
+          # filter table as one nf_tables netlink batch. In the unprivileged
+          # guest, iptables cannot force a bigger socket buffer
+          # (SO_SNDBUFFORCE needs CAP_NET_ADMIN on the host), so the batch
+          # must fit this host-wide default, which every new socket starts
+          # with. At the guest's 110-Pod limit the batch measured 1.17 MB,
+          # against the kernel's 212992-byte default; 4 MiB leaves 3.5 times
+          # that. checks.compute-network-policy-runtime fails without it.
+          "net.core.wmem_default" = 4194304;
         };
 
         # Incus 7.4 supports NIC ACLs, but its preseed API has no ACL object
