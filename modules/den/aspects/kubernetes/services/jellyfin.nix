@@ -374,16 +374,31 @@ in
                       imagePullPolicy = "IfNotPresent";
                       # ffmpeg probing a new library alongside playback
                       # exceeded 2Gi and the kernel killed the server.
+                      #
+                      # Ephemeral storage is the cache emptyDir (see its
+                      # sizeLimit below) plus this container's logs and
+                      # writable layer. The limit adds 1Gi to the cache for
+                      # logs and the writable layer, so the cache's own limit
+                      # is what bounds the Pod.
+                      #
+                      # The request is a typical working set, not the whole
+                      # cache. On this single-node cluster it only gates
+                      # scheduling and ranks Pods for eviction when the node
+                      # runs short of disk (below about 5% of nodefs free).
+                      # The storage pool has far more free space than the
+                      # 65Gi limit, so reserving all of it buys nothing, and a
+                      # 64Gi request cannot schedule on a smaller node such
+                      # as the 64 GiB prod-home-replacement fixture.
                       resources = {
                         requests = {
                           cpu = "500m";
                           memory = "1Gi";
-                          ephemeral-storage = "4Gi";
+                          ephemeral-storage = "8Gi";
                         };
                         limits = {
                           cpu = "2";
                           memory = "4Gi";
-                          ephemeral-storage = "5Gi";
+                          ephemeral-storage = "65Gi";
                         };
                       };
                       securityContext = containerSecurity;
@@ -436,9 +451,18 @@ in
                       persistentVolumeClaim.claimName = "jellyfin-config";
                     }
                     {
+                      # Jellyfin writes transcodes to /cache/transcodes, its
+                      # default. With throttling (300 s ahead) and segment
+                      # deletion (900 s kept) set in Jellyfin, each stream
+                      # holds at most about 1200 s of segments; Jellyfin
+                      # throttles remuxes too. 64Gi holds four simultaneous
+                      # 4K streams at remux-class bitrates (about 100 Mb/s,
+                      # 14 GiB each) with headroom. Jellarr 0.1.0 cannot set
+                      # those two options; docs/operations/jellyfin.md
+                      # records them.
                       name = "cache";
                       emptyDir = {
-                        sizeLimit = "4Gi";
+                        sizeLimit = "64Gi";
                       };
                     }
                     {

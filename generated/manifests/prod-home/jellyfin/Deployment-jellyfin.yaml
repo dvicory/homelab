@@ -43,11 +43,11 @@ spec:
           resources:
             limits:
               cpu: "2"
-              ephemeral-storage: 5Gi
+              ephemeral-storage: 65Gi
               memory: 4Gi
             requests:
               cpu: 500m
-              ephemeral-storage: 4Gi
+              ephemeral-storage: 8Gi
               memory: 1Gi
           securityContext:
             allowPrivilegeEscalation: false
@@ -129,7 +129,7 @@ spec:
           persistentVolumeClaim:
             claimName: jellyfin-config
         - emptyDir:
-            sizeLimit: 4Gi
+            sizeLimit: 64Gi
           name: cache
         - hostPath:
             path: /srv/media/data/library

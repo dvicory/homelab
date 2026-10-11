@@ -307,13 +307,14 @@ in
                 "type": "Directory",
             }, "Jellyfin consumes the semantic media-library projection"
             assert storage["mediaPaths"]["library"] == storage["mediaPaths"]["data"] + "/library"
-            assert volumes[mount(runtime, "/cache")["name"]]["emptyDir"]["sizeLimit"] == "4Gi"
-            assert runtime["resources"]["limits"]["ephemeral-storage"] == "5Gi"
-            assert runtime["resources"]["requests"]["ephemeral-storage"] == "4Gi"
+            assert volumes[mount(runtime, "/cache")["name"]]["emptyDir"]["sizeLimit"] == "64Gi"
+            assert runtime["resources"]["limits"]["ephemeral-storage"] == "65Gi"
+            assert runtime["resources"]["requests"]["ephemeral-storage"] == "8Gi"
             cache_gib = int(volumes[mount(runtime, "/cache")["name"]]["emptyDir"]["sizeLimit"].removesuffix("Gi"))
             requested_gib = int(runtime["resources"]["requests"]["ephemeral-storage"].removesuffix("Gi"))
             limited_gib = int(runtime["resources"]["limits"]["ephemeral-storage"].removesuffix("Gi"))
-            assert cache_gib <= requested_gib < limited_gib, "the scheduler reserves cache capacity with headroom"
+            assert 0 < requested_gib <= cache_gib < limited_gib, \
+                "the request is a baseline within the cache, and the limit bounds the cache with headroom"
 
             pv = find("PersistentVolume", "jellyfin-config")
             pvc = find("PersistentVolumeClaim", "jellyfin-config")

@@ -16,7 +16,18 @@ compute guest listed under "Current stack" in
   in [`docs/operations.md`](../operations.md).
 - `/media` is the guest's `/srv/media/data/library`, mounted read-only.
   Jellyfin cannot change the library.
-- `/cache` is disposable, up to 4 GiB, and is deleted with the Pod.
+- `/cache` is disposable, up to 64 GiB, and is deleted with the Pod.
+  Transcodes go to `/cache/transcodes`. If `/cache` passes 64 GiB,
+  Kubernetes evicts the Pod and playback stops.
+- The cache size assumes two Jellyfin settings that Jellarr cannot manage, so
+  they live in Jellyfin's retained configuration. After restoring or
+  recreating `/config`, set them again in Dashboard → Playback → Transcoding:
+  - **Throttle transcodes**, with a throttle delay of 300 seconds.
+  - **Delete segments**, keeping 900 seconds of segments.
+
+  Without them Jellyfin keeps every segment until playback stops, and one 4K
+  remux can need its whole file. With them each stream holds about 1200
+  seconds of segments, so 64 GiB covers four 4K streams at about 100 Mb/s.
 
 ## Before deployment
 
