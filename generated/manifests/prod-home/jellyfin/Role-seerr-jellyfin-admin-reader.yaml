@@ -1,0 +1,14 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: seerr-jellyfin-admin-reader
+  namespace: jellyfin
+rules:
+  - apiGroups:
+      - ""
+    resourceNames:
+      - jellyfin-admin
+    resources:
+      - secrets
+    verbs:
+      - get
