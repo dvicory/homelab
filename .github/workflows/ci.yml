@@ -199,10 +199,14 @@ jobs:
           else
             attr=".#ciJobs.$SYSTEM.$GROUP"
           fi
-          # VM checks need the runner's resources, not a share of parallel builds.
           build_args=(--keep-going --fallback)
           if [ "$GROUP" = checks ]; then
+            # VM checks need the runner's resources, not a share of parallel
+            # builds. Evaluating every check takes about 10 GiB, and a nix
+            # build process keeps that heap until its last build ends, so
+            # evaluate in a separate process and build the derivation.
             build_args+=(--max-jobs 1)
+            attr="$(nix eval --raw "$attr.drvPath")^*"
           fi
           nix build -L --out-link "$RUNNER_TEMP/result" "${build_args[@]}" "$attr"
 

@@ -26,7 +26,15 @@ jobs omit checks whose Hestia group ends in `-runtime`, because GitHub's ARM
 runners do not expose KVM. A KVM-capable ARM builder can build any omitted
 check directly. Check jobs use `--max-jobs 1` so VM tests do not compete with
 other builds on the same runner; other CI groups retain Nix's normal
-parallelism.
+parallelism. Check jobs also evaluate their projection in a separate
+`nix eval` process and then build the resulting derivation. Evaluating every
+check takes about 10 GiB, and a `nix build` process that evaluated them keeps
+that memory until its last build ends.
+
+A hosted x86-64 runner has 4 vCPUs and 16 GiB of memory. A VM check must fit
+there: request at most 4 cores, and leave the runner several GiB beyond the
+guest's memory. A VM that oversubscribes the runner does not fail cleanly;
+GitHub loses the runner and the job ends without the test's result.
 
 Hosted CI builds the full ARM64 Darwin configuration. An ARM64 Linux job first
 builds the Linux system closure used by its `nix.linux-builder` VM and passes
