@@ -39,7 +39,12 @@
             featureGates.KubeletInUserNamespace = true;
           };
           extraKubeProxyConfig = {
-            mode = "iptables";
+            # iptables mode writes whole tables as one iptables-nft batch,
+            # which in the unprivileged guest must fit the kernel's default
+            # socket buffer; at the 110-Pod limit its nat table does not.
+            # nftables mode updates incrementally and its nft client can
+            # raise its buffer to net.core.wmem_max.
+            mode = "nftables";
             clientConnection.kubeconfig = "/var/lib/rancher/k3s/agent/kubeproxy.kubeconfig";
             conntrack = {
               maxPerCore = 0;
