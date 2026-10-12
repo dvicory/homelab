@@ -159,6 +159,48 @@ With `KUBECONFIG` selecting the guest's cluster:
 `--check-ready` covers the node, Argo seed, and bootstrap Jobs.
 Also verify service routes, TLS, and native login.
 
+### NetworkPolicy enforcement after a reboot
+
+kube-network-policies (`kube-system/kube-network-policies`) enforces
+NetworkPolicy; K3s's embedded controller is disabled. After every host
+reboot, guest restart or guest replacement, check on the host, as root:
+
+```sh
+incus --project compute exec compute-1 -- \
+  k3s kubectl -n kube-system rollout status daemonset/kube-network-policies --timeout=2m
+incus --project compute exec compute-1 -- \
+  journalctl -u k3s -b --no-pager -o cat |
+  grep -E 'Failed to execute iptables-restore|Failed to run iptables-restore|nftables sync failed|Message too long'
+```
+
+The first command must report the DaemonSet rolled out. The second
+must print nothing; a line means kube-proxy (in either its iptables or
+its nftables mode) or another component failed to update the guest's
+firewall.
+
+The enforcer fails closed: while it is down with its rules in place,
+every new Pod connection is refused, including allowed ones, until the
+kubelet restarts it. A deliberate stop (deleting or updating the
+DaemonSet) removes its rules first, so Pods are unprotected until the
+new Pod is ready. To log each connection's verdict while
+investigating a refusal, raise its `--v` argument to 2 in
+`kubernetes.services.network-policy`; Argo reverts edits made only in
+the cluster.
+
+### Remove kube-router's leftover rules
+
+When K3s stops running its embedded controller, its iptables rules and
+ipsets stay behind (k3s-io/k3s#7244) and keep applying stale
+decisions to whatever Pod now holds an old address. From the
+repository checkout on the host, as root:
+
+```sh
+incus --project compute exec compute-1 -- \
+  sh -s < modules/den/aspects/kubernetes/_kube-router-cleanup.sh
+```
+
+It must end with `kube-router rules left: 0`. It is safe to repeat.
+
 ## Failure and retry
 
 Fix the reported preflight prerequisite and start a new explicit

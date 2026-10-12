@@ -26,12 +26,25 @@
             "servicelb"
             "traefik"
           ];
-          extraFlags = [ "--snapshotter=overlayfs" ];
+          extraFlags = [
+            "--snapshotter=overlayfs"
+            # The embedded network-policy controller rewrites the whole
+            # iptables filter table as one netlink batch, which an
+            # unprivileged guest cannot size; it fails above about 14 Pods.
+            # kube-network-policies (kubernetes.services.network-policy)
+            # enforces NetworkPolicy instead.
+            "--disable-network-policy"
+          ];
           extraKubeletConfig = {
             featureGates.KubeletInUserNamespace = true;
           };
           extraKubeProxyConfig = {
-            mode = "iptables";
+            # iptables mode writes whole tables as one iptables-nft batch,
+            # which in the unprivileged guest must fit the kernel's default
+            # socket buffer; at the 110-Pod limit its nat table does not.
+            # nftables mode updates incrementally and its nft client can
+            # raise its buffer to net.core.wmem_max.
+            mode = "nftables";
             clientConnection.kubeconfig = "/var/lib/rancher/k3s/agent/kubeproxy.kubeconfig";
             conntrack = {
               maxPerCore = 0;

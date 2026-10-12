@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  labels:
+    app.kubernetes.io/name: kube-network-policies
+  name: kube-network-policies
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-network-policies
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kube-network-policies
+    spec:
+      containers:
+        - args:
+            - /bin/netpol
+            - --hostname-override=$(NODE_NAME)
+            - --fail-open=false
+            - --nfqueue-id=98
+            - --metrics-bind-address=:9080
+            - --v=0
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          image: registry.k8s.io/networking/kube-network-policies:v1.1.2@sha256:c671f98e444825d57c590c92da1b5e66070917c4d3dff1f9279775e6b73254fe
+          name: kube-network-policies
+          ports:
+            - containerPort: 9080
+              name: metrics
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 9080
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 50Mi
+          securityContext:
+            capabilities:
+              add:
+                - NET_ADMIN
+            privileged: true
+          volumeMounts:
+            - mountPath: /var/run/nri
+              name: nri-plugin
+            - mountPath: /var/run/netns
+              mountPropagation: HostToContainer
+              name: netns
+      hostNetwork: true
+      priorityClassName: system-node-critical
+      serviceAccountName: kube-network-policies
+      tolerations:
+        - operator: Exists
+      volumes:
+        - hostPath:
+            path: /var/run/nri
+          name: nri-plugin
+        - hostPath:
+            path: /var/run/netns
+          name: netns
