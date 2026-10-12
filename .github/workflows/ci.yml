@@ -191,6 +191,15 @@ jobs:
           CHECK: ${{ inputs.check }}
         run: |
           set -euo pipefail
+          if [ "$GROUP" = checks ] && [ "$SYSTEM" = x86_64-linux ]; then
+            nproc; free -m; swapon --show; df -m / /mnt /nix; cat /proc/sys/vm/dirty_ratio /proc/sys/vm/dirty_background_ratio
+            (set +euo pipefail
+            while sleep 20; do
+              echo "DIAG $(date -u +%T) load=$(cut -d' ' -f1-3 /proc/loadavg) $(free -m | awk '/Mem:/{print "used="$3" cache="$6" avail="$7} /Swap:/{print "swap="$3}' | tr '\n' ' ') dirty=$(awk '/^Dirty:/{print int($2/1024)}' /proc/meminfo)M wb=$(awk '/^Writeback:/{print int($2/1024)}' /proc/meminfo)M nix=$(df -m --output=used /nix | tail -1 | tr -d ' ')M root=$(df -m --output=avail / | tail -1 | tr -d ' ')M psi_mem=$(awk '/full/{print $2}' /proc/pressure/memory) psi_io=$(awk '/full/{print $2}' /proc/pressure/io) psi_cpu=$(awk '/some/{print $2}' /proc/pressure/cpu)"
+              ps -eo rss=,pcpu=,comm= --sort=-rss | head -3 | awk '{printf "DIAG   rss=%dM cpu=%s %s\n", $1/1024, $2, $3}'
+              sudo dmesg | grep -iE 'oom|killed process|hung task|blocked for' | tail -2 | sed 's/^/DIAG   /'
+            done) &
+          fi
           if [ -n "$CHECK" ]; then
             [[ "$CHECK" =~ ^[a-zA-Z0-9_./-]+$ ]] || { echo "invalid check name" >&2; exit 1; }
             attr=".#checks.$SYSTEM.\"$CHECK\""
