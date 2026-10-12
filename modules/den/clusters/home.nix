@@ -135,6 +135,7 @@ in
       argocd
       cert-manager
       cluster-dns
+      network-policy
       retained-storage
       media
       jellyfin

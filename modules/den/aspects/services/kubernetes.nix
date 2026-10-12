@@ -26,7 +26,15 @@
             "servicelb"
             "traefik"
           ];
-          extraFlags = [ "--snapshotter=overlayfs" ];
+          extraFlags = [
+            "--snapshotter=overlayfs"
+            # The embedded network-policy controller rewrites the whole
+            # iptables filter table as one netlink batch, which an
+            # unprivileged guest cannot size; it fails above about 14 Pods.
+            # kube-network-policies (kubernetes.services.network-policy)
+            # enforces NetworkPolicy instead.
+            "--disable-network-policy"
+          ];
           extraKubeletConfig = {
             featureGates.KubeletInUserNamespace = true;
           };
