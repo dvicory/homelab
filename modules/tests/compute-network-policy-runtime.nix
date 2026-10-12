@@ -22,7 +22,9 @@
 # ClusterIP and NodePort forwarding. After the restart kube-proxy must run in
 # nftables mode with its whole table accepted at the default buffers. It also
 # kills the enforcer and requires new connections to be refused until it is
-# back (fail-closed).
+# back (fail-closed). With a render node hotplugged into the guest, it
+# requires the enforcer to hold only NET_ADMIN and to have no way to the node,
+# which a privileged control container in the same guest can open.
 #
 # Without the enforcer the stranger reaches radarr once K3s's controller is
 # disabled, and the test fails. x86_64/KVM only; the enforcer image comes from

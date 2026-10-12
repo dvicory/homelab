@@ -10,6 +10,8 @@ From the committed prod-home manifests this writes, as kubectl Lists:
                    household ingress NodePort in front of the Gateway proxy
   enforcer.json    the committed network-policy application's objects,
                    exactly as Argo applies them
+  device-probes.json  a Pod with the enforcer's host network, volumes and
+                   container securityContext, and a privileged control
   stand-ins.json   one Pod per committed workload, with the workload's pod
                    labels and container ports, serving HTTP on each TCP port;
                    plus a Gateway proxy, a stranger in media and an outsider
@@ -243,6 +245,38 @@ def main():
         pod("newcomer-stranger", "media", {"app.kubernetes.io/name": "stranger"}, control, args.image),
     ]
     (args.out / "newcomers.json").write_text(json.dumps(list_of(newcomers)))
+    # Two Pods shaped like the committed enforcer (host network, its volumes,
+    # its container securityContext) running the stand-in image: a twin with
+    # the enforcer's exact securityContext, and a privileged control.
+    daemonset = next(item for item in enforcer if item["kind"] == "DaemonSet")
+    template = daemonset["spec"]["template"]["spec"]
+    real = template["containers"][0]
+
+    def device_probe(name, security):
+        return {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": name, "namespace": daemonset["metadata"]["namespace"]},
+            "spec": {
+                "hostNetwork": template.get("hostNetwork", False),
+                "tolerations": template.get("tolerations", []),
+                "volumes": template.get("volumes", []),
+                "terminationGracePeriodSeconds": 0,
+                "containers": [{
+                    "name": "probe",
+                    "image": args.image,
+                    "imagePullPolicy": "Never",
+                    "command": ["sleep", "2147483647"],
+                    "securityContext": security,
+                    "volumeMounts": real.get("volumeMounts", []),
+                }],
+            },
+        }
+
+    (args.out / "device-probes.json").write_text(json.dumps(list_of([
+        device_probe("enforcer-twin", real.get("securityContext", {})),
+        device_probe("privileged-control", {"privileged": True}),
+    ])))
     (args.out / "stand-ins.json").write_text(json.dumps(list_of(stand_ins)))
     (args.out / "filler.json").write_text(json.dumps(filler))
     (args.out / "plan.json").write_text(

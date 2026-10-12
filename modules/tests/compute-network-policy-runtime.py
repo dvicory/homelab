@@ -20,7 +20,9 @@ boundaries, a new Pod's first connection, the enforcer's health and metrics,
 that no kube-router rule is left, that neither K3s's controller nor
 kube-proxy reports a failed restore and that kube-proxy's tables fit the
 buffer. On the migrated boot it also kills the enforcer and checks that new
-connections are refused, not admitted, until it is back (fail-closed).
+connections are refused, not admitted, until it is back (fail-closed), and
+that it holds only NET_ADMIN and cannot reach a render node hotplugged into
+the guest, which a privileged control container can open.
 
 Runs only inside the disposable fixture-host VM of
 checks.compute-network-policy-runtime.
@@ -426,6 +428,53 @@ def crash(lib, guest: Guest) -> None:
     lib.check(all(state == "refused" for _, state in refused), "the stranger is refused throughout the crash")
 
 
+RENDER_NODE = "/dev/dri/renderD128"
+NET_ADMIN = 1 << 12
+
+
+def no_device_access(lib, guest: Guest) -> None:
+    """The enforcer holds NET_ADMIN only and cannot reach the delegated render
+    node, which a privileged container could open."""
+    lib.run("modprobe", "vgem")
+    lib.wait_for("render node in the guest", lambda: guest.runtime.guest(
+        "stat", "-c", "%F", RENDER_NODE, check_result=False) == "character special file", timeout=120)
+    pid = lib.run("pgrep", "-o", "-f", "/bin/netpol")
+    status = dict(line.split(":\t", 1) for line in Path(f"/proc/{pid}/status").read_text().splitlines() if ":\t" in line)
+    enforcer_dev = sorted(os.listdir(f"/proc/{pid}/root/dev"))
+    # Unprivileged, it must still reach containerd's NRI socket, which gives
+    # it Pod addresses before the API server does.
+    logs = guest.kubectl("logs", f"daemonset/{ENFORCER[1]}", "--tail=-1", namespace=ENFORCER[0])
+    nri = {"connected": "Created plugin" in logs, "failed": "failed to create NRI plugin" in logs}
+    guest.push_apply("device-probes")
+    guest.wait_ready("device probes", timeout=300)
+
+    def in_probe(name: str, script: str) -> subprocess.CompletedProcess:
+        return lib.completed("incus", "--force-local", "--project", guest.project, "exec", guest.instance,
+                             "--mode=non-interactive", "--", "k3s", "kubectl", "exec", name, "-n", ENFORCER[0],
+                             "--", "sh", "-c", script, timeout=60)
+
+    twin_sees = in_probe("enforcer-twin", f"test -e {RENDER_NODE}").returncode == 0
+    twin_mknod = in_probe("enforcer-twin", "mknod /tmp/render c 226 128 && exec 3<>/tmp/render")
+    twin_caps = in_probe("enforcer-twin", "grep CapEff /proc/self/status").stdout.split()[-1:]
+    control = in_probe("privileged-control", f"exec 3<>{RENDER_NODE}")
+    guest.kubectl("delete", "-f", "/tmp/device-probes.json", "--wait=true", timeout=300)
+    observe("device_access", {
+        "enforcer": {"CapEff": status.get("CapEff", "").strip(), "NoNewPrivs": status.get("NoNewPrivs", "").strip(),
+                     "dev": enforcer_dev},
+        "twin": {"sees_node": twin_sees, "mknod": (twin_mknod.stdout + twin_mknod.stderr).strip()[-160:],
+                 "CapEff": twin_caps},
+        "privileged_control_opens": control.returncode == 0,
+        "nri": nri,
+    })
+    lib.check(nri["connected"] and not nri["failed"], "the unprivileged enforcer connects to containerd's NRI socket")
+    lib.check(int(status["CapEff"], 16) == NET_ADMIN, "the enforcer's only effective capability is NET_ADMIN")
+    lib.check(status.get("NoNewPrivs", "").strip() == "1", "the enforcer cannot gain privileges")
+    lib.check("dri" not in enforcer_dev, "the enforcer's /dev has no render node")
+    lib.check(not twin_sees and twin_mknod.returncode != 0,
+              "a container with the enforcer's securityContext cannot see or create the render node")
+    lib.check(control.returncode == 0, "a privileged container in the same guest could open the render node")
+
+
 def enforce(lib, guest: Guest, label: str, since: int, expect_nftables: bool) -> None:
     for probe in guest.plan["probes"]:
         client, server, port, admitted = probe["client"], probe["server"], probe["port"], probe["admitted"]
@@ -530,6 +579,8 @@ def run_scenario(args) -> None:
         # The guest still runs its pre-change K3s unit, with kube-proxy in
         # iptables mode; its tables are recorded, not required to fit.
         enforce(lib, guest, "migrated", guest.now() - 5, expect_nftables=False)
+    with lib.phase("the enforcer has no device access"):
+        no_device_access(lib, guest)
     with lib.phase("enforcer crash"):
         crash(lib, guest)
     with lib.phase("enforcement after a guest restart"):
