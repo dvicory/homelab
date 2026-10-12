@@ -30,8 +30,10 @@
         # The declaration before the media capability: no identity-mapped
         # GID, no media attachment, no Jellyfin retained path or credential,
         # and the smaller resource limits of that time, which activation must
-        # raise on the running guest.
+        # raise on the running guest. It also predates the accelerator, which
+        # activation adds to the running guest.
         previous = current // {
+          accelerator = null;
           instanceConfig = current.instanceConfig // {
             "limits.cpu" = "4";
             "limits.memory" = "12GiB";

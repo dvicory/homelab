@@ -2,7 +2,7 @@
 id: ADR-0001
 status: accepted
 date: 2026-09-06
-updated: 2026-09-21
+updated: 2026-10-11
 decision-makers:
   - Daniel Vicory
 consulted: []
@@ -10,7 +10,8 @@ informed: []
 supersedes: []
 superseded-by: []
 modifies: []
-modified-by: []
+modified-by:
+  - ADR-0010
 related-adrs: []
 related-specs:
   - management-boundaries
@@ -64,6 +65,10 @@ expanding authority. Local evaluation is not target-runtime evidence.
 
 A future VM migration can retain higher-level recovery contracts while
 replacing attachment and lifecycle implementation.
+
+Hardware delegation: [ADR-0010](0010-narrow-accelerator-delegation.md)
+accepts one narrow delegation, a host GPU's render interface for declared
+workloads. Other hardware access still needs its own decision.
 
 ## Reconsider when
 

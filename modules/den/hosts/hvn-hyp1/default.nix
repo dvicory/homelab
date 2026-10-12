@@ -83,6 +83,12 @@ in
             type = "disk";
           };
         };
+        # Arc Pro A40/A50 (DG2), driven by i915.
+        accelerator = {
+          vendor = "intel";
+          pciAddress = "0000:85:00.0";
+          source = "/dev/dri/renderD128";
+        };
       };
       services.storage-roots.roots.media = {
         path = "/srv/media";

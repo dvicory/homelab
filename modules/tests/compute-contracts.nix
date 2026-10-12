@@ -1,5 +1,7 @@
 {
   config,
+  den,
+  inputs,
   lib,
   self,
   ...
@@ -7,7 +9,43 @@
 let
   host = self.nixosConfigurations.hvn-hyp1.config;
   guest = self.nixosConfigurations.compute-1.config;
-  compute = config.den.hosts.x86_64-linux.hvn-hyp1.settings.virtualization.compute;
+  hostEntity = config.den.hosts.x86_64-linux.hvn-hyp1;
+  compute = hostEntity.settings.virtualization.compute;
+  # The host's compute aspect, evaluated with a changed declaration.
+  computeAspect =
+    (import ../den/aspects/virtualization/compute.nix {
+      inherit
+        den
+        lib
+        inputs
+        config
+        ;
+    }).den.aspects.virtualization.compute.nixos;
+  evaluateWith =
+    change:
+    computeAspect {
+      host = hostEntity // {
+        settings = hostEntity.settings // {
+          virtualization = hostEntity.settings.virtualization // {
+            compute = change compute;
+          };
+        };
+      };
+      config = host;
+      inherit lib;
+      inherit (self.nixosConfigurations.hvn-hyp1) pkgs;
+    };
+  rejected =
+    change:
+    !(builtins.tryEval (builtins.deepSeq (evaluateWith change).virtualisation.incus.preseed true))
+    .success;
+  withDevice =
+    name: device: current:
+    current // { devices = current.devices // { ${name} = device; }; };
+  ungranted =
+    builtins.fromJSON
+      (evaluateWith (current: current // { accelerator = null; }))
+      .environment.etc."homelab/compute.json".text;
   preseed = host.virtualisation.incus.preseed;
   project = (lib.findFirst (p: p.name == compute.project) null preseed.projects).config;
   profile = lib.findFirst (
@@ -27,6 +65,7 @@ let
       "secrets"
       "state"
     ]
+    ++ lib.optional (compute.accelerator != null) "gpu-render"
   );
   owners = builtins.attrNames (
     lib.filterAttrs (
@@ -106,7 +145,7 @@ let
           "disk"
           "nic"
         ]
-      ) (builtins.attrValues devices)
+      ) (builtins.attrValues (removeAttrs devices [ "gpu-render" ]))
       && devices.root.pool == compute.pool
       && devices.identity.source == compute.identityPath
       && devices.identity.readonly == "true"
@@ -128,10 +167,31 @@ let
         "pci"
         "proxy"
         "unix-block"
-        "unix-char"
         "unix-hotplug"
         "usb"
-      ];
+      ]
+      && project."restricted.devices.unix-char" == (if compute.accelerator != null then "allow" else "block");
+    # gpu-render never enters the guest's ID map.
+    accelerator-grant-leaves-id-map =
+      descriptor.config."raw.idmap" == ungranted.config."raw.idmap"
+      && descriptor.idmap == ungranted.idmap
+      && project."restricted.idmap.gid" == ungranted.projectConfig."restricted.idmap.gid"
+      && removeAttrs descriptor.devices [ "gpu-render" ] == ungranted.devices;
+    character-devices-only-through-the-grant =
+      !(rejected (current: current))
+      && rejected (
+        withDevice "kvm" {
+          type = "unix-char";
+          source = "/dev/kvm";
+          path = "/dev/kvm";
+        }
+      )
+      && rejected (
+        withDevice "gpu" {
+          type = "gpu";
+          gputype = "physical";
+        }
+      );
     workload-state-outside-envelope =
       let
         allowed = lib.splitString "," project."restricted.devices.disk.paths";

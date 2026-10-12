@@ -101,6 +101,7 @@ in
           config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
         resources = config.flake.clusterResources.${cluster.name};
         computeResources = {
+          inherit (hostCompute) accelerator;
           instance = hostCompute.instance;
           retainedPaths = hostCompute.retainedPaths;
           stateRoot = {
@@ -115,6 +116,7 @@ in
       in
       assert lib.assertMsg (
         lib.sort builtins.lessThan (builtins.attrNames computeResources) == [
+          "accelerator"
           "images"
           "instance"
           "mediaPaths"

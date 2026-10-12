@@ -174,6 +174,9 @@
           media = {
             gid = 505;
           };
+          gpu-render = {
+            gid = 506;
+          };
 
           # POSIX service groups (add as needed)
           docker = {

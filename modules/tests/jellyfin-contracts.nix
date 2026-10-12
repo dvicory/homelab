@@ -14,14 +14,18 @@ let
   releaseCompute =
     config.den.hosts.${releaseCluster.hostSystem}.${releaseCluster.hostName}.settings.virtualization.compute;
   releaseComputeResources = {
-    inherit (releaseCompute) instance retainedPaths;
+    inherit (releaseCompute) accelerator instance retainedPaths;
     inherit (config.flake.clusterResources.prod-home) mediaPaths;
   };
   releaseSystem =
     inputs.self.nixosConfigurations.${releaseComputeResources.instance}.pkgs.stdenv.hostPlatform.system;
   provisionerPackage = inputs.self.packages.${releaseSystem}.jellyfin-provisioner-image;
-  renderJellyfin =
-    provisioner:
+  renderJellyfin = provisioner: renderJellyfinWith { inherit provisioner; };
+  renderJellyfinWith =
+    {
+      provisioner ? provisionerPackage,
+      cluster ? releaseCluster,
+    }:
     (import ../den/aspects/kubernetes/services/jellyfin.nix {
       inherit config lib;
       inputs = inputs // {
@@ -35,9 +39,23 @@ let
       };
     }).den.aspects.kubernetes.services.jellyfin.k8s-manifests
       {
-        cluster = releaseCluster;
+        inherit cluster;
         computeResources = releaseComputeResources;
       };
+  # Jellarr configuration rendered for a declared transcoding mode.
+  jellarrConfigFor =
+    transcoding:
+    let
+      rendered = renderJellyfinWith {
+        cluster = lib.recursiveUpdate releaseCluster {
+          settings.kubernetes.services.jellyfin = { inherit transcoding; };
+        };
+      };
+      configMap = lib.findFirst (
+        object: object.kind == "ConfigMap" && object.metadata.name == "jellarr-configuration"
+      ) (throw "Jellyfin render has no Jellarr ConfigMap") rendered.applications.jellyfin-configuration.objects;
+    in
+    configMap.data."config.yml";
   # One side of the release moves; everything else is the shipped package.
   drift =
     {
@@ -140,7 +158,7 @@ let
 in
 {
   perSystem =
-    { pkgs, ... }:
+    { pkgs, system, ... }:
     let
       environment = ../../generated/manifests/prod-home;
       cluster = config.den.clusters.prod-home;
@@ -161,7 +179,19 @@ in
       contractInputs = pkgs.writeText "jellyfin-contract-inputs.json" (
         builtins.toJSON {
           administrator = cluster.settings.kubernetes.services.jellyfin.administrator;
+          gpuRenderGid = config.den.groups.gpu-render.gid;
         }
+      );
+      encodingVariants = pkgs.writeText "jellyfin-encoding-variants.json" (
+        builtins.toJSON {
+          hardware = jellarrConfigFor "hardware";
+          software = jellarrConfigFor "software";
+        }
+      );
+      # Jellarr validates its whole configuration against a strict schema
+      # before it reads the API key, so the pinned CLI checks a file offline.
+      jellarrCli = lib.optionalString pkgs.stdenv.hostPlatform.isLinux (
+        lib.getExe self.packages.${system}.jellarr-image.passthru.jellarr
       );
       runtimeSecrets = pkgs.writeText "jellyfin-runtime-secrets-contract.json" (
         builtins.toJSON config.flake.clusterResources.prod-home.runtimeSecrets
@@ -188,7 +218,8 @@ in
             ];
           }
           ''
-            python - ${environment} ${storage} ${release} ${runtimeSecrets} ${jellarrRelease} ${contractInputs} ${renderedImages} <<'PY'
+            python - ${environment} ${storage} ${release} ${runtimeSecrets} ${jellarrRelease} ${contractInputs} ${renderedImages} ${encodingVariants} <<'PY'
+            import copy
             import json
             import pathlib
             import sys
@@ -201,6 +232,7 @@ in
             jellarr_release = json.loads(pathlib.Path(sys.argv[5]).read_text())
             contract_inputs = json.loads(pathlib.Path(sys.argv[6]).read_text())
             release_render = json.loads(pathlib.Path(sys.argv[7]).read_text())
+            encoding_variants = json.loads(pathlib.Path(sys.argv[8]).read_text())
             resources = []
             application_objects = {}
             for application in ("jellyfin-retained", "jellyfin", "jellyfin-configuration", "gateway"):
@@ -366,6 +398,13 @@ in
             assert len({paths[0] for paths in library_paths.values()}) == len(library_paths), library_paths
             assert "startup" not in jellarr_config
 
+            variants = {mode: yaml.safe_load(text) for mode, text in encoding_variants.items()}
+            pathlib.Path("jellarr-hardware.yml").write_text(encoding_variants["hardware"])
+            pathlib.Path("jellarr-software.yml").write_text(encoding_variants["software"])
+            unknown = copy.deepcopy(variants["hardware"])
+            unknown["encoding"]["enableToneMapping"] = True
+            pathlib.Path("jellarr-unknown-key.yml").write_text(yaml.safe_dump(unknown))
+
             job = find("Job", "jellyfin-configuration")
             annotations = job["metadata"].get("annotations", {})
             assert annotations.get("argocd.argoproj.io/hook") == "PostSync"
@@ -460,7 +499,80 @@ in
                 "backendRequest": "0s",
             }, "Jellyfin request and backend deadlines remain streaming-safe"
 
+            # Only declared grant holders mount /dev/dri or hold gpu-render.
+            cluster_resources = []
+            for path in sorted(environment.rglob("*.yaml")):
+                if path.name.startswith("CustomResourceDefinition-"):
+                    continue
+                cluster_resources.extend(resource for resource in yaml.safe_load_all(path.read_text()) if resource)
+
+            def workloads(items):
+                for resource in items:
+                    spec = resource.get("spec") or {}
+                    if resource.get("kind") == "Pod":
+                        yield resource, spec
+                        continue
+                    template = spec.get("template") or spec.get("jobTemplate", {}).get("spec", {}).get("template")
+                    if isinstance(template, dict) and isinstance(template.get("spec"), dict):
+                        yield resource, template["spec"]
+
+            def containers_of(spec):
+                return spec.get("containers", []) + spec.get("initContainers", []) + spec.get("ephemeralContainers", [])
+
+            def owner_of(resource):
+                return (resource["kind"], resource["metadata"].get("namespace"), resource["metadata"]["name"])
+
+            # Adding a holder is a reviewed edit here and in its manifests.
+            declared_grant_holders = {("Deployment", "jellyfin", "jellyfin"): {"jellyfin"}}
+
+            def accelerator_grants(items):
+                gid = contract_inputs["gpuRenderGid"]
+                holders = set()
+                for resource, spec in workloads(items):
+                    owner = owner_of(resource)
+                    security = spec.get("securityContext", {})
+                    claims = gid in security.get("supplementalGroups", []) or gid in (
+                        security.get("fsGroup"), security.get("runAsGroup"))
+                    device_volumes = set()
+                    for volume in spec.get("volumes", []):
+                        path = volume.get("hostPath", {}).get("path", "").rstrip("/")
+                        if path == "/dev" or path.startswith("/dev/"):
+                            assert volume["hostPath"] == {"path": "/dev/dri", "type": "Directory"}, (
+                                f"{owner} mounts {path}; a grant mounts only /dev/dri"
+                            )
+                            device_volumes.add(volume["name"])
+                    for container in containers_of(spec):
+                        container_security = container.get("securityContext", {})
+                        assert not container_security.get("privileged"), f"{owner} {container['name']} is privileged"
+                        claims = claims or container_security.get("runAsGroup") == gid
+                        if any(m["name"] in device_volumes for m in container.get("volumeMounts", [])):
+                            assert container["name"] in declared_grant_holders.get(owner, set()), (
+                                f"{owner} {container['name']} mounts /dev/dri without a declared grant"
+                            )
+                    if claims or device_volumes:
+                        assert owner in declared_grant_holders, f"{owner} claims the accelerator without a declared grant"
+                        holders.add(owner)
+                assert holders == set(declared_grant_holders), f"declared grant holders: {sorted(holders)}"
+
+            accelerator_grants(cluster_resources)
             PY
+
+            # Both transcoding variants pass Jellarr's strict schema; an
+            # unknown encoding key does not. A valid file gets as far as the
+            # missing API key.
+            ${lib.optionalString (jellarrCli != "") ''
+              schema() {
+                env -u JELLARR_API_KEY HOME="$PWD" ${jellarrCli} --configFile "$1" > "$1.out" 2>&1 || true
+              }
+              for variant in jellarr-hardware.yml jellarr-software.yml; do
+                schema "$variant"
+                grep -q "JELLARR_API_KEY required" "$variant.out" || { cat "$variant.out" >&2; exit 1; }
+                if grep -q "Configuration validation failed" "$variant.out"; then cat "$variant.out" >&2; exit 1; fi
+              done
+              schema jellarr-unknown-key.yml
+              grep -q "Configuration validation failed" jellarr-unknown-key.yml.out \
+                || { cat jellarr-unknown-key.yml.out >&2; exit 1; }
+            ''}
             node ${./jellyfin-bootstrap.mjs} bootstrap.mjs
 
             # Partial-state preflight: run the script the provisioner image runs

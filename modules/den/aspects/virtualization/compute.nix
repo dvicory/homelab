@@ -216,7 +216,31 @@ in
         reservedDeviceNames = [
           "secrets"
           "state"
-        ];
+        ]
+        ++ lib.optional (grant != null) "gpu-render";
+        # Incus sets gpu-render on the guest's node itself, so the group stays
+        # out of storageCapabilities and needs no hole in the guest's ID map.
+        grant = cfg.accelerator;
+        grantDevices = lib.optionalAttrs (grant != null) {
+          gpu-render = {
+            type = "unix-char";
+            inherit (grant) source path;
+            # The guest starts without the node; Incus adds it when it appears.
+            required = "false";
+            uid = "0";
+            gid = toString fleetGroups.gpu-render.gid;
+            mode = "0660";
+          };
+        };
+        characterDevices = lib.attrNames (
+          lib.filterAttrs (
+            _: entry:
+            builtins.elem (entry.type or null) [
+              "gpu"
+              "unix-char"
+            ]
+          ) cfg.devices
+        );
         baseDeviceNames = builtins.attrNames cfg.devices;
         reservedCollisions = lib.filter (name: builtins.elem name baseDeviceNames) reservedDeviceNames;
         invalidRetainedIds = lib.filter (
@@ -310,6 +334,8 @@ in
           assert lib.assertMsg (
             reservedCollisions == [ ]
           ) "Incus device map uses reserved names: ${lib.concatStringsSep ", " reservedCollisions}";
+          assert lib.assertMsg (characterDevices == [ ])
+            "Only the accelerator grant adds character or GPU devices: ${lib.concatStringsSep ", " characterDevices}";
           assert lib.assertMsg (
             invalidRetainedIds == [ ]
           ) "Retained path IDs must be below idmapSize: ${lib.concatStringsSep ", " invalidRetainedIds}";
@@ -320,6 +346,7 @@ in
           assert lib.assertMsg (readOnlyRetained == [ ])
             "Retained paths share one writable state root; a read-only source needs its own attachment: ${lib.concatStringsSep ", " readOnlyRetained}";
           baseDevices
+          // grantDevices
           // {
             state = {
               type = "disk";
@@ -367,7 +394,9 @@ in
           "restricted.devices.pci" = "block";
           "restricted.devices.proxy" = "block";
           "restricted.devices.unix-block" = "block";
-          "restricted.devices.unix-char" = "block";
+          # Incus then admits any character device. The device assertion and
+          # the adoption gate keep the granted render node the only one.
+          "restricted.devices.unix-char" = if grant != null then "allow" else "block";
           "restricted.devices.unix-hotplug" = "block";
           "restricted.devices.usb" = "block";
           "restricted.networks.access" = cfg.network;
