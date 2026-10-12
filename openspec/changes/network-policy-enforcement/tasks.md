@@ -2,6 +2,7 @@
 
 - [x] 1.1 Add `--disable-network-policy` to the guest's K3s in the `services.kubernetes` aspect; verify `nix eval .#nixosConfigurations.compute-1.config.systemd.services.k3s.serviceConfig.ExecStart` contains it.
 - [x] 1.2 Add `kubernetes.services.network-policy`: kube-network-policies v1.1.2 pinned by digest, host network, fail-closed, metrics on :9080 with a readiness probe, sync wave -3; include it in `prod-home`; verify the regenerated manifests show `Application-network-policy.yaml` at wave -3 and `prod-home-manifests-fresh` passes.
+- [x] 1.3 Run the enforcer unprivileged with only `NET_ADMIN`; verify `jellyfin-contracts` passes with its no-privileged-container rule and `compute-network-policy-runtime` shows the enforcer's only capability is `NET_ADMIN` and it cannot reach a hotplugged render node.
 
 ## 2. Acceptance
 

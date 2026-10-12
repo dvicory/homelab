@@ -148,9 +148,16 @@
                         cpu = "100m";
                         memory = "50Mi";
                       };
+                      # Not privileged: NET_ADMIN covers nftables, nfqueue and
+                      # conntrack in the guest's network namespace. A
+                      # privileged container would also see every guest
+                      # device, the delegated render node included (ADR-0010).
                       securityContext = {
-                        privileged = true;
-                        capabilities.add = [ "NET_ADMIN" ];
+                        allowPrivilegeEscalation = false;
+                        capabilities = {
+                          drop = [ "ALL" ];
+                          add = [ "NET_ADMIN" ];
+                        };
                       };
                       volumeMounts = [
                         {

@@ -43,10 +43,12 @@ spec:
               cpu: 100m
               memory: 50Mi
           securityContext:
+            allowPrivilegeEscalation: false
             capabilities:
               add:
                 - NET_ADMIN
-            privileged: true
+              drop:
+                - ALL
           volumeMounts:
             - mountPath: /var/run/nri
               name: nri-plugin

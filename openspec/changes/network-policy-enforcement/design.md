@@ -57,6 +57,8 @@ Alternatives considered:
 
 `kubernetes.services.network-policy` renders the upstream objects (ServiceAccount, ClusterRole with list/watch on Pods, Namespaces and NetworkPolicies, ClusterRoleBinding, DaemonSet) into a `network-policy` Argo Application in `kube-system`, sync wave -3, before Argo's own Application (-2). The image is pinned by digest and pulled from `registry.k8s.io`, like the other registry-delivered platform components. The DaemonSet uses the host network, tolerates every taint and runs at `system-node-critical` priority.
 
+The container is not privileged. It holds only `NET_ADMIN` (every other capability dropped, no privilege escalation), which covers nftables, nfqueue and conntrack in the guest's network namespace; the NRI socket and `/var/run/netns` are host paths it reads as root. Upstream's manifest runs it privileged, but a privileged container would see every guest device, including the render node ADR-0010 delegates only to declared holders. The check confirms the enforcer works this way and cannot see or create the render node, while a privileged container in the same guest can open it.
+
 The guest's K3s gets `--disable-network-policy` in the `services.kubernetes` aspect.
 
 It does not depend on anything it enforces: on the host network it reaches the API server, the registry and the node's resolver without passing its own rules (it does not use cluster DNS), and the kubelet restarts it without Argo.
