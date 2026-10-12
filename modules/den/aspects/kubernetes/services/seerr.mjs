@@ -201,7 +201,6 @@ async function configure() {
     await sleep(5000);
     const status = checkedStatus(await request('/settings/jellyfin/sync'), ids);
     if (!status.running) {
-      if (status.progress > status.total) throw new Error('Invalid Jellyfin scan progress');
       completed = true;
       break;
     }

@@ -582,6 +582,15 @@ with open('/fixture/coordination/' + sys.argv[1] + '.lock', 'r') as lock:
             # Jellyfin's own ffmpeg makes a legal local-only video, not a host echo.
             run("legal-video", apps["jellyfin"]["image"], *mount("data", "/data"), "--entrypoint", "/usr/lib/jellyfin-ffmpeg/ffmpeg", argv=("-nostdin", "-f", "lavfi", "-i", "color=c=black:s=64x64:d=1", "-c:v", "mpeg4", "/data/library/movies-ui/Fixture.mp4"))
             docker("exec", keeper, "/lsiopy/bin/python", "-c", "import os; p='/fixture/data/library/movies-ui/Fixture.mp4'; os.chown(p,0,int(__import__('sys').argv[1])); os.chmod(p,0o660)", str(media_gid))
+            # Seerr scans each library in 20-item batches. A finished scan
+            # reports the last batch's start index as progress and the last
+            # library's item count as total. More than one Movies batch before
+            # the empty Shows library makes progress exceed total.
+            movie_batch = 21
+            docker("exec", keeper, "/lsiopy/bin/python", "-c", '''import os, shutil, sys
+for index in range(int(sys.argv[2])):
+    p = '/fixture/data/library/movies/Scan Fixture %02d.mp4' % index
+    shutil.copyfile('/fixture/data/library/movies-ui/Fixture.mp4', p); os.chown(p, 0, int(sys.argv[1])); os.chmod(p, 0o660)''', str(media_gid), str(movie_batch))
             unmanaged_library = {"name": "UI-owned library", "collectionType": "movies", "libraryOptions": {"pathInfos": [{"path": "/media/movies-ui"}]}}
             add_library(unmanaged_library)
             jellyfin("/Library/Refresh", "POST", key=owner_token)
@@ -590,10 +599,11 @@ with open('/fixture/coordination/' + sys.argv[1] + '.lock', 'r') as lock:
             while time.monotonic() < deadline:
                 items = jellyfin("/Items?Recursive=true&Fields=Path&IncludeItemTypes=Movie", key=owner_token)["Items"]
                 matches = [item for item in items if item.get("Path") == "/media/movies-ui/Fixture.mp4"]
-                if len(matches) == 1:
+                movies = [item for item in items if item.get("Path", "").startswith("/media/movies/")]
+                if len(matches) == 1 and len(movies) == movie_batch:
                     preserved_item = matches[0]["Id"]; break
                 time.sleep(2)
-            require(preserved_item is not None, "Jellyfin daemon could not read unmanaged legal media")
+            require(preserved_item is not None, "Jellyfin daemon could not read unmanaged legal media and the Movies batch")
             stream_path = "/Videos/" + preserved_item + "/stream.mp4?Static=true"
             preserved_digest = hashlib.sha256(jellyfin(stream_path, key=owner_token, binary=True)).digest()
             def verify_preserved():
@@ -704,6 +714,11 @@ console.log(queued);''', waiter_pid)
                 verify_preserved()
                 return {item["Name"]: item["ItemId"] for item in folders}
 
+            # Seerr refreshes this mapping before any library scan and aborts
+            # the scan when the download fails, as it does on this internal
+            # network. A fresh copy stands in for a successful download, so the
+            # full sync really scans the declared libraries.
+            copy_text("seerr/anime-list.xml", '<anime-list><anime anidbid="1"/></anime-list>\n')
             start("seerr", 5055)
             public = ready(request, ports["seerr"], "/api/v1/settings/public")
             require(public["mediaServerType"] == 4 and public["initialized"] is False, "fixture Seerr unexpectedly claimed")
@@ -780,6 +795,8 @@ const target = 'https://kubernetes.default.svc/api/v1/namespaces/jellyfin/secret
             add_library(libraries[-1])
             library_ids = verify_libraries()
             reconcile_seerr()
+            scan = seerr_api("/settings/jellyfin/sync")
+            require(scan["running"] is False and scan["progress"] > scan["total"], "fixture scan did not finish past the Movies batch with progress above the empty Shows total")
 
             def verify_seerr():
                 require(seerr_api("/settings/public")["initialized"] is True and seerr_api("/auth/me")["id"] == 1, "Seerr owner/initialization state differs")
