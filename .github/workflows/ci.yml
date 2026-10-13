@@ -232,7 +232,7 @@ jobs:
             sandbox = relaxed
             auto-allocate-uids = true
             extra-system-features = uid-range
-            extra-experimental-features = auto-allocate-uids cgroups
+            experimental-features = nix-command flakes auto-allocate-uids cgroups
             extra-substituters = https://cache.numtide.com
             extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=
           github_access_token: ${{ github.token }}
