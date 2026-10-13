@@ -3,7 +3,6 @@
 # cannot set setgid bits, so the test needs a VM.
 {
   lib,
-  self,
   ...
 }:
 {
@@ -26,8 +25,8 @@
         testScript = ''
           start_all()
           machine.succeed(
-              "PREPARE_LUKS_STORAGE=${self + "/pkgs/by-name/prepare-luks-storage/prepare-luks-storage.sh"} "
-              "CLASSIFY_LEGACY_MEDIA=${self + "/pkgs/by-name/classify-legacy-media/classify-legacy-media.sh"} "
+              "PREPARE_LUKS_STORAGE=${../../pkgs/by-name/prepare-luks-storage/prepare-luks-storage.sh} "
+              "CLASSIFY_LEGACY_MEDIA=${../../pkgs/by-name/classify-legacy-media/classify-legacy-media.sh} "
               "bash ${./classify-legacy-media.sh} >&2"
           )
         '';
