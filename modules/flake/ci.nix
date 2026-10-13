@@ -47,37 +47,50 @@ let
       )
     );
   checksFor = system: (self.checks or { }).${system} or { };
+  isPreserveCheck = name: lib.hasPrefix "preserve-" name;
+  ordinaryChecksFor = system: lib.filterAttrs (name: _: !isPreserveCheck name) (checksFor system);
+  preserveFastChecksFor =
+    system:
+    lib.filterAttrs (name: _: isPreserveCheck name && name != "preserve-zfs-reference") (
+      checksFor system
+    );
+  preserveVmChecksFor =
+    system: lib.filterAttrs (name: _: name == "preserve-zfs-reference") (checksFor system);
   hostedChecksFor =
     system:
     # Hosted x86_64-linux runners have KVM, so runtime-group (VM) checks run
     # there. They are excluded only on systems without hosted KVM.
     lib.filterAttrs (
-      _: check:
-      system == "x86_64-linux"
-      || !(lib.hasSuffix "runtime" (check.meta.hestia.group or ""))
-    ) (checksFor system);
+      _: check: system == "x86_64-linux" || !(lib.hasSuffix "runtime" (check.meta.hestia.group or ""))
+    ) (ordinaryChecksFor system);
 
   ciJobs = lib.genAttrs ciSystems (
     system:
     withSystem system (
       { pkgs, ... }:
-      lib.mapAttrs (name: entries: pkgs.linkFarm "ci-${name}" entries) {
-        packages = project system "packages" ((self.packages or { }).${system} or { });
-        checks = project system "checks" (checksFor system);
-        devShells = project system "development" ((self.devShells or { }).${system} or { });
-        formatters = project system "development" {
-          default = (self.formatter or { }).${system} or null;
-        };
-        nixosConfigurations = configurationsFor system "nixosConfigurations" (
-          configuration: configuration.config.system.build.toplevel
-        );
-        darwinConfigurations = configurationsFor system "darwinConfigurations" (
-          configuration: configuration.system
-        );
-        homeConfigurations = configurationsFor system "homeConfigurations" (
-          configuration: configuration.activationPackage
-        );
-      }
+      lib.mapAttrs (name: entries: pkgs.linkFarm "ci-${name}" entries) (
+        {
+          packages = project system "packages" ((self.packages or { }).${system} or { });
+          checks = project system "checks" (ordinaryChecksFor system);
+          preserve-fast = project system "preserve-fast" (preserveFastChecksFor system);
+          devShells = project system "development" ((self.devShells or { }).${system} or { });
+          formatters = project system "development" {
+            default = (self.formatter or { }).${system} or null;
+          };
+          nixosConfigurations = configurationsFor system "nixosConfigurations" (
+            configuration: configuration.config.system.build.toplevel
+          );
+          darwinConfigurations = configurationsFor system "darwinConfigurations" (
+            configuration: configuration.system
+          );
+          homeConfigurations = configurationsFor system "homeConfigurations" (
+            configuration: configuration.activationPackage
+          );
+        }
+        // lib.optionalAttrs (preserveVmChecksFor system != { }) {
+          preserve-zfs-reference = project system "preserve-zfs-reference" (preserveVmChecksFor system);
+        }
+      )
     )
   );
 in
