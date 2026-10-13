@@ -475,7 +475,9 @@ let
         then
           builtins.tryEval (
             let
-              projected = projectRoute projectorInput ctx.projectors.${selected.integration.integrationId};
+              projected = projectRoute projectorInput ctx.projectors.${selected.integration.integrationId} (
+                if binding == null then { } else binding.nativeOverrides or { }
+              );
             in
             builtins.deepSeq projected projected
           )
@@ -652,7 +654,7 @@ let
     ) stateResources;
 
   projectRoute =
-    route: projector:
+    route: projector: nativeOverrides:
     let
       jobId = "preserve-" + builtins.substring 0 16 (builtins.hashString "sha256" route.obligationId);
       projected = projector {
@@ -665,7 +667,7 @@ let
           ownerConfig
           realization
           ;
-        inherit jobId;
+        inherit jobId nativeOverrides;
       };
     in
     {
@@ -691,7 +693,7 @@ let
       map (
         route:
         let
-          projected = projectRoute route projectors.${route.integration.integrationId};
+          projected = projectRoute route projectors.${route.integration.integrationId} { };
         in
         {
           name = route.obligationId;

@@ -1,4 +1,15 @@
 { lib, ... }:
+let
+  validRelativePath =
+    path:
+    builtins.isString path
+    && builtins.all (component: !(builtins.elem component [ "" "." ".." ])) (lib.splitString "/" path);
+  validAbsolutePath =
+    path:
+    builtins.isString path
+    && lib.hasPrefix "/" path
+    && (path == "/" || validRelativePath (lib.removePrefix "/" path));
+in
 {
   config.fleet.preserve.projectors = {
     zrepl =
@@ -7,11 +18,21 @@
         ownerConfig,
         realization,
         jobId,
+        nativeOverrides ? { },
         ...
       }:
       let
         native = ownerConfig.native.zrepl or { };
         source = ownerConfig.source or { };
+        overrides = nativeOverrides.zrepl or { };
+        sharedKeys = builtins.filter (key: builtins.hasAttr key overrides) [
+          "connect"
+          "snapshotting"
+          "pruning"
+          "send"
+          "replication"
+          "conflict_resolution"
+        ];
         derivedKeys = builtins.filter (key: builtins.hasAttr key native) [
           "name"
           "type"
@@ -23,7 +44,13 @@
           "pruning"
         ];
       in
-      if derivedKeys != [ ] then
+      if !builtins.isString (realization.locator or null) || realization.locator == "" then
+        throw "preserve: zrepl projector for '${jobId}' requires a non-empty native source locator"
+      else if !builtins.isAttrs overrides then
+        throw "preserve: zrepl projector for '${jobId}' requires namespaced attribute overrides"
+      else if sharedKeys != [ ] then
+        throw "preserve: zrepl projector for '${jobId}' refuses Binding overrides of shared destination or lifecycle configuration"
+      else if derivedKeys != [ ] then
         throw "preserve: zrepl projector for '${jobId}' refuses derived native.zrepl keys ${builtins.concatStringsSep ", " derivedKeys}"
       else if
         (source.subpath or null) != null || (source.include or [ ]) != [ ] || (source.exclude or [ ]) != [ ]
@@ -55,11 +82,24 @@
         ownerConfig,
         realization,
         jobId,
+        nativeOverrides ? { },
         ...
       }:
       let
         native = ownerConfig.native.restic or { };
         source = ownerConfig.source or { };
+        overrides = nativeOverrides.restic or { };
+        sharedKeys = builtins.filter (key: builtins.hasAttr key overrides) [
+          "target"
+          "timerConfig"
+          "pruneOpts"
+          "checkOpts"
+          "runCheck"
+          "createWrapper"
+        ];
+        subpath = source.subpath or null;
+        includes = source.include or [ ];
+        root = lib.removeSuffix "/" realization.path;
         target = native.target or { };
         repository = target.repository or null;
         repositoryFile = target.repositoryFile or null;
@@ -75,6 +115,19 @@
       in
       if !builtins.isString (realization.path or null) then
         throw "preserve: restic projector for '${jobId}' requires a realization with a filesystem path"
+      else if !builtins.isAttrs overrides then
+        throw "preserve: restic projector for '${jobId}' requires namespaced attribute overrides"
+      else if sharedKeys != [ ] then
+        throw "preserve: restic projector for '${jobId}' refuses Binding overrides of shared destination or lifecycle configuration"
+      else if subpath != null && !validRelativePath subpath then
+        throw "preserve: restic projector for '${jobId}' requires a relative subpath without empty, dot, or parent components"
+      else if
+        !builtins.isList includes
+        || !builtins.all (
+          path: validAbsolutePath path && (path == root || lib.hasPrefix "${root}/" path)
+        ) includes
+      then
+        throw "preserve: restic projector for '${jobId}' requires includes within the authoritative realization path"
       else if (repository == null) == (repositoryFile == null) then
         throw "preserve: restic projector for '${jobId}' requires exactly one of native.restic.target.repository or native.restic.target.repositoryFile"
       else if credential == null then
@@ -84,8 +137,8 @@
       else
         let
           base =
-            if (source.subpath or null) != null then
-              "${realization.path}/${source.subpath}"
+            if subpath != null then
+              "${root}/${subpath}"
             else
               realization.path;
         in
@@ -109,7 +162,7 @@
             else
               null;
           config.services.restic.backups.${jobId} = {
-            paths = [ base ] ++ (source.include or [ ]);
+            paths = [ base ] ++ includes;
             exclude = source.exclude or [ ];
             repository = repository;
             repositoryFile = repositoryFile;

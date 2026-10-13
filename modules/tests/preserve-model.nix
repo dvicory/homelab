@@ -548,6 +548,57 @@ let
     ];
   }) [ realizationSpec ];
 
+  invalidResticSources = [
+    { subpath = "../escape"; }
+    { subpath = "db/../../escape"; }
+    { subpath = "/etc"; }
+    { subpath = ""; }
+    { subpath = "."; }
+    { subpath = "db/./child"; }
+    { subpath = "db//child"; }
+    { subpath = "db/"; }
+    { include = [ "/etc/shadow" ]; }
+    { include = [ "/srv/application/extra" ]; }
+    { include = [ "/srv/app/../escape" ]; }
+    { include = [ "/srv/app-other/extra" ]; }
+    { include = [ "extra" ]; }
+  ];
+  invalidLocatorRealizations = [
+    (builtins.removeAttrs zfsRealization [ "locator" ])
+  ] ++ map (locator: zfsRealization // { inherit locator; }) [
+    null
+    42
+    ""
+    { }
+  ];
+  invalidLocatorResults =
+    mode:
+    map (
+      realization:
+      compile (singleRoute { states.application.mode = mode; }) [
+        { state = "application"; inherit realization; }
+      ]
+    ) invalidLocatorRealizations;
+
+  rootRestic = compile (singleRoute {
+    policies.protected.routes = [ "route-restic" ];
+    bindings = [
+      {
+        state = "application";
+        route = "route-restic";
+        source = emptySource // {
+          subpath = "db";
+          include = [ "/extra" ];
+        };
+      }
+    ];
+  }) [
+    {
+      state = "application";
+      realization = zfsRealization // { path = "/"; };
+    }
+  ];
+
   conflictingZreplNative = [
     { name = "redirected-job"; }
     { type = "sink"; }
@@ -565,7 +616,14 @@ let
           }
         ];
       }
-    ) conflictingZreplNative
+    ) (conflictingZreplNative ++ [
+      { connect.listener_name = "diverged-sink"; }
+      { snapshotting.interval = "10h"; }
+      { pruning.keep_sender = [ ]; }
+      { send.encrypted = true; }
+      { replication.concurrency.steps = 2; }
+      { conflict_resolution.initial_replication = "all"; }
+    ])
     ++ map (
       native:
       singleRoute {
@@ -616,7 +674,43 @@ let
           "not-a-list"
           [ 1 ]
           [ "" ]
+        ]
+    ++ map (
+      native:
+      singleRoute {
+        policies.protected.routes = [ "route-restic" ];
+        bindings = [
+          {
+            state = "application";
+            route = "route-restic";
+            nativeOverrides.restic = native;
+          }
         ];
+      }
+    ) [
+      { target.repository = "/archive/diverged"; }
+      { target.repositoryFile = "/run/credentials/other-repository"; }
+      { target.passwordFile = "/run/credentials/other-password"; }
+      { target.environmentFile = "/run/credentials/other-environment"; }
+      { timerConfig.OnCalendar = "daily"; }
+      { pruneOpts = [ "--keep-last 1" ]; }
+      { checkOpts = [ "--read-data" ]; }
+      { runCheck = false; }
+      { createWrapper = false; }
+    ]
+    ++ map (
+      source:
+      singleRoute {
+        policies.protected.routes = [ "route-restic" ];
+        bindings = [
+          {
+            state = "application";
+            route = "route-restic";
+            source = emptySource // source;
+          }
+        ];
+      }
+    ) invalidResticSources;
   rejectedProjections = map (
     declarations: compile declarations [ realizationSpec ]
   ) rejectedProjectionDeclarations;
@@ -1612,6 +1706,7 @@ let
         )
         (
           rejectedProjections
+          ++ invalidLocatorResults "enabled"
           ++ [
             nativelessWiring
             uncredentialedRestic
@@ -1626,7 +1721,14 @@ let
       && (builtins.head result.desiredInventory.states).operational == false
       && result.executablePlan.states == [ ]
       && result.ownerProjections == { }
-    ) planOnlyRejectedProjections;
+    ) (planOnlyRejectedProjections ++ invalidLocatorResults "plan-only");
+    root-realization-narrowing =
+      let
+        route = builtins.head (builtins.head rootRestic.executablePlan.states).routes;
+        backups = rootRestic.ownerProjections.${route.obligationId}.config.services.restic.backups;
+        job = backups.${builtins.head (builtins.attrNames backups)};
+      in
+      route.status == "resolved" && job.paths == [ "/db" "/extra" ];
     external-adapter-without-projector =
       (builtins.head externalAdapter.executablePlan.states).operational
       &&
