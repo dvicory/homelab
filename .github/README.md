@@ -21,15 +21,20 @@ nix build .#ciJobs.x86_64-linux.nixosConfigurations
 nix build .#checks.aarch64-linux.den-semantics
 ```
 
-Linux VM checks remain directly buildable for x86-64 and ARM64. Hosted ARM
-jobs omit checks whose Hestia group ends in `-runtime`, because GitHub's ARM
-runners do not expose KVM. A KVM-capable ARM builder can build any omitted
-check directly. Check jobs use `--max-jobs 1` so VM tests do not compete with
-other builds on the same runner; other CI groups retain Nix's normal
-parallelism. Check jobs also evaluate their projection in a separate
-`nix eval` process and then build the resulting derivation. Evaluating every
-check takes about 10 GiB, and a `nix build` process that evaluated them keeps
-that memory until its last build ends.
+Linux VM checks remain directly buildable for x86-64 and ARM64. Hosted CI
+partitions the actual check derivations using NixOS test drivers and
+`requiredSystemFeatures`, never Hestia group names. Each x86-64 VM/KVM check
+runs on its own native Ubuntu 24.04 runner with `--max-jobs 1`; the fast check
+aggregate contains no runtime checks. All platforms retain their full fast
+semantic/schema/freshness inventory and package/configuration/development groups.
+Hosted ARM runtime checks are recorded as unsupported because its runners do
+not expose KVM; a KVM-capable ARM builder can still build those checks directly.
+Every registered check must be a derivation and belongs to exactly one of the
+fast, hosted runtime, or explicitly unsupported partitions. Future checks join
+automatically. CI uploads the evaluated inventory for each platform.
+
+Build jobs release their separate `nix eval` heap before building the exact
+derivation, preserving memory for the VM. No runner executes competing VM suites.
 
 A hosted x86-64 runner has 4 vCPUs and 16 GiB of memory. A VM check must fit
 there: request at most 4 cores, and leave the runner several GiB beyond the
@@ -38,9 +43,11 @@ GitHub loses the runner and the job ends without the test's result.
 
 Hosted CI builds the full ARM64 Darwin configuration. An ARM64 Linux job first
 builds the Linux system closure used by its `nix.linux-builder` VM and passes
-that closure to the macOS job through a one-day workflow artifact. This breaks
-the first-build cycle without weakening the production configuration. The
-workstation builds the same configuration as its activation gate.
+that closure to the macOS job through a one-day workflow artifact. Only the
+Darwin configuration job waits for this bootstrap; Linux and other Darwin
+groups do not. This breaks the first-build cycle without weakening the
+production configuration. The workstation builds the same configuration as
+its activation gate.
 
 Manual dispatch builds the full projection by default. Set `system` to build
 only that platform, or set `check` to run one check (defaulting to x86-64 when
@@ -51,14 +58,28 @@ gh workflow run ci.yml --ref "$REF" -f check=den-semantics
 gh workflow run ci.yml --ref "$REF" -f system=aarch64-linux
 ```
 
-Check names and implementations belong in Nix, not workflow branches. Successful
-check jobs upload nonempty outputs as `check-output-<system>-<run-id>` artifacts;
-Linux runners enable available KVM acceleration and publish nonempty outputs to
-the public `dvicory-homelab` Cachix cache. System builds and checks can reuse
-narinfo and objects uploaded by other jobs.
-All jobs read the public `dvicory-homelab` Cachix cache. Successful `main` push
-jobs publish their existing outputs and runtime closures directly from the build
-runner; another job's failure does not prevent those uploads. There is no second
+Check names and implementations belong in Nix, not workflow branches. Single
+check dispatch validates its registration and hosted platform support; selecting
+an unsupported runtime platform fails explicitly rather than silently skipping.
+`media-runtime` dispatch still runs the unchanged native x86-64 Docker suite.
+Successful check jobs upload nonempty outputs as
+`check-output-<system>-<check-or-group>-<run-id>` artifacts; empty outputs retain
+their evidence in the job log. Linux runners enable available KVM acceleration.
+System builds and checks can reuse narinfo and objects uploaded by other jobs.
+All jobs read the public `dvicory-homelab` Cachix cache and the signed upstream
+`https://cache.numtide.com` cache documented by the pinned `llm-agents` input.
+CI and shared Nix settings append its fixed public key
+`niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=`
+without replacing existing substituters or keys. This permits exact upstream
+package substitution without changing package sources or versions. Signature
+verification remains required; CI does not automatically accept PR-provided
+flake configuration or grant upstream cache-write access. Successful `main` push
+jobs publish their existing outputs, runtime closures, and realized build
+dependencies directly from the build runner; another job's failure does not
+prevent those uploads. Publication uses the derivation roots recorded by the
+successful build, including dependencies embedded in compressed images that
+have no runtime store references. It excludes the source/derivation-only
+closure and never builds missing outputs for publication. There is no second
 build on a separate publication runner. The `cachix-publish` environment remains
 restricted to `main`, and only the publication step receives its per-cache write
 token. Pull requests and manual dispatches remain read-only.

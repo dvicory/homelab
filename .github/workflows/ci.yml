@@ -30,6 +30,78 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  plan:
+    name: Inventory hosted checks
+    if: inputs.check != 'media-runtime'
+    runs-on: ${{ inputs.check != '' && inputs.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || inputs.check != '' && inputs.system == 'aarch64-darwin' && 'macos-14' || 'ubuntu-24.04' }}
+    outputs:
+      matrix: ${{ steps.inventory.outputs.matrix }}
+      darwin: ${{ steps.inventory.outputs.darwin }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            extra-substituters = https://cache.numtide.com
+            extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=
+          github_access_token: ${{ github.token }}
+      - name: Configure durable cache (read only)
+        if: vars.CACHIX_CACHE != ''
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: ${{ vars.CACHIX_CACHE }}
+          skipPush: true
+      - name: Partition actual check derivations
+        id: inventory
+        env:
+          CHECK: ${{ inputs.check }}
+          REQUESTED_SYSTEM: ${{ inputs.system }}
+        run: |
+          set -euo pipefail
+          system=x86_64-linux
+          if [ -n "$CHECK" ] && [ -n "$REQUESTED_SYSTEM" ] && [ "$REQUESTED_SYSTEM" != all ]; then
+            system="$REQUESTED_SYSTEM"
+          fi
+          nix eval --json ".#hostedCiInventory.$system" > "$RUNNER_TEMP/check-inventory.json"
+          cat "$RUNNER_TEMP/check-inventory.json"
+          if [ -n "$CHECK" ]; then
+            matrix=$(jq -ce --arg check "$CHECK" --arg system "$system" '
+              [.inventory[] | select(.name == $check)] |
+              if length != 1 then error("check is not registered for selected platform")
+              elif .[0].hosted | not then error("selected check requires KVM unavailable on this hosted platform")
+              else {include: [{system: $system, group: (if .[0].runtime then "runtime" else "checks" end), check: $check, artifact: ($check | @uri)}]} end
+            ' "$RUNNER_TEMP/check-inventory.json")
+            darwin=false
+          else
+            platforms='["x86_64-linux","aarch64-linux","aarch64-darwin"]'
+            if [ -n "$REQUESTED_SYSTEM" ] && [ "$REQUESTED_SYSTEM" != all ]; then
+              platforms=$(jq -cn --arg system "$REQUESTED_SYSTEM" '[$system]')
+            fi
+            matrix=$(jq -c --argjson platforms "$platforms" '
+              {include: (
+                [if $platforms | index("x86_64-linux") then .runtime[] |
+                   {system: "x86_64-linux", group: "runtime", check: .name, artifact: (.name | @uri)} else empty end]
+                + [$platforms[] as $system |
+                 ["packages","checks","devShells","formatters","nixosConfigurations","darwinConfigurations","homeConfigurations"][] as $group |
+                 select($system != "aarch64-darwin" or $group != "darwinConfigurations") |
+                 {system: $system, group: $group, check: "", artifact: ""}]
+              )}
+            ' "$RUNNER_TEMP/check-inventory.json")
+            darwin=$(jq -cn --argjson platforms "$platforms" '$platforms | index("aarch64-darwin") != null')
+          fi
+          printf 'matrix=%s\ndarwin=%s\n' "$matrix" "$darwin" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$matrix" | jq .
+      - name: Upload required check inventory
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: required-check-inventory-${{ github.run_id }}
+          path: ${{ runner.temp }}/check-inventory.json
+
   bootstrap-darwin-builder:
     name: Bootstrap Darwin Linux builder
     if: inputs.check == '' && (inputs.system == '' || inputs.system == 'all' || inputs.system == 'aarch64-darwin')
@@ -59,6 +131,8 @@ jobs:
           extra_nix_config: |
             build-dir = /nix/build
             sandbox = relaxed
+            extra-substituters = https://cache.numtide.com
+            extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=
           github_access_token: ${{ github.token }}
 
       - name: Configure durable cache (read only)
@@ -84,28 +158,19 @@ jobs:
           overwrite: true
           retention-days: 1
 
-  # One job per (system, ciJobs group).
-  #
-  # Evaluation has to happen per system: nixidy reads the chart derivation while
-  # evaluating, so evaluating a foreign system forces realising charts for a
-  # platform the runner cannot build. The previous single evaluate job worked
-  # only while no nixidy environment was in ciJobs.
-  #
-  # Each ciJobs group is directly buildable. The only cross-job handoff is the
-  # Linux system closure needed to bootstrap the full Darwin configuration.
+  # Native evaluation discovers all VM drivers; each gets its own KVM runner.
+  # Only the real Darwin configuration consumer waits for the bootstrap closure.
   build:
-    needs: bootstrap-darwin-builder
-    if: ${{ !cancelled() && inputs.check != 'media-runtime' }}
-    name: ${{ matrix.group }} (${{ matrix.system }})
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    name: ${{ matrix.check || matrix.group }} (${{ matrix.system }})
     runs-on: ${{ matrix.system == 'x86_64-linux' && 'ubuntu-24.04' || matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'macos-14' }}
     environment:
       name: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.CACHIX_CACHE != '' && 'cachix-publish' || '' }}
     strategy:
       fail-fast: false
-      matrix:
-        system: ${{ fromJSON(inputs.system && inputs.system != 'all' && format('["{0}"]', inputs.system) || inputs.check != '' && '["x86_64-linux"]' || '["x86_64-linux","aarch64-linux","aarch64-darwin"]') }}
-        group: ${{ fromJSON(inputs.check != '' && '["checks"]' || '["packages","checks","devShells","formatters","nixosConfigurations","darwinConfigurations","homeConfigurations"]') }}
-    steps:
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps: &build-steps
       - name: Monitor cache publication runner
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.CACHIX_CACHE != ''
         uses: step-security/harden-runner@351661ca32ac09a36dc5ee2d536e3128f2a3c8ed # v2.22.0
@@ -114,9 +179,14 @@ jobs:
 
       - name: Enable available KVM acceleration
         if: runner.os == 'Linux'
+        env:
+          GROUP: ${{ matrix.group }}
         run: |
           if [ -c /dev/kvm ]; then
             sudo chmod a+rw /dev/kvm
+          elif [ "$GROUP" = runtime ]; then
+            echo 'Runtime check requires a native KVM runner' >&2
+            exit 1
           fi
 
       - name: Check out repository
@@ -147,12 +217,17 @@ jobs:
           extra_nix_config: |
             build-dir = /nix/build
             sandbox = relaxed
+            extra-substituters = https://cache.numtide.com
+            extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=
           github_access_token: ${{ github.token }}
 
       - name: Install Nix on macOS
         if: runner.os == 'macOS'
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
+          extra_nix_config: |
+            extra-substituters = https://cache.numtide.com
+            extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=
           github_access_token: ${{ github.token }}
 
       - name: Configure durable cache (read only)
@@ -165,7 +240,7 @@ jobs:
       # System builds and VM checks can fetch multi-GiB images. Hestia v3
       # buffers whole NARs in RAM; use durable/upstream caches for these groups.
       - name: Start Hestia cache
-        if: matrix.group != 'nixosConfigurations' && matrix.group != 'darwinConfigurations' && matrix.group != 'checks'
+        if: matrix.group != 'nixosConfigurations' && matrix.group != 'darwinConfigurations' && matrix.group != 'checks' && matrix.group != 'runtime'
         uses: Mic92/hestia@dfed9ced335d28978ba74e513939a10db1f71025 # v3.1.0
         with:
           version: v3.0.1
@@ -188,38 +263,47 @@ jobs:
         env:
           SYSTEM: ${{ matrix.system }}
           GROUP: ${{ matrix.group }}
-          CHECK: ${{ inputs.check }}
+          CHECK: ${{ matrix.check }}
         run: |
           set -euo pipefail
+          if [ "$GROUP" = checks ]; then
+            nix eval --json ".#hostedCiInventory.$SYSTEM" > "$RUNNER_TEMP/check-inventory.json"
+            cat "$RUNNER_TEMP/check-inventory.json"
+          fi
           if [ -n "$CHECK" ]; then
-            [[ "$CHECK" =~ ^[a-zA-Z0-9_./-]+$ ]] || { echo "invalid check name" >&2; exit 1; }
-            attr=".#checks.$SYSTEM.\"$CHECK\""
+            check_attr=$(jq -rn --arg check "$CHECK" '$check | @json')
+            attr=".#checks.$SYSTEM.$check_attr"
           elif [ "$GROUP" = checks ]; then
             attr=".#hostedCiJobs.$SYSTEM.checks"
           else
             attr=".#ciJobs.$SYSTEM.$GROUP"
           fi
           build_args=(--keep-going --fallback)
-          if [ "$GROUP" = checks ]; then
-            # VM checks need the runner's resources, not a share of parallel
-            # builds. Evaluating every check takes about 10 GiB, and a nix
-            # build process keeps that heap until its last build ends, so
-            # evaluate in a separate process and build the derivation.
+          if [ "$GROUP" = runtime ]; then
+            # One VM suite on this runner, never competing VM heaps.
             build_args+=(--max-jobs 1)
-            attr="$(nix eval --raw "$attr.drvPath")^*"
           fi
-          nix build -L --out-link "$RUNNER_TEMP/result" "${build_args[@]}" "$attr"
+          # Release the evaluation heap before any build/VM starts (PR #64).
+          drv=$(nix eval --raw "$attr.drvPath")
+          nix build -L --out-link "$RUNNER_TEMP/result" --json "${build_args[@]}" "$drv^*" > "$RUNNER_TEMP/build.json"
 
       - name: Upload successful check outputs
-        if: matrix.group == 'checks'
+        if: matrix.group == 'checks' || matrix.group == 'runtime'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: check-output-${{ matrix.system }}-${{ github.run_id }}
+          name: check-output-${{ matrix.system }}-${{ matrix.artifact || matrix.group }}-${{ github.run_id }}
           path: ${{ runner.temp }}/result*
           # Some checks have empty successful outputs; their evidence is the job log.
           if-no-files-found: ignore
 
-      - name: Publish successful outputs to Cachix
+      - name: Upload platform check inventory
+        if: always() && matrix.group == 'checks'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: check-inventory-${{ matrix.system }}-${{ matrix.artifact || matrix.group }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/check-inventory.json
+
+      - name: Publish successful outputs and build dependencies to Cachix
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.CACHIX_CACHE != ''
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -229,14 +313,41 @@ jobs:
           shopt -s nullglob
           outputs=("$RUNNER_TEMP"/result*)
           if [ "${#outputs[@]}" -gt 0 ]; then
-            cachix push "$CACHIX_CACHE" "${outputs[@]}"
+            # Compressed images hide build dependencies from their runtime references.
+            # Keep only realized additions to the exact build's source closure.
+            jq -r '.[].drvPath' "$RUNNER_TEMP/build.json" \
+              | xargs nix-store --query --requisites \
+              | sort -u > "$RUNNER_TEMP/build-sources"
+            jq -r '.[].drvPath' "$RUNNER_TEMP/build.json" \
+              | xargs nix-store --query --requisites --include-outputs \
+              | sort -u > "$RUNNER_TEMP/build-realized"
+            {
+              printf '%s\n' "${outputs[@]}"
+              comm -13 "$RUNNER_TEMP/build-sources" "$RUNNER_TEMP/build-realized"
+            } | cachix push "$CACHIX_CACHE"
           fi
+
+  build-darwin-configuration:
+    needs: [plan, bootstrap-darwin-builder]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.bootstrap-darwin-builder.result == 'success' && needs.plan.outputs.darwin == 'true' }}
+    name: darwinConfigurations (aarch64-darwin)
+    runs-on: macos-14
+    environment:
+      name: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.CACHIX_CACHE != '' && 'cachix-publish' || '' }}
+    strategy:
+      matrix:
+        include:
+          - system: aarch64-darwin
+            group: darwinConfigurations
+            check: ""
+            artifact: ""
+    steps: *build-steps
 
   # Same pinned application suite as the former media VM envelope. Kubernetes
   # and host-storage boundaries remain covered by their separate runtime gates.
   media-runtime:
     name: media-runtime (x86_64-linux)
-    if: inputs.check == '' || inputs.check == 'media-runtime'
+    if: (inputs.check == '' && (inputs.system == '' || inputs.system == 'all' || inputs.system == 'x86_64-linux')) || inputs.check == 'media-runtime'
     runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
@@ -247,6 +358,9 @@ jobs:
       - name: Install Nix
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
+          extra_nix_config: |
+            extra-substituters = https://cache.numtide.com
+            extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=
           github_access_token: ${{ github.token }}
 
       - name: Configure durable cache (read only)
@@ -259,6 +373,10 @@ jobs:
       - name: Record native runner and input identities
         run: |
           set -euo pipefail
+          case "${{ inputs.system }}" in
+            ''|all|x86_64-linux) ;;
+            *) echo 'media-runtime requires the native x86_64-linux hosted runner' >&2; exit 1 ;;
+          esac
           mkdir -p "$RUNNER_TEMP/media-native-evidence"
           {
             printf 'runner_image=%s\nrunner_image_version=%s\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"

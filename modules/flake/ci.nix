@@ -46,16 +46,54 @@ let
         self.${output} or { }
       )
     );
-  checksFor = system: (self.checks or { }).${system} or { };
-  hostedChecksFor =
+  checksFor =
     system:
-    # Hosted x86_64-linux runners have KVM, so runtime-group (VM) checks run
-    # there. They are excluded only on systems without hosted KVM.
-    lib.filterAttrs (
-      _: check:
-      system == "x86_64-linux"
-      || !(lib.hasSuffix "runtime" (check.meta.hestia.group or ""))
-    ) (checksFor system);
+    let
+      checks = self.checks.${system};
+    in
+    assert lib.assertMsg (lib.all lib.isDerivation (lib.attrValues checks))
+      "CI checks.${system} must contain only derivations";
+    checks;
+
+  requiredFeaturesFor =
+    check:
+    # NixOS tests expose a lazy derivation; its raw derivation owns the features.
+    check.requiredSystemFeatures or (check.config.rawTestDerivation.requiredSystemFeatures or [ ]);
+
+  isRuntime =
+    check:
+    lib.elem "kvm" (requiredFeaturesFor check)
+    || lib.isDerivation (
+      check.driver or (check.driverInteractive or (check.config.driver or null))
+    );
+
+  checkInventory =
+    system:
+    let
+      checks = checksFor system;
+      inventory = lib.mapAttrsToList (name: check: {
+        inherit name;
+        inherit (check) drvPath;
+        runtime = isRuntime check;
+        requiredSystemFeatures = requiredFeaturesFor check;
+        hosted = !isRuntime check || system == "x86_64-linux";
+        reason = if isRuntime check && system != "x86_64-linux" then "hosted runner has no KVM" else "";
+      }) checks;
+      fast = builtins.filter (entry: !entry.runtime) inventory;
+      runtime = builtins.filter (entry: entry.runtime && entry.hosted) inventory;
+      unsupported = builtins.filter (entry: !entry.hosted) inventory;
+    in
+    assert lib.assertMsg (
+      builtins.length (fast ++ runtime ++ unsupported) == builtins.length inventory
+      && lib.sort builtins.lessThan (map (entry: entry.name) (fast ++ runtime ++ unsupported))
+      == builtins.attrNames checks
+    ) "Hosted CI must partition every checks.${system} registration exactly once";
+    {
+      inherit inventory fast runtime unsupported;
+    };
+
+  hostedChecksFor =
+    system: lib.filterAttrs (_: check: !isRuntime check) (checksFor system);
 
   ciJobs = lib.genAttrs ciSystems (
     system:
@@ -85,6 +123,7 @@ in
   flake = {
     # Pick up standard flake outputs without duplicating their inventory in CI.
     inherit ciJobs;
+    hostedCiInventory = lib.genAttrs ciSystems checkInventory;
     ciBundles = lib.mapAttrs (
       system: jobs: withSystem system ({ pkgs, ... }: pkgs.linkFarm "ci-${system}" jobs)
     ) ciJobs;
