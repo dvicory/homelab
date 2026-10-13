@@ -17,32 +17,6 @@ the `fleet-monitoring` capability; this runbook covers operating it.
 Metrics, alert rules and alert routing never depend on Kanidm, the Gateway
 or cert-manager. Only Grafana does.
 
-## What lives in Nix and what doesn't
-
-Declared in Nix and rendered to `generated/manifests/prod-home/`:
-
-- every Deployment, chart and image, pinned by version and digest;
-- the alert rules (`modules/den/aspects/kubernetes/services/monitoring/alerting.nix`),
-  unit-tested by the `monitoring-rules` check;
-- the scrape targets: host exporters through the `prometheus-targets`
-  quirk, cluster sources from the cluster declaration;
-- Alertmanager routing, inhibition and templates (also `alerting.nix`),
-  checked by `monitoring-alertmanager`; credentials appear only as file
-  paths;
-- Grafana's data sources and dashboards (`assets/monitoring/dashboards/`,
-  each with its source, revision and SHA-256 in `sources.json`);
-- the host exporter, the status timers, the declared disks and pools, and
-  the firewall rule;
-- the Kanidm client for Grafana, the retained path, the retention period,
-  the free-space floor and every resource limit.
-
-Encrypted in Git: the six runtime Secrets below.
-
-Outside Nix: the Pushover application, the Telegram bot and chat, the
-healthchecks.io check, and runtime state (metrics data, silences, Grafana's
-database, Grafana's random administrator password, and the Grafana client
-secret that Kanidm generates).
-
 ## One-time setup
 
 Do these once, in order. Never paste a credential value into a commit, PR,
@@ -61,9 +35,12 @@ issue or chat.
    minutes**. Add its Pushover and Telegram integrations with the same user
    and chat. Note the check's ping URL. Anyone holding it can send pings and
    hide an outage, so treat it as a credential.
-4. **Secrets.** Store the five delivery values and rekey, as below, then
-   commit the encrypted files.
-5. **Deploy** `hvn-hyp1` (operator-gated), then let Argo CD sync.
+4. **Secrets.** Supply the five delivery values through the
+   [runtime-secret flow](../operations.md#runtime-secret-references), then
+   rekey and commit the encrypted files.
+5. **Deploy** `hvn-hyp1` through the
+   [host deployment procedure](../operations.md#deploy-configuration),
+   then let Argo CD sync.
 
 ## Runtime Secrets
 
@@ -76,52 +53,26 @@ issue or chat.
 | `monitoring--alertmanager-delivery--heartbeat-url` | `alertmanager-delivery` → `heartbeat-url` | healthchecks.io ping URL |
 | `monitoring--grafana-admin--secret-key` | `grafana-admin` → `secret-key` | agenix-rekey `alnum-no-newline` generator, committed |
 
-Grafana's secret key is generated and committed; it needs only a rekey.
-Each delivery secret is declared only once its encrypted file exists:
-agenix-rekey refuses to evaluate a request whose file is missing, and the
-staging unit copies every declared secret. Until then Alertmanager keeps
-running and every send through that channel fails.
+Manage the encrypted sources through the
+[runtime-secret flow](../operations.md#runtime-secret-references).
+Grafana's secret key is generated; the delivery credentials come from the
+providers above.
 
-Alertmanager reads the Pushover token and user key exactly as stored, so no
-value may end in a newline. From a Git checkout of the repository, run this
-sequence. `store` reads each value without echoing it and encrypts it to the
-master public key; only `agenix rekey` needs your master identity:
-
-```sh
-nix develop            # provides age and agenix
-umask 077
-store() {
-  read -rsp "$1: " value; echo
-  printf '%s' "$value" | age -R .secrets/pub/master.pub \
-    -o ".secrets/hosts/compute-1/monitoring--alertmanager-delivery--$1.age"
-  unset value
-}
-store pushover-token
-store pushover-user-key
-store telegram-bot-token
-store telegram-chat-id
-store heartbeat-url
-git add .secrets/hosts/compute-1/monitoring--alertmanager-delivery--*.age
-agenix rekey -a
-nix eval --json .#nixosConfigurations.hvn-hyp1.config.secretRequests \
-  --apply 'r: builtins.filter (n: builtins.match "monitoring--.*" n != null) (builtins.attrNames r)'
-nix run .#sync-prod-home-manifests && nix run .#write-files
-```
-
-The `nix eval` must list the six `monitoring--…` sources; it prints names,
-never values. Commit the new `.age` files, the rekeyed copies under
-`.secrets/hosts/hvn-hyp1/rekeyed/` and the regenerated output, then deploy
-`hvn-hyp1`.
+Delivery values must not end in a newline: Alertmanager reads Pushover's
+token and user key verbatim. A missing credential file leaves Alertmanager
+running, but sends through that integration fail.
 
 ### Rotation
 
-Revoke the old credential at the provider, store the new value with the same
-source name (`store` above), rekey, commit and deploy `hvn-hyp1`.
-`compute-stage-secrets` restages the Secret, and Alertmanager reads its files
-at each send, so no restart is needed. To rotate the heartbeat URL,
-regenerate it on the healthchecks.io check. To rotate Grafana's secret key,
-delete its `.age` file, run `agenix generate -a` and `agenix rekey -a`, and
-deploy; it signs Grafana's sessions, so everyone signs in again.
+When a provider credential changes, update its encrypted source above and
+deploy `hvn-hyp1`. Once `compute-stage-secrets` restages the Secret,
+Alertmanager reads its files at each send, so no restart is needed.
+Regenerate the heartbeat URL on the healthchecks.io check if it is exposed.
+
+Grafana's secret key protects secrets encrypted in its database. After
+changing the key through the generated-secret flow and deploying it,
+replace the Grafana Pod. This recreates its disposable database and
+provisioned configuration; metrics history is unaffected.
 
 ## Severity routing
 
@@ -130,13 +81,11 @@ deploy; it signs Grafana's sessions, so everyone signs in again.
 | critical | priority 1 (bypasses quiet hours) | yes | every 4 h |
 | warning | priority 0 (respects quiet hours) | yes | every 24 h |
 
-This is configuration in `alerting.nix`, not contract. You can change
-it there without a spec change; the `monitoring-alertmanager` check fails if
-a change drops a critical alert from either channel, lets quiet hours hold
-one, leaves a warning with no channel, or stops resolution notices.
+To change routing, edit the receivers and routes in
+`modules/den/aspects/kubernetes/services/monitoring/alerting.nix`.
 
 - Quiet hours are set in the Pushover app, never in Homelab.
-- Telegram has no sender-side quiet hours: every message notifies.
+- This configuration enables Telegram notifications for every message.
 - A failing channel is reported through the other one only
   (`AlertDeliveryFailing`). A channel that breaks while idle is found at its
   next send attempt; there is no daily probe yet.
@@ -176,9 +125,9 @@ port-forward svc/victoriametrics 8428` serves VictoriaMetrics' query UI at
 silences. Port-forwarding is not subject to NetworkPolicy, and these UIs
 have no login, so treat that access like the cluster access it comes from.
 
-To use Grafana itself, run these on the host. The login form must be turned
-on, because a password alone gives no way in; basic authentication stays
-off.
+To use Grafana itself, run these commands in **Bash on the host**. The login
+form must be turned on, because a password alone gives no way in; basic
+authentication stays off.
 
 1. Hold automated sync on `apps` and `monitoring`, or self-heal reverts
    step 2:
@@ -221,8 +170,6 @@ off.
      --type merge -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'
    ```
 
-The `monitoring-grafana-runtime` check runs steps 2 to 4 against the pinned
-Grafana image.
 
 ## Silences
 
@@ -230,15 +177,15 @@ Silence through Grafana (Alerting → Silences, data source "Alertmanager").
 Grafana keeps this external Alertmanager UI enabled; its own alert-rule
 execution is disabled because vmalert evaluates the declared rules.
 Silences live in Alertmanager's `emptyDir` and are lost when the pod or the
-guest is replaced; re-create them afterwards. The heartbeat cannot be
-silenced in Alertmanager: pause the check in healthchecks.io for planned
-outages instead.
+guest is replaced; re-create them afterwards. Do not silence `Watchdog`:
+that stops pings and triggers the external outage alert. Pause the check
+in healthchecks.io for planned outages instead.
 
 ## A "heartbeat down" notice
 
-healthchecks.io alerts when no ping has arrived for 15 minutes. The
-heartbeat is sent only while fresh data is stored and alerts are evaluated
-and routed. In order of likelihood:
+healthchecks.io alerts 15 minutes after the last ping (the 5-minute period
+plus 10-minute grace). The heartbeat is sent only while fresh data is stored
+and alerts are evaluated and routed. Check:
 
 1. **The guest, host, power or uplink is down.** Check that `hvn-hyp1`
    answers and that the guest is running.
@@ -252,13 +199,24 @@ and routed. In order of likelihood:
    is missing. This is intentional: it never writes to substitute storage.
    Restore the retained state root before anything else.
 4. **vmalert or Alertmanager stopped.** Check their pods and logs.
+5. **Heartbeat delivery failed.** Check Alertmanager's webhook failure
+   counter and logs, the staged heartbeat credential, and outbound access
+   to healthchecks.io. Do not copy the ping URL into reports.
+6. **The check or Watchdog is paused.** Check active Alertmanager silences,
+   the external check's last ping and pause state, and its Pushover and
+   Telegram integrations. A new check provides no coverage until its first
+   successful ping.
 
-### Testing the heartbeat
+### Optional heartbeat drill
 
 To prove that the heartbeat stops when ingestion stops while every
 monitoring service keeps running, pause Argo CD auto-sync for the
 `monitoring` Application and apply an egress-deny NetworkPolicy that
 selects only the VictoriaMetrics pod:
+
+Run this during planned maintenance: it intentionally causes an external
+outage notification. Remove the policy and restore auto-sync even if the
+drill fails.
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -275,9 +233,8 @@ spec:
 
 Its scrapes fail, but its query API still answers vmalert and Grafana.
 healthchecks.io should report the check down within 30 minutes. Delete the
-policy, resume auto-sync, and wait for the recovery notice. The guest's
-NetworkPolicy enforcer, kube-network-policies, applies egress rules; the
-`monitoring-k3s-runtime` check shows it with compute-1's K3s flags.
+policy, resume auto-sync, and confirm that fresh scrapes, heartbeats and
+the recovery notice return.
 
 ## Metrics storage
 
@@ -311,9 +268,9 @@ Check this before you change a CPU or memory limit.
   more than 25 % of its 100 ms CPU periods for 15 minutes. It keeps running
   into its CPU limit, so its work slows; nothing is killed.
 - **`KubeContainerMemoryNearLimit`** (warning): its working set stayed above
-  90 % of its memory limit for 10 minutes. An OOM kill is close.
-- **`KubeContainerOOMKilled`** (critical): the kernel killed it at its memory
-  limit.
+  90 % of its memory limit for 10 minutes. Little headroom remains.
+- **`KubeContainerOOMKilled`** (critical): an OOM kill was observed. Check
+  the container's limit and guest memory pressure before raising limits.
 
 A CPU peak near 100 % of the limit together with throttling means the limit
 sets the pace. A memory peak well below the limit means memory has room.
@@ -348,10 +305,8 @@ Required mounts are derived: each MergerFS pool and each provisioned
 ## Known gaps
 
 - Probes start inside the guest. They miss failures in the host's DNAT, LAN
-  DNS, the router and the public edges. External probing is a follow-up
-  change.
-- No backups or recovery monitoring; that is a future change. Metrics
-  history is not a backup.
-- No active channel checks: a channel that breaks while idle is found at its
-  next send.
-- No log aggregation and no application-specific alerts.
+  DNS, the router and the public edges.
+- Backup freshness and recovery are not monitored. Metrics history is not
+  a backup.
+- A delivery channel that breaks while idle is found at its next send
+  attempt.
