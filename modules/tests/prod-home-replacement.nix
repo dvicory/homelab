@@ -139,9 +139,10 @@
           ' "$out/root.yaml"
         '';
         bootstrapHost = self.packages.${system}.household-bootstrap-host;
-        test =
+        mkTest = family:
           (pkgs.testers.runNixOSTest {
-            name = "prod-home-replacement";
+            name =
+              if family == "replacement" then "prod-home-replacement" else "prod-home-consumer-resilience";
             globalTimeout = 4 * 60 * 60;
             requiredFeatures.kvm = true;
 
@@ -318,6 +319,7 @@
               # The driver streams the VM console while execute waits for exit.
               (status, _) = fixture_host.execute(
                   "python3 -u /tmp/prod-home-replacement.py"
+                  " --scenario ${family}"
                   " --bundle ${guestBundle}"
                   " --fixture ${fixture}"
                   " --repo ${testRepo}"
@@ -330,7 +332,7 @@
                   f" < /dev/null > {console} 2>&1",
                   timeout=4 * 60 * 60,
               )
-              assert status == 0, "prod-home-replacement scenario failed"
+              assert status == 0, "${family} scenario failed"
             '';
           }).overrideTestDerivation
             (_: {
@@ -338,11 +340,13 @@
               # Builders must explicitly permit this with sandbox = relaxed.
               __noChroot = true;
             });
+        replacementTest = mkTest "replacement";
+        consumerTest = mkTest "consumer-resilience";
       in
       {
         # The same inputs can exercise the scenario on a disposable native
         # x86_64 or aarch64 Linux host.
-        legacyPackages.prod-home-replacement-test = test // {
+        legacyPackages.prod-home-replacement-test = replacementTest // {
           inherit
             fixture
             testRepo
@@ -350,9 +354,15 @@
             guestBundle
             ;
         };
-        checks.prod-home-replacement = test // {
-          meta = test.meta // {
+        legacyPackages.prod-home-consumer-resilience-test = consumerTest;
+        checks.prod-home-replacement = replacementTest // {
+          meta = replacementTest.meta // {
             hestia.group = "${system}-prod-home-replacement";
+          };
+        };
+        checks.prod-home-consumer-resilience = consumerTest // {
+          meta = consumerTest.meta // {
+            hestia.group = "${system}-prod-home-consumer-resilience";
           };
         };
       }
