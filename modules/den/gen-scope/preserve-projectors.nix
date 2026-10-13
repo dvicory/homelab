@@ -3,7 +3,14 @@ let
   validRelativePath =
     path:
     builtins.isString path
-    && builtins.all (component: !(builtins.elem component [ "" "." ".." ])) (lib.splitString "/" path);
+    && builtins.all (
+      component:
+      !(builtins.elem component [
+        ""
+        "."
+        ".."
+      ])
+    ) (lib.splitString "/" path);
   validAbsolutePath =
     path:
     builtins.isString path
@@ -136,11 +143,7 @@ in
         throw "preserve: restic projector for '${jobId}' requires native.restic.tags to be a list of non-empty strings"
       else
         let
-          base =
-            if subpath != null then
-              "${root}/${subpath}"
-            else
-              realization.path;
+          base = if subpath != null then "${root}/${subpath}" else realization.path;
         in
         {
           entryPoint = integration.adapter;

@@ -565,7 +565,8 @@ let
   ];
   invalidLocatorRealizations = [
     (builtins.removeAttrs zfsRealization [ "locator" ])
-  ] ++ map (locator: zfsRealization // { inherit locator; }) [
+  ]
+  ++ map (locator: zfsRealization // { inherit locator; }) [
     null
     42
     ""
@@ -576,28 +577,36 @@ let
     map (
       realization:
       compile (singleRoute { states.application.mode = mode; }) [
-        { state = "application"; inherit realization; }
+        {
+          state = "application";
+          inherit realization;
+        }
       ]
     ) invalidLocatorRealizations;
 
-  rootRestic = compile (singleRoute {
-    policies.protected.routes = [ "route-restic" ];
-    bindings = [
-      {
-        state = "application";
-        route = "route-restic";
-        source = emptySource // {
-          subpath = "db";
-          include = [ "/extra" ];
-        };
-      }
-    ];
-  }) [
-    {
-      state = "application";
-      realization = zfsRealization // { path = "/"; };
-    }
-  ];
+  rootRestic =
+    compile
+      (singleRoute {
+        policies.protected.routes = [ "route-restic" ];
+        bindings = [
+          {
+            state = "application";
+            route = "route-restic";
+            source = emptySource // {
+              subpath = "db";
+              include = [ "/extra" ];
+            };
+          }
+        ];
+      })
+      [
+        {
+          state = "application";
+          realization = zfsRealization // {
+            path = "/";
+          };
+        }
+      ];
 
   conflictingZreplNative = [
     { name = "redirected-job"; }
@@ -605,25 +614,30 @@ let
     { filesystems."unrelated/dataset" = true; }
   ];
   rejectedProjectionDeclarations =
-    map (
-      native:
-      singleRoute {
-        bindings = [
-          {
-            state = "application";
-            route = "route-zrepl";
-            nativeOverrides.zrepl = native;
-          }
-        ];
-      }
-    ) (conflictingZreplNative ++ [
-      { connect.listener_name = "diverged-sink"; }
-      { snapshotting.interval = "10h"; }
-      { pruning.keep_sender = [ ]; }
-      { send.encrypted = true; }
-      { replication.concurrency.steps = 2; }
-      { conflict_resolution.initial_replication = "all"; }
-    ])
+    map
+      (
+        native:
+        singleRoute {
+          bindings = [
+            {
+              state = "application";
+              route = "route-zrepl";
+              nativeOverrides.zrepl = native;
+            }
+          ];
+        }
+      )
+      (
+        conflictingZreplNative
+        ++ [
+          { connect.listener_name = "diverged-sink"; }
+          { snapshotting.interval = "10h"; }
+          { pruning.keep_sender = [ ]; }
+          { send.encrypted = true; }
+          { replication.concurrency.steps = 2; }
+          { conflict_resolution.initial_replication = "all"; }
+        ]
+      )
     ++ map (
       native:
       singleRoute {
@@ -675,29 +689,32 @@ let
           [ 1 ]
           [ "" ]
         ]
-    ++ map (
-      native:
-      singleRoute {
-        policies.protected.routes = [ "route-restic" ];
-        bindings = [
-          {
-            state = "application";
-            route = "route-restic";
-            nativeOverrides.restic = native;
+    ++
+      map
+        (
+          native:
+          singleRoute {
+            policies.protected.routes = [ "route-restic" ];
+            bindings = [
+              {
+                state = "application";
+                route = "route-restic";
+                nativeOverrides.restic = native;
+              }
+            ];
           }
-        ];
-      }
-    ) [
-      { target.repository = "/archive/diverged"; }
-      { target.repositoryFile = "/run/credentials/other-repository"; }
-      { target.passwordFile = "/run/credentials/other-password"; }
-      { target.environmentFile = "/run/credentials/other-environment"; }
-      { timerConfig.OnCalendar = "daily"; }
-      { pruneOpts = [ "--keep-last 1" ]; }
-      { checkOpts = [ "--read-data" ]; }
-      { runCheck = false; }
-      { createWrapper = false; }
-    ]
+        )
+        [
+          { target.repository = "/archive/diverged"; }
+          { target.repositoryFile = "/run/credentials/other-repository"; }
+          { target.passwordFile = "/run/credentials/other-password"; }
+          { target.environmentFile = "/run/credentials/other-environment"; }
+          { timerConfig.OnCalendar = "daily"; }
+          { pruneOpts = [ "--keep-last 1" ]; }
+          { checkOpts = [ "--read-data" ]; }
+          { runCheck = false; }
+          { createWrapper = false; }
+        ]
     ++ map (
       source:
       singleRoute {
@@ -1728,7 +1745,12 @@ let
         backups = rootRestic.ownerProjections.${route.obligationId}.config.services.restic.backups;
         job = backups.${builtins.head (builtins.attrNames backups)};
       in
-      route.status == "resolved" && job.paths == [ "/db" "/extra" ];
+      route.status == "resolved"
+      &&
+        job.paths == [
+          "/db"
+          "/extra"
+        ];
     external-adapter-without-projector =
       (builtins.head externalAdapter.executablePlan.states).operational
       &&

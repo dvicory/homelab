@@ -61,9 +61,11 @@ supply the same typed data in shared Integration+Target wiring.
 The scratch guard checks all declared Realizations and retained destination
 fences in the document, not only the selected State or Route. Filesystem
 paths are resolved across symlink aliases; native locators are compared only
-within the selected owner's matching physical/native namespace. Missing
-fences on a resolved Target refuse restore rather than silently allowing
-unknown local boundaries. Enabled restore integrations require nonempty
+within the selected owner's matching physical/native namespace. If a native
+fence cannot be classified, restore and verification refuse it rather than
+skip it. Distinct explicit namespaces remain separate; path-only documents
+without native fences remain supported. Missing fences on a resolved Target
+also refuse restore. Enabled restore integrations require nonempty
 owner-resolved fences. Owners remain responsible for truthful fences and
 repeat their native checks immediately before mutation.
 
@@ -105,7 +107,7 @@ homelab-preserve --manifest FILE plan
 homelab-preserve --manifest FILE status [--observe]
 homelab-preserve --manifest FILE points STATE
 homelab-preserve --manifest FILE run STATE --route ROUTE
-homelab-preserve --manifest FILE restore STATE --from ROUTE --point ID --to SCRATCH:NAME
+homelab-preserve --manifest FILE restore STATE --from ROUTE --point ID --to SCRATCH:NAME [--execute --receipt FILE]
 homelab-preserve --manifest FILE verify RECEIPT
 ```
 
@@ -180,10 +182,19 @@ than implying operational configuration. Adapter availability remains checked
 during runtime invocation, not by filesystem probes during pure evaluation.
 
 The zrepl projector owns job identity, job type and source dataset filters;
-native overrides cannot replace those derived values. It explicitly refuses
-subpath/include/exclude source narrowing it cannot faithfully express. Restic
-`native.restic.tags` are projected as escaped `--tag` entries in the pinned
-NixOS module's `extraBackupArgs`, including accepted Binding overrides.
+native overrides cannot replace those derived values. It requires a nonempty
+native source locator and refuses subpath/include/exclude narrowing it cannot
+faithfully express.
+
+Both built-in projectors reject Binding changes to shared destinations,
+credentials and lifecycle settings. Restic's State-scoped `native.restic.tags`
+remain overridable and become escaped `--tag` entries in the pinned NixOS
+module's `extraBackupArgs`. Opaque external native fields remain the selected
+owner's responsibility.
+
+Restic subpaths must be relative, with no empty, dot or parent components.
+Includes must be absolute paths inside the authoritative Realization.
+These are lexical checks during pure evaluation, not live filesystem probes.
 
 The Restic projector emits physical fences for absolute local repository
 paths (including `local:/...`) and qualified native fences for backend
@@ -209,10 +220,22 @@ Preflight is coordinator-scoped: it checks the destination component, filesystem
 Execute repeats coordinator safety checks immediately before the adapter operation. The adapter then checks native destination absence and safe native properties before mutation. `--force` is unsupported. Restore into an original path, filesystem root or active State is not authorized. Production restore requires a separate contract; it does not change StateSlot identity.
 
 An existing dangling symlink is an existing destination, not free scratch.
+Execution exclusively reserves a new receipt file before dispatching restore
+and writes through that reserved handle. Relative receipt paths are supported;
+existing files or dangling receipt symlinks refuse execution before mutation.
+Use a stable, operator-owned receipt directory.
+
+If dispatch or receipt writing fails, the reserved file remains, possibly
+empty or partial. It is not a valid recovery receipt. Inspect the scratch
+result before retrying and choose a new receipt path; Preserve does not delete
+failed reservations or roll back the owner's native changes.
+
 Receipts bind the exact retained native point and capture identity to the
-restore result; an altered receipt does not authorize verification of another
-point. The synthetic external adapter discovers its retained catalog rather
-than regenerating point metadata from current configuration.
+restore result. Verification rechecks the receipt's destination against the
+current ScratchDestination, safe name, canonical path, native locator and
+all current source/Target fences. A receipt cannot grant new destination
+authority. The synthetic external adapter discovers its retained catalog
+rather than regenerating point metadata from current configuration.
 
 The fixture adapter resolves `native.targetRoot` aliases canonically before
 containment checks. Catalog writes use an exclusively created unique temporary

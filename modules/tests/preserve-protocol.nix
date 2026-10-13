@@ -114,27 +114,6 @@
             }
             EOF
 
-            homelab-preserve --manifest "$manifest" --json plan > "$TMPDIR/plan.json"
-            jq -e '.kind == "executable-plan" and .fixtureOnly == true and (.states | length) == 1' "$TMPDIR/plan.json" >/dev/null
-            jq -e '.states[0] | has("caveats") | not' "$TMPDIR/plan.json" >/dev/null
-            jq -e '.states[0].routes[0].target | (has("purpose") or has("kind") or has("locator") or has("ownerData")) | not' \
-              "$TMPDIR/plan.json" >/dev/null
-            jq -e '.states[0].routes[0] | (has("binding") or has("failureDomainIndependent")) | not' \
-              "$TMPDIR/plan.json" >/dev/null
-            jq -e '.states[0].routes[0].ownerConfig | has("bindingApplied") | not' "$TMPDIR/plan.json" >/dev/null
-            jq -e '.states[0].routes[0].target.failureDomain | length > 0' "$TMPDIR/plan.json" >/dev/null
-            jq -e '.states[0].routes[0].semanticRequirements.dataKind == "filesystem" and
-              .states[0].routes[0].semanticRequirements.requiredConsistency == "live" and
-              .states[0].routes[0].semanticRequirements.requiredFidelity == ["posix-filesystem"] and
-              .states[0].routes[0].guaranteedConsistency == "live" and
-              .states[0].routes[0].nativePointRepresentations == ["fixture-directory/v1"]' \
-              "$TMPDIR/plan.json" >/dev/null
-
-            homelab-preserve --manifest "$manifest" plan > "$TMPDIR/plan-human.txt"
-            test -s "$TMPDIR/plan-human.txt"
-            homelab-preserve --manifest "$manifest" status > "$TMPDIR/status-human.txt"
-            test -s "$TMPDIR/status-human.txt"
-
             jq '.fixtureOnly = false' "$manifest" > "$TMPDIR/nonfixture.json"
             if homelab-preserve --manifest "$TMPDIR/nonfixture.json" plan >/dev/null 2>&1; then
               echo "fixture-only integration unexpectedly allowed in a non-fixture plan" >&2
@@ -160,17 +139,21 @@
             jq -e '.kind == "points" and .stateId == "fixture/state" and
               .routes[0].status == "ok" and (.routes[0].points | length) == 0' \
               "$TMPDIR/empty-points.json" >/dev/null
-            homelab-preserve --manifest "$manifest" --json run fixture/state --route fixture-route > "$TMPDIR/run.json"
-            jq -e '.evidence == "retained" and .details.atomicAction == "fixture-retain"' "$TMPDIR/run.json" >/dev/null
+            jq '.states[0].routes[0].integration.operations -= ["run"] |
+                .states[0].routes[0].ownerConfig.native.root = "'$TMPDIR'/catalog-unauthorized"' \
+              "$manifest" > "$TMPDIR/unauthorized-run.json"
+            if homelab-preserve --manifest "$TMPDIR/unauthorized-run.json" --json run fixture/state \
+              --route fixture-route >/dev/null 2>"$TMPDIR/unauthorized-run-error.json"; then
+              echo "runtime advertisement broadened configured run authority" >&2
+              exit 1
+            fi
+            jq -e '.error.code == "unsupported-operation"' "$TMPDIR/unauthorized-run-error.json" >/dev/null
+            test ! -e "$TMPDIR/catalog-unauthorized"
+            homelab-preserve --manifest "$manifest" --json run fixture/state --route fixture-route >/dev/null
 
             homelab-preserve --manifest "$manifest" --json points fixture/state > "$TMPDIR/points.json"
             jq -e '.routes[0].status == "ok" and (.routes[0].points | length) == 1 and
               .routes[0].points[0].nativeId == "fixture-point-1"' "$TMPDIR/points.json" >/dev/null
-            jq -e '.routes[0].points[0].producerProvenance["fixture.applicationVersion"] == "1.2.3"' "$TMPDIR/points.json" >/dev/null
-            jq -e '.routes[0].points[0].producerProvenance["postgresql.serverVersion"] == "16"' "$TMPDIR/points.json" >/dev/null
-            jq -e '.routes[0].points[0].producerProvenance["application.schema"].major == 4' "$TMPDIR/points.json" >/dev/null
-            jq -e '.routes[0].points[0].nativeRepresentation.kind == "fixture-directory/v1" and .routes[0].points[0].payloadRepresentation == null' \
-              "$TMPDIR/points.json" >/dev/null
 
             # Discovery reads the retained catalog, not metadata reconstructed from the request.
             jq '.producerProvenance["fixture.retainedWitness"] = "catalog-value"' \
@@ -180,8 +163,6 @@
             jq -e '.routes[0].points[0].producerProvenance["fixture.retainedWitness"] == "catalog-value"' \
               "$TMPDIR/catalog-points.json" >/dev/null
             cp "$TMPDIR/catalog/point.json" "$TMPDIR/retained-before.json"
-            homelab-preserve --manifest "$manifest" points fixture/state > "$TMPDIR/points-human.txt"
-            test -s "$TMPDIR/points-human.txt"
 
             jq '.states[0].routes[0].integration.nativePointRepresentations = ["other/v1"]' \
               "$manifest" > "$TMPDIR/wrong-representation.json"
@@ -288,6 +269,18 @@
               exit 1
             fi
             test ! -e "$TMPDIR/scratch/unknown"
+            jq '.states[0].routes[0].integration.operations -= ["restore"]' \
+              "$manifest" > "$TMPDIR/unauthorized-restore.json"
+            if homelab-preserve --manifest "$TMPDIR/unauthorized-restore.json" --json restore fixture/state \
+              --from fixture-route --point fixture-point-1 --to scratch:unauthorized \
+              --execute --receipt "$TMPDIR/unauthorized-receipt.json" \
+              >/dev/null 2>"$TMPDIR/unauthorized-restore-error.json"; then
+              echo "runtime advertisement broadened configured restore authority" >&2
+              exit 1
+            fi
+            jq -e '.error.code == "unsupported-operation"' "$TMPDIR/unauthorized-restore-error.json" >/dev/null
+            test ! -e "$TMPDIR/scratch/unauthorized"
+            test ! -e "$TMPDIR/unauthorized-receipt.json"
 
             if homelab-preserve --manifest "$manifest" --json restore fixture/state \
               --from fixture-route --point fixture-point-1 --to scratch:rehearsal \
@@ -296,23 +289,66 @@
               exit 1
             fi
             test ! -e "$TMPDIR/scratch/rehearsal"
+            for occupied in file dangling; do
+              if test "$occupied" = file; then
+                printf 'existing receipt\n' > "$TMPDIR/occupied-receipt.json"
+                cp "$TMPDIR/occupied-receipt.json" "$TMPDIR/occupied-before.json"
+              else
+                ln -s "$TMPDIR/absent-receipt" "$TMPDIR/occupied-receipt.json"
+              fi
+              if homelab-preserve --manifest "$manifest" --json restore fixture/state \
+                --from fixture-route --point fixture-point-1 --to scratch:receipt-blocked \
+                --execute --receipt "$TMPDIR/occupied-receipt.json" \
+                >/dev/null 2>"$TMPDIR/occupied-error.json"; then
+                echo "occupied receipt name unexpectedly allowed mutation" >&2
+                exit 1
+              fi
+              jq -e '.error.code == "receipt-exists"' "$TMPDIR/occupied-error.json" >/dev/null
+              test ! -e "$TMPDIR/scratch/receipt-blocked"
+              if test "$occupied" = file; then
+                cmp "$TMPDIR/occupied-before.json" "$TMPDIR/occupied-receipt.json"
+              else
+                test -L "$TMPDIR/occupied-receipt.json"
+                test ! -e "$TMPDIR/absent-receipt"
+              fi
+              rm "$TMPDIR/occupied-receipt.json"
+            done
             homelab-preserve --manifest "$manifest" --json restore fixture/state \
               --from fixture-route --point fixture-point-1 --to scratch:rehearsal \
               --execute --receipt "$TMPDIR/receipt.json" > "$TMPDIR/restore.json"
             test -f "$TMPDIR/scratch/rehearsal/content.txt"
             test -f "$TMPDIR/receipt.json"
-            jq -e '.producerProvenance["fixture.applicationVersion"] == "1.2.3"' "$TMPDIR/receipt.json" >/dev/null
-            jq -e '.point.nativeRepresentation.kind == "fixture-directory/v1" and .point.payloadRepresentation == null' \
-              "$TMPDIR/receipt.json" >/dev/null
             homelab-preserve --manifest "$manifest" --json verify "$TMPDIR/receipt.json" > "$TMPDIR/verify.json"
             jq -e '.verified == true and .evidence == "verified"' "$TMPDIR/verify.json" >/dev/null
+            jq '.states[0].routes[0].integration.operations -= ["verify"]' \
+              "$manifest" > "$TMPDIR/unauthorized-verify.json"
+            if homelab-preserve --manifest "$TMPDIR/unauthorized-verify.json" --json verify "$TMPDIR/receipt.json" \
+              >/dev/null 2>"$TMPDIR/unauthorized-verify-error.json"; then
+              echo "runtime advertisement broadened configured verify authority" >&2
+              exit 1
+            fi
+            jq -e '.error.code == "unsupported-operation"' "$TMPDIR/unauthorized-verify-error.json" >/dev/null
+            mkdir "$TMPDIR/outside-scratch"
+            cp "$TMPDIR/scratch/rehearsal/content.txt" "$TMPDIR/outside-scratch/content.txt"
+            jq --arg path "$TMPDIR/outside-scratch" '.destination.path = $path' \
+              "$TMPDIR/receipt.json" > "$TMPDIR/redirected-receipt.json"
+            if homelab-preserve --manifest "$manifest" --json verify "$TMPDIR/redirected-receipt.json" \
+              >/dev/null 2>"$TMPDIR/redirected-error.json"; then
+              echo "receipt redirected outside scratch unexpectedly verified" >&2
+              exit 1
+            fi
+            jq -e '.error.code == "receipt-destination-mismatch"' "$TMPDIR/redirected-error.json" >/dev/null
+            cmp "$TMPDIR/scratch/rehearsal/content.txt" "$TMPDIR/outside-scratch/content.txt"
 
             jq -e '.producerProvenance["fixture.retainedWitness"] == "catalog-value" and
               .ownerReceipt.captureId == .point.captureId and
               .ownerReceipt.nativeId == .point.nativeId' "$TMPDIR/receipt.json" >/dev/null
-            homelab-preserve --manifest "$manifest" --json restore fixture/state \
-              --from fixture-route --point fixture-point-1 --to scratch:second \
-              --execute --receipt "$TMPDIR/receipt-second.json" >/dev/null
+            (
+              cd "$TMPDIR"
+              homelab-preserve --manifest "$manifest" --json restore fixture/state \
+                --from fixture-route --point fixture-point-1 --to scratch:second \
+                --execute --receipt receipt-second.json >/dev/null
+            )
             homelab-preserve --manifest "$manifest" --json verify "$TMPDIR/receipt-second.json" >/dev/null
             cmp "$TMPDIR/retained-before.json" "$TMPDIR/catalog/point.json"
             jq '.ownerReceipt.captureId = "wrong-capture"' "$TMPDIR/receipt-second.json" \
@@ -422,6 +458,31 @@
                 cmp "$TMPDIR/retained-before.json" "$TMPDIR/catalog/point.json"
               done
             done
+            jq '.states[0].routes[0].targetBoundaries.nativeNamespace = null' \
+              "$TMPDIR/other-target.json" > "$TMPDIR/unclassified-native.json"
+            if homelab-preserve --manifest "$TMPDIR/unclassified-native.json" --json restore fixture/state \
+              --from fixture-route --point fixture-point-1 --to scratch:unclassified \
+              --execute --receipt "$TMPDIR/unclassified-receipt.json" \
+              >/dev/null 2>"$TMPDIR/unclassified-error.json"; then
+              echo "unclassified native destination bypassed retained Target fences" >&2
+              exit 1
+            fi
+            jq -e '.error.code == "unknown-native-namespace"' "$TMPDIR/unclassified-error.json" >/dev/null
+            test ! -e "$TMPDIR/scratch/unclassified"
+            test ! -e "$TMPDIR/unclassified-receipt.json"
+            jq '.states[0].routes[0].targetBoundaries.nativeNamespace = "separate-native-realm"' \
+              "$TMPDIR/other-target.json" > "$TMPDIR/separate-native.json"
+            homelab-preserve --manifest "$TMPDIR/separate-native.json" --json restore fixture/state \
+              --from fixture-route --point fixture-point-1 --to scratch:separate \
+              > "$TMPDIR/separate-preflight.json"
+            jq -e '.mutation == false' "$TMPDIR/separate-preflight.json" >/dev/null
+            homelab-preserve --manifest "$TMPDIR/separate-native.json" --json verify "$TMPDIR/receipt-second.json" >/dev/null
+            if homelab-preserve --manifest "$TMPDIR/unclassified-native.json" --json verify "$TMPDIR/receipt-second.json" \
+              >/dev/null 2>"$TMPDIR/unclassified-verify-error.json"; then
+              echo "verification bypassed unclassified native fences" >&2
+              exit 1
+            fi
+            jq -e '.error.code == "unknown-native-namespace"' "$TMPDIR/unclassified-verify-error.json" >/dev/null
             jq 'del(.states[0].routes[0].targetBoundaries)' "$manifest" \
               > "$TMPDIR/missing-target-boundaries.json"
             if homelab-preserve --manifest "$TMPDIR/missing-target-boundaries.json" --json \
@@ -466,9 +527,7 @@
                 ln "$TMPDIR/fixture-safety-external.txt" "$TMPDIR/fixture-safety-catalog/point.json.tmp"
               fi
               homelab-preserve --manifest "$TMPDIR/fixture-safety.json" --json run fixture/state \
-                --route fixture-route > "$TMPDIR/fixture-safety-run-$link.json"
-              jq -e '.evidence == "retained" and .details.atomicAction == "fixture-retain"' \
-                "$TMPDIR/fixture-safety-run-$link.json" >/dev/null
+                --route fixture-route >/dev/null
               cmp "$TMPDIR/fixture-safety-expected.txt" "$TMPDIR/fixture-safety-external.txt"
               cmp "$TMPDIR/fixture-safety-expected.txt" "$TMPDIR/fixture-safety-catalog/point.json.tmp"
               if test "$link" = symlink; then

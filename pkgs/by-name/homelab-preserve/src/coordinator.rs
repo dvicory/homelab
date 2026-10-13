@@ -5,11 +5,11 @@ use crate::model::{
     ScratchDestination, State, StatusResult, VerifyResult, PROTOCOL_VERSION, SCHEMA_VERSION,
 };
 use crate::process::{invoke_adapter, request_id};
-use crate::safety::preflight_destination;
+use crate::safety::{authorize_destination, preflight_destination};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 
@@ -360,6 +360,17 @@ fn require_capability(
     capability: &str,
     explicit_scratch: bool,
 ) -> Result<AdapterVersion> {
+    if !integration(route)?
+        .operations
+        .iter()
+        .any(|value| value == capability)
+    {
+        return Err(PreserveError::new(
+            "unsupported-operation",
+            format!("configured integration does not authorize '{capability}'"),
+        )
+        .context(&state.state_id, Some(&route.route_id)));
+    }
     let description = describe(state, route)?;
     if !description
         .capabilities
@@ -765,6 +776,17 @@ pub fn restore(
 ) -> Result<Value> {
     let state = executable_state(document, state_id)?;
     let route = executable_route(state, route_id)?;
+    let receipt_path = if execute {
+        Some(receipt_path.ok_or_else(|| {
+            PreserveError::new(
+                "missing-receipt-path",
+                "executing restore requires a new persisted receipt",
+            )
+            .context(state_id, Some(route_id))
+        })?)
+    } else {
+        receipt_path
+    };
     let scratch: &ScratchDestination =
         document
             .scratch_destinations
@@ -815,25 +837,23 @@ pub fn restore(
         }));
     }
 
-    if let Some(path) = receipt_path {
-        if path.exists() {
-            return Err(PreserveError::new(
-                "receipt-exists",
-                format!("receipt {} already exists", path.display()),
+    let path = receipt_path.expect("executing restore requires a receipt");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| {
+            let code = match error.kind() {
+                std::io::ErrorKind::AlreadyExists => "receipt-exists",
+                std::io::ErrorKind::NotFound => "invalid-receipt-path",
+                _ => "receipt-write",
+            };
+            PreserveError::new(
+                code,
+                format!("could not reserve receipt {}: {error}", path.display()),
             )
-            .context(state_id, Some(route_id)));
-        }
-        if !path.parent().is_some_and(|parent| parent.is_dir()) {
-            return Err(PreserveError::new(
-                "invalid-receipt-path",
-                format!(
-                    "receipt {} has no existing parent directory",
-                    path.display()
-                ),
-            )
-            .context(state_id, Some(route_id)));
-        }
-    }
+            .context(state_id, Some(route_id))
+        })?;
     let destination = preflight_destination(
         &document.states,
         state,
@@ -875,9 +895,7 @@ pub fn restore(
         destination,
         owner_receipt: result.owner_receipt,
     };
-    if let Some(path) = receipt_path {
-        write_receipt(path, &receipt)?;
-    }
+    write_receipt(&mut file, &receipt)?;
     serde_json::to_value(&receipt).map_err(|error| {
         PreserveError::new(
             "receipt-serialization",
@@ -886,18 +904,8 @@ pub fn restore(
     })
 }
 
-fn write_receipt(path: &Path, receipt: &RestoreReceipt) -> Result<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|error| {
-            PreserveError::new(
-                "receipt-write",
-                format!("could not create receipt {}: {error}", path.display()),
-            )
-        })?;
-    serde_json::to_writer_pretty(&mut file, receipt).map_err(|error| {
+fn write_receipt(file: &mut File, receipt: &RestoreReceipt) -> Result<()> {
+    serde_json::to_writer_pretty(&mut *file, receipt).map_err(|error| {
         PreserveError::new(
             "receipt-write",
             format!("could not write restore receipt: {error}"),
@@ -942,6 +950,35 @@ pub fn verify(document: &Document, receipt: RestoreReceipt) -> Result<VerifyResu
         .context(&receipt.state_id, Some(&receipt.route_id)));
     }
     validate_point(state, route, &receipt.point)?;
+    let scratch = document
+        .scratch_destinations
+        .get(&receipt.destination.capability_ref)
+        .ok_or_else(|| {
+            PreserveError::new(
+                "unknown-scratch-destination",
+                "receipt scratch destination is not currently configured",
+            )
+            .context(&receipt.state_id, Some(&receipt.route_id))
+        })?;
+    let authorized = authorize_destination(
+        &document.states,
+        state,
+        route,
+        &receipt.destination.capability_ref,
+        scratch,
+        &receipt.destination.new_name,
+    )?;
+    if receipt.destination.path != authorized.path
+        || receipt.destination.native_locator != authorized.native_locator
+        || fs::symlink_metadata(&authorized.path)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err(PreserveError::new(
+            "receipt-destination-mismatch",
+            "receipt destination does not match the current authorized scratch destination",
+        )
+        .context(&receipt.state_id, Some(&receipt.route_id)));
+    }
     require_capability(state, route, "verify", false)?;
     let result: VerifyResult = parse_result(
         invoke(
@@ -949,7 +986,7 @@ pub fn verify(document: &Document, receipt: RestoreReceipt) -> Result<VerifyResu
             route,
             "verify",
             Some(receipt.point.clone()),
-            Some(receipt.destination.clone()),
+            Some(authorized),
             Some(receipt),
         )?,
         "verify",

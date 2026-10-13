@@ -4,7 +4,7 @@ use homelab_preserve::model::{
 };
 use homelab_preserve::process::invoke_adapter;
 use homelab_preserve::safety::preflight_destination;
-use homelab_preserve::{plan, points, restore, status, validate_document, verify};
+use homelab_preserve::{plan, points, restore, run, status, validate_document, verify};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
@@ -27,7 +27,7 @@ fn temporary(name: &str) -> PathBuf {
 fn script(directory: &Path, body: &str) -> PathBuf {
     let id = TEMP_ID.fetch_add(1, Ordering::Relaxed);
     let path = directory.join(format!("adapter-{id}"));
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
+    let shell = option_env!("HOMELAB_PRESERVE_TEST_SHELL").unwrap_or("/bin/sh");
     fs::write(&path, format!("#!{shell}\n{body}\n")).unwrap();
     let mut permissions = fs::metadata(&path).unwrap().permissions();
     permissions.set_mode(0o700);
@@ -584,6 +584,47 @@ fn restore_refuses_document_sources_and_retained_targets_before_adapter_dispatch
         "rehearsal",
     )
     .unwrap();
+    document.states[0].routes[0]
+        .target_boundaries
+        .as_mut()
+        .unwrap()
+        .native_namespace = None;
+    assert_eq!(
+        preflight_destination(
+            &document.states,
+            &document.states[0],
+            &document.states[0].routes[0],
+            "scratch",
+            &document.scratch_destinations["scratch"],
+            "rehearsal",
+        )
+        .unwrap_err()
+        .code,
+        "unknown-native-namespace"
+    );
+    document.states[0].routes[0]
+        .target_boundaries
+        .as_mut()
+        .unwrap()
+        .native_namespace = Some("fixture-native".to_owned());
+    document.states[1].routes[0]
+        .target_boundaries
+        .as_mut()
+        .unwrap()
+        .native_namespace = None;
+    assert_eq!(
+        preflight_destination(
+            &document.states,
+            &document.states[0],
+            &document.states[0].routes[0],
+            "scratch",
+            &document.scratch_destinations["scratch"],
+            "rehearsal",
+        )
+        .unwrap_err()
+        .code,
+        "unknown-native-namespace"
+    );
     document.states[1].routes[0].target_boundaries = None;
     assert_eq!(
         restore(
@@ -1211,6 +1252,18 @@ fn point_evidence_does_not_verify_restored_content() {
         "requiredConsistency": "filesystem",
         "requiredFidelity": ["posix-filesystem"]
     }));
+    fs::create_dir(directory.join("scratch")).unwrap();
+    document.scratch_destinations.insert(
+        "scratch".to_owned(),
+        ScratchDestination {
+            native_parent: "scratch/root".to_owned(),
+            mount_root: directory.join("scratch"),
+        },
+    );
+    let destination = fs::canonicalize(directory.join("scratch"))
+        .unwrap()
+        .join("rehearsal");
+    fs::create_dir(&destination).unwrap();
 
     let receipt: RestoreReceipt = serde_json::from_value(json!({
         "schemaVersion": 1,
@@ -1242,7 +1295,7 @@ fn point_evidence_does_not_verify_restored_content() {
         "destination": {
             "capabilityRef": "scratch",
             "newName": "rehearsal",
-            "path": "/scratch/rehearsal",
+            "path": destination,
             "nativeLocator": "scratch/root/rehearsal"
         }
     }))
@@ -1253,5 +1306,298 @@ fn point_evidence_does_not_verify_restored_content() {
         "verification-failed"
     );
 
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn restore_receipts_and_verification_stay_within_current_authority() {
+    let directory = temporary("receipt-authority");
+    let scratch_root = directory.join("scratch");
+    fs::create_dir(&scratch_root).unwrap();
+    let receipt_path = directory.join("receipt.json");
+    let spawned = directory.join("spawned");
+    let mutated = directory.join("mutated");
+    let verified = directory.join("verified");
+    let describe = describe_result(FULL_CAPABILITIES);
+    let points_result = format!(
+        "{{\"protocolVersion\":1,\"requestId\":\"%s\",\"result\":{{\"kind\":\"points\",\"points\":[{}]}}}}",
+        point_json("route", "capture-1", "filesystem", "[\"posix-filesystem\"]")
+    );
+    let responder = op_adapter(
+        &directory,
+        &[
+            ("describe", &describe),
+            ("points", &points_result),
+            ("restore", "{\"protocolVersion\":1,\"requestId\":\"%s\",\"result\":{\"kind\":\"restore\",\"ownerReceipt\":{}}}"),
+            ("verify", "{\"protocolVersion\":1,\"requestId\":\"%s\",\"result\":{\"kind\":\"verify\",\"verified\":true,\"evidence\":\"verified\",\"scope\":\"fixture-content\"}}"),
+        ],
+    );
+    let adapter = script(
+        &directory,
+        &format!(
+            "touch '{}'\nrequest=$(cat)\ncase \"$request\" in\n*'\"operation\":\"restore\"'*) test -f '{}' || exit 7; touch '{}'; mkdir '{}';;\n*'\"operation\":\"verify\"'*) touch '{}';;\nesac\nprintf '%s' \"$request\" | '{}'",
+            spawned.display(), receipt_path.display(), mutated.display(),
+            scratch_root.join("rehearsal").display(), verified.display(), responder.display()
+        ),
+    );
+    let mut document = executable_document(integration(adapter));
+    document.scratch_destinations.insert(
+        "scratch".to_owned(),
+        ScratchDestination {
+            native_parent: "scratch/root".to_owned(),
+            mount_root: scratch_root.clone(),
+        },
+    );
+    assert_eq!(
+        restore(
+            &document,
+            "state",
+            "route",
+            "point-1",
+            "scratch",
+            "rehearsal",
+            true,
+            None
+        )
+        .unwrap_err()
+        .code,
+        "missing-receipt-path"
+    );
+    assert!(!spawned.exists());
+    for dangling in [false, true] {
+        if dangling {
+            std::os::unix::fs::symlink(directory.join("absent"), &receipt_path).unwrap();
+        } else {
+            fs::write(&receipt_path, "existing receipt").unwrap();
+        }
+        assert_eq!(
+            restore(
+                &document,
+                "state",
+                "route",
+                "point-1",
+                "scratch",
+                "rehearsal",
+                true,
+                Some(&receipt_path)
+            )
+            .unwrap_err()
+            .code,
+            "receipt-exists"
+        );
+        assert!(!mutated.exists());
+        assert!(!scratch_root.join("rehearsal").exists());
+        if dangling {
+            assert!(fs::symlink_metadata(&receipt_path)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+        } else {
+            assert_eq!(
+                fs::read_to_string(&receipt_path).unwrap(),
+                "existing receipt"
+            );
+        }
+        fs::remove_file(&receipt_path).unwrap();
+    }
+
+    let receipt: RestoreReceipt = serde_json::from_value(
+        restore(
+            &document,
+            "state",
+            "route",
+            "point-1",
+            "scratch",
+            "rehearsal",
+            true,
+            Some(&receipt_path),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(mutated.exists());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&fs::read(&receipt_path).unwrap()).unwrap(),
+        serde_json::to_value(&receipt).unwrap()
+    );
+    verify(&document, receipt.clone()).unwrap();
+    assert!(verified.exists());
+    fs::remove_file(&verified).unwrap();
+    fs::remove_file(&spawned).unwrap();
+    for operation in ["run", "restore", "verify"] {
+        let mut limited = document.clone();
+        limited.states[0].routes[0]
+            .integration
+            .as_mut()
+            .unwrap()
+            .operations
+            .retain(|value| value != operation);
+        let error = match operation {
+            "run" => run(&limited, "state", "route").unwrap_err(),
+            "restore" => restore(
+                &limited,
+                "state",
+                "route",
+                "point-1",
+                "scratch",
+                "denied",
+                true,
+                Some(&directory.join("denied.json")),
+            )
+            .unwrap_err(),
+            "verify" => verify(&limited, receipt.clone()).unwrap_err(),
+            _ => unreachable!(),
+        };
+        assert_eq!(error.code, "unsupported-operation");
+        assert!(!spawned.exists(), "denied operation spawned describe");
+        assert!(!directory.join("denied.json").exists());
+    }
+
+    let outside = directory.join("outside");
+    fs::create_dir(&outside).unwrap();
+    for (field, code) in [
+        ("path", "receipt-destination-mismatch"),
+        ("native", "receipt-destination-mismatch"),
+        ("name", "receipt-destination-mismatch"),
+        ("traversal", "unsafe-destination-name"),
+        ("capability", "unknown-scratch-destination"),
+    ] {
+        let mut altered = receipt.clone();
+        match field {
+            "path" => altered.destination.path = outside.clone(),
+            "native" => altered.destination.native_locator = "retained/point".to_owned(),
+            "name" => altered.destination.new_name = "different".to_owned(),
+            "traversal" => altered.destination.new_name = "../outside".to_owned(),
+            "capability" => altered.destination.capability_ref = "unknown".to_owned(),
+            _ => unreachable!(),
+        }
+        assert_eq!(verify(&document, altered).unwrap_err().code, code);
+        assert!(!spawned.exists());
+        assert!(!verified.exists());
+    }
+    let mut revoked = document.clone();
+    revoked.scratch_destinations.clear();
+    assert_eq!(
+        verify(&revoked, receipt.clone()).unwrap_err().code,
+        "unknown-scratch-destination"
+    );
+    let mut source_alias = document.clone();
+    source_alias.states.push(state(Some(scratch_root.clone())));
+    assert_eq!(
+        verify(&source_alias, receipt.clone()).unwrap_err().code,
+        "source-alias"
+    );
+    let mut target_alias = document.clone();
+    target_alias.states[0].routes[0]
+        .target_boundaries
+        .as_mut()
+        .unwrap()
+        .paths
+        .push(scratch_root.clone());
+    assert_eq!(
+        verify(&target_alias, receipt.clone()).unwrap_err().code,
+        "target-alias"
+    );
+    fs::remove_dir(scratch_root.join("rehearsal")).unwrap();
+    std::os::unix::fs::symlink(&outside, scratch_root.join("rehearsal")).unwrap();
+    assert_eq!(
+        verify(&document, receipt).unwrap_err().code,
+        "destination-escape"
+    );
+    assert!(!spawned.exists());
+    assert!(!verified.exists());
+    fs::remove_file(scratch_root.join("rehearsal")).unwrap();
+    fs::remove_file(&receipt_path).unwrap();
+
+    // A failed attempt never unlinks its receipt path or a replacement entry.
+    for replaced in [false, true] {
+        let before_failure = if replaced {
+            format!(
+                "mv '{}' '{}'; printf foreign > '{}'; ",
+                receipt_path.display(),
+                directory.join("moved-reservation").display(),
+                receipt_path.display()
+            )
+        } else {
+            String::new()
+        };
+        let failing = script(
+            &directory,
+            &format!(
+                "request=$(cat)\ncase \"$request\" in *'\"operation\":\"restore\"'*) {before_failure}exit 7;; esac\nprintf '%s' \"$request\" | '{}'",
+                responder.display()
+            ),
+        );
+        document.states[0].routes[0]
+            .integration
+            .as_mut()
+            .unwrap()
+            .adapter = failing;
+        assert_eq!(
+            restore(
+                &document,
+                "state",
+                "route",
+                "point-1",
+                "scratch",
+                "rehearsal",
+                true,
+                Some(&receipt_path)
+            )
+            .unwrap_err()
+            .code,
+            "adapter-exit"
+        );
+        if replaced {
+            assert_eq!(fs::read_to_string(&receipt_path).unwrap(), "foreign");
+        }
+        assert_eq!(
+            restore(
+                &document,
+                "state",
+                "route",
+                "point-1",
+                "scratch",
+                "rehearsal",
+                true,
+                Some(&receipt_path)
+            )
+            .unwrap_err()
+            .code,
+            "receipt-exists"
+        );
+        fs::remove_file(&receipt_path).unwrap();
+        assert!(!scratch_root.join("rehearsal").exists());
+    }
+    fs::remove_file(&mutated).unwrap();
+    let destination_created_during_discovery = script(
+        &directory,
+        &format!(
+            "request=$(cat)\ncase \"$request\" in\n*'\"operation\":\"points\"'*) mkdir '{}';;\n*'\"operation\":\"restore\"'*) touch '{}';;\nesac\nprintf '%s' \"$request\" | '{}'",
+            scratch_root.join("rehearsal").display(), mutated.display(), responder.display()
+        ),
+    );
+    document.states[0].routes[0]
+        .integration
+        .as_mut()
+        .unwrap()
+        .adapter = destination_created_during_discovery;
+    assert_eq!(
+        restore(
+            &document,
+            "state",
+            "route",
+            "point-1",
+            "scratch",
+            "rehearsal",
+            true,
+            Some(&receipt_path)
+        )
+        .unwrap_err()
+        .code,
+        "destination-exists"
+    );
+    assert!(!mutated.exists());
+    assert!(scratch_root.join("rehearsal").is_dir());
     fs::remove_dir_all(directory).unwrap();
 }

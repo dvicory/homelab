@@ -61,6 +61,38 @@ pub fn preflight_destination(
     scratch: &ScratchDestination,
     new_name: &str,
 ) -> Result<DestinationRequest> {
+    let destination = authorize_destination(
+        protected_states,
+        state,
+        route,
+        capability_ref,
+        scratch,
+        new_name,
+    )?;
+    if destination.path.try_exists().map_err(|error| {
+        PreserveError::new(
+            "destination-inspect",
+            format!("could not inspect destination: {error}"),
+        )
+        .context(&state.state_id, Some(&route.route_id))
+    })? || fs::symlink_metadata(&destination.path).is_ok()
+    {
+        return Err(
+            PreserveError::new("destination-exists", "scratch destination already exists")
+                .context(&state.state_id, Some(&route.route_id)),
+        );
+    }
+    Ok(destination)
+}
+
+pub(crate) fn authorize_destination(
+    protected_states: &[State],
+    state: &State,
+    route: &Route,
+    capability_ref: &str,
+    scratch: &ScratchDestination,
+    new_name: &str,
+) -> Result<DestinationRequest> {
     let mut components = Path::new(new_name).components();
     if new_name.is_empty()
         || new_name.contains('/')
@@ -98,20 +130,7 @@ pub fn preflight_destination(
     }
 
     let destination = root.join(new_name);
-    if destination.try_exists().map_err(|error| {
-        PreserveError::new(
-            "destination-inspect",
-            format!("could not inspect destination: {error}"),
-        )
-        .context(&state.state_id, Some(&route.route_id))
-    })? || fs::symlink_metadata(&destination).is_ok()
-    {
-        return Err(
-            PreserveError::new("destination-exists", "scratch destination already exists")
-                .context(&state.state_id, Some(&route.route_id)),
-        );
-    }
-    if destination.parent() != Some(root.as_path()) {
+    if resolved(&destination) != destination {
         return Err(PreserveError::new(
             "destination-escape",
             "scratch destination escaped its configured root",
@@ -127,7 +146,8 @@ pub fn preflight_destination(
     let native_namespace = route
         .target_boundaries
         .as_ref()
-        .and_then(|boundaries| boundaries.native_namespace.as_deref());
+        .and_then(|boundaries| boundaries.native_namespace.as_deref())
+        .filter(|namespace| !namespace.is_empty());
     for protected in protected_states {
         if let Some(realization) = &protected.realization {
             if let Some(source) = &realization.path {
@@ -183,6 +203,19 @@ pub fn preflight_destination(
                     )
                     .context(&state.state_id, Some(&route.route_id)));
                 }
+            }
+            if !boundaries.native_locators.is_empty()
+                && (native_namespace.is_none()
+                    || boundaries
+                        .native_namespace
+                        .as_deref()
+                        .is_none_or(str::is_empty))
+            {
+                return Err(PreserveError::new(
+                    "unknown-native-namespace",
+                    "native scratch destination cannot be checked against retained Target fences",
+                )
+                .context(&state.state_id, Some(&route.route_id)));
             }
             if boundaries.native_namespace.is_some()
                 && boundaries.native_namespace.as_deref() == native_namespace
