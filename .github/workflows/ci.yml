@@ -55,6 +55,15 @@ jobs:
         with:
           name: ${{ vars.CACHIX_CACHE }}
           skipPush: true
+      - &signed-upstream-cache
+        name: Preserve signed upstream cache after Cachix
+        run: |
+          config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/nix"
+          mkdir -p "$config_dir"
+          printf '%s\n' \
+            'extra-substituters = https://cache.numtide.com' \
+            'extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=' \
+            >> "$config_dir/nix.conf"
       - name: Partition actual check derivations
         id: inventory
         env:
@@ -144,6 +153,7 @@ jobs:
         with:
           name: ${{ vars.CACHIX_CACHE }}
           skipPush: true
+      - *signed-upstream-cache
 
       - name: Build Darwin Linux builder system
         run: |
@@ -239,6 +249,7 @@ jobs:
         with:
           name: ${{ vars.CACHIX_CACHE }}
           skipPush: true
+      - *signed-upstream-cache
 
       # System builds and VM checks can fetch multi-GiB images. Hestia v3
       # buffers whole NARs in RAM; use durable/upstream caches for these groups.
@@ -372,6 +383,7 @@ jobs:
         with:
           name: ${{ vars.CACHIX_CACHE }}
           skipPush: true
+      - *signed-upstream-cache
 
       - name: Record native runner and input identities
         run: |
