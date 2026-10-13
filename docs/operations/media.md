@@ -134,6 +134,14 @@ The suite creates its own internal network, containers and Linux volume,
 then verifies owned cleanup before reporting success. It does not use
 household data or secrets.
 
+Nix CI runs this entire suite as the required `media-runtime (x86_64-linux)`
+job, separately from sandboxed flake checks. To select it alone with
+`workflow_dispatch`, set `check` to `media-runtime`; it always uses the native
+x86 runner. The `media-runtime-<run-id>` artifact retains the final success,
+elapsed command time, runner/image/source identities and owned-cleanup
+diagnostics. The suite is executed on every full CI run even when its Nix app
+dependencies are cached.
+
 This exercises media application APIs and producer behavior. It does not prove
 Kubernetes RBAC, NetworkPolicy or Gateway behavior, or the
 Incus/MergerFS/ZFS/GPU storage and acceleration boundaries.

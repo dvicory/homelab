@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       check:
-        description: Optional flake check name; leave empty to build the full CI projection
+        description: Optional check name (media-runtime runs the native suite); leave empty for all CI
         type: string
         default: ""
       system:
@@ -95,7 +95,7 @@ jobs:
   # Linux system closure needed to bootstrap the full Darwin configuration.
   build:
     needs: bootstrap-darwin-builder
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && inputs.check != 'media-runtime' }}
     name: ${{ matrix.group }} (${{ matrix.system }})
     runs-on: ${{ matrix.system == 'x86_64-linux' && 'ubuntu-24.04' || matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'macos-14' }}
     environment:
@@ -232,10 +232,10 @@ jobs:
             cachix push "$CACHIX_CACHE" "${outputs[@]}"
           fi
 
-  # Prove the unchanged suite on native x86 Docker before replacing its VM
-  # envelope. The existing media-runtime check remains required meanwhile.
-  media-native-proof:
-    name: Native media proof (x86_64-linux)
+  # Same pinned application suite as the former media VM envelope. Kubernetes
+  # and host-storage boundaries remain covered by their separate runtime gates.
+  media-runtime:
+    name: media-runtime (x86_64-linux)
     if: inputs.check == '' || inputs.check == 'media-runtime'
     runs-on: ubuntu-24.04
     steps:
@@ -287,7 +287,8 @@ jobs:
       - name: Run full unchanged native media acceptance
         run: |
           set -euo pipefail
-          /usr/bin/time -p nix run .#media-live-acceptance -- \
+          # Preserve the VM suite's 2700-second deadline; INT permits owned cleanup.
+          /usr/bin/time -p timeout --signal=INT 2700s nix run .#media-live-acceptance -- \
             --docker-host unix:///var/run/docker.sock --platform linux/amd64 \
             2>&1 | tee "$RUNNER_TEMP/media-native-evidence/acceptance.log"
 
@@ -310,9 +311,9 @@ jobs:
             test -z "$volumes"
           } 2>&1 | tee "$RUNNER_TEMP/media-native-evidence/cleanup.log"
 
-      - name: Upload native proof diagnostics
+      - name: Upload native media diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: media-native-proof-${{ github.run_id }}
+          name: media-runtime-${{ github.run_id }}
           path: ${{ runner.temp }}/media-native-evidence
