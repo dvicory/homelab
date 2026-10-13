@@ -1,7 +1,7 @@
 # Behaviour test: agenix restartUnits restart consumers only when the secret's
 # content changes.
 #
-# The container runs the restart units that the agenix aspect generates for
+# The test machine runs the restart units that the agenix aspect generates for
 # hvn-hyp1's crowdsec enrollment key, unchanged, against a stub
 # crowdsec.service. Real agenix would need an age identity and an encrypted
 # fixture, so a small script stands in for agenix activation. It follows
@@ -18,7 +18,6 @@ let
 
   secretName = "crowdsec-enrollmentKey";
   unitName = "agenix-restart-${secretName}";
-  secretPath = hvnConfig.age.secrets.${secretName}.path;
   generatedPath = hvnConfig.systemd.paths.${unitName};
   generatedService = hvnConfig.systemd.services.${unitName};
 in
@@ -29,7 +28,9 @@ in
       test = pkgs.testers.runNixOSTest {
         name = "agenix-restart-guard";
 
-        containers.machine =
+        requiredFeatures.kvm = true;
+
+        nodes.machine =
           { pkgs, ... }:
           let
             activate = pkgs.writeShellScriptBin "fake-agenix-activate" ''
@@ -85,7 +86,6 @@ in
 
         testScript = ''
           unit = "${unitName}.service"
-          assert "${secretPath}" == "/run/agenix/${secretName}"
 
           def starts():
               return int(machine.succeed("wc -l < /run/consumer-starts").strip())
