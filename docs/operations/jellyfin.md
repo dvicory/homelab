@@ -209,6 +209,11 @@ New package visibility must be made public through the explicitly approved
 GitHub operation before anonymous verification can succeed; public visibility
 is irreversible.
 
+Before publication, content audits inspect every Docker manifest-selected layer
+regardless of its filename, plus image configuration and metadata. Public
+certificate PEMs are allowed; private keys, credential directories and encrypted
+production-secret inputs are refused.
+
 Keep selected and supported rollback versions and layers in GHCR without
 automatic pruning. Keep their reviewed source and digest mappings. CI transfer
 artifacts expire and are not backups; there is no second archive store or

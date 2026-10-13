@@ -71,13 +71,17 @@ def audit(archive):
     count = 0
     payload_files = 0
     with tarfile.open(archive) as outer:
+        manifest = json.load(outer.extractfile("manifest.json"))
+        layers = {name for image in manifest for name in image["Layers"]}
+        require(layers, "image has no referenced layers")
+        require(all(outer.getmember(name).isfile() for name in layers), "referenced layers must be regular archive members")
         for layer in outer:
             name = layer.name.removeprefix("./")
             require(not any(part in (".secrets", ".ssh", ".aws") for part in Path(name).parts), "private credential path in public image")
             require(not name.endswith(".age"), "encrypted production secret in public image")
             if not layer.isfile():
                 continue
-            if not layer.name.endswith(".tar"):
+            if layer.name not in layers and not layer.name.endswith(".tar"):
                 data = outer.extractfile(layer).read()
                 audit_bytes(data)
                 try:
