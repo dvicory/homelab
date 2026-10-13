@@ -11,62 +11,98 @@ in
   perSystem =
     { pkgs, system, ... }:
     lib.optionalAttrs (system == "x86_64-linux") {
-      checks.household-sign-in-runtime =
-        (pkgs.testers.runNixOSTest {
-          name = "household-sign-in-runtime";
-          globalTimeout = 3600;
-          requiredFeatures.kvm = true;
-          nodes.machine = {
-            system.stateVersion = "26.05";
-            networking.hosts."127.0.0.1" = [ domain ];
-            virtualisation = {
-              cores = 4;
-              memorySize = 6144;
-              diskSize = 16384;
-              restrictNetwork = false;
-              docker.enable = true;
-            };
-            environment.systemPackages = [
+      apps.household-sign-in-runtime = {
+        type = "app";
+        program = lib.getExe (
+          pkgs.writeShellApplication {
+            name = "household-sign-in-runtime";
+            runtimeInputs = [
+              pkgs.coreutils
+              pkgs.docker
               pkgs.openssl
               pkgs.openldap
               (pkgs.python3.withPackages (ps: [ ps.pyyaml ]))
             ];
-          };
-          testScript =
-            let
-              packages = self.packages.${system};
-              images = [
-                packages.kanidm-provision-image
-                packages.jellyfin-provisioner-image
-                packages.jellyfin-plugins-image
-                packages.jellarr-image
-              ];
-              source = lib.fileset.toSource {
-                root = ../..;
-                fileset = lib.fileset.unions [
-                  ./household-sign-in-runtime.py
-                  ../../generated/manifests/prod-home
+            text =
+              let
+                packages = self.packages.${system};
+                images = [
+                  packages.kanidm-provision-image
+                  packages.jellyfin-provisioner-image
+                  packages.jellarr-image
                 ];
-              };
-            in
-            ''
-              start_all()
-              machine.wait_for_unit("docker.service")
-            ''
-            + lib.concatMapStrings (image: ''
-              machine.succeed("docker load < ${image}")
-            '') images
-            + ''
-              status, output = machine.execute(
-                  "python3 ${source}/modules/tests/household-sign-in-runtime.py --domain ${domain} 2>&1",
-                  timeout=3000,
-              )
-              print(output)
-              assert status == 0, f"household sign-in exited {status}"
-            '';
-        }).overrideTestDerivation
-          (_: {
-            __noChroot = true;
-          });
+                source = lib.fileset.toSource {
+                  root = ../..;
+                  fileset = lib.fileset.unions [
+                    ./household-sign-in-runtime.py
+                    ../../generated/manifests/prod-home
+                  ];
+                };
+              in
+              ''
+                if [[ "''${1:-}" == --help ]]; then
+                  echo 'Run the complete household sign-in suite as root in an exclusive disposable native x86 Docker fixture.'
+                  echo 'Requires ${domain} resolving to 127.0.0.1; never run on a production host.'
+                  exit 0
+                fi
+                test "$#" -eq 0
+                test "$(id -u)" -eq 0
+                test "$(uname -m)" = x86_64
+                export DOCKER_HOST=unix:///var/run/docker.sock
+                unset DOCKER_CONTEXT
+                case "$(docker info --format '{{.OSType}}/{{.Architecture}}')" in
+                  linux/x86_64|linux/amd64) ;;
+                  *) echo 'Native linux/amd64 Docker required' >&2; exit 1 ;;
+                esac
+                python -c 'import socket; assert socket.gethostbyname("${domain}") == "127.0.0.1", "Canonical directory hostname must resolve to loopback"'
+                test ! -e /root/household
+                for name in kanidm jellyfin seerr; do
+                  if docker container inspect "$name" >/dev/null 2>&1; then
+                    echo "Refusing existing fixture container $name" >&2
+                    exit 1
+                  fi
+                done
+                if docker network inspect household >/dev/null 2>&1; then
+                  echo 'Refusing existing fixture network household' >&2
+                  exit 1
+                fi
+
+                cleanup() {
+                  status=$?
+                  trap - EXIT
+                  failed=0
+                  if ! ids=$(docker container ls --all --quiet); then failed=1; ids=; fi
+                  for id in $ids; do
+                    if ! mounts=$(docker container inspect --format '{{range .Mounts}}{{println .Source}}{{end}}' "$id"); then
+                      failed=1
+                      continue
+                    fi
+                    while IFS= read -r mount; do
+                      if [[ "$mount" == /root/household/* ]]; then
+                        if ! docker container rm --force "$id"; then failed=1; fi
+                        break
+                      fi
+                    done <<< "$mounts"
+                  done
+                  if ! networks=$(docker network ls --filter name=^household$ --format '{{.Name}}'); then failed=1; networks=; fi
+                  if [[ -n "$networks" ]] && ! docker network rm household; then failed=1; fi
+                  if ! rm -rf /root/household; then failed=1; fi
+                  printf 'EVIDENCE owned-cleanup {"exit":%s,"cleanup_succeeded":%s}\n' "$status" "$([[ "$failed" == 0 ]] && echo true || echo false)"
+                  if [[ "$failed" != 0 ]]; then exit 1; fi
+                  exit "$status"
+                }
+                trap cleanup EXIT
+                trap 'exit 130' INT
+                trap 'exit 143' TERM
+              ''
+              + lib.concatMapStrings (image: ''
+                docker load < ${image}
+              '') images
+              + ''
+                python ${source}/modules/tests/household-sign-in-runtime.py --domain ${domain}
+              '';
+          }
+        );
+      };
     };
 }

@@ -51,6 +51,21 @@ gh workflow run ci.yml --ref "$REF" -f check=den-semantics
 gh workflow run ci.yml --ref "$REF" -f system=aarch64-linux
 ```
 
+`check=household-sign-in-runtime` selects the read-only native x86 Docker
+lane rather than a cached Nix check derivation. The entire materialized
+household suite runs on every full CI invocation, even when its pinned app
+dependencies are cached. It uses the canonical production manifests and
+three helper archives; directory NetworkPolicy remains a separate real
+K3s/kernel VM gate.
+
+The same app is available as `nix run .#household-sign-in-runtime`. Run it
+only as root inside an exclusive disposable native x86 Linux Docker fixture,
+with `idm.plus2.danielvicory.dev` resolving to `127.0.0.1`. It refuses existing
+fixture resources, never edits host resolution, and cleans owned containers,
+network and synthetic credentials on exit. The hosted disposable runner
+adds one explicit canonical-domain loopback entry. No production account,
+credential or Seerr publication is part of this acceptance.
+
 Check names and implementations belong in Nix, not workflow branches. Successful
 check jobs upload nonempty outputs as `check-output-<system>-<run-id>` artifacts;
 Linux runners enable available KVM acceleration and publish nonempty outputs to

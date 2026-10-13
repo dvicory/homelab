@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Household sign-in acceptance: Kanidm LDAPS, Jellyfin's LDAP plugin, Seerr.
 
-Runs inside a disposable VM with Docker. Every workload uses the image,
-command, environment and configuration of the committed prod-home
+Runs in an exclusive disposable native x86 Docker fixture. Every workload
+uses the image, command, environment and configuration of the committed prod-home
 manifests. Test-only pieces: Docker instead of Kubernetes, a test CA that
 Kanidm's clients trust through SSL_CERT_FILE (production uses a public CA),
 and provisioning without OAuth2 clients, whose Secret publication needs
@@ -278,7 +278,7 @@ def main():
     kanidm.admin = kanidm.login("idm_admin", admin_password)
     require(kanidm.admin is not None, "idm_admin signs in")
 
-    # The committed provisioning Job, without OAuth2 clients. The VM host's
+    # The committed provisioning Job, without OAuth2 clients. The fixture's
     # published 443→8443 listener stands in for Kanidm's HTTPS Service.
     desired = WORK / "desired"
     desired.mkdir()
@@ -401,7 +401,8 @@ def main():
             "-v", f"{jf}/config:/config", "-v", f"{jf}/cache:/cache", "--tmpfs", f"/run/provision:mode=0700,uid=751,gid=751",
             "-v", f"{jf}/secrets/password:/run/secrets/password:ro", "--entrypoint", provisioner["command"][0],
             provisioner["image"], timeout=900)
-        result = run("docker", "run", "--rm", "--user", uid, "-v", f"{jf}/config:/config", plugins["image"])
+        result = run("docker", "run", "--rm", "--user", uid, "-v", f"{jf}/config:/config",
+            "--entrypoint", plugins["command"][0], plugins["image"], *plugins["command"][1:], *plugins.get("args", []))
         return result.stdout
 
     jelly = Http("http://127.0.0.1:8096")

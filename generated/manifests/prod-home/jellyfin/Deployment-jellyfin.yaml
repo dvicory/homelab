@@ -85,7 +85,7 @@ spec:
           env:
             - name: JELLYFIN_ADMINISTRATOR
               value: daniel
-          image: homelab/jellyfin-provisioner:kwnlsmg75rxr486qj00y0dh0m7iriypw
+          image: homelab/jellyfin-provisioner:ysw3vqycjy860v6slyl77wzyk67ynkqq
           imagePullPolicy: Never
           name: provision
           resources:
@@ -117,7 +117,9 @@ spec:
               name: admin-password
               readOnly: true
               subPath: password
-        - image: homelab/jellyfin-plugins:22da2ww9wzny7cdkilycba0w1plwy0jp
+        - command:
+            - /bin/jellyfin-install-plugins
+          image: homelab/jellyfin-provisioner:ysw3vqycjy860v6slyl77wzyk67ynkqq
           imagePullPolicy: Never
           name: plugins
           resources:

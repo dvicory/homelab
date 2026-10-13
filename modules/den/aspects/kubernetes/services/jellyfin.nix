@@ -127,7 +127,6 @@ in
     {
       images = [
         packages.jellyfin-provisioner-image
-        packages.jellyfin-plugins-image
         packages.jellarr-image
       ];
       retainedPaths.jellyfin-config = {
@@ -155,10 +154,7 @@ in
       provisionerRelease = provisioner.passthru.release;
       jellarr = packages.jellarr-image;
       jellarrRelease = jellarr.passthru.release;
-      pluginsImage = packages.jellyfin-plugins-image;
-      ldapPlugin = lib.findFirst (
-        plugin: plugin.name == "LDAP Authentication"
-      ) (throw "The Jellyfin plugins image has no LDAP Authentication plugin") pluginsImage.passthru.plugins;
+      ldapPlugin = provisioner.ldapPlugin;
       provisionerImage = "${provisioner.imageName}:${provisioner.imageTag}";
       runtimeImage = "${provisionerRelease.runtimeImage}@${provisionerRelease.runtimeDigest}";
       jellarrImage = "${jellarrRelease.imageName}:${jellarrRelease.imageTag}";
@@ -480,8 +476,9 @@ in
                     # that holds anything before setup completes.
                     {
                       name = "plugins";
-                      image = pluginsImage.imageReference;
+                      image = provisionerImage;
                       imagePullPolicy = "Never";
+                      command = [ "/bin/${provisioner.pluginInstaller.meta.mainProgram}" ];
                       resources = {
                         requests = {
                           cpu = "10m";

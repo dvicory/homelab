@@ -11,7 +11,7 @@ The owner chose Kanidm accounts through Jellyfin's official LDAP plugin and Kani
 - Members of the household group may hold a password-only Kanidm credential. The same password signs them in to Kanidm and, through LDAP, to Jellyfin and Seerr.
 - **BREAKING (identity policy):** Kanidm applies the strictest policy of all of a person's groups, and its built-in all-persons group requires MFA by default. Provisioning lowers that all-persons floor to `any`, so a person outside the administrator group may hold a password-only credential. The administrator group keeps its MFA minimum, now as one of the declared account policies, and its members' web password never works for LDAP.
 - Administrators who want LDAP sign-in set a separate Kanidm POSIX password. Their passkey or MFA sign-in for Kanidm and every OIDC application does not change.
-- Jellyfin runs the official LDAP plugin, pinned by Nix and installed by an init container before the stock runtime starts. Jellarr configures it through Jellyfin's plugin API. Members of the administrator group become Jellyfin administrators at sign-in; leaving the group removes that at the next sign-in. Everyone else is refused, and no Jellyfin account is created for them.
+- Jellyfin runs the official LDAP plugin, pinned in the normal Linux flake package `jellyfin-ldap-plugin`. Its files and installer are bundled into the existing `jellyfin-provisioner-image`; the plugins init container uses that same image with an explicit installer command before the stock runtime starts. No additional helper image is introduced. Jellarr configures it through Jellyfin's plugin API. Members of the administrator group become Jellyfin administrators at sign-in; leaving the group removes that at the next sign-in. Everyone else is refused, and no Jellyfin account is created for them.
 - Seerr needs no change: its Jellyfin login accepts these people.
 - The declared local Jellyfin administrator stays a local account with its agenix password. It remains the break-glass sign-in and the account the provisioner, Jellarr bootstrap, and Seerr helper use. Directory sign-in does not convert or link any existing local account.
 
@@ -41,8 +41,8 @@ None.
 
 - `modules/den/aspects/kubernetes/services/identity.nix`: LDAPS listener and Service port, NetworkPolicy rule for Jellyfin, household group, and declared account policies.
 - `pkgs/by-name/kanidm-provision-image/package.nix`: applies the declared account policies. New image tag.
-- `pkgs/by-name/jellyfin-plugins-image/package.nix` (new) and `modules/flake/packages.nix`: pinned LDAP plugin and its installer. New image.
+- `pkgs/by-name/jellyfin-ldap-plugin/package.nix` (new), `pkgs/by-name/jellyfin-provisioner-image/package.nix` and `modules/flake/packages.nix`: normal pinned LDAP package/installer bundled into the existing provisioner image. Changed provisioner image tag, not a new helper image.
 - `modules/den/aspects/kubernetes/services/jellyfin.nix`: plugins init container and Jellarr plugin configuration.
-- Tests: `identity-contracts`, `jellyfin-contracts`, `identity-provision-runtime`, and the new `household-sign-in-runtime`.
+- Tests: `identity-contracts`, `jellyfin-contracts`, `identity-provision-runtime`, the native Docker `household-sign-in-runtime` app/CI lane and the separate directory K3s/kernel VM gate. The native lane materializes the same Python suite, committed manifests and three helper archives in an owned disposable root-run x86_64 Linux Docker fixture; its canonical identity hostname must already resolve to loopback.
 - `docs/operations/identity.md` and `docs/operations/jellyfin.md`.
-- Regenerated `generated/manifests/prod-home`. Both new image tags must be imported into `compute-1` before the merge deploys.
+- Regenerated `generated/manifests/prod-home`. Import the changed `jellyfin-provisioner-image`, `kanidm-provision-image` and `jellarr-image` into `compute-1` before the owner-approved merge deploys. Revised packaging/native-lane proof and owner live household acceptance are not claimed by this mechanism revision; Seerr remains `initial`.

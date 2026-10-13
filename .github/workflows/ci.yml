@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       check:
-        description: Optional flake check name; leave empty to build the full CI projection
+        description: Optional check name (household-sign-in-runtime runs the native suite); leave empty for all CI
         type: string
         default: ""
       system:
@@ -95,7 +95,7 @@ jobs:
   # Linux system closure needed to bootstrap the full Darwin configuration.
   build:
     needs: bootstrap-darwin-builder
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && inputs.check != 'household-sign-in-runtime' }}
     name: ${{ matrix.group }} (${{ matrix.system }})
     runs-on: ${{ matrix.system == 'x86_64-linux' && 'ubuntu-24.04' || matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'macos-14' }}
     environment:
@@ -231,3 +231,81 @@ jobs:
           if [ "${#outputs[@]}" -gt 0 ]; then
             cachix push "$CACHIX_CACHE" "${outputs[@]}"
           fi
+
+  # Application APIs/authentication need Docker, not a second generic VM.
+  # The separate household-directory K3s/kernel NetworkPolicy gate is unchanged.
+  household-sign-in-runtime:
+    name: household-sign-in-runtime (x86_64-linux)
+    if: inputs.check == '' || inputs.check == 'household-sign-in-runtime'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          github_access_token: ${{ github.token }}
+
+      - name: Configure durable cache (read only)
+        if: vars.CACHIX_CACHE != ''
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: ${{ vars.CACHIX_CACHE }}
+          skipPush: true
+
+      - name: Record native runner and canonical inputs
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/household-native-evidence"
+          {
+            printf 'runner_image=%s\nrunner_image_version=%s\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+            uname -a
+            docker --host unix:///var/run/docker.sock version
+            docker --host unix:///var/run/docker.sock info
+            git rev-parse HEAD HEAD:generated/manifests/prod-home
+            sha256sum flake.lock modules/tests/household-sign-in-runtime.py modules/tests/household-sign-in-runtime.nix
+          } 2>&1 | tee "$RUNNER_TEMP/household-native-evidence/inputs.log"
+
+      - name: Prepare pinned native acceptance app
+        run: |
+          set -euo pipefail
+          /usr/bin/time -p nix run .#household-sign-in-runtime -- --help \
+            2>&1 | tee "$RUNNER_TEMP/household-native-evidence/app-preparation.log"
+
+      - name: Run complete native household acceptance
+        run: |
+          set -euo pipefail
+          # This runner is disposable; the app never changes host resolution.
+          printf '127.0.0.1 idm.plus2.danielvicory.dev\n' | sudo tee -a /etc/hosts
+          app=$(nix eval --raw .#apps.x86_64-linux.household-sign-in-runtime.program)
+          # Preserve the original suite's 3000-second deadline and owned cleanup.
+          sudo /usr/bin/time -p timeout --signal=INT 3000s "$app" \
+            2>&1 | tee "$RUNNER_TEMP/household-native-evidence/acceptance.log"
+
+      - name: Record independent owned cleanup
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/household-native-evidence"
+          {
+            for name in kanidm jellyfin seerr; do
+              remaining=$(docker --host unix:///var/run/docker.sock container ls --all --filter "name=^/$name$" --format '{{.Names}}')
+              printf 'remaining_%s=%s\n' "$name" "$remaining"
+              test -z "$remaining"
+            done
+            remaining=$(docker --host unix:///var/run/docker.sock network ls --filter name=^household$ --format '{{.Name}}')
+            printf 'remaining_household_network=%s\n' "$remaining"
+            test -z "$remaining"
+            sudo test ! -e /root/household
+            printf 'remaining_fixture_directory=false\n'
+          } 2>&1 | tee "$RUNNER_TEMP/household-native-evidence/cleanup.log"
+
+      - name: Upload sanitized native household evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: household-sign-in-runtime-${{ github.run_id }}
+          path: ${{ runner.temp }}/household-native-evidence

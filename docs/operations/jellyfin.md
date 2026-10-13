@@ -12,9 +12,13 @@ compute guest listed under "Current stack" in
 
 ## Household directory sign-in
 
-The `plugins` initContainer installs Nix-pinned LDAP Authentication v24 after
-fresh-state provisioning and before the stock runtime. Jellarr configures the
-loaded plugin through its native API, preserving its user links. Do not
+The `plugins` initContainer uses the same `jellyfin-provisioner-image` as
+fresh-state provisioning, with the explicit `jellyfin-install-plugins`
+command. The normal Linux flake package `jellyfin-ldap-plugin` supplies the
+Nix-pinned official LDAP Authentication v24 files and installer bundled in
+that image; no additional helper image is needed. Installation runs after
+fresh-state provisioning and before the stock runtime. Jellarr configures
+the loaded plugin through its native API, preserving its user links. Do not
 install another version through the dashboard or disable TLS verification.
 
 Enroll people as described in [Identity operations](identity.md#household-media-credentials).
@@ -29,16 +33,38 @@ administrator can obtain a directory-backed Jellyfin administrator account.
 If Kanidm is down, directory login fails and the local administrator still
 works.
 
-Before deployment, import the new `kanidm-provision-image` and
-`jellyfin-plugins-image` alongside the existing helpers. Keep Seerr in phase
-`initial` until the owner accepts household sign-in from an actual media
-client and Seerr. Disposable fixture success is not production acceptance.
+Before deployment, import the changed `jellyfin-provisioner-image`,
+`kanidm-provision-image` and `jellarr-image` as described in "Deliver helper
+images". Keep Seerr in phase `initial` until the owner accepts household
+sign-in from an actual media client and Seerr. Disposable fixture success
+is not production acceptance; live household acceptance remains open.
 
 To roll back directory integration, revert the plugin initContainer and
 Jellarr LDAP settings together and restart Jellyfin. Preserve retained users,
 plugin configuration and credentials; do not reset `/config` or convert
 directory users to local accounts. Revert Kanidm listener/policy declarations
 only after directory consumers are removed.
+
+### Disposable household acceptance
+
+The native `household-sign-in-runtime` flake app and CI lane materialize the
+same Python suite, committed manifests and three helper-image archives:
+`jellyfin-provisioner-image`, `kanidm-provision-image` and `jellarr-image`.
+They run against real pinned services in an owned disposable Docker fixture,
+not on the production host and not inside a new Docker VM test envelope.
+
+Run as root on disposable native x86_64 Linux with a running Docker daemon.
+Reserve the fixture's workload names, state and loopback ports for the suite.
+Before starting, the canonical hostname `idm.plus2.danielvicory.dev` must
+resolve to `127.0.0.1` on that host. The app never edits host resolution.
+The disposable GitHub runner may explicitly add that loopback hosts entry;
+do not redirect the production hostname on a production host.
+
+This application lane exercises authentication and certificate verification.
+The directory K3s/kernel VM gate separately proves NetworkPolicy enforcement;
+Docker success cannot prove that boundary. These instructions do not record
+a pass for the revised packaging or native lane, and neither fixture replaces
+owner-approved deployment and real-device household acceptance.
 
 ## Storage
 
@@ -225,9 +251,10 @@ secret is missing, provisioning fails and Jellyfin does not start.
 
 ## Deliver helper images
 
-Kubernetes never pulls the provisioner and Jellarr images. Import each new
-revision into the guest before you sync manifests that reference it. Do not
-rebuild or activate the guest OS for this.
+Kubernetes never pulls the Jellyfin provisioner, Kanidm provisioner or Jellarr
+images. The Jellyfin provisioner image also carries the LDAP installer.
+Import each new revision into the guest before you sync manifests that
+reference it. Do not rebuild or activate the guest OS for this.
 
 1. On the Linux Incus host, from the selected repository revision, build the
    images in Bash:
@@ -235,7 +262,6 @@ rebuild or activate the guest OS for this.
    ```sh
    archives=$(nix build --no-link --print-out-paths \
      .#packages."$system".jellyfin-provisioner-image \
-     .#packages."$system".jellyfin-plugins-image \
      .#packages."$system".kanidm-provision-image \
      .#packages."$system".jellarr-image) || exit 1
    ```

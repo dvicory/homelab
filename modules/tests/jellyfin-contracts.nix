@@ -20,12 +20,10 @@ let
   releaseSystem =
     inputs.self.nixosConfigurations.${releaseComputeResources.instance}.pkgs.stdenv.hostPlatform.system;
   provisionerPackage = inputs.self.packages.${releaseSystem}.jellyfin-provisioner-image;
-  pluginsPackage = inputs.self.packages.${releaseSystem}.jellyfin-plugins-image;
   renderJellyfin = provisioner: renderJellyfinWith { inherit provisioner; };
   renderJellyfinWith =
     {
       provisioner ? provisionerPackage,
-      plugins ? pluginsPackage,
       cluster ? releaseCluster,
     }:
     (import ../den/aspects/kubernetes/services/jellyfin.nix {
@@ -35,7 +33,6 @@ let
           packages = inputs.self.packages // {
             ${releaseSystem} = inputs.self.packages.${releaseSystem} // {
               jellyfin-provisioner-image = provisioner;
-              jellyfin-plugins-image = plugins;
             };
           };
         };
@@ -119,17 +116,18 @@ let
   # A plugin build for another Jellyfin major release must not render.
   pluginTargets =
     targetAbi:
-    pluginsPackage
-    // {
-      passthru = pluginsPackage.passthru // {
-        plugins = map (plugin: plugin // { inherit targetAbi; }) pluginsPackage.passthru.plugins;
+    provisionerPackage
+    // rec {
+      ldapPlugin = provisionerPackage.ldapPlugin // { inherit targetAbi; };
+      passthru = provisionerPackage.passthru // {
+        inherit ldapPlugin;
       };
     };
   renders = arguments: (builtins.tryEval (renderJellyfinWith arguments)).success;
   pluginFailures =
-    lib.optional (!(renders { plugins = pluginTargets "12.0.0.0"; })) "plugin-for-12-renders"
-    ++ lib.optional (renders { plugins = pluginTargets "13.0.0.0"; }) "plugin-for-13-rejected"
-    ++ lib.optional (renders { plugins = pluginTargets "10.11.9.0"; }) "plugin-for-10.11-rejected";
+    lib.optional (!(renders { provisioner = pluginTargets "12.0.0.0"; })) "plugin-for-12-renders"
+    ++ lib.optional (renders { provisioner = pluginTargets "13.0.0.0"; }) "plugin-for-13-rejected"
+    ++ lib.optional (renders { provisioner = pluginTargets "10.11.9.0"; }) "plugin-for-10.11-rejected";
   conformant = renderJellyfin provisionerPackage;
   conformantDeployment = lib.findFirst (
     object: object.kind == "Deployment" && object.metadata.name == "jellyfin"
@@ -181,6 +179,7 @@ in
       cluster = config.den.clusters.prod-home;
       compute =
         config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
+      provisioner = self.packages.${cluster.hostSystem}.jellyfin-provisioner-image;
       storage = pkgs.writeText "jellyfin-storage-contract.json" (
         builtins.toJSON {
           inherit (compute) retainedPaths;
@@ -188,7 +187,7 @@ in
         }
       );
       release = pkgs.writeText "jellyfin-release-contract.json" (
-        builtins.toJSON self.packages.${cluster.hostSystem}.jellyfin-provisioner-image.passthru.release
+        builtins.toJSON provisioner.passthru.release
       );
       jellarrRelease = pkgs.writeText "jellarr-release-contract.json" (
         builtins.toJSON self.packages.${cluster.hostSystem}.jellarr-image.passthru.release
@@ -199,16 +198,19 @@ in
           gpuRenderGid = config.den.groups.gpu-render.gid;
           inherit (cluster.settings.kubernetes.services.identity) adminGroup householdGroup directory;
           directoryHost = builtins.head cluster.routes.idm.hostnames;
-          plugins = map (plugin: {
-            inherit (plugin)
+          ldapPlugin = {
+            inherit (provisioner.ldapPlugin)
               name
               serverName
               guid
               version
+              targetAbi
+              sourceRev
               directory
               ;
-          }) self.packages.${cluster.hostSystem}.jellyfin-plugins-image.passthru.plugins;
-          pluginsImage = builtins.unsafeDiscardStringContext self.packages.${cluster.hostSystem}.jellyfin-plugins-image.passthru.imageReference;
+          };
+          provisionerImage = builtins.unsafeDiscardStringContext "${provisioner.imageName}:${provisioner.imageTag}";
+          pluginInstaller = "/bin/${provisioner.pluginInstaller.meta.mainProgram}";
         }
       );
       encodingVariants = pkgs.writeText "jellyfin-encoding-variants.json" (
@@ -333,7 +335,8 @@ in
             runtime = containers[0]
             provisioner, plugins_init = init_containers
             assert runtime["name"] == "jellyfin" and provisioner["name"] == "provision"
-            assert plugins_init["image"] == contract_inputs["pluginsImage"], "the pinned plugins image installs plugins"
+            assert plugins_init["image"] == provisioner["image"] == contract_inputs["provisionerImage"], "the bundled provisioner image installs plugins"
+            assert plugins_init["command"] == [contract_inputs["pluginInstaller"]], "the bundled installer is invoked explicitly"
             assert plugins_init.get("imagePullPolicy") == "Never"
             assert [m["mountPath"] for m in plugins_init["volumeMounts"]] == ["/config"], "the plugin installer touches only /config"
             assert mount(plugins_init, "/config")["name"] == mount(runtime, "/config")["name"]
@@ -440,7 +443,11 @@ in
             assert "startup" not in jellarr_config
 
             # Household sign-in: Jellarr configures the installed LDAP plugin.
-            ldap_plugin = next(p for p in contract_inputs["plugins"] if p["name"] == "LDAP Authentication")
+            ldap_plugin = contract_inputs["ldapPlugin"]
+            assert ldap_plugin["name"] == "LDAP Authentication"
+            assert ldap_plugin["version"] == "24.0.0.0"
+            assert ldap_plugin["targetAbi"] == "12.0.0.0"
+            assert ldap_plugin["sourceRev"] == "d11c86a47d51a0e3372bbff20e508302ad78f7bd"
             assert ldap_plugin["guid"] == "958aad66-3784-4d2a-b89a-a7b6fab6e25c"
             assert ldap_plugin["directory"] == "LDAP Authentication_" + ldap_plugin["version"]
             assert [p["name"] for p in jellarr_config["plugins"]] == [ldap_plugin["serverName"]], (
