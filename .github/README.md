@@ -63,6 +63,14 @@ build on a separate publication runner. The `cachix-publish` environment remains
 restricted to `main`, and only the publication step receives its per-cache write
 token. Pull requests and manual dispatches remain read-only.
 
+Exact derivations, not changed-file guesses, determine cache reuse. Runtime
+fixtures must reference individual files, package-local directories (including
+the test's adjacent scripts), or explicit filesets rather than interpolate
+`self` paths that retain the entire flake source as a build input. The recovery
+fixture includes all of its copied manifests and no unrelated applications.
+Hermes image tags still identify the Git source revision; changing that
+deployment provenance is not a cache optimization.
+
 Nix store contents published by CI are public, so CI outputs must never contain
 decrypted secrets.
 

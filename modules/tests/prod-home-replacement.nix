@@ -95,7 +95,21 @@
             '';
         computeGuest = pkgs.callPackage (inputs.self + "/pkgs/by-name/compute-runtime/package.nix") { };
         guestBundle = guest.config.system.build.computeBundle;
-        canonical = inputs.self + "/generated/manifests/prod-home";
+        canonical = lib.fileset.toSource {
+          root = ../../generated/manifests/prod-home;
+          fileset = lib.fileset.unions [
+            ../../generated/manifests/prod-home/apps/Application-retained-storage.yaml
+            ../../generated/manifests/prod-home/apps/Application-jellyfin.yaml
+            ../../generated/manifests/prod-home/apps/Application-jellyfin-retained.yaml
+            ../../generated/manifests/prod-home/apps/Application-jellyfin-configuration.yaml
+            ../../generated/manifests/prod-home/apps/AppProject-prod-home.yaml
+            ../../generated/manifests/prod-home/retained-storage
+            ../../generated/manifests/prod-home/jellyfin
+            ../../generated/manifests/prod-home/jellyfin-retained
+            ../../generated/manifests/prod-home/jellyfin-configuration
+            ../../generated/manifests/prod-home/bootstrap.yaml
+          ];
+        };
         seedManifests = self.packages.${system}.household-bootstrap-manifests;
         # Canonical seed inputs are Argo namespace, CRDs, controllers and root
         # handoff only; Jellyfin and Argo workloads remain pinned registry
