@@ -28,9 +28,7 @@ in
       test = pkgs.testers.runNixOSTest {
         name = "agenix-restart-guard";
 
-        requiredFeatures.kvm = true;
-
-        nodes.machine =
+        containers.machine =
           { pkgs, ... }:
           let
             activate = pkgs.writeShellScriptBin "fake-agenix-activate" ''
