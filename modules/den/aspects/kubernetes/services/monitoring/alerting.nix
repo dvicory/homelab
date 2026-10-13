@@ -355,6 +355,7 @@ let
       };
 
       # Recording rules that the vendored kubernetes-mixin dashboards read.
+      # Keep the collector's cluster label for their cluster selectors.
       record = name: expr: {
         record = name;
         inherit expr;
@@ -368,7 +369,7 @@ let
         '';
       dashboards = [
         (record "node_namespace_pod_container:container_cpu_usage_seconds_total:sum_rate5m" ''
-          sum by (namespace, pod, container, node) (
+          sum by (cluster, namespace, pod, container, node) (
             rate(container_cpu_usage_seconds_total{job="cadvisor", image!=""}[5m])
           )
         '')
