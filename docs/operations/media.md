@@ -120,10 +120,9 @@ Expected result: both Jobs complete.
 Each helper holds a lock file while it runs. Do not delete or replace a lock
 file while a helper runs.
 
-## Native acceptance proof
+## Native media acceptance
 
-Nix CI runs the entire existing `media-live-acceptance.py` suite on an
-`ubuntu-24.04` x86 runner through the pinned `media-live-acceptance` app:
+Run the pinned application suite against a disposable native Linux x86 Docker daemon:
 
 ```sh
 nix run .#media-live-acceptance -- \
@@ -135,15 +134,6 @@ The suite creates its own internal network, containers and Linux volume,
 then verifies owned cleanup before reporting success. It does not use
 household data or secrets.
 
-The `media-native-proof-<run-id>` artifact records runner and Docker
-versions, source and asset identities, pinned image identities, command
-elapsed time and remaining owned resources. App preparation is timed
-separately; acceptance timing includes Nix invocation and cold image pulls,
-not a warm-cache speedup claim.
-
-The existing `media-runtime` VM gate remains until the unchanged x86 suite
-and owned cleanup succeed on the hosted runner. This proof does not replace
-the Kubernetes RBAC, NetworkPolicy or Gateway gates, or the
-Incus/MergerFS/ZFS/GPU storage and acceleration gates. After equivalence is
-observed, only the media execution envelope may be replaced; do not retain
-two permanent executions of the same suite.
+This exercises media application APIs and producer behavior. It does not prove
+Kubernetes RBAC, NetworkPolicy or Gateway behavior, or the
+Incus/MergerFS/ZFS/GPU storage and acceleration boundaries.
