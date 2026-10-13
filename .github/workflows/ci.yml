@@ -66,7 +66,10 @@ jobs:
           if [ -n "$CHECK" ] && [ -n "$REQUESTED_SYSTEM" ] && [ "$REQUESTED_SYSTEM" != all ]; then
             system="$REQUESTED_SYSTEM"
           fi
-          nix eval --json ".#hostedCiInventory.$system" > "$RUNNER_TEMP/check-inventory.json"
+          # Keep exact drv identities in native job receipts, not the planning barrier.
+          nix eval --json ".#hostedCiInventory.$system" \
+            --apply 'builtins.mapAttrs (_: builtins.map (entry: builtins.removeAttrs entry [ "drvPath" ]))' \
+            > "$RUNNER_TEMP/check-inventory.json"
           cat "$RUNNER_TEMP/check-inventory.json"
           if [ -n "$CHECK" ]; then
             matrix=$(jq -ce --arg check "$CHECK" --arg system "$system" '

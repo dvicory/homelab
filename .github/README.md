@@ -31,7 +31,10 @@ Hosted ARM runtime checks are recorded as unsupported because its runners do
 not expose KVM; a KVM-capable ARM builder can still build those checks directly.
 Every registered check must be a derivation and belongs to exactly one of the
 fast, hosted runtime, or explicitly unsupported partitions. Future checks join
-automatically. CI uploads the evaluated inventory for each platform.
+automatically. Planning projects this inventory without forcing `drvPath`, so
+runtime lanes can start without evaluating every check's complete build graph.
+Native check jobs still upload the full evaluated platform inventory with exact
+derivation identities; runtime build receipts retain their exact derivations.
 
 Build jobs release their separate `nix eval` heap before building the exact
 derivation, preserving memory for the VM. No runner executes competing VM suites.
@@ -83,6 +86,21 @@ closure and never builds missing outputs for publication. There is no second
 build on a separate publication runner. The `cachix-publish` environment remains
 restricted to `main`, and only the publication step receives its per-cache write
 token. Pull requests and manual dispatches remain read-only.
+
+A successful warm `main` job does not prove that a cold PR runner can substitute
+its dependencies. For a repeated compiled dependency, compare the exact
+derivation and every required output with the `main` log, then query each output
+using `nix path-info --store https://dvicory-homelab.cachix.org "$output"`.
+A 404 means the output is unavailable, not that its derivation changed; Cachix
+also hides paths whose closure is incomplete. The publisher's realized-only
+selection includes the patched Incus server, documentation, agent loader and
+client even when a VM image hides them from its runtime references.
+
+Restore unavailable dependencies only through owner-approved protected-main
+publication of the exact successful outputs and their closures. Never use PR
+credentials or accept unsigned NARs to make a cold-cache proof pass. Measure
+substitution from an empty isolated store with builds disabled before
+attributing a runtime improvement to the cache.
 
 Exact derivations, not changed-file guesses, determine cache reuse. Runtime
 fixtures must reference individual files, package-local directories (including
