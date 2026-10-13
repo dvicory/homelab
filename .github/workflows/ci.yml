@@ -257,7 +257,7 @@ jobs:
         if: matrix.group != 'nixosConfigurations' && matrix.group != 'darwinConfigurations' && matrix.group != 'checks' && matrix.group != 'runtime'
         uses: Mic92/hestia@dfed9ced335d28978ba74e513939a10db1f71025 # v3.1.0
         with:
-          version: v3.0.1
+          version: v3.1.0
           upstream-cache-filter: true
 
       - name: Download Darwin Linux builder closure

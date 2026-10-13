@@ -69,6 +69,12 @@ Successful check jobs upload nonempty outputs as
 `check-output-<system>-<check-or-group>-<run-id>` artifacts; empty outputs retain
 their evidence in the job log. Linux runners enable available KVM acceleration.
 System builds and checks can reuse narinfo and objects uploaded by other jobs.
+Hestia's binary version is pinned alongside its action. Use core v3.1.0 or
+newer: it rejects cached narinfos whose backing packs are unavailable, rather
+than repeatedly advertising objects that fail during download. The manifest
+and backing packs are separate GitHub cache entries; a manifest hit alone
+does not prove that its objects remain available.
+
 All jobs read the public `dvicory-homelab` Cachix cache and the signed upstream
 `https://cache.numtide.com` cache documented by the pinned `llm-agents` input.
 CI and shared Nix settings append its fixed public key
