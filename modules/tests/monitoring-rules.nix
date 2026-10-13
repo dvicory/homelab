@@ -2,7 +2,7 @@
 # same VictoriaMetrics release as the pinned images evaluates the rule file
 # that the vmalert ConfigMap carries, unchanged, against synthetic series.
 #
-# Each case pins a time bound from the fleet-monitoring spec: the alert is
+# Alert cases pin a time bound from the fleet-monitoring spec: the alert is
 # expected to fire by the bound and, where the spec says so, not before.
 {
   lib,
@@ -67,6 +67,31 @@ let
   container = name: pod name // { container = "jellyfin"; };
 
   tests = [
+    {
+      name = "the upstream pod CPU dashboard selects the cluster-labeled recording rule";
+      interval = "30s";
+      input_series = [
+        (series "container_cpu_usage_seconds_total" (container "jellyfin-0" // {
+          job = "cadvisor";
+          cluster = "prod-home";
+          node = "hvn-hyp1";
+          image = "jellyfin";
+        }) "0+15x20")
+      ];
+      metricsql_expr_test = [
+        {
+          # k8s-resources-pod.json CPU Usage query, with dashboard variables resolved.
+          expr = ''sum(max by (cluster, namespace, pod, container)(node_namespace_pod_container:container_cpu_usage_seconds_total:sum_rate5m{namespace="jellyfin", pod="jellyfin-0", cluster="prod-home", container!=""})) by (container)'';
+          eval_time = "10m";
+          exp_samples = [
+            {
+              labels = ''{container="jellyfin"}'';
+              value = 0.5;
+            }
+          ];
+        }
+      ];
+    }
     {
       name = "a single OOM kill is critical within 5 minutes, even while Argo CD reports Healthy";
       interval = "30s";

@@ -153,6 +153,7 @@ in
           global = {
             scrape_interval = "30s";
             scrape_timeout = "10s";
+            external_labels.cluster = cluster.name;
           };
           # The host exporters come from the targets the host publishes
           # through the `prometheus-targets` quirk.
