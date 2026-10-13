@@ -25,6 +25,11 @@ let
         default = true;
         description = "Whether the Gateway's backend NetworkPolicy also admits every pod in the route's namespace. Set false when the backend's owner admits its in-cluster clients with its own NetworkPolicy; the Gateway policy then admits only the Gateway proxy.";
       };
+      manageBackendIngress = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Generate the Gateway's backend NetworkPolicy. Set false when the backend owner supplies all ingress rules, including Gateway admission.";
+      };
       port = mkOption { type = types.port; };
       hostnames = mkOption {
         type = types.addCheck (types.listOf types.str) (

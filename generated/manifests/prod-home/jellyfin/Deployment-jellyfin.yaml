@@ -117,6 +117,30 @@ spec:
               name: admin-password
               readOnly: true
               subPath: password
+        - image: homelab/jellyfin-plugins:22da2ww9wzny7cdkilycba0w1plwy0jp
+          imagePullPolicy: Never
+          name: plugins
+          resources:
+            limits:
+              cpu: 250m
+              ephemeral-storage: 16Mi
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 16Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            runAsGroup: 751
+            runAsNonRoot: true
+            runAsUser: 751
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - mountPath: /config
+              name: config
       nodeSelector:
         kubernetes.io/hostname: compute-1
       securityContext:

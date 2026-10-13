@@ -18,6 +18,23 @@
     default = "homelab-admin";
     description = "Kanidm group whose members administer Homelab. Provisioning fills it from the fleet `admins` role only in phase normal.";
   };
+  den.aspects.kubernetes.services.identity.settings.householdGroup = lib.mkOption {
+    type = lib.types.strMatching "[a-z][a-z0-9_-]*";
+    default = "jellyfin-users";
+    description = ''
+      Kanidm group whose members may sign in to Jellyfin, and through it to
+      Seerr, with their Kanidm password. Provisioning creates the group and
+      its account policy; operators manage its members in Kanidm.
+    '';
+  };
+  den.aspects.kubernetes.services.identity.settings.directory = lib.mkOption {
+    type = lib.types.attrs;
+    readOnly = true;
+    default = {
+      port = 3636;
+    };
+    description = "Read-only port of Kanidm's LDAPS gateway on its Service, for directory consumers.";
+  };
   den.aspects.kubernetes.services.identity.compute-resources =
     { cluster, ... }:
     let
@@ -63,7 +80,8 @@
       normal = phase == "normal";
       provisionObjectNames = [ "kanidm-provision" ];
       domain = builtins.head cluster.routes.idm.hostnames;
-      inherit (cluster.settings.kubernetes.services.identity) adminGroup;
+      inherit (cluster.settings.kubernetes.services.identity) adminGroup householdGroup directory;
+      jellyfinRoute = cluster.routes.jellyfin;
       adminRoutes = lib.filterAttrs (_: route: route.auth == "admin") cluster.routes;
       routeUrls =
         route:
@@ -268,6 +286,11 @@
           members = [ ];
           overwriteMembers = true;
         };
+        # Household members are not fleet users; operators add them in Kanidm.
+        groups.${householdGroup} = {
+          members = [ ];
+          overwriteMembers = false;
+        };
         persons = lib.mapAttrs (name: user: {
           displayName = if user.identity.displayName != "" then user.identity.displayName else name;
           mailAddresses = lib.optional (user.identity.email != null) user.identity.email;
@@ -311,7 +334,32 @@
         tls_key = "/etc/kanidm/tls/tls.key"
         domain = "${domain}"
         origin = "https://${domain}"
+        ldapbindaddress = "0.0.0.0:${toString directory.port}"
       '';
+      # Account policy per group. Kanidm applies the strictest value of each
+      # setting across a person's groups, so the administrator group states
+      # its own minimum instead of relying on Kanidm's default, and a
+      # household member's password-only credential needs the all-persons
+      # floor lowered to `any`. Primary-password fallback lets a household
+      # member's one Kanidm password work for LDAP binds; administrators
+      # bind only with a separate POSIX password.
+      accountPolicies = [
+        {
+          group = "idm_all_persons";
+          credentialTypeMinimum = "any";
+          allowPrimaryCredFallback = null;
+        }
+        {
+          group = adminGroup;
+          credentialTypeMinimum = "mfa";
+          allowPrimaryCredFallback = false;
+        }
+        {
+          group = householdGroup;
+          credentialTypeMinimum = "any";
+          allowPrimaryCredFallback = true;
+        }
+      ];
     in
     assert lib.assertMsg (
       cluster.routes.idm.namespace == namespace
@@ -519,6 +567,10 @@
                             name = "https";
                             containerPort = 8443;
                           }
+                          {
+                            name = "ldaps";
+                            containerPort = directory.port;
+                          }
                         ];
                         readinessProbe = {
                           httpGet = {
@@ -596,6 +648,12 @@
                     targetPort = "https";
                     protocol = "TCP";
                   }
+                  {
+                    name = "ldaps";
+                    port = directory.port;
+                    targetPort = "ldaps";
+                    protocol = "TCP";
+                  }
                 ];
               };
             }
@@ -634,6 +692,24 @@
                     ];
                   }
                 ]
+                # Jellyfin's LDAP plugin is the only directory client. Cluster
+                # DNS rewrites the identity hostname to the Service.
+                ++ [
+                  {
+                    from = [
+                      {
+                        namespaceSelector.matchLabels."kubernetes.io/metadata.name" = jellyfinRoute.namespace;
+                        podSelector.matchLabels = jellyfinRoute.backendPodSelector;
+                      }
+                    ];
+                    ports = [
+                      {
+                        protocol = "TCP";
+                        port = directory.port;
+                      }
+                    ];
+                  }
+                ]
                 # argocd-server fetches discovery and keys and redeems codes.
                 # Cluster DNS rewrites the issuer hostname to the Service, so
                 # this path never uses the host's public address.
@@ -664,6 +740,7 @@
                 "state.json" = builtins.toJSON provisionState;
                 "clients.json" = builtins.toJSON oauth2Clients;
                 "members.json" = builtins.toJSON (if normal then builtins.attrNames administrators else [ ]);
+                "policies.json" = builtins.toJSON accountPolicies;
               };
             }
             {

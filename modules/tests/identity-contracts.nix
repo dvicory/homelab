@@ -138,6 +138,74 @@ let
   kanidmIngress =
     objects: (findObject objects "NetworkPolicy" namespace "kanidm-private").spec.ingress;
   namespace = "identity";
+  inherit (cluster.settings.kubernetes.services.identity) adminGroup householdGroup directory;
+  jellyfinRoute = cluster.routes.jellyfin;
+  normalPolicies = builtins.fromJSON (provisionData normalObjects)."policies.json";
+  policyFor = group: lib.findFirst (policy: policy.group == group) null normalPolicies;
+  # Kanidm's credential-type minimums, weakest first.
+  credentialStrengths = [
+    "any"
+    "mfa"
+    "passkey"
+    "attested_passkey"
+  ];
+  kanidmDeployment = findObject normalObjects "Deployment" namespace "kanidm";
+  kanidmService = findObject normalObjects "Service" namespace "kanidm";
+  # NetworkPolicies are additive, regardless of name or application owner.
+  admissionObjects =
+    identityRendered: gatewayRendered:
+    lib.concatMap (
+      application:
+      if application.condition or true then
+        application.content.objects or (application.objects or [ ])
+      else
+        [ ]
+    ) (builtins.attrValues identityRendered.applications ++ builtins.attrValues gatewayRendered.applications);
+  kanidmLabels = kanidmDeployment.spec.template.metadata.labels;
+  selectsKanidm =
+    selector:
+    lib.matchAttrs (selector.matchLabels or { }) kanidmLabels
+    && lib.all (
+      expression:
+      let
+        present = builtins.hasAttr expression.key kanidmLabels;
+        listed = present && lib.elem kanidmLabels.${expression.key} (expression.values or [ ]);
+      in
+      if expression.operator == "In" then listed
+      else if expression.operator == "NotIn" then !listed
+      else if expression.operator == "Exists" then present
+      else if expression.operator == "DoesNotExist" then !present
+      else throw "Unsupported Kubernetes selector operator"
+    ) (selector.matchExpressions or [ ]);
+  directoryPeers =
+    objects:
+    lib.unique (lib.concatMap (
+      policy:
+      lib.concatMap (
+        rule:
+        let
+          ports = rule.ports or [ ];
+          admits = port:
+            (port.protocol or "TCP") == "TCP"
+            && (
+              !(port ? port)
+              || port.port == "ldaps"
+              || (builtins.isInt port.port
+                && port.port <= directory.port
+                && directory.port <= (port.endPort or port.port))
+            );
+        in
+        if ports == [ ] || lib.any admits ports then
+          if rule.from or [ ] == [ ] then [ "anyone" ] else rule.from
+        else [ ]
+      ) (policy.spec.ingress or [ ])
+    ) (lib.filter (
+      object:
+      object.kind == "NetworkPolicy"
+      && object.metadata.namespace == namespace
+      && selectsKanidm object.spec.podSelector
+      && lib.elem "Ingress" (object.spec.policyTypes or [ "Ingress" ])
+    ) objects));
   allowsArgocdServer = lib.any (
     rule:
     lib.any (
@@ -182,6 +250,62 @@ let
       ) rule.verbs
     ) role.rules;
   failures = lib.filterAttrs (_: value: !value) {
+    # Kanidm serves LDAPS on the declared directory port, on its Service.
+    directory-listens =
+      lib.hasInfix ''ldapbindaddress = "0.0.0.0:${toString directory.port}"'' serverConfig
+      && builtins.elem {
+        name = "ldaps";
+        containerPort = directory.port;
+      } (builtins.head kanidmDeployment.spec.template.spec.containers).ports
+      && builtins.elem {
+        name = "ldaps";
+        port = directory.port;
+        targetPort = "ldaps";
+        protocol = "TCP";
+      } kanidmService.spec.ports;
+    # Only Jellyfin's pods reach the directory, in every phase.
+    directory-admits-only-jellyfin = lib.all (
+      objects:
+      directoryPeers objects == [
+        {
+          namespaceSelector.matchLabels."kubernetes.io/metadata.name" = jellyfinRoute.namespace;
+          podSelector.matchLabels = jellyfinRoute.backendPodSelector;
+        }
+      ]
+    ) [
+      (admissionObjects initial initialGateway)
+      (admissionObjects provisioning provisioningGateway)
+      (admissionObjects normal normalGateway)
+    ];
+    # Kanidm applies the strictest value of each setting across a person's
+    # groups. Administrators state an MFA-or-stronger minimum themselves and
+    # never bind to LDAP with their primary password. Household members bind
+    # with it, and the all-persons floor must not exceed their minimum, or a
+    # password-only member could not exist.
+    account-policies-declared =
+      let
+        rank = minimum: lib.lists.findFirstIndex (value: value == minimum) null credentialStrengths;
+        admin = policyFor adminGroup;
+        household = policyFor householdGroup;
+        floor = policyFor "idm_all_persons";
+      in
+      lib.all (policy: rank policy.credentialTypeMinimum != null) normalPolicies
+      && lib.length (lib.unique (map (policy: policy.group) normalPolicies)) == lib.length normalPolicies
+      && admin != null
+      && rank admin.credentialTypeMinimum >= rank "mfa"
+      && admin.allowPrimaryCredFallback == false
+      && household != null
+      && household.allowPrimaryCredFallback == true
+      && floor != null
+      && rank floor.credentialTypeMinimum <= rank household.credentialTypeMinimum
+      && normalPolicies == builtins.fromJSON (provisionData provisioningObjects)."policies.json";
+    # Provisioning creates the household group but never owns its members.
+    household-membership-operator-owned =
+      normalState.groups.${householdGroup} == {
+        members = [ ];
+        overwriteMembers = false;
+      }
+      && householdGroup != adminGroup;
     three-phases-declared =
       identity.settings.phase.type.functor.payload.values == [
         "initial"
@@ -362,7 +486,10 @@ let
       && !(builtins.elem "groups" normalOidc.requestedScopes)
       && normalArgocd.rbac.scopes == "[groups]"
       && envValue "KANIDM_ADMIN_GROUP" == cluster.settings.kubernetes.services.identity.adminGroup
-      && builtins.attrNames normalState.groups == [ (envValue "KANIDM_ADMIN_GROUP") ]
+      && builtins.attrNames normalState.groups == lib.sort builtins.lessThan [
+        (envValue "KANIDM_ADMIN_GROUP")
+        householdGroup
+      ]
       && normalArgocd.rbac."policy.csv" == "g, ${envValue "KANIDM_ADMIN_GROUP"}, role:admin\n"
       && normalArgocd.rbac."policy.default" == "";
     argocd-client-secret-reference =

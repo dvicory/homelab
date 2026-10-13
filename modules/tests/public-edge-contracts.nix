@@ -259,7 +259,7 @@ let
   backendPolicyContract =
     inventory:
     let
-      routeNames = builtins.attrNames inventory.routes;
+      routeNames = builtins.attrNames (lib.filterAttrs (_: route: route.manageBackendIngress) inventory.routes);
       objects = backendPolicies inventory;
       proxySelector = {
         namespaceSelector.matchLabels."kubernetes.io/metadata.name" = "gateway";
@@ -302,7 +302,7 @@ let
     && lib.any (route: !route.sameNamespaceIngress) (builtins.attrValues inventory.routes);
   sameNamespaceCluster = testCluster // {
     routes = routes // {
-      idm = routes.idm // {
+      jellyfin = routes.jellyfin // {
         namespace = routes.argocd.namespace;
       };
     };
@@ -310,13 +310,13 @@ let
   sameNamespaceBackendPolicyContract =
     let
       argocd = policyFor sameNamespaceCluster "argocd";
-      idm = policyFor sameNamespaceCluster "idm";
+      jellyfin = policyFor sameNamespaceCluster "jellyfin";
     in
     builtins.length (backendPolicies sameNamespaceCluster)
-    == builtins.length (builtins.attrNames routes)
-    && argocd.metadata.namespace == idm.metadata.namespace
-    && argocd.metadata.name != idm.metadata.name
-    && argocd.spec.podSelector.matchLabels != idm.spec.podSelector.matchLabels;
+    == builtins.length (builtins.attrNames (lib.filterAttrs (_: route: route.manageBackendIngress) routes))
+    && argocd.metadata.namespace == jellyfin.metadata.namespace
+    && argocd.metadata.name != jellyfin.metadata.name
+    && argocd.spec.podSelector.matchLabels != jellyfin.spec.podSelector.matchLabels;
   emptySelectorCluster = testCluster // {
     routes = routes // {
       argocd = routes.argocd // {

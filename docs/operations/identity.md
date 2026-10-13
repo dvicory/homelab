@@ -106,6 +106,47 @@ enable the local account for the repair:
 
    Confirm that `argocd-cm` shows `admin.enabled: "false"` again.
 
+## Household media credentials
+
+The official Jellyfin LDAP plugin uses Kanidm's private, certificate-verified
+LDAPS gateway. Operators own `jellyfin-users` membership; provisioning creates
+the group and its policy but does not replace its members. `homelab-admin`
+membership stays declaration-owned and grants Jellyfin administration at
+directory sign-in. Removing membership affects the next login, not existing
+sessions.
+
+Using the matching Kanidm CLI as an authorized identity operator:
+
+```sh
+kanidm person create <name> "<display name>"
+kanidm person posix set <name>
+kanidm group add-members jellyfin-users <name>
+kanidm person credential create-reset-token <name>
+```
+
+Give the reset link privately to the person. Household non-administrators
+may enroll a password-only web credential; LDAP accepts that primary password
+only until they set a POSIX password. The declared `idm_all_persons` floor is
+`any`, which allows password-only enrollment for all non-administrators, not
+only this group. Administrator policy explicitly requires MFA or stronger
+and disables primary-password LDAP fallback.
+
+Administrators retain web MFA/passkeys and set a **separate POSIX password**
+with `kanidm person posix set-password <name>`, authenticating and
+reauthenticating as themselves. That password authenticates LDAP, not Kanidm
+web sign-in. Do not grant household members machine access or use an
+administrator's web password as the directory password.
+
+For later all-persons web MFA adoption, first enroll every affected person's
+MFA/passkey and separate POSIX password. Verify media login with that password,
+then change the declared `accountPolicies` floor in `identity.nix` to `mfa`.
+A live-only policy change is overwritten by provisioning. Repeat Kanidm MFA,
+Jellyfin and Seerr sign-in after reconciliation; account IDs must not change.
+This is a credential migration, not a Jellyfin account migration.
+
+POSIX accounts enter Kanidm's anonymous directory view; private LDAPS does
+not make the corresponding anonymous HTTPS Unix-account attributes private.
+
 ## Upgrade
 
 Run `kanidmd domain upgrade-check` and take a restorable backup before

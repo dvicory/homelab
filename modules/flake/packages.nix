@@ -57,6 +57,9 @@
       jellarr-image = lib.optionalAttrs isLinux {
         jellarr-image = callPackage (self + "/pkgs/by-name/jellarr-image/package.nix") { };
       };
+      jellyfin-plugins-image = lib.optionalAttrs isLinux {
+        jellyfin-plugins-image = callPackage (self + "/pkgs/by-name/jellyfin-plugins-image/package.nix") { };
+      };
 
       provision-keys = callPackage (self + "/pkgs/by-name/provision-keys/package.nix") {
         inherit generate-secrets rekey;
@@ -77,7 +80,8 @@
       // kanidm-provision-image
       // retained-directories-image
       // jellyfin-provisioner-image
-      // jellarr-image;
+      // jellarr-image
+      // jellyfin-plugins-image;
 
       checks = {
         compute-runtime = config.packages.compute-runtime;

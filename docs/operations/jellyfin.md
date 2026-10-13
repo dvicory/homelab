@@ -3,11 +3,42 @@
 Jellyfin runs in the `jellyfin` namespace on the compute guest. Before the
 server starts, the `provision` initContainer prepares retained state. The
 `jellyfin-configuration` Job then applies the declared libraries and
-settings.
+settings. Its API-key bootstrap waits for the native `Healthy` response:
+HTTP 200 alone also includes `Degraded` while the stock server starts.
 
 In the commands below, set `system` to the host system and `instance` to the
 compute guest listed under "Current stack" in
 [`docs/operations.md`](../operations.md).
+
+## Household directory sign-in
+
+The `plugins` initContainer installs Nix-pinned LDAP Authentication v24 after
+fresh-state provisioning and before the stock runtime. Jellarr configures the
+loaded plugin through its native API, preserving its user links. Do not
+install another version through the dashboard or disable TLS verification.
+
+Enroll people as described in [Identity operations](identity.md#household-media-credentials).
+Use the ordinary Jellyfin username/password login, and Seerr's ordinary
+Jellyfin login, with the person's primary password or separate POSIX password.
+This is LDAP authentication, not OIDC, and LDAP itself does not perform MFA.
+
+The declared Jellyfin administrator remains local, with its existing agenix
+password and user ID. A same-named Kanidm account does not convert it; its
+directory password cannot log in to that local account. A different central
+administrator can obtain a directory-backed Jellyfin administrator account.
+If Kanidm is down, directory login fails and the local administrator still
+works.
+
+Before deployment, import the new `kanidm-provision-image` and
+`jellyfin-plugins-image` alongside the existing helpers. Keep Seerr in phase
+`initial` until the owner accepts household sign-in from an actual media
+client and Seerr. Disposable fixture success is not production acceptance.
+
+To roll back directory integration, revert the plugin initContainer and
+Jellarr LDAP settings together and restart Jellyfin. Preserve retained users,
+plugin configuration and credentials; do not reset `/config` or convert
+directory users to local accounts. Revert Kanidm listener/policy declarations
+only after directory consumers are removed.
 
 ## Storage
 
@@ -204,6 +235,8 @@ rebuild or activate the guest OS for this.
    ```sh
    archives=$(nix build --no-link --print-out-paths \
      .#packages."$system".jellyfin-provisioner-image \
+     .#packages."$system".jellyfin-plugins-image \
+     .#packages."$system".kanidm-provision-image \
      .#packages."$system".jellarr-image) || exit 1
    ```
 
@@ -223,7 +256,8 @@ rebuild or activate the guest OS for this.
    ```sh
    grep -rhoE 'homelab/[a-z-]+:[a-z0-9]+' \
      generated/manifests/prod-home/jellyfin \
-     generated/manifests/prod-home/jellyfin-configuration | sort -u
+     generated/manifests/prod-home/jellyfin-configuration \
+     generated/manifests/prod-home/identity | sort -u
    sudo incus --project compute exec "$instance" -- \
      k3s ctr --namespace k8s.io images ls -q
    ```

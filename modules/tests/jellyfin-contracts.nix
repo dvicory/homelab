@@ -20,10 +20,12 @@ let
   releaseSystem =
     inputs.self.nixosConfigurations.${releaseComputeResources.instance}.pkgs.stdenv.hostPlatform.system;
   provisionerPackage = inputs.self.packages.${releaseSystem}.jellyfin-provisioner-image;
+  pluginsPackage = inputs.self.packages.${releaseSystem}.jellyfin-plugins-image;
   renderJellyfin = provisioner: renderJellyfinWith { inherit provisioner; };
   renderJellyfinWith =
     {
       provisioner ? provisionerPackage,
+      plugins ? pluginsPackage,
       cluster ? releaseCluster,
     }:
     (import ../den/aspects/kubernetes/services/jellyfin.nix {
@@ -33,6 +35,7 @@ let
           packages = inputs.self.packages // {
             ${releaseSystem} = inputs.self.packages.${releaseSystem} // {
               jellyfin-provisioner-image = provisioner;
+              jellyfin-plugins-image = plugins;
             };
           };
         };
@@ -113,6 +116,20 @@ let
       release.provisionPatchRev = laterSourceRev;
     };
   };
+  # A plugin build for another Jellyfin major release must not render.
+  pluginTargets =
+    targetAbi:
+    pluginsPackage
+    // {
+      passthru = pluginsPackage.passthru // {
+        plugins = map (plugin: plugin // { inherit targetAbi; }) pluginsPackage.passthru.plugins;
+      };
+    };
+  renders = arguments: (builtins.tryEval (renderJellyfinWith arguments)).success;
+  pluginFailures =
+    lib.optional (!(renders { plugins = pluginTargets "12.0.0.0"; })) "plugin-for-12-renders"
+    ++ lib.optional (renders { plugins = pluginTargets "13.0.0.0"; }) "plugin-for-13-rejected"
+    ++ lib.optional (renders { plugins = pluginTargets "10.11.9.0"; }) "plugin-for-10.11-rejected";
   conformant = renderJellyfin provisionerPackage;
   conformantDeployment = lib.findFirst (
     object: object.kind == "Deployment" && object.metadata.name == "jellyfin"
@@ -180,6 +197,18 @@ in
         builtins.toJSON {
           administrator = cluster.settings.kubernetes.services.jellyfin.administrator;
           gpuRenderGid = config.den.groups.gpu-render.gid;
+          inherit (cluster.settings.kubernetes.services.identity) adminGroup householdGroup directory;
+          directoryHost = builtins.head cluster.routes.idm.hostnames;
+          plugins = map (plugin: {
+            inherit (plugin)
+              name
+              serverName
+              guid
+              version
+              directory
+              ;
+          }) self.packages.${cluster.hostSystem}.jellyfin-plugins-image.passthru.plugins;
+          pluginsImage = builtins.unsafeDiscardStringContext self.packages.${cluster.hostSystem}.jellyfin-plugins-image.passthru.imageReference;
         }
       );
       encodingVariants = pkgs.writeText "jellyfin-encoding-variants.json" (
@@ -205,6 +234,8 @@ in
       checks.jellyfin-contracts =
         assert lib.assertMsg (releaseFailures == [ ])
           "Jellyfin release invariant checks failed: ${lib.concatStringsSep ", " releaseFailures}";
+        assert lib.assertMsg (pluginFailures == [ ])
+          "Jellyfin plugin release checks failed: ${lib.concatStringsSep ", " pluginFailures}";
         assert lib.assertMsg (administratorFailures == [ ])
           "Jellyfin administrator name checks failed: ${lib.concatStringsSep ", " administratorFailures}";
         pkgs.runCommand "jellyfin-contracts"
@@ -295,10 +326,20 @@ in
             pod = pod_spec(deployment)
             containers = pod["containers"]
             init_containers = pod.get("initContainers", [])
-            assert len(containers) == 1 and len(init_containers) == 1, "Jellyfin has one stock container behind one provisioner init"
+            assert len(containers) == 1, "Jellyfin has one stock container"
+            # The provisioner refuses a non-empty /config before setup, so
+            # the plugin installer must run after it.
+            assert [c["name"] for c in init_containers] == ["provision", "plugins"], init_containers
             runtime = containers[0]
-            provisioner = init_containers[0]
+            provisioner, plugins_init = init_containers
             assert runtime["name"] == "jellyfin" and provisioner["name"] == "provision"
+            assert plugins_init["image"] == contract_inputs["pluginsImage"], "the pinned plugins image installs plugins"
+            assert plugins_init.get("imagePullPolicy") == "Never"
+            assert [m["mountPath"] for m in plugins_init["volumeMounts"]] == ["/config"], "the plugin installer touches only /config"
+            assert mount(plugins_init, "/config")["name"] == mount(runtime, "/config")["name"]
+            assert not plugins_init.get("env") and not plugins_init.get("envFrom"), "the plugin installer gets no credential"
+            assert plugins_init["securityContext"]["allowPrivilegeEscalation"] is False
+            assert "ALL" in plugins_init["securityContext"]["capabilities"]["drop"]
             assert runtime["image"] == runtime_image, "long-lived Jellyfin uses the exact stock runtime digest"
             assert runtime["image"].startswith("docker.io/jellyfin/jellyfin:12.1@sha256:")
             assert provisioner["image"] != runtime["image"], "patched provisioner bytes cannot become the long-lived runtime"
@@ -397,6 +438,35 @@ in
             ), library_paths
             assert len({paths[0] for paths in library_paths.values()}) == len(library_paths), library_paths
             assert "startup" not in jellarr_config
+
+            # Household sign-in: Jellarr configures the installed LDAP plugin.
+            ldap_plugin = next(p for p in contract_inputs["plugins"] if p["name"] == "LDAP Authentication")
+            assert ldap_plugin["guid"] == "958aad66-3784-4d2a-b89a-a7b6fab6e25c"
+            assert ldap_plugin["directory"] == "LDAP Authentication_" + ldap_plugin["version"]
+            assert [p["name"] for p in jellarr_config["plugins"]] == [ldap_plugin["serverName"]], (
+                "Jellarr names only the loaded plugin, so it never installs one from a repository"
+            )
+            assert "pluginRepositories" not in jellarr_config.get("system", {})
+            ldap = jellarr_config["plugins"][0]["configuration"]
+            host = contract_inputs["directoryHost"]
+            base = ",".join("dc=" + part for part in host.split("."))
+            def member_of(group):
+                return f"(memberof=spn={group}@{host},{base})"
+            assert (ldap["LdapServer"], ldap["LdapPort"], ldap["LdapBaseDn"]) == (host, contract_inputs["directory"]["port"], base)
+            assert ldap["UseSsl"] is True and ldap["UseStartTls"] is False, "LDAPS only"
+            assert ldap["SkipSslVerify"] is False and ldap["LdapRootCaPath"] == "", "the server certificate is verified"
+            assert ldap["LdapBindUser"] == "" and ldap["LdapBindPassword"] == "", "the plugin holds no directory credential"
+            assert ldap["LdapSearchFilter"] == (
+                f"(&(class=person)(|{member_of(contract_inputs['householdGroup'])}{member_of(contract_inputs['adminGroup'])}))"
+            ), "only household and administrator group members may sign in"
+            assert ldap["LdapAdminFilter"] == f"(&(class=person){member_of(contract_inputs['adminGroup'])})", (
+                "only administrator group members administer Jellyfin"
+            )
+            assert ldap["EnableLdapAdminFilterMemberUid"] is False
+            assert ldap["LdapUidAttribute"] == "uuid" and ldap["LdapUsernameAttribute"] == "name"
+            assert ldap["LdapSearchAttributes"] == "name", "people sign in by Kanidm name only"
+            assert ldap["AllowPassChange"] is False
+            assert "LdapUsers" not in ldap, "plugin-owned user links stay application-owned"
 
             variants = {mode: yaml.safe_load(text) for mode, text in encoding_variants.items()}
             pathlib.Path("jellarr-hardware.yml").write_text(encoding_variants["hardware"])

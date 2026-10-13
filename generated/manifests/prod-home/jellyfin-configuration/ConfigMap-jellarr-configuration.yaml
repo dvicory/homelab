@@ -20,7 +20,7 @@ data:
     for (let attempt = 0; attempt < 60; attempt += 1) {
       try {
         const response = await fetch(baseUrl + "/health");
-        if (response.ok) {
+        if (response.ok && (await response.text()).trim() === "Healthy") {
           healthy = true;
           break;
         }
@@ -78,7 +78,7 @@ data:
         // A failed logout must not hide a key-bootstrap failure.
       }
     }
-  config.yml: '{"base_url":"http://jellyfin.jellyfin.svc.cluster.local:8096","encoding":{"allowAv1Encoding":false,"allowHevcEncoding":false,"enableDecodingColorDepth10Hevc":true,"enableDecodingColorDepth10HevcRext":true,"enableDecodingColorDepth10Vp9":true,"enableDecodingColorDepth12HevcRext":true,"enableHardwareEncoding":true,"hardwareAccelerationType":"qsv","hardwareDecodingCodecs":["h264","hevc","mpeg2video","vc1","vp9","av1"],"qsvDevice":"/dev/dri/renderD128","vaapiDevice":"/dev/dri/renderD128"},"library":{"virtualFolders":[{"collectionType":"movies","libraryOptions":{"pathInfos":[{"path":"/media/movies"}]},"name":"Movies"},{"collectionType":"tvshows","libraryOptions":{"pathInfos":[{"path":"/media/tv"}]},"name":"Shows"}]},"system":{"enableMetrics":true},"version":1}'
+  config.yml: '{"base_url":"http://jellyfin.jellyfin.svc.cluster.local:8096","encoding":{"allowAv1Encoding":false,"allowHevcEncoding":false,"enableDecodingColorDepth10Hevc":true,"enableDecodingColorDepth10HevcRext":true,"enableDecodingColorDepth10Vp9":true,"enableDecodingColorDepth12HevcRext":true,"enableHardwareEncoding":true,"hardwareAccelerationType":"qsv","hardwareDecodingCodecs":["h264","hevc","mpeg2video","vc1","vp9","av1"],"qsvDevice":"/dev/dri/renderD128","vaapiDevice":"/dev/dri/renderD128"},"library":{"virtualFolders":[{"collectionType":"movies","libraryOptions":{"pathInfos":[{"path":"/media/movies"}]},"name":"Movies"},{"collectionType":"tvshows","libraryOptions":{"pathInfos":[{"path":"/media/tv"}]},"name":"Shows"}]},"plugins":[{"configuration":{"AllowPassChange":false,"CreateUsersFromLdap":true,"EnableAllFolders":true,"EnableLdapAdminFilterMemberUid":false,"EnableLdapProfileImageSync":false,"LdapAdminBaseDn":"","LdapAdminFilter":"(&(class=person)(memberof=spn=homelab-admin@idm.plus2.danielvicory.dev,dc=idm,dc=plus2,dc=danielvicory,dc=dev))","LdapBaseDn":"dc=idm,dc=plus2,dc=danielvicory,dc=dev","LdapBindPassword":"","LdapBindUser":"","LdapPort":3636,"LdapRootCaPath":"","LdapSearchAttributes":"name","LdapSearchFilter":"(&(class=person)(|(memberof=spn=jellyfin-users@idm.plus2.danielvicory.dev,dc=idm,dc=plus2,dc=danielvicory,dc=dev)(memberof=spn=homelab-admin@idm.plus2.danielvicory.dev,dc=idm,dc=plus2,dc=danielvicory,dc=dev)))","LdapServer":"idm.plus2.danielvicory.dev","LdapUidAttribute":"uuid","LdapUsernameAttribute":"name","SkipSslVerify":false,"UseSsl":true,"UseStartTls":false},"name":"LDAP-Auth"}],"system":{"enableMetrics":true},"version":1}'
 kind: ConfigMap
 metadata:
   name: jellarr-configuration
