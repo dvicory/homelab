@@ -66,6 +66,64 @@ token. Pull requests and manual dispatches remain read-only.
 Nix store contents published by CI are public, so CI outputs must never contain
 decrypted secrets.
 
+### Early Nix helper candidates
+
+`helper-release.yml` is a separate main-owned lane. A requested **Nix CI**
+run starts authorization and read-only native x86-64 helper builds alongside
+the rest of CI, not after its runtime tests. GitHub's actual CI workflow ID
+and path, repository, event, current source SHA, PR head and maintain/admin
+permission facts authorize a source. Forks, stale heads and write-only
+contributors are refused; `author_association` is not an authorization rule.
+
+Only the protected `helper-release` publisher job has `packages: write`.
+It downloads an immutable artifact ID from its own read-only build and checks
+the independently recorded metadata fingerprint, each archive's actual
+checksum, config/rootfs and native platform. It runs only main-owned tooling;
+it never checks out PR code or takes a package destination from artifact data.
+Publication credentials live in an ephemeral authentication file removed on
+exit. There is no repository write permission or automatic selection commit.
+Publication keeps Docker schema 2 config bytes, which GHCR and K3s support.
+Converting them to OCI rewrites creation/history timestamps and is refused
+by the exact producer-config identity check.
+
+The fixed destinations are public
+`ghcr.io/dvicory/homelab/{retained-directories,kanidm-provision,jellyfin-provisioner,jellarr}`.
+The owner approved early same-repository maintainer candidate publication and
+these irreversible public namespaces, but the publisher PR still needs a
+separately approved merge before this workflow can be used. Do not dispatch an
+unreviewed branch-owned publisher or substitute a personal token.
+
+After that merge, an owner may explicitly request the lane for a current
+permitted Nix CI source run:
+
+```sh
+gh workflow run helper-release.yml --ref main -f source_run="$SOURCE_RUN"
+```
+
+New GHCR packages default private. Configure only the four approved packages
+as public through GitHub's supported package-settings interface; the workflow
+does not change visibility. Then rerun the failed **verify** job, not the
+successful publisher. The verification job has no package-write permission and
+uses `--no-creds`, verified TLS and full digest retrieval to compare the remote
+config/rootfs with the original Nix output. A private or mismatched candidate
+remains ineligible even if authenticated publication succeeded.
+
+`helper-verified-<sha>` records candidates for a separately tested/reviewed
+consumer PR; it does not deploy them. Seven-day Actions artifacts only transfer
+builds and evidence. Retain selected and supported rollback manifests/layers in
+GHCR without automatic pruning, plus their committed source/digest mappings.
+No GitHub Release archive or independent offline/exact-byte recovery guarantee
+is added. A lost registry version must be rebuilt from still-available locked
+inputs and may have a different digest; a GitHub-wide outage remains an
+availability limit, never permission to use a mutable fallback.
+
+The native disposable check is
+`checks.x86_64-linux.helper-release-runtime`; it builds the existing retained
+helper and a genuinely recompiled version, runs their Kubernetes Jobs through
+a real TLS registry without helper preloads/imports, and checks anonymous
+access, refusal, explicit old-digest rollback and retained-state identity.
+`checks.<system>.helper-source` exercises the actual authorization decisions.
+
 GitHub enforces full-SHA action pins and the repository action allowlist.
 Dependabot groups action updates into a weekly pull request after a seven-day
 cooldown. `.github/workflows/security.yml` runs zizmor when GitHub automation
