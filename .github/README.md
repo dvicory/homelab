@@ -72,11 +72,14 @@ System builds and checks can reuse narinfo and objects uploaded by other jobs.
 All jobs read the public `dvicory-homelab` Cachix cache and the signed upstream
 `https://cache.numtide.com` cache documented by the pinned `llm-agents` input.
 CI and shared Nix settings append its fixed public key
-`niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=`
-without replacing existing substituters or keys. This permits exact upstream
-package substitution without changing package sources or versions. Signature
-verification remains required; CI does not automatically accept PR-provided
-flake configuration or grant upstream cache-write access. Successful `main` push
+`niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=`.
+CI appends the upstream cache and key to the user configuration after Cachix:
+Cachix's base settings override installer-level `extra-*` values. The later
+Hestia configuration preserves this user configuration. Existing substituters
+and keys remain configured. This permits exact upstream package substitution
+without changing package sources or versions. Signature verification remains
+required; CI does not automatically accept PR-provided flake configuration or
+grant upstream cache-write access. Successful `main` push
 jobs publish their existing outputs, runtime closures, and realized build
 dependencies directly from the build runner; another job's failure does not
 prevent those uploads. Publication uses the derivation roots recorded by the
