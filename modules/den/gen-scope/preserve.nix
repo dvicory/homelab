@@ -511,7 +511,7 @@ let
           wiring.targetBoundaries or null
         else
           null;
-      boundaryIssues = lib.optionals (resolutionIssues == [ ] && projectionEvaluation.success) (
+      boundaryIssues =
         lib.optional (targetBoundaries != null && !validTargetBoundaries targetBoundaries) (
           mkIssue state.stateId routeId "invalid-target-boundaries"
             "owner-emitted retained destination fences are invalid"
@@ -519,7 +519,9 @@ let
         ++
           lib.optional
             (
-              selected != null
+              resolutionIssues == [ ]
+              && projectionEvaluation.success
+              && selected != null
               && builtins.elem "restore" selected.integration.operations
               && (
                 targetBoundaries == null
@@ -533,8 +535,7 @@ let
             (
               mkIssue state.stateId routeId "missing-target-boundaries"
                 "restore integration requires owner-emitted retained destination fences"
-            )
-      );
+            );
       issues = resolutionIssues ++ projectionIssues ++ boundaryIssues;
 
       value = projectorInput // {
@@ -588,7 +589,7 @@ let
         );
       issues = resolvedPolicy.issues ++ realizationIssues;
       policyRoutes =
-        if resolvedPolicy.selected == null || issues != [ ] then [ ] else resolvedPolicy.selected.routes;
+        if resolvedPolicy.selected == null || resolvedPolicy.issues != [ ] then [ ] else resolvedPolicy.selected.routes;
       realization = if realizationCount == 1 then (builtins.head contributions).realization else null;
       value = {
         inherit issues realization;
@@ -804,16 +805,25 @@ let
           inherit (contribution.state) stateId;
           inherit (contribution) realization;
         }) realizations;
+      inventoryStates = documentsFor inventoryResolution;
+      protectedTargets = lib.concatMap (
+        state:
+        map (route: {
+          inherit (state) stateId;
+          inherit (route) routeId targetBoundaries;
+          targetId = route.target.targetId;
+        }) (builtins.filter (route: route.target != null) state.routes)
+      ) inventoryStates;
       desiredInventory = {
         schemaVersion = 2;
         kind = "desired-inventory";
-        inherit scratchDestinations fixtureOnly protectedRealizations;
-        states = documentsFor inventoryResolution;
+        inherit scratchDestinations fixtureOnly protectedRealizations protectedTargets;
+        states = inventoryStates;
       };
       executablePlan = {
         schemaVersion = 2;
         kind = "executable-plan";
-        inherit scratchDestinations fixtureOnly protectedRealizations;
+        inherit scratchDestinations fixtureOnly protectedRealizations protectedTargets;
         states = documentsFor executableResolution;
       };
     in

@@ -1,5 +1,8 @@
 use crate::error::{PreserveError, Result};
-use crate::model::{DestinationRequest, ProtectedRealization, Route, ScratchDestination, State};
+use crate::model::{
+    DestinationRequest, ProtectedRealization, ProtectedTarget, Realization, Route,
+    ScratchDestination, State, TargetBoundaries,
+};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -53,9 +56,33 @@ fn native_overlaps(left: &str, right: &str) -> bool {
             .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
+pub(crate) fn usable_realization(realization: &Realization) -> bool {
+    let path = realization.path.as_ref();
+    if path.is_some_and(|path| !path.is_absolute()) {
+        return false;
+    }
+    if matches!(realization.kind.as_str(), "filesystem" | "host-filesystem") {
+        return path.is_some();
+    }
+    // Opaque objects are not native fences. Only an explicit authoritative path
+    // or the supported string-native locator can authorize a comparison.
+    path.is_some() || realization.locator.as_str().is_some_and(|value| !value.is_empty())
+}
+
+pub(crate) fn valid_target_boundaries(boundaries: &TargetBoundaries) -> bool {
+    boundaries.paths.iter().all(|path| path.is_absolute())
+        && boundaries.native_locators.iter().all(|locator| !locator.is_empty())
+        && (boundaries.native_locators.is_empty()
+            || boundaries.native_namespace.as_deref().is_some_and(|value| !value.is_empty()))
+}
+
+pub(crate) fn nonempty_target_boundaries(boundaries: &TargetBoundaries) -> bool {
+    !boundaries.paths.is_empty() || !boundaries.native_locators.is_empty()
+}
+
 pub fn preflight_destination(
     protected_realizations: &[ProtectedRealization],
-    protected_states: &[State],
+    protected_targets: &[ProtectedTarget],
     state: &State,
     route: &Route,
     capability_ref: &str,
@@ -64,7 +91,7 @@ pub fn preflight_destination(
 ) -> Result<DestinationRequest> {
     let destination = authorize_destination(
         protected_realizations,
-        protected_states,
+        protected_targets,
         state,
         route,
         capability_ref,
@@ -89,7 +116,7 @@ pub fn preflight_destination(
 
 pub(crate) fn authorize_destination(
     protected_realizations: &[ProtectedRealization],
-    protected_states: &[State],
+    protected_targets: &[ProtectedTarget],
     state: &State,
     route: &Route,
     capability_ref: &str,
@@ -153,6 +180,13 @@ pub(crate) fn authorize_destination(
         .filter(|namespace| !namespace.is_empty());
     for protected in protected_realizations {
         let realization = &protected.realization;
+        if !usable_realization(realization) {
+            return Err(PreserveError::new(
+                "unusable-protected-realization",
+                format!("State '{}' lacks a comparable authoritative source fence", protected.state_id),
+            )
+            .context(&state.state_id, Some(&route.route_id)));
+        }
         if let Some(source) = &realization.path {
             if overlaps(&destination, &resolved(source)) {
                 return Err(PreserveError::new(
@@ -178,63 +212,59 @@ pub(crate) fn authorize_destination(
             }
         }
     }
-    for protected in protected_states {
-        for retained_route in &protected.routes {
-            if retained_route.target.is_none() {
-                continue;
-            }
-            let Some(boundaries) = &retained_route.target_boundaries else {
-                if retained_route.status == "resolved" {
-                    return Err(PreserveError::new(
-                        "missing-target-boundaries",
-                        format!(
-                            "State '{}' Route '{}' lacks owner-resolved retained destination fences",
-                            protected.state_id, retained_route.route_id
-                        ),
-                    )
-                    .context(&state.state_id, Some(&route.route_id)));
-                }
-                continue;
-            };
-            for path in &boundaries.paths {
-                if overlaps(&destination, &resolved(path)) {
-                    return Err(PreserveError::new(
-                        "target-alias",
-                        format!(
-                            "scratch destination overlaps retained Target on State '{}' Route '{}'",
-                            protected.state_id, retained_route.route_id
-                        ),
-                    )
-                    .context(&state.state_id, Some(&route.route_id)));
-                }
-            }
-            if !boundaries.native_locators.is_empty()
-                && (native_namespace.is_none()
-                    || boundaries
-                        .native_namespace
-                        .as_deref()
-                        .is_none_or(str::is_empty))
-            {
+    for protected in protected_targets {
+        let boundaries = protected.target_boundaries.as_ref()
+            .filter(|boundaries| nonempty_target_boundaries(boundaries))
+            .ok_or_else(|| PreserveError::new(
+                "missing-target-boundaries",
+                format!(
+                    "State '{}' Route '{}' Target '{}' lacks owner-resolved retained destination fences",
+                    protected.state_id, protected.route_id, protected.target_id
+                ),
+            ).context(&state.state_id, Some(&route.route_id)))?;
+        if boundaries.paths.iter().any(|path| !path.is_absolute())
+            || boundaries.native_locators.iter().any(|locator| locator.is_empty())
+        {
+            return Err(PreserveError::new(
+                "invalid-target-boundaries",
+                "retained Target fences require absolute paths and nonempty native locators",
+            ).context(&state.state_id, Some(&route.route_id)));
+        }
+        for path in &boundaries.paths {
+            if overlaps(&destination, &resolved(path)) {
                 return Err(PreserveError::new(
-                    "unknown-native-namespace",
-                    "native scratch destination cannot be checked against retained Target fences",
+                    "target-alias",
+                    format!(
+                        "scratch destination overlaps retained Target on State '{}' Route '{}'",
+                        protected.state_id, protected.route_id
+                    ),
                 )
                 .context(&state.state_id, Some(&route.route_id)));
             }
-            if boundaries.native_namespace.is_some()
-                && boundaries.native_namespace.as_deref() == native_namespace
-            {
-                for locator in &boundaries.native_locators {
-                    if native_overlaps(&native_locator, locator) {
-                        return Err(PreserveError::new(
-                            "target-alias",
-                            format!(
-                                "native scratch destination overlaps retained Target on State '{}' Route '{}'",
-                                protected.state_id, retained_route.route_id
-                            ),
-                        )
-                        .context(&state.state_id, Some(&route.route_id)));
-                    }
+        }
+        if !boundaries.native_locators.is_empty()
+            && (native_namespace.is_none()
+                || boundaries.native_namespace.as_deref().is_none_or(str::is_empty))
+        {
+            return Err(PreserveError::new(
+                "unknown-native-namespace",
+                "native scratch destination cannot be checked against retained Target fences",
+            )
+            .context(&state.state_id, Some(&route.route_id)));
+        }
+        if boundaries.native_namespace.is_some()
+            && boundaries.native_namespace.as_deref() == native_namespace
+        {
+            for locator in &boundaries.native_locators {
+                if native_overlaps(&native_locator, locator) {
+                    return Err(PreserveError::new(
+                        "target-alias",
+                        format!(
+                            "native scratch destination overlaps retained Target on State '{}' Route '{}'",
+                            protected.state_id, protected.route_id
+                        ),
+                    )
+                    .context(&state.state_id, Some(&route.route_id)));
                 }
             }
         }

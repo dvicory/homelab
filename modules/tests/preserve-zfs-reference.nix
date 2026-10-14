@@ -113,6 +113,14 @@
             protectedRealizations = map (state: {
               inherit (state) stateId realization;
             }) states;
+            protectedTargets = lib.concatMap (
+              state:
+              map (route: {
+                inherit (state) stateId;
+                inherit (route) routeId targetBoundaries;
+                targetId = route.target.targetId;
+              }) state.routes
+            ) states;
             scratchDestinations.scratch = {
               nativeParent = "receiver/scratch";
               mountRoot = "/restore";
@@ -378,6 +386,12 @@
                             "nativeNamespace": "fixture-zfs",
                         }
                         guarded["states"][0]["routes"].append(other)
+                        guarded["protectedTargets"].append({
+                            "stateId": "fixture/state",
+                            "routeId": other["routeId"],
+                            "targetId": other["target"]["targetId"],
+                            "targetBoundaries": other["targetBoundaries"],
+                        })
                         expected = "target-alias"
                     machine.succeed("cat > /root/guarded.json <<'EOF'\n" + json.dumps(guarded) + "\nEOF")
                     machine.fail(

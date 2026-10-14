@@ -5,7 +5,10 @@ use crate::model::{
     ScratchDestination, State, StatusResult, VerifyResult, PROTOCOL_VERSION, SCHEMA_VERSION,
 };
 use crate::process::{invoke_adapter, request_id};
-use crate::safety::{authorize_destination, preflight_destination};
+use crate::safety::{
+    authorize_destination, nonempty_target_boundaries, preflight_destination,
+    usable_realization, valid_target_boundaries,
+};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -110,6 +113,25 @@ pub fn validate_document(document: &Document) -> Result<()> {
         }
     }
 
+    let mut targets = BTreeSet::new();
+    for protected in &document.protected_targets {
+        if protected.state_id.is_empty() || protected.route_id.is_empty()
+            || protected.target_id.is_empty()
+            || !targets.insert((&protected.state_id, &protected.route_id, &protected.target_id))
+        {
+            return Err(PreserveError::new(
+                "invalid-protected-target",
+                "retained Target fences require unique State, Route, and Target identities",
+            ).context(&protected.state_id, Some(&protected.route_id)));
+        }
+        if protected.target_boundaries.as_ref().is_some_and(|boundaries| !valid_target_boundaries(boundaries)) {
+            return Err(PreserveError::new(
+                "invalid-target-boundaries",
+                "owner-resolved Target fences require absolute paths and a namespace for native locators",
+            ).context(&protected.state_id, Some(&protected.route_id)));
+        }
+    }
+
     let mut states = BTreeSet::new();
     for state in &document.states {
         if !states.insert(&state.state_id) {
@@ -117,6 +139,18 @@ pub fn validate_document(document: &Document) -> Result<()> {
                 "duplicate-state",
                 format!("state '{}' appears more than once", state.state_id),
             ));
+        }
+        if state.mode == "enabled" && state.operational {
+            let realization = state.realization.as_ref().ok_or_else(|| PreserveError::new(
+                "missing-realization",
+                "enabled operational State lacks an authoritative realization",
+            ).context(&state.state_id, None))?;
+            if !usable_realization(realization) {
+                return Err(PreserveError::new(
+                    "unusable-protected-realization",
+                    "enabled operational State lacks a comparable authoritative source fence",
+                ).context(&state.state_id, None));
+            }
         }
         if let Some(realization) = &state.realization {
             if !document.protected_realizations.iter().any(|protected| {
@@ -140,6 +174,35 @@ pub fn validate_document(document: &Document) -> Result<()> {
                     ),
                 ));
             }
+            if let Some(target) = &route.target {
+                    let protected = document.protected_targets.iter().find(|protected| {
+                        protected.state_id == state.state_id
+                            && protected.route_id == route.route_id
+                            && protected.target_id == target.target_id
+                    }).ok_or_else(|| PreserveError::new(
+                        "missing-protected-target",
+                        "known Route Target is absent from retained Target fences",
+                    ).context(&state.state_id, Some(&route.route_id)))?;
+                    if protected.target_boundaries != route.target_boundaries {
+                        return Err(PreserveError::new(
+                            "mismatched-protected-target",
+                            "Route Target fences disagree with its authoritative record",
+                        ).context(&state.state_id, Some(&route.route_id)));
+                    }
+                if state.mode == "enabled" && state.operational
+                    && route.integration.as_ref().is_some_and(|integration| {
+                        integration.operations.iter().any(|operation| operation == "restore")
+                    })
+                    && protected.target_boundaries.as_ref().is_none_or(|boundaries| {
+                        !nonempty_target_boundaries(boundaries)
+                    })
+                {
+                    return Err(PreserveError::new(
+                        "missing-target-boundaries",
+                        "enabled restore integration lacks owner-resolved retained destination fences",
+                    ).context(&state.state_id, Some(&route.route_id)));
+                }
+            }
             if document.kind == "executable-plan" {
                 if let Some(target) = &route.target {
                     if target.failure_domain.is_empty() {
@@ -153,39 +216,6 @@ pub fn validate_document(document: &Document) -> Result<()> {
                     }
                 }
                 if let Some(integration) = &route.integration {
-                    if let Some(boundaries) = &route.target_boundaries {
-                        if boundaries.paths.iter().any(|path| !path.is_absolute())
-                            || boundaries
-                                .native_locators
-                                .iter()
-                                .any(|locator| locator.is_empty())
-                            || (!boundaries.native_locators.is_empty()
-                                && boundaries
-                                    .native_namespace
-                                    .as_deref()
-                                    .is_none_or(str::is_empty))
-                        {
-                            return Err(PreserveError::new(
-                                "invalid-target-boundaries",
-                                "owner-resolved target fences require absolute paths and a namespace for native locators",
-                            )
-                            .context(&state.state_id, Some(&route.route_id)));
-                        }
-                    }
-                    if integration
-                        .operations
-                        .iter()
-                        .any(|operation| operation == "restore")
-                        && route.target_boundaries.as_ref().is_none_or(|boundaries| {
-                            boundaries.paths.is_empty() && boundaries.native_locators.is_empty()
-                        })
-                    {
-                        return Err(PreserveError::new(
-                            "missing-target-boundaries",
-                            "enabled restore integration lacks owner-resolved retained destination fences",
-                        )
-                        .context(&state.state_id, Some(&route.route_id)));
-                    }
                     if integration.fixture_only && !document.fixture_only {
                         return Err(PreserveError::new(
                             "fixture-only-integration",
@@ -837,7 +867,7 @@ pub fn restore(
             })?;
     let planned = preflight_destination(
         &document.protected_realizations,
-        &document.states,
+        &document.protected_targets,
         state,
         route,
         scratch_ref,
@@ -894,7 +924,7 @@ pub fn restore(
         })?;
     let destination = preflight_destination(
         &document.protected_realizations,
-        &document.states,
+        &document.protected_targets,
         state,
         route,
         scratch_ref,
@@ -1002,7 +1032,7 @@ pub fn verify(document: &Document, receipt: RestoreReceipt) -> Result<VerifyResu
         })?;
     let authorized = authorize_destination(
         &document.protected_realizations,
-        &document.states,
+        &document.protected_targets,
         state,
         route,
         &receipt.destination.capability_ref,

@@ -26,6 +26,7 @@ pub struct Document {
     #[serde(default)]
     pub fixture_only: bool,
     pub protected_realizations: Vec<ProtectedRealization>,
+    pub protected_targets: Vec<ProtectedTarget>,
     #[serde(default)]
     pub states: Vec<State>,
     #[serde(default)]
@@ -60,6 +61,15 @@ pub struct State {
 pub struct ProtectedRealization {
     pub state_id: String,
     pub realization: Realization,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectedTarget {
+    pub state_id: String,
+    pub route_id: String,
+    pub target_id: String,
+    pub target_boundaries: Option<TargetBoundaries>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -123,7 +133,7 @@ pub struct Target {
     pub extra: BTreeMap<String, Value>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct TargetBoundaries {
     #[serde(default)]
