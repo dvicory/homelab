@@ -2,7 +2,8 @@
 # No live data/secrets; Kubernetes RBAC and Incus/MergerFS remain separate gates.
 { lib, ... }:
 {
-  perSystem = { pkgs, ... }:
+  perSystem =
+    { pkgs, ... }:
     let
       source = lib.fileset.toSource {
         root = ../..;
@@ -23,7 +24,8 @@
           exec python ${source}/modules/tests/media-live-acceptance.py "$@"
         '';
       };
-    in {
+    in
+    {
       packages.media-live-acceptance = runner;
       apps.media-live-acceptance = {
         type = "app";
