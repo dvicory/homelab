@@ -2,8 +2,10 @@
 
 Monitoring runs in the `monitoring` namespace on the compute guest. It alerts
 the owner through Pushover and Telegram, and an external dead man's switch
-(healthchecks.io) alerts when monitoring itself goes quiet. The contract is
-the `fleet-monitoring` capability; this runbook covers operating it.
+(healthchecks.io) alerts when monitoring itself goes quiet. The proposed
+`fleet-monitoring` capability is in the active
+`openspec/changes/monitoring-and-alerting/` change, not yet the current main
+specification; this runbook covers the configured operations.
 
 | Component | Where | Role |
 | --- | --- | --- |
@@ -106,18 +108,21 @@ From outside the household network, open `https://grafana.<domain>`. Grafana
 serves one hostname: sign-in from the backup hostname returns you to the
 canonical one. Grafana appears only in identity phase `normal`.
 
-Dashboards come from Git and cannot be saved from the UI. To change one, edit
-or replace the JSON under `assets/monitoring/dashboards/`, update its entry in
-`sources.json` (source, revision, SHA-256), and regenerate the manifests.
+Dashboards come from Git and cannot be saved over their provisioned originals
+in the UI. For a local change, copy the dashboard into a disposable Grafana,
+edit the copy with Grafana's native editor, and export its JSON. Review its
+queries, data source UID, dashboard UID and links before replacing the local
+asset under `assets/monitoring/dashboards/`. Update its provenance and SHA-256
+in `sources.json`, then regenerate the manifests. Replace upstream dashboards
+from a pinned upstream revision rather than hand-editing their large exports;
+record any local customization as such.
 
 ### Break-glass: Grafana without Kanidm
 
-Grafana's built-in `admin` gets a random password at every Pod start: an
-init container writes it to a memory-backed volume, and Grafana reads it
-with `$__file{}`. Nobody knows it and it is never stored. Grafana applies it
-only when it creates its database. The database is an `emptyDir`, so each
-new Pod gets a new database and a new password; a container restart in the
-same Pod keeps both.
+Grafana's built-in `admin` gets a random password at every Pod start. An init
+container writes it to a memory-backed volume, and Grafana reads it with
+`$__file{}` when creating its disposable database. A new Pod gets a new
+database and password; a container restart in the same Pod keeps both.
 
 When Kanidm is down you rarely need Grafana. `kubectl -n monitoring
 port-forward svc/victoriametrics 8428` serves VictoriaMetrics' query UI at
@@ -170,6 +175,9 @@ authentication stays off.
      --type merge -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'
    ```
 
+   Wait for the Grafana rollout, then confirm that its login form and basic
+   authentication are disabled, OAuth auto-login is restored, and both
+   `apps` and `monitoring` again have automated sync enabled.
 
 ## Silences
 
@@ -204,35 +212,6 @@ and alerts are evaluated and routed. Check:
    the external check's last ping and pause state, and its Pushover and
    Telegram integrations. A new check provides no coverage until its first
    successful ping.
-
-### Optional heartbeat drill
-
-To prove that the heartbeat stops when ingestion stops while every
-monitoring service keeps running, pause Argo CD auto-sync for the
-`monitoring` Application and apply an egress-deny NetworkPolicy that
-selects only the VictoriaMetrics pod:
-
-Run this during planned maintenance: it intentionally causes an external
-outage notification. Remove the policy and restore auto-sync even if the
-drill fails.
-
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: drill-stop-ingestion
-  namespace: monitoring
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: victoriametrics
-  policyTypes: [Egress]
-```
-
-Its scrapes fail, but its query API still answers vmalert and Grafana.
-healthchecks.io should report the check down within 30 minutes. Delete the
-policy, resume auto-sync, and confirm that fresh scrapes, heartbeats and
-the recovery notice return.
 
 ## Metrics storage
 
@@ -296,9 +275,28 @@ List candidates with `lsblk -d -o NAME,TYPE,TRAN,MODEL,WWN` and
 gone raises `HostDiskTelemetryMissing`. SMART reads every 15 minutes, so the
 unused spares cannot spin down.
 
-Required mounts are derived: each MergerFS pool and each provisioned
-`disk.luks-storage` mount. Add any other mount to
-`services.host-telemetry.extraRequiredMounts`.
+Required mounts are a **build-time expected list**: each Den MergerFS pool,
+each provisioned `disk.luks-storage` mount, and
+`services.host-telemetry.extraRequiredMounts`. The list is compiled into
+`HostRequiredMountMissing` rules; it is not a metric of the host's activated
+configuration. Each rule tests absence of that exact host and mountpoint's
+`node_filesystem_size_bytes` series for 2 minutes.
+
+- **Add a mount host-first.** Activate the host change, confirm the mount
+  with `findmnt` and its series in VictoriaMetrics, then sync the monitoring
+  rules containing the new expectation. Until those rules arrive, the new
+  mount has no missing-mount coverage.
+- **Remove an expectation monitor-first.** Sync the monitoring rules without
+  that mount, confirm the old rule is gone, then retire the host mount.
+  Coverage ends when the rule is removed. Removing the mount while the old
+  rule remains will correctly fire a missing-mount alert.
+
+Host activation and Argo CD rule rollout are not atomic. Query the exact
+mountpoint rather than a count or path-prefix match: an unrelated mount does
+not satisfy an expectation. A present series proves exporter observation,
+not that the right backing storage is healthy; use `findmnt`, filesystem and
+pool alerts together. Scrape freshness affects when absence becomes visible;
+the 2-minute hold starts at rule evaluation, not necessarily at unmount.
 
 ## Known gaps
 
