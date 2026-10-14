@@ -270,6 +270,12 @@ def main():
             d("exec", name, "rm", "-f", dest)
         # The production packet enforcer, not K3s's retired embedded controller,
         # must be ready before the controller and source-isolation scenarios.
+        phase = "network-policy-mounts"
+        # HostToContainer needs a propagation-capable netns mount in this
+        # owned Docker node, not a change to the runner's host mounts.
+        d("exec", name, "mkdir", "-p", "/var/run/netns")
+        d("exec", name, "mount", "--bind", "/var/run/netns", "/var/run/netns")
+        d("exec", name, "mount", "--make-rshared", "/var/run/netns")
         phase = "network-policy-apply"
         kubectl("apply", "-f", settings["networkPolicy"])
         phase = "network-policy-readiness"
