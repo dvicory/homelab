@@ -272,7 +272,6 @@ jobs:
           sudo mount --bind /nix/build/household-native/docker /var/lib/docker
           sudo mount --bind /nix/build/household-native/containerd /var/lib/containerd
           sudo systemctl start containerd.service docker.service
-          printf 'TMPDIR=/nix/build/household-native/tmp\n' >> "$GITHUB_ENV"
 
       - name: Install Nix
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
@@ -287,6 +286,11 @@ jobs:
         with:
           name: ${{ vars.CACHIX_CACHE }}
           skipPush: true
+
+      - name: Select owned fixture scratch after Nix installation
+        run: |
+          # The installer changes ownership under /nix; keep its own TMPDIR outside it.
+          printf 'TMPDIR=/nix/build/household-native/tmp\n' >> "$GITHUB_ENV"
 
       - name: Record native runner and canonical inputs
         run: |
