@@ -357,7 +357,7 @@ software mode (D9).
   applies the remaining changes to the configuration it read, and posts that.
   Settings it does not declare, such as throttling and segment deletion,
   which the owner sets by hand (`docs/operations/jellyfin.md`, "Storage"),
-  survive every run. The `prod-home-replacement` VM test sets them, reruns
+  survive every run. The `prod-home-consumer-resilience` VM test sets them, reruns
   the delivered Jellarr Job, and checks that they survive while a changed
   declared key is restored.
 - Jellarr validates the whole file against its strict schema before it reads
@@ -452,7 +452,7 @@ Owner decision (item 5):
 | Layer | What it proves | Where |
 | --- | --- | --- |
 | Evaluation | No declared device is `unix-char` or `gpu`; the grant leaves the guest's ID map alone; only declared grant holders mount `/dev/dri` or hold GID 506; both encoding variants pass Jellarr's strict schema | `compute-contracts`, `jellyfin-contracts` |
-| VM with stand-in | `vgem` provides a real, openable render node with no media engine. On the host VM it is group `render`, mode `0660`; an undeclared host user cannot open it and a user in `render` can. The guest sees it as group `gpu-render`, mode `0660`; Jellyfin's Pod can open it; an ungranted Pod cannot see it; a non-holder cannot open it. With `vgem` unloaded, the guest and Jellyfin start, Jellyfin's encoding settings still say QSV, and the documented check reports the node missing. Loading `vgem` later adds the node to the running guest; unloading and reloading it removes and restores it. The source check reports `vgem` as drift. A Jellarr rerun keeps owner-set throttling and segment deletion. Replacement keeps the grant. | `prod-home-replacement` |
+| VM with stand-in | `vgem` provides a real, openable render node with no media engine. On the host VM it is group `render`, mode `0660`; an undeclared host user cannot open it and a user in `render` can. The guest sees it as group `gpu-render`, mode `0660`; Jellyfin's Pod can open it; an ungranted Pod cannot see it; a non-holder cannot open it. With `vgem` unloaded, the guest and Jellyfin start, Jellyfin's encoding settings still say QSV, and the documented check reports the node missing. Loading `vgem` later adds the node to the running guest; unloading and reloading it removes and restores it. The source check reports `vgem` as drift. A Jellarr rerun keeps owner-set throttling and segment deletion. Replacement keeps the grant. | Both required families: `prod-home-consumer-resilience` covers absence, grant/permission checks, arrival/loss/return and Jellarr reconciliation; `prod-home-replacement` covers the grant through replacement. |
 | VM upgrade | A guest created under the earlier declaration (no grant, character devices blocked) receives the device through host activation and native preseed without a restart, and keeps it through restart and replacement. | `compute-guest-upgrade` |
 | Operator acceptance | The documented check reports hardware usable; `vainfo` in the Pod shows the iHD driver and DG2 profiles; a forced 4K HEVC 10-bit to 1080p H.264 transcode shows hardware in Jellyfin's playback info; the host's Video engine is busy (`intel_gpu_top`, operator `sudo`); CPU stays within the limit; a subtitle burn-in plays smoothly | `docs/operations/jellyfin.md` |
 

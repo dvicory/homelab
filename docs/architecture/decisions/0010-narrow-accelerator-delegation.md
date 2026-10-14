@@ -91,8 +91,9 @@ B-Series card with SR-IOV.
   source is therefore `renderD128`, and a host check reports drift if that
   name ever belongs to another PCI device.
 - Confirmation: `compute-contracts`, `jellyfin-contracts`, the
-  `prod-home-replacement` and `compute-guest-upgrade` VM tests with a `vgem`
-  stand-in, and operator acceptance on the target host
+  `prod-home-consumer-resilience`, `prod-home-replacement`, and
+  `compute-guest-upgrade` VM tests with a `vgem` stand-in, and operator
+  acceptance on the target host
   (`docs/operations/jellyfin.md`, "Accept hardware transcoding").
 
 ## Reconsider when
