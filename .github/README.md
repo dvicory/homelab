@@ -120,9 +120,11 @@ Owned storage is restricted to an exclusive disposable Linux Docker runner:
 it places `/nix`, Docker and containerd data on its owned Btrfs loop image.
 Setup refuses an existing image (including dangling symlinks), `/nix`, daemon
 storage symlinks and existing target mounts. Cleanup validates the recorded
-image UUID and exact FSROOT of every mount before stopping daemons, unmounting
-storage or deleting the image. Independent acceptance cleanup checks the whole
-exclusive daemon and owned scratch, not just a name prefix. The executor adds
+image UUID and exact FSROOT of every mount before stopping Docker/containerd,
+unmounting their bind mounts or deleting owned scratch. The Nix store remains
+mounted through post-actions; final mount/loop/image teardown belongs to the
+exclusive disposable runner's lifetime. Independent acceptance cleanup checks
+the whole daemon and owned scratch, not just a name prefix. The executor adds
 the declared canonical-domain loopback entry; the app itself never does.
 Owned `TMPDIR` is selected only after Nix installation and cache setup:
 installation can change ownership under `/nix` and break its own temporary

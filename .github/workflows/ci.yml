@@ -431,7 +431,7 @@ jobs:
           loop_dev=$(sudo losetup --find --show /mnt/nix.img)
           printf '%s\n' "$loop_dev" > "$RUNNER_TEMP/native-storage-loop"
           sudo mkfs.btrfs -L nix --nodiscard "$loop_dev"
-          sudo blkid -s UUID -o value "$loop_dev" > "$RUNNER_TEMP/native-storage-uuid"
+          sudo blkid -s UUID -o value "$loop_dev" | tee "$RUNNER_TEMP/native-storage-uuid"
           test -s "$RUNNER_TEMP/native-storage-uuid"
           sudo mkdir /nix
           sudo mount "$loop_dev" /nix -o noatime,nobarrier,nodiscard,compress=zstd:1,space_cache=v2,commit=120
@@ -572,11 +572,6 @@ jobs:
               fi
             done
             sudo systemctl stop docker.service docker.socket containerd.service
-            for unit in nix-daemon.socket nix-daemon.service; do
-              if sudo systemctl is-active --quiet "$unit"; then
-                sudo systemctl stop "$unit"
-              fi
-            done
             for name in docker containerd; do
               if mountpoint -q "/var/lib/$name"; then
                 sudo umount "/var/lib/$name"
@@ -585,11 +580,9 @@ jobs:
             if mountpoint -q /nix; then
               sudo rm -rf /nix/build/native-acceptance
               sudo test ! -e /nix/build/native-acceptance
-              sudo umount /nix
             fi
-            sudo losetup --detach "$loop_dev"
-            sudo rm /mnt/nix.img
-            test ! -e /mnt/nix.img
+            # The tool store must survive Cachix/Nix post-actions. The exclusive
+            # disposable runner owns final /nix mount, loop and image teardown.
           fi
           printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Upload native execution diagnostics
