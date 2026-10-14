@@ -79,6 +79,11 @@ All jobs read the public `dvicory-homelab` Cachix cache and the signed upstream
 `https://cache.numtide.com` cache documented by the pinned `llm-agents` input.
 CI and shared Nix settings append its fixed public key
 `niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=`.
+The owner approved this signer for CI and shared fleet Nix settings. This grants
+Numtide trust to supply executable store outputs, not just package metadata.
+The key is not restricted to Codex or one package: it can authenticate any
+requested store output. Its configured scope belongs to Nix desired state;
+signature checks do not make an untrusted publisher safe.
 CI appends the upstream cache and key to the user configuration after Cachix:
 Cachix's base settings override installer-level `extra-*` values. The later
 Hestia configuration preserves this user configuration. Existing substituters
