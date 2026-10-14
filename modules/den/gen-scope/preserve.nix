@@ -151,16 +151,29 @@ let
     let
       boundary = realization.boundary or { };
       exclusions = (boundary.exclusions or [ ]) ++ (source.exclude or [ ]);
-      includes = source.include or [ ];
+      root =
+        if (realization.path or null) != null then realization.path else realization.locator or null;
+      subpath = source.subpath or null;
+      base =
+        if root == null || subpath == null then root else "${lib.removeSuffix "/" root}/${subpath}";
+      contains =
+        parent: child:
+        parent != null && (parent == child || lib.hasPrefix "${lib.removeSuffix "/" parent}/" child);
+      selected = [ base ] ++ (source.include or [ ]);
+      # Excluding any part of a required boundary defeats both base and include coverage.
+      childExcluded =
+        child: builtins.any (excluded: contains excluded child || contains child excluded) exclusions;
       childCovered =
         child:
-        builtins.elem child includes
-        || ((boundary.recursive or false) && !(builtins.elem child exclusions));
+        !(childExcluded child)
+        && builtins.any (
+          path: path == child || ((boundary.recursive or false) && contains path child)
+        ) selected;
       required = boundary.requiredChildren or [ ];
     in
     {
       missingChildren = builtins.filter (child: !(childCovered child)) required;
-      excludedRequired = builtins.filter (child: builtins.elem child exclusions) required;
+      excludedRequired = builtins.filter childExcluded required;
     };
 
   assessmentFor =

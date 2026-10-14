@@ -427,6 +427,131 @@ let
         }
       ];
 
+  coverageFixture =
+    mode: spec:
+    compile
+      (singleRoute {
+        states.application.mode = mode;
+        policies.protected.routes = [ "route-restic" ];
+        bindings = [
+          {
+            state = "application";
+            route = "route-restic";
+            source = emptySource // (spec.source or { });
+          }
+        ];
+      })
+      [
+        {
+          state = "application";
+          realization = coveredRealization // {
+            path = spec.path or coveredRealization.path;
+            boundary = coveredRealization.boundary // (spec.boundary or { });
+          };
+        }
+      ];
+  narrowedCoverageGap = {
+    source.subpath = "db";
+  };
+  missingCoverage = map (coverageFixture "enabled") [
+    narrowedCoverageGap
+    { source.subpath = "database/records"; }
+    { source.subpath = "database-other"; }
+    { boundary.recursive = false; }
+    {
+      boundary = {
+        recursive = false;
+        requiredChildren = [ "/srv/app/database/records" ];
+      };
+      source.subpath = "database";
+    }
+    {
+      boundary = {
+        recursive = false;
+        requiredChildren = [ "/srv/app/database/records" ];
+      };
+      source = {
+        subpath = "db";
+        include = [ "/srv/app/database" ];
+      };
+    }
+    {
+      source = {
+        subpath = "db";
+        include = [ "/srv/app/database-other" ];
+      };
+    }
+    {
+      source = {
+        subpath = "db";
+        include = [ "/srv/app/database/records" ];
+      };
+    }
+  ];
+  validCoverage = map (coverageFixture "enabled") [
+    { }
+    {
+      boundary.recursive = false;
+      source.subpath = "database";
+    }
+    {
+      boundary.requiredChildren = [ "/srv/app/database/records" ];
+      source.subpath = "database";
+    }
+    {
+      boundary.recursive = false;
+      source = {
+        subpath = "db";
+        include = [ "/srv/app/database" ];
+      };
+    }
+    {
+      boundary.requiredChildren = [ "/srv/app/database/records" ];
+      source = {
+        subpath = "db";
+        include = [ "/srv/app/database" ];
+      };
+    }
+    { source.exclude = [ "/srv/app/database-other" ]; }
+    {
+      boundary.exclusions = [ "/srv/app/db" ];
+      source.subpath = "database";
+    }
+    {
+      path = "/";
+      boundary = {
+        recursive = false;
+        requiredChildren = [ "/database" ];
+      };
+      source = {
+        subpath = "db";
+        include = [ "/database" ];
+      };
+    }
+  ];
+  excludedCoverage = map (coverageFixture "enabled") (
+    map (path: { source.exclude = [ path ]; }) [
+      "/srv/app/database"
+      "/srv/app"
+      "/srv"
+      "/"
+      "/srv/app/database/records"
+    ]
+    ++ [
+      {
+        boundary.recursive = false;
+        source = {
+          subpath = "db";
+          include = [ "/srv/app/database" ];
+          exclude = [ "/srv/app" ];
+        };
+      }
+      { boundary.exclusions = [ "/srv/app" ]; }
+      { boundary.exclusions = [ "/srv/app/database/records" ]; }
+    ]
+  );
+  planOnlyCoverageGap = coverageFixture "plan-only" narrowedCoverageGap;
+
   unsupportedOperation = compile (singleRoute {
     routes.route-zrepl.operation = "restore";
   }) [ realizationSpec ];
@@ -1487,6 +1612,32 @@ let
       hasIssue "uncovered-child-boundary" uncovered
       && allIssueContext uncovered
       && hasIssue "coverage-exclusion" excluded;
+    narrowed-coverage-gaps = builtins.all (
+      result:
+      hasIssue "uncovered-child-boundary" result
+      && allIssueContext result
+      && !(builtins.head result.desiredInventory.states).operational
+      && throws result.executablePlan
+    ) missingCoverage;
+    valid-narrowed-coverage = builtins.all (
+      result:
+      (builtins.head result.executablePlan.states).operational
+      && (builtins.head (builtins.head result.desiredInventory.states).routes).status == "resolved"
+    ) validCoverage;
+    coverage-exclusion-boundaries = builtins.all (
+      result:
+      hasIssue "coverage-exclusion" result
+      && hasIssue "uncovered-child-boundary" result
+      && throws result.executablePlan
+    ) excludedCoverage;
+    plan-only-coverage-gap =
+      hasIssue "uncovered-child-boundary" planOnlyCoverageGap
+      && allIssueContext planOnlyCoverageGap
+      && builtins.isString (builtins.toJSON planOnlyCoverageGap.desiredInventory)
+      && !(builtins.head planOnlyCoverageGap.desiredInventory.states).operational
+      && (builtins.head (builtins.head planOnlyCoverageGap.desiredInventory.states).routes).status
+      == "unresolved"
+      && planOnlyCoverageGap.executablePlan.states == [ ];
     capability-matrix =
       hasIssue "unsupported-operation" unsupportedOperation
       && hasIssue "unsupported-baseline-operation" missingBaseline
