@@ -146,6 +146,37 @@ let
       }
     );
 
+  # Match the filesystem component rules used by the owner projectors.
+  canonicalFilesystemPath =
+    path:
+    builtins.isString path
+    && lib.hasPrefix "/" path
+    && (
+      path == "/"
+      || builtins.all (component: !(builtins.elem component [ "" "." ".." ])) (
+        builtins.tail (lib.splitString "/" path)
+      )
+    );
+
+  validRealizationPaths =
+    realization:
+    let
+      path = realization.path or null;
+      validPaths =
+        paths:
+        builtins.isList paths
+        && builtins.all (
+          value: if path == null then builtins.isString value else canonicalFilesystemPath value
+        ) paths;
+    in
+    (path == null || canonicalFilesystemPath path)
+    && (
+      !(builtins.elem (realization.kind or null) [ "filesystem" "host-filesystem" ])
+      || path != null
+    )
+    && validPaths (realization.boundary.requiredChildren or [ ])
+    && validPaths (realization.boundary.exclusions or [ ]);
+
   coverageFor =
     realization: source:
     let
@@ -153,6 +184,23 @@ let
       exclusions = (boundary.exclusions or [ ]) ++ (source.exclude or [ ]);
       root = if (realization.path or null) != null then realization.path else realization.locator or null;
       subpath = source.subpath or null;
+      invalidSource =
+        (realization.path or null) != null
+        && !(
+          builtins.isAttrs source
+          && (
+            subpath == null
+            || (
+              builtins.isString subpath
+              && subpath != ""
+              && canonicalFilesystemPath "/${subpath}"
+            )
+          )
+          && builtins.isList (source.include or [ ])
+          && builtins.all canonicalFilesystemPath (source.include or [ ])
+          && builtins.isList (source.exclude or [ ])
+          && builtins.all canonicalFilesystemPath (source.exclude or [ ])
+        );
       base = if root == null || subpath == null then root else "${lib.removeSuffix "/" root}/${subpath}";
       contains =
         parent: child:
@@ -170,8 +218,9 @@ let
       required = boundary.requiredChildren or [ ];
     in
     {
-      missingChildren = builtins.filter (child: !(childCovered child)) required;
-      excludedRequired = builtins.filter childExcluded required;
+      inherit invalidSource;
+      missingChildren = if invalidSource then [ ] else builtins.filter (child: !(childCovered child)) required;
+      excludedRequired = if invalidSource then [ ] else builtins.filter childExcluded required;
     };
 
   assessmentFor =
@@ -386,13 +435,18 @@ let
       coverage =
         if realization == null then
           {
+            invalidSource = false;
             missingChildren = [ ];
             excludedRequired = [ ];
           }
         else
           coverageFor realization source;
       coverageIssues =
-        lib.optional (realization != null && coverage.missingChildren != [ ]) (
+        lib.optional coverage.invalidSource (
+          mkIssue state.stateId routeId "invalid-source-selection"
+            "filesystem source paths must be canonical absolute paths and subpath must be relative without empty, dot, or parent components"
+        )
+        ++ lib.optional (realization != null && coverage.missingChildren != [ ]) (
           mkIssue state.stateId routeId "uncovered-child-boundary" (
             "source omits required children ${builtins.toJSON coverage.missingChildren}"
           )
@@ -753,6 +807,7 @@ let
         || !builtins.isString (contribution.realization.owner.id or null)
         || !builtins.isList (contribution.realization.capabilities or null)
         || !builtins.isAttrs (contribution.realization.boundary or null)
+        || !validRealizationPaths contribution.realization
         || !builtins.isList (contribution.realization.access or null)
         || (
           let
@@ -782,7 +837,7 @@ let
         if invalidTargets != [ ] then
           throw "preserve: a target must declare a non-empty failureDomain attribute set"
         else if invalidRealizations != [ ] then
-          throw "preserve: a realization contribution does not reference a declared state or a valid boundary"
+          throw "preserve: a realization contribution does not reference a declared state or a valid boundary with canonical filesystem paths"
         else if invalidBindings != [ ] then
           throw "preserve: a binding does not reference declared state and route instances"
         else if invalidWiring != [ ] then

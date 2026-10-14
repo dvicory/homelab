@@ -433,6 +433,7 @@ let
       (singleRoute {
         states.application.mode = mode;
         policies.protected.routes = [ "route-restic" ];
+        projectors = spec.projectors or config.fleet.preserve.projectors;
         bindings = [
           {
             state = "application";
@@ -445,6 +446,7 @@ let
         {
           state = "application";
           realization = coveredRealization // {
+            kind = spec.kind or coveredRealization.kind;
             path = spec.path or coveredRealization.path;
             boundary = coveredRealization.boundary // (spec.boundary or { });
           };
@@ -458,6 +460,13 @@ let
     { source.subpath = "database/records"; }
     { source.subpath = "database-other"; }
     { boundary.recursive = false; }
+    {
+      path = "/";
+      boundary = {
+        recursive = false;
+        requiredChildren = [ "/database" ];
+      };
+    }
     {
       boundary = {
         recursive = false;
@@ -490,6 +499,17 @@ let
   ];
   validCoverage = map (coverageFixture "enabled") [
     { }
+    {
+      boundary = {
+        recursive = false;
+        requiredChildren = [ "/srv/app/db" ];
+      };
+      source.subpath = "db";
+    }
+    {
+      path = "/";
+      boundary.requiredChildren = [ "/database" ];
+    }
     {
       boundary.recursive = false;
       source.subpath = "database";
@@ -551,6 +571,48 @@ let
     ]
   );
   planOnlyCoverageGap = coverageFixture "plan-only" narrowedCoverageGap;
+
+  nonCanonicalBoundaryCoverage = map (coverageFixture "enabled") [
+    {
+      boundary.requiredChildren = [ "/srv/app/db/../database" ];
+      source.subpath = "db";
+    }
+    { boundary.requiredChildren = [ "/srv/app/./database" ]; }
+    { boundary.requiredChildren = [ "/srv//app/database" ]; }
+    { boundary.requiredChildren = [ "/srv/app/database/" ]; }
+    { boundary.exclusions = [ "/srv/app/db/../database" ]; }
+    { boundary.exclusions = [ "/srv/app/./database" ]; }
+    { boundary.exclusions = [ "/srv//app/database" ]; }
+    { boundary.exclusions = [ "/srv/app/database/" ]; }
+    { path = "/srv/app/db/../database"; }
+    { path = "/srv/./app"; }
+    { path = "/srv//app"; }
+    { path = "/srv/app/"; }
+    {
+      kind = "filesystem";
+      path = null;
+    }
+    {
+      kind = "host-filesystem";
+      path = null;
+    }
+  ];
+  nonCanonicalSourceCoverage =
+    mode:
+    map (source: coverageFixture mode {
+      inherit source;
+      # Coverage admission must not rely on a registered owner's renderer.
+      projectors = { };
+    }) [
+      { exclude = [ "/srv/app/db/../database" ]; }
+      { exclude = [ "/srv/app/./database" ]; }
+      { exclude = [ "/srv//app/database" ]; }
+      { exclude = [ "/srv/app/database/" ]; }
+      { include = [ "/srv/app/db/../database" ]; }
+      { include = [ "/srv/app/./database" ]; }
+      { subpath = "database/../db"; }
+      { subpath = "database/./records"; }
+    ];
 
   unsupportedOperation = compile (singleRoute {
     routes.route-zrepl.operation = "restore";
@@ -1640,6 +1702,23 @@ let
       && !(builtins.head result.desiredInventory.states).operational
       && throws result.executablePlan
     ) missingCoverage;
+    canonical-realization-boundaries = builtins.all (
+      result: throws result.desiredInventory && throws result.executablePlan
+    ) nonCanonicalBoundaryCoverage;
+    canonical-source-coverage = builtins.all (
+      result:
+      hasIssue "invalid-source-selection" result
+      && allIssueContext result
+      && !(builtins.head result.desiredInventory.states).operational
+      && throws result.executablePlan
+    ) (nonCanonicalSourceCoverage "enabled");
+    plan-only-canonical-source-coverage = builtins.all (
+      result:
+      hasIssue "invalid-source-selection" result
+      && builtins.isString (builtins.toJSON result.desiredInventory)
+      && !(builtins.head result.desiredInventory.states).operational
+      && result.executablePlan.states == [ ]
+    ) (nonCanonicalSourceCoverage "plan-only");
     valid-narrowed-coverage = builtins.all (
       result:
       (builtins.head result.executablePlan.states).operational
@@ -1890,7 +1969,7 @@ let
       builtins.all
         (
           result:
-          hasIssue "invalid-owner-projection" result
+          (hasIssue "invalid-owner-projection" result || hasIssue "invalid-source-selection" result)
           && (builtins.head result.desiredInventory.states).operational == false
           && throws result.executablePlan
         )
@@ -1906,7 +1985,7 @@ let
         );
     plan-only-projector-diagnostics = builtins.all (
       result:
-      hasIssue "invalid-owner-projection" result
+      (hasIssue "invalid-owner-projection" result || hasIssue "invalid-source-selection" result)
       && builtins.isString (builtins.toJSON result.desiredInventory)
       && (builtins.head result.desiredInventory.states).operational == false
       && result.executablePlan.states == [ ]
