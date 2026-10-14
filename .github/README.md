@@ -13,6 +13,12 @@ its own system's projection: nixidy chart evaluation can require native builds.
 Every CI group is a directly buildable Nix derivation. `ciBundles.<system>`
 builds the complete projection; neither target requires GitHub Actions.
 
+`hostedCiPlan.<system>` supplies the standard group names, lazy check
+inventory and native application descriptors. The workflow dispatches that
+plan; it does not maintain a second list of output categories or branch on a
+test/application name. Platform-specific Darwin bootstrap remains an executor
+dependency, not a workload-selection rule.
+
 On a builder for the selected system:
 
 ```sh
@@ -23,43 +29,42 @@ nix build .#checks.aarch64-linux.den-semantics
 
 ### Required evidence layers
 
-Hosted CI uses three directly buildable groups, not Hestia metadata suffixes:
+`modules/flake/ci.nix` keeps the mandatory semantic/schema/policy,
+Kubernetes application, host-recovery and native-application identities.
+They are registration contracts, not execution groups. Missing checks,
+non-derivation replacements, fast checks replaced by runtime tests, runtime
+gates replaced by non-runtime checks, or required gates made unsupported on
+their hosted platform fail evaluation. Native apps must have matching
+executable packages and exactly one native descriptor; packaging is not
+acceptance.
 
-| Group | Required coverage | Hosted platform |
-| --- | --- | --- |
-| `fastChecks` | Nix/Den placement, storage, identity, public-edge and current Jellyfin/media contracts; credential/input safety; local compute-runtime and generated-bootstrap behavior; canonical manifest freshness, pinned local schemas, and offline Kyverno policy | All three systems |
-| `kubernetesApplications` | `public-edge-runtime`, `media-ingress-runtime`, and separate full execution of `verify-kubernetes-api` (admission, Secret API, Argo and Gateway controller/CNI/authorization) and `media-live-acceptance` (native media APIs) | x86-64 Linux |
-| `hostRecovery` | Secret/service delivery, storage tools, mount/ID-map/filesystem/firewall enforcement, identity provisioning, ESP mirror recovery, existing-guest upgrade and whole-guest replacement | x86-64 Linux |
+The generic fast projection is `hostedCiJobs.<system>.checks`. Every hosted
+runtime check gets its own native runner according to its actual capabilities.
+All standard `ciJobs` groups still come from Nix, including packages,
+development outputs and system configurations. `ciBundles` includes every
+registered check, including checks unsupported by hosted runners.
 
-The exact mandatory registrations live in `modules/flake/ci.nix`. Missing
-required checks, non-derivation replacements or VM gates replaced by non-VM
-checks fail hosted evaluation. Both native apps must have matching executable
-packages; building those packages alone is not acceptance.
-Other non-VM checks are still projected automatically into `fastChecks`.
-Other native VM/KVM checks are projected into `hostRecovery` on x86-64 Linux,
-without duplicating the focused application group. Ordinary `ciJobs.checks`
-and `ciBundles` still include every registered check; packages, development
-outputs and system configurations retain their automatic projection.
+`All required CI` joins the successful plan, build matrix, native matrix,
+Darwin configuration and Darwin Linux-builder bootstrap. It requires all
+three planned and evaluated platform inventories, every standard output
+group, every hosted runtime registration, every native execution, and the
+bootstrap receipt. Receipts record real successful Nix build derivations and
+outputs; check receipts retain exact check derivations. Native receipts record
+the executable from the built package, complete descriptor and checked report
+SHA-256. Missing/duplicate/unexpected receipts, replacement check derivations,
+changed or missing persisted report bytes, failed/skipped executor roles and
+scoped dispatches cannot satisfy the aggregate. Make this stable context
+required in branch protection; that configuration remains a maintainer action.
 
-`hostedCiInventory.<system>` records every check's derivation, required system
-features, hosted group or explicit unsupported-platform reason, and the native
-executables. Every hosted check must occur in exactly one group. `All required
-CI` requires all three platforms, every projected group and successful
-check/native execution receipts. A missing matrix job, skipped/failed group,
-missing receipt or native runner that was only packaged cannot satisfy it.
-Make this stable aggregate context required in branch protection; configuring
-GitHub branch protection remains a maintainer action.
-
-The mandatory host inventory includes `compute-network-policy-runtime`,
+Mandatory host recovery includes `compute-network-policy-runtime`,
 `compute-guest-upgrade`, `prod-home-replacement` and
-`prod-home-consumer-resilience`, not just whichever checks happen to remain
-registered. Both recovery families must accompany their scenario implementations;
-missing either fails hosted evaluation. Neither is replaced by native Kubernetes
-coverage. Detailed Argo resource retirement runs in the required native suite;
-the recovery VMs retain real data, ownership, mount and accelerator observations
-through guest replacement.
+`prod-home-consumer-resilience`. The two recovery families retain separate
+replacement and consumer-resilience evidence; neither is replaced by native
+Kubernetes coverage. Detailed Argo resource retirement runs in the required
+native suite; the replacement VM retains real data, ownership, mount and
+accelerator observations through guest replacement.
 
-Linux also requires `prepare-luks-storage` in `fastChecks`. It exercises real
+Linux also requires the fast `prepare-luks-storage` check. It exercises real
 rsync transfers/checksum verification and refuses unsafe operations before
 simulated block/format mutators. It does not prove real partitioning or LUKS
 formatting; `prepare-luks-storage-runtime` does. It runs the packaged tool on
@@ -70,22 +75,6 @@ the packaged script, found in its syntax tree, must run the real binary and
 succeed; only findmnt's silent "no mount" exit 1 is accepted. Error-wording
 probes of external utilities are not retained as safety evidence; unsupported
 fixture xattrs are reported as unexercised.
-
-Native NixOS tests are identified by their `.driver`, and other KVM-dependent
-checks by `requiredSystemFeatures`, not display metadata. Hosted application
-and host groups require `/dev/kvm`; missing acceleration fails rather than
-silently omitting the group. Hosted ARM Linux has no KVM and Darwin cannot run
-native Linux VMs, so neither hosts those groups. Linux checks registered for
-ARM remain directly buildable on a KVM-capable native ARM builder.
-`fastChecks` builds two derivations at a time so the policy gate's parts can
-overlap; the VM groups use `--max-jobs 1`; other groups retain normal Nix
-parallelism. All VM-bearing groups evaluate in a separate `nix eval` process
-and then build the resulting derivation, releasing the evaluator heap before
-starting a guest.
-
-A hosted x86-64 runner has 4 vCPUs and 16 GiB of memory. VM fixtures must fit
-there: request at most 4 cores and leave several GiB beyond guest memory.
-Oversubscription can lose the runner without producing a test result.
 
 The schema gate checks original canonical YAML against pinned local schemas,
 with duplicate-key and complete document/schema accounting. It does not prove
@@ -170,8 +159,9 @@ profiles/scores, wrong credentials/configuration and denied access, stable
 managed identities, preserved unmanaged video bytes, Seerr first-owner and
 steady-state boundaries, serialized producer entry points and owned cleanup.
 It does not prove Kubernetes RBAC or host mount propagation. Required
-`compute-guest-upgrade` and `prod-home-replacement` separately retain existing
-guest activation and real Incus/ZFS/MergerFS/K3s replacement evidence.
+`compute-guest-upgrade`, `prod-home-replacement` and
+`prod-home-consumer-resilience` separately retain existing guest activation,
+real Incus/ZFS/MergerFS/K3s replacement and consumer-resilience evidence.
 
 `media-ingress-runtime` applies the committed media NetworkPolicies on a K3s
 node that enforces them. The Gateway proxy and each declared client reach
@@ -183,10 +173,10 @@ other pod is refused.
 On a native x86-64 Linux builder with KVM:
 
 ```sh
-nix eval --json .#hostedCiInventory.x86_64-linux
-nix build -L .#hostedCiJobs.x86_64-linux.fastChecks
-for group in kubernetesApplications hostRecovery; do
-  drv=$(nix eval --raw ".#hostedCiJobs.x86_64-linux.$group.drvPath")
+nix eval --json .#hostedCiPlan > hosted-plan.json
+nix eval --json .#hostedCiInventory.x86_64-linux > hosted-inventory.json
+nix build -L .#hostedCiJobs.x86_64-linux.checks
+jq -r '.runtime[].drvPath' hosted-inventory.json | while IFS= read -r drv; do
   nix build -L --max-jobs 1 "$drv^*"
 done
 # Native interactive interface is unchanged.
@@ -203,10 +193,13 @@ shutdown. Use owned, mode-0700 disk-backed scratch as above: accumulated VM
 images can exhaust `/run/user/$UID` tmpfs and cause guest block-device I/O
 failures. Hosted builds already use the disk-backed `/nix/build` directory.
 
-The application link farm builds both native runners; their full execution is
-separately required. Use an explicit local Unix-socket Docker context and a new
-API report filename (the app refuses overwrite). CI also validates the
-completed report through the same packaged API runner:
+Native descriptors build both runners; their full execution is separately
+required. The API descriptor supplies `--docker-context default`, its owned
+fresh `reportFile`, and `reportCheckArguments` for the same packaged app.
+The generic executor runs in its job-owned evidence directory, refuses an
+existing report, checks the completed report, and binds the uploaded exact
+bytes to the success receipt. Applications without a persisted report need
+neither additional field; the standard media arguments and suite are unchanged.
 
 ```sh
 nix run .#verify-kubernetes-api -- \
@@ -221,8 +214,9 @@ Hosted execution verifies that `default` addresses exactly
 Unix-socket context, such as `colima`. The app ignores ambient Docker/Kubernetes
 credentials, creates its own loopback-only API and kubeconfig, and removes its
 owned container, anonymous volumes and credentials even on scenario failure.
-Cleanup failure makes the gate fail. Only its sanitized report is uploaded,
-including on failure; no raw Docker logs, kubeconfig or assertion errors.
+Cleanup failure makes the gate fail. The approved sanitized report is included
+in the generic `native-<system>-<application>-<run-id>` evidence artifact even
+on failure; raw fixture logs, kubeconfig and assertion errors are not exported.
 
 Argo failure witnesses capture only owned, whitelisted status fields before
 cleanup. Native catch scripts use Chainsaw's injected current context.
@@ -250,7 +244,7 @@ and other import-from-derivation inputs. Run from the checkout on native Linux;
 require the named missing-check diagnostic, not merely any nonzero exit:
 
 ```sh
-nix eval --impure --max-jobs 1 --cores 4 --expr '
+nix eval --json --impure --max-jobs 1 --cores 4 --expr '
   let
     f = builtins.getFlake (toString ./.);
     ci = import ./modules/flake/ci.nix {
@@ -266,27 +260,83 @@ nix eval --impure --max-jobs 1 --cores 4 --expr '
         };
       };
     };
-  in ci.flake.hostedCiJobs.x86_64-linux.fastChecks.drvPath
+  in ci.flake.hostedCiPlan.x86_64-linux
 '
 # Expected: Missing required CI checks for x86_64-linux: runtime-secret-k3s
 ```
 
-Removing `prod-home-manifests-schema`, `compute-guest-upgrade` or
-`prod-home-replacement` instead must fail with the corresponding identity.
+Removing `prod-home-manifests-schema`, `compute-guest-upgrade`,
+`prod-home-replacement` or `prod-home-consumer-resilience` instead must fail
+with the corresponding identity. ARM Linux also requires native
+`agenix-restart-guard` registration and runtime capability.
 Removing either required native app or package, replacing the package with a
 non-derivation or changing the app away from its executable package must fail
 with `Required native CI apps must have matching executable packages`.
 Removing the required-name list entry changes the verification contract; it is
 not a registration-loss probe. API empty selection, nonexistent selector,
 removed TLS CEL or Argo mutations remain negative probes, not exclusions.
-For workflow accounting, remove one successful receipt or one platform
-inventory from a disposable artifact copy; the final aggregation must fail.
+For workflow accounting, remove one successful receipt, one evaluated platform
+inventory or one persisted report from a disposable artifact copy; the final
+aggregation must fail. Replacing a recorded check derivation, moving a native
+program outside its built output or changing accepted report bytes must fail.
+The accounting self-check and real downloaded-artifact join are runnable:
+
+```sh
+python3 .github/required-ci.py --self-test
+# After downloading the full workflow artifacts into the documented directories:
+RUN_ID="$RUN_ID" python3 .github/required-ci.py "$RUNNER_TEMP"
+```
+
+The join reads `required-plan/check-inventory.json`, one
+`required-inventories/check-inventory-<system>-checks-<run-id>/check-inventory.json`
+per platform, `required-receipts/*/ci-receipt.json`, and
+`required-native/native-<system>-<application>-<run-id>/<reportFile>`.
+
+Linux VM checks remain directly buildable for x86-64 and ARM64. Hosted CI
+partitions actual derivations using NixOS test drivers and declared
+`requiredSystemFeatures`, never check names or Hestia groups. A driver identifies
+a runtime check, not a KVM requirement. Nix exports each entry's `requirements`
+(`kvm`, `uidRange`, `cgroups`), hosted eligibility and explicit unsupported reason
+through `hostedCiInventory.<system>`; the workflow carries those facts into its
+matrix. Every hosted runtime check gets a separate native runner with
+`--max-jobs 1`; the fast aggregate contains no runtime or unsupported checks.
+All platforms retain their semantic/schema/freshness inventory and
+package/configuration/development groups. ARM VM/KVM checks remain explicitly
+unsupported on hosted runners without KVM; capable ARM builders can build them
+directly. Unknown required system features also receive an explicit unsupported
+reason rather than being scheduled on an incapable runner.
+
+`agenix-restart-guard` uses the existing NixOS systemd-nspawn test driver on
+both native Linux architectures. It uses the same production generator/algorithm,
+rebuilt for the hypothetical native ARM fixture rather than changing hvn-hyp1's
+deployed architecture, and preserves the private stamp modes (700/600), initial
+consumer start, unchanged-content non-restarts, exactly one rotation restart,
+and repeated-rotation non-restart assertions. There is no duplicate VM suite or
+script/hash assertion. PAM, hardening, kernel, network and security boundary tests
+retain their VM gates. Only disposable Linux lanes requiring `uid-range` enable
+Nix auto-allocated UIDs and the cgroups experimental feature, after requiring a
+cgroup-v2 host. Darwin never schedules this Linux container test.
+
+Every registered check must be a derivation and belongs exactly once to the
+fast, hosted runtime, or unsupported partition. Future registrations join
+automatically. Planning reads lazy feature declarations across the selected
+platforms without forcing raw test derivations or `drvPath`. Native check jobs
+upload evaluated platform inventory with exact hosted derivation identities;
+unsupported entries retain `drvPath = null`, so a Darwin receipt cannot force an
+unsupported Linux build graph. Runtime receipts retain their exact derivations.
+
+Build jobs release their separate `nix eval` heap before building the exact
+derivation, preserving memory for the test. A hosted x86-64 runner has 4 vCPUs
+and 16 GiB of memory: VM fixtures must fit, leaving several GiB beyond guest
+memory. Oversubscription can lose the runner without producing a test result.
 
 Hosted CI builds the full ARM64 Darwin configuration. An ARM64 Linux job first
 builds the Linux system closure used by its `nix.linux-builder` VM and passes
-that closure to the macOS job through a one-day workflow artifact. This breaks
-the first-build cycle without weakening the production configuration. The
-workstation builds the same configuration as its activation gate.
+that closure to the macOS job through a one-day workflow artifact. Only the
+Darwin configuration job waits for this bootstrap; Linux and other Darwin
+groups do not. This breaks the first-build cycle without weakening the
+production configuration. The workstation builds the same configuration as
+its activation gate.
 
 Manual dispatch builds all hosted groups by default. Set `system` to build
 only that platform, or set `check` to run one check (defaulting to x86-64 when
@@ -298,18 +348,72 @@ gh workflow run ci.yml --ref "$REF" -f check=den-semantics
 gh workflow run ci.yml --ref "$REF" -f system=aarch64-linux
 ```
 
-Successful check groups upload nonempty native outputs as
-`check-output-<group>-<system>-<run-id>` artifacts; empty successful outputs
-retain their evidence in the job log. The real API step uploads the sanitized
-`kubernetes-api-<system>-<run-id>` report on success or failure. Scenario identity,
-operation status, skipped selection and owned-state cleanup are enforced by
-the existing scenario implementations, not by artifact presence.
-All jobs read the public `dvicory-homelab` Cachix cache. Successful `main` push
-jobs publish their existing outputs and runtime closures directly from the build
-runner; another job's failure does not prevent those uploads. There is no second
+Check names and implementations belong in Nix, not workflow branches. Single
+dispatch validates a check or native application's registration and platform;
+unsupported or ambiguous selections fail rather than silently skipping.
+`check=media-live-acceptance` selects the declared native x86-64 Docker suite.
+Its package carries the exact source, manifests and policy inputs; invocation
+does not borrow files from the caller's checkout. Nix owns its arguments,
+deadline and owned-resource prefix. The native executor records the package
+identity, runs the whole app and independently checks owned Docker cleanup.
+Successful check jobs upload nonempty outputs as
+`check-output-<system>-<check-or-group>-<run-id>` artifacts; empty outputs retain
+their evidence in the job log. Linux runners enable available KVM acceleration.
+System builds and checks can reuse narinfo and objects uploaded by other jobs.
+Hestia's binary version is pinned alongside its action. Use core v3.1.0 or
+newer: it rejects cached narinfos whose backing packs are unavailable, rather
+than repeatedly advertising objects that fail during download. The manifest
+and backing packs are separate GitHub cache entries; a manifest hit alone
+does not prove that its objects remain available.
+
+All jobs read the public `dvicory-homelab` Cachix cache and the signed upstream
+`https://cache.numtide.com` cache documented by the pinned `llm-agents` input.
+CI and shared Nix settings append its fixed public key
+`niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=`.
+The owner approved this signer for CI and shared fleet Nix settings. This grants
+Numtide trust to supply executable store outputs, not just package metadata.
+The key is not restricted to Codex or one package: it can authenticate any
+requested store output. Its configured scope belongs to Nix desired state;
+signature checks do not make an untrusted publisher safe.
+CI appends the upstream cache and key to the user configuration after Cachix:
+Cachix's base settings override installer-level `extra-*` values. The later
+Hestia configuration preserves this user configuration. Existing substituters
+and keys remain configured. This permits exact upstream package substitution
+without changing package sources or versions. Signature verification remains
+required; CI does not automatically accept PR-provided flake configuration or
+grant upstream cache-write access. Successful `main` push
+jobs publish their existing outputs, runtime closures, and realized build
+dependencies directly from the build runner; another job's failure does not
+prevent those uploads. Publication uses the derivation roots recorded by the
+successful build, including dependencies embedded in compressed images that
+have no runtime store references. It excludes the source/derivation-only
+closure and never builds missing outputs for publication. There is no second
 build on a separate publication runner. The `cachix-publish` environment remains
 restricted to `main`, and only the publication step receives its per-cache write
 token. Pull requests and manual dispatches remain read-only.
+
+A successful warm `main` job does not prove that a cold PR runner can substitute
+its dependencies. For a repeated compiled dependency, compare the exact
+derivation and every required output with the `main` log, then query each output
+using `nix path-info --store https://dvicory-homelab.cachix.org "$output"`.
+A 404 means the output is unavailable, not that its derivation changed; Cachix
+also hides paths whose closure is incomplete. The publisher's realized-only
+selection includes the patched Incus server, documentation, agent loader and
+client even when a VM image hides them from its runtime references.
+
+Restore unavailable dependencies only through owner-approved protected-main
+publication of the exact successful outputs and their closures. Never use PR
+credentials or accept unsigned NARs to make a cold-cache proof pass. Measure
+substitution from an empty isolated store with builds disabled before
+attributing a runtime improvement to the cache.
+
+Exact derivations, not changed-file guesses, determine cache reuse. Runtime
+fixtures must reference individual files, package-local directories (including
+the test's adjacent scripts), or explicit filesets rather than interpolate
+`self` paths that retain the entire flake source as a build input. The recovery
+fixture includes all of its copied manifests and no unrelated applications.
+Hermes image tags still identify the Git source revision; changing that
+deployment provenance is not a cache optimization.
 
 Nix store contents published by CI are public, so CI outputs must never contain
 decrypted secrets.

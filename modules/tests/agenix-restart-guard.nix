@@ -18,6 +18,7 @@ let
 
   secretName = "crowdsec-enrollmentKey";
   unitName = "agenix-restart-${secretName}";
+  secretPath = hvnConfig.age.secrets.${secretName}.path;
   generatedPath = hvnConfig.systemd.paths.${unitName};
   generatedService = hvnConfig.systemd.services.${unitName};
 in
@@ -85,20 +86,21 @@ in
 
         testScript = ''
           unit = "${unitName}.service"
+          assert "${secretPath}" == "/run/agenix/${secretName}"
 
           def starts():
               return int(machine.succeed("wc -l < /run/consumer-starts").strip())
 
           def runs():
               return int(machine.succeed(
-                  f"systemctl show {unit} --property=ExecMainStartTimestampMonotonic --value"
+                  f"journalctl -b -u {unit} -o cat | grep -c '^agenix-restart:' || true"
               ).strip())
 
           def activate(content):
               before = runs()
               machine.succeed(f"fake-agenix-activate {content}")
               machine.wait_until_succeeds(
-                  f"test $(systemctl show {unit} --property=ExecMainStartTimestampMonotonic --value) -gt {before}",
+                  f"test $(journalctl -b -u {unit} -o cat | grep -c '^agenix-restart:') -gt {before}",
                   timeout=30,
               )
               machine.wait_until_succeeds(f"! systemctl is-active --quiet {unit}", timeout=30)
@@ -118,6 +120,7 @@ in
           activate("initial")
           activate("initial")
           assert starts() == 1, f"unchanged secret restarted the consumer: {starts()} starts"
+          machine.succeed(f"journalctl -b -u {unit} -o cat | grep -q 'content unchanged'")
 
           # Rotation restarts the consumer once.
           activate("rotated")
