@@ -1,8 +1,8 @@
 {
   "homelab-overview.json": {
     "revision": "local",
-    "sha256": "1d9ad0eeda1f1a3eb706344e865c4886f0537d1d3ded93775960c6552555d625",
-    "source": "written in this repository"
+    "sha256": "1d12b83ac76aa69ba86bf7994e4bab07cf8412495a922b64c9018dbdf76d947b",
+    "source": "written in this repository; exact required-mount coverage is provided by alert rules, not a dashboard count"
   },
   "k8s-resources-namespace.json": {
     "revision": "97c701c0918b211a1d33791cf9d70c4fdb57a2cb",

@@ -415,6 +415,7 @@ let
         }) "4x80")
       ];
       alert_rule_test = [
+        (expect "1m30s" "host-storage" "HostRequiredMountMissing" [ ])
         (expect "3m" "host-storage" "HostRequiredMountMissing" [
           (alert {
             job = "host-node";
@@ -716,11 +717,11 @@ in
     let
       objects = self.nixidyEnvs.${system}.prod-home.config.applications.monitoring.objects;
       data =
-        name:
+        objects: name:
         (lib.findFirst (
           object: object.kind == "ConfigMap" && object.metadata.name == name
         ) (throw "monitoring ConfigMap ${name} is not rendered") objects).data;
-      rules = pkgs.writeText "rules.json" (data "vmalert-rules")."rules.json";
+      rules = pkgs.writeText "rules.json" (data objects "vmalert-rules")."rules.json";
       testFile = pkgs.writeText "tests.json" (
         builtins.toJSON {
           rule_files = [ "rules.json" ];
@@ -728,6 +729,79 @@ in
           inherit tests;
         }
       );
+      addedMount = "/srv/staged-mount";
+      retiredMount = "/srv/media/data";
+      withoutRetired = lib.remove retiredMount hvn.requiredMounts;
+      mountStages = map (
+        stage:
+        let
+          # Render the production aspect with each rollout's host expectations.
+          aspect = import ../den/aspects/kubernetes/services/monitoring/alerting.nix {
+            inherit lib;
+            config = { };
+            inputs.self.nixosConfigurations.${hostName}.config.homelab.monitoring =
+              hvn // { requiredMounts = stage.expected; };
+          };
+          stagedObjects = (aspect.den.aspects.kubernetes.services.monitoring.alerting.k8s-manifests {
+            cluster = {
+              inherit hostName;
+              routes = { };
+            };
+            computeResources.instance = "compute-1";
+          }).applications.monitoring.objects;
+          stagedRules = pkgs.writeText "staged-rules.json" (data stagedObjects "vmalert-rules")."rules.json";
+          stagedTests = pkgs.writeText "staged-tests.json" (builtins.toJSON {
+            rule_files = [ "rules.json" ];
+            evaluation_interval = "30s";
+            tests = [{
+              name = stage.name;
+              interval = "30s";
+              input_series = map (mountpoint:
+                series "node_filesystem_size_bytes" (nodeLabels // { inherit mountpoint; }) "100x40"
+              ) stage.present ++ lib.optional stage.recovers (
+                series "node_filesystem_size_bytes" (nodeLabels // { mountpoint = addedMount; }) "_x8 100x32"
+              );
+              alert_rule_test = [
+                (expect "1m30s" "host-storage" "HostRequiredMountMissing" [ ])
+                (expect "3m" "host-storage" "HostRequiredMountMissing" (
+                  map (mountpoint: alert {
+                    job = "host-node";
+                    host = hostName;
+                    inherit mountpoint;
+                    severity = "critical";
+                  } "Required mount ${mountpoint} on ${hostName} is not mounted.") stage.missing
+                ))
+                (expect "6m" "host-storage" "HostRequiredMountMissing" [ ])
+              ];
+            }];
+          });
+        in ''
+          cp ${stagedRules} rules.json
+          vmalert-tool unittest --files=${stagedTests}
+        ''
+      ) [
+        {
+          name = "host-first addition is observed before it becomes required";
+          expected = hvn.requiredMounts;
+          present = hvn.requiredMounts ++ [ addedMount ];
+          missing = [ ];
+          recovers = false;
+        }
+        {
+          name = "a newly expected but missing mount fires and resolves on observation";
+          expected = hvn.requiredMounts ++ [ addedMount ];
+          present = hvn.requiredMounts;
+          missing = [ addedMount ];
+          recovers = true;
+        }
+        {
+          name = "monitor-first retirement permits the mount to disappear";
+          expected = withoutRetired;
+          present = withoutRetired;
+          missing = [ ];
+          recovers = false;
+        }
+      ];
     in
     {
       checks.monitoring-rules =
@@ -740,6 +814,7 @@ in
             cp ${rules} rules.json
             cp ${testFile} tests.json
             vmalert-tool unittest --files=tests.json
+            ${lib.concatStringsSep "\n" mountStages}
             touch $out
           '';
     };
