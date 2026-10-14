@@ -13,6 +13,12 @@ its own system's projection: nixidy chart evaluation can require native builds.
 Every CI group is a directly buildable Nix derivation. `ciBundles.<system>`
 builds the complete projection; neither target requires GitHub Actions.
 
+`hostedCiPlan.<system>` supplies the standard group names, lazy check
+inventory and native application descriptors. The workflow dispatches that
+plan; it does not maintain a second list of output categories or branch on a
+test/application name. Platform-specific Darwin bootstrap remains an executor
+dependency, not a workload-selection rule.
+
 On a builder for the selected system:
 
 ```sh
@@ -80,9 +86,13 @@ gh workflow run ci.yml --ref "$REF" -f system=aarch64-linux
 ```
 
 Check names and implementations belong in Nix, not workflow branches. Single
-check dispatch validates its registration and hosted platform support; selecting
-an unsupported runtime platform fails explicitly rather than silently skipping.
-`media-runtime` dispatch still runs the unchanged native x86-64 Docker suite.
+dispatch validates a check or native application's registration and platform;
+unsupported or ambiguous selections fail rather than silently skipping.
+`check=media-live-acceptance` selects the declared native x86-64 Docker suite.
+Its package carries the exact source, manifests and policy inputs; invocation
+does not borrow files from the caller's checkout. Nix owns its arguments,
+deadline and owned-resource prefix. The native executor records the package
+identity, runs the whole app and independently checks owned Docker cleanup.
 Successful check jobs upload nonempty outputs as
 `check-output-<system>-<check-or-group>-<run-id>` artifacts; empty outputs retain
 their evidence in the job log. Linux runners enable available KVM acceleration.
