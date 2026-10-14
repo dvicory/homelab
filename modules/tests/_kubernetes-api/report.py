@@ -278,6 +278,91 @@ def capture_root_retirement_witness():
     (work / "root-retirement-witness.json").write_text(json.dumps(witness))
 
 
+def classify_network_policy_error(text):
+    """Fixed diagnostic category only; never retain event messages or logs."""
+    text = text[-16384:].lower()
+    for category, markers in (
+        ("apparmor", ("apparmor",)),
+        ("mount", ("failedmount", "failed to mount", "mount propagation", "not a shared mount")),
+        ("image", ("errimagepull", "imagepullbackoff", "failed to pull image")),
+        ("permission", ("operation not permitted", "permission denied")),
+        ("kernel-support", ("protocol not supported", "operation not supported", "module not found")),
+        ("nfqueue", ("could not open nfqueue", "nfqueue socket", "reading nfqueue stats")),
+        ("nftables", ("nftables sync failed", "failed to create dataplane controller")),
+        ("nri", ("nri plugin exited", "failed to create nri plugin")),
+        ("container-config", ("createcontainerconfigerror", "createcontainererror", "failedcreate")),
+        ("scheduling", ("failedscheduling",)),
+        ("readiness", ("readiness probe failed",)),
+    ):
+        if any(marker in text for marker in markers):
+            return category
+    return classify_kubectl_error(text)
+
+
+def network_policy_witness(daemonset, pods, events):
+    """Owned enforcer state only; exclude names, UIDs, messages and arbitrary text."""
+    def count(value):
+        return value if type(value) is int and 0 <= value <= 2147483647 else None
+
+    def enum(value, allowed):
+        return value if value in allowed else "unknown"
+
+    metadata = daemonset.get("metadata") or {}
+    uid = metadata.get("uid")
+    owned = [pod for pod in pods.get("items") or [] if uid and any(
+        owner.get("uid") == uid and owner.get("kind") == "DaemonSet" and owner.get("controller") is True
+        for owner in (pod.get("metadata") or {}).get("ownerReferences") or []
+    )][:4]
+    owned_uids = {pod.get("metadata", {}).get("uid") for pod in owned}
+    if uid:
+        owned_uids.add(uid)
+    status = daemonset.get("status") or {}
+    return {
+        "daemonSetPresent": bool(uid),
+        "daemonSet": {key: count(status.get(key)) for key in (
+            "desiredNumberScheduled", "currentNumberScheduled", "numberReady",
+            "numberAvailable", "numberUnavailable", "numberMisscheduled", "observedGeneration",
+        )},
+        "pods": [{
+            "index": index,
+            "phase": enum((pod.get("status") or {}).get("phase"), ("Pending", "Running", "Succeeded", "Failed", "Unknown")),
+            "conditions": [{
+                "type": condition["type"], "status": enum(condition.get("status"), ("True", "False", "Unknown")),
+            } for condition in (pod.get("status") or {}).get("conditions") or []
+                if condition.get("type") in ("PodScheduled", "Initialized", "ContainersReady", "Ready", "PodReadyToStartContainers")],
+            "containers": [{
+                "ready": container.get("ready") is True,
+                "restartCount": count(container.get("restartCount")),
+                "states": {key: [{
+                    "state": state,
+                    "reason": enum(value.get("reason"), (
+                        "ContainerCreating", "PodInitializing", "CrashLoopBackOff", "ErrImagePull",
+                        "ImagePullBackOff", "CreateContainerConfigError", "CreateContainerError",
+                        "Error", "Completed", "OOMKilled", "ContainerCannotRun",
+                    )),
+                    "exitCode": count(value.get("exitCode")),
+                    "errorCategory": classify_network_policy_error(value.get("message") or ""),
+                } for state, value in (container.get(key) or {}).items() if state in ("waiting", "running", "terminated")]
+                    for key in ("state", "lastState")},
+            } for container in (pod.get("status") or {}).get("containerStatuses") or []
+                if container.get("name") == "kube-network-policies"],
+        } for index, pod in enumerate(owned, 1)],
+        "events": [{
+            "type": enum(event.get("type"), ("Normal", "Warning")),
+            "reason": enum(event.get("reason"), (
+                "FailedCreate", "FailedScheduling", "FailedMount", "FailedAttachVolume",
+                "Failed", "BackOff", "Unhealthy", "Pulling", "Pulled", "Created", "Started",
+                "SuccessfulCreate", "Killing", "FailedSync",
+            )),
+            "count": count(event.get("count")),
+            "errorCategory": classify_network_policy_error(
+                (event.get("reason") or "") + " " + (event.get("message") or "")
+            ),
+        } for event in events.get("items") or []
+            if (event.get("involvedObject") or {}).get("uid") in owned_uids][:32],
+    }
+
+
 def classify_kubectl_error(stderr):
     """Diagnostic hint only; never return native error text or policy verdicts."""
     text = stderr[-16384:].lower()
@@ -449,6 +534,32 @@ def self_check():
     assert witness[0]["conditionsShape"] == "null" and witness[0]["conditions"] == []
     assert witness[1]["conditionsShape"] == "missing" and not witness[1]["present"]
     assert sensitive not in json.dumps(witness)
+    enforcer_uid = "owned-enforcer"
+    enforcer = network_policy_witness(
+        {"metadata": {"uid": enforcer_uid, "annotations": {"private": sensitive}},
+         "status": {"desiredNumberScheduled": 1, "numberReady": 0}},
+        {"items": [
+            {"metadata": {"uid": "owned-pod", "name": sensitive, "ownerReferences": [
+                {"uid": enforcer_uid, "kind": "DaemonSet", "controller": True}]},
+             "status": {"phase": "Pending", "containerStatuses": [{
+                 "name": "kube-network-policies", "ready": False, "restartCount": 2,
+                 "state": {"waiting": {"reason": "CrashLoopBackOff", "message": sensitive}},
+                 "lastState": {"terminated": {"reason": "Error", "exitCode": 1, "message": "operation not permitted " + sensitive}},
+             }]}},
+            {"metadata": {"uid": sensitive}, "status": {"phase": sensitive}},
+        ]},
+        {"items": [
+            {"involvedObject": {"uid": "owned-pod"}, "type": "Warning", "reason": "FailedMount",
+             "message": sensitive, "count": 3},
+            {"involvedObject": {"uid": sensitive}, "type": "Warning", "reason": sensitive, "message": sensitive},
+        ]},
+    )
+    assert enforcer["daemonSet"]["numberReady"] == 0 and len(enforcer["pods"]) == 1
+    assert enforcer["pods"][0]["containers"][0]["states"]["lastState"][0]["errorCategory"] == "permission"
+    assert enforcer["events"] == [{"type": "Warning", "reason": "FailedMount", "count": 3, "errorCategory": "mount"}]
+    assert sensitive not in json.dumps(enforcer)
+    assert classify_network_policy_error("could not open nfqueue socket " + sensitive) == "nfqueue"
+    assert sensitive not in classify_network_policy_error(sensitive)
     source = {"repoURL": sensitive, "targetRevision": "a" * 40}
     job_uid = "12345678-1234-1234-1234-123456789abc"
     recovery = argo_recovery_witness({"items": [{
