@@ -40,6 +40,114 @@ ARGO_RECOVERY_JOBS = ("failed-child-late", "missing-child-late")
 ARGO_RETAINED_APPS = ("hook",)
 ARGO_ROOT_RETIREMENT_APPS = ("retained", "retirement-root")
 
+GATEWAY_PREREQUISITES = (
+    ("GatewayClass", "envoy", ""), ("Gateway", "household", "gateway"),
+    ("EnvoyProxy", "household", "gateway"), ("ClientTrafficPolicy", "trusted-edges", "gateway"),
+)
+
+
+def gateway_prerequisite_witness(resources, workloads, node, expectation):
+    """Fixed fixture status only; no messages, addresses, names, UIDs or spec export."""
+    def count(value):
+        return value if type(value) is int and 0 <= value <= 2147483647 else None
+
+    def enum(value, allowed):
+        return value if value in allowed else "unknown"
+
+    def items(raw):
+        return raw.get("items") or ([raw] if raw.get("kind") else [])
+
+    def conditions(raw):
+        return [{
+            "type": enum(condition.get("type"), ("Accepted", "Programmed", "ResolvedRefs", "Ready", "Available", "Progressing", "ReplicaFailure", "PodScheduled", "Initialized", "ContainersReady")),
+            "status": enum(condition.get("status"), ("True", "False", "Unknown")),
+            "observedGeneration": count(condition.get("observedGeneration")),
+            "reason": enum(condition.get("reason"), (
+                "Accepted", "Programmed", "ResolvedRefs", "Pending", "Invalid", "UnsupportedValue",
+                "AddressNotAssigned", "AddressNotUsable", "NoResources", "ListenersNotValid",
+                "InvalidParameters", "InvalidCertificateRef", "RefNotPermitted", "BackendNotFound",
+                "InvalidBackendRef", "InvalidCACertificateRef", "Conflicted", "TargetNotFound",
+                "NotAccepted", "Unschedulable", "MinimumReplicasAvailable", "MinimumReplicasUnavailable",
+                "NewReplicaSetAvailable", "ReplicaSetUpdated", "ProgressDeadlineExceeded", "FailedCreate",
+                "PodCompleted", "ContainersNotReady", "PodReady", "KubeletReady", "KubeletNotReady",
+            )),
+        } for condition in (raw or [])[:16] if isinstance(condition, dict)]
+
+    objects = {(obj.get("kind"), (obj.get("metadata") or {}).get("name"),
+                (obj.get("metadata") or {}).get("namespace", "")): obj for obj in items(resources)}
+    result = {"resources": []}
+    for kind, name, namespace in GATEWAY_PREREQUISITES:
+        obj = objects.get((kind, name, namespace), {})
+        status = obj.get("status") or {}
+        result["resources"].append({
+            "kind": kind, "name": name, "present": bool(obj),
+            "generation": count((obj.get("metadata") or {}).get("generation")),
+            "conditions": conditions(status.get("conditions")),
+            "addressCount": count(len(status.get("addresses") or [])) if kind == "Gateway" else None,
+            "listeners": [{"conditions": conditions(listener.get("conditions")),
+                           "attachedRoutes": count(listener.get("attachedRoutes"))}
+                          for listener in (status.get("listeners") or [])[:4]],
+            "ancestors": [{
+                "controllerMatches": ancestor.get("controllerName") == "gateway.envoyproxy.io/gatewayclass-controller",
+                "targetMatches": (ancestor.get("ancestorRef") or {}).get("name") == "household"
+                    and (ancestor.get("ancestorRef") or {}).get("namespace", "gateway") == "gateway"
+                    and (ancestor.get("ancestorRef") or {}).get("kind", "Gateway") == "Gateway"
+                    and (ancestor.get("ancestorRef") or {}).get("group", "gateway.networking.k8s.io") == "gateway.networking.k8s.io",
+                "conditions": conditions(ancestor.get("conditions")),
+            } for ancestor in (status.get("ancestors") or [])[:8]],
+        })
+    expectation = expectation if isinstance(expectation, dict) else {}
+    result["waitingFor"] = {
+        "resource": enum(expectation.get("resource"), ("gatewayclass", "gateway", "envoyproxy", "clienttrafficpolicy", "httproute", "backendtlspolicy", "securitypolicy")),
+        "condition": enum(expectation.get("condition"), ("Accepted", "Programmed", "ResolvedRefs")),
+        "status": enum(expectation.get("status"), ("True", "False", "Unknown")),
+        "stage": enum(expectation.get("stage"), ("generation", "status", "assertion")),
+    }
+    objects = items(workloads)
+    deployments = [obj for obj in objects if obj.get("kind") == "Deployment" and (
+        (obj.get("metadata") or {}).get("name") == "envoy-gateway" or
+        all(((obj.get("metadata") or {}).get("labels") or {}).get(key) == value for key, value in (
+            ("gateway.envoyproxy.io/owning-gateway-name", "household"),
+            ("gateway.envoyproxy.io/owning-gateway-namespace", "gateway"),
+        )))][:4]
+    deployment_uids = {(obj.get("metadata") or {}).get("uid") for obj in deployments} - {None}
+
+    def owned(obj, kind, uids):
+        return any(owner.get("uid") in uids and owner.get("kind") == kind and owner.get("controller") is True
+                   for owner in (obj.get("metadata") or {}).get("ownerReferences") or [])
+
+    replica_uids = {(obj.get("metadata") or {}).get("uid") for obj in objects
+                    if obj.get("kind") == "ReplicaSet" and owned(obj, "Deployment", deployment_uids)} - {None}
+    result["deployments"] = [{
+        "controller": (obj.get("metadata") or {}).get("name") == "envoy-gateway",
+        "generation": count((obj.get("metadata") or {}).get("generation")),
+        **{key: count((obj.get("status") or {}).get(key)) for key in
+           ("observedGeneration", "replicas", "readyReplicas", "availableReplicas", "unavailableReplicas")},
+        "conditions": conditions((obj.get("status") or {}).get("conditions")),
+    } for obj in deployments]
+    result["pods"] = [{
+        "phase": enum((pod.get("status") or {}).get("phase"), ("Pending", "Running", "Succeeded", "Failed", "Unknown")),
+        "conditions": conditions((pod.get("status") or {}).get("conditions")),
+        "containers": [{
+            "ready": container.get("ready") is True, "restartCount": count(container.get("restartCount")),
+            "states": [{"state": state, "reason": enum(value.get("reason"), (
+                "ContainerCreating", "PodInitializing", "CrashLoopBackOff", "ErrImagePull",
+                "ImagePullBackOff", "CreateContainerConfigError", "CreateContainerError",
+                "Error", "Completed", "OOMKilled", "ContainerCannotRun",
+            )), "errorCategory": classify_network_policy_error(value.get("message") or "")}
+                for state, value in (container.get("state") or {}).items() if state in ("waiting", "running", "terminated")],
+        } for container in ((pod.get("status") or {}).get("initContainerStatuses") or [])[:4]
+            + ((pod.get("status") or {}).get("containerStatuses") or [])[:4]],
+    } for pod in [obj for obj in objects if obj.get("kind") == "Pod" and owned(obj, "ReplicaSet", replica_uids)][:8]]
+    result["node"] = {
+        "present": node.get("kind") == "Node",
+        "hostnameMatches": ((node.get("metadata") or {}).get("labels") or {}).get("kubernetes.io/hostname") == "compute-1",
+        "conditions": conditions((node.get("status") or {}).get("conditions")),
+        "addressTypes": sorted({enum(address.get("type"), ("InternalIP", "ExternalIP", "Hostname"))
+                                for address in (node.get("status") or {}).get("addresses") or []}),
+    }
+    return result
+
 
 def argo_recovery_witness(raw, raw_jobs, fixture_sources, app_names=ARGO_RECOVERY_APPS):
     """Diagnostic state only: omit messages, credentials, URLs and arbitrary text."""
@@ -574,6 +682,53 @@ def self_check():
     assert witness[0]["conditionsShape"] == "null" and witness[0]["conditions"] == []
     assert witness[1]["conditionsShape"] == "missing" and not witness[1]["present"]
     assert sensitive not in json.dumps(witness)
+    gateway = gateway_prerequisite_witness({"items": [{
+        "kind": "Gateway", "metadata": {"name": "household", "namespace": "gateway", "generation": 2},
+        "status": {"addresses": [{"value": sensitive}], "conditions": [
+            {"type": "Programmed", "status": "False", "reason": "AddressNotAssigned", "observedGeneration": 1, "message": sensitive},
+            {"type": sensitive, "status": sensitive, "reason": sensitive, "observedGeneration": True}],
+            "listeners": [{"name": sensitive, "attachedRoutes": 2, "conditions": None}]},
+    }, {
+        "kind": "EnvoyProxy", "metadata": {"name": "household", "namespace": "gateway", "generation": 1},
+        "status": {"ancestors": [{"controllerName": sensitive, "ancestorRef": {"name": sensitive},
+                                  "conditions": [{"type": "Accepted", "status": "True", "reason": "Accepted", "observedGeneration": 1}]}]},
+    }]}, {"items": [{
+        "kind": "Deployment", "metadata": {"name": "envoy-gateway", "uid": "controller"},
+        "status": {"availableReplicas": 0, "observedGeneration": 1},
+    }, {
+        "kind": "Deployment", "metadata": {"name": sensitive, "uid": "proxy", "labels": {
+            "gateway.envoyproxy.io/owning-gateway-name": "household",
+            "gateway.envoyproxy.io/owning-gateway-namespace": "gateway"}},
+        "status": {"availableReplicas": 0},
+    }, {
+        "kind": "ReplicaSet", "metadata": {"uid": "replica", "ownerReferences": [
+            {"kind": "Deployment", "uid": "proxy", "controller": True}]},
+    }, {
+        "kind": "Pod", "metadata": {"name": sensitive, "ownerReferences": [
+            {"kind": "ReplicaSet", "uid": "replica", "controller": True}]},
+        "status": {"phase": "Pending", "conditions": [{"type": "PodScheduled", "status": "False", "reason": "Unschedulable", "message": sensitive}],
+                   "containerStatuses": [{"name": sensitive, "ready": False, "restartCount": 0,
+                                          "state": {"waiting": {"reason": "CreateContainerError", "message": "permission denied " + sensitive}}}]},
+    }, {
+        "kind": "Pod", "metadata": {"ownerReferences": [{"kind": "ReplicaSet", "uid": sensitive, "controller": True}]},
+        "status": {"phase": "Running"},
+    }]}, {"kind": "Node", "metadata": {"labels": {"kubernetes.io/hostname": "compute-1"}},
+          "status": {"addresses": [{"type": "InternalIP", "address": sensitive}],
+                     "conditions": [{"type": "Ready", "status": "True", "reason": "KubeletReady"}]}},
+        {"resource": "gateway", "condition": "Programmed", "status": "True", "stage": "status", "private": sensitive})
+    assert sensitive not in json.dumps(gateway)
+    assert gateway["waitingFor"] == {"resource": "gateway", "condition": "Programmed", "status": "True", "stage": "status"}
+    assert gateway["resources"][1]["generation"] == 2 and gateway["resources"][1]["conditions"][0]["observedGeneration"] == 1
+    assert gateway["resources"][1]["conditions"][0]["reason"] == "AddressNotAssigned"
+    assert gateway["resources"][1]["conditions"][1] == {"type": "unknown", "status": "unknown", "observedGeneration": None, "reason": "unknown"}
+    assert not gateway["resources"][2]["ancestors"][0]["controllerMatches"] and not gateway["resources"][2]["ancestors"][0]["targetMatches"]
+    assert len(gateway["deployments"]) == 2 and len(gateway["pods"]) == 1
+    assert gateway["pods"][0]["conditions"][0]["reason"] == "Unschedulable"
+    assert gateway["pods"][0]["containers"][0]["states"][0]["errorCategory"] == "permission"
+    assert gateway["node"]["hostnameMatches"] and gateway["node"]["addressTypes"] == ["InternalIP"]
+    missing_gateway = gateway_prerequisite_witness({}, {}, {}, {"resource": sensitive})
+    assert not any(resource["present"] for resource in missing_gateway["resources"])
+    assert missing_gateway["pods"] == [] and missing_gateway["waitingFor"]["resource"] == "unknown"
     enforcer_uid = "owned-enforcer"
     creation_message = f'failed to generate container spec: path "/{sensitive}" is mounted on "/{sensitive}" but it is not a shared or slave mount'
     enforcer = network_policy_witness(
