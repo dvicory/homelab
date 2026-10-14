@@ -15,7 +15,7 @@ import time
 import uuid
 
 import yaml
-from report import ARGO_CRDS, ARGO_RECOVERY_APPS, ARGO_RECOVERY_JOBS, REQUIRED_SCENARIOS, argo_recovery_witness, check_report, classify_docker_error, classify_kubectl_error, crd_condition_witness, sanitize_tests
+from report import ARGO_CRDS, ARGO_RECOVERY_APPS, ARGO_RECOVERY_JOBS, REQUIRED_SCENARIOS, argo_recovery_witness, check_report, classify_docker_error, classify_kubectl_error, classify_network_policy_error, crd_condition_witness, network_policy_witness, sanitize_tests
 
 OWNER_LABEL = "verification.homelab/fixture"
 
@@ -86,6 +86,8 @@ def main():
         result = subprocess.run(command, env=env, cwd=work, input=input, text=True, capture_output=True, timeout=timeout)
         if check and result.returncode:
             report["commandFailure"] = {"program": Path(command[0]).name, "returnCode": result.returncode}
+            if phase in ("network-policy-apply", "network-policy-readiness"):
+                report["commandFailure"]["errorCategory"] = classify_network_policy_error(result.stderr)
             if phase == "argo-fixture-prerequisites":
                 report["commandFailure"]["errorCategory"] = classify_kubectl_error(result.stderr)
                 marker = "HOMELAB_NATIVE_ARGO_ERROR_LINE="
@@ -203,7 +205,7 @@ def main():
                 raise ValueError("unpinned-registry-image")
             d("pull", "--platform", "linux/amd64", image, timeout=600)
             archive = work / f"registry-{index}.tar"
-            d("save", "--output", str(archive), image, timeout=600)
+            d("save", "--platform", "linux/amd64", "--output", str(archive), image, timeout=600)
             registry_archives.append(archive)
         report["timingsSeconds"]["imageFetch"] = round(time.monotonic() - image_start, 3)
         phase = "cluster-setup"
@@ -268,8 +270,9 @@ def main():
             d("exec", name, "rm", "-f", dest)
         # The production packet enforcer, not K3s's retired embedded controller,
         # must be ready before the controller and source-isolation scenarios.
-        phase = "network-policy-readiness"
+        phase = "network-policy-apply"
         kubectl("apply", "-f", settings["networkPolicy"])
+        phase = "network-policy-readiness"
         kubectl("rollout", "status", "daemonset/kube-network-policies", "-n", "kube-system", "--timeout=180s", timeout=190)
         phase = "owned-client-create"
         tools = settings["gateway"]["toolsImage"]
@@ -399,6 +402,51 @@ def main():
             "scenario-deadline",
         }
         report["failureReason"] = str(error) if isinstance(error, (ValueError, RuntimeError)) and str(error) in allowed else type(error).__name__
+        if phase in ("network-policy-apply", "network-policy-readiness") and "KUBECONFIG" in env:
+            # Readonly, bounded failure evidence before the owned node is removed.
+            # Never persist native messages/logs, credentials, or arbitrary names.
+            observed = {}
+            unavailable = {}
+            for key, resource in (
+                ("daemonset", ["daemonset", "kube-network-policies"]),
+                ("pods", ["pods", "-l", "app.kubernetes.io/name=kube-network-policies"]),
+                ("events", ["events"]),
+            ):
+                try:
+                    result = kubectl("-n", "kube-system", "get", *resource,
+                                     "-o", "json", "--request-timeout=10s", timeout=15, check=False)
+                    if result.returncode:
+                        unavailable[key] = {"returnCode": result.returncode,
+                                            "errorCategory": classify_kubectl_error(result.stderr)}
+                    else:
+                        observed[key] = json.loads(result.stdout)
+                except Exception as witness_error:
+                    unavailable[key] = {"type": type(witness_error).__name__}
+            witness = network_policy_witness(observed.get("daemonset", {}),
+                                             observed.get("pods", {}), observed.get("events", {}))
+            witness.update(status="observed" if observed else "unavailable",
+                           capturePhase="before-cleanup", unavailable=unavailable, logs=[])
+            report["networkPolicyWitness"] = witness
+            uid = (observed.get("daemonset", {}).get("metadata") or {}).get("uid")
+            owned_pods = [pod for pod in observed.get("pods", {}).get("items") or [] if uid and any(
+                owner.get("uid") == uid and owner.get("kind") == "DaemonSet" and owner.get("controller") is True
+                for owner in (pod.get("metadata") or {}).get("ownerReferences") or []
+            )][:4]
+            for index, pod in enumerate(owned_pods, 1):
+                for previous in (False, True):
+                    log = {"podIndex": index, "previous": previous}
+                    try:
+                        result = kubectl("-n", "kube-system", "logs", pod["metadata"]["name"],
+                                         "-c", "kube-network-policies", "--tail=100", "--limit-bytes=16384",
+                                         f"--previous={str(previous).lower()}", "--request-timeout=10s",
+                                         timeout=15, check=False)
+                        log.update(returnCode=result.returncode,
+                                   errorCategory=classify_network_policy_error(
+                                       result.stderr if result.returncode else result.stdout))
+                    except Exception as witness_error:
+                        log["type"] = type(witness_error).__name__
+                    witness["logs"].append(log)
+            checkpoint(force=True)
         if phase == "argo-fixture-prerequisites" and "KUBECONFIG" in env:
             try:
                 witness = run([
