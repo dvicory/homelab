@@ -60,11 +60,17 @@ K3s/kernel VM gate.
 
 The same app is available as `nix run .#household-sign-in-runtime`. Run it
 only as root inside an exclusive disposable native x86 Linux Docker fixture,
-with `idm.plus2.danielvicory.dev` resolving to `127.0.0.1`. It refuses existing
-fixture resources, never edits host resolution, and cleans owned containers,
-network and synthetic credentials on exit. The hosted disposable runner
+with `idm.plus2.danielvicory.dev` resolving to `127.0.0.1`. The existing
+`TMPDIR` parent (default `/root`) is canonicalized; its `household` child must
+not exist, including a dangling symlink. The app refuses existing fixture
+resources before loading images, never edits host resolution, and cleans only
+owned containers, network and synthetic credentials on exit. The hosted disposable runner
 adds one explicit canonical-domain loopback entry. No production account,
 credential or Seerr publication is part of this acceptance.
+
+The hosted household lane places `/nix`, Docker and containerd data on its
+owned Btrfs image. Setup refuses existing mounts; cleanup checks the filesystem
+UUID and expected bind-mount roots before unmounting them or deleting the image.
 
 Check names and implementations belong in Nix, not workflow branches. Successful
 check jobs upload nonempty outputs as `check-output-<system>-<run-id>` artifacts;

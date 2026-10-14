@@ -43,7 +43,7 @@ in
                 if [[ "''${1:-}" == --help ]]; then
                   echo 'Run the complete household sign-in suite as root in an exclusive disposable native x86 Docker fixture.'
                   echo 'Requires ${domain} resolving to 127.0.0.1; never run on a production host.'
-                  echo 'Fixture data uses $TMPDIR/household when TMPDIR is set, otherwise /root/household.'
+                  echo 'Fixture data uses the configured TMPDIR parent, or /root when unset.'
                   exit 0
                 fi
                 test "$#" -eq 0
@@ -57,7 +57,8 @@ in
                 esac
                 python -c 'import socket; assert socket.gethostbyname("${domain}") == "127.0.0.1", "Canonical directory hostname must resolve to loopback"'
                 work="$(realpath -e "''${TMPDIR:-/root}")/household"
-                test ! -e "$work" && test ! -L "$work"
+                test ! -e "$work"
+                test ! -L "$work"
                 for name in kanidm jellyfin seerr; do
                   if docker container inspect "$name" >/dev/null 2>&1; then
                     echo "Refusing existing fixture container $name" >&2
