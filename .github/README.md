@@ -53,10 +53,11 @@ GitHub branch protection remains a maintainer action.
 The mandatory host inventory includes `compute-network-policy-runtime`,
 `compute-guest-upgrade`, `prod-home-replacement` and
 `prod-home-consumer-resilience`, not just whichever checks happen to remain
-registered. The consumer-resilience family registration must accompany its
-scenario implementation; missing it fails hosted evaluation. Neither recovery
-family is replaced by native Kubernetes coverage. Broad VM scenario narrowing
-remains deferred until equivalent native acceptance passes.
+registered. Both recovery families must accompany their scenario implementations;
+missing either fails hosted evaluation. Neither is replaced by native Kubernetes
+coverage. Detailed Argo resource retirement runs in the required native suite;
+the recovery VMs retain real data, ownership, mount and accelerator observations
+through guest replacement.
 
 Linux also requires `prepare-luks-storage` in `fastChecks`. It exercises real
 rsync transfers/checksum verification and refuses unsafe operations before
