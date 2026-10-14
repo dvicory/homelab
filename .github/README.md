@@ -82,6 +82,17 @@ checksum, config/rootfs and native platform. It runs only main-owned tooling;
 it never checks out PR code or takes a package destination from artifact data.
 Publication credentials live in an ephemeral authentication file removed on
 exit. There is no repository write permission or automatic selection commit.
+
+The publisher checks out `github.workflow_sha`, the immutable commit supplying
+the main-owned workflow, not the triggering producer SHA. It does not evaluate
+the PR's Nix code or execute its image entrypoint with publication authority.
+This separation blocks PR-supplied publisher scripts; it does not make archives
+safe. The credentialed job still trusts its parsers, pinned Actions and tools.
+Hashes bind transferred bytes, and credential scanning detects recognizable
+material; neither proves those bytes harmless or free of every possible secret.
+Maintainer/source authorization is not a passing-CI or approving-review gate.
+The `workflow_run` security finding remains unsuppressed pending owner review;
+a finding exception would persist in repository configuration, not apply once.
 Publication keeps Docker schema 2 config bytes, which GHCR and K3s support.
 Converting them to OCI rewrites creation/history timestamps and is refused
 by the exact producer-config identity check.
@@ -123,6 +134,9 @@ helper and a genuinely recompiled version, runs their Kubernetes Jobs through
 a real TLS registry without helper preloads/imports, and checks anonymous
 access, refusal, explicit old-digest rollback and retained-state identity.
 `checks.<system>.helper-source` exercises the actual authorization decisions.
+`checks.<system>.helper-release` runs the registered archive/admission audit,
+including referenced extensionless layers, linked transfer files, metadata
+credentials and public-certificate controls.
 
 GitHub enforces full-SHA action pins and the repository action allowlist.
 Dependabot groups action updates into a weekly pull request after a seven-day

@@ -1,6 +1,6 @@
 ## 1. Publisher capability
 
-- [ ] 1.1 Inventory the current four helper producers and every consumer/preload; verify each exact producer, native platform, and secret-free packaged input before defining publication identities.
+- [x] 1.1 Inventory the current four helper producers and every consumer/preload; verify each exact producer, native platform, and secret-free packaged input before defining publication identities.
 - [x] 1.2 Implement publication from exact Nix outputs and record source, archive, manifest, config/rootfs, and platform identities; verify the command publishes an exact built artifact to a real disposable TLS registry and refuses an incompatible artifact before selection.
 - [x] 1.3 Implement separate anonymous verification of an already-published candidate; verify public consumer access, declared producer/config/rootfs identity, verified TLS, and native platform identity without publisher credentials.
 - [x] 1.4 Add early read-only PR builds and a separate main-owned publisher with scoped package-write permission; verify approved same-repository source/SHA and fixed package destinations, refusal of forks/unauthorized sources and altered artifacts, and no execution of PR code with publication credentials. Keep production consumers unchanged in the publisher PR.
