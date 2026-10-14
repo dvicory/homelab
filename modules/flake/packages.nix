@@ -101,7 +101,7 @@
               ];
             }
             ''
-              ${pkgs.bash}/bin/bash ${self + "/pkgs/by-name/prepare-luks-storage/test.sh"}
+              ${pkgs.bash}/bin/bash ${../../pkgs/by-name/prepare-luks-storage}/test.sh
               touch "$out"
             '';
       };

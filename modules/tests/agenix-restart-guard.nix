@@ -1,7 +1,7 @@
 # Behaviour test: agenix restartUnits restart consumers only when the secret's
 # content changes.
 #
-# The VM runs the restart units that the agenix aspect generates for
+# The container runs the restart units that the agenix aspect generates for
 # hvn-hyp1's crowdsec enrollment key, unchanged, against a stub
 # crowdsec.service. Real agenix would need an age identity and an encrypted
 # fixture, so a small script stands in for agenix activation. It follows
@@ -13,23 +13,24 @@
   ...
 }:
 let
-  hvnConfig = self.nixosConfigurations.hvn-hyp1.config;
-  hvnSystem = hvnConfig.nixpkgs.hostPlatform.system;
-
   secretName = "crowdsec-enrollmentKey";
   unitName = "agenix-restart-${secretName}";
-  generatedPath = hvnConfig.systemd.paths.${unitName};
-  generatedService = hvnConfig.systemd.services.${unitName};
 in
 {
   perSystem =
     { pkgs, system, ... }:
     let
+      # Generate the production units with native executables on each Linux builder.
+      hvnConfig =
+        (import ./_compute-configurations.nix {
+          inherit self lib system;
+          hostName = "hvn-hyp1";
+        }).hostConfig;
+      generatedPath = hvnConfig.systemd.paths.${unitName};
+      generatedService = hvnConfig.systemd.services.${unitName};
       test = pkgs.testers.runNixOSTest {
         name = "agenix-restart-guard";
-        requiredFeatures.kvm = true;
-
-        nodes.machine =
+        containers.machine =
           { pkgs, ... }:
           let
             activate = pkgs.writeShellScriptBin "fake-agenix-activate" ''
@@ -89,13 +90,13 @@ in
           def starts():
               return int(machine.succeed("wc -l < /run/consumer-starts").strip())
 
-          def runs():
+          def started_at():
               return int(machine.succeed(
                   f"systemctl show {unit} --property=ExecMainStartTimestampMonotonic --value"
               ).strip())
 
           def activate(content):
-              before = runs()
+              before = started_at()
               machine.succeed(f"fake-agenix-activate {content}")
               machine.wait_until_succeeds(
                   f"test $(systemctl show {unit} --property=ExecMainStartTimestampMonotonic --value) -gt {before}",
@@ -130,14 +131,14 @@ in
       };
     in
     {
-      checks = lib.optionalAttrs (system == hvnSystem) {
+      checks = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
         agenix-restart-guard = test // {
           meta = test.meta // {
             hestia.group = "${system}-agenix-runtime";
           };
         };
       };
-      legacyPackages = lib.optionalAttrs (system == hvnSystem) {
+      legacyPackages = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
         agenix-restart-guard-test = test;
       };
     };

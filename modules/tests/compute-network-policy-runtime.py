@@ -24,6 +24,11 @@ connections are refused, not admitted, until it is back (fail-closed), and
 that it holds only NET_ADMIN and cannot reach a render node hotplugged into
 the guest, which a privileged control container can open.
 
+Independent traffic rows overlap in four I/O workers; each keeps its own
+probe and retry deadlines. Pod creation/deletion, controller migration,
+crashes and guest restarts stay ordered, with watchers running throughout
+their original observation windows.
+
 Runs only inside the disposable fixture-host VM of
 checks.compute-network-policy-runtime.
 """
@@ -31,6 +36,7 @@ checks.compute-network-policy-runtime.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import json
 import os
@@ -172,9 +178,10 @@ class Guest:
         return name
 
     def watch_read(self, client: str, name: str, stop: bool = True) -> list[tuple[int, str]]:
+        command = f"cat /tmp/watch-{name}.log"
         if stop:
-            self.exec_in(client, "sh", "-c", f"kill $(cat /tmp/watch-{name}.pid) 2>/dev/null; true")
-        text = self.exec_in(client, "cat", f"/tmp/watch-{name}.log")
+            command = f"kill $(cat /tmp/watch-{name}.pid) 2>/dev/null; {command}"
+        text = self.exec_in(client, "sh", "-c", command)
         return [(int(line.split()[0]), line.split()[1]) for line in text.splitlines() if len(line.split()) == 2]
 
     def waiting(self) -> list[str]:
@@ -476,11 +483,17 @@ def no_device_access(lib, guest: Guest) -> None:
 
 
 def enforce(lib, guest: Guest, label: str, since: int, expect_nftables: bool) -> None:
-    for probe in guest.plan["probes"]:
+    def probe_boundary(probe: dict) -> None:
         client, server, port, admitted = probe["client"], probe["server"], probe["port"], probe["admitted"]
         reached = lib.wait_for(f"{client} -> {server}:{port}",
                                lambda: guest.reaches(client, server, port) == admitted, timeout=60)
         lib.check(bool(reached), f"{label}: {client} {'reaches' if admitted else 'is refused at'} {server}:{port}")
+
+    # No lifecycle mutation runs alongside these independent connections.
+    # Each refusal still waits wget's full three seconds; each row retains
+    # its own 60-second convergence deadline and its positive controls.
+    with ThreadPoolExecutor(max_workers=4) as probes:
+        list(probes.map(probe_boundary, guest.plan["probes"]))
     # A new Pod's first connection, with no retry.
     guest.push_apply("newcomers")
     guest.wait_ready(f"{label} newcomers", timeout=300)
@@ -558,7 +571,6 @@ def run_scenario(args) -> None:
     with lib.phase("committed objects, the guest as before the change, filler up to the Pod limit"):
         for name in ("namespaces", "services", "stand-ins", "policies", "filler"):
             guest.push_apply(name)
-        guest.wait_ready("stand-ins")
         as_before_change(lib, guest, args)
         guest.wait_ready("before the change")
         # kube-proxy's iptables tables at the production Service and Pod count.

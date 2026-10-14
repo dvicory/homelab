@@ -49,12 +49,14 @@ let
   checksFor =
     system:
     let
-      checks = (self.checks or { }).${system} or { };
+      checks = self.checks.${system};
     in
     assert lib.assertMsg (lib.all lib.isDerivation (
       lib.attrValues checks
     )) "CI checks.${system} must contain only derivations";
     checks;
+
+  # Mandatory identities are safety contracts, not executor-selection groups.
   requiredFastChecks = [
     "den-semantics"
     "compute-contracts"
@@ -79,8 +81,6 @@ let
     "prod-home-manifests-policy"
     "argocd-application-health"
   ];
-  # Runtime-Secret API, Argo and Gateway controller coverage runs natively
-  # through the separately required verify-kubernetes-api app below.
   requiredKubernetesApplications = [
     "public-edge-runtime"
     "media-ingress-runtime"
@@ -98,38 +98,28 @@ let
     "incus-mount-isolation"
     "root-esp-mirror"
     "prod-home-replacement"
+    "prod-home-consumer-resilience"
   ];
-  requiredFeaturesFor =
-    check:
-    check.requiredSystemFeatures or (check.config.rawTestDerivation.requiredSystemFeatures or [ ]);
-  needsVm =
-    check:
-    lib.elem "kvm" (requiredFeaturesFor check)
-    || lib.isDerivation (check.driver or (check.driverInteractive or (check.config.driver or null)));
   requiredNativeApplications = [
     "verify-kubernetes-api"
     "media-live-acceptance"
   ];
-  nativeApplicationsFor =
-    system:
-    if system != "x86_64-linux" then
-      { }
+
+  requiredFeaturesFor =
+    check:
+    # Read the lazy test's feature declarations without forcing its raw derivation.
+    if check ? config.requiredFeatures then
+      builtins.attrNames (lib.filterAttrs (_: enabled: enabled) check.config.requiredFeatures)
     else
-      let
-        packages = (self.packages or { }).${system} or { };
-        apps = (self.apps or { }).${system} or { };
-        valid =
-          name:
-          builtins.hasAttr name packages
-          && lib.isDerivation packages.${name}
-          && builtins.hasAttr name apps
-          && (apps.${name}.type or "") == "app"
-          && (apps.${name}.program or "") == lib.getExe packages.${name};
-      in
-      assert lib.assertMsg (lib.all valid requiredNativeApplications)
-        "Required native CI apps must have matching executable packages: ${lib.concatStringsSep ", " requiredNativeApplications}";
-      lib.genAttrs requiredNativeApplications (name: packages.${name});
-  hostedChecksFor =
+      check.requiredSystemFeatures or [ ];
+
+  isRuntime =
+    check:
+    lib.elem "kvm" (requiredFeaturesFor check)
+    || lib.elem "uid-range" (requiredFeaturesFor check)
+    || lib.isDerivation (check.driver or (check.driverInteractive or (check.config.driver or null)));
+
+  checkInventory =
     system:
     let
       checks = checksFor system;
@@ -139,81 +129,90 @@ let
           "prepare-luks-storage"
           "incus-mount-isolation-decisions"
         ];
-      required =
-        fastRequired
-        ++ lib.optionals (system == "x86_64-linux") (
-          requiredKubernetesApplications ++ requiredHostRecovery
-        );
+      runtimeRequired =
+        lib.optionals (system == "x86_64-linux") (requiredKubernetesApplications ++ requiredHostRecovery)
+        ++ lib.optional (system == "aarch64-linux") "agenix-restart-guard";
+      required = fastRequired ++ runtimeRequired;
       missing = lib.filter (name: !(builtins.hasAttr name checks)) required;
-      select = names: lib.genAttrs names (name: checks.${name});
+      inventory = lib.mapAttrsToList (
+        name: check:
+        let
+          requiredSystemFeatures = requiredFeaturesFor check;
+          linux = lib.hasSuffix "-linux" system;
+          requirements = {
+            kvm = lib.elem "kvm" requiredSystemFeatures;
+            uidRange = lib.elem "uid-range" requiredSystemFeatures;
+            cgroups = lib.elem "uid-range" requiredSystemFeatures;
+          };
+          supportedFeatures = [
+            "benchmark"
+            "big-parallel"
+            "nixos-test"
+          ]
+          ++ lib.optional (system == "x86_64-linux") "kvm"
+          ++ lib.optional linux "uid-range";
+          unsupportedFeatures = lib.subtractLists supportedFeatures requiredSystemFeatures;
+          hosted = unsupportedFeatures == [ ];
+        in
+        {
+          inherit
+            name
+            requiredSystemFeatures
+            requirements
+            hosted
+            ;
+          # Unsupported Linux tests on Darwin must remain inspectable, not evaluated.
+          drvPath = if hosted then check.drvPath else null;
+          runtime = isRuntime check;
+          reason = lib.concatMapStringsSep "; " (
+            feature:
+            if feature == "kvm" then
+              "hosted runner has no KVM"
+            else if feature == "uid-range" then
+              "hosted runner cannot run Linux UID-range containers"
+            else
+              "hosted runner lacks required system feature ${feature}"
+          ) unsupportedFeatures;
+        }
+      ) checks;
+      fast = builtins.filter (entry: !entry.runtime && entry.hosted) inventory;
+      runtime = builtins.filter (entry: entry.runtime && entry.hosted) inventory;
+      unsupported = builtins.filter (entry: !entry.hosted) inventory;
     in
     assert lib.assertMsg (
       missing == [ ]
     ) "Missing required CI checks for ${system}: ${lib.concatStringsSep ", " missing}";
     assert lib.assertMsg (lib.all (
-      name: lib.isDerivation checks.${name}
-    ) required) "Required CI checks for ${system} must be derivations";
+      name: !isRuntime checks.${name}
+    ) fastRequired) "Required fast CI checks for ${system} must not require a runtime driver";
     assert lib.assertMsg (lib.all (
-      name: !(needsVm checks.${name})
-    ) fastRequired) "Required fast CI checks for ${system} must not require a VM";
+      name: isRuntime checks.${name}
+    ) runtimeRequired) "Required hosted runtime checks must retain their runtime boundary";
+    assert lib.assertMsg (lib.all (
+      name: (lib.findFirst (entry: entry.name == name) null inventory).hosted
+    ) required) "Required CI checks for ${system} must remain hosted on their required platform";
+    assert builtins.isList (nativeApplicationsFor system);
     assert lib.assertMsg (
-      system != "x86_64-linux"
-      || lib.all (name: needsVm checks.${name}) (requiredKubernetesApplications ++ requiredHostRecovery)
-    ) "Required hosted runtime checks must retain their VM boundary";
-    assert builtins.isAttrs (nativeApplicationsFor system);
+      builtins.length (fast ++ runtime ++ unsupported) == builtins.length inventory
+      &&
+        lib.sort builtins.lessThan (map (entry: entry.name) (fast ++ runtime ++ unsupported))
+        == builtins.attrNames checks
+    ) "Hosted CI must partition every checks.${system} registration exactly once";
     {
-      fastChecks = select fastRequired // lib.filterAttrs (_: check: !(needsVm check)) checks;
-    }
-    // lib.optionalAttrs (system == "x86_64-linux") {
-      kubernetesApplications = select requiredKubernetesApplications;
-      hostRecovery =
-        select requiredHostRecovery
-        // lib.filterAttrs (
-          name: check: needsVm check && !(lib.elem name requiredKubernetesApplications)
-        ) checks;
+      inherit
+        inventory
+        fast
+        runtime
+        unsupported
+        ;
     };
 
-  hostedInventoryFor =
+  hostedChecksFor =
     system:
     let
-      groups = hostedChecksFor system;
-      inventory = lib.mapAttrsToList (
-        name: check:
-        let
-          matching = lib.filter (group: builtins.hasAttr name groups.${group}) (builtins.attrNames groups);
-          hosted = !needsVm check || system == "x86_64-linux";
-        in
-        assert lib.assertMsg (
-          builtins.length matching == (if hosted then 1 else 0)
-        ) "Hosted CI must account for ${system}.${name} exactly once";
-        {
-          inherit name hosted;
-          drvPath = if hosted then check.drvPath else null;
-          runtime = needsVm check;
-          requiredSystemFeatures = requiredFeaturesFor check;
-          group = if hosted then lib.head matching else null;
-          reason = if hosted then "" else "hosted runner has no KVM";
-        }
-      ) (checksFor system);
-      nativeApplications = lib.mapAttrsToList (name: package: {
-        inherit name;
-        inherit (package) drvPath;
-        program = lib.getExe package;
-        group = "kubernetesApplications";
-      }) (nativeApplicationsFor system);
+      names = map (entry: entry.name) (checkInventory system).fast;
     in
-    {
-      checks = inventory;
-      inherit nativeApplications;
-      jobGroups = builtins.attrNames groups ++ [
-        "packages"
-        "devShells"
-        "formatters"
-        "nixosConfigurations"
-        "darwinConfigurations"
-        "homeConfigurations"
-      ];
-    };
+    lib.filterAttrs (name: _: lib.elem name names) (checksFor system);
 
   ciJobs = lib.genAttrs ciSystems (
     system:
@@ -238,12 +237,78 @@ let
       }
     )
   );
+
+  nativeApplicationsFor =
+    system:
+    let
+      packages = (self.packages or { }).${system} or { };
+      apps = (self.apps or { }).${system} or { };
+      valid =
+        name:
+        builtins.hasAttr name packages
+        && lib.isDerivation packages.${name}
+        && builtins.hasAttr name apps
+        && (apps.${name}.type or "") == "app"
+        && (apps.${name}.program or "") == lib.getExe packages.${name};
+      descriptors = [
+        {
+          name = "media-live-acceptance";
+          package = "packages.${system}.media-live-acceptance";
+          arguments = [
+            "--docker-host"
+            "unix:///var/run/docker.sock"
+            "--platform"
+            "linux/amd64"
+          ];
+          timeoutSeconds = 2700;
+          requirements.docker = true;
+          cleanupPrefix = "homelab-media-live-";
+        }
+        {
+          name = "verify-kubernetes-api";
+          package = "packages.${system}.verify-kubernetes-api";
+          arguments = [
+            "--docker-context"
+            "default"
+            "--report"
+            "kubernetes-api-result.json"
+          ];
+          reportFile = "kubernetes-api-result.json";
+          reportCheckArguments = [
+            "--check-report"
+            "kubernetes-api-result.json"
+          ];
+          timeoutSeconds = 7200;
+          requirements.docker = true;
+          cleanupPrefix = "homelab-api-";
+        }
+      ];
+    in
+    if system != "x86_64-linux" then
+      [ ]
+    else
+      assert lib.assertMsg (lib.all valid requiredNativeApplications)
+        "Required native CI apps must have matching executable packages: ${lib.concatStringsSep ", " requiredNativeApplications}";
+      assert lib.assertMsg (
+        lib.sort builtins.lessThan (map (entry: entry.name) descriptors)
+        == lib.sort builtins.lessThan requiredNativeApplications
+      ) "Required native CI apps must be registered exactly once";
+      descriptors;
+
+  hostedPlanFor = system: {
+    inventory = builtins.mapAttrs (_: map (entry: builtins.removeAttrs entry [ "drvPath" ])) (
+      checkInventory system
+    );
+    groups = builtins.attrNames ciJobs.${system};
+    nativeApplications = nativeApplicationsFor system;
+  };
 in
 {
   flake = {
     # Pick up standard flake outputs without duplicating their inventory in CI.
     inherit ciJobs;
-    hostedCiInventory = lib.genAttrs ciSystems hostedInventoryFor;
+    hostedCiInventory = lib.genAttrs ciSystems checkInventory;
+    hostedCiPlan = lib.genAttrs ciSystems hostedPlanFor;
     ciBundles = lib.mapAttrs (
       system: jobs: withSystem system ({ pkgs, ... }: pkgs.linkFarm "ci-${system}" jobs)
     ) ciJobs;
@@ -251,13 +316,9 @@ in
       system:
       withSystem system (
         { pkgs, ... }:
-        lib.mapAttrs (name: entries: pkgs.linkFarm "ci-${name}-hosted" (project system "checks" entries)) (
-          hostedChecksFor system
-          // lib.optionalAttrs (system == "x86_64-linux") {
-            kubernetesApplications =
-              (hostedChecksFor system).kubernetesApplications // nativeApplicationsFor system;
-          }
-        )
+        {
+          checks = pkgs.linkFarm "ci-checks-hosted" (project system "checks" (hostedChecksFor system));
+        }
       )
     );
   };
