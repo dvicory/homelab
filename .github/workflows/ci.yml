@@ -249,9 +249,12 @@ jobs:
         run: |
           set -euo pipefail
           test ! -e /mnt/nix.img
-          ! mountpoint -q /nix
-          ! mountpoint -q /var/lib/docker
-          ! mountpoint -q /var/lib/containerd
+          for target in /nix /var/lib/docker /var/lib/containerd; do
+            if mountpoint -q "$target"; then
+              printf 'refusing existing storage mount: %s\n' "$target" >&2
+              exit 1
+            fi
+          done
           free_space=$(df -m --output=avail /mnt | tail -n 1)
           disk_size=$((free_space - 1024))
           test "$disk_size" -gt 1024

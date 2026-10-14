@@ -254,6 +254,7 @@ def main():
     trust = WORK / "trust"
     trust.mkdir()
     shutil.copy(pki / "ca.crt", trust / "ca.crt")
+    run("chmod", "-R", "a+rX", str(trust))
     for path in ("kanidm-tls", "kanidm-config", "kanidm-data"):
         run("chown", "-R", "1000:1000", str(WORK / path))
     cafile = str(pki / "ca.crt")
