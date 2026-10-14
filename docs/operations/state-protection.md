@@ -297,9 +297,10 @@ nix build .#checks.x86_64-linux.preserve-zfs-reference
 
 The VM uses disposable pools, synthetic data and an independent oracle. It does not require Incus, Kubernetes, credentials, homelab access, external repositories or production lifecycle owners.
 
-CI separates `preserve-fast` from `preserve-zfs-reference` and from ordinary
-checks. The hosted ZFS fixture runs on x86_64 Linux/KVM, not hosted ARM emulation
-or Darwin. Direct dispatch of `preserve-zfs-reference` uses the same bounded
-VM build path. The current ordinary-check serialization and separate
-evaluation/build processes remain intact; Preserve does not undo their runner
-memory safeguards.
+Nix's hosted inventory places the model/protocol/inventory checks in the fast
+aggregate and gives `preserve-zfs-reference` its own native x86_64 Linux/KVM
+runner. No Preserve name filter or duplicate CI group selects them. The ZFS
+fixture is not scheduled on hosted ARM emulation or Darwin. Direct dispatch of
+`preserve-zfs-reference` uses the same registered, capability-checked VM path;
+separate evaluation/build processes and the one-runtime-suite cap retain the
+runner memory safeguards.

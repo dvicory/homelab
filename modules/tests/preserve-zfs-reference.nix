@@ -179,7 +179,7 @@
             pkgs.testers.runNixOSTest {
               name = "preserve-zfs-reference";
               globalTimeout = 60 * 60;
-              requiredFeatures.kvm = system != "aarch64-linux";
+              requiredFeatures.kvm = true;
 
               nodes.machine =
                 { config, pkgs, ... }:

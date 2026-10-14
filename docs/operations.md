@@ -120,6 +120,11 @@ nix build .#nixosConfigurations.compute-1.config.system.build.computeBundle --ou
 nix build .#packages.x86_64-linux.household-bootstrap-bundle --out-link bootstrap-bundle
 ```
 
+The guest bundle keeps the native LXC `metadata.tar.xz`, `rootfs.tar.xz`
+and `system` interface. Rootfs compression uses pixz level 0 to reduce
+preparation time at the cost of a larger archive; the decompressed
+guest payload and metadata are unchanged.
+
 Run guest lifecycle commands as root.
 
 Adopt and inspect an existing guest:
