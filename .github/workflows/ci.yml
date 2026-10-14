@@ -244,9 +244,38 @@ jobs:
         with:
           persist-credentials: false
 
+      # Share the temporary-disk filesystem between Nix and this job's Docker fixture.
+      - name: Prepare native acceptance storage
+        run: |
+          set -euo pipefail
+          test ! -e /mnt/nix.img
+          ! mountpoint -q /nix
+          ! mountpoint -q /var/lib/docker
+          ! mountpoint -q /var/lib/containerd
+          free_space=$(df -m --output=avail /mnt | tail -n 1)
+          disk_size=$((free_space - 1024))
+          test "$disk_size" -gt 1024
+          sudo fallocate -l "${disk_size}M" /mnt/nix.img
+          loop_dev=$(sudo losetup --find --show /mnt/nix.img)
+          sudo mkfs.btrfs -L nix --nodiscard "$loop_dev"
+          sudo mkdir -p /nix
+          sudo mount "$loop_dev" /nix -o noatime,nobarrier,nodiscard,compress=zstd:1,space_cache=v2,commit=120
+          sudo mkdir -p /nix/build
+          sudo chattr +C /nix/build
+          sudo mkdir -p /nix/build/household-native/{docker,containerd,tmp}
+          sudo chmod 1777 /nix/build/household-native/tmp
+          sudo systemctl stop docker.service docker.socket containerd.service
+          sudo mkdir -p /var/lib/docker /var/lib/containerd
+          sudo mount --bind /nix/build/household-native/docker /var/lib/docker
+          sudo mount --bind /nix/build/household-native/containerd /var/lib/containerd
+          sudo systemctl start containerd.service docker.service
+          printf 'TMPDIR=/nix/build/household-native/tmp\n' >> "$GITHUB_ENV"
+
       - name: Install Nix
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
+          extra_nix_config: |
+            build-dir = /nix/build
           github_access_token: ${{ github.token }}
 
       - name: Configure durable cache (read only)
@@ -265,6 +294,10 @@ jobs:
             uname -a
             docker --host unix:///var/run/docker.sock version
             docker --host unix:///var/run/docker.sock info
+            df -h / /nix
+            for target in /nix /var/lib/docker /var/lib/containerd; do
+              findmnt -rn -M "$target" -o TARGET,SOURCE,FSTYPE,FSROOT
+            done
             git rev-parse HEAD HEAD:generated/manifests/prod-home
             sha256sum flake.lock modules/tests/household-sign-in-runtime.py modules/tests/household-sign-in-runtime.nix
           } 2>&1 | tee "$RUNNER_TEMP/household-native-evidence/inputs.log"
@@ -282,7 +315,7 @@ jobs:
           printf '127.0.0.1 idm.plus2.danielvicory.dev\n' | sudo tee -a /etc/hosts
           app=$(nix eval --raw .#apps.x86_64-linux.household-sign-in-runtime.program)
           # Preserve the original suite's 3000-second deadline and owned cleanup.
-          sudo /usr/bin/time -p timeout --signal=INT 3000s "$app" \
+          sudo env TMPDIR="$TMPDIR" /usr/bin/time -p timeout --signal=INT 3000s "$app" \
             2>&1 | tee "$RUNNER_TEMP/household-native-evidence/acceptance.log"
 
       - name: Record independent owned cleanup
@@ -300,8 +333,32 @@ jobs:
             printf 'remaining_household_network=%s\n' "$remaining"
             test -z "$remaining"
             sudo test ! -e /root/household
+            sudo test ! -e /nix/build/household-native/tmp/household
             printf 'remaining_fixture_directory=false\n'
           } 2>&1 | tee "$RUNNER_TEMP/household-native-evidence/cleanup.log"
+
+      - name: Clean owned native acceptance storage
+        if: always()
+        run: |
+          set -euo pipefail
+          if sudo test -d /nix/build/household-native; then
+            # Never unmount an unrelated daemon's storage.
+            for name in docker containerd; do
+              if mountpoint -q "/var/lib/$name"; then
+                test "$(findmnt -rn -M "/var/lib/$name" -o FSROOT)" = "/build/household-native/$name"
+                test "$(findmnt -rn -M "/var/lib/$name" -o UUID)" = "$(findmnt -rn -M /nix -o UUID)"
+              fi
+            done
+            sudo systemctl stop docker.service docker.socket containerd.service
+            for name in docker containerd; do
+              if mountpoint -q "/var/lib/$name"; then
+                sudo umount "/var/lib/$name"
+              fi
+            done
+            sudo rm -rf /nix/build/household-native
+            sudo test ! -e /nix/build/household-native
+          fi
+          printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
 
       - name: Upload sanitized native household evidence
         if: always()

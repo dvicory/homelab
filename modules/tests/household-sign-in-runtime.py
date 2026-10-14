@@ -32,7 +32,6 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFESTS = ROOT / "generated/manifests/prod-home"
-WORK = Path("/root/household")
 LDAP_PROVIDER = "Jellyfin.Plugin.LDAP_Auth.LdapAuthenticationProviderPlugin"
 DEFAULT_PROVIDER = "Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider"
 JELLYFIN_HOST = "jellyfin.jellyfin.svc.cluster.local"
@@ -201,8 +200,10 @@ def jellyfin_headers(token=None):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--domain", required=True)
+    parser.add_argument("--work-dir", type=Path, default=Path("/root/household"))
     args = parser.parse_args()
     domain = args.domain
+    WORK = args.work_dir
     base = ",".join("dc=" + part for part in domain.split("."))
 
     # Everything below comes from the committed manifests.
@@ -539,8 +540,11 @@ def main():
     require(status == 200 and not ana["admin"], "leaving the administrator group removes Jellyfin administration at the next sign-in", ana)
     kanidm.api("DELETE", f"/v1/group/{household_group}/_attr/member", ["hana"])
     require(authenticate("hana", primary["hana"])[0] != 200, "leaving the household group refuses the next sign-in")
-    status, _, _ = jelly.call("GET", "/Users/Me", None, jellyfin_headers(hana_token))
+    status, _, session_user = jelly.call("GET", "/Users/Me", None, jellyfin_headers(hana_token))
     evidence("session-after-leaving-household-group", status)
+    require(status == 200 and isinstance(session_user, dict) and session_user.get("Id") == hana["id"],
+            "leaving the household group keeps the established Jellyfin session authorized",
+            {"status": status, "id": (session_user or {}).get("Id") if isinstance(session_user, dict) else None})
     kanidm.api("POST", f"/v1/group/{household_group}/_attr/member", ["hana"])
     status, _ = kanidm.api("DELETE", f"/v1/group/{household_group}/_attr/member", ["ana"])
     require(status == 200, "the operator removes a POSIX-backed household member", status)

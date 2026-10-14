@@ -43,6 +43,7 @@ in
                 if [[ "''${1:-}" == --help ]]; then
                   echo 'Run the complete household sign-in suite as root in an exclusive disposable native x86 Docker fixture.'
                   echo 'Requires ${domain} resolving to 127.0.0.1; never run on a production host.'
+                  echo 'Fixture data uses $TMPDIR/household when TMPDIR is set, otherwise /root/household.'
                   exit 0
                 fi
                 test "$#" -eq 0
@@ -55,7 +56,8 @@ in
                   *) echo 'Native linux/amd64 Docker required' >&2; exit 1 ;;
                 esac
                 python -c 'import socket; assert socket.gethostbyname("${domain}") == "127.0.0.1", "Canonical directory hostname must resolve to loopback"'
-                test ! -e /root/household
+                work="$(realpath -e "''${TMPDIR:-/root}")/household"
+                test ! -e "$work" && test ! -L "$work"
                 for name in kanidm jellyfin seerr; do
                   if docker container inspect "$name" >/dev/null 2>&1; then
                     echo "Refusing existing fixture container $name" >&2
@@ -78,7 +80,7 @@ in
                       continue
                     fi
                     while IFS= read -r mount; do
-                      if [[ "$mount" == /root/household/* ]]; then
+                      if [[ "$mount" == "$work/"* ]]; then
                         if ! docker container rm --force "$id"; then failed=1; fi
                         break
                       fi
@@ -86,7 +88,7 @@ in
                   done
                   if ! networks=$(docker network ls --filter name=^household$ --format '{{.Name}}'); then failed=1; networks=; fi
                   if [[ -n "$networks" ]] && ! docker network rm household; then failed=1; fi
-                  if ! rm -rf /root/household; then failed=1; fi
+                  if ! rm -rf "$work"; then failed=1; fi
                   printf 'EVIDENCE owned-cleanup {"exit":%s,"cleanup_succeeded":%s}\n' "$status" "$([[ "$failed" == 0 ]] && echo true || echo false)"
                   if [[ "$failed" != 0 ]]; then exit 1; fi
                   exit "$status"
@@ -99,7 +101,7 @@ in
                 docker load < ${image}
               '') images
               + ''
-                python ${source}/modules/tests/household-sign-in-runtime.py --domain ${domain}
+                python ${source}/modules/tests/household-sign-in-runtime.py --domain ${domain} --work-dir "$work"
               '';
           }
         );
