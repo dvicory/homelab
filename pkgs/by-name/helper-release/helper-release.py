@@ -76,6 +76,8 @@ def audit(archive):
         require(layers, "image has no referenced layers")
         require(all(outer.getmember(name).isfile() for name in layers), "referenced layers must be regular archive members")
         for layer in outer:
+            audit_metadata(layer.get_info())
+            audit_metadata(layer.pax_headers)
             name = layer.name.removeprefix("./")
             require(not any(part in (".secrets", ".ssh", ".aws") for part in Path(name).parts), "private credential path in public image")
             require(not name.endswith(".age"), "encrypted production secret in public image")
@@ -94,6 +96,8 @@ def audit(archive):
                 continue
             with tarfile.open(fileobj=outer.extractfile(layer)) as payload:
                 for member in payload:
+                    audit_metadata(member.get_info())
+                    audit_metadata(member.pax_headers)
                     name = member.name.removeprefix("./")
                     require(not any(part in (".secrets", ".ssh", ".aws") for part in Path(name).parts), "private credential path in public image")
                     require(not name.endswith(".age"), "encrypted production secret in public image")
@@ -143,6 +147,7 @@ def build(args):
 
 def candidate(args):
     directory = Path(args.directory)
+    require(not directory.is_symlink() and all(path.is_file() and not path.is_symlink() for path in directory.iterdir()), "transfer must contain regular files only")
     require(sha(directory / "candidate.json") == args.candidate_sha256, "artifact metadata differs from trusted read-only build")
     value = json.loads((directory / "candidate.json").read_text())
     require(value["schema"] == 1 and value["sourceSha"] == args.source_sha and value["sourceRun"] == args.source_run, "artifact source SHA/run does not match authorized source")
@@ -150,7 +155,6 @@ def candidate(args):
     names = set(value["artifacts"])
     require(names == set(HELPERS) or (args.disposable and names and names <= set(HELPERS)), "artifact inventory differs from fixed helper allowlist")
     require({p.name for p in directory.iterdir()} <= {"candidate.json", "publication.json"} | {f"{name}.tar" for name in names}, "unexpected transfer artifact contents")
-    require(all(path.is_file() and not path.is_symlink() for path in directory.iterdir()), "transfer must contain regular files only")
     for name, identity in value["artifacts"].items():
         require(re.fullmatch(r"/nix/store/[0-9a-z]{32}-[^/]+\.drv", identity["derivation"]), "invalid producer derivation identity")
         require(re.fullmatch(r"/nix/store/[0-9a-z]{32}-[^/]+", identity["archivePath"]), "invalid producer output identity")
