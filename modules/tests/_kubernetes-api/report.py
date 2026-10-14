@@ -296,6 +296,8 @@ def classify_network_policy_error(text):
     ):
         if any(marker in text for marker in markers):
             return category
+    if "secret" in text and "not found" in text:
+        return "missing-secret"
     return classify_kubectl_error(text)
 
 
@@ -505,10 +507,41 @@ def check_report(raw, required):
         if test.get("status") != "passed" or any(
             step.get("status") != "passed"
             or not step.get("operations")
-            or any(op.get("status") != "passed" or op.get("failure") for op in step["operations"])
+            or any(op.get("status") != "passed" or op.get("failure") or op.get("hasFailure") for op in step["operations"])
             for step in steps
         ):
             raise ValueError("scenario-failure-or-skip")
+
+
+def check_acceptance(report):
+    """Validate the persisted sanitized result with independent safety identities."""
+    if not isinstance(report, dict):
+        raise ValueError("acceptance-report-shape")
+    if report.get("scenario") != "kubernetes-native-safety":
+        raise ValueError("acceptance-scenario")
+    supplied = report.get("requiredScenarios")
+    if not isinstance(supplied, list) or len(supplied) != len(REQUIRED_SCENARIOS) or set(supplied) != set(REQUIRED_SCENARIOS):
+        raise ValueError("required-scenario-inventory")
+    check_report({"tests": report.get("executed")}, REQUIRED_SCENARIOS)
+    if any(
+        operation.get("hasFailure") is not False
+        for test in report["executed"] for step in test["steps"] for operation in step["operations"]
+    ):
+        raise ValueError("scenario-failure-or-skip")
+    if report.get("scoped") is not False:
+        raise ValueError("scoped-execution-not-full-acceptance")
+    mutation = report.get("mutation")
+    if not isinstance(mutation, dict) or set(mutation) != {"gatewayTLSCEL", "argo"} or mutation.get("gatewayTLSCEL") is not False or mutation.get("argo") != "":
+        raise ValueError("negative-mutation-not-full-acceptance")
+    cleanup = report.get("cleanup")
+    if not isinstance(cleanup, dict) or any(
+        cleanup.get(key) is not True for key in ("containers", "volumes", "network", "credentials")
+    ) or any(value is not True for value in cleanup.values()):
+        raise ValueError("owned-state-cleanup-failed")
+    if report.get("status") != "passed" or report.get("fullAcceptance") is not True or any(
+        key in report for key in ("failurePhase", "failureReason", "commandFailure")
+    ):
+        raise ValueError("acceptance-failed")
 
 
 def self_check():
@@ -560,6 +593,9 @@ def self_check():
     assert sensitive not in json.dumps(enforcer)
     assert classify_network_policy_error("could not open nfqueue socket " + sensitive) == "nfqueue"
     assert sensitive not in classify_network_policy_error(sensitive)
+    assert classify_network_policy_error('secret "' + sensitive + '" not found') == "missing-secret"
+    assert classify_network_policy_error('FailedMount: secret "' + sensitive + '" not found') == "mount"
+    assert classify_network_policy_error('ErrImagePull: secret "' + sensitive + '" not found') == "image"
     source = {"repoURL": sensitive, "targetRevision": "a" * 40}
     job_uid = "12345678-1234-1234-1234-123456789abc"
     recovery = argo_recovery_witness({"items": [{
@@ -652,12 +688,81 @@ def self_check():
             continue
         raise AssertionError("incomplete report accepted")
 
+    # Harmless operation-count changes are not a new safety inventory.
+    varied = copy.deepcopy(good)
+    varied["tests"][0]["steps"][0]["operations"] *= 3
+    check_report(varied, required)
+    complete = {
+        "scenario": "kubernetes-native-safety", "requiredScenarios": REQUIRED_SCENARIOS,
+        "executed": sanitize_tests({"name": name, "status": "passed", "steps": [
+            {"status": "passed", "operations": [{"status": "passed", "type": "assert"}]},
+        ]} for name in REQUIRED_SCENARIOS),
+        "status": "passed", "fullAcceptance": True, "scoped": False,
+        "mutation": {"gatewayTLSCEL": False, "argo": ""},
+        "cleanup": {key: True for key in ("containers", "volumes", "network", "credentials")},
+    }
+    check_acceptance(complete)
+    incomplete = [None, {}, {"executed": []}]
+    for key in complete:
+        bad = copy.deepcopy(complete)
+        del bad[key]
+        incomplete.append(bad)
+    for key, value in (
+        ("executed", []), ("requiredScenarios", REQUIRED_SCENARIOS[:-1]),
+        ("scoped", True), ("scoped", None), ("status", "failed"), ("fullAcceptance", False),
+        ("mutation", {"gatewayTLSCEL": True, "argo": ""}), ("failureReason", "command-failed"),
+        ("mutation", {"gatewayTLSCEL": 0, "argo": ""}),
+        ("failurePhase", "cleanup"), ("commandFailure", {"returnCode": 1}),
+        ("cleanup", {**complete["cleanup"], "extra": False}),
+    ):
+        bad = copy.deepcopy(complete)
+        bad[key] = value
+        incomplete.append(bad)
+    for key in complete["cleanup"]:
+        for value in (False, None, 1):
+            bad = copy.deepcopy(complete)
+            bad["cleanup"][key] = value
+            incomplete.append(bad)
+        bad = copy.deepcopy(complete)
+        del bad["cleanup"][key]
+        incomplete.append(bad)
+    for path in ("scenario", "step", "operation", "failure", "failure-missing", "missing"):
+        bad = copy.deepcopy(complete)
+        test = bad["executed"][0]
+        if path == "scenario":
+            test["status"] = "skipped"
+        elif path == "step":
+            test["steps"][0]["status"] = "failed"
+        elif path == "operation":
+            test["steps"][0]["operations"][0]["status"] = "skipped"
+        elif path == "failure":
+            test["steps"][0]["operations"][0]["hasFailure"] = True
+        elif path == "failure-missing":
+            del test["steps"][0]["operations"][0]["hasFailure"]
+        else:
+            bad["executed"].pop()
+        incomplete.append(bad)
+    for bad in incomplete:
+        try:
+            check_acceptance(bad)
+        except ValueError:
+            continue
+        raise AssertionError("incomplete acceptance accepted")
+
 
 if __name__ == "__main__":
     import sys
 
     if sys.argv[1:] == ["--capture-retained"]:
         capture_retained_witness()
+    elif len(sys.argv) == 3 and sys.argv[1] == "--check-full":
+        import json
+        from pathlib import Path
+
+        try:
+            check_acceptance(json.loads(Path(sys.argv[2]).read_text()))
+        except (OSError, ValueError, TypeError, AttributeError, KeyError):
+            raise SystemExit("invalid-full-acceptance-report") from None
     elif len(sys.argv) == 1:
         self_check()
     else:

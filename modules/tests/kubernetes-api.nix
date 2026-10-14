@@ -66,6 +66,10 @@
       defaultFixture = lib.optionalString (pkgs.stdenv.hostPlatform.system == "x86_64-linux")
         "--fixture-settings ${settings}";
       runner = pkgs.writeShellScriptBin "verify-kubernetes-api" ''
+        if [ "''${1-}" = "--check-report" ]; then
+          shift
+          exec ${python}/bin/python3 ${./_kubernetes-api}/report.py --check-full "$@"
+        fi
         exec ${python}/bin/python3 ${./_kubernetes-api}/run.py ${defaultFixture} "$@"
       '';
     in
