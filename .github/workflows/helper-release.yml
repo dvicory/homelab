@@ -1,13 +1,18 @@
 name: Nix helper candidates
 
 on:
-  workflow_run:
-    workflows: [Nix CI]
-    types: [requested]
-  workflow_dispatch:
+  workflow_call:
     inputs:
+      source_sha:
+        description: Exact merged-main caller SHA
+        required: true
+        type: string
       source_run:
-        description: Known Nix CI run for the current approved same-repository source
+        description: Exact required-green Nix CI caller run
+        required: true
+        type: string
+      source_attempt:
+        description: Exact Nix CI caller attempt
         required: true
         type: string
 
@@ -16,28 +21,31 @@ permissions:
   actions: read
 
 concurrency:
-  group: helper-candidate-${{ github.event.workflow_run.id || inputs.source_run }}
+  group: helper-candidate-${{ github.run_id }}-${{ github.run_attempt }}
   cancel-in-progress: false
 
 jobs:
   authorize:
-    if: github.ref == 'refs/heads/main'
+    if: github.repository == 'dvicory/homelab' && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.sha == github.workflow_sha && inputs.source_sha == github.sha && inputs.source_run == github.run_id && inputs.source_attempt == github.run_attempt
     runs-on: ubuntu-24.04
     outputs:
       sha: ${{ steps.source.outputs.sha }}
       run: ${{ steps.source.outputs.run }}
+      attempt: ${{ steps.source.outputs.attempt }}
     steps:
       - name: Check out main-owned authorization code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
-      - name: Authorize actual repository permissions and current source
+      - name: Verify exact main caller and completed Required CI receipt
         id: source
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE_RUN: ${{ github.event.workflow_run.id || inputs.source_run }}
-        run: python3 .github/helper-source.py --run "$SOURCE_RUN" --output "$GITHUB_OUTPUT"
+          SOURCE_RUN: ${{ inputs.source_run }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_ATTEMPT: ${{ inputs.source_attempt }}
+        run: python3 .github/helper-source.py --run "$SOURCE_RUN" --sha "$SOURCE_SHA" --attempt "$SOURCE_ATTEMPT" --output "$GITHUB_OUTPUT"
 
   build:
     needs: authorize
@@ -54,13 +62,13 @@ jobs:
           ref: ${{ github.workflow_sha }}
           path: trusted
           persist-credentials: false
-      - name: Check out permitted immutable producer source (read only)
+      - name: Check out exact merged-main producer source (read only)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.authorize.outputs.sha }}
           path: source
           persist-credentials: false
-      - name: Install Nix with sandboxed PR builds
+      - name: Install Nix with sandboxed producer builds
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
           extra_nix_config: sandbox = true
@@ -92,7 +100,6 @@ jobs:
   publish:
     needs: [authorize, build]
     runs-on: ubuntu-24.04
-    environment: helper-release
     permissions:
       contents: read
       actions: read
@@ -105,14 +112,13 @@ jobs:
         with:
           ref: ${{ github.workflow_sha }}
           persist-credentials: false
-      - name: Recheck current source authorization before publication
+      - name: Recheck exact main caller and required CI before publication
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_RUN: ${{ needs.authorize.outputs.run }}
           SOURCE_SHA: ${{ needs.authorize.outputs.sha }}
-        run: |
-          python3 .github/helper-source.py --run "$SOURCE_RUN" --output "$RUNNER_TEMP/source-facts"
-          python3 -c 'import json,os; facts=dict(line.strip().split("=",1) for line in open(os.environ["RUNNER_TEMP"]+"/source-facts")); assert facts["sha"] == os.environ["SOURCE_SHA"]'
+          SOURCE_ATTEMPT: ${{ needs.authorize.outputs.attempt }}
+        run: python3 .github/helper-source.py --run "$SOURCE_RUN" --sha "$SOURCE_SHA" --attempt "$SOURCE_ATTEMPT" --output "$RUNNER_TEMP/source-facts"
       - name: Download candidate data by immutable artifact ID
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -127,7 +133,7 @@ jobs:
         with:
           name: ${{ vars.CACHIX_CACHE }}
           skipPush: true
-      - name: Publish fixed packages from verified data, never PR scripts
+      - name: Publish fixed packages from verified data, never producer scripts
         env:
           GH_TOKEN: ${{ github.token }}
           REGISTRY_AUTH_FILE: ${{ runner.temp }}/helper-auth.json

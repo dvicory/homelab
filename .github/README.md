@@ -66,55 +66,62 @@ token. Pull requests and manual dispatches remain read-only.
 Nix store contents published by CI are public, so CI outputs must never contain
 decrypted secrets.
 
-### Early Nix helper candidates
+### Required-green main Nix helper candidates
 
-`helper-release.yml` is a separate main-owned lane. A requested **Nix CI**
-run starts authorization and read-only native x86-64 helper builds alongside
-the rest of CI, not after its runtime tests. GitHub's actual CI workflow ID
-and path, repository, event, current source SHA, PR head and maintain/admin
-permission facts authorize a source. Forks, stale heads and write-only
-contributors are refused; `author_association` is not an authorization rule.
+`helper-release.yml` is reusable only: **Nix CI** calls it automatically for a
+same-repository `push` to `main`, after **Required CI** succeeds. That gate joins
+every required CI dependency, including all build matrix legs, the Darwin
+builder bootstrap and the Actions security audit. Every dependency must succeed;
+failed, cancelled or skipped dependencies refuse publication. PRs and manual or
+selected CI runs never publish. There is no early PR admission, `workflow_run`
+trigger, manual publisher dispatch or per-release approval click.
 
-Only the protected `helper-release` publisher job has `packages: write`.
-It downloads an immutable artifact ID from its own read-only build and checks
-the independently recorded metadata fingerprint, each archive's actual
-checksum, config/rootfs and native platform. It runs only main-owned tooling;
-it never checks out PR code or takes a package destination from artifact data.
-Publication credentials live in an ephemeral authentication file removed on
-exit. There is no repository write permission or automatic selection commit.
+Both caller and callee check the trusted repository, main push event, CI workflow
+path and immutable source/tooling SHA. The callee also checks GitHub's actual
+workflow ID, run ID, attempt, repository and main head facts, and the completed,
+successful **Required CI** job for that exact SHA/attempt. It repeats that check
+before publication. The parent run is still executing the publisher, so its
+overall conclusion is deliberately not the gate. The exact merged-main push SHA
+is retained even if a newer main push arrives; consumers never follow a branch
+or mutable image tag.
 
-The publisher checks out `github.workflow_sha`, the immutable commit supplying
-the main-owned workflow, not the triggering producer SHA. It does not evaluate
-the PR's Nix code or execute its image entrypoint with publication authority.
-This separation blocks PR-supplied publisher scripts; it does not make archives
-safe. The credentialed job still trusts its parsers, pinned Actions and tools.
-Hashes bind transferred bytes, and credential scanning detects recognizable
-material; neither proves those bytes harmless or free of every possible secret.
-Maintainer/source authorization is not a passing-CI or approving-review gate.
-The `workflow_run` security finding remains unsuppressed pending owner review;
-a finding exception would persist in repository configuration, not apply once.
+The producer builds and audits four native x86-64 helpers in a read-only,
+sandboxed job. Only the caller's narrowly scoped reusable-workflow call grants
+`packages: write`; the callee reduces permissions for authorization, build and
+verification, leaving that authority only in its publisher job. No repository
+write permission, inherited repository secrets or approval environment is used.
+GitHub's token is repository-associated package authority, **not four
+package-scoped credentials**. Fixed destinations remain enforced by publisher
+code; artifact data cannot choose them.
+
+The publisher downloads an immutable artifact ID from its own read-only build
+and checks the independently recorded metadata fingerprint, every archive's
+actual checksum, config/rootfs and native platform. It checks out
+`github.workflow_sha`, which must equal the exact main producer SHA, and runs
+only that main-owned publisher tooling. It never executes transferred scripts
+or image entrypoints. Publication credentials live in an ephemeral
+authentication file removed on exit.
+
+Data separation does not make archives safe. The credentialed job still trusts
+its parsers, pinned Actions and tools. Hashes bind transferred bytes, and
+credential scanning detects recognizable material; neither proves those bytes
+harmless or free of every possible secret. No audit finding is suppressed.
 Publication keeps Docker schema 2 config bytes, which GHCR and K3s support.
-Converting them to OCI rewrites creation/history timestamps and is refused
-by the exact producer-config identity check.
+Converting them to OCI rewrites creation/history timestamps and is refused by
+the exact producer-config identity check.
 
-The fixed destinations are public
+The fixed destinations are
 `ghcr.io/dvicory/homelab/{retained-directories,kanidm-provision,jellyfin-provisioner,jellarr}`.
-The owner approved early same-repository maintainer candidate publication and
-these irreversible public namespaces, but the publisher PR still needs a
-separately approved merge before this workflow can be used. Do not dispatch an
-unreviewed branch-owned publisher or substitute a personal token.
+Automation requires a separately approved merge of this workflow and repository
+Actions package-write access to those destinations. This configuration does not
+authorize an unreviewed branch-owned publisher, personal token substitution or
+package visibility changes.
 
-After that merge, an owner may explicitly request the lane for a current
-permitted Nix CI source run:
-
-```sh
-gh workflow run helper-release.yml --ref main -f source_run="$SOURCE_RUN"
-```
-
-New GHCR packages default private. Configure only the four approved packages
-as public through GitHub's supported package-settings interface; the workflow
-does not change visibility. Then rerun the failed **verify** job, not the
-successful publisher. The verification job has no package-write permission and
+New GHCR packages default private. Public visibility and repository Actions
+access are external package-settings prerequisites, not mutations this workflow
+performs. If visibility prevents verification, resolve it only with separate
+owner authorization, then rerun the failed **verify** job, not the successful
+publisher. The verification job has no package-write permission and
 uses `--no-creds`, verified TLS and full digest retrieval to compare the remote
 config/rootfs with the original Nix output. A private or mismatched candidate
 remains ineligible even if authenticated publication succeeded.
@@ -133,7 +140,8 @@ The native disposable check is
 helper and a genuinely recompiled version, runs their Kubernetes Jobs through
 a real TLS registry without helper preloads/imports, and checks anonymous
 access, refusal, explicit old-digest rollback and retained-state identity.
-`checks.<system>.helper-source` exercises the actual authorization decisions.
+`checks.<system>.helper-source` exercises exact main-caller and completed
+required-job receipt authorization, including refusal of PR/manual/fork sources.
 `checks.<system>.helper-release` runs the registered archive/admission audit,
 including referenced extensionless layers, linked transfer files, metadata
 credentials and public-certificate controls.
@@ -141,4 +149,13 @@ credentials and public-certificate controls.
 GitHub enforces full-SHA action pins and the repository action allowlist.
 Dependabot groups action updates into a weekly pull request after a seven-day
 cooldown. `.github/workflows/security.yml` runs zizmor when GitHub automation
-changes and rejects medium-or-higher findings.
+changes and is also called by every Nix CI run, rejecting medium-or-higher
+findings before helper publication.
+
+The reusable call uses GitHub's documented [same-commit local workflow
+reference](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#calling-a-reusable-workflow).
+The [caller context and permission
+rules](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations)
+mean the callee sees the caller's `github` facts and can only reduce the caller's
+token permissions, not elevate them. No environment secret or approval
+configuration is required for automatic helper promotion.
