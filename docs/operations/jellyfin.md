@@ -198,13 +198,14 @@ Production still uses the procedure below until the separately reviewed
 all-helper digest cutover is merged. The publisher capability does not change
 these consumers or authorize an Argo sync.
 
-The main-owned [early helper candidate lane](../../.github/README.md#early-nix-helper-candidates)
+The [main helper candidate lane](../../.github/README.md#required-green-main-nix-helper-candidates)
 builds the existing Jellyfin provisioner and Jellarr alongside the retained
-directory and Kanidm helpers. It publishes only approved same-repository
-maintainer candidates, checks exact source/archive/config/rootfs/platform
-identity, and separately verifies anonymous access to immutable manifest
-digests. It does not wait for unrelated tests or automatically select a release.
-Required tests, review and a separately approved merge still govern selection.
+directory and Kanidm helpers. It publishes automatically only from an exact
+merged-main push after all required CI succeeds, without a per-release approval
+click. It checks source/run/attempt, archive/config/rootfs/platform identity
+and anonymous access to immutable manifest digests. It does not automatically
+select a release; required tests, review and a separately approved consumer
+merge still govern selection.
 New package visibility must be made public through the explicitly approved
 GitHub operation before anonymous verification can succeed; public visibility
 is irreversible.

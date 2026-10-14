@@ -27,16 +27,16 @@ Desired state SHALL select a helper by its manifest digest and verified target p
 
 ### Requirement: Helper publication is trusted and secret-free
 
-Only an explicitly authorized trusted publisher SHALL receive artifact-publication authority. Pull-request-controlled code SHALL NOT execute with that authority. The publisher SHALL verify the permitted source and artifact identity before publishing a candidate; publication alone SHALL NOT authorize production selection. Public helper artifacts, identity records, and publication diagnostics SHALL contain no production credential values or private keys. Runtime credentials SHALL remain in the established secret-delivery flow rather than becoming build or publication inputs.
+Only an explicitly authorized trusted publisher SHALL receive artifact-publication authority. Publication SHALL accept only an exact same-repository merged-main push whose required CI has succeeded. Pull-request and manual sources SHALL NOT receive publication authority. The publisher SHALL verify the permitted source and artifact identity before publishing a candidate; publication alone SHALL NOT authorize production selection. Public helper artifacts, identity records, and publication diagnostics SHALL contain no production credential values or private keys. Runtime credentials SHALL remain in the established secret-delivery flow rather than becoming build or publication inputs.
 
-#### Scenario: A trusted pull request builds a candidate
-- **WHEN** an approved maintainer's pull request builds a candidate
-- **THEN** PR-controlled build code runs without publication credentials
-- **AND** a separate trusted publisher may publish its verified artifact without waiting for unrelated tests
+#### Scenario: Required CI passes for a merged-main release
+- **WHEN** all required CI succeeds for an exact same-repository merged-main push
+- **THEN** a separate trusted publisher automatically publishes its verified artifact without a per-release approval click
+- **AND** producer code runs without publication credentials
 - **AND** production selection still requires the existing test, review, and merge gates
 
 #### Scenario: An untrusted source requests publication
-- **WHEN** a fork or unauthorized source supplies a candidate artifact
+- **WHEN** a pull request, manual run, fork, or unauthorized source supplies a candidate artifact
 - **THEN** publication is refused without executing its code with publication authority
 
 #### Scenario: A public release is prepared

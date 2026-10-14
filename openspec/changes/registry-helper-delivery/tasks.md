@@ -3,18 +3,18 @@
 - [x] 1.1 Inventory the current four helper producers and every consumer/preload; verify each exact producer, native platform, and secret-free packaged input before defining publication identities.
 - [x] 1.2 Implement publication from exact Nix outputs and record source, archive, manifest, config/rootfs, and platform identities; verify the command publishes an exact built artifact to a real disposable TLS registry and refuses an incompatible artifact before selection.
 - [x] 1.3 Implement separate anonymous verification of an already-published candidate; verify public consumer access, declared producer/config/rootfs identity, verified TLS, and native platform identity without publisher credentials.
-- [x] 1.4 Add early read-only PR builds and a separate main-owned publisher with scoped package-write permission; verify approved same-repository source/SHA and fixed package destinations, refusal of forks/unauthorized sources and altered artifacts, and no execution of PR code with publication credentials. Keep production consumers unchanged in the publisher PR.
+- [x] 1.4 Implement automatic publication only from an exact same-repository merged-main push after the complete required-CI gate, using a separate main-owned publisher with scoped package-write permission and no per-release approval click. Verify exact source/tooling SHA, run and attempt; refusal of PR, manual, fork, incomplete-CI and altered-artifact sources; fixed destinations; and read-only producer execution. Keep production consumers unchanged in the publisher PR.
 
 ## 2. Changed-path integration proof
 
 - [x] 2.1 Exercise the publish/verify/select path with a real existing helper and a genuinely different compiled A/B release; prove meaningful Kubernetes Job behavior, unchanged guest/control-plane identity and usable retained state, no helper preload/import or guest recreation, and owned cleanup.
 - [x] 2.2 Preserve positive listener/availability controls and prove wrong or missing digest, untrusted TLS, wrong architecture, and producer mismatch refusal; retain sanitized native failure evidence and do not replace these cases with manifest-string checks.
-- [x] 2.3 Update existing operations guidance with early publication versus gated selection, public visibility, supported rollback, and registry-only rebuild/availability limits; verify commands against the exercised interface.
+- [x] 2.3 Update existing operations guidance with automatic main-only publication after required CI versus separately gated selection, public visibility, supported rollback, and registry-only rebuild/availability limits; verify commands against the exercised interface.
 
 ## 3. Authorized real publication
 
-- [ ] 3.1 Record the owner's approval for early trust-separated publication, the four public GHCR namespaces, irreversible visibility, and scoped package permission; obtain separate approval before merging the publisher PR.
-- [ ] 3.2 After the reviewed publisher PR is merged, publish the exact native helper artifacts through the main-owned workflow; verify their real manifest/config/platform identities and that no unrelated test dependency delays the build/publication lane.
+- [ ] 3.1 Record the owner's approval for automatic merged-main publication after required CI, the four public GHCR namespaces, irreversible visibility, and scoped package permission; obtain separate approval before merging the publisher PR.
+- [ ] 3.2 After the reviewed publisher PR is merged, publish the exact native helper artifacts through the main-owned workflow; verify their real manifest/config/platform identities and that every required executor has succeeded for that exact source and attempt.
 - [ ] 3.3 Configure the approved public visibility through GitHub's supported interface and verify anonymous access to each exact digest; produce verified candidate identities and refuse private, missing, wrong-platform, altered, or mismatched releases.
 
 ## 4. Clean consumer cutover and acceptance
