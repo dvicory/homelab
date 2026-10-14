@@ -192,43 +192,6 @@
       }
     },
     {
-      "id": 5,
-      "title": "Required mounts present",
-      "type": "stat",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "victoriametrics"
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 16,
-        "w": 12,
-        "h": 8
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "victoriametrics"
-          },
-          "expr": "count by (mountpoint) (node_filesystem_size_bytes{job=\"host-node\", mountpoint=~\"/srv/media/data|/mnt/storage-clear/.*\"})",
-          "legendFormat": "{{mountpoint}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        }
-      }
-    },
-    {
       "id": 6,
       "title": "Free space",
       "type": "bargauge",
@@ -237,9 +200,9 @@
         "uid": "victoriametrics"
       },
       "gridPos": {
-        "x": 12,
+        "x": 0,
         "y": 16,
-        "w": 12,
+        "w": 24,
         "h": 8
       },
       "targets": [
