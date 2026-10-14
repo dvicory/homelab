@@ -71,6 +71,9 @@ credential or Seerr publication is part of this acceptance.
 The hosted household lane places `/nix`, Docker and containerd data on its
 owned Btrfs image. Setup refuses existing mounts; cleanup checks the filesystem
 UUID and expected bind-mount roots before unmounting them or deleting the image.
+Select its owned `TMPDIR` only after Nix installation and cache setup. Pointing
+the installer at scratch under `/nix` lets installation change the ownership of
+the installer's own temporary directory and can prevent it from completing.
 
 Check names and implementations belong in Nix, not workflow branches. Successful
 check jobs upload nonempty outputs as `check-output-<system>-<run-id>` artifacts;
