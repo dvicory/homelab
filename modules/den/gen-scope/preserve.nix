@@ -787,16 +787,22 @@ let
         resolutionFor declarations realizations projectors true fixtureOnly (
           lib.filterAttrs (_name: state: state.mode == "enabled") states
         );
+      protectedRealizations =
+        assert validated;
+        map (contribution: {
+          inherit (contribution.state) stateId;
+          inherit (contribution) realization;
+        }) realizations;
       desiredInventory = {
-        schemaVersion = 1;
+        schemaVersion = 2;
         kind = "desired-inventory";
-        inherit scratchDestinations fixtureOnly;
+        inherit scratchDestinations fixtureOnly protectedRealizations;
         states = documentsFor inventoryResolution;
       };
       executablePlan = {
-        schemaVersion = 1;
+        schemaVersion = 2;
         kind = "executable-plan";
-        inherit scratchDestinations fixtureOnly;
+        inherit scratchDestinations fixtureOnly protectedRealizations;
         states = documentsFor executableResolution;
       };
     in

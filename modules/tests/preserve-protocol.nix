@@ -27,7 +27,7 @@
             manifest="$TMPDIR/manifest.json"
             cat > "$manifest" <<EOF
             {
-              "schemaVersion": 1,
+              "schemaVersion": 2,
               "kind": "executable-plan",
               "fixtureOnly": true,
               "scratchDestinations": {
@@ -113,6 +113,34 @@
               ]
             }
             EOF
+            jq '.protectedRealizations = [.states[] | {stateId, realization}]' \
+              "$manifest" > "$TMPDIR/fenced-manifest.json"
+            manifest="$TMPDIR/fenced-manifest.json"
+
+            for invalid in missing null incomplete empty relative-path empty-locator unknown-owner old-schema; do
+              case "$invalid" in
+                missing) filter='del(.protectedRealizations)'; code=document-json ;;
+                null) filter='.protectedRealizations = null'; code=document-json ;;
+                incomplete) filter='.protectedRealizations = [{stateId:"fixture/state"}]'; code=document-json ;;
+                empty) filter='.protectedRealizations = []'; code=missing-protected-realization ;;
+                relative-path) filter='.protectedRealizations[0].realization.path = "relative"'; code=invalid-protected-realization ;;
+                empty-locator) filter='.protectedRealizations[0].realization.locator = ""'; code=invalid-protected-realization ;;
+                unknown-owner) filter='.protectedRealizations[0].realization.owner = {}'; code=invalid-protected-realization ;;
+                old-schema) filter='.schemaVersion = 1'; code=unsupported-schema-version ;;
+              esac
+              jq "$filter" "$manifest" > "$TMPDIR/invalid-fences.json"
+              if homelab-preserve --manifest "$TMPDIR/invalid-fences.json" --json \
+                restore fixture/state --from fixture-route --point fixture-point-1 \
+                --to scratch:invalid --execute --receipt "$TMPDIR/invalid-receipt.json" \
+                >/dev/null 2>"$TMPDIR/invalid-fences-error.json"; then
+                echo "$invalid authoritative fences unexpectedly allowed restore" >&2
+                exit 1
+              fi
+              jq -e --arg code "$code" '.error.code == $code' "$TMPDIR/invalid-fences-error.json" >/dev/null
+              test ! -e "$TMPDIR/scratch/invalid"
+              test ! -e "$TMPDIR/invalid-receipt.json"
+              test ! -e "$TMPDIR/catalog"
+            done
 
             jq '.fixtureOnly = false' "$manifest" > "$TMPDIR/nonfixture.json"
             if homelab-preserve --manifest "$TMPDIR/nonfixture.json" plan >/dev/null 2>&1; then
@@ -127,6 +155,16 @@
               echo "plan-only state unexpectedly operated" >&2
               exit 1
             fi
+            if homelab-preserve --manifest "$TMPDIR/plan-only.json" --json restore fixture/state \
+              --from fixture-route --point fixture-point-1 --to scratch:plan-only \
+              --execute --receipt "$TMPDIR/plan-only-receipt.json" \
+              >/dev/null 2>"$TMPDIR/plan-only-error.json"; then
+              echo "plan-only protection unexpectedly restored" >&2
+              exit 1
+            fi
+            jq -e '.error.code == "plan-only-document"' "$TMPDIR/plan-only-error.json" >/dev/null
+            test ! -e "$TMPDIR/scratch/plan-only"
+            test ! -e "$TMPDIR/plan-only-receipt.json"
 
             homelab-preserve --manifest "$manifest" --json status > "$TMPDIR/configured.json"
             jq -e '.states[0].routes[0].observed == false and .states[0].routes[0].pointCount == null' \
@@ -399,9 +437,9 @@
                 active_locator="fixture/scratch"
               fi
               jq --arg path "$active_path" --arg locator "$active_locator" \
-                '.states += [.states[0] | .stateId = "fixture/other" |
-                  .realization.path = $path | .realization.locator = $locator |
-                  .routes[0].obligationId = "fixture/other::fixture-route"]' \
+                '.protectedRealizations += [{stateId: "fixture/other",
+                  realization: (.states[0].realization |
+                    .path = $path | .locator = $locator)}]' \
                 "$manifest" > "$TMPDIR/other-state.json"
               for mode in preflight execute; do
                 args=()
@@ -422,6 +460,13 @@
                 cmp "$TMPDIR/scratch/other-live-sentinel" "$TMPDIR/other-live-before.txt"
                 cmp "$TMPDIR/retained-before.json" "$TMPDIR/catalog/point.json"
               done
+              if homelab-preserve --manifest "$TMPDIR/other-state.json" --json \
+                verify "$TMPDIR/receipt-second.json" \
+                >/dev/null 2>"$TMPDIR/other-state-verify-error.json"; then
+                echo "verify into a plan-only source boundary unexpectedly accepted" >&2
+                exit 1
+              fi
+              jq -e '.error.code == "source-alias"' "$TMPDIR/other-state-verify-error.json" >/dev/null
             done
             # A different Route's retained Target is fenced even when its owner is not selected.
             for boundary in path native; do
@@ -437,7 +482,9 @@
                      paths: (if $boundary == "path" then [$scratch] else [] end),
                      nativeLocators: (if $boundary == "native" then ["fixture/scratch"] else [] end),
                      nativeNamespace: "fixture-native"
-                   }]' "$manifest" > "$TMPDIR/other-target.json"
+                   }] |
+                 .protectedRealizations += [.states[1] | {stateId, realization}]' \
+                "$manifest" > "$TMPDIR/other-target.json"
               for mode in preflight execute; do
                 args=()
                 if test "$mode" = execute; then

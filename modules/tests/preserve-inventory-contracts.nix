@@ -128,6 +128,13 @@ let
       && !(entry ? caveats)
       && !(entry ? failureDomainIndependent)
     ) inventory.states;
+    plan-only-sources-remain-fenced =
+      builtins.all (
+        entry:
+        builtins.any (
+          protected: protected.stateId == entry.stateId && protected.realization == entry.realization
+        ) hvn.homelab.preserve.executablePlan.protectedRealizations
+      ) inventory.states;
     no-production-enablement =
       hvn.homelab.preserve.executablePlan.states == [ ]
       && !hvn.services.zrepl.enable
