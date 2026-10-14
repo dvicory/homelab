@@ -27,8 +27,14 @@ condition() {
   else
     base=".status.conditions[?(@.type==\"$kind\")]"
   fi
+  jq -cn --arg resource "$resource" --arg condition "$kind" --arg status "$value" \
+    '{$resource, $condition, $status, stage:"generation"}' > "$g/condition-wait.json"
   k wait "$resource/$name" -n "$namespace" --timeout=180s "--for=jsonpath={$base.observedGeneration}=$generation"
+  jq -cn --arg resource "$resource" --arg condition "$kind" --arg status "$value" \
+    '{$resource, $condition, $status, stage:"status"}' > "$g/condition-wait.json"
   k wait "$resource/$name" -n "$namespace" --timeout=180s "--for=jsonpath={$base.status}=$value"
+  jq -cn --arg resource "$resource" --arg condition "$kind" --arg status "$value" \
+    '{$resource, $condition, $status, stage:"assertion"}' > "$g/condition-wait.json"
   k get "$resource" "$name" -n "$namespace" -o json | jq -e \
     --arg owner "$owner" --arg ref "$ref" --arg controller "$controller" --arg ancestor "$ancestor" \
     --arg ancestorKind "$ancestor_kind" --arg namespace "$namespace" --arg resource "$resource" \
@@ -44,6 +50,7 @@ condition() {
            ($resource == "envoyproxy" or .controllerName == $controller)) end) and
         any(.conditions[]?; .type == $kind and .status == $value and .observedGeneration == $generation and
           ($reason == "" or .reason == $reason)))' >/dev/null
+  rm -f "$g/condition-wait.json"
 }
 route_ready() { condition httproute "$1" gateway Accepted True; condition httproute "$1" gateway ResolvedRefs True; }
 proxy_ready() {

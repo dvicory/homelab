@@ -220,6 +220,12 @@ on failure; raw fixture logs, kubeconfig and assertion errors are not exported.
 
 Argo failure witnesses capture only owned, whitelisted status fields before
 cleanup. Native catch scripts use Chainsaw's injected current context.
+Gateway prerequisite failures also retain a bounded pre-cleanup witness:
+the pending condition/watch stage, fixed Gateway resources' current and observed
+generations, allowlisted status/reason categories, controller/ancestor matches,
+owned controller/proxy workload readiness, and node address types (not values).
+It exports no raw API objects, messages, logs, events or Secrets. An unavailable
+witness cannot turn the original prerequisite failure into acceptance.
 
 Behavior counterfactuals use the same app with a new report filename. Each
 must fail, and its report must show the failure at the intended scenario step;

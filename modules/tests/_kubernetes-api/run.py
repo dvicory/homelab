@@ -15,7 +15,7 @@ import time
 import uuid
 
 import yaml
-from report import ARGO_CRDS, ARGO_RECOVERY_APPS, ARGO_RECOVERY_JOBS, REQUIRED_SCENARIOS, argo_recovery_witness, check_acceptance, check_report, classify_docker_error, classify_kubectl_error, classify_network_policy_error, crd_condition_witness, network_policy_witness, sanitize_tests
+from report import ARGO_CRDS, ARGO_RECOVERY_APPS, ARGO_RECOVERY_JOBS, REQUIRED_SCENARIOS, argo_recovery_witness, check_acceptance, check_report, classify_docker_error, classify_kubectl_error, classify_network_policy_error, crd_condition_witness, gateway_prerequisite_witness, network_policy_witness, sanitize_tests
 
 OWNER_LABEL = "verification.homelab/fixture"
 
@@ -408,6 +408,44 @@ def main():
             "scenario-deadline",
         }
         report["failureReason"] = str(error) if isinstance(error, (ValueError, RuntimeError)) and str(error) in allowed else type(error).__name__
+        if phase == "gateway-fixture-prerequisites" and "KUBECONFIG" in env:
+            # Read only the owned fixture context before cleanup; no events,
+            # logs, Secrets or arbitrary API fields survive the sanitizer.
+            observed = {}
+            unavailable = {}
+            for key, resource in (
+                ("resources", ["gatewayclass/envoy", "gateway/household", "envoyproxy/household",
+                               "clienttrafficpolicy/trusted-edges", "-n", "gateway"]),
+                ("workloads", ["deployments,replicasets,pods", "-n", "gateway"]),
+                ("node", ["node/compute-1"]),
+            ):
+                try:
+                    result = kubectl("get", *resource, "--ignore-not-found", "-o", "json",
+                                     "--request-timeout=10s", timeout=15, check=False)
+                    if result.returncode:
+                        unavailable[key] = {"returnCode": result.returncode,
+                                            "errorCategory": classify_kubectl_error(result.stderr)}
+                    else:
+                        observed[key] = json.loads(result.stdout) if result.stdout.strip() else {}
+                except Exception as witness_error:
+                    unavailable[key] = {"type": type(witness_error).__name__}
+            try:
+                expectation = json.loads((work / "gateway" / "condition-wait.json").read_text())
+            except (OSError, json.JSONDecodeError):
+                expectation = {}
+            try:
+                report["gatewayPrerequisiteWitness"] = gateway_prerequisite_witness(
+                    observed.get("resources", {}), observed.get("workloads", {}),
+                    observed.get("node", {}), expectation)
+                report["gatewayPrerequisiteWitness"].update(
+                    status="observed" if observed else "unavailable",
+                    capturePhase="before-cleanup", unavailable=unavailable)
+            except Exception as witness_error:
+                report["gatewayPrerequisiteWitness"] = {
+                    "status": "unavailable", "type": type(witness_error).__name__,
+                    "capturePhase": "before-cleanup",
+                }
+            checkpoint(force=True)
         if phase in ("network-policy-apply", "network-policy-readiness") and "KUBECONFIG" in env:
             # Readonly, bounded failure evidence before the owned node is removed.
             # Never persist native messages/logs, credentials, or arbitrary names.
