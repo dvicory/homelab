@@ -282,14 +282,21 @@ def classify_network_policy_error(text):
     """Fixed diagnostic category only; never retain event messages or logs."""
     text = text[-16384:].lower()
     for category, markers in (
+        # Specific kubelet/containerd/OCI causes precede their generic wrappers.
+        ("nonroot-user", ("runasnonroot", "breaks non-root policy")),
+        ("seccomp", ("seccomp",)),
         ("apparmor", ("apparmor",)),
-        ("mount", ("failedmount", "failed to mount", "mount propagation", "not a shared mount")),
+        ("mount-propagation", ("not a shared mount", "not a shared or slave mount", "mount propagation")),
+        ("mount", ("failedmount", "failed to mount")),
+        ("oci-entrypoint", ("executable file not found", "exec format error", "no command specified")),
         ("image", ("errimagepull", "imagepullbackoff", "failed to pull image")),
         ("permission", ("operation not permitted", "permission denied")),
         ("kernel-support", ("protocol not supported", "operation not supported", "module not found")),
         ("nfqueue", ("could not open nfqueue", "nfqueue socket", "reading nfqueue stats")),
         ("nftables", ("nftables sync failed", "failed to create dataplane controller")),
         ("nri", ("nri plugin exited", "failed to create nri plugin")),
+        ("container-spec", ("failed to generate container spec",)),
+        ("oci-runtime", ("oci runtime create failed", "failed to create shim task")),
         ("container-config", ("createcontainerconfigerror", "createcontainererror", "failedcreate")),
         ("scheduling", ("failedscheduling",)),
         ("readiness", ("readiness probe failed",)),
@@ -568,6 +575,7 @@ def self_check():
     assert witness[1]["conditionsShape"] == "missing" and not witness[1]["present"]
     assert sensitive not in json.dumps(witness)
     enforcer_uid = "owned-enforcer"
+    creation_message = f'failed to generate container spec: path "/{sensitive}" is mounted on "/{sensitive}" but it is not a shared or slave mount'
     enforcer = network_policy_witness(
         {"metadata": {"uid": enforcer_uid, "annotations": {"private": sensitive}},
          "status": {"desiredNumberScheduled": 1, "numberReady": 0}},
@@ -576,7 +584,7 @@ def self_check():
                 {"uid": enforcer_uid, "kind": "DaemonSet", "controller": True}]},
              "status": {"phase": "Pending", "containerStatuses": [{
                  "name": "kube-network-policies", "ready": False, "restartCount": 2,
-                 "state": {"waiting": {"reason": "CrashLoopBackOff", "message": sensitive}},
+                 "state": {"waiting": {"reason": "CreateContainerError", "message": creation_message}},
                  "lastState": {"terminated": {"reason": "Error", "exitCode": 1, "message": "operation not permitted " + sensitive}},
              }]}},
             {"metadata": {"uid": sensitive}, "status": {"phase": sensitive}},
@@ -584,18 +592,33 @@ def self_check():
         {"items": [
             {"involvedObject": {"uid": "owned-pod"}, "type": "Warning", "reason": "FailedMount",
              "message": sensitive, "count": 3},
+            {"involvedObject": {"uid": "owned-pod"}, "type": "Warning", "reason": "Failed",
+             "message": creation_message, "count": 1},
             {"involvedObject": {"uid": sensitive}, "type": "Warning", "reason": sensitive, "message": sensitive},
         ]},
     )
     assert enforcer["daemonSet"]["numberReady"] == 0 and len(enforcer["pods"]) == 1
+    assert enforcer["pods"][0]["containers"][0]["states"]["state"][0]["errorCategory"] == "mount-propagation"
     assert enforcer["pods"][0]["containers"][0]["states"]["lastState"][0]["errorCategory"] == "permission"
-    assert enforcer["events"] == [{"type": "Warning", "reason": "FailedMount", "count": 3, "errorCategory": "mount"}]
+    assert enforcer["events"] == [
+        {"type": "Warning", "reason": "FailedMount", "count": 3, "errorCategory": "mount"},
+        {"type": "Warning", "reason": "Failed", "count": 1, "errorCategory": "mount-propagation"},
+    ]
     assert sensitive not in json.dumps(enforcer)
     assert classify_network_policy_error("could not open nfqueue socket " + sensitive) == "nfqueue"
     assert sensitive not in classify_network_policy_error(sensitive)
     assert classify_network_policy_error('secret "' + sensitive + '" not found') == "missing-secret"
     assert classify_network_policy_error('FailedMount: secret "' + sensitive + '" not found') == "mount"
     assert classify_network_policy_error('ErrImagePull: secret "' + sensitive + '" not found') == "image"
+    for category, message in (
+        ("nonroot-user", f"container has runAsNonRoot and image has non-numeric user ({sensitive}), cannot verify user is non-root"),
+        ("seccomp", f'failed to generate container spec: cannot load seccomp profile "/{sensitive}": permission denied'),
+        ("oci-entrypoint", f'failed to create shim task: OCI runtime create failed: exec: "{sensitive}": executable file not found in $PATH'),
+        ("container-spec", "failed to generate container spec: " + sensitive),
+        ("oci-runtime", "failed to create shim task: " + sensitive),
+    ):
+        assert classify_network_policy_error(message) == category
+    assert classify_network_policy_error(sensitive) == "unclassified"
     source = {"repoURL": sensitive, "targetRevision": "a" * 40}
     job_uid = "12345678-1234-1234-1234-123456789abc"
     recovery = argo_recovery_witness({"items": [{
