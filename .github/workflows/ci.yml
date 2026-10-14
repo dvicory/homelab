@@ -1,57 +1,50 @@
-name: Nix CI
+# PRIVATE DISPOSABLE EXPERIMENT: materialize only on an isolated experiment branch.
+name: Disposable CI orchestration comparison
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
   workflow_dispatch:
     inputs:
-      check:
-        description: Optional check name (media-runtime runs the native suite); leave empty for all CI
-        type: string
-        default: ""
-      system:
-        description: Platform; all uses x86_64-linux for a single check
+      arm:
+        description: Identical full x86_64-linux hosted runtime inventory, different allocation
         type: choice
-        default: all
-        options:
-          - all
-          - x86_64-linux
-          - aarch64-linux
-          - aarch64-darwin
+        required: true
+        options: [matrix, batches]
+      pair:
+        description: Evidence label, not a source or cache selector
+        type: string
+        required: true
 
 permissions:
   actions: read
   contents: read
 
+# Do not cancel another observation or contend within a pair.
 concurrency:
-  group: nix-ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: disposable-ci-orchestration-comparison
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: d6f8e9a7a2912253071d0591a5492f975f23a52c
 
 jobs:
   plan:
-    name: Inventory hosted checks
-    if: inputs.check != 'media-runtime'
-    runs-on: ${{ inputs.check != '' && inputs.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || inputs.check != '' && inputs.system == 'aarch64-darwin' && 'macos-14' || 'ubuntu-24.04' }}
+    name: Plan complete runtime slice
+    runs-on: ubuntu-24.04
     outputs:
-      matrix: ${{ steps.inventory.outputs.matrix }}
-      darwin: ${{ steps.inventory.outputs.darwin }}
+      matrix: ${{ steps.plan.outputs.matrix }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ env.SOURCE_SHA }}
           persist-credentials: false
-      - name: Install Nix
-        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
           extra_nix_config: |
             extra-substituters = https://cache.numtide.com
             extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=
           github_access_token: ${{ github.token }}
-      - name: Configure durable cache (read only)
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         if: vars.CACHIX_CACHE != ''
-        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ${{ vars.CACHIX_CACHE }}
           skipPush: true
@@ -64,152 +57,69 @@ jobs:
             'extra-substituters = https://cache.numtide.com' \
             'extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=' \
             >> "$config_dir/nix.conf"
-      - name: Partition actual check derivations
-        id: inventory
+      - name: Partition opaque runtime inventory with Nix
+        id: plan
         env:
-          CHECK: ${{ inputs.check }}
-          REQUESTED_SYSTEM: ${{ inputs.system }}
+          ARM: ${{ inputs.arm }}
+          PAIR: ${{ inputs.pair }}
+          INVENTORY_PATH: ${{ runner.temp }}/orchestration-evidence/inventory.json
         run: |
           set -euo pipefail
-          system=x86_64-linux
-          if [ -n "$CHECK" ] && [ -n "$REQUESTED_SYSTEM" ] && [ "$REQUESTED_SYSTEM" != all ]; then
-            system="$REQUESTED_SYSTEM"
-          fi
-          # Keep exact drv identities in native job receipts, not the planning barrier.
-          nix eval --json ".#hostedCiInventory.$system" \
+          e="$RUNNER_TEMP/orchestration-evidence"
+          mkdir -p "$e"
+          date -u +%s.%N > "$e/plan-start.txt"
+          nix eval --json "path:$PWD#hostedCiInventory.x86_64-linux" \
             --apply 'builtins.mapAttrs (_: builtins.map (entry: builtins.removeAttrs entry [ "drvPath" ]))' \
-            > "$RUNNER_TEMP/check-inventory.json"
-          cat "$RUNNER_TEMP/check-inventory.json"
-          if [ -n "$CHECK" ]; then
-            matrix=$(jq -ce --arg check "$CHECK" --arg system "$system" '
-              [.inventory[] | select(.name == $check)] |
-              if length != 1 then error("check is not registered for selected platform")
-              elif .[0].hosted | not then error("selected check requires KVM unavailable on this hosted platform")
-              else {include: [{system: $system, group: (if .[0].runtime then "runtime" else "checks" end), check: $check, artifact: ($check | @uri)}]} end
-            ' "$RUNNER_TEMP/check-inventory.json")
-            darwin=false
-          else
-            platforms='["x86_64-linux","aarch64-linux","aarch64-darwin"]'
-            if [ -n "$REQUESTED_SYSTEM" ] && [ "$REQUESTED_SYSTEM" != all ]; then
-              platforms=$(jq -cn --arg system "$REQUESTED_SYSTEM" '[$system]')
-            fi
-            matrix=$(jq -c --argjson platforms "$platforms" '
-              {include: (
-                [if $platforms | index("x86_64-linux") then .runtime[] |
-                   {system: "x86_64-linux", group: "runtime", check: .name, artifact: (.name | @uri)} else empty end]
-                + [$platforms[] as $system |
-                 ["packages","checks","devShells","formatters","nixosConfigurations","darwinConfigurations","homeConfigurations"][] as $group |
-                 select($system != "aarch64-darwin" or $group != "darwinConfigurations") |
-                 {system: $system, group: $group, check: "", artifact: ""}]
-              )}
-            ' "$RUNNER_TEMP/check-inventory.json")
-            darwin=$(jq -cn --argjson platforms "$platforms" '$platforms | index("aarch64-darwin") != null')
-          fi
-          printf 'matrix=%s\ndarwin=%s\n' "$matrix" "$darwin" >> "$GITHUB_OUTPUT"
-          printf '%s\n' "$matrix" | jq .
-      - name: Upload required check inventory
+            > "$e/inventory.json"
+          nix eval --impure --json \
+            --expr '
+              let
+                inventoryPath = builtins.getEnv "INVENTORY_PATH";
+                arm = builtins.getEnv "ARM";
+                entries = (builtins.fromJSON (builtins.readFile inventoryPath)).runtime;
+                names = builtins.map (entry: entry.name) entries;
+                count = builtins.length names;
+                slots = if arm == "matrix" then count else if count < 4 then count else 4;
+                indices = builtins.genList (i: i) count;
+                assigned = slot: builtins.map (i: builtins.elemAt names i)
+                  (builtins.filter (i: i - (builtins.div i slots) * slots == slot) indices);
+              in
+              assert arm == "matrix" || arm == "batches";
+              assert count > 0;
+              assert builtins.all (entry: entry.hosted && entry.runtime) entries;
+              { include = builtins.genList (slot: {
+                  id = "runtime-" + builtins.toString slot;
+                  names = assigned slot;
+                }) slots; }
+            ' > "$e/matrix.json"
+          date -u +%s.%N > "$e/plan-end.txt"
+          jq -n --arg arm "$ARM" --arg pair "$PAIR" --arg source "$SOURCE_SHA" \
+            '{arm:$arm,pair:$pair,source:$source}' > "$e/observation.json"
+          printf 'matrix=%s\n' "$(jq -c . "$e/matrix.json")" >> "$GITHUB_OUTPUT"
+      - name: Save planning evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: required-check-inventory-${{ github.run_id }}
-          path: ${{ runner.temp }}/check-inventory.json
+          name: orchestration-plan-${{ github.run_id }}
+          path: ${{ runner.temp }}/orchestration-evidence
 
-  bootstrap-darwin-builder:
-    name: Bootstrap Darwin Linux builder
-    if: inputs.check == '' && (inputs.system == '' || inputs.system == 'all' || inputs.system == 'aarch64-darwin')
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Prepare Nix storage
-        run: |
-          free_space=$(df -m --output=avail /mnt | tail -n 1)
-          disk_size=$((free_space - 4096))
-          test "$disk_size" -gt 1024
-          sudo fallocate -l "${disk_size}M" /mnt/nix.img
-          loop_dev=$(sudo losetup --find --show /mnt/nix.img)
-          sudo mkfs.btrfs -L nix --nodiscard "$loop_dev"
-          sudo mkdir -p /nix
-          sudo mount "$loop_dev" /nix -o noatime,nobarrier,nodiscard,compress=zstd:1,space_cache=v2,commit=120
-          sudo mkdir -p /nix/build
-          sudo chattr +C /nix/build
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
-        with:
-          extra_nix_config: |
-            build-dir = /nix/build
-            sandbox = relaxed
-            extra-substituters = https://cache.numtide.com
-            extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=
-          github_access_token: ${{ github.token }}
-
-      - name: Configure durable cache (read only)
-        if: vars.CACHIX_CACHE != ''
-        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
-        with:
-          name: ${{ vars.CACHIX_CACHE }}
-          skipPush: true
-      - *signed-upstream-cache
-
-      - name: Build Darwin Linux builder system
-        run: |
-          sudo mkdir -p /mnt/darwin-builder-cache
-          sudo chown "$USER" /mnt/darwin-builder-cache
-          system_path=$(nix build --no-link --print-out-paths '.#darwinConfigurations.daniels-2021-mbp.config.nix.linux-builder.package.nixosConfig.system.build.toplevel')
-          nix copy --to "file:///mnt/darwin-builder-cache?compression=zstd" "$system_path"
-          printf '%s\n' "$system_path" > /mnt/darwin-builder-cache/system-path
-
-      - name: Upload Darwin Linux builder closure
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: darwin-builder-${{ github.run_id }}
-          path: /mnt/darwin-builder-cache
-          overwrite: true
-          retention-days: 1
-
-  # Native evaluation discovers all VM drivers; each gets its own KVM runner.
-  # Only the real Darwin configuration consumer waits for the bootstrap closure.
-  build:
+  accept:
+    name: Runtime allocation ${{ matrix.id }}
     needs: plan
-    if: ${{ !cancelled() && needs.plan.result == 'success' }}
-    name: ${{ matrix.check || matrix.group }} (${{ matrix.system }})
-    runs-on: ${{ matrix.system == 'x86_64-linux' && 'ubuntu-24.04' || matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'macos-14' }}
-    environment:
-      name: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.CACHIX_CACHE != '' && 'cachix-publish' || '' }}
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
-    steps: &build-steps
-      - name: Monitor cache publication runner
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.CACHIX_CACHE != ''
-        uses: step-security/harden-runner@351661ca32ac09a36dc5ee2d536e3128f2a3c8ed # v2.22.0
-        with:
-          egress-policy: audit
-
+    steps:
       - name: Enable available KVM acceleration
-        if: runner.os == 'Linux'
-        env:
-          GROUP: ${{ matrix.group }}
         run: |
-          if [ -c /dev/kvm ]; then
-            sudo chmod a+rw /dev/kvm
-          elif [ "$GROUP" = runtime ]; then
-            echo 'Runtime check requires a native KVM runner' >&2
-            exit 1
-          fi
-
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ env.SOURCE_SHA }}
           persist-credentials: false
-
-      # Put the Nix store on the runner's temporary disk.
       - name: Prepare Nix storage
-        if: runner.os == 'Linux'
         run: |
           free_space=$(df -m --output=avail /mnt | tail -n 1)
           disk_size=$((free_space - 1024))
@@ -220,12 +130,8 @@ jobs:
           sudo mkdir -p /nix
           sudo mount "$loop_dev" /nix -o noatime,nobarrier,nodiscard,compress=zstd:1,space_cache=v2,commit=120
           sudo mkdir -p /nix/build
-          # Keep Btrfs CoW out of disposable VM/build files, not the store.
           sudo chattr +C /nix/build
-
-      - name: Install Nix on Linux
-        if: runner.os == 'Linux'
-        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
           extra_nix_config: |
             build-dir = /nix/build
@@ -233,220 +139,96 @@ jobs:
             extra-substituters = https://cache.numtide.com
             extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=
           github_access_token: ${{ github.token }}
-
-      - name: Install Nix on macOS
-        if: runner.os == 'macOS'
-        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
-        with:
-          extra_nix_config: |
-            extra-substituters = https://cache.numtide.com
-            extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=
-          github_access_token: ${{ github.token }}
-
-      - name: Configure durable cache (read only)
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         if: vars.CACHIX_CACHE != ''
-        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ${{ vars.CACHIX_CACHE }}
           skipPush: true
       - *signed-upstream-cache
-
-      # System builds and VM checks can fetch multi-GiB images. Hestia v3
-      # buffers whole NARs in RAM; use durable/upstream caches for these groups.
-      - name: Start Hestia cache
-        if: matrix.group != 'nixosConfigurations' && matrix.group != 'darwinConfigurations' && matrix.group != 'checks' && matrix.group != 'runtime'
-        uses: Mic92/hestia@dfed9ced335d28978ba74e513939a10db1f71025 # v3.1.0
-        with:
-          version: v3.1.0
-          upstream-cache-filter: true
-
-      - name: Download Darwin Linux builder closure
-        if: matrix.system == 'aarch64-darwin' && matrix.group == 'darwinConfigurations'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: darwin-builder-${{ github.run_id }}
-          path: ${{ runner.temp }}/darwin-builder-cache
-
-      - name: Import Darwin Linux builder closure
-        if: matrix.system == 'aarch64-darwin' && matrix.group == 'darwinConfigurations'
-        run: |
-          system_path=$(cat "$RUNNER_TEMP/darwin-builder-cache/system-path")
-          sudo nix copy --option require-sigs false --from "file://$RUNNER_TEMP/darwin-builder-cache" "$system_path"
-
-      - name: Build
+      - name: Evaluate then accept every assigned exact derivation
         env:
-          SYSTEM: ${{ matrix.system }}
-          GROUP: ${{ matrix.group }}
-          CHECK: ${{ matrix.check }}
+          NAMES: ${{ toJSON(matrix.names) }}
+          ARM: ${{ inputs.arm }}
+          PAIR: ${{ inputs.pair }}
+          ALLOCATION: ${{ matrix.id }}
         run: |
           set -euo pipefail
-          if [ "$GROUP" = checks ]; then
-            nix eval --json ".#hostedCiInventory.$SYSTEM" > "$RUNNER_TEMP/check-inventory.json"
-            cat "$RUNNER_TEMP/check-inventory.json"
-          fi
-          if [ -n "$CHECK" ]; then
-            check_attr=$(jq -rn --arg check "$CHECK" '$check | @json')
-            attr=".#checks.$SYSTEM.$check_attr"
-          elif [ "$GROUP" = checks ]; then
-            attr=".#hostedCiJobs.$SYSTEM.checks"
-          else
-            attr=".#ciJobs.$SYSTEM.$GROUP"
-          fi
-          build_args=(--keep-going --fallback)
-          if [ "$GROUP" = runtime ]; then
-            # One VM suite on this runner, never competing VM heaps.
-            build_args+=(--max-jobs 1)
-          fi
-          # Release the evaluation heap before any build/VM starts (PR #64).
-          drv=$(nix eval --raw "$attr.drvPath")
-          nix build -L --out-link "$RUNNER_TEMP/result" --json "${build_args[@]}" "$drv^*" > "$RUNNER_TEMP/build.json"
-
-      - name: Upload successful check outputs
-        if: matrix.group == 'checks' || matrix.group == 'runtime'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: check-output-${{ matrix.system }}-${{ matrix.artifact || matrix.group }}-${{ github.run_id }}
-          path: ${{ runner.temp }}/result*
-          # Some checks have empty successful outputs; their evidence is the job log.
-          if-no-files-found: ignore
-
-      - name: Upload platform check inventory
-        if: always() && matrix.group == 'checks'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: check-inventory-${{ matrix.system }}-${{ matrix.artifact || matrix.group }}-${{ github.run_id }}
-          path: ${{ runner.temp }}/check-inventory.json
-
-      - name: Publish successful outputs and build dependencies to Cachix
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.CACHIX_CACHE != ''
-        env:
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          CACHIX_CACHE: ${{ vars.CACHIX_CACHE }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          outputs=("$RUNNER_TEMP"/result*)
-          if [ "${#outputs[@]}" -gt 0 ]; then
-            # Compressed images hide build dependencies from their runtime references.
-            # Keep only realized additions to the exact build's source closure.
-            jq -r '.[].drvPath' "$RUNNER_TEMP/build.json" \
-              | xargs nix-store --query --requisites \
-              | sort -u > "$RUNNER_TEMP/build-sources"
-            jq -r '.[].drvPath' "$RUNNER_TEMP/build.json" \
-              | xargs nix-store --query --requisites --include-outputs \
-              | sort -u > "$RUNNER_TEMP/build-realized"
-            {
-              printf '%s\n' "${outputs[@]}"
-              comm -13 "$RUNNER_TEMP/build-sources" "$RUNNER_TEMP/build-realized"
-            } | cachix push "$CACHIX_CACHE"
-          fi
-
-  build-darwin-configuration:
-    needs: [plan, bootstrap-darwin-builder]
-    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.bootstrap-darwin-builder.result == 'success' && needs.plan.outputs.darwin == 'true' }}
-    name: darwinConfigurations (aarch64-darwin)
-    runs-on: macos-14
-    environment:
-      name: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.CACHIX_CACHE != '' && 'cachix-publish' || '' }}
-    strategy:
-      matrix:
-        include:
-          - system: aarch64-darwin
-            group: darwinConfigurations
-            check: ""
-            artifact: ""
-    steps: *build-steps
-
-  # Same pinned application suite as the former media VM envelope. Kubernetes
-  # and host-storage boundaries remain covered by their separate runtime gates.
-  media-runtime:
-    name: media-runtime (x86_64-linux)
-    if: (inputs.check == '' && (inputs.system == '' || inputs.system == 'all' || inputs.system == 'x86_64-linux')) || inputs.check == 'media-runtime'
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
-        with:
-          extra_nix_config: |
-            extra-substituters = https://cache.numtide.com
-            extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=
-          github_access_token: ${{ github.token }}
-
-      - name: Configure durable cache (read only)
-        if: vars.CACHIX_CACHE != ''
-        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
-        with:
-          name: ${{ vars.CACHIX_CACHE }}
-          skipPush: true
-      - *signed-upstream-cache
-
-      - name: Record native runner and input identities
-        run: |
-          set -euo pipefail
-          case "${{ inputs.system }}" in
-            ''|all|x86_64-linux) ;;
-            *) echo 'media-runtime requires the native x86_64-linux hosted runner' >&2; exit 1 ;;
-          esac
-          mkdir -p "$RUNNER_TEMP/media-native-evidence"
-          {
-            printf 'runner_image=%s\nrunner_image_version=%s\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
-            printf 'suite_platform=linux/amd64\nmeasurement=cold disposable runner; image pulls included\n'
-            printf 'excluded=Kubernetes RBAC/NetworkPolicy/Gateway; Incus/MergerFS/ZFS/GPU\n'
-            uname -a
-            lscpu
-            docker --host unix:///var/run/docker.sock version
-            docker --host unix:///var/run/docker.sock info
-            docker --host unix:///var/run/docker.sock image ls --digests --no-trunc
-            nix --version
-            git rev-parse HEAD HEAD:assets/media-policy HEAD:generated/manifests/prod-home
-            sha256sum flake.lock modules/tests/media-live-acceptance.py
-            case "$(docker --host unix:///var/run/docker.sock info --format '{{.OSType}}/{{.Architecture}}')" in
-              linux/x86_64|linux/amd64) ;;
-              *) echo 'Native linux/amd64 Docker daemon required' >&2; exit 1 ;;
-            esac
-          } 2>&1 | tee "$RUNNER_TEMP/media-native-evidence/inputs.log"
-
-      - name: Prepare existing pinned native app
-        run: |
-          set -euo pipefail
-          /usr/bin/time -p nix run .#media-live-acceptance -- --help \
-            2>&1 | tee "$RUNNER_TEMP/media-native-evidence/app-preparation.log"
-
-      - name: Run full unchanged native media acceptance
-        run: |
-          set -euo pipefail
-          # Preserve the VM suite's 2700-second deadline; INT permits owned cleanup.
-          /usr/bin/time -p timeout --signal=INT 2700s nix run .#media-live-acceptance -- \
-            --docker-host unix:///var/run/docker.sock --platform linux/amd64 \
-            2>&1 | tee "$RUNNER_TEMP/media-native-evidence/acceptance.log"
-
-      - name: Record images and owned cleanup
-        if: always()
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/media-native-evidence"
-          {
-            docker --host unix:///var/run/docker.sock image ls --digests --no-trunc
-            docker --host unix:///var/run/docker.sock image ls --quiet --no-trunc \
-              | sort -u | xargs --no-run-if-empty docker --host unix:///var/run/docker.sock image inspect \
-                --format '{{.Id}} {{.Os}}/{{.Architecture}} {{json .RepoDigests}}'
-            containers=$(docker --host unix:///var/run/docker.sock container ls --all --filter name=homelab-media-live- --format '{{.Names}}')
-            networks=$(docker --host unix:///var/run/docker.sock network ls --filter name=homelab-media-live- --format '{{.Name}}')
-            volumes=$(docker --host unix:///var/run/docker.sock volume ls --filter name=homelab-media-live- --format '{{.Name}}')
-            printf 'remaining_owned_containers=%s\nremaining_owned_networks=%s\nremaining_owned_volumes=%s\n' "$containers" "$networks" "$volumes"
-            test -z "$containers"
-            test -z "$networks"
-            test -z "$volumes"
-          } 2>&1 | tee "$RUNNER_TEMP/media-native-evidence/cleanup.log"
-
-      - name: Upload native media diagnostics
+          e="$RUNNER_TEMP/orchestration-evidence"
+          mkdir -p "$e"
+          jq -n --arg arm "$ARM" --arg pair "$PAIR" --arg source "$SOURCE_SHA" \
+            --arg allocation "$ALLOCATION" --argjson names "$NAMES" \
+            --arg runner "$RUNNER_NAME" --arg image "${ImageOS:-unknown}" \
+            --arg version "${ImageVersion:-unknown}" \
+            '{arm:$arm,pair:$pair,source:$source,allocation:$allocation,names:$names,runner:$runner,image:$image,imageVersion:$version}' \
+            > "$e/observation.json"
+          { uname -a; lscpu; free -b; df -B1 /nix; nix --version; sha256sum flake.lock; } > "$e/runner.txt"
+          nix --version > "$e/nix-version.txt"
+          # Never upload access-tokens from the full configuration.
+          nix config show --json | jq '{substituters, "trusted-public-keys": .["trusted-public-keys"], "max-jobs": .["max-jobs"], cores, "system-features": .["system-features"], builders, sandbox, "always-allow-substitutes": .["always-allow-substitutes"]}' > "$e/nix-config.json"
+          date -u +%s.%N > "$e/evaluator-start.txt"
+          nix eval --impure --json "path:$PWD#checks.x86_64-linux" \
+            --apply 'checks: builtins.map (name: { inherit name; drvPath = (builtins.getAttr name checks).drvPath; }) (builtins.fromJSON (builtins.getEnv "NAMES"))' \
+            > "$e/targets.json"
+          date -u +%s.%N > "$e/evaluator-end.txt"
+          mapfile -t drvs < <(jq -r '.[].drvPath' "$e/targets.json")
+          nix derivation show "${drvs[@]}" > "$e/derivations.json"
+          installables=()
+          for drv in "${drvs[@]}"; do
+            installables+=("$drv^*")
+          done
+          date -u +%s.%N > "$e/acceptance-start.txt"
+          set +e
+          # Unchanged production drvs/flags/cache policy. Cached roots are not assertion timings.
+          python3 - "$e" "${installables[@]}" <<'PY'
+          import json, pathlib, subprocess, sys, time
+          evidence = pathlib.Path(sys.argv[1])
+          targets = {entry["drvPath"] for entry in json.loads((evidence / "targets.json").read_text())}
+          derivations = json.loads((evidence / "derivations.json").read_text())
+          derivations = derivations.get("derivations", derivations)
+          derivations = {"/nix/store/" + key.removeprefix("/nix/store/"): value for key, value in derivations.items()}
+          outputs = {"/nix/store/" + output["path"].removeprefix("/nix/store/") for drv in targets for output in derivations[drv]["outputs"].values()}
+          validity = {}
+          for path in sorted(outputs):
+              query = subprocess.run(["nix-store", "--check-validity", path], capture_output=True, text=True)
+              validity[path] = {"status": query.returncode, "stderr": query.stderr}
+          (evidence / "pre-build-validity.json").write_text(json.dumps(validity))
+          command = ["nix", "build", "-L", "--log-format", "internal-json",
+                     "--out-link", str(evidence / "result"), "--json",
+                     "--keep-going", "--fallback", "--max-jobs", "1", *sys.argv[2:]]
+          (evidence / "build-command.json").write_text(json.dumps(command))
+          activities = {}
+          with (evidence / "build.json").open("w") as output, \
+               (evidence / "build-events.jsonl").open("w") as events:
+              started = time.monotonic()
+              process = subprocess.Popen(command, stdout=output, stderr=subprocess.PIPE, text=True)
+              for line in process.stderr:
+                  try:
+                      event = json.loads(line.removeprefix("@nix "))
+                  except ValueError:
+                      event = {"raw": line}
+                  events.write(json.dumps({"receivedAt": time.time(), "receivedMonotonic": time.monotonic(), "event": event}) + "\n")
+                  events.flush()
+                  fields = event.get("fields", [])
+                  if event.get("action") == "start" and event.get("type") == 105 and fields and fields[0] in targets:
+                      activities[event["id"]] = fields[0]
+                  elif event.get("action") == "result" and event.get("type") == 101 and event.get("id") in activities and fields:
+                      # Only this invocation's root log lines; never fetch an old cache log.
+                      with (evidence / (pathlib.Path(activities[event["id"]]).name + ".log")).open("a") as log:
+                          log.write(fields[0] + "\n")
+                  elif event.get("action") == "stop":
+                      activities.pop(event.get("id"), None)
+              status = process.wait()
+              (evidence / "build-invocation-seconds.txt").write_text(str(time.monotonic() - started))
+              sys.exit(status)
+          PY
+          status=$?
+          set -e
+          date -u +%s.%N > "$e/acceptance-end.txt"
+          printf '%s\n' "$status" > "$e/exit-status.txt"
+          exit "$status"
+      - name: Save identities, actual acceptance logs, outputs and timing
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: media-runtime-${{ github.run_id }}
-          path: ${{ runner.temp }}/media-native-evidence
+          name: orchestration-${{ matrix.id }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/orchestration-evidence
