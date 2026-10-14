@@ -52,12 +52,12 @@ GitHub branch protection remains a maintainer action.
 
 The mandatory host inventory includes `compute-network-policy-runtime`,
 `compute-guest-upgrade` and `prod-home-replacement`, not just whichever checks
-happen to remain registered. The current combined `prod-home-replacement`
-fixture retains both replacement and consumer-resilience assertions. When the
-approved PR67 dependency is integrated, its two-family split and real required
-gate definitions must be carried with it. Neither recovery concept is replaced
-by native Kubernetes coverage. Broad VM scenario narrowing remains deferred
-until equivalent native acceptance passes.
+happen to remain registered. The combined `prod-home-replacement` fixture
+retains both replacement and consumer-resilience assertions; splitting it must
+carry both concepts and their mandatory host gates. Neither is replaced by
+native Kubernetes coverage. Detailed Argo resource retirement runs in the
+required native suite; the recovery VM retains real data, ownership, mount and
+accelerator observations through guest replacement.
 
 Linux also requires `prepare-luks-storage` in `fastChecks`. It exercises real
 rsync transfers/checksum verification and refuses unsafe operations before
