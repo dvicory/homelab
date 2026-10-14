@@ -13,8 +13,9 @@ in
     lib.optionalAttrs (system == "x86_64-linux") {
       apps.household-sign-in-runtime = {
         type = "app";
-        program = lib.getExe (
-          pkgs.writeShellApplication {
+        program = lib.getExe self.packages.${system}.household-sign-in-runtime;
+      };
+      packages.household-sign-in-runtime = pkgs.writeShellApplication {
             name = "household-sign-in-runtime";
             runtimeInputs = [
               pkgs.coreutils
@@ -104,8 +105,6 @@ in
               + ''
                 python ${source}/modules/tests/household-sign-in-runtime.py --domain ${domain} --work-dir "$work"
               '';
-          }
-        );
       };
     };
 }

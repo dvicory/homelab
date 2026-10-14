@@ -32,7 +32,11 @@ in
       let
         rootfs = config.system.build.images.lxc;
         metadata = config.system.build.images."lxc-metadata";
-        rootfsPath = "${rootfs}/${rootfs.passthru.filePath}";
+        # Keep the native archive inputs and format; favor preparation speed
+        # over compressed size without changing the guest system closure.
+        rootfsPath = "${
+          rootfs.override { compressCommand = "pixz -0 -t"; }
+        }/${rootfs.passthru.filePath}";
         metadataPath = "${metadata}/${metadata.passthru.filePath}";
       in
       {

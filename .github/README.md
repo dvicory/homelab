@@ -13,6 +13,12 @@ its own system's projection: nixidy chart evaluation can require native builds.
 Every CI group is a directly buildable Nix derivation. `ciBundles.<system>`
 builds the complete projection; neither target requires GitHub Actions.
 
+`hostedCiPlan.<system>` supplies the standard group names, lazy check
+inventory and native application descriptors. The workflow dispatches that
+plan; it does not maintain a second list of output categories or branch on a
+test/application name. Platform-specific Darwin bootstrap remains an executor
+dependency, not a workload-selection rule.
+
 On a builder for the selected system:
 
 ```sh
@@ -21,15 +27,41 @@ nix build .#ciJobs.x86_64-linux.nixosConfigurations
 nix build .#checks.aarch64-linux.den-semantics
 ```
 
-Linux VM checks remain directly buildable for x86-64 and ARM64. Hosted ARM
-jobs omit checks whose Hestia group ends in `-runtime`, because GitHub's ARM
-runners do not expose KVM. A KVM-capable ARM builder can build any omitted
-check directly. Check jobs use `--max-jobs 1` so VM tests do not compete with
-other builds on the same runner; other CI groups retain Nix's normal
-parallelism. Check jobs also evaluate their projection in a separate
-`nix eval` process and then build the resulting derivation. Evaluating every
-check takes about 10 GiB, and a `nix build` process that evaluated them keeps
-that memory until its last build ends.
+Linux VM checks remain directly buildable for x86-64 and ARM64. Hosted CI
+partitions actual derivations using NixOS test drivers and declared
+`requiredSystemFeatures`, never check names or Hestia groups. A driver identifies
+a runtime check, not a KVM requirement. Nix exports each entry's `requirements`
+(`kvm`, `uidRange`, `cgroups`), hosted eligibility and explicit unsupported reason
+through `hostedCiInventory.<system>`; the workflow carries those facts into its
+matrix. Every hosted runtime check gets a separate native runner with
+`--max-jobs 1`; the fast aggregate contains no runtime or unsupported checks.
+All platforms retain their semantic/schema/freshness inventory and
+package/configuration/development groups. ARM VM/KVM checks remain explicitly
+unsupported on hosted runners without KVM; capable ARM builders can build them
+directly. Unknown required system features also receive an explicit unsupported
+reason rather than being scheduled on an incapable runner.
+
+`agenix-restart-guard` alone uses the existing NixOS systemd-nspawn test driver on
+both native Linux architectures. It uses the same production generator/algorithm,
+rebuilt for the hypothetical native ARM fixture rather than changing hvn-hyp1's
+deployed architecture, and preserves the private stamp modes (700/600), initial
+consumer start, unchanged-content non-restarts, exactly one rotation restart,
+and repeated-rotation non-restart assertions. There is no duplicate VM suite or
+script/hash assertion. PAM, hardening, kernel, network and security boundary tests
+retain their VM gates. Only disposable Linux lanes requiring `uid-range` enable
+Nix auto-allocated UIDs and the cgroups experimental feature, after requiring a
+cgroup-v2 host. Darwin never schedules this Linux container test.
+
+Every registered check must be a derivation and belongs exactly once to the
+fast, hosted runtime, or unsupported partition. Future registrations join
+automatically. Planning reads lazy feature declarations across the selected
+platforms without forcing raw test derivations or `drvPath`. Native check jobs
+upload evaluated platform inventory with exact hosted derivation identities;
+unsupported entries retain `drvPath = null`, so a Darwin receipt cannot force an
+unsupported Linux build graph. Runtime receipts retain their exact derivations.
+
+Build jobs release their separate `nix eval` heap before building the exact
+derivation, preserving memory for the test. No runner executes competing suites.
 
 A hosted x86-64 runner has 4 vCPUs and 16 GiB of memory. A VM check must fit
 there: request at most 4 cores, and leave the runner several GiB beyond the
@@ -38,9 +70,11 @@ GitHub loses the runner and the job ends without the test's result.
 
 Hosted CI builds the full ARM64 Darwin configuration. An ARM64 Linux job first
 builds the Linux system closure used by its `nix.linux-builder` VM and passes
-that closure to the macOS job through a one-day workflow artifact. This breaks
-the first-build cycle without weakening the production configuration. The
-workstation builds the same configuration as its activation gate.
+that closure to the macOS job through a one-day workflow artifact. Only the
+Darwin configuration job waits for this bootstrap; Linux and other Darwin
+groups do not. This breaks the first-build cycle without weakening the
+production configuration. The workstation builds the same configuration as
+its activation gate.
 
 Manual dispatch builds the full projection by default. Set `system` to build
 only that platform, or set `check` to run one check (defaulting to x86-64 when
@@ -51,41 +85,107 @@ gh workflow run ci.yml --ref "$REF" -f check=den-semantics
 gh workflow run ci.yml --ref "$REF" -f system=aarch64-linux
 ```
 
-`check=household-sign-in-runtime` selects the read-only native x86 Docker
-lane rather than a cached Nix check derivation. The entire materialized
-household suite runs on every full CI invocation, even when its pinned app
-dependencies are cached. It uses the canonical production manifests and
-three helper archives; directory NetworkPolicy remains a separate real
-K3s/kernel VM gate.
+Check names and implementations belong in Nix, not workflow branches. Single
+dispatch validates a check or native application's registration and platform;
+unsupported or ambiguous selections fail rather than silently skipping.
+`modules/flake/ci.nix` owns native app package identities, arguments, deadlines,
+cleanup prefixes and executor requirements through `hostedCiPlan`. Every
+declared app receives exactly one matrix row, on full runs and single dispatch.
+The native executor builds that package, runs the whole app even when its
+dependencies are cached, and independently checks owned Docker cleanup.
 
-The same app is available as `nix run .#household-sign-in-runtime`. Run it
-only as root inside an exclusive disposable native x86 Linux Docker fixture,
-with `idm.plus2.danielvicory.dev` resolving to `127.0.0.1`. The existing
-`TMPDIR` parent (default `/root`) is canonicalized; its `household` child must
-not exist, including a dangling symlink. The app refuses existing fixture
-resources before loading images, never edits host resolution, and cleans only
-owned containers, network and synthetic credentials on exit. The hosted disposable runner
-adds one explicit canonical-domain loopback entry. No production account,
-credential or Seerr publication is part of this acceptance.
+`check=media-live-acceptance` selects the standard native x86-64 Docker suite;
+it does not require root-owned storage or change host resolution.
+`check=household-sign-in-runtime` selects the complete native x86-64 household
+suite. Both packages carry their exact source, canonical manifests and policy
+inputs, rather than borrowing files from the caller's checkout. The household
+package retains the three helper archives, LDAP/Jellyfin/Seerr authentication,
+MFA and POSIX-password migration, recovery, certificate/group security, and
+HTTP 200 plus original-user-ID acceptance for retained Jellyfin sessions.
+Directory NetworkPolicy remains a separate real K3s/kernel VM gate.
 
-The hosted household lane places `/nix`, Docker and containerd data on its
-owned Btrfs image. Setup refuses existing mounts; cleanup checks the filesystem
-UUID and expected bind-mount roots before unmounting them or deleting the image.
-Select its owned `TMPDIR` only after Nix installation and cache setup. Pointing
-the installer at scratch under `/nix` lets installation change the ownership of
-the installer's own temporary directory and can prevent it from completing.
+The household app is also available as `nix run .#household-sign-in-runtime`.
+Run it only as root in an exclusive disposable native x86 Linux Docker
+fixture, with the Nix-declared canonical directory hostname resolving to
+`127.0.0.1`. Its existing `TMPDIR` parent (default `/root`) is canonicalized;
+the `household` child must not exist, including a dangling symlink. The app
+refuses existing fixture containers and network before loading images, never
+edits host resolution, and cleans only owned containers, network and synthetic
+credentials on exit. No production account, credential or Seerr publication
+is part of this acceptance.
 
-Check names and implementations belong in Nix, not workflow branches. Successful
-check jobs upload nonempty outputs as `check-output-<system>-<run-id>` artifacts;
-Linux runners enable available KVM acceleration and publish nonempty outputs to
-the public `dvicory-homelab` Cachix cache. System builds and checks can reuse
-narinfo and objects uploaded by other jobs.
-All jobs read the public `dvicory-homelab` Cachix cache. Successful `main` push
-jobs publish their existing outputs and runtime closures directly from the build
-runner; another job's failure does not prevent those uploads. There is no second
+The generic native executor dispatches `requirements.root`,
+`requirements.ownedStorage` and `loopbackHost`, never application names.
+Owned storage is restricted to an exclusive disposable Linux Docker runner:
+it places `/nix`, Docker and containerd data on its owned Btrfs loop image.
+Setup refuses an existing image (including dangling symlinks), `/nix`, daemon
+storage symlinks and existing target mounts. Cleanup validates the recorded
+image UUID and exact FSROOT of every mount before stopping daemons, unmounting
+storage or deleting the image. Independent acceptance cleanup checks the whole
+exclusive daemon and owned scratch, not just a name prefix. The executor adds
+the declared canonical-domain loopback entry; the app itself never does.
+Owned `TMPDIR` is selected only after Nix installation and cache setup:
+installation can change ownership under `/nix` and break its own temporary
+directory if pointed there early.
+
+Successful check jobs upload nonempty outputs as
+`check-output-<system>-<check-or-group>-<run-id>` artifacts; empty outputs retain
+their evidence in the job log. Linux runners enable available KVM acceleration.
+System builds and checks can reuse narinfo and objects uploaded by other jobs.
+Hestia's binary version is pinned alongside its action. Use core v3.1.0 or
+newer: it rejects cached narinfos whose backing packs are unavailable, rather
+than repeatedly advertising objects that fail during download. The manifest
+and backing packs are separate GitHub cache entries; a manifest hit alone
+does not prove that its objects remain available.
+
+All jobs read the public `dvicory-homelab` Cachix cache and the signed upstream
+`https://cache.numtide.com` cache documented by the pinned `llm-agents` input.
+CI and shared Nix settings append its fixed public key
+`niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=`.
+The owner approved this signer for CI and shared fleet Nix settings. This grants
+Numtide trust to supply executable store outputs, not just package metadata.
+The key is not restricted to Codex or one package: it can authenticate any
+requested store output. Its configured scope belongs to Nix desired state;
+signature checks do not make an untrusted publisher safe.
+CI appends the upstream cache and key to the user configuration after Cachix:
+Cachix's base settings override installer-level `extra-*` values. The later
+Hestia configuration preserves this user configuration. Existing substituters
+and keys remain configured. This permits exact upstream package substitution
+without changing package sources or versions. Signature verification remains
+required; CI does not automatically accept PR-provided flake configuration or
+grant upstream cache-write access. Successful `main` push
+jobs publish their existing outputs, runtime closures, and realized build
+dependencies directly from the build runner; another job's failure does not
+prevent those uploads. Publication uses the derivation roots recorded by the
+successful build, including dependencies embedded in compressed images that
+have no runtime store references. It excludes the source/derivation-only
+closure and never builds missing outputs for publication. There is no second
 build on a separate publication runner. The `cachix-publish` environment remains
 restricted to `main`, and only the publication step receives its per-cache write
 token. Pull requests and manual dispatches remain read-only.
+
+A successful warm `main` job does not prove that a cold PR runner can substitute
+its dependencies. For a repeated compiled dependency, compare the exact
+derivation and every required output with the `main` log, then query each output
+using `nix path-info --store https://dvicory-homelab.cachix.org "$output"`.
+A 404 means the output is unavailable, not that its derivation changed; Cachix
+also hides paths whose closure is incomplete. The publisher's realized-only
+selection includes the patched Incus server, documentation, agent loader and
+client even when a VM image hides them from its runtime references.
+
+Restore unavailable dependencies only through owner-approved protected-main
+publication of the exact successful outputs and their closures. Never use PR
+credentials or accept unsigned NARs to make a cold-cache proof pass. Measure
+substitution from an empty isolated store with builds disabled before
+attributing a runtime improvement to the cache.
+
+Exact derivations, not changed-file guesses, determine cache reuse. Runtime
+fixtures must reference individual files, package-local directories (including
+the test's adjacent scripts), or explicit filesets rather than interpolate
+`self` paths that retain the entire flake source as a build input. The recovery
+fixture includes all of its copied manifests and no unrelated applications.
+Hermes image tags still identify the Git source revision; changing that
+deployment provenance is not a cache optimization.
 
 Nix store contents published by CI are public, so CI outputs must never contain
 decrypted secrets.
