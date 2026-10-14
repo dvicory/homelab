@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 pub const PROTOCOL_VERSION: u32 = 1;
 
 fn protocol_version() -> u32 {
@@ -25,6 +25,7 @@ pub struct Document {
     pub kind: String,
     #[serde(default)]
     pub fixture_only: bool,
+    pub protected_realizations: Vec<ProtectedRealization>,
     #[serde(default)]
     pub states: Vec<State>,
     #[serde(default)]
@@ -55,6 +56,13 @@ pub struct State {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectedRealization {
+    pub state_id: String,
+    pub realization: Realization,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Realization {
     pub kind: String,

@@ -230,4 +230,5 @@ over the replacement.
 - [`jellyfin`](operations/jellyfin.md)
 - [`luks-storage-migration`](operations/luks-storage-migration.md)
 - [`media`](operations/media.md)
+- [`state-protection`](operations/state-protection.md)
 

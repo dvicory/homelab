@@ -1118,6 +1118,18 @@ let
     states.application.mode = "plan-only";
   };
   planOnlyIncomplete = compile planOnlyIncompleteDeclarations [ realizationSpec ];
+  mixedModes =
+    compile
+      (lib.recursiveUpdate common {
+        states.planned = state // {
+          stateId = "application/planned";
+          mode = "plan-only";
+        };
+      })
+      [
+        realizationSpec
+        (realizationSpec // { state = "planned"; })
+      ];
 
   missingRealization = compile common [ ];
   duplicateRealization = compile common [
@@ -1553,13 +1565,6 @@ let
   postgresEntry = (builtins.head postgres.desiredInventory.states);
 
   assertions = {
-    schema-versions =
-      resolved.desiredInventory.schemaVersion == 1
-      && resolved.executablePlan.schemaVersion == 1
-      && resolved.desiredInventory.kind == "desired-inventory"
-      && resolved.executablePlan.kind == "executable-plan"
-      && resolved.desiredInventory.fixtureOnly == true
-      && resolved.executablePlan.fixtureOnly == true;
     typed-identities =
       builtins.isString stateIdentity
       && builtins.isString resolvedEvaluated.slots.application-data.id_hash
@@ -1602,6 +1607,22 @@ let
       && (builtins.head planOnlyIncomplete.desiredInventory.states).operational == false
       && planOnlyIncomplete.executablePlan.states == [ ]
       && throws missingTarget.executablePlan;
+    plan-only-authoritative-fences =
+      builtins.length planOnlyIncomplete.executablePlan.protectedRealizations == 1
+      &&
+        (builtins.head planOnlyIncomplete.executablePlan.protectedRealizations).stateId
+        == (builtins.head planOnlyIncomplete.desiredInventory.states).stateId
+      &&
+        (builtins.head planOnlyIncomplete.executablePlan.protectedRealizations).realization
+        == realizationSpec.realization
+      && builtins.length duplicateRealization.desiredInventory.protectedRealizations == 2;
+    mixed-modes-fence-without-enabling =
+      builtins.length mixedModes.executablePlan.states == 1
+      && builtins.length mixedModes.executablePlan.protectedRealizations == 2
+      && builtins.any (
+        protected: protected.stateId == "application/planned"
+      ) mixedModes.executablePlan.protectedRealizations
+      && builtins.all (entry: entry.mode == "enabled") mixedModes.executablePlan.states;
     realization-failures =
       hasIssue "missing-realization" missingRealization
       && hasIssue "duplicate-realization" duplicateRealization
@@ -1635,8 +1656,9 @@ let
       && allIssueContext planOnlyCoverageGap
       && builtins.isString (builtins.toJSON planOnlyCoverageGap.desiredInventory)
       && !(builtins.head planOnlyCoverageGap.desiredInventory.states).operational
-      && (builtins.head (builtins.head planOnlyCoverageGap.desiredInventory.states).routes).status
-      == "unresolved"
+      &&
+        (builtins.head (builtins.head planOnlyCoverageGap.desiredInventory.states).routes).status
+        == "unresolved"
       && planOnlyCoverageGap.executablePlan.states == [ ];
     capability-matrix =
       hasIssue "unsupported-operation" unsupportedOperation

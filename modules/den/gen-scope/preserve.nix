@@ -151,11 +151,9 @@ let
     let
       boundary = realization.boundary or { };
       exclusions = (boundary.exclusions or [ ]) ++ (source.exclude or [ ]);
-      root =
-        if (realization.path or null) != null then realization.path else realization.locator or null;
+      root = if (realization.path or null) != null then realization.path else realization.locator or null;
       subpath = source.subpath or null;
-      base =
-        if root == null || subpath == null then root else "${lib.removeSuffix "/" root}/${subpath}";
+      base = if root == null || subpath == null then root else "${lib.removeSuffix "/" root}/${subpath}";
       contains =
         parent: child:
         parent != null && (parent == child || lib.hasPrefix "${lib.removeSuffix "/" parent}/" child);
@@ -800,16 +798,22 @@ let
         resolutionFor declarations realizations projectors true fixtureOnly (
           lib.filterAttrs (_name: state: state.mode == "enabled") states
         );
+      protectedRealizations =
+        assert validated;
+        map (contribution: {
+          inherit (contribution.state) stateId;
+          inherit (contribution) realization;
+        }) realizations;
       desiredInventory = {
-        schemaVersion = 1;
+        schemaVersion = 2;
         kind = "desired-inventory";
-        inherit scratchDestinations fixtureOnly;
+        inherit scratchDestinations fixtureOnly protectedRealizations;
         states = documentsFor inventoryResolution;
       };
       executablePlan = {
-        schemaVersion = 1;
+        schemaVersion = 2;
         kind = "executable-plan";
-        inherit scratchDestinations fixtureOnly;
+        inherit scratchDestinations fixtureOnly protectedRealizations;
         states = documentsFor executableResolution;
       };
     in

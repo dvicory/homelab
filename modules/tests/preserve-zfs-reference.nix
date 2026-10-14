@@ -106,10 +106,13 @@
               issues = [ ];
             };
 
-          mkManifest = simulateReceiveFailure: {
-            schemaVersion = 1;
+          mkManifest = simulateReceiveFailure: rec {
+            schemaVersion = 2;
             kind = "executable-plan";
             fixtureOnly = true;
+            protectedRealizations = map (state: {
+              inherit (state) stateId realization;
+            }) states;
             scratchDestinations.scratch = {
               nativeParent = "receiver/scratch";
               mountRoot = "/restore";
@@ -348,9 +351,8 @@
                 for boundary in ["source-path", "source-native", "target-path", "target-native"]:
                     guarded = copy.deepcopy(base_document)
                     if boundary.startswith("source"):
-                        other = copy.deepcopy(guarded["states"][0])
+                        other = copy.deepcopy(guarded["protectedRealizations"][0])
                         other["stateId"] = "fixture/other"
-                        other["routes"] = []
                         if boundary == "source-path":
                             other["realization"]["kind"] = "host-filesystem"
                             other["realization"]["path"] = "/restore"
@@ -359,7 +361,7 @@
                         else:
                             other["realization"]["path"] = None
                             other["realization"]["locator"] = "receiver/scratch"
-                        guarded["states"].append(other)
+                        guarded["protectedRealizations"].append(other)
                         expected = "source-alias"
                     else:
                         other = copy.deepcopy(guarded["states"][0]["routes"][1])
@@ -403,6 +405,22 @@
                 assert receipt1["point"] == older, receipt1
                 assert receipt1["ownerReceipt"]["sourceGuid"] == older["nativeId"], receipt1
                 assert receipt1["destination"]["nativeLocator"] == "receiver/scratch/scratch1"
+                # Current inventory-only sources reauthorize receipt verification too.
+                for boundary in ["path", "native"]:
+                    guarded = copy.deepcopy(base_document)
+                    other = copy.deepcopy(guarded["protectedRealizations"][0])
+                    other["stateId"] = "fixture/plan-only"
+                    other["realization"]["path"] = "/restore" if boundary == "path" else None
+                    other["realization"]["locator"] = "fixture/unrelated" if boundary == "path" else "receiver/scratch"
+                    guarded["protectedRealizations"].append(other)
+                    machine.succeed("cat > /root/verify-guarded.json <<'EOF'\n" + json.dumps(guarded) + "\nEOF")
+                    machine.fail(
+                        "homelab-preserve --manifest /root/verify-guarded.json --json verify"
+                        " /root/receipt1.json 2>/root/verify-guarded-error.json"
+                    )
+                    error = json.loads(sh("cat /root/verify-guarded-error.json"))["error"]
+                    assert error["code"] == "source-alias", error
+                    assert snapshot_inventory() == retained_before
                 assert sh("zfs get -H -o value mounted receiver/scratch/scratch1") == "yes"
 
                 def check_restored(path):

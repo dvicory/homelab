@@ -1,5 +1,5 @@
 use crate::error::{PreserveError, Result};
-use crate::model::{DestinationRequest, Route, ScratchDestination, State};
+use crate::model::{DestinationRequest, ProtectedRealization, Route, ScratchDestination, State};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -54,6 +54,7 @@ fn native_overlaps(left: &str, right: &str) -> bool {
 }
 
 pub fn preflight_destination(
+    protected_realizations: &[ProtectedRealization],
     protected_states: &[State],
     state: &State,
     route: &Route,
@@ -62,6 +63,7 @@ pub fn preflight_destination(
     new_name: &str,
 ) -> Result<DestinationRequest> {
     let destination = authorize_destination(
+        protected_realizations,
         protected_states,
         state,
         route,
@@ -86,6 +88,7 @@ pub fn preflight_destination(
 }
 
 pub(crate) fn authorize_destination(
+    protected_realizations: &[ProtectedRealization],
     protected_states: &[State],
     state: &State,
     route: &Route,
@@ -148,33 +151,34 @@ pub(crate) fn authorize_destination(
         .as_ref()
         .and_then(|boundaries| boundaries.native_namespace.as_deref())
         .filter(|namespace| !namespace.is_empty());
-    for protected in protected_states {
-        if let Some(realization) = &protected.realization {
-            if let Some(source) = &realization.path {
-                if overlaps(&destination, &resolved(source)) {
-                    return Err(PreserveError::new(
-                        "source-alias",
-                        format!(
-                            "scratch destination overlaps active State '{}'",
-                            protected.state_id
-                        ),
-                    )
-                    .context(&state.state_id, Some(&route.route_id)));
-                }
-            }
-            if let Some(locator) = realization.locator.as_str() {
-                if native_overlaps(&native_locator, locator) {
-                    return Err(PreserveError::new(
-                        "source-alias",
-                        format!(
-                            "native scratch destination overlaps active State '{}'",
-                            protected.state_id
-                        ),
-                    )
-                    .context(&state.state_id, Some(&route.route_id)));
-                }
+    for protected in protected_realizations {
+        let realization = &protected.realization;
+        if let Some(source) = &realization.path {
+            if overlaps(&destination, &resolved(source)) {
+                return Err(PreserveError::new(
+                    "source-alias",
+                    format!(
+                        "scratch destination overlaps active State '{}'",
+                        protected.state_id
+                    ),
+                )
+                .context(&state.state_id, Some(&route.route_id)));
             }
         }
+        if let Some(locator) = realization.locator.as_str() {
+            if native_overlaps(&native_locator, locator) {
+                return Err(PreserveError::new(
+                    "source-alias",
+                    format!(
+                        "native scratch destination overlaps active State '{}'",
+                        protected.state_id
+                    ),
+                )
+                .context(&state.state_id, Some(&route.route_id)));
+            }
+        }
+    }
+    for protected in protected_states {
         for retained_route in &protected.routes {
             if retained_route.target.is_none() {
                 continue;

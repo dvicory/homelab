@@ -85,6 +85,31 @@ pub fn validate_document(document: &Document) -> Result<()> {
         ));
     }
 
+    for protected in &document.protected_realizations {
+        let realization = &protected.realization;
+        let nonempty = |value: Option<&str>| value.is_some_and(|value| !value.is_empty());
+        if protected.state_id.is_empty()
+            || realization.kind.is_empty()
+            || !nonempty(realization.owner.get("kind").and_then(Value::as_str))
+            || !nonempty(realization.owner.get("id").and_then(Value::as_str))
+            || !(nonempty(realization.locator.as_str())
+                || realization
+                    .locator
+                    .as_object()
+                    .is_some_and(|locator| !locator.is_empty()))
+            || realization
+                .path
+                .as_ref()
+                .is_some_and(|path| !path.is_absolute())
+        {
+            return Err(PreserveError::new(
+                "invalid-protected-realization",
+                "authoritative source fences require a State identity, typed owner, locator, and absolute source path when present",
+            )
+            .context(&protected.state_id, None));
+        }
+    }
+
     let mut states = BTreeSet::new();
     for state in &document.states {
         if !states.insert(&state.state_id) {
@@ -92,6 +117,17 @@ pub fn validate_document(document: &Document) -> Result<()> {
                 "duplicate-state",
                 format!("state '{}' appears more than once", state.state_id),
             ));
+        }
+        if let Some(realization) = &state.realization {
+            if !document.protected_realizations.iter().any(|protected| {
+                protected.state_id == state.state_id && &protected.realization == realization
+            }) {
+                return Err(PreserveError::new(
+                    "missing-protected-realization",
+                    "State realization is absent from the authoritative source fences",
+                )
+                .context(&state.state_id, None));
+            }
         }
         let mut routes = BTreeSet::new();
         for route in &state.routes {
@@ -774,6 +810,7 @@ pub fn restore(
     execute: bool,
     receipt_path: Option<&Path>,
 ) -> Result<Value> {
+    validate_document(document)?;
     let state = executable_state(document, state_id)?;
     let route = executable_route(state, route_id)?;
     let receipt_path = if execute {
@@ -799,6 +836,7 @@ pub fn restore(
                 .context(state_id, Some(route_id))
             })?;
     let planned = preflight_destination(
+        &document.protected_realizations,
         &document.states,
         state,
         route,
@@ -855,6 +893,7 @@ pub fn restore(
             .context(state_id, Some(route_id))
         })?;
     let destination = preflight_destination(
+        &document.protected_realizations,
         &document.states,
         state,
         route,
@@ -931,6 +970,7 @@ pub fn verify(document: &Document, receipt: RestoreReceipt) -> Result<VerifyResu
             ),
         ));
     }
+    validate_document(document)?;
     let state = executable_state(document, &receipt.state_id)?;
     let route = executable_route(state, &receipt.route_id)?;
     let target = route
@@ -961,6 +1001,7 @@ pub fn verify(document: &Document, receipt: RestoreReceipt) -> Result<VerifyResu
             .context(&receipt.state_id, Some(&receipt.route_id))
         })?;
     let authorized = authorize_destination(
+        &document.protected_realizations,
         &document.states,
         state,
         route,

@@ -1,6 +1,6 @@
 use homelab_preserve::model::{
-    Document, Integration, NativePoint, ProtocolRequest, RestoreReceipt, Route, ScratchDestination,
-    State, Target, TargetBoundaries,
+    Document, Integration, NativePoint, ProtectedRealization, ProtocolRequest, RestoreReceipt,
+    Route, ScratchDestination, State, Target, TargetBoundaries,
 };
 use homelab_preserve::process::invoke_adapter;
 use homelab_preserve::safety::preflight_destination;
@@ -98,6 +98,13 @@ fn state(source: Option<PathBuf>) -> State {
     }
 }
 
+fn protected(state: &State) -> ProtectedRealization {
+    ProtectedRealization {
+        state_id: state.state_id.clone(),
+        realization: state.realization.as_ref().unwrap().clone(),
+    }
+}
+
 fn route() -> Route {
     Route {
         route_id: "route".to_owned(),
@@ -169,9 +176,10 @@ fn opaque_namespaced_provenance_round_trips() {
 #[test]
 fn unsupported_document_version_is_rejected() {
     let document = Document {
-        schema_version: 2,
+        schema_version: 1,
         kind: "executable-plan".to_owned(),
         fixture_only: false,
+        protected_realizations: Vec::new(),
         states: Vec::new(),
         scratch_destinations: BTreeMap::new(),
         extra: BTreeMap::new(),
@@ -180,6 +188,62 @@ fn unsupported_document_version_is_rejected() {
         validate_document(&document).unwrap_err().code,
         "unsupported-schema-version"
     );
+}
+
+#[test]
+fn required_authoritative_fences_fail_closed() {
+    let directory = temporary("required-fences");
+    let path = directory.join("manifest.json");
+    let document = executable_document(integration(PathBuf::from("/does/not/run")));
+    let valid = serde_json::to_value(&document).unwrap();
+    for (field, code) in [
+        ("missing", "document-json"),
+        ("null", "document-json"),
+        ("incomplete", "document-json"),
+        ("empty", "missing-protected-realization"),
+        ("relative-path", "invalid-protected-realization"),
+        ("empty-locator", "invalid-protected-realization"),
+        ("unknown-owner", "invalid-protected-realization"),
+        ("old-schema", "unsupported-schema-version"),
+    ] {
+        let mut invalid = valid.clone();
+        match field {
+            "missing" => {
+                invalid
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("protectedRealizations");
+            }
+            "null" => invalid["protectedRealizations"] = Value::Null,
+            "incomplete" => invalid["protectedRealizations"] = json!([{"stateId": "state"}]),
+            "empty" => invalid["protectedRealizations"] = json!([]),
+            "relative-path" => {
+                invalid["protectedRealizations"][0]["realization"]["path"] = json!("relative")
+            }
+            "empty-locator" => {
+                invalid["protectedRealizations"][0]["realization"]["locator"] = json!("")
+            }
+            "unknown-owner" => {
+                invalid["protectedRealizations"][0]["realization"]["owner"] = json!({})
+            }
+            "old-schema" => invalid["schemaVersion"] = json!(1),
+            _ => unreachable!(),
+        }
+        fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+        assert_eq!(
+            homelab_preserve::load_document(&path).unwrap_err().code,
+            code
+        );
+    }
+    let mut missing = document.clone();
+    missing.protected_realizations.clear();
+    assert_eq!(
+        restore(&missing, "state", "route", "point-1", "scratch", "new", false, None)
+            .unwrap_err()
+            .code,
+        "missing-protected-realization"
+    );
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -192,9 +256,10 @@ fn executable_plan_enforces_fixture_only_boundaries() {
         ..route()
     });
     let document = Document {
-        schema_version: 1,
+        schema_version: 2,
         kind: "executable-plan".to_owned(),
         fixture_only: false,
+        protected_realizations: vec![protected(&executable)],
         states: vec![executable.clone()],
         scratch_destinations: BTreeMap::new(),
         extra: BTreeMap::new(),
@@ -216,9 +281,10 @@ fn executable_plan_enforces_fixture_only_boundaries() {
         ..integration(PathBuf::from("/configured/adapter/does-not-exist"))
     });
     let production_document = Document {
-        schema_version: 1,
+        schema_version: 2,
         kind: "executable-plan".to_owned(),
         fixture_only: false,
+        protected_realizations: vec![protected(&production)],
         states: vec![production],
         scratch_destinations: BTreeMap::new(),
         extra: BTreeMap::new(),
@@ -267,14 +333,44 @@ fn planning_never_invokes_an_adapter() {
         ..route()
     });
     let document = Document {
-        schema_version: 1,
+        schema_version: 2,
         kind: "desired-inventory".to_owned(),
         fixture_only: true,
+        protected_realizations: vec![protected(&planned_state)],
         states: vec![planned_state],
         scratch_destinations: BTreeMap::new(),
         extra: BTreeMap::new(),
     };
     assert!(plan(&document).is_ok());
+    assert_eq!(
+        restore(&document, "state", "route", "point-1", "scratch", "new", false, None)
+            .unwrap_err()
+            .code,
+        "plan-only-document"
+    );
+    let executable = Document {
+        kind: "executable-plan".to_owned(),
+        ..document
+    };
+    assert_eq!(
+        run(&executable, "state", "route").unwrap_err().code,
+        "state-not-operational"
+    );
+    assert_eq!(
+        restore(
+            &executable,
+            "state",
+            "route",
+            "point-1",
+            "scratch",
+            "new",
+            false,
+            None
+        )
+        .unwrap_err()
+        .code,
+        "state-not-operational"
+    );
 }
 
 #[test]
@@ -403,7 +499,9 @@ fn destination_preflight_rejects_unsafe_and_aliasing_paths() {
 
     let safe_state = state(Some(directory.join("active")));
     let safe_route = route();
+    let safe_fences = [protected(&safe_state)];
     let planned = preflight_destination(
+        &safe_fences,
         std::slice::from_ref(&safe_state),
         &safe_state,
         &safe_route,
@@ -419,6 +517,7 @@ fn destination_preflight_rejects_unsafe_and_aliasing_paths() {
 
     assert_eq!(
         preflight_destination(
+            &safe_fences,
             std::slice::from_ref(&safe_state),
             &safe_state,
             &safe_route,
@@ -434,6 +533,7 @@ fn destination_preflight_rejects_unsafe_and_aliasing_paths() {
     fs::create_dir(scratch_root.join("existing")).unwrap();
     assert_eq!(
         preflight_destination(
+            &safe_fences,
             std::slice::from_ref(&safe_state),
             &safe_state,
             &safe_route,
@@ -449,6 +549,7 @@ fn destination_preflight_rejects_unsafe_and_aliasing_paths() {
     std::os::unix::fs::symlink(directory.join("absent"), scratch_root.join("dangling")).unwrap();
     assert_eq!(
         preflight_destination(
+            &safe_fences,
             std::slice::from_ref(&safe_state),
             &safe_state,
             &safe_route,
@@ -464,6 +565,7 @@ fn destination_preflight_rejects_unsafe_and_aliasing_paths() {
     let source_alias = state(Some(scratch_root.clone()));
     assert_eq!(
         preflight_destination(
+            &[protected(&source_alias)],
             std::slice::from_ref(&source_alias),
             &source_alias,
             &safe_route,
@@ -496,11 +598,13 @@ fn restore_refuses_document_sources_and_retained_targets_before_adapter_dispatch
     );
     let mut other = state(Some(scratch_root.clone()));
     other.state_id = "other-state".to_owned();
-    document.states.push(other);
+    other.mode = "plan-only".to_owned();
+    other.operational = false;
+    document.protected_realizations.push(protected(&other));
     let receipt = directory.join("receipt.json");
     for native_alias in [false, true] {
         if native_alias {
-            let realization = document.states[1].realization.as_mut().unwrap();
+            let realization = &mut document.protected_realizations[1].realization;
             realization.path = Some(directory.join("other-source"));
             realization.locator = json!("scratch/root");
         }
@@ -524,7 +628,9 @@ fn restore_refuses_document_sources_and_retained_targets_before_adapter_dispatch
             "other State's live data"
         );
     }
-    document.states[1].realization.as_mut().unwrap().locator = json!("source/other");
+    document.protected_realizations[1].realization.locator = json!("source/other");
+    other.realization = Some(document.protected_realizations[1].realization.clone());
+    document.states.push(other);
     document.states[0].routes[0]
         .target_boundaries
         .as_mut()
@@ -576,6 +682,7 @@ fn restore_refuses_document_sources_and_retained_targets_before_adapter_dispatch
         .unwrap()
         .native_namespace = Some("different-native-realm".to_owned());
     preflight_destination(
+        &document.protected_realizations,
         &document.states,
         &document.states[0],
         &document.states[0].routes[0],
@@ -591,6 +698,7 @@ fn restore_refuses_document_sources_and_retained_targets_before_adapter_dispatch
         .native_namespace = None;
     assert_eq!(
         preflight_destination(
+            &document.protected_realizations,
             &document.states,
             &document.states[0],
             &document.states[0].routes[0],
@@ -614,6 +722,7 @@ fn restore_refuses_document_sources_and_retained_targets_before_adapter_dispatch
         .native_namespace = None;
     assert_eq!(
         preflight_destination(
+            &document.protected_realizations,
             &document.states,
             &document.states[0],
             &document.states[0].routes[0],
@@ -651,9 +760,10 @@ fn executable_document(integration: Integration) -> Document {
         ..route()
     });
     Document {
-        schema_version: 1,
+        schema_version: 2,
         kind: "executable-plan".to_owned(),
         fixture_only: true,
+        protected_realizations: vec![protected(&executable)],
         states: vec![executable],
         scratch_destinations: BTreeMap::new(),
         extra: BTreeMap::new(),
@@ -1030,9 +1140,10 @@ fn two_route_document(first: PathBuf, second: PathBuf, second_status: &str) -> D
         ..route()
     });
     Document {
-        schema_version: 1,
+        schema_version: 2,
         kind: "executable-plan".to_owned(),
         fixture_only: true,
+        protected_realizations: vec![protected(&executable)],
         states: vec![executable],
         scratch_destinations: BTreeMap::new(),
         extra: BTreeMap::new(),
@@ -1266,7 +1377,7 @@ fn point_evidence_does_not_verify_restored_content() {
     fs::create_dir(&destination).unwrap();
 
     let receipt: RestoreReceipt = serde_json::from_value(json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "stateId": "state",
         "routeId": "route",
         "targetId": "target",
@@ -1482,11 +1593,26 @@ fn restore_receipts_and_verification_stay_within_current_authority() {
         "unknown-scratch-destination"
     );
     let mut source_alias = document.clone();
-    source_alias.states.push(state(Some(scratch_root.clone())));
-    assert_eq!(
-        verify(&source_alias, receipt.clone()).unwrap_err().code,
-        "source-alias"
-    );
+    let mut planned = state(Some(scratch_root.clone()));
+    planned.state_id = "plan-only-source".to_owned();
+    planned.mode = "plan-only".to_owned();
+    planned.operational = false;
+    source_alias
+        .protected_realizations
+        .push(protected(&planned));
+    for native_alias in [false, true] {
+        if native_alias {
+            let realization = &mut source_alias.protected_realizations[1].realization;
+            realization.path = None;
+            realization.locator = json!("scratch/root");
+        }
+        assert_eq!(
+            verify(&source_alias, receipt.clone()).unwrap_err().code,
+            "source-alias"
+        );
+        assert!(!spawned.exists());
+        assert!(!verified.exists());
+    }
     let mut target_alias = document.clone();
     target_alias.states[0].routes[0]
         .target_boundaries
@@ -1599,5 +1725,47 @@ fn restore_receipts_and_verification_stay_within_current_authority() {
     );
     assert!(!mutated.exists());
     assert!(scratch_root.join("rehearsal").is_dir());
+    fs::remove_dir(scratch_root.join("rehearsal")).unwrap();
+    fs::remove_file(&receipt_path).unwrap();
+
+    // A plan-only source alias introduced by discovery must fence execute revalidation.
+    let live_alias = directory.join("planned-source");
+    std::os::unix::fs::symlink(&outside, &live_alias).unwrap();
+    let mut planned = state(Some(live_alias.clone()));
+    planned.state_id = "plan-only-source".to_owned();
+    planned.mode = "plan-only".to_owned();
+    planned.operational = false;
+    document.protected_realizations.push(protected(&planned));
+    let alias_created_during_discovery = script(
+        &directory,
+        &format!(
+            "request=$(cat)\ncase \"$request\" in\n*'\"operation\":\"points\"'*) rm '{}'; ln -s '{}' '{}';;\n*'\"operation\":\"restore\"'*) touch '{}';;\nesac\nprintf '%s' \"$request\" | '{}'",
+            live_alias.display(), scratch_root.display(), live_alias.display(),
+            mutated.display(), responder.display()
+        ),
+    );
+    document.states[0].routes[0]
+        .integration
+        .as_mut()
+        .unwrap()
+        .adapter = alias_created_during_discovery;
+    assert_eq!(
+        restore(
+            &document,
+            "state",
+            "route",
+            "point-1",
+            "scratch",
+            "rehearsal",
+            true,
+            Some(&receipt_path)
+        )
+        .unwrap_err()
+        .code,
+        "source-alias"
+    );
+    assert!(!mutated.exists());
+    assert!(!scratch_root.join("rehearsal").exists());
+    assert_eq!(fs::metadata(&receipt_path).unwrap().len(), 0);
     fs::remove_dir_all(directory).unwrap();
 }
