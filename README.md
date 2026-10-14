@@ -45,6 +45,6 @@ amd64 emulation is not native ARM evidence.
 
 ## Media verification
 
-On an x86_64 Linux builder with KVM, `nix build .#checks.x86_64-linux.media-runtime -L` runs the pinned media services in a disposable Docker VM without production mounts or credentials.
+On native x86_64 Linux with Docker Engine 26+, `nix run .#media-live-acceptance -- --docker-host unix:///var/run/docker.sock --platform linux/amd64` runs the full pinned media API suite using packaged manifests/policy inputs and owned disposable Docker volumes, without production mounts or credentials. Hosted CI requires its execution, not merely building the runner; Kubernetes/Incus/recovery evidence remains separate.
 
 Native service behavior is the category-integration proof. SABnzbd owns its default `*` category; the local initializer checks must not equate its complete category inventory with the configured Arr instances.
