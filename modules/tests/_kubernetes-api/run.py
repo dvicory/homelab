@@ -15,7 +15,7 @@ import time
 import uuid
 
 import yaml
-from report import ARGO_CRDS, ARGO_RECOVERY_APPS, ARGO_RECOVERY_JOBS, REQUIRED_SCENARIOS, argo_recovery_witness, check_report, classify_docker_error, classify_kubectl_error, classify_network_policy_error, crd_condition_witness, network_policy_witness, sanitize_tests
+from report import ARGO_CRDS, ARGO_RECOVERY_APPS, ARGO_RECOVERY_JOBS, REQUIRED_SCENARIOS, argo_recovery_witness, check_acceptance, check_report, classify_docker_error, classify_kubectl_error, classify_network_policy_error, crd_condition_witness, network_policy_witness, sanitize_tests
 
 OWNER_LABEL = "verification.homelab/fixture"
 
@@ -567,6 +567,12 @@ def main():
             report.setdefault("failureReason", "owned-state-cleanup-failed")
             report["status"] = "failed"
             report["fullAcceptance"] = False
+        if report["status"] == "passed":
+            try:
+                check_acceptance(report)
+            except (ValueError, TypeError, AttributeError, KeyError):
+                report.update(status="failed", fullAcceptance=False,
+                              failurePhase="final-report", failureReason="invalid-full-acceptance-report")
         report["timingsSeconds"]["cleanup"] = round(time.monotonic() - cleanup_start, 3)
         report["timingsSeconds"]["total"] = round(time.monotonic() - started, 3)
         output.seek(0)
