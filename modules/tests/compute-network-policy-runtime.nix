@@ -129,8 +129,12 @@ in
                 users.groups.media.gid = 505;
 
                 virtualisation = {
-                  cores = 8;
-                  memorySize = 10240;
+                  # Sized for GitHub's hosted x86-64 runner (4 vCPUs, 16 GiB).
+                  # With the node at its Pod limit the fixture host uses about
+                  # 2.8 GiB besides page cache; more vCPUs than the runner has,
+                  # or a larger guest, starves the runner until GitHub loses it.
+                  cores = 4;
+                  memorySize = 6144;
                   diskSize = 65536;
                   # The enforcer image is pulled by digest from its registry.
                   restrictNetwork = false;
