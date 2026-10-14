@@ -97,7 +97,6 @@ let
     "incus-mount-isolation"
     "root-esp-mirror"
     "prod-home-replacement"
-    "prod-home-consumer-resilience"
   ];
   requiredFeaturesFor = check:
     check.requiredSystemFeatures or (check.config.rawTestDerivation.requiredSystemFeatures or [ ]);

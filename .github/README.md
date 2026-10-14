@@ -51,12 +51,13 @@ Make this stable aggregate context required in branch protection; configuring
 GitHub branch protection remains a maintainer action.
 
 The mandatory host inventory includes `compute-network-policy-runtime`,
-`compute-guest-upgrade`, `prod-home-replacement` and
-`prod-home-consumer-resilience`, not just whichever checks happen to remain
-registered. The consumer-resilience family registration must accompany its
-scenario implementation; missing it fails hosted evaluation. Neither recovery
-family is replaced by native Kubernetes coverage. Broad VM scenario narrowing
-remains deferred until equivalent native acceptance passes.
+`compute-guest-upgrade` and `prod-home-replacement`, not just whichever checks
+happen to remain registered. The current combined `prod-home-replacement`
+fixture retains both replacement and consumer-resilience assertions. When the
+approved PR67 dependency is integrated, its two-family split and real required
+gate definitions must be carried with it. Neither recovery concept is replaced
+by native Kubernetes coverage. Broad VM scenario narrowing remains deferred
+until equivalent native acceptance passes.
 
 Linux also requires `prepare-luks-storage` in `fastChecks`. It exercises real
 rsync transfers/checksum verification and refuses unsafe operations before
