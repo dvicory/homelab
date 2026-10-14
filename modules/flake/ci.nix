@@ -51,8 +51,9 @@ let
     let
       checks = (self.checks or { }).${system} or { };
     in
-    assert lib.assertMsg (lib.all lib.isDerivation (lib.attrValues checks))
-      "CI checks.${system} must contain only derivations";
+    assert lib.assertMsg (lib.all lib.isDerivation (
+      lib.attrValues checks
+    )) "CI checks.${system} must contain only derivations";
     checks;
   requiredFastChecks = [
     "den-semantics"
@@ -99,46 +100,63 @@ let
     "prod-home-replacement"
     "prod-home-consumer-resilience"
   ];
-  requiredFeaturesFor = check:
+  requiredFeaturesFor =
+    check:
     check.requiredSystemFeatures or (check.config.rawTestDerivation.requiredSystemFeatures or [ ]);
-  needsVm = check:
+  needsVm =
+    check:
     lib.elem "kvm" (requiredFeaturesFor check)
     || lib.isDerivation (check.driver or (check.driverInteractive or (check.config.driver or null)));
-  requiredNativeApplications = [ "verify-kubernetes-api" "media-live-acceptance" ];
+  requiredNativeApplications = [
+    "verify-kubernetes-api"
+    "media-live-acceptance"
+  ];
   nativeApplicationsFor =
     system:
-    if system != "x86_64-linux" then { } else
-    let
-      packages = (self.packages or { }).${system} or { };
-      apps = (self.apps or { }).${system} or { };
-      valid = name:
-        builtins.hasAttr name packages && lib.isDerivation packages.${name}
-        && builtins.hasAttr name apps && (apps.${name}.type or "") == "app"
-        && (apps.${name}.program or "") == lib.getExe packages.${name};
-    in
-    assert lib.assertMsg (lib.all valid requiredNativeApplications)
-      "Required native CI apps must have matching executable packages: ${lib.concatStringsSep ", " requiredNativeApplications}";
-    lib.genAttrs requiredNativeApplications (name: packages.${name});
+    if system != "x86_64-linux" then
+      { }
+    else
+      let
+        packages = (self.packages or { }).${system} or { };
+        apps = (self.apps or { }).${system} or { };
+        valid =
+          name:
+          builtins.hasAttr name packages
+          && lib.isDerivation packages.${name}
+          && builtins.hasAttr name apps
+          && (apps.${name}.type or "") == "app"
+          && (apps.${name}.program or "") == lib.getExe packages.${name};
+      in
+      assert lib.assertMsg (lib.all valid requiredNativeApplications)
+        "Required native CI apps must have matching executable packages: ${lib.concatStringsSep ", " requiredNativeApplications}";
+      lib.genAttrs requiredNativeApplications (name: packages.${name});
   hostedChecksFor =
     system:
     let
       checks = checksFor system;
-      fastRequired = requiredFastChecks ++ lib.optionals (lib.hasSuffix "-linux" system) [
-        "prepare-luks-storage"
-        "incus-mount-isolation-decisions"
-      ];
-      required = fastRequired ++ lib.optionals (system == "x86_64-linux") (
-        requiredKubernetesApplications ++ requiredHostRecovery
-      );
+      fastRequired =
+        requiredFastChecks
+        ++ lib.optionals (lib.hasSuffix "-linux" system) [
+          "prepare-luks-storage"
+          "incus-mount-isolation-decisions"
+        ];
+      required =
+        fastRequired
+        ++ lib.optionals (system == "x86_64-linux") (
+          requiredKubernetesApplications ++ requiredHostRecovery
+        );
       missing = lib.filter (name: !(builtins.hasAttr name checks)) required;
       select = names: lib.genAttrs names (name: checks.${name});
     in
-    assert lib.assertMsg (missing == [ ])
-      "Missing required CI checks for ${system}: ${lib.concatStringsSep ", " missing}";
-    assert lib.assertMsg (lib.all (name: lib.isDerivation checks.${name}) required)
-      "Required CI checks for ${system} must be derivations";
-    assert lib.assertMsg (lib.all (name: !(needsVm checks.${name})) fastRequired)
-      "Required fast CI checks for ${system} must not require a VM";
+    assert lib.assertMsg (
+      missing == [ ]
+    ) "Missing required CI checks for ${system}: ${lib.concatStringsSep ", " missing}";
+    assert lib.assertMsg (lib.all (
+      name: lib.isDerivation checks.${name}
+    ) required) "Required CI checks for ${system} must be derivations";
+    assert lib.assertMsg (lib.all (
+      name: !(needsVm checks.${name})
+    ) fastRequired) "Required fast CI checks for ${system} must not require a VM";
     assert lib.assertMsg (
       system != "x86_64-linux"
       || lib.all (name: needsVm checks.${name}) (requiredKubernetesApplications ++ requiredHostRecovery)
@@ -149,25 +167,29 @@ let
     }
     // lib.optionalAttrs (system == "x86_64-linux") {
       kubernetesApplications = select requiredKubernetesApplications;
-      hostRecovery = select requiredHostRecovery // lib.filterAttrs (
-        name: check: needsVm check && !(lib.elem name requiredKubernetesApplications)
-      ) checks;
+      hostRecovery =
+        select requiredHostRecovery
+        // lib.filterAttrs (
+          name: check: needsVm check && !(lib.elem name requiredKubernetesApplications)
+        ) checks;
     };
 
   hostedInventoryFor =
     system:
     let
       groups = hostedChecksFor system;
-      inventory = lib.mapAttrsToList (name: check:
+      inventory = lib.mapAttrsToList (
+        name: check:
         let
           matching = lib.filter (group: builtins.hasAttr name groups.${group}) (builtins.attrNames groups);
           hosted = !needsVm check || system == "x86_64-linux";
         in
-        assert lib.assertMsg (builtins.length matching == (if hosted then 1 else 0))
-          "Hosted CI must account for ${system}.${name} exactly once";
+        assert lib.assertMsg (
+          builtins.length matching == (if hosted then 1 else 0)
+        ) "Hosted CI must account for ${system}.${name} exactly once";
         {
           inherit name hosted;
-          inherit (check) drvPath;
+          drvPath = if hosted then check.drvPath else null;
           runtime = needsVm check;
           requiredSystemFeatures = requiredFeaturesFor check;
           group = if hosted then lib.head matching else null;
@@ -180,12 +202,17 @@ let
         program = lib.getExe package;
         group = "kubernetesApplications";
       }) (nativeApplicationsFor system);
-    in {
+    in
+    {
       checks = inventory;
       inherit nativeApplications;
       jobGroups = builtins.attrNames groups ++ [
-        "packages" "devShells" "formatters" "nixosConfigurations"
-        "darwinConfigurations" "homeConfigurations"
+        "packages"
+        "devShells"
+        "formatters"
+        "nixosConfigurations"
+        "darwinConfigurations"
+        "homeConfigurations"
       ];
     };
 
@@ -228,8 +255,8 @@ in
         lib.mapAttrs (name: entries: pkgs.linkFarm "ci-${name}-hosted" (project system "checks" entries)) (
           hostedChecksFor system
           // lib.optionalAttrs (system == "x86_64-linux") {
-            kubernetesApplications = (hostedChecksFor system).kubernetesApplications
-              // nativeApplicationsFor system;
+            kubernetesApplications =
+              (hostedChecksFor system).kubernetesApplications // nativeApplicationsFor system;
           }
         )
       )
