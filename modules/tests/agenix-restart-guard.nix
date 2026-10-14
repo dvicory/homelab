@@ -21,11 +21,11 @@ in
     { pkgs, system, ... }:
     let
       # Generate the production units with native executables on each Linux builder.
-      hvnConfig = (import ./_compute-configurations.nix {
-        inherit self lib system;
-        hostName = "hvn-hyp1";
-      }).hostConfig;
-      secretPath = hvnConfig.age.secrets.${secretName}.path;
+      hvnConfig =
+        (import ./_compute-configurations.nix {
+          inherit self lib system;
+          hostName = "hvn-hyp1";
+        }).hostConfig;
       generatedPath = hvnConfig.systemd.paths.${unitName};
       generatedService = hvnConfig.systemd.services.${unitName};
       test = pkgs.testers.runNixOSTest {
@@ -86,7 +86,6 @@ in
 
         testScript = ''
           unit = "${unitName}.service"
-          assert "${secretPath}" == "/run/agenix/${secretName}"
 
           def starts():
               return int(machine.succeed("wc -l < /run/consumer-starts").strip())

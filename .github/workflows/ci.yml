@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       check:
-        description: Optional check name (media-runtime runs the native suite); leave empty for all CI
+        description: Optional registered check or native application; leave empty for all CI
         type: string
         default: ""
       system:
@@ -32,11 +32,13 @@ concurrency:
 jobs:
   plan:
     name: Inventory hosted checks
-    if: inputs.check != 'media-runtime'
     runs-on: ${{ inputs.check != '' && inputs.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || inputs.check != '' && inputs.system == 'aarch64-darwin' && 'macos-14' || 'ubuntu-24.04' }}
     outputs:
       matrix: ${{ steps.inventory.outputs.matrix }}
       darwin: ${{ steps.inventory.outputs.darwin }}
+      build: ${{ steps.inventory.outputs.build }}
+      native: ${{ steps.inventory.outputs.native }}
+      applications: ${{ steps.inventory.outputs.applications }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -75,44 +77,51 @@ jobs:
           if [ -n "$REQUESTED_SYSTEM" ] && [ "$REQUESTED_SYSTEM" != all ]; then
             system="$REQUESTED_SYSTEM"
           fi
-          # Capabilities are lazy; exact drv identities belong to native job receipts.
-          inventory_projection='builtins.mapAttrs (_: builtins.map (entry: builtins.removeAttrs entry [ "drvPath" ]))'
+          # Nix owns groups, capabilities and native execution; planning stays lazy.
           if [ -n "$CHECK" ] || { [ -n "$REQUESTED_SYSTEM" ] && [ "$REQUESTED_SYSTEM" != all ]; }; then
-            nix eval --json ".#hostedCiInventory.$system" --apply "$inventory_projection" \
+            nix eval --json ".#hostedCiPlan.$system" \
               | jq --arg system "$system" '{($system): .}' > "$RUNNER_TEMP/check-inventory.json"
           else
-            nix eval --json .#hostedCiInventory \
-              --apply "builtins.mapAttrs (_: inventory: ($inventory_projection) inventory)" \
-              > "$RUNNER_TEMP/check-inventory.json"
+            nix eval --json .#hostedCiPlan > "$RUNNER_TEMP/check-inventory.json"
           fi
           cat "$RUNNER_TEMP/check-inventory.json"
-          if [ -n "$CHECK" ]; then
-            matrix=$(jq -ce --arg check "$CHECK" --arg system "$system" '
-              [.[$system].inventory[] | select(.name == $check)] |
-              if length != 1 then error("check is not registered for selected platform")
-              elif .[0].hosted | not then error(.[0].reason)
-              else {include: [{system: $system, group: (if .[0].runtime then "runtime" else "checks" end), check: $check, artifact: ($check | @uri), requirements: .[0].requirements}]} end
-            ' "$RUNNER_TEMP/check-inventory.json")
-            darwin=false
-          else
-            platforms='["x86_64-linux","aarch64-linux","aarch64-darwin"]'
-            if [ -n "$REQUESTED_SYSTEM" ] && [ "$REQUESTED_SYSTEM" != all ]; then
-              platforms=$(jq -cn --arg system "$REQUESTED_SYSTEM" '[$system]')
-            fi
-            matrix=$(jq -c --argjson platforms "$platforms" '
-              {include: (
-                [$platforms[] as $system | .[$system].runtime[] |
-                   {system: $system, group: "runtime", check: .name, artifact: (.name | @uri), requirements: .requirements}]
-                + [$platforms[] as $system |
-                 ["packages","checks","devShells","formatters","nixosConfigurations","darwinConfigurations","homeConfigurations"][] as $group |
-                 select($system != "aarch64-darwin" or $group != "darwinConfigurations") |
-                 {system: $system, group: $group, check: "", artifact: "", requirements: {}}]
-              )}
-            ' "$RUNNER_TEMP/check-inventory.json")
-            darwin=$(jq -cn --argjson platforms "$platforms" '$platforms | index("aarch64-darwin") != null')
-          fi
-          printf 'matrix=%s\ndarwin=%s\n' "$matrix" "$darwin" >> "$GITHUB_OUTPUT"
-          printf '%s\n' "$matrix" | jq .
+          jq -ce --arg check "$CHECK" --arg system "$system" '
+            def check_row($system):
+              {system: $system, group: (if .runtime then "runtime" else "checks" end),
+               check: .name, artifact: (.name | @uri), requirements: .requirements};
+            if $check != "" then
+              [.[$system].inventory.inventory[] | select(.name == $check)] as $checks |
+              [.[$system].nativeApplications[] | select(.name == $check)] as $apps |
+              if ($checks | length) + ($apps | length) != 1 then
+                error("check or application is not uniquely registered for the platform")
+              elif ($checks | length) == 1 then
+                if $checks[0].hosted | not then error($checks[0].reason)
+                else {matrix: {include: [$checks[0] | check_row($system)]},
+                      applications: {include: []}, darwin: false} end
+              else {matrix: {include: []},
+                    applications: {include: [$apps[0] + {system: $system}]}, darwin: false}
+              end
+            else
+              {matrix: {include: (
+                 [to_entries[] as $platform | $platform.value.inventory.runtime[] |
+                    check_row($platform.key)]
+                 + [to_entries[] as $platform | $platform.value.groups[] as $group |
+                    select($platform.key != "aarch64-darwin" or $group != "darwinConfigurations") |
+                    {system: $platform.key, group: $group, check: "", artifact: "", requirements: {}}]
+               )},
+               applications: {include: [to_entries[] as $platform |
+                 $platform.value.nativeApplications[] + {system: $platform.key}]},
+               darwin: has("aarch64-darwin")}
+            end
+          ' "$RUNNER_TEMP/check-inventory.json" > "$RUNNER_TEMP/execution-plan.json"
+          {
+            printf 'matrix=%s\n' "$(jq -c .matrix "$RUNNER_TEMP/execution-plan.json")"
+            printf 'applications=%s\n' "$(jq -c .applications "$RUNNER_TEMP/execution-plan.json")"
+            printf 'darwin=%s\n' "$(jq -r .darwin "$RUNNER_TEMP/execution-plan.json")"
+            printf 'build=%s\n' "$(jq -r '.matrix.include | length > 0' "$RUNNER_TEMP/execution-plan.json")"
+            printf 'native=%s\n' "$(jq -r '.applications.include | length > 0' "$RUNNER_TEMP/execution-plan.json")"
+          } >> "$GITHUB_OUTPUT"
+          cat "$RUNNER_TEMP/execution-plan.json"
       - name: Upload required check inventory
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -181,7 +190,7 @@ jobs:
   # Only the real Darwin configuration consumer waits for the bootstrap closure.
   build:
     needs: plan
-    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.build == 'true' }}
     name: ${{ matrix.check || matrix.group }} (${{ matrix.system }})
     runs-on: ${{ matrix.system == 'x86_64-linux' && 'ubuntu-24.04' || matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'macos-14' }}
     environment:
@@ -378,20 +387,27 @@ jobs:
             group: darwinConfigurations
             check: ""
             artifact: ""
+            requirements:
+              kvm: false
+              uidRange: false
+              cgroups: false
     steps: *build-steps
 
-  # Same pinned application suite as the former media VM envelope. Kubernetes
-  # and host-storage boundaries remain covered by their separate runtime gates.
-  media-runtime:
-    name: media-runtime (x86_64-linux)
-    if: (inputs.check == '' && (inputs.system == '' || inputs.system == 'all' || inputs.system == 'x86_64-linux')) || inputs.check == 'media-runtime'
-    runs-on: ubuntu-24.04
+  native-applications:
+    name: ${{ matrix.name }} (${{ matrix.system }})
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.native == 'true' }}
+    runs-on: ${{ matrix.system == 'x86_64-linux' && 'ubuntu-24.04' || matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'macos-14' }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.applications) }}
+    env:
+      APPLICATION: ${{ toJSON(matrix) }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
       - name: Install Nix
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
@@ -399,7 +415,6 @@ jobs:
             extra-substituters = https://cache.numtide.com
             extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=
           github_access_token: ${{ github.token }}
-
       - name: Configure durable cache (read only)
         if: vars.CACHIX_CACHE != ''
         uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
@@ -407,69 +422,71 @@ jobs:
           name: ${{ vars.CACHIX_CACHE }}
           skipPush: true
       - *signed-upstream-cache
-
-      - name: Record native runner and input identities
+      - name: Record native runner and declared inputs
         run: |
           set -euo pipefail
-          case "${{ inputs.system }}" in
-            ''|all|x86_64-linux) ;;
-            *) echo 'media-runtime requires the native x86_64-linux hosted runner' >&2; exit 1 ;;
-          esac
-          mkdir -p "$RUNNER_TEMP/media-native-evidence"
+          mkdir -p "$RUNNER_TEMP/native-evidence"
+          printf '%s\n' "$APPLICATION" > "$RUNNER_TEMP/native-evidence/application.json"
           {
             printf 'runner_image=%s\nrunner_image_version=%s\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
-            printf 'suite_platform=linux/amd64\nmeasurement=cold disposable runner; image pulls included\n'
-            printf 'excluded=Kubernetes RBAC/NetworkPolicy/Gateway; Incus/MergerFS/ZFS/GPU\n'
             uname -a
-            lscpu
-            docker --host unix:///var/run/docker.sock version
-            docker --host unix:///var/run/docker.sock info
-            docker --host unix:///var/run/docker.sock image ls --digests --no-trunc
             nix --version
-            git rev-parse HEAD HEAD:assets/media-policy HEAD:generated/manifests/prod-home
-            sha256sum flake.lock modules/tests/media-live-acceptance.py
-            case "$(docker --host unix:///var/run/docker.sock info --format '{{.OSType}}/{{.Architecture}}')" in
-              linux/x86_64|linux/amd64) ;;
-              *) echo 'Native linux/amd64 Docker daemon required' >&2; exit 1 ;;
-            esac
-          } 2>&1 | tee "$RUNNER_TEMP/media-native-evidence/inputs.log"
-
-      - name: Prepare existing pinned native app
+            git rev-parse HEAD
+            sha256sum flake.lock
+            if [ "$(jq -r .requirements.docker <<< "$APPLICATION")" = true ]; then
+              docker --host unix:///var/run/docker.sock version
+              docker --host unix:///var/run/docker.sock info
+              server=$(docker --host unix:///var/run/docker.sock info --format '{{.OSType}}/{{.Architecture}}')
+              system=$(jq -r .system <<< "$APPLICATION")
+              case "$system/$server" in
+                x86_64-linux/linux/x86_64|x86_64-linux/linux/amd64|aarch64-linux/linux/aarch64|aarch64-linux/linux/arm64) ;;
+                *) echo 'Native declared Linux Docker platform required' >&2; exit 1 ;;
+              esac
+            fi
+          } 2>&1 | tee "$RUNNER_TEMP/native-evidence/inputs.log"
+      - name: Build declared application package
         run: |
           set -euo pipefail
-          /usr/bin/time -p nix run .#media-live-acceptance -- --help \
-            2>&1 | tee "$RUNNER_TEMP/media-native-evidence/app-preparation.log"
-
-      - name: Run full unchanged native media acceptance
+          package=$(jq -er .package <<< "$APPLICATION")
+          drv=$(nix eval --raw ".#$package.drvPath")
+          /usr/bin/time -p nix build "$drv^*" --out-link "$RUNNER_TEMP/native-app" --json \
+            > "$RUNNER_TEMP/native-evidence/build.json"
+      - name: Run complete declared native acceptance
         run: |
           set -euo pipefail
-          # Preserve the VM suite's 2700-second deadline; INT permits owned cleanup.
-          /usr/bin/time -p timeout --signal=INT 2700s nix run .#media-live-acceptance -- \
-            --docker-host unix:///var/run/docker.sock --platform linux/amd64 \
-            2>&1 | tee "$RUNNER_TEMP/media-native-evidence/acceptance.log"
-
-      - name: Record images and owned cleanup
+          system=$(jq -er .system <<< "$APPLICATION")
+          name=$(jq -er .name <<< "$APPLICATION")
+          deadline=$(jq -er .timeoutSeconds <<< "$APPLICATION")
+          program=$(nix eval --raw ".#apps.$system.$name.program")
+          jq -j '.arguments[] | . + "\u0000"' <<< "$APPLICATION" > "$RUNNER_TEMP/native-arguments"
+          mapfile -d '' -t arguments < "$RUNNER_TEMP/native-arguments"
+          /usr/bin/time -p timeout --signal=INT "${deadline}s" "$program" "${arguments[@]}" \
+            2>&1 | tee "$RUNNER_TEMP/native-evidence/acceptance.log"
+      - name: Record independent owned cleanup
         if: always()
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/media-native-evidence"
+          mkdir -p "$RUNNER_TEMP/native-evidence"
           {
-            docker --host unix:///var/run/docker.sock image ls --digests --no-trunc
-            docker --host unix:///var/run/docker.sock image ls --quiet --no-trunc \
-              | sort -u | xargs --no-run-if-empty docker --host unix:///var/run/docker.sock image inspect \
-                --format '{{.Id}} {{.Os}}/{{.Architecture}} {{json .RepoDigests}}'
-            containers=$(docker --host unix:///var/run/docker.sock container ls --all --filter name=homelab-media-live- --format '{{.Names}}')
-            networks=$(docker --host unix:///var/run/docker.sock network ls --filter name=homelab-media-live- --format '{{.Name}}')
-            volumes=$(docker --host unix:///var/run/docker.sock volume ls --filter name=homelab-media-live- --format '{{.Name}}')
-            printf 'remaining_owned_containers=%s\nremaining_owned_networks=%s\nremaining_owned_volumes=%s\n' "$containers" "$networks" "$volumes"
-            test -z "$containers"
-            test -z "$networks"
-            test -z "$volumes"
-          } 2>&1 | tee "$RUNNER_TEMP/media-native-evidence/cleanup.log"
-
-      - name: Upload native media diagnostics
+            if [ "$(jq -r .requirements.docker <<< "$APPLICATION")" = true ]; then
+              docker --host unix:///var/run/docker.sock image ls --digests --no-trunc
+              prefix=$(jq -er .cleanupPrefix <<< "$APPLICATION")
+              for kind in container network volume; do
+                if [ "$kind" = container ]; then
+                  remaining=$(docker --host unix:///var/run/docker.sock container ls --all \
+                    --filter "name=$prefix" --format '{{.Names}}')
+                else
+                  remaining=$(docker --host unix:///var/run/docker.sock "$kind" ls \
+                    --filter "name=$prefix" --format '{{.Name}}')
+                fi
+                printf 'remaining_owned_%s=%s\n' "$kind" "$remaining"
+                test -z "$remaining"
+              done
+            fi
+          } 2>&1 | tee "$RUNNER_TEMP/native-evidence/cleanup.log"
+      - name: Upload native execution diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: media-runtime-${{ github.run_id }}
-          path: ${{ runner.temp }}/media-native-evidence
+          name: native-${{ matrix.system }}-${{ matrix.name }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/native-evidence

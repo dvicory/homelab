@@ -51,8 +51,9 @@ let
     let
       checks = self.checks.${system};
     in
-    assert lib.assertMsg (lib.all lib.isDerivation (lib.attrValues checks))
-      "CI checks.${system} must contain only derivations";
+    assert lib.assertMsg (lib.all lib.isDerivation (
+      lib.attrValues checks
+    )) "CI checks.${system} must contain only derivations";
     checks;
 
   requiredFeaturesFor =
@@ -67,9 +68,7 @@ let
     check:
     lib.elem "kvm" (requiredFeaturesFor check)
     || lib.elem "uid-range" (requiredFeaturesFor check)
-    || lib.isDerivation (
-      check.driver or (check.driverInteractive or (check.config.driver or null))
-    );
+    || lib.isDerivation (check.driver or (check.driverInteractive or (check.config.driver or null)));
 
   checkInventory =
     system:
@@ -89,13 +88,19 @@ let
             "benchmark"
             "big-parallel"
             "nixos-test"
-          ] ++ lib.optional (system == "x86_64-linux") "kvm"
-            ++ lib.optional linux "uid-range";
+          ]
+          ++ lib.optional (system == "x86_64-linux") "kvm"
+          ++ lib.optional linux "uid-range";
           unsupportedFeatures = lib.subtractLists supportedFeatures requiredSystemFeatures;
           hosted = unsupportedFeatures == [ ];
         in
         {
-          inherit name requiredSystemFeatures requirements hosted;
+          inherit
+            name
+            requiredSystemFeatures
+            requirements
+            hosted
+            ;
           # Unsupported Linux tests on Darwin must remain inspectable, not evaluated.
           drvPath = if hosted then check.drvPath else null;
           runtime = isRuntime check;
@@ -116,11 +121,17 @@ let
     in
     assert lib.assertMsg (
       builtins.length (fast ++ runtime ++ unsupported) == builtins.length inventory
-      && lib.sort builtins.lessThan (map (entry: entry.name) (fast ++ runtime ++ unsupported))
-      == builtins.attrNames checks
+      &&
+        lib.sort builtins.lessThan (map (entry: entry.name) (fast ++ runtime ++ unsupported))
+        == builtins.attrNames checks
     ) "Hosted CI must partition every checks.${system} registration exactly once";
     {
-      inherit inventory fast runtime unsupported;
+      inherit
+        inventory
+        fast
+        runtime
+        unsupported
+        ;
     };
 
   hostedChecksFor =
@@ -153,12 +164,39 @@ let
       }
     )
   );
+
+  nativeApplicationsFor =
+    system:
+    lib.optionals (system == "x86_64-linux") [
+      {
+        name = "media-live-acceptance";
+        package = "packages.${system}.media-live-acceptance";
+        arguments = [
+          "--docker-host"
+          "unix:///var/run/docker.sock"
+          "--platform"
+          "linux/amd64"
+        ];
+        timeoutSeconds = 2700;
+        requirements.docker = true;
+        cleanupPrefix = "homelab-media-live-";
+      }
+    ];
+
+  hostedPlanFor = system: {
+    inventory = builtins.mapAttrs (_: map (entry: builtins.removeAttrs entry [ "drvPath" ])) (
+      checkInventory system
+    );
+    groups = builtins.attrNames ciJobs.${system};
+    nativeApplications = nativeApplicationsFor system;
+  };
 in
 {
   flake = {
     # Pick up standard flake outputs without duplicating their inventory in CI.
     inherit ciJobs;
     hostedCiInventory = lib.genAttrs ciSystems checkInventory;
+    hostedCiPlan = lib.genAttrs ciSystems hostedPlanFor;
     ciBundles = lib.mapAttrs (
       system: jobs: withSystem system ({ pkgs, ... }: pkgs.linkFarm "ci-${system}" jobs)
     ) ciJobs;
