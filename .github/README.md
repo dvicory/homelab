@@ -27,18 +27,36 @@ Hosted CI uses three directly buildable groups, not Hestia metadata suffixes:
 
 | Group | Required coverage | Hosted platform |
 | --- | --- | --- |
-| `fastChecks` | Nix/Den placement, storage, identity and public-edge contracts; local compute-runtime and generated-bootstrap behavior; canonical manifest freshness, pinned local schemas, and offline Kyverno policy | All three systems |
-| `kubernetesApplications` | `public-edge-runtime`, `media-runtime`, `media-ingress-runtime`, plus the separately executed `verify-kubernetes-api` app (Gateway CEL admission, runtime-Secret API, Argo controller and Gateway controller/CNI/authorization scenarios) | x86-64 Linux |
-| `hostRecovery` | `agenix-restart-guard`, `classify-legacy-media`, `prepare-luks-storage-runtime`, `mergerfs-capability`, `runtime-secret-k3s`, `compute-ingress-runtime`, `prod-home-replacement` | x86-64 Linux |
+| `fastChecks` | Nix/Den placement, storage, identity, public-edge and current Jellyfin/media contracts; credential/input safety; local compute-runtime and generated-bootstrap behavior; canonical manifest freshness, pinned local schemas, and offline Kyverno policy | All three systems |
+| `kubernetesApplications` | `public-edge-runtime`, `media-ingress-runtime`, and separate full execution of `verify-kubernetes-api` (admission, Secret API, Argo and Gateway controller/CNI/authorization) and `media-live-acceptance` (native media APIs) | x86-64 Linux |
+| `hostRecovery` | Secret/service delivery, storage tools, mount/ID-map/filesystem/firewall enforcement, identity provisioning, ESP mirror recovery, existing-guest upgrade and whole-guest replacement | x86-64 Linux |
 
 The exact mandatory registrations live in `modules/flake/ci.nix`. Missing
-required checks or non-derivation replacements fail evaluation of every hosted
-check group for the affected platform; the API app and package must also exist.
+required checks, non-derivation replacements or VM gates replaced by non-VM
+checks fail hosted evaluation. Both native apps must have matching executable
+packages; building those packages alone is not acceptance.
 Other non-VM checks are still projected automatically into `fastChecks`.
 Other native VM/KVM checks are projected into `hostRecovery` on x86-64 Linux,
 without duplicating the focused application group. Ordinary `ciJobs.checks`
 and `ciBundles` still include every registered check; packages, development
 outputs and system configurations retain their automatic projection.
+
+`hostedCiInventory.<system>` records every check's derivation, required system
+features, hosted group or explicit unsupported-platform reason, and the native
+executables. Every hosted check must occur in exactly one group. `All required
+CI` requires all three platforms, every projected group and successful
+check/native execution receipts. A missing matrix job, skipped/failed group,
+missing receipt or native runner that was only packaged cannot satisfy it.
+Make this stable aggregate context required in branch protection; configuring
+GitHub branch protection remains a maintainer action.
+
+The mandatory host inventory includes `compute-network-policy-runtime`,
+`compute-guest-upgrade`, `prod-home-replacement` and
+`prod-home-consumer-resilience`, not just whichever checks happen to remain
+registered. The consumer-resilience family registration must accompany its
+scenario implementation; missing it fails hosted evaluation. Neither recovery
+family is replaced by native Kubernetes coverage. Broad VM scenario narrowing
+remains deferred until equivalent native acceptance passes.
 
 Linux also requires `prepare-luks-storage` in `fastChecks`. It exercises real
 rsync transfers/checksum verification and refuses unsafe operations before
@@ -144,13 +162,15 @@ delivery without changing prior state, and succeeds again after repair.
 Host checks retain mount/ID-map/filesystem/firewall/service-delivery evidence;
 no Kubernetes-only replacement justifies removing that coverage.
 
-`media-runtime` exercises pinned native media services and production producer
-jobs: actual libraries/profiles/scores, wrong credentials/configuration and
-denied access, stable managed identities, preserved unmanaged video bytes,
-and Seerr first-owner/steady-state boundaries. It does not prove Kubernetes
-RBAC or host mount propagation. Required `prod-home-replacement` separately
-covers the real Incus/ZFS/MergerFS/K3s replacement, host-to-guest Secret
-staging/rotation, retained data and resource retirement.
+`media-live-acceptance` executes the unchanged pinned native media suite on the
+hosted Docker daemon, using the packaged runner's exact source/manifests/policy
+inputs rather than the invoking checkout. It proves actual libraries,
+profiles/scores, wrong credentials/configuration and denied access, stable
+managed identities, preserved unmanaged video bytes, Seerr first-owner and
+steady-state boundaries, serialized producer entry points and owned cleanup.
+It does not prove Kubernetes RBAC or host mount propagation. Required
+`compute-guest-upgrade` and `prod-home-replacement` separately retain existing
+guest activation and real Incus/ZFS/MergerFS/K3s replacement evidence.
 
 `media-ingress-runtime` applies the committed media NetworkPolicies on a K3s
 node that enforces them. The Gateway proxy and each declared client reach
@@ -162,9 +182,12 @@ other pod is refused.
 On a native x86-64 Linux builder with KVM:
 
 ```sh
+nix eval --json .#hostedCiInventory.x86_64-linux
 nix build -L .#hostedCiJobs.x86_64-linux.fastChecks
-nix build -L --max-jobs 1 .#hostedCiJobs.x86_64-linux.kubernetesApplications
-nix build -L --max-jobs 1 .#hostedCiJobs.x86_64-linux.hostRecovery
+for group in kubernetesApplications hostRecovery; do
+  drv=$(nix eval --raw ".#hostedCiJobs.x86_64-linux.$group.drvPath")
+  nix build -L --max-jobs 1 "$drv^*"
+done
 # Native interactive interface is unchanged.
 nix build .#checks.x86_64-linux.runtime-secret-k3s.driver
 (
@@ -179,13 +202,17 @@ shutdown. Use owned, mode-0700 disk-backed scratch as above: accumulated VM
 images can exhaust `/run/user/$UID` tmpfs and cause guest block-device I/O
 failures. Hosted builds already use the disk-backed `/nix/build` directory.
 
-The application link farm builds the API app; executing it is a separate
-required workflow step. Use an explicit local Unix-socket Docker context and a
-new report filename (the app refuses overwrite):
+The application link farm builds both native runners; their full execution is
+separately required. Use an explicit local Unix-socket Docker context and a new
+API report filename (the app refuses overwrite). CI also validates the
+completed report through the same packaged API runner:
 
 ```sh
 nix run .#verify-kubernetes-api -- \
   --docker-context default --report ./kubernetes-api-result.json
+nix run .#verify-kubernetes-api -- --check-report ./kubernetes-api-result.json
+nix run .#media-live-acceptance -- \
+  --docker-host unix:///var/run/docker.sock --platform linux/amd64
 ```
 
 Hosted execution verifies that `default` addresses exactly
@@ -243,14 +270,16 @@ nix eval --impure --max-jobs 1 --cores 4 --expr '
 # Expected: Missing required CI checks for x86_64-linux: runtime-secret-k3s
 ```
 
-Removing `prod-home-manifests-schema` or `media-runtime` instead must fail with
-the corresponding identity. Removing `verify-kubernetes-api` from `apps`
-must fail evaluation of `kubernetesApplications` with
-`Missing required CI app: verify-kubernetes-api`. Removing the required-name
-list entry is not this probe: it changes the verification contract rather than
-testing registration loss. API empty selection, nonexistent selector, a
-removed TLS CEL rule or an Argo mutation are also negative probes, not
-accepted exclusions.
+Removing `prod-home-manifests-schema`, `compute-guest-upgrade` or
+`prod-home-replacement` instead must fail with the corresponding identity.
+Removing either required native app or package, replacing the package with a
+non-derivation or changing the app away from its executable package must fail
+with `Required native CI apps must have matching executable packages`.
+Removing the required-name list entry changes the verification contract; it is
+not a registration-loss probe. API empty selection, nonexistent selector,
+removed TLS CEL or Argo mutations remain negative probes, not exclusions.
+For workflow accounting, remove one successful receipt or one platform
+inventory from a disposable artifact copy; the final aggregation must fail.
 
 Hosted CI builds the full ARM64 Darwin configuration. An ARM64 Linux job first
 builds the Linux system closure used by its `nix.linux-builder` VM and passes
