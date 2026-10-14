@@ -113,8 +113,13 @@
               ]
             }
             EOF
+            with_targets() {
+              jq '.protectedTargets = [.states[] | .stateId as $state | .routes[] |
+                select(.target != null) | {stateId: $state, routeId,
+                  targetId: .target.targetId, targetBoundaries}]'
+            }
             jq '.protectedRealizations = [.states[] | {stateId, realization}]' \
-              "$manifest" > "$TMPDIR/fenced-manifest.json"
+              "$manifest" | with_targets > "$TMPDIR/fenced-manifest.json"
             manifest="$TMPDIR/fenced-manifest.json"
 
             for invalid in missing null incomplete empty relative-path empty-locator unknown-owner old-schema; do
@@ -274,7 +279,7 @@
 
             jq '.states[0].routes[0].ownerConfig.native.targetRoot = "'$TMPDIR'/scratch" |
                 .states[0].routes[0].targetBoundaries.paths += ["'$TMPDIR'/scratch"]' \
-              "$manifest" > "$TMPDIR/target-alias.json"
+              "$manifest" | with_targets > "$TMPDIR/target-alias.json"
             if homelab-preserve --manifest "$TMPDIR/target-alias.json" restore fixture/state \
               --from fixture-route --point fixture-point-1 --to scratch:aliasdest \
               --execute --receipt "$TMPDIR/alias-receipt.json" >/dev/null 2>&1; then
@@ -484,7 +489,7 @@
                      nativeNamespace: "fixture-native"
                    }] |
                  .protectedRealizations += [.states[1] | {stateId, realization}]' \
-                "$manifest" > "$TMPDIR/other-target.json"
+                "$manifest" | with_targets > "$TMPDIR/other-target.json"
               for mode in preflight execute; do
                 args=()
                 if test "$mode" = execute; then
@@ -506,7 +511,7 @@
               done
             done
             jq '.states[0].routes[0].targetBoundaries.nativeNamespace = null' \
-              "$TMPDIR/other-target.json" > "$TMPDIR/unclassified-native.json"
+              "$TMPDIR/other-target.json" | with_targets > "$TMPDIR/unclassified-native.json"
             if homelab-preserve --manifest "$TMPDIR/unclassified-native.json" --json restore fixture/state \
               --from fixture-route --point fixture-point-1 --to scratch:unclassified \
               --execute --receipt "$TMPDIR/unclassified-receipt.json" \
@@ -518,7 +523,7 @@
             test ! -e "$TMPDIR/scratch/unclassified"
             test ! -e "$TMPDIR/unclassified-receipt.json"
             jq '.states[0].routes[0].targetBoundaries.nativeNamespace = "separate-native-realm"' \
-              "$TMPDIR/other-target.json" > "$TMPDIR/separate-native.json"
+              "$TMPDIR/other-target.json" | with_targets > "$TMPDIR/separate-native.json"
             homelab-preserve --manifest "$TMPDIR/separate-native.json" --json restore fixture/state \
               --from fixture-route --point fixture-point-1 --to scratch:separate \
               > "$TMPDIR/separate-preflight.json"
@@ -531,7 +536,7 @@
             fi
             jq -e '.error.code == "unknown-native-namespace"' "$TMPDIR/unclassified-verify-error.json" >/dev/null
             jq 'del(.states[0].routes[0].targetBoundaries)' "$manifest" \
-              > "$TMPDIR/missing-target-boundaries.json"
+              | with_targets > "$TMPDIR/missing-target-boundaries.json"
             if homelab-preserve --manifest "$TMPDIR/missing-target-boundaries.json" --json \
               restore fixture/state --from fixture-route --point fixture-point-1 \
               --to scratch:missing-fences --execute --receipt "$TMPDIR/missing-fences-receipt.json" \
@@ -566,7 +571,7 @@
                .states[0].routes[0].ownerConfig.native.root = $root |
                .states[0].routes[0].ownerConfig.native.targetRoot = $alias |
                .states[0].routes[0].targetBoundaries.paths = [$root, $alias]' \
-              "$manifest" > "$TMPDIR/fixture-safety.json"
+              "$manifest" | with_targets > "$TMPDIR/fixture-safety.json"
             for link in symlink hardlink; do
               if test "$link" = symlink; then
                 ln -s "$TMPDIR/fixture-safety-external.txt" "$TMPDIR/fixture-safety-catalog/point.json.tmp"

@@ -145,7 +145,13 @@ A small separately packaged fixture adapter proves registration without coordina
 The coordinator reads two schema-versioned documents generated from one model:
 
 - `desired-inventory` contains planned states, policy intent, realization and coverage, selected or missing lifecycle owner, route status, and structured issues.
-- `executable-plan` contains only enabled, strictly resolved states, fixed adapters, targets, owner actions, point identity rules, and scratch capabilities.
+- `executable-plan` contains only enabled, strictly resolved operational states, fixed adapters, targets, owner actions, point identity rules, and scratch capabilities.
+
+Both schema-2 documents also carry required `protectedRealizations` and
+`protectedTargets` lists derived from the full inventory, independently of
+operation eligibility. Source contributions remain even when ambiguous or
+plan-only; known Target records retain missing fences as refusal evidence.
+Adapter protocol remains version 1.
 
 The user surface is `plan`, `status`, `points <state>`, `run <state> --route <route>`, `restore <state> --from <route> --point <native-id> --to <scratch>:<new-name>`, and `verify <receipt>`, with human and JSON output. `points` returns one State report containing a result for every resolved Route; each result carries either validated points or a structured Route error, so one unavailable owner cannot hide another owner's usable evidence. `run` performs no cross-route transaction. Restore defaults to preflight and requires explicit execution.
 
@@ -178,14 +184,18 @@ containing absolute operation-host paths, opaque native locators, and their
 physical/native namespace. Known projectors derive these fences from resolved
 native configuration; an independently configured owner may supply the same
 typed data in shared Integration+Target wiring. Logical Target identity and
-opaque native configuration remain unchanged. The shared scratch guard checks
-every declared active Realization and relevant retained destination in the
-document; native locators are compared only within a matching owner-defined
-namespace. Missing fences on a resolved Target refuse restore, and an enabled
-restore Integration cannot omit its nonempty safety data. No owner-name
-dispatch switch, public target registry, lifecycle engine, or plugin framework
-is introduced. Runtime-file/relative Restic repositories are not guessed or
-read during evaluation; explicit owner-provided fences are required for restore.
+opaque native configuration remain unchanged. The shared scratch guard borrows
+the document-wide source and Target lists for preflight, execute revalidation
+and verification against current configuration. Plan-only sources stay live;
+changing operation eligibility does not remove known retained Target fences.
+Filesystem locators require authoritative paths, and opaque object locators
+are not reinterpreted. Native Target locators require comparable namespaces.
+Missing or empty fences refuse destination authorization, including those of
+baseline-only owners; these owners remain inspectable. Enabled restore
+Integrations require nonempty safety data. Runtime-file/relative Restic
+repositories are not guessed or read during evaluation; explicit owner-provided
+fences are required for restore. No lifecycle engine or public Target registry
+is introduced.
 
 
 Use an owner's native explicit target option where it satisfies these checks. A thin owner-specific helper may fill only the missing scratch operation. Root-targeted SelfHostBlocks restore helpers and recursive rollback are evidence that a provider result cannot be accepted without this safety check.

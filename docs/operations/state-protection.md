@@ -58,18 +58,27 @@ another Target registry or identity input. A registered projector derives
 it from resolved native configuration; an independently configured owner may
 supply the same typed data in shared Integration+Target wiring.
 
-The scratch guard checks all declared Realizations and retained destination
-fences in the document, not only the selected State or Route. Filesystem
-paths are resolved across symlink aliases; native locators are compared only
-within the selected owner's matching physical/native namespace. If a native
-fence cannot be classified, restore and verification refuse it rather than
-skip it. Distinct explicit namespaces remain separate; path-only documents
-without native fences remain supported. Missing fences on a resolved Target
-also refuse restore. Enabled restore integrations require nonempty
-owner-resolved fences. Owners remain responsible for truthful fences and
-repeat their native checks immediately before mutation.
+Both documents carry required `protectedRealizations` and `protectedTargets`
+lists independently of executable States. They retain all authoritative source
+contributions and known owner-resolved Target fences, including plan-only
+States. Disabling an operation does not delete live data or retained points.
+
+Restore preflight, execute revalidation and receipt verification check these
+document-wide fences. Filesystem paths resolve symlink aliases. An opaque
+object locator requires a separate authoritative path; `physicalBacking`
+cannot supply it. Native Target locators require comparable owner-defined
+namespaces. Missing, empty or unusable fences refuse destination authorization;
+they do not disappear merely because their owner supports inspection only.
+Baseline-only owners can remain inspectable with incomplete Target fences.
+Enabled restore integrations require nonempty owner-resolved fences, and owners
+repeat native checks immediately before mutation.
 
 A normal compatible State requires no Binding. Optional Bindings contain only irreducible State-specific subpath/include/exclude narrowing, owner selection for an unresolved Route, or namespaced native overrides.
+
+Source paths, required filesystem children and include/exclude selections must be
+absolute and contain no empty, `.` or `..` components; `/` is valid. A subpath
+is relative and follows the same component rule. Coverage uses the selected
+base and includes, with exclusions taking precedence.
 
 Policy precedence models concrete assignment, supplied `selectorPolicies` defaults, then slot suggestion. That precedence is implemented and tested with directly supplied selector inputs; fleet selector discovery and application are deferred and not wired.
 
@@ -96,11 +105,11 @@ Inspect the installed generated documents:
 homelab-preserve --manifest /etc/homelab-preserve/desired-inventory.json plan
 ```
 
-The executable document is empty until a separately reviewed configuration enables fully resolved States.
+The executable document's `states` list is empty until a separately reviewed configuration enables fully resolved States. Its source and Target safety lists remain present.
 
 ## Coordinator commands
 
-Protocol and document schema version are both `1`.
+Document schema version is `2`; adapter protocol version remains `1`. Old document schemas and missing safety lists are refused rather than treated as empty.
 
 ```text
 homelab-preserve --manifest FILE plan

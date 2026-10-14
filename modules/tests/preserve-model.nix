@@ -599,20 +599,25 @@ let
   ];
   nonCanonicalSourceCoverage =
     mode:
-    map (source: coverageFixture mode {
-      inherit source;
-      # Coverage admission must not rely on a registered owner's renderer.
-      projectors = { };
-    }) [
-      { exclude = [ "/srv/app/db/../database" ]; }
-      { exclude = [ "/srv/app/./database" ]; }
-      { exclude = [ "/srv//app/database" ]; }
-      { exclude = [ "/srv/app/database/" ]; }
-      { include = [ "/srv/app/db/../database" ]; }
-      { include = [ "/srv/app/./database" ]; }
-      { subpath = "database/../db"; }
-      { subpath = "database/./records"; }
-    ];
+    map
+      (
+        source:
+        coverageFixture mode {
+          inherit source;
+          # Coverage admission must not rely on a registered owner's renderer.
+          projectors = { };
+        }
+      )
+      [
+        { exclude = [ "/srv/app/db/../database" ]; }
+        { exclude = [ "/srv/app/./database" ]; }
+        { exclude = [ "/srv//app/database" ]; }
+        { exclude = [ "/srv/app/database/" ]; }
+        { include = [ "/srv/app/db/../database" ]; }
+        { include = [ "/srv/app/./database" ]; }
+        { subpath = "database/../db"; }
+        { subpath = "database/./records"; }
+      ];
 
   unsupportedOperation = compile (singleRoute {
     routes.route-zrepl.operation = "restore";

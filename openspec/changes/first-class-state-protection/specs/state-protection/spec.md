@@ -216,6 +216,21 @@ The integration SHALL use the lifecycle owner's native restore or extraction ope
 - **WHEN** the same immutable point is restored into two different new authorized scratch destinations
 - **THEN** both rehearsals use the selected point and neither changes live state or retained representations
 
+#### Scenario: A plan-only source remains live
+
+- **WHEN** another State's scratch destination overlaps a live authoritative realization whose protection configuration is plan-only
+- **THEN** restore and verification refuse the destination rather than omit that source from authorization
+
+#### Scenario: A State becomes plan-only while retained points survive
+
+- **WHEN** a State loses executable eligibility while its owner retains points at a known Target
+- **THEN** that Target's fences still constrain another State's restore and verification, and missing or unusable fences cause refusal
+
+#### Scenario: A retained Target owner supports inspection only
+
+- **WHEN** a known retained Target has missing or empty destination fences and its Integration supports only baseline inspection
+- **THEN** baseline inspection remains available but another Route cannot restore or verify a destination by treating those fences as checked
+
 ### Requirement: External adapters are versioned and bounded by owner operations
 
 Lifecycle-owner integrations SHALL use a small versioned, language-independent executable contract selected from trusted evaluated configuration. Recovery metadata SHALL NOT select or supply an executable path. Incompatible protocol versions, unsupported required operations, representations, access methods, or fidelity requirements SHALL be rejected before mutation.

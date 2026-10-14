@@ -1,5 +1,6 @@
 {
   config,
+  inputs,
   lib,
   self,
   ...
@@ -31,6 +32,102 @@ let
     entry: entry.directory == compute.stateRoot
   ) null persistedDirectories;
   retained = builtins.attrValues compute.retainedPaths;
+  # Reuse real typed State/Route identities, with isolated owner wiring only.
+  fenceOwners =
+    (inputs.gen-schema.inputs.gen-merge.lib.evalModuleTree {
+      modules = [
+        {
+          options.targets = inputs.gen-schema.lib.mkInstanceRegistry config.den.schema."preserve-target" {
+            extraModules = [ { config._identity.keys = [ "targetId" ]; } ];
+          };
+          options.integrations =
+            inputs.gen-schema.lib.mkInstanceRegistry config.den.schema."preserve-integration"
+              {
+                extraModules = [ { config._identity.keys = [ "integrationId" ]; } ];
+              };
+          config = {
+            targets.retained = {
+              targetId = "fixture-retained";
+              failureDomain.domain = "fixture";
+            };
+            integrations.inspect = {
+              integrationId = "fixture-inspect";
+              owner = "fixture-owner";
+              adapter = "/fixture/never-dispatched";
+              fixtureOnly = true;
+              operations = [
+                "describe"
+                "status"
+                "points"
+              ];
+              dataKinds = [ "*" ];
+              requiredSourceCapabilities = [ "filesystem-read" ];
+              guaranteedConsistency = "filesystem";
+              fidelityGuarantees = [ "posix-filesystem" ];
+              nativePointRepresentations = [ "fixture-point/v1" ];
+            };
+          };
+        }
+      ];
+    }).config;
+  retainedBoundaries = {
+    paths = [ "/fixture/retained" ];
+    nativeLocators = [ "fixture/retained" ];
+    nativeNamespace = "fixture-native";
+  };
+  fenceCompile =
+    homeMode: persistMode: targetBoundaries: contributions:
+    let
+      route = config.den.preserve.routes.household-route // {
+        target = fenceOwners.targets.retained;
+        integration = fenceOwners.integrations.inspect;
+        operation = "status";
+      };
+      fixtureStates = lib.mapAttrs (
+        name: state:
+        state
+        // {
+          mode = if name == "household/home" then homeMode else persistMode;
+          explicitPolicy = state.explicitPolicy // {
+            routes = [ route ];
+          };
+        }
+      ) config.den.preserve.states;
+    in
+    config.fleet.preserve.compile {
+      states = fixtureStates;
+      routes.household-route = route;
+      targets = fenceOwners.targets;
+      integrations = fenceOwners.integrations;
+      bindings = [ ];
+      integrationTargets = [
+        {
+          inherit targetBoundaries;
+          target = fenceOwners.targets.retained;
+          integration = fenceOwners.integrations.inspect;
+          native = { };
+        }
+      ];
+      realizations = map (entry: {
+        state = fixtureStates.${entry.stateId};
+        inherit (entry) realization;
+      }) contributions;
+      projectors = { };
+      scratchDestinations = { };
+      fixtureOnly = true;
+    };
+  bothEnabled = fenceCompile "enabled" "enabled" retainedBoundaries inventory.states;
+  retainedTransition = fenceCompile "enabled" "plan-only" retainedBoundaries inventory.states;
+  missingRetained = fenceCompile "enabled" "plan-only" null inventory.states;
+  emptyRetained = fenceCompile "enabled" "plan-only" {
+    paths = [ ];
+    nativeLocators = [ ];
+  } inventory.states;
+  missingSource = fenceCompile "plan-only" "plan-only" retainedBoundaries [ ];
+  invalidRetained = fenceCompile "plan-only" "plan-only" {
+    paths = [ "relative/retained" ];
+  } inventory.states;
+  throws = value: !(builtins.tryEval (builtins.deepSeq value true)).success;
   assertions = {
     household-states =
       builtins.attrNames states == [
@@ -134,6 +231,46 @@ let
         protected: protected.stateId == entry.stateId && protected.realization == entry.realization
       ) hvn.homelab.preserve.executablePlan.protectedRealizations
     ) inventory.states;
+    retained-target-transition =
+      builtins.length bothEnabled.executablePlan.states == 2
+      && builtins.length retainedTransition.executablePlan.states == 1
+      && (builtins.head retainedTransition.executablePlan.states).stateId == "household/home"
+      && retainedTransition.executablePlan.protectedTargets == bothEnabled.executablePlan.protectedTargets
+      &&
+        retainedTransition.desiredInventory.protectedTargets
+        == retainedTransition.executablePlan.protectedTargets
+      && builtins.all (
+        protected:
+        protected.routeId == config.den.preserve.routes.household-route.routeId
+        && protected.targetId == fenceOwners.targets.retained.targetId
+        && protected.targetBoundaries == retainedBoundaries
+      ) retainedTransition.executablePlan.protectedTargets;
+    missing-empty-targets-remain-refusal-evidence =
+      builtins.length missingRetained.executablePlan.states == 1
+      && builtins.length missingRetained.executablePlan.protectedTargets == 2
+      && builtins.all (
+        protected: protected.targetBoundaries == null
+      ) missingRetained.executablePlan.protectedTargets
+      && builtins.all (
+        protected:
+        protected.targetBoundaries == {
+          paths = [ ];
+          nativeLocators = [ ];
+        }
+      ) emptyRetained.executablePlan.protectedTargets;
+    diagnostic-missing-source-keeps-known-targets =
+      builtins.length missingSource.desiredInventory.states == 2
+      && builtins.all (
+        entry: !entry.operational && entry.realization == null
+      ) missingSource.desiredInventory.states
+      && builtins.length missingSource.executablePlan.protectedTargets == 2
+      && builtins.all (
+        protected: protected.targetId == "fixture-retained"
+      ) missingSource.executablePlan.protectedTargets
+      && throws (fenceCompile "enabled" "enabled" retainedBoundaries [ ]);
+    malformed-target-diagnostics = builtins.all (
+      entry: builtins.elem "invalid-target-boundaries" (map (issue: issue.code) (issuesOf entry))
+    ) invalidRetained.desiredInventory.states;
     no-production-enablement =
       hvn.homelab.preserve.executablePlan.states == [ ]
       && !hvn.services.zrepl.enable

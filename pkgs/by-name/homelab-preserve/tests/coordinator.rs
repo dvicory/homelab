@@ -1,6 +1,6 @@
 use homelab_preserve::model::{
-    Document, Integration, NativePoint, ProtectedRealization, ProtocolRequest, RestoreReceipt,
-    Route, ScratchDestination, State, Target, TargetBoundaries,
+    Document, Integration, NativePoint, ProtectedRealization, ProtectedTarget, ProtocolRequest,
+    RestoreReceipt, Route, ScratchDestination, State, Target, TargetBoundaries,
 };
 use homelab_preserve::process::invoke_adapter;
 use homelab_preserve::safety::preflight_destination;
@@ -84,7 +84,7 @@ fn state(source: Option<PathBuf>) -> State {
             kind: "filesystem".to_owned(),
             owner: json!({"kind": "host", "id": "fixture"}),
             locator: json!("source/state"),
-            path: source,
+            path: source.or_else(|| Some(PathBuf::from("/fixture/source"))),
             boundary: json!({"recursive": false}),
             access: Vec::new(),
             physical_backing: None,
@@ -103,6 +103,25 @@ fn protected(state: &State) -> ProtectedRealization {
         state_id: state.state_id.clone(),
         realization: state.realization.as_ref().unwrap().clone(),
     }
+}
+
+fn protected_targets(state: &State) -> Vec<ProtectedTarget> {
+    state
+        .routes
+        .iter()
+        .filter_map(|route| {
+            route.target.as_ref().map(|target| ProtectedTarget {
+                state_id: state.state_id.clone(),
+                route_id: route.route_id.clone(),
+                target_id: target.target_id.clone(),
+                target_boundaries: route.target_boundaries.clone(),
+            })
+        })
+        .collect()
+}
+
+fn refresh_targets(document: &mut Document) {
+    document.protected_targets = document.states.iter().flat_map(protected_targets).collect();
 }
 
 fn route() -> Route {
@@ -180,6 +199,7 @@ fn unsupported_document_version_is_rejected() {
         kind: "executable-plan".to_owned(),
         fixture_only: false,
         protected_realizations: Vec::new(),
+        protected_targets: Vec::new(),
         states: Vec::new(),
         scratch_destinations: BTreeMap::new(),
         extra: BTreeMap::new(),
@@ -199,6 +219,14 @@ fn required_authoritative_fences_fail_closed() {
     for (field, code) in [
         ("missing", "document-json"),
         ("null", "document-json"),
+        ("missing-target-list", "document-json"),
+        ("null-target-list", "document-json"),
+        ("incomplete-target", "document-json"),
+        ("empty-target-list", "missing-protected-target"),
+        ("wrong-target-identity", "missing-protected-target"),
+        ("mismatched-target-fences", "mismatched-protected-target"),
+        ("omitted-realization", "missing-realization"),
+        ("null-realization", "missing-realization"),
         ("incomplete", "document-json"),
         ("empty", "missing-protected-realization"),
         ("relative-path", "invalid-protected-realization"),
@@ -225,6 +253,27 @@ fn required_authoritative_fences_fail_closed() {
             }
             "unknown-owner" => {
                 invalid["protectedRealizations"][0]["realization"]["owner"] = json!({})
+            }
+            "missing-target-list" => {
+                invalid.as_object_mut().unwrap().remove("protectedTargets");
+            }
+            "null-target-list" => invalid["protectedTargets"] = Value::Null,
+            "incomplete-target" => invalid["protectedTargets"] = json!([{"stateId": "state"}]),
+            "empty-target-list" => invalid["protectedTargets"] = json!([]),
+            "wrong-target-identity" => invalid["protectedTargets"][0]["targetId"] = json!("other"),
+            "mismatched-target-fences" => {
+                invalid["protectedTargets"][0]["targetBoundaries"]["paths"] = json!(["/other"])
+            }
+            "omitted-realization" => {
+                invalid["states"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("realization");
+                invalid["protectedRealizations"] = json!([]);
+            }
+            "null-realization" => {
+                invalid["states"][0]["realization"] = Value::Null;
+                invalid["protectedRealizations"] = json!([]);
             }
             "old-schema" => invalid["schemaVersion"] = json!(1),
             _ => unreachable!(),
@@ -260,6 +309,7 @@ fn executable_plan_enforces_fixture_only_boundaries() {
         kind: "executable-plan".to_owned(),
         fixture_only: false,
         protected_realizations: vec![protected(&executable)],
+        protected_targets: protected_targets(&executable),
         states: vec![executable.clone()],
         scratch_destinations: BTreeMap::new(),
         extra: BTreeMap::new(),
@@ -285,6 +335,7 @@ fn executable_plan_enforces_fixture_only_boundaries() {
         kind: "executable-plan".to_owned(),
         fixture_only: false,
         protected_realizations: vec![protected(&production)],
+        protected_targets: protected_targets(&production),
         states: vec![production],
         scratch_destinations: BTreeMap::new(),
         extra: BTreeMap::new(),
@@ -337,6 +388,7 @@ fn planning_never_invokes_an_adapter() {
         kind: "desired-inventory".to_owned(),
         fixture_only: true,
         protected_realizations: vec![protected(&planned_state)],
+        protected_targets: protected_targets(&planned_state),
         states: vec![planned_state],
         scratch_destinations: BTreeMap::new(),
         extra: BTreeMap::new(),
@@ -497,12 +549,14 @@ fn destination_preflight_rejects_unsafe_and_aliasing_paths() {
         mount_root: scratch_root.clone(),
     };
 
-    let safe_state = state(Some(directory.join("active")));
+    let mut safe_state = state(Some(directory.join("active")));
     let safe_route = route();
+    safe_state.routes.push(safe_route.clone());
+    let safe_targets = protected_targets(&safe_state);
     let safe_fences = [protected(&safe_state)];
     let planned = preflight_destination(
         &safe_fences,
-        std::slice::from_ref(&safe_state),
+        &safe_targets,
         &safe_state,
         &safe_route,
         "scratch",
@@ -518,7 +572,7 @@ fn destination_preflight_rejects_unsafe_and_aliasing_paths() {
     assert_eq!(
         preflight_destination(
             &safe_fences,
-            std::slice::from_ref(&safe_state),
+            &safe_targets,
             &safe_state,
             &safe_route,
             "scratch",
@@ -534,7 +588,7 @@ fn destination_preflight_rejects_unsafe_and_aliasing_paths() {
     assert_eq!(
         preflight_destination(
             &safe_fences,
-            std::slice::from_ref(&safe_state),
+            &safe_targets,
             &safe_state,
             &safe_route,
             "scratch",
@@ -550,7 +604,7 @@ fn destination_preflight_rejects_unsafe_and_aliasing_paths() {
     assert_eq!(
         preflight_destination(
             &safe_fences,
-            std::slice::from_ref(&safe_state),
+            &safe_targets,
             &safe_state,
             &safe_route,
             "scratch",
@@ -566,7 +620,7 @@ fn destination_preflight_rejects_unsafe_and_aliasing_paths() {
     assert_eq!(
         preflight_destination(
             &[protected(&source_alias)],
-            std::slice::from_ref(&source_alias),
+            &safe_targets,
             &source_alias,
             &safe_route,
             "scratch",
@@ -654,6 +708,7 @@ fn restore_refuses_document_sources_and_retained_targets_before_adapter_dispatch
             },
             native_namespace: Some("fixture-native".to_owned()),
         });
+        refresh_targets(&mut document);
         assert_eq!(
             restore(
                 &document,
@@ -681,9 +736,10 @@ fn restore_refuses_document_sources_and_retained_targets_before_adapter_dispatch
         .as_mut()
         .unwrap()
         .native_namespace = Some("different-native-realm".to_owned());
+    refresh_targets(&mut document);
     preflight_destination(
         &document.protected_realizations,
-        &document.states,
+        &document.protected_targets,
         &document.states[0],
         &document.states[0].routes[0],
         "scratch",
@@ -699,7 +755,7 @@ fn restore_refuses_document_sources_and_retained_targets_before_adapter_dispatch
     assert_eq!(
         preflight_destination(
             &document.protected_realizations,
-            &document.states,
+            &document.protected_targets,
             &document.states[0],
             &document.states[0].routes[0],
             "scratch",
@@ -720,10 +776,11 @@ fn restore_refuses_document_sources_and_retained_targets_before_adapter_dispatch
         .as_mut()
         .unwrap()
         .native_namespace = None;
+    refresh_targets(&mut document);
     assert_eq!(
         preflight_destination(
             &document.protected_realizations,
-            &document.states,
+            &document.protected_targets,
             &document.states[0],
             &document.states[0].routes[0],
             "scratch",
@@ -735,6 +792,7 @@ fn restore_refuses_document_sources_and_retained_targets_before_adapter_dispatch
         "unknown-native-namespace"
     );
     document.states[1].routes[0].target_boundaries = None;
+    refresh_targets(&mut document);
     assert_eq!(
         restore(
             &document,
@@ -764,6 +822,7 @@ fn executable_document(integration: Integration) -> Document {
         kind: "executable-plan".to_owned(),
         fixture_only: true,
         protected_realizations: vec![protected(&executable)],
+        protected_targets: protected_targets(&executable),
         states: vec![executable],
         scratch_destinations: BTreeMap::new(),
         extra: BTreeMap::new(),
@@ -789,6 +848,281 @@ fn op_adapter(directory: &Path, op_results: &[(&str, &str)]) -> PathBuf {
         ));
     }
     script(directory, &body)
+}
+
+fn fence_receipt(scratch: &ScratchDestination) -> RestoreReceipt {
+    serde_json::from_value(json!({
+        "schemaVersion": 2,
+        "stateId": "state", "routeId": "route", "targetId": "target", "integrationId": "fixture",
+        "adapterVersion": {"protocolVersion": 1, "implementation": "test-adapter",
+            "implementationVersion": "0.1.0", "fixtureOnly": true},
+        "point": serde_json::from_str::<Value>(&point_json("route", "capture-1", "filesystem", "[\"posix-filesystem\"]")).unwrap(),
+        "destination": {"capabilityRef": "scratch", "newName": "rehearsal",
+            "path": fs::canonicalize(&scratch.mount_root).unwrap().join("rehearsal"),
+            "nativeLocator": format!("{}/rehearsal", scratch.native_parent)}
+    })).unwrap()
+}
+
+#[test]
+fn missing_and_inert_source_fences_refuse_restore_and_verify_before_dispatch() {
+    let directory = temporary("source-fence-bypasses");
+    let scratch_root = directory.join("scratch");
+    fs::create_dir(&scratch_root).unwrap();
+    let dispatched = directory.join("dispatched");
+    let adapter = script(
+        &directory,
+        &format!("touch '{}'; exit 1", dispatched.display()),
+    );
+    let mut valid = executable_document(integration(adapter));
+    valid.scratch_destinations.insert(
+        "scratch".to_owned(),
+        ScratchDestination {
+            native_parent: "scratch/root".to_owned(),
+            mount_root: scratch_root.clone(),
+        },
+    );
+    let receipt = fence_receipt(&valid.scratch_destinations["scratch"]);
+    for case in [
+        "missing",
+        "filesystem-object",
+        "native-object",
+        "filesystem-string-without-path",
+    ] {
+        let mut document = valid.clone();
+        if case == "missing" {
+            document.states[0].realization = None;
+            document.protected_realizations.clear();
+        } else {
+            let mut other = protected(&document.states[0]);
+            other.state_id = "plan-only-source".to_owned();
+            other.realization.path = None;
+            other.realization.kind = if case == "native-object" {
+                "application-native"
+            } else {
+                "host-filesystem"
+            }
+            .to_owned();
+            other.realization.locator = if case == "filesystem-string-without-path" {
+                json!("scratch/root")
+            } else {
+                json!({"path": scratch_root})
+            };
+            other.realization.physical_backing =
+                Some(json!({"path": directory.join("unrelated-backing")}));
+            document.protected_realizations.push(other);
+        }
+        let code = if case == "missing" {
+            "missing-realization"
+        } else {
+            "unusable-protected-realization"
+        };
+        for execute in [false, true] {
+            assert_eq!(
+                restore(
+                    &document,
+                    "state",
+                    "route",
+                    "point-1",
+                    "scratch",
+                    "rehearsal",
+                    execute,
+                    Some(&directory.join("receipt.json"))
+                )
+                .unwrap_err()
+                .code,
+                code,
+                "{case}"
+            );
+        }
+        assert_eq!(
+            verify(&document, receipt.clone()).unwrap_err().code,
+            code,
+            "{case}"
+        );
+        assert!(!dispatched.exists(), "{case} dispatched an adapter");
+        assert!(!scratch_root.join("rehearsal").exists());
+        assert!(!directory.join("receipt.json").exists());
+    }
+    let mut diagnostic = valid.clone();
+    diagnostic.kind = "desired-inventory".to_owned();
+    diagnostic.states[0].mode = "plan-only".to_owned();
+    diagnostic.states[0].operational = false;
+    diagnostic.states[0].realization = None;
+    diagnostic.protected_realizations.clear();
+    assert!(plan(&diagnostic).is_ok());
+    assert!(!dispatched.exists());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn every_known_retained_target_fences_restore_and_current_config_verification() {
+    let directory = temporary("retained-target-bypasses");
+    let scratch_root = directory.join("scratch");
+    fs::create_dir(&scratch_root).unwrap();
+    let dispatched = directory.join("dispatched");
+    let adapter = script(
+        &directory,
+        &format!("touch '{}'; exit 1", dispatched.display()),
+    );
+    let mut valid = executable_document(integration(adapter));
+    valid.states[0].routes[0]
+        .target_boundaries
+        .as_mut()
+        .unwrap()
+        .native_namespace = Some("fixture-native".to_owned());
+    refresh_targets(&mut valid);
+    valid.scratch_destinations.insert(
+        "scratch".to_owned(),
+        ScratchDestination {
+            native_parent: "scratch/root".to_owned(),
+            mount_root: scratch_root.clone(),
+        },
+    );
+    let receipt = fence_receipt(&valid.scratch_destinations["scratch"]);
+    for case in [
+        "missing",
+        "empty-object",
+        "empty-arrays",
+        "path",
+        "native",
+        "incomparable",
+    ] {
+        for plan_only in [false, true] {
+            let mut document = valid.clone();
+            let mut sibling = document.states[0].clone();
+            sibling.state_id = "retained-sibling".to_owned();
+            sibling.routes[0].integration.as_mut().unwrap().operations = vec![
+                "describe".to_owned(),
+                "status".to_owned(),
+                "points".to_owned(),
+            ];
+            sibling.routes[0].target.as_mut().unwrap().target_id = "sibling-target".to_owned();
+            sibling.routes[0].target_boundaries = match case {
+                "missing" => None,
+                "empty-object" => Some(serde_json::from_value(json!({})).unwrap()),
+                "empty-arrays" => Some(
+                    serde_json::from_value(json!({"paths": [], "nativeLocators": []})).unwrap(),
+                ),
+                _ => Some(TargetBoundaries {
+                    paths: if case == "path" {
+                        vec![scratch_root.clone()]
+                    } else {
+                        Vec::new()
+                    },
+                    native_locators: if case == "path" {
+                        Vec::new()
+                    } else {
+                        vec!["scratch/root".to_owned()]
+                    },
+                    native_namespace: Some("fixture-native".to_owned()),
+                }),
+            };
+            document.protected_realizations.push(protected(&sibling));
+            document
+                .protected_targets
+                .extend(protected_targets(&sibling));
+            // All-inventory fences survive enabled -> plan-only, when the State
+            // disappears from the executable State list.
+            if !plan_only {
+                document.states.push(sibling);
+            }
+            if case == "incomparable" {
+                document.states[0].routes[0]
+                    .target_boundaries
+                    .as_mut()
+                    .unwrap()
+                    .native_namespace = None;
+                document.protected_targets[0]
+                    .target_boundaries
+                    .as_mut()
+                    .unwrap()
+                    .native_namespace = None;
+            }
+            assert!(validate_document(&document).is_ok());
+            let code = match case {
+                "missing" | "empty-object" | "empty-arrays" => "missing-target-boundaries",
+                "incomparable" => "unknown-native-namespace",
+                _ => "target-alias",
+            };
+            for execute in [false, true] {
+                assert_eq!(
+                    restore(
+                        &document,
+                        "state",
+                        "route",
+                        "point-1",
+                        "scratch",
+                        "rehearsal",
+                        execute,
+                        Some(&directory.join("receipt.json"))
+                    )
+                    .unwrap_err()
+                    .code,
+                    code,
+                    "{case}, planned={plan_only}"
+                );
+            }
+            assert_eq!(
+                verify(&document, receipt.clone()).unwrap_err().code,
+                code,
+                "{case}, planned={plan_only}"
+            );
+            assert!(!dispatched.exists());
+            assert!(!scratch_root.join("rehearsal").exists());
+            assert!(!directory.join("receipt.json").exists());
+        }
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn comparable_path_objects_and_string_native_fences_allow_unrelated_scratch() {
+    let directory = temporary("fence-positive-control");
+    let scratch_root = directory.join("scratch");
+    fs::create_dir(&scratch_root).unwrap();
+    let describe = describe_result(FULL_CAPABILITIES);
+    let points_result = format!("{{\"protocolVersion\":1,\"requestId\":\"%s\",\"result\":{{\"kind\":\"points\",\"points\":[{}]}}}}",
+        point_json("route", "capture-1", "filesystem", "[\"posix-filesystem\"]"));
+    let adapter = op_adapter(&directory, &[
+        ("describe", &describe), ("points", &points_result),
+        ("verify", "{\"protocolVersion\":1,\"requestId\":\"%s\",\"result\":{\"kind\":\"verify\",\"verified\":true,\"evidence\":\"verified\",\"scope\":\"fixture\"}}"),
+    ]);
+    let mut document = executable_document(integration(adapter));
+    document.scratch_destinations.insert(
+        "scratch".to_owned(),
+        ScratchDestination {
+            native_parent: "scratch/root".to_owned(),
+            mount_root: scratch_root,
+        },
+    );
+    let mut object = protected(&document.states[0]);
+    object.state_id = "path-object".to_owned();
+    object.realization.locator = json!({"opaque": "owner-data"});
+    object.realization.path = Some(directory.join("unrelated-source"));
+    document.protected_realizations.push(object);
+    let mut native = protected(&document.states[0]);
+    native.state_id = "native-source".to_owned();
+    native.realization.kind = "zfs-dataset".to_owned();
+    native.realization.path = None;
+    native.realization.locator = json!("source/unrelated");
+    document.protected_realizations.push(native);
+    restore(
+        &document,
+        "state",
+        "route",
+        "point-1",
+        "scratch",
+        "rehearsal",
+        false,
+        None,
+    )
+    .unwrap();
+    verify(
+        &document,
+        fence_receipt(&document.scratch_destinations["scratch"]),
+    )
+    .unwrap();
+    fs::remove_dir_all(directory).unwrap();
 }
 
 fn route_result<'a>(report: &'a Value, route_id: &str) -> &'a Value {
@@ -952,6 +1286,7 @@ fn executable_routes_require_valid_semantics_and_guarantees() {
 
     let mut missing_boundaries = executable_document(integration(adapter()));
     missing_boundaries.states[0].routes[0].target_boundaries = None;
+    refresh_targets(&mut missing_boundaries);
     assert_eq!(
         validate_document(&missing_boundaries).unwrap_err().code,
         "missing-target-boundaries"
@@ -962,6 +1297,7 @@ fn executable_routes_require_valid_semantics_and_guarantees() {
         .as_mut()
         .unwrap()
         .paths = vec![PathBuf::from("relative/target")];
+    refresh_targets(&mut relative_boundary);
     assert_eq!(
         validate_document(&relative_boundary).unwrap_err().code,
         "invalid-target-boundaries"
@@ -972,6 +1308,7 @@ fn executable_routes_require_valid_semantics_and_guarantees() {
         .as_mut()
         .unwrap()
         .native_locators = vec!["pool/target".to_owned()];
+    refresh_targets(&mut unqualified_native);
     assert_eq!(
         validate_document(&unqualified_native).unwrap_err().code,
         "invalid-target-boundaries"
@@ -1144,6 +1481,7 @@ fn two_route_document(first: PathBuf, second: PathBuf, second_status: &str) -> D
         kind: "executable-plan".to_owned(),
         fixture_only: true,
         protected_realizations: vec![protected(&executable)],
+        protected_targets: protected_targets(&executable),
         states: vec![executable],
         scratch_destinations: BTreeMap::new(),
         extra: BTreeMap::new(),
@@ -1603,6 +1941,7 @@ fn restore_receipts_and_verification_stay_within_current_authority() {
     for native_alias in [false, true] {
         if native_alias {
             let realization = &mut source_alias.protected_realizations[1].realization;
+            realization.kind = "zfs-dataset".to_owned();
             realization.path = None;
             realization.locator = json!("scratch/root");
         }
@@ -1620,6 +1959,7 @@ fn restore_receipts_and_verification_stay_within_current_authority() {
         .unwrap()
         .paths
         .push(scratch_root.clone());
+    refresh_targets(&mut target_alias);
     assert_eq!(
         verify(&target_alias, receipt.clone()).unwrap_err().code,
         "target-alias"
@@ -1763,6 +2103,39 @@ fn restore_receipts_and_verification_stay_within_current_authority() {
         .unwrap_err()
         .code,
         "source-alias"
+    );
+    assert!(!mutated.exists());
+    assert!(!scratch_root.join("rehearsal").exists());
+    assert_eq!(fs::metadata(&receipt_path).unwrap().len(), 0);
+    // The same discovery-time alias must fence a surviving plan-only Target.
+    fs::remove_file(&receipt_path).unwrap();
+    fs::remove_file(&live_alias).unwrap();
+    std::os::unix::fs::symlink(&outside, &live_alias).unwrap();
+    document.protected_realizations.pop();
+    document.protected_targets.push(ProtectedTarget {
+        state_id: "plan-only-retained".to_owned(),
+        route_id: "retained-route".to_owned(),
+        target_id: "retained-target".to_owned(),
+        target_boundaries: Some(TargetBoundaries {
+            paths: vec![live_alias],
+            native_locators: Vec::new(),
+            native_namespace: None,
+        }),
+    });
+    assert_eq!(
+        restore(
+            &document,
+            "state",
+            "route",
+            "point-1",
+            "scratch",
+            "rehearsal",
+            true,
+            Some(&receipt_path)
+        )
+        .unwrap_err()
+        .code,
+        "target-alias"
     );
     assert!(!mutated.exists());
     assert!(!scratch_root.join("rehearsal").exists());
