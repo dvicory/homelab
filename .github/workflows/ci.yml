@@ -72,20 +72,26 @@ jobs:
         run: |
           set -euo pipefail
           system=x86_64-linux
-          if [ -n "$CHECK" ] && [ -n "$REQUESTED_SYSTEM" ] && [ "$REQUESTED_SYSTEM" != all ]; then
+          if [ -n "$REQUESTED_SYSTEM" ] && [ "$REQUESTED_SYSTEM" != all ]; then
             system="$REQUESTED_SYSTEM"
           fi
-          # Keep exact drv identities in native job receipts, not the planning barrier.
-          nix eval --json ".#hostedCiInventory.$system" \
-            --apply 'builtins.mapAttrs (_: builtins.map (entry: builtins.removeAttrs entry [ "drvPath" ]))' \
-            > "$RUNNER_TEMP/check-inventory.json"
+          # Capabilities are lazy; exact drv identities belong to native job receipts.
+          inventory_projection='builtins.mapAttrs (_: builtins.map (entry: builtins.removeAttrs entry [ "drvPath" ]))'
+          if [ -n "$CHECK" ] || { [ -n "$REQUESTED_SYSTEM" ] && [ "$REQUESTED_SYSTEM" != all ]; }; then
+            nix eval --json ".#hostedCiInventory.$system" --apply "$inventory_projection" \
+              | jq --arg system "$system" '{($system): .}' > "$RUNNER_TEMP/check-inventory.json"
+          else
+            nix eval --json .#hostedCiInventory \
+              --apply "builtins.mapAttrs (_: inventory: ($inventory_projection) inventory)" \
+              > "$RUNNER_TEMP/check-inventory.json"
+          fi
           cat "$RUNNER_TEMP/check-inventory.json"
           if [ -n "$CHECK" ]; then
             matrix=$(jq -ce --arg check "$CHECK" --arg system "$system" '
-              [.inventory[] | select(.name == $check)] |
+              [.[$system].inventory[] | select(.name == $check)] |
               if length != 1 then error("check is not registered for selected platform")
-              elif .[0].hosted | not then error("selected check requires KVM unavailable on this hosted platform")
-              else {include: [{system: $system, group: (if .[0].runtime then "runtime" else "checks" end), check: $check, artifact: ($check | @uri)}]} end
+              elif .[0].hosted | not then error(.[0].reason)
+              else {include: [{system: $system, group: (if .[0].runtime then "runtime" else "checks" end), check: $check, artifact: ($check | @uri), requirements: .[0].requirements}]} end
             ' "$RUNNER_TEMP/check-inventory.json")
             darwin=false
           else
@@ -95,12 +101,12 @@ jobs:
             fi
             matrix=$(jq -c --argjson platforms "$platforms" '
               {include: (
-                [if $platforms | index("x86_64-linux") then .runtime[] |
-                   {system: "x86_64-linux", group: "runtime", check: .name, artifact: (.name | @uri)} else empty end]
+                [$platforms[] as $system | .[$system].runtime[] |
+                   {system: $system, group: "runtime", check: .name, artifact: (.name | @uri), requirements: .requirements}]
                 + [$platforms[] as $system |
                  ["packages","checks","devShells","formatters","nixosConfigurations","darwinConfigurations","homeConfigurations"][] as $group |
                  select($system != "aarch64-darwin" or $group != "darwinConfigurations") |
-                 {system: $system, group: $group, check: "", artifact: ""}]
+                 {system: $system, group: $group, check: "", artifact: "", requirements: {}}]
               )}
             ' "$RUNNER_TEMP/check-inventory.json")
             darwin=$(jq -cn --argjson platforms "$platforms" '$platforms | index("aarch64-darwin") != null')
@@ -171,7 +177,7 @@ jobs:
           overwrite: true
           retention-days: 1
 
-  # Native evaluation discovers all VM drivers; each gets its own KVM runner.
+  # Nix discovers runtime checks and their capabilities for each native runner.
   # Only the real Darwin configuration consumer waits for the bootstrap closure.
   build:
     needs: plan
@@ -193,12 +199,12 @@ jobs:
       - name: Enable available KVM acceleration
         if: runner.os == 'Linux'
         env:
-          GROUP: ${{ matrix.group }}
+          REQUIRE_KVM: ${{ matrix.requirements.kvm || false }}
         run: |
           if [ -c /dev/kvm ]; then
             sudo chmod a+rw /dev/kvm
-          elif [ "$GROUP" = runtime ]; then
-            echo 'Runtime check requires a native KVM runner' >&2
+          elif [ "$REQUIRE_KVM" = true ]; then
+            echo 'This check requires a native KVM runner' >&2
             exit 1
           fi
 
@@ -233,6 +239,23 @@ jobs:
             extra-substituters = https://cache.numtide.com
             extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=
           github_access_token: ${{ github.token }}
+
+      - name: Enable required container builder capabilities
+        if: runner.os == 'Linux' && matrix.requirements.uidRange
+        env:
+          REQUIRE_CGROUPS: ${{ matrix.requirements.cgroups }}
+        run: |
+          set -euo pipefail
+          if [ "$REQUIRE_CGROUPS" = true ]; then
+            test -f /sys/fs/cgroup/cgroup.controllers
+          fi
+          # These settings apply only to this disposable native container lane.
+          printf '%s\n' \
+            'auto-allocate-uids = true' \
+            'extra-system-features = uid-range' \
+            'extra-experimental-features = auto-allocate-uids cgroups' \
+            | sudo tee -a /etc/nix/nix.conf
+          sudo systemctl restart nix-daemon.service
 
       - name: Install Nix on macOS
         if: runner.os == 'macOS'
@@ -294,7 +317,7 @@ jobs:
           fi
           build_args=(--keep-going --fallback)
           if [ "$GROUP" = runtime ]; then
-            # One VM suite on this runner, never competing VM heaps.
+            # One runtime suite on this runner, never competing test heaps.
             build_args+=(--max-jobs 1)
           fi
           # Release the evaluation heap before any build/VM starts (PR #64).

@@ -22,22 +22,40 @@ nix build .#checks.aarch64-linux.den-semantics
 ```
 
 Linux VM checks remain directly buildable for x86-64 and ARM64. Hosted CI
-partitions the actual check derivations using NixOS test drivers and
-`requiredSystemFeatures`, never Hestia group names. Each x86-64 VM/KVM check
-runs on its own native Ubuntu 24.04 runner with `--max-jobs 1`; the fast check
-aggregate contains no runtime checks. All platforms retain their full fast
-semantic/schema/freshness inventory and package/configuration/development groups.
-Hosted ARM runtime checks are recorded as unsupported because its runners do
-not expose KVM; a KVM-capable ARM builder can still build those checks directly.
-Every registered check must be a derivation and belongs to exactly one of the
-fast, hosted runtime, or explicitly unsupported partitions. Future checks join
-automatically. Planning projects this inventory without forcing `drvPath`, so
-runtime lanes can start without evaluating every check's complete build graph.
-Native check jobs still upload the full evaluated platform inventory with exact
-derivation identities; runtime build receipts retain their exact derivations.
+partitions actual derivations using NixOS test drivers and declared
+`requiredSystemFeatures`, never check names or Hestia groups. A driver identifies
+a runtime check, not a KVM requirement. Nix exports each entry's `requirements`
+(`kvm`, `uidRange`, `cgroups`), hosted eligibility and explicit unsupported reason
+through `hostedCiInventory.<system>`; the workflow carries those facts into its
+matrix. Every hosted runtime check gets a separate native runner with
+`--max-jobs 1`; the fast aggregate contains no runtime or unsupported checks.
+All platforms retain their semantic/schema/freshness inventory and
+package/configuration/development groups. ARM VM/KVM checks remain explicitly
+unsupported on hosted runners without KVM; capable ARM builders can build them
+directly. Unknown required system features also receive an explicit unsupported
+reason rather than being scheduled on an incapable runner.
+
+`agenix-restart-guard` alone uses the existing NixOS systemd-nspawn test driver on
+both native Linux architectures. It uses the same production generator/algorithm,
+rebuilt for the hypothetical native ARM fixture rather than changing hvn-hyp1's
+deployed architecture, and preserves the private stamp modes (700/600), initial
+consumer start, unchanged-content non-restarts, exactly one rotation restart,
+and repeated-rotation non-restart assertions. There is no duplicate VM suite or
+script/hash assertion. PAM, hardening, kernel, network and security boundary tests
+retain their VM gates. Only disposable Linux lanes requiring `uid-range` enable
+Nix auto-allocated UIDs and the cgroups experimental feature, after requiring a
+cgroup-v2 host. Darwin never schedules this Linux container test.
+
+Every registered check must be a derivation and belongs exactly once to the
+fast, hosted runtime, or unsupported partition. Future registrations join
+automatically. Planning reads lazy feature declarations across the selected
+platforms without forcing raw test derivations or `drvPath`. Native check jobs
+upload evaluated platform inventory with exact hosted derivation identities;
+unsupported entries retain `drvPath = null`, so a Darwin receipt cannot force an
+unsupported Linux build graph. Runtime receipts retain their exact derivations.
 
 Build jobs release their separate `nix eval` heap before building the exact
-derivation, preserving memory for the VM. No runner executes competing VM suites.
+derivation, preserving memory for the test. No runner executes competing suites.
 
 A hosted x86-64 runner has 4 vCPUs and 16 GiB of memory. A VM check must fit
 there: request at most 4 cores, and leave the runner several GiB beyond the

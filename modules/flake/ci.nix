@@ -57,12 +57,16 @@ let
 
   requiredFeaturesFor =
     check:
-    # NixOS tests expose a lazy derivation; its raw derivation owns the features.
-    check.requiredSystemFeatures or (check.config.rawTestDerivation.requiredSystemFeatures or [ ]);
+    # Read the lazy test's feature declarations without forcing its raw derivation.
+    if check ? config.requiredFeatures then
+      builtins.attrNames (lib.filterAttrs (_: enabled: enabled) check.config.requiredFeatures)
+    else
+      check.requiredSystemFeatures or [ ];
 
   isRuntime =
     check:
     lib.elem "kvm" (requiredFeaturesFor check)
+    || lib.elem "uid-range" (requiredFeaturesFor check)
     || lib.isDerivation (
       check.driver or (check.driverInteractive or (check.config.driver or null))
     );
@@ -71,15 +75,42 @@ let
     system:
     let
       checks = checksFor system;
-      inventory = lib.mapAttrsToList (name: check: {
-        inherit name;
-        inherit (check) drvPath;
-        runtime = isRuntime check;
-        requiredSystemFeatures = requiredFeaturesFor check;
-        hosted = !isRuntime check || system == "x86_64-linux";
-        reason = if isRuntime check && system != "x86_64-linux" then "hosted runner has no KVM" else "";
-      }) checks;
-      fast = builtins.filter (entry: !entry.runtime) inventory;
+      inventory = lib.mapAttrsToList (
+        name: check:
+        let
+          requiredSystemFeatures = requiredFeaturesFor check;
+          linux = lib.hasSuffix "-linux" system;
+          requirements = {
+            kvm = lib.elem "kvm" requiredSystemFeatures;
+            uidRange = lib.elem "uid-range" requiredSystemFeatures;
+            cgroups = lib.elem "uid-range" requiredSystemFeatures;
+          };
+          supportedFeatures = [
+            "benchmark"
+            "big-parallel"
+            "nixos-test"
+          ] ++ lib.optional (system == "x86_64-linux") "kvm"
+            ++ lib.optional linux "uid-range";
+          unsupportedFeatures = lib.subtractLists supportedFeatures requiredSystemFeatures;
+          hosted = unsupportedFeatures == [ ];
+        in
+        {
+          inherit name requiredSystemFeatures requirements hosted;
+          # Unsupported Linux tests on Darwin must remain inspectable, not evaluated.
+          drvPath = if hosted then check.drvPath else null;
+          runtime = isRuntime check;
+          reason = lib.concatMapStringsSep "; " (
+            feature:
+            if feature == "kvm" then
+              "hosted runner has no KVM"
+            else if feature == "uid-range" then
+              "hosted runner cannot run Linux UID-range containers"
+            else
+              "hosted runner lacks required system feature ${feature}"
+          ) unsupportedFeatures;
+        }
+      ) checks;
+      fast = builtins.filter (entry: !entry.runtime && entry.hosted) inventory;
       runtime = builtins.filter (entry: entry.runtime && entry.hosted) inventory;
       unsupported = builtins.filter (entry: !entry.hosted) inventory;
     in
@@ -93,7 +124,11 @@ let
     };
 
   hostedChecksFor =
-    system: lib.filterAttrs (_: check: !isRuntime check) (checksFor system);
+    system:
+    let
+      names = map (entry: entry.name) (checkInventory system).fast;
+    in
+    lib.filterAttrs (name: _: lib.elem name names) (checksFor system);
 
   ciJobs = lib.genAttrs ciSystems (
     system:
