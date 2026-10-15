@@ -56,6 +56,11 @@ owned-child cleanup for running and exited-but-unreaped leaders, with an
 unrelated session left alive. It does not replace the two complete cold
 recovery scenarios.
 
+Argo CD image repository, version and digest changes belong in
+`modules/den/aspects/kubernetes/services/argocd.nix`. Regenerate the canonical
+manifests with `sync-prod-home-manifests`; do not override those references
+only inside a recovery fixture.
+
 `agenix-restart-guard` alone uses the existing NixOS systemd-nspawn test driver on
 both native Linux architectures. It uses the same production generator/algorithm,
 rebuilt for the hypothetical native ARM fixture rather than changing hvn-hyp1's
