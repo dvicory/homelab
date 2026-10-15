@@ -64,6 +64,16 @@ Kubernetes coverage. Detailed Argo resource retirement runs in the required
 native suite; the replacement VM retains real data, ownership, mount and
 accelerator observations through guest replacement.
 
+This tooling slice changes no intended production behavior or policy.
+Removing Go assertions can still change the Nix-derived
+`retained-directories-image` identity and its generated Job reference.
+The operator accepts that identity-only delta; build the helper from the
+selected revision and follow the existing
+[helper image delivery procedure](../docs/operations/jellyfin.md#deliver-helper-images)
+before syncing `retained-storage`. Neither a green test nor packaging the
+image imports it into the guest, and this tooling change performs no import
+or deployment.
+
 Linux also requires the fast `prepare-luks-storage` check. It exercises real
 rsync transfers/checksum verification and refuses unsafe operations before
 simulated block/format mutators. It does not prove real partitioning or LUKS
