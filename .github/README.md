@@ -228,6 +228,16 @@ Cleanup failure makes the gate fail. The approved sanitized report is included
 in the generic `native-<system>-<application>-<run-id>` evidence artifact even
 on failure; raw fixture logs, kubeconfig and assertion errors are not exported.
 
+Owned image-import failures distinguish archive copy, `ctr` import and archive
+cleanup, retaining only the zero-based archive ordinal rather than archive names or command arguments. A failed import
+also projects only known dial-failure categories for the fixture's fixed
+containerd socket from at most 8 KiB of stderr, then performs a readonly `ctr version`
+server RPC with one-second connect, two-second request and four-second process
+deadlines. Both RPC output streams are discarded; its return code or fixed
+timeout/transport category is diagnostic only. The original command failure and
+full cleanup remain authoritative; neither socket existence nor API `/readyz`
+alone establishes containerd RPC readiness.
+
 Argo failure witnesses capture only owned, whitelisted status fields before
 cleanup. Native catch scripts use Chainsaw's injected current context.
 Gateway prerequisite failures also retain a bounded pre-cleanup witness:
