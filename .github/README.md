@@ -45,10 +45,16 @@ Cold recovery deliberately discards the guest container cache and pulls the
 canonical public images online. The fixture's first bootstrap diagnostic
 interval fails promptly on classified registry refusals without preloading,
 retrying, weakening readiness or changing the shipped bootstrap command.
-Only its owned bootstrap process group is stopped. Other failures retain the
-existing readiness/deadline path. `prod-home-registry-failures` checks the
-classification boundary and real owned-child cleanup; it does not replace
-the two complete cold recovery scenarios.
+Only its owned bootstrap process group is stopped, including surviving children
+when the leader exits first. The leader stays unreaped until group shutdown.
+Bootstrap output and interval diagnostics are deferred until the outcome is
+known; the classified refusal discards that output and skips the outer raw
+journal, containerd and workload dumps. This is not generic log redaction.
+Other failures retain the existing diagnostics and readiness/deadline path.
+`prod-home-registry-failures` checks the classification boundary and real
+owned-child cleanup for running and exited-but-unreaped leaders, with an
+unrelated session left alive. It does not replace the two complete cold
+recovery scenarios.
 
 `agenix-restart-guard` alone uses the existing NixOS systemd-nspawn test driver on
 both native Linux architectures. It uses the same production generator/algorithm,
