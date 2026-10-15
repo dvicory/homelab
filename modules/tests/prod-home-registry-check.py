@@ -1,10 +1,12 @@
 """Run directly with the recovery driver path; no cluster or production state."""
 import importlib.util
 import os
+from pathlib import Path
 import select
 import signal
 import subprocess
 import sys
+import tempfile
 
 spec = importlib.util.spec_from_file_location("recovery", sys.argv[1])
 recovery = importlib.util.module_from_spec(spec)
@@ -29,12 +31,26 @@ assert recovery.registry_pull_failure(pods("ErrImagePull", secret)) is None
 assert recovery.registry_pull_failure({}) is None
 
 child = "import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); print('ready',flush=True); time.sleep(60)"
-unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+scratch = tempfile.TemporaryDirectory(prefix="bootstrap-grace-")
+cleanup_marker = Path(scratch.name) / "cleaned"
+slow_child = f"""import signal,time
+from pathlib import Path
+def stop(signum, frame):
+    time.sleep(1)
+    Path({str(cleanup_marker)!r}).write_text("cleaned")
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, stop)
+print("ready", flush=True)
+time.sleep(60)
+"""
+unrelated = subprocess.Popen([sys.executable, "-c", "import signal; signal.pause()"], start_new_session=True)
 try:
-    for leader_status in (None, 0, 7):
+    for leader_status, child_script, expect_cleanup in (
+        (None, child, False), (0, child, False), (7, child, False), (7, slow_child, True),
+    ):
         owned = subprocess.Popen(
             [sys.executable, "-u", "-c", "import subprocess,sys; "
-             f"p=subprocess.Popen({[sys.executable, '-u', '-c', child]!r},stdout=subprocess.PIPE,text=True); "
+             f"p=subprocess.Popen({[sys.executable, '-u', '-c', child_script]!r},stdout=subprocess.PIPE,text=True); "
              "assert p.stdout.readline().strip()=='ready'; print(p.pid,flush=True); "
              + ("p.wait()" if leader_status is None else f"sys.exit({leader_status})")],
             stdout=subprocess.PIPE, text=True, start_new_session=True,
@@ -56,6 +72,8 @@ try:
             if leader_status is not None:
                 assert owned.returncode == leader_status, "cleanup lost the leader's exit status"
             assert select.select([child_fd], [], [], 5)[0], "owned bootstrap child survived group cleanup"
+            if expect_cleanup:
+                assert cleanup_marker.is_file(), "leader exit cut short the child's SIGTERM cleanup"
             assert unrelated.poll() is None, "bootstrap cleanup stopped an unrelated session"
         finally:
             try:
@@ -76,4 +94,5 @@ try:
 finally:
     unrelated.terminate()
     unrelated.wait(timeout=5)
+    scratch.cleanup()
 print("registry failures are classified without messages; application/unrelated/retiring state is not an upstream failure; running and exited-but-unreaped leaders lose owned children without touching unrelated sessions")

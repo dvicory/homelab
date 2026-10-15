@@ -760,12 +760,9 @@ def stop_owned_bootstrap(process: subprocess.Popen) -> None:
     except ProcessLookupError:
         process.wait()
         return
-    # Keep the leader waitable: its PID must not be reused before group cleanup.
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        if os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG):
-            break
-        time.sleep(0.1)
+    # Keep the leader waitable: its PID pins the group through its children's grace.
+    # ponytail: fixed 30s grace; track live group members only if cleanup latency matters.
+    time.sleep(30)
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
