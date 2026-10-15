@@ -195,6 +195,9 @@ overall conclusion is deliberately not the gate. The exact merged-main push SHA
 is retained even if a newer main push arrives; consumers never follow a branch
 or mutable image tag.
 
+The producer's local Git reference declares `shallow=1` for Actions'
+detached checkout; its `rev` remains the exact authorized SHA.
+
 The producer builds and audits four native x86-64 helpers in a read-only,
 sandboxed job. Only the caller's narrowly scoped reusable-workflow call grants
 `packages: write`; the callee reduces permissions for authorization, build and
