@@ -2,7 +2,7 @@
 
 - [x] 1.1 Rebase the slice onto the accepted application integration without importing temporary rollout refs; verify current contracts, generated-manifest freshness and preserved unrelated changes at the resulting exact revision.
 - [x] 1.2 Reconcile the design's deletion inventory against that revision, including current Jellyfin/media tests rather than stale comparison workspaces; record each assertion's claimed failure, observed boundary and keep/delete/replace decision.
-- [ ] 1.3 Capture baseline timings and executed scenario identities for the targeted checks, separating setup/downloads, execution, architecture, cache state and external failures; do not classify an unexecuted derivation or a timeout limit as runtime evidence.
+- [x] 1.3 Capture baseline timings and executed scenario identities for the targeted checks, separating setup/downloads, execution, architecture, cache state and external failures; do not classify an unexecuted derivation or a timeout limit as runtime evidence.
 
 ## 2. Remove vacuous assertions and replace misleading safety claims
 
@@ -43,4 +43,4 @@
 - [x] 6.2 Enforce the native media API scenario on the accepted media revision; verify wrong credentials/configuration fail and intended native state persists without relying on successful log phrases or nonempty collections.
 - [ ] 6.3 Delete migrated Kubernetes-only bootstrap, declaration, self-heal and detailed Argo retirement assertions from broad VM scenarios after equivalent required native coverage passes. Run retained host mount/ID-map/filesystem/firewall/service and full guest-recovery acceptance, preserving actual credential delivery, mapped read-only library access, source loss/return and application state through replacement.
 - [ ] 6.4 Run the selected checks against the exact proposed Git revision, with negative mutations and sanitized result artifacts; compare equivalent baseline/candidate setup and execution timings and report reliability limits without claiming an unmeasured speedup.
-- [ ] 6.5 Update existing verification/CI documentation to name what each gate proves, exclusions and reproduction commands; validate OpenSpec planning consistency and confirm no intended production behavior or policy change. Disclose the accepted test-source-derived retained-directories image identity delta and its required import-before-deploy gate; do not perform that production operation.
+- [x] 6.5 Update existing verification/CI documentation to name what each gate proves, exclusions and reproduction commands; validate OpenSpec planning consistency and confirm no intended production behavior or policy change. Disclose the accepted test-source-derived retained-directories image identity delta and its required import-before-deploy gate; do not perform that production operation.
