@@ -65,6 +65,12 @@ def selects(policy, selector):
     match = policy["spec"]["podSelector"].get("matchLabels", {})
     return bool(match) and all(selector.get(key) == value for key, value in match.items())
 
+gateway_peer = {
+    "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "gateway"}},
+    "podSelector": {"matchLabels": {"gateway.envoyproxy.io/owning-gateway-name": "household"}},
+}
+
+
 
 checks = dict(inputs["hostChecks"])
 checks.update({
@@ -101,10 +107,7 @@ checks.update({
     "a monitoring Service is selected by no NetworkPolicy":
         all(any(selects(policy, service["spec"]["selector"]) for policy in policies) for service in monitoring if service["kind"] == "Service"),
     "something other than the Gateway may reach Grafana":
-        not has_grafana or [rule["from"] for rule in find(monitoring, "NetworkPolicy", "grafana")["spec"]["ingress"]] == [[{
-            "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "gateway"}},
-            "podSelector": {"matchLabels": {"gateway.envoyproxy.io/owning-gateway-name": "household"}},
-        }]],
+        not has_grafana or [rule["from"] for rule in find(monitoring, "NetworkPolicy", "grafana")["spec"]["ingress"]] == [[gateway_peer]],
     "kube-state-metrics exports Secrets or ConfigMaps, or its RBAC can write":
         "pods" in ksm_resources and not {"secrets", "configmaps"}.intersection(ksm_resources)
         and all(set(rule["verbs"]) <= {"get", "list", "watch"} for rule in find(monitoring, "ClusterRole", "kube-state-metrics")["rules"]),
@@ -129,8 +132,11 @@ if has_grafana:
     dashboards = data("grafana-dashboards")
     checks.update({
         "the Gateway's backend policy admits more than the Gateway proxy to Grafana":
-            all("podSelector" in peer and "namespaceSelector" in peer
-                for rule in find(gateway, "NetworkPolicy", "gateway-grafana-backend-ingress")["spec"]["ingress"] for peer in rule["from"]),
+            all(rule.get("from") and all(
+                all(expected["matchLabels"].items() <= peer.get(selector, {}).get("matchLabels", {}).items()
+                    for selector, expected in gateway_peer.items())
+                for peer in rule["from"])
+                for rule in find(gateway, "NetworkPolicy", "gateway-grafana-backend-ingress")["spec"]["ingress"]),
         "Grafana's administrator password is stored rather than generated in memory at Pod start":
             password.get("value", "") == "$__file{/run/grafana-admin/password}"
             and volume.get("emptyDir", {}).get("medium", "") == "Memory" and len(grafana.get("initContainers", [])) == 1,
