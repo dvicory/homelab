@@ -51,10 +51,10 @@ def capture_envoy_readiness(kubectl_command, env, workloads):
             *kubectl_command, "get", "--raw",
             "/api/v1/namespaces/gateway/pods/" + pod["metadata"]["name"] + ":19003/proxy/ready",
             "--request-timeout=3s",
-        ], env=env, capture_output=True, text=True, timeout=5)
+        ], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
         witness["apiReadiness"] = {
             "returnCode": api_probe.returncode,
-            "errorCategory": classify_kubectl_error(api_probe.stderr) if api_probe.returncode else None,
+            "errorCategory": "request-failed" if api_probe.returncode else None,
         }
     except Exception as error:
         witness["apiReadiness"] = {"errorCategory": "timeout" if isinstance(error, subprocess.TimeoutExpired) else "transport"}
@@ -93,7 +93,7 @@ def capture_envoy_readiness(kubectl_command, env, workloads):
         ):
             try:
                 response = subprocess.run([
-                    "curl", "--noproxy", "*", "--silent", "--show-error",
+                    "curl", "--disable", "--noproxy", "*", "--silent", "--show-error",
                     "--connect-timeout", "2", "--max-time", "3", "--max-filesize", "16384",
                     "--write-out", "\n%{http_code}", f"http://127.0.0.1:{ports[port]}{path}",
                 ], env=env, capture_output=True, timeout=5)
@@ -120,14 +120,21 @@ def capture_envoy_readiness(kubectl_command, env, workloads):
         witness["errorCategory"] = "forward-timeout" if isinstance(error, TimeoutError) else "forward-or-response-unavailable"
     finally:
         if process is not None:
-            process.terminate()
+            handlers = {sig: signal.signal(sig, signal.SIG_IGN) for sig in (signal.SIGTERM, signal.SIGINT)}
             try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-            process.stdout.close()
-            witness["forwardStopped"] = True
+                try:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+                finally:
+                    process.stdout.close()
+                witness["forwardStopped"] = True
+            finally:
+                for sig, handler in handlers.items():
+                    signal.signal(sig, handler)
     return witness
 
 
