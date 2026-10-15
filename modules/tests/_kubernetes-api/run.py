@@ -15,9 +15,23 @@ import time
 import uuid
 
 import yaml
-from report import ARGO_CRDS, ARGO_RECOVERY_APPS, ARGO_RECOVERY_JOBS, ENVOY_READINESS_STATS, REQUIRED_SCENARIOS, argo_recovery_witness, check_acceptance, check_report, classify_docker_error, classify_kubectl_error, classify_network_policy_error, crd_condition_witness, envoy_readiness_witness, gateway_owned_workloads, gateway_prerequisite_witness, network_policy_witness, sanitize_tests
+from report import ARGO_CRDS, ARGO_RECOVERY_APPS, ARGO_RECOVERY_JOBS, ENVOY_READINESS_STATS, REQUIRED_SCENARIOS, argo_recovery_witness, check_acceptance, check_report, classify_docker_error, classify_kubectl_error, classify_network_policy_error, containerd_socket_failure, crd_condition_witness, envoy_readiness_witness, gateway_owned_workloads, gateway_prerequisite_witness, network_policy_witness, sanitize_tests
 
 OWNER_LABEL = "verification.homelab/fixture"
+
+
+def capture_containerd_rpc(docker_command, env, node):
+    """Readonly server RPC; discard native output and bound client/server waits."""
+    try:
+        result = subprocess.run([
+            *docker_command, "exec", node, "ctr", "--address", "/run/k3s/containerd/containerd.sock",
+            "--connect-timeout", "1s", "--timeout", "2s", "version",
+        ], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
+        return {"returnCode": result.returncode}
+    except subprocess.TimeoutExpired:
+        return {"errorCategory": "timeout"}
+    except OSError:
+        return {"errorCategory": "transport"}
 
 
 def capture_envoy_readiness(kubectl_command, env, workloads):
@@ -201,7 +215,7 @@ def main():
         print(json.dumps({"event": "verification-progress", "phase": phase, "elapsedSeconds": elapsed, "suite": report.get("currentSuite"), "executed": report.get("executed", [])}, sort_keys=True), flush=True)
         last_checkpoint_phase = phase
 
-    def run(command, *, timeout=60, check=True, input=None):
+    def run(command, *, timeout=60, check=True, input=None, operation=None, archive_index=None):
         checkpoint()
         result = subprocess.run(command, env=env, cwd=work, input=input, text=True, capture_output=True, timeout=timeout)
         if check and result.returncode:
@@ -242,6 +256,12 @@ def main():
                 report["commandFailure"]["subcommand"] = command[len(docker)]
                 report["commandFailure"]["target"] = next((part for part in command if "@sha256:" in part), None)
                 report["commandFailure"]["errorCategory"] = classify_docker_error(result.stderr)
+            if operation is not None:
+                report["commandFailure"]["operation"] = operation
+                report["commandFailure"]["archiveIndex"] = archive_index
+                if operation == "ctr-import":
+                    report["commandFailure"]["containerdSocketFailure"] = containerd_socket_failure(result.stderr)
+                    report["commandFailure"]["containerdRPC"] = capture_containerd_rpc(docker, env, name)
             raise RuntimeError("command-failed")
         return result
 
@@ -385,9 +405,9 @@ def main():
         archives = [image["archive"] for image in settings["images"] if image["reference"] in settings["kubernetesImages"]] + registry_archives
         for index, archive in enumerate(archives):
             dest = f"/tmp/fixture-image-{index}.tar"
-            d("cp", str(archive), f"{name}:{dest}", timeout=600)
-            d("exec", name, "ctr", "--address", "/run/k3s/containerd/containerd.sock", "--namespace", "k8s.io", "images", "import", dest, timeout=600)
-            d("exec", name, "rm", "-f", dest)
+            d("cp", str(archive), f"{name}:{dest}", timeout=600, operation="archive-copy", archive_index=index)
+            d("exec", name, "ctr", "--address", "/run/k3s/containerd/containerd.sock", "--namespace", "k8s.io", "images", "import", dest, timeout=600, operation="ctr-import", archive_index=index)
+            d("exec", name, "rm", "-f", dest, operation="archive-cleanup", archive_index=index)
         # The production packet enforcer, not K3s's retired embedded controller,
         # must be ready before the controller and source-isolation scenarios.
         phase = "network-policy-mounts"

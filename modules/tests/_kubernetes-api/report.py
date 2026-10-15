@@ -58,6 +58,21 @@ ENVOY_READINESS_STATS = (
           for suffix in ("update_attempt", "update_success", "update_failure", "update_rejected", "control_plane.connected_state"))
 
 
+def containerd_socket_failure(stderr):
+    """Project only known dial failures for the fixture's fixed socket."""
+    message = stderr[:8192].lower()
+    if "/run/k3s/containerd/containerd.sock" in message and (
+            "failed to dial" in message or "dial unix" in message):
+        for text, category in (
+            ("connection refused", "connection-refused"),
+            ("no such file or directory", "socket-absent"),
+            ("deadline exceeded", "timeout"), ("i/o timeout", "timeout"),
+        ):
+            if text in message:
+                return category
+    return "unclassified"
+
+
 def envoy_readiness_witness(server_info, stats):
     """Never export native version text, dynamically named stats or nonnumeric values."""
     state = server_info.get("state")
@@ -782,6 +797,14 @@ def self_check():
     absent_envoy = envoy_readiness_witness({"state": sensitive, "version": sensitive}, {})
     assert absent_envoy["state"] == "unknown" and not absent_envoy["versionMatches"]
     assert all(value is None for value in absent_envoy["stats"].values())
+    for text, expected in (
+        ("connection refused", "connection-refused"),
+        ("no such file or directory", "socket-absent"),
+        ("context deadline exceeded", "timeout"),
+    ):
+        assert containerd_socket_failure("failed to dial /run/k3s/containerd/containerd.sock: " + text + sensitive) == expected
+        assert containerd_socket_failure("failed to dial /private.sock: " + text + sensitive) == "unclassified"
+    assert containerd_socket_failure("x" * 8192 + "dial unix /run/k3s/containerd/containerd.sock: connection refused") == "unclassified"
     enforcer_uid = "owned-enforcer"
     creation_message = f'failed to generate container spec: path "/{sensitive}" is mounted on "/{sensitive}" but it is not a shared or slave mount'
     enforcer = network_policy_witness(
