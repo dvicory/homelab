@@ -815,13 +815,14 @@ in
   perSystem =
     { pkgs, system, ... }:
     let
-      objects = self.nixidyEnvs.${system}.prod-home.config.applications.monitoring.objects;
+      # Native rendering remains covered by prod-home-manifests-fresh.
+      rendered = ../../generated/manifests/prod-home;
+      python = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
       data =
         objects: name:
         (lib.findFirst (
           object: object.kind == "ConfigMap" && object.metadata.name == name
         ) (throw "monitoring ConfigMap ${name} is not rendered") objects).data;
-      rules = pkgs.writeText "rules.json" (data objects "vmalert-rules")."rules.json";
       testFile = pkgs.writeText "tests.json" (
         builtins.toJSON {
           rule_files = [ "rules.json" ];
@@ -923,12 +924,17 @@ in
       checks.monitoring-rules =
         pkgs.runCommand "monitoring-rules"
           {
-            nativeBuildInputs = [ pkgs.victoriametrics ];
+            nativeBuildInputs = [ pkgs.victoriametrics python ];
             # vmalert-tool serves its in-process store on loopback.
             __darwinAllowLocalNetworking = true;
           }
           ''
-            cp ${rules} rules.json
+            python - ${rendered} <<'PY'
+            from pathlib import Path
+            import sys, yaml
+            obj = yaml.safe_load((Path(sys.argv[1]) / "monitoring/ConfigMap-vmalert-rules.yaml").read_text())
+            Path("rules.json").write_text(obj["data"]["rules.json"])
+            PY
             cp ${testFile} tests.json
             chmod u+w rules.json tests.json
             vmalert-tool unittest --files=tests.json

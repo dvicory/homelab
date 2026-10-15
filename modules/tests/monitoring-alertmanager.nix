@@ -19,13 +19,8 @@
   perSystem =
     { pkgs, system, ... }:
     let
-      objects = self.nixidyEnvs.${system}.prod-home.config.applications.monitoring.objects;
-      data =
-        (lib.findFirst (
-          object: object.kind == "ConfigMap" && object.metadata.name == "alertmanager-config"
-        ) (throw "alertmanager-config is not rendered") objects).data;
-      config = pkgs.writeText "alertmanager.json" data."alertmanager.yaml";
-      template = pkgs.writeText "homelab.tmpl" data."homelab.tmpl";
+      # Native rendering remains covered by prod-home-manifests-fresh.
+      rendered = ../../generated/manifests/prod-home;
       routeCases = [
         {
           receiver = "critical";
@@ -48,7 +43,7 @@
           labels = "alertname=AlertDeliveryFailing integration=telegram severity=critical";
         }
       ];
-      python = pkgs.python3;
+      python = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
     in
     {
       checks.monitoring-alertmanager =
@@ -64,9 +59,15 @@
           ''
             set -euo pipefail
             mkdir templates
-            cp ${template} templates/homelab.tmpl
+            python - ${rendered} <<'PY'
+            from pathlib import Path
+            import sys, yaml
+            obj = yaml.safe_load((Path(sys.argv[1]) / "monitoring/ConfigMap-alertmanager-config.yaml").read_text())
+            Path("rendered-alertmanager.json").write_text(obj["data"]["alertmanager.yaml"])
+            Path("templates/homelab.tmpl").write_text(obj["data"]["homelab.tmpl"])
+            PY
             # The only change: templates load from here instead of the pod path.
-            ${python.interpreter} - ${config} > alertmanager.json <<'PY'
+            ${python.interpreter} - rendered-alertmanager.json > alertmanager.json <<'PY'
             import json, sys
             config = json.load(open(sys.argv[1]))
             assert config["templates"] == ["/etc/alertmanager/templates/*.tmpl"], config["templates"]
