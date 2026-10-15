@@ -33,27 +33,30 @@ in
             metadata.name = "monitoring";
           }
         ]
-        ++ map (
-          { name, key }:
-          {
-            apiVersion = "v1";
-            kind = "Secret";
-            metadata = {
-              inherit name;
-              namespace = "monitoring";
-            };
-            stringData.${key} = "test-value-not-a-credential";
-          }
-        ) [
-          {
-            name = "grafana-oidc";
-            key = "client-secret";
-          }
-          {
-            name = "grafana-admin";
-            key = "secret-key";
-          }
-        ];
+        ++
+          map
+            (
+              { name, key }:
+              {
+                apiVersion = "v1";
+                kind = "Secret";
+                metadata = {
+                  inherit name;
+                  namespace = "monitoring";
+                };
+                stringData.${key} = "test-value-not-a-credential";
+              }
+            )
+            [
+              {
+                name = "grafana-oidc";
+                key = "client-secret";
+              }
+              {
+                name = "grafana-admin";
+                key = "secret-key";
+              }
+            ];
       };
       manifests = pkgs.runCommand "grafana-test-objects.json" { nativeBuildInputs = [ python ]; } ''
         python - ${rendered} > "$out" <<'PY'
