@@ -10,9 +10,9 @@
 # unchanged.
 #
 # Four small HTTP servers stand in for the core sources under their job
-# names. Three independent NixOS checks share the same VM and healthy cadence
-# setup, then prove ingestion-stop/recovery, read-only storage/recovery, or
-# critical source-down delivery with continued heartbeats after staleness.
+# names. Three independent NixOS checks reuse the VM configuration and healthy
+# cadence setup, then prove ingestion-stop/recovery, read-only storage/recovery,
+# or critical source-down delivery with continued heartbeats after staleness.
 # The fault checks retain their full quiet windows and post-fault recovery.
 { lib, ... }:
 {
@@ -40,9 +40,6 @@
             (out / "rules.json").write_text(rules)
             (out / "homelab.tmpl").write_text(alertmanager["homelab.tmpl"])
             config = json.loads(alertmanager["alertmanager.yaml"])
-            watchdog = next(r for g in json.loads(rules)["groups"] for r in g["rules"] if r.get("alert") == "Watchdog")
-            heartbeat = next(r for r in config["receivers"] if r["name"] == "heartbeat")
-            (out / "originals.json").write_text(json.dumps({"watchdog": watchdog, "heartbeat": heartbeat}))
             # Only repeat intervals and the critical test receiver differ.
             for route in config["route"]["routes"]:
                 if route["receiver"] == "heartbeat":
@@ -128,174 +125,181 @@
         http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
       '';
       python = lib.getExe pkgs.python3;
-      test = name: scenario: pkgs.testers.runNixOSTest {
-        inherit name;
-        requiredFeatures.kvm = true;
-        nodes.machine =
-          { pkgs, ... }:
-          {
-            system.stateVersion = "26.05";
-            virtualisation.memorySize = 2048;
-            networking.firewall.enable = true;
-            environment.systemPackages = [
-              pkgs.curl
-              pkgs.iptables
-            ];
-            fileSystems."/var/lib/victoriametrics-test" = {
-              fsType = "tmpfs";
-              options = [ "size=300M" ];
-            };
-            environment.etc = {
-              "victoriametrics/scrape.json".text = builtins.toJSON scrape;
-              "vmalert/rules.json".source = "${fixtures}/rules.json";
-              "alertmanager/config/alertmanager.yaml".source = "${fixtures}/alertmanager.json";
-              "alertmanager/templates/homelab.tmpl".source = "${fixtures}/homelab.tmpl";
-              "monitoring-originals.json".source = "${fixtures}/originals.json";
-              # The heartbeat receiver reads its URL from this file.
-              "alertmanager/delivery/heartbeat-url".text = "http://127.0.0.1:9001/ping\n";
-            };
-            systemd.services =
-              lib.mapAttrs' (
-                job: source:
-                lib.nameValuePair "fake-${job}" {
-                  wantedBy = [ "multi-user.target" ];
-                  serviceConfig.ExecStart = "${python} ${fakeSource} ${toString source.port} ${lib.escapeShellArg source.body}";
-                }
-              ) sources
-              // {
-                fake-heartbeat = {
-                  wantedBy = [ "multi-user.target" ];
-                  serviceConfig.ExecStart = "${python} ${fakeReceiver} 9001 /tmp/heartbeat.log";
-                };
-                fake-critical = {
-                  wantedBy = [ "multi-user.target" ];
-                  serviceConfig.ExecStart = "${python} ${fakeReceiver} 9002 /tmp/critical.log";
-                };
-                victoriametrics = {
-                  wantedBy = [ "multi-user.target" ];
-                  after = [ "var-lib-victoriametrics\\x2dtest.mount" ];
-                  serviceConfig.ExecStart = lib.escapeShellArgs [
-                    "${pkgs.victoriametrics}/bin/victoria-metrics"
-                    "-storageDataPath=/var/lib/victoriametrics-test/data"
-                    "-retentionPeriod=90d"
-                    "-storage.minFreeDiskSpaceBytes=${toString floorBytes}"
-                    "-promscrape.config=/etc/victoriametrics/scrape.json"
-                    "-promscrape.config.strictParse=true"
-                    "-httpListenAddr=127.0.0.1:8428"
-                  ];
-                };
-                vmalert = {
-                  wantedBy = [ "multi-user.target" ];
-                  serviceConfig = {
-                    ExecStart = lib.escapeShellArgs [
-                      "${pkgs.victoriametrics}/bin/vmalert"
-                      "-datasource.url=http://127.0.0.1:8428"
-                      "-remoteWrite.url=http://127.0.0.1:8428"
-                      "-remoteRead.url=http://127.0.0.1:8428"
-                      "-notifier.url=http://127.0.0.1:9093"
-                      "-rule=/etc/vmalert/rules.json"
-                      "-evaluationInterval=10s"
-                      "-httpListenAddr=127.0.0.1:8880"
-                    ];
-                    Restart = "always";
-                  };
-                };
-                alertmanager = {
-                  wantedBy = [ "multi-user.target" ];
-                  serviceConfig = {
-                    ExecStart = lib.escapeShellArgs [
-                      "${pkgs.prometheus-alertmanager}/bin/alertmanager"
-                      "--config.file=/etc/alertmanager/config/alertmanager.yaml"
-                      "--storage.path=/var/lib/alertmanager-test"
-                      "--web.listen-address=127.0.0.1:9093"
-                      "--cluster.listen-address="
-                    ];
-                    StateDirectory = "alertmanager-test";
-                  };
-                };
+      test =
+        name: scenario:
+        pkgs.testers.runNixOSTest {
+          inherit name;
+          requiredFeatures.kvm = true;
+          nodes.machine =
+            { pkgs, ... }:
+            {
+              system.stateVersion = "26.05";
+              virtualisation.memorySize = 2048;
+              networking.firewall.enable = true;
+              environment.systemPackages = [
+                pkgs.curl
+                pkgs.iptables
+              ];
+              fileSystems."/var/lib/victoriametrics-test" = {
+                fsType = "tmpfs";
+                options = [ "size=300M" ];
               };
-          };
-        testScript = ''
-          import json
-          import time
+              environment.etc = {
+                "victoriametrics/scrape.json".text = builtins.toJSON scrape;
+                "vmalert/rules.json".source = "${fixtures}/rules.json";
+                "alertmanager/config/alertmanager.yaml".source = "${fixtures}/alertmanager.json";
+                "alertmanager/templates/homelab.tmpl".source = "${fixtures}/homelab.tmpl";
+                # The heartbeat receiver reads its URL from this file.
+                "alertmanager/delivery/heartbeat-url".text = "http://127.0.0.1:9001/ping\n";
+              };
+              systemd.services =
+                lib.mapAttrs' (
+                  job: source:
+                  lib.nameValuePair "fake-${job}" {
+                    wantedBy = [ "multi-user.target" ];
+                    serviceConfig.ExecStart = "${python} ${fakeSource} ${toString source.port} ${lib.escapeShellArg source.body}";
+                  }
+                ) sources
+                // {
+                  fake-heartbeat = {
+                    wantedBy = [ "multi-user.target" ];
+                    serviceConfig.ExecStart = "${python} ${fakeReceiver} 9001 /tmp/heartbeat.log";
+                  };
+                  fake-critical = {
+                    wantedBy = [ "multi-user.target" ];
+                    serviceConfig.ExecStart = "${python} ${fakeReceiver} 9002 /tmp/critical.log";
+                  };
+                  victoriametrics = {
+                    wantedBy = [ "multi-user.target" ];
+                    after = [ "var-lib-victoriametrics\\x2dtest.mount" ];
+                    serviceConfig.ExecStart = lib.escapeShellArgs [
+                      "${pkgs.victoriametrics}/bin/victoria-metrics"
+                      "-storageDataPath=/var/lib/victoriametrics-test/data"
+                      "-retentionPeriod=90d"
+                      "-storage.minFreeDiskSpaceBytes=${toString floorBytes}"
+                      "-promscrape.config=/etc/victoriametrics/scrape.json"
+                      "-promscrape.config.strictParse=true"
+                      "-httpListenAddr=127.0.0.1:8428"
+                    ];
+                  };
+                  vmalert = {
+                    wantedBy = [ "multi-user.target" ];
+                    serviceConfig = {
+                      ExecStart = lib.escapeShellArgs [
+                        "${pkgs.victoriametrics}/bin/vmalert"
+                        "-datasource.url=http://127.0.0.1:8428"
+                        "-remoteWrite.url=http://127.0.0.1:8428"
+                        "-remoteRead.url=http://127.0.0.1:8428"
+                        "-notifier.url=http://127.0.0.1:9093"
+                        "-rule=/etc/vmalert/rules.json"
+                        "-evaluationInterval=10s"
+                        "-httpListenAddr=127.0.0.1:8880"
+                      ];
+                      Restart = "always";
+                    };
+                  };
+                  alertmanager = {
+                    wantedBy = [ "multi-user.target" ];
+                    serviceConfig = {
+                      ExecStart = lib.escapeShellArgs [
+                        "${pkgs.prometheus-alertmanager}/bin/alertmanager"
+                        "--config.file=/etc/alertmanager/config/alertmanager.yaml"
+                        "--storage.path=/var/lib/alertmanager-test"
+                        "--web.listen-address=127.0.0.1:9093"
+                        "--cluster.listen-address="
+                      ];
+                      StateDirectory = "alertmanager-test";
+                    };
+                  };
+                };
+            };
+          testScript = ''
+            import json
+            import time
 
-          def pings():
-              text = machine.succeed("cat /tmp/heartbeat.log 2>/dev/null || true")
-              return [json.loads(line) for line in text.splitlines() if line]
+            def pings():
+                text = machine.succeed("cat /tmp/heartbeat.log 2>/dev/null || true")
+                return [json.loads(line) for line in text.splitlines() if line]
 
-          def ping_times():
-              return [entry["time"] for entry in pings()]
+            def ping_times():
+                return [entry["time"] for entry in pings()]
 
-          def diagnose():
-              print(machine.execute("systemctl --no-pager status victoriametrics vmalert alertmanager fake-heartbeat | tail -60")[1])
-              print(machine.execute("journalctl --no-pager -u vmalert -u alertmanager -u victoriametrics | tail -60")[1])
-              print(machine.execute("curl -s http://127.0.0.1:8880/api/v1/alerts | head -c 3000")[1])
-              print(machine.execute("curl -s 'http://127.0.0.1:8428/api/v1/query?query=up' | head -c 2000")[1])
-              print(machine.execute("curl -s http://127.0.0.1:9093/api/v2/alerts | head -c 3000")[1])
+            def diagnose():
+                print(machine.execute("systemctl --no-pager status victoriametrics vmalert alertmanager fake-heartbeat | tail -60")[1])
+                print(machine.execute("journalctl --no-pager -u vmalert -u alertmanager -u victoriametrics | tail -60")[1])
+                print(machine.execute("curl -s http://127.0.0.1:8880/api/v1/alerts | head -c 3000")[1])
+                print(machine.execute("curl -s 'http://127.0.0.1:8428/api/v1/query?query=up' | head -c 2000")[1])
+                print(machine.execute("curl -s http://127.0.0.1:9093/api/v2/alerts | head -c 3000")[1])
 
-          def wait_for_pings(count, timeout):
-              deadline = time.time() + timeout
-              start = len(pings())
-              while time.time() < deadline:
-                  if len(pings()) >= start + count:
-                      return
-                  time.sleep(5)
-              diagnose()
-              raise AssertionError(f"fewer than {count} new pings in {timeout} s")
+            def wait_for_pings(count, timeout):
+                deadline = time.time() + timeout
+                start = len(pings())
+                while time.time() < deadline:
+                    if len(pings()) >= start + count:
+                        return
+                    time.sleep(5)
+                diagnose()
+                raise AssertionError(f"fewer than {count} new pings in {timeout} s")
 
-          def assert_pings_stop(cause, bound):
-              # Pings must stop within the expression's bound plus one repeat.
-              started = float(machine.succeed("date +%s.%N"))
-              time.sleep(bound)
-              settled = len(pings())
-              time.sleep(90)
-              late = pings()[settled:]
-              assert not late, f"{cause}: pings continued: {late}"
-              stopped_at = max([t for t in ping_times() if t <= started + bound] or [started])
-              print(f"EVIDENCE {cause}: last ping {stopped_at - started:.0f} s after the fault; none in the following {bound + 90 - (stopped_at - started):.0f} s")
+            def assert_pings_stop(cause, bound):
+                # Pings must stop within the expression's bound plus one repeat.
+                started = float(machine.succeed("date +%s.%N"))
+                time.sleep(bound)
+                settled = len(pings())
+                time.sleep(90)
+                late = pings()[settled:]
+                assert not late, f"{cause}: pings continued: {late}"
+                stopped_at = max([t for t in ping_times() if t <= started + bound] or [started])
+                print(f"EVIDENCE {cause}: last ping {stopped_at - started:.0f} s after the fault; none in the following {bound + 90 - (stopped_at - started):.0f} s")
 
-          def no_resolved_pings():
-              resolved = [entry for entry in pings() if '"status":"resolved"' in entry["body"].replace(" ", "")]
-              assert not resolved, resolved
+            def no_resolved_pings():
+                resolved = [entry for entry in pings() if '"status":"resolved"' in entry["body"].replace(" ", "")]
+                assert not resolved, resolved
 
-          def wait_for_source_alert_clear():
-              machine.wait_until_succeeds(
-                  "curl -sf 'http://127.0.0.1:9093/api/v2/alerts?active=true&filter=alertname%3D%22TelemetrySourceDown%22&filter=job%3D%22kubelet%22' | grep -qx '\\[\\]'",
-                  timeout=300,
-              )
+            def wait_for_source_alert_clear():
+                machine.wait_until_succeeds(
+                    "curl -sf 'http://127.0.0.1:9093/api/v2/alerts?active=true&filter=alertname%3D%22TelemetrySourceDown%22&filter=job%3D%22kubelet%22' | grep -qx '\\[\\]'",
+                    timeout=300,
+                )
 
-          start_all()
-          for unit in ("victoriametrics", "vmalert", "alertmanager", "fake-heartbeat", "fake-critical"):
-              machine.wait_for_unit(unit + ".service")
-          machine.wait_for_open_port(8428)
-          machine.wait_for_open_port(9093)
+            def wait_for_source_alert_firing():
+                deadline = time.time() + 120
+                while time.time() < deadline:
+                    alerts = json.loads(machine.succeed(
+                        "curl -sf 'http://127.0.0.1:9093/api/v2/alerts?active=true&filter=alertname%3D%22TelemetrySourceDown%22&filter=job%3D%22kubelet%22'"
+                    ))
+                    if any(alert["labels"].get("severity") == "critical" and alert["status"]["state"] == "active" for alert in alerts):
+                        print("EVIDENCE TelemetrySourceDown(kubelet) is firing before source-outage recovery")
+                        return
+                    time.sleep(5)
+                diagnose()
+                raise AssertionError("kubelet source-down alert never fired during the ingestion outage")
 
-          with subtest("the rendered Watchdog and heartbeat receiver are in use unchanged"):
-              originals = json.loads(machine.succeed("cat /etc/monitoring-originals.json"))
-              rules = json.loads(machine.succeed("cat /etc/vmalert/rules.json"))
-              watchdog = [r for g in rules["groups"] for r in g["rules"] if r.get("alert") == "Watchdog"]
-              assert watchdog == [originals["watchdog"]], watchdog
-              config = json.loads(machine.succeed("cat /etc/alertmanager/config/alertmanager.yaml"))
-              heartbeat = [r for r in config["receivers"] if r["name"] == "heartbeat"]
-              assert heartbeat == [originals["heartbeat"]], heartbeat
+            start_all()
+            for unit in ("victoriametrics", "vmalert", "alertmanager", "fake-heartbeat", "fake-critical"):
+                machine.wait_for_unit(unit + ".service")
+            machine.wait_for_open_port(8428)
+            machine.wait_for_open_port(9093)
 
-          with subtest("the pinned VictoriaMetrics exports the metrics the rules read"):
-              metrics = machine.succeed("curl -sf http://127.0.0.1:8428/metrics")
-              for name in ("vm_rows_added_to_storage_total", "vm_free_disk_space_bytes", "vm_data_size_bytes"):
-                  assert f"\n{name}" in metrics, name
-              print("EVIDENCE VictoriaMetrics exports vm_rows_added_to_storage_total, vm_free_disk_space_bytes, vm_data_size_bytes")
+            with subtest("the pinned VictoriaMetrics exports the metrics the rules read"):
+                metrics = machine.succeed("curl -sf http://127.0.0.1:8428/metrics")
+                for name in ("vm_rows_added_to_storage_total", "vm_free_disk_space_bytes", "vm_data_size_bytes"):
+                    assert f"\n{name}" in metrics, name
+                print("EVIDENCE VictoriaMetrics exports vm_rows_added_to_storage_total, vm_free_disk_space_bytes, vm_data_size_bytes")
 
-          with subtest("(a) healthy: pings arrive at the repeat interval"):
-              wait_for_pings(3, 360)
-              times = ping_times()[-3:]
-              gaps = [b - a for a, b in zip(times, times[1:])]
-              assert all(20 <= gap <= 75 for gap in gaps), gaps
-              print(f"EVIDENCE healthy ping gaps {[round(g) for g in gaps]} s")
-        '' + scenario + ''
-          no_resolved_pings()
-          print(f"EVIDENCE {len(pings())} pings in total; none was a resolved message")
-        '';
-      };
+            with subtest("(a) healthy: pings arrive at the repeat interval"):
+                wait_for_pings(3, 360)
+                times = ping_times()[-3:]
+                gaps = [b - a for a, b in zip(times, times[1:])]
+                assert all(20 <= gap <= 75 for gap in gaps), gaps
+                print(f"EVIDENCE healthy ping gaps {[round(g) for g in gaps]} s")
+          ''
+          + scenario
+          + ''
+            no_resolved_pings()
+            print(f"EVIDENCE {len(pings())} pings in total; none was a resolved message")
+          '';
+        };
       scenarios = {
         monitoring-heartbeat-ingestion-stop = ''
           with subtest("stalled ingestion: pings stop while every service still answers"):
@@ -306,6 +310,7 @@
               machine.succeed("curl -sf http://127.0.0.1:9093/-/ready >/dev/null")
               no_resolved_pings()
               print("EVIDENCE stalled: query API, vmalert and Alertmanager answer; no resolved request reached the receiver")
+              wait_for_source_alert_firing()
               machine.succeed("iptables -D OUTPUT -o lo -p tcp --dport 9101:9104 -j REJECT")
               wait_for_pings(2, 360)
               wait_for_source_alert_clear()
@@ -321,11 +326,21 @@
               machine.succeed("curl -sf 'http://127.0.0.1:8428/api/v1/query?query=up' >/dev/null")
               no_resolved_pings()
               print("EVIDENCE read-only: vm_storage_is_read_only 1; queries answer")
+              restored = float(machine.succeed("date +%s.%N"))
               machine.succeed("rm /var/lib/victoriametrics-test/fill")
               machine.wait_until_succeeds("curl -sf http://127.0.0.1:8428/metrics | grep -q '^vm_storage_is_read_only{.*} 0$'", timeout=120)
               wait_for_pings(2, 360)
-              wait_for_source_alert_clear()
-              print("EVIDENCE storage recovered: vm_storage_is_read_only 0; two new pings after silence; prior kubelet source-down alert cleared")
+              deadline = time.time() + 120
+              while time.time() < deadline:
+                  result = json.loads(machine.succeed(
+                      "curl -sfG --data-urlencode 'query=timestamp(kubelet_running_pods{job=\"kubelet\"})' http://127.0.0.1:8428/api/v1/query"
+                  ))["data"]["result"]
+                  if result and all(float(series["value"][1]) > restored for series in result):
+                      break
+                  time.sleep(5)
+              else:
+                  raise AssertionError("no fresh kubelet sample was ingested after storage recovery")
+              print("EVIDENCE storage recovered: vm_storage_is_read_only 0; two new pings after silence; newly ingested kubelet sample after storage restoration")
         '';
         monitoring-heartbeat-single-source-down = ''
           with subtest("one stale source: pings continue, the critical receiver gets TelemetrySourceDown"):
@@ -359,11 +374,13 @@
     in
     {
       checks = lib.optionalAttrs (system == "x86_64-linux") (
-        lib.mapAttrs (name: scenario:
+        lib.mapAttrs (
+          name: scenario:
           let
             case = test name scenario;
           in
-          case // {
+          case
+          // {
             meta = case.meta // {
               hestia.group = "${system}-${name}-runtime";
             };

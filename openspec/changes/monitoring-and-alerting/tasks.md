@@ -1,6 +1,6 @@
 ## 1. Contract checks and scaffolding
 
-- [x] 1.1 Add `modules/tests/monitoring-contracts.nix` with evaluation-only checks. It must fail when:
+- [x] 1.1 Add `modules/tests/monitoring-contracts.nix` with native rendered-contract checks. It must fail when:
   - a non-monitoring Application declares sync wave ≥ 5;
   - any monitoring Application is below wave 5;
   - a route targets a monitoring Service other than Grafana, or the Grafana route is not `auth = "admin"`;
@@ -165,7 +165,7 @@
   - **(b) Stalled ingestion:** `monitoring-heartbeat-ingestion-stop` blocks all four fake sources with the firewall, while the VictoriaMetrics query API, vmalert and Alertmanager stay up and answer. Pings stop within the expression's bound, remain absent for the full quiet observation window, and no "resolved" request reaches the receiver.
   - **(c) Read-only store:** `monitoring-heartbeat-storage-read-only` puts VictoriaMetrics' data on a small filesystem and fills it until free space is below `-storage.minFreeDiskSpaceBytes`. VictoriaMetrics reports read-only, queries still answer, and pings stop for the full quiet observation window.
   - **(d) One stale source:** `monitoring-heartbeat-single-source-down` starts with no active kubelet source-down alert, then stops that source. A new firing `TelemetrySourceDown` notification must reach the critical receiver after this stop, followed by two further heartbeats while the source remains stopped.
-  - **(e) Recovery from actual heartbeat silence:** the ingestion-stop and storage-read-only cases each remove their fault and require two new pings plus clearance of the prior kubelet source-down alert. Storage also must report writable again. Every case rejects resolved heartbeat requests, including after recovery. A final heartbeat-only wait after restarting the single source is intentionally absent: heartbeats already continue with that source stopped, so it would prove no recovery.
+  - **(e) Recovery from actual heartbeat silence:** the ingestion-stop case observes a real firing critical kubelet `TelemetrySourceDown` before removing its source-blocking fault, then requires two new pings and clearance of that observed alert. The storage-read-only case removes its storage fault and requires writable storage, two new pings and a newly ingested core-source sample timestamped after restoration; its sources stay healthy, so it makes no source-alert clearance claim. Every case rejects resolved heartbeat requests, including after recovery. A final heartbeat-only wait after restarting the single source is intentionally absent: heartbeats already continue with that source stopped, so it would prove no recovery.
 
   Historical sequential-check evidence: `monitoring-heartbeat` passed through its driver on hvn-hyp1 (2026-10-11), and current-head hosted CI38697644274 passed it before the split. Healthy pings were 40 s apart; pings stopped after actual ingestion and storage faults while the services answered, then resumed after each fault was removed; new `TelemetrySourceDown` delivery and continued pings with one stale source passed. The historical final source-restart/heartbeat-only wait was not evidence of source recovery. New independent-case execution evidence is recorded separately; these historical timings are not a split-check speedup claim.
 
