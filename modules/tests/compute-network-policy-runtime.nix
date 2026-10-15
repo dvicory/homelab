@@ -25,6 +25,10 @@
 # back (fail-closed). With a render node hotplugged into the guest, it
 # requires the enforcer to hold only NET_ADMIN and to have no way to the node,
 # which a privileged control container in the same guest can open.
+# Independent traffic rows overlap in four bounded I/O workers without
+# shortening a refusal probe, convergence deadline or observation window.
+# Lifecycle transitions remain serial; readiness is required after entering
+# the legacy-controller configuration, not both before and after it.
 #
 # Without the enforcer the stranger reaches radarr once K3s's controller is
 # disabled, and the test fails. x86_64/KVM only; the enforcer image comes from

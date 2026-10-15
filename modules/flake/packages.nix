@@ -34,6 +34,7 @@
         agenix-restart-guard = callPackage (self + "/pkgs/by-name/agenix-restart-guard/package.nix") { };
       };
       compute-runtime = callPackage (self + "/pkgs/by-name/compute-runtime/package.nix") { };
+      helper-release = callPackage (self + "/pkgs/by-name/helper-release/package.nix") { };
       prepare-luks-storage = lib.optionalAttrs isLinux {
         prepare-luks-storage = callPackage (self + "/pkgs/by-name/prepare-luks-storage/package.nix") { };
       };
@@ -71,6 +72,7 @@
           install
           compute-runtime
           ;
+        inherit helper-release;
       }
       // agenix-restart-guard
       // prepare-luks-storage
@@ -81,6 +83,16 @@
 
       checks = {
         compute-runtime = config.packages.compute-runtime;
+        helper-source =
+          pkgs.runCommand "helper-source-authorization" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+            python ${self + "/.github/test-helper-source.py"} ${self + "/.github/helper-source.py"}
+            touch "$out"
+          '';
+        helper-release =
+          pkgs.runCommand "helper-release-audit" { nativeBuildInputs = [ pkgs.python3 pkgs.openssl ]; } ''
+            python ${self + "/pkgs/by-name/helper-release/test.py"} ${self + "/pkgs/by-name/helper-release/helper-release.py"}
+            touch "$out"
+          '';
       }
       // lib.optionalAttrs isLinux {
         prepare-luks-storage =
@@ -105,7 +117,7 @@
               REQUIRE_REAL_TOOL_CHECKS = "1";
             }
             ''
-              ${pkgs.bash}/bin/bash ${self + "/pkgs/by-name/prepare-luks-storage/test.sh"}
+              ${pkgs.bash}/bin/bash ${../../pkgs/by-name/prepare-luks-storage}/test.sh
               touch "$out"
             '';
       };

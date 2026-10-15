@@ -13,6 +13,12 @@ its own system's projection: nixidy chart evaluation can require native builds.
 Every CI group is a directly buildable Nix derivation. `ciBundles.<system>`
 builds the complete projection; neither target requires GitHub Actions.
 
+`hostedCiPlan.<system>` supplies the standard group names, lazy check
+inventory and native application descriptors. The workflow dispatches that
+plan; it does not maintain a second list of output categories or branch on a
+test/application name. Platform-specific Darwin bootstrap remains an executor
+dependency, not a workload-selection rule.
+
 On a builder for the selected system:
 
 ```sh
@@ -21,15 +27,41 @@ nix build .#ciJobs.x86_64-linux.nixosConfigurations
 nix build .#checks.aarch64-linux.den-semantics
 ```
 
-Linux VM checks remain directly buildable for x86-64 and ARM64. Hosted ARM
-jobs omit checks whose Hestia group ends in `-runtime`, because GitHub's ARM
-runners do not expose KVM. A KVM-capable ARM builder can build any omitted
-check directly. Check jobs use `--max-jobs 1` so VM tests do not compete with
-other builds on the same runner; other CI groups retain Nix's normal
-parallelism. Check jobs also evaluate their projection in a separate
-`nix eval` process and then build the resulting derivation. Evaluating every
-check takes about 10 GiB, and a `nix build` process that evaluated them keeps
-that memory until its last build ends.
+Linux VM checks remain directly buildable for x86-64 and ARM64. Hosted CI
+partitions actual derivations using NixOS test drivers and declared
+`requiredSystemFeatures`, never check names or Hestia groups. A driver identifies
+a runtime check, not a KVM requirement. Nix exports each entry's `requirements`
+(`kvm`, `uidRange`, `cgroups`), hosted eligibility and explicit unsupported reason
+through `hostedCiInventory.<system>`; the workflow carries those facts into its
+matrix. Every hosted runtime check gets a separate native runner with
+`--max-jobs 1`; the fast aggregate contains no runtime or unsupported checks.
+All platforms retain their semantic/schema/freshness inventory and
+package/configuration/development groups. ARM VM/KVM checks remain explicitly
+unsupported on hosted runners without KVM; capable ARM builders can build them
+directly. Unknown required system features also receive an explicit unsupported
+reason rather than being scheduled on an incapable runner.
+
+`agenix-restart-guard` alone uses the existing NixOS systemd-nspawn test driver on
+both native Linux architectures. It uses the same production generator/algorithm,
+rebuilt for the hypothetical native ARM fixture rather than changing hvn-hyp1's
+deployed architecture, and preserves the private stamp modes (700/600), initial
+consumer start, unchanged-content non-restarts, exactly one rotation restart,
+and repeated-rotation non-restart assertions. There is no duplicate VM suite or
+script/hash assertion. PAM, hardening, kernel, network and security boundary tests
+retain their VM gates. Only disposable Linux lanes requiring `uid-range` enable
+Nix auto-allocated UIDs and the cgroups experimental feature, after requiring a
+cgroup-v2 host. Darwin never schedules this Linux container test.
+
+Every registered check must be a derivation and belongs exactly once to the
+fast, hosted runtime, or unsupported partition. Future registrations join
+automatically. Planning reads lazy feature declarations across the selected
+platforms without forcing raw test derivations or `drvPath`. Native check jobs
+upload evaluated platform inventory with exact hosted derivation identities;
+unsupported entries retain `drvPath = null`, so a Darwin receipt cannot force an
+unsupported Linux build graph. Runtime receipts retain their exact derivations.
+
+Build jobs release their separate `nix eval` heap before building the exact
+derivation, preserving memory for the test. No runner executes competing suites.
 
 A hosted x86-64 runner has 4 vCPUs and 16 GiB of memory. A VM check must fit
 there: request at most 4 cores, and leave the runner several GiB beyond the
@@ -38,9 +70,11 @@ GitHub loses the runner and the job ends without the test's result.
 
 Hosted CI builds the full ARM64 Darwin configuration. An ARM64 Linux job first
 builds the Linux system closure used by its `nix.linux-builder` VM and passes
-that closure to the macOS job through a one-day workflow artifact. This breaks
-the first-build cycle without weakening the production configuration. The
-workstation builds the same configuration as its activation gate.
+that closure to the macOS job through a one-day workflow artifact. Only the
+Darwin configuration job waits for this bootstrap; Linux and other Darwin
+groups do not. This breaks the first-build cycle without weakening the
+production configuration. The workstation builds the same configuration as
+its activation gate.
 
 Manual dispatch builds the full projection by default. Set `system` to build
 only that platform, or set `check` to run one check (defaulting to x86-64 when
@@ -51,22 +85,166 @@ gh workflow run ci.yml --ref "$REF" -f check=den-semantics
 gh workflow run ci.yml --ref "$REF" -f system=aarch64-linux
 ```
 
-Check names and implementations belong in Nix, not workflow branches. Successful
-check jobs upload nonempty outputs as `check-output-<system>-<run-id>` artifacts;
-Linux runners enable available KVM acceleration and publish nonempty outputs to
-the public `dvicory-homelab` Cachix cache. System builds and checks can reuse
-narinfo and objects uploaded by other jobs.
-All jobs read the public `dvicory-homelab` Cachix cache. Successful `main` push
-jobs publish their existing outputs and runtime closures directly from the build
-runner; another job's failure does not prevent those uploads. There is no second
+Check names and implementations belong in Nix, not workflow branches. Single
+dispatch validates a check or native application's registration and platform;
+unsupported or ambiguous selections fail rather than silently skipping.
+`check=media-live-acceptance` selects the declared native x86-64 Docker suite.
+Its package carries the exact source, manifests and policy inputs; invocation
+does not borrow files from the caller's checkout. Nix owns its arguments,
+deadline and owned-resource prefix. The native executor records the package
+identity, runs the whole app and independently checks owned Docker cleanup.
+Successful check jobs upload nonempty outputs as
+`check-output-<system>-<check-or-group>-<run-id>` artifacts; empty outputs retain
+their evidence in the job log. Linux runners enable available KVM acceleration.
+System builds and checks can reuse narinfo and objects uploaded by other jobs.
+Hestia's binary version is pinned alongside its action. Use core v3.1.0 or
+newer: it rejects cached narinfos whose backing packs are unavailable, rather
+than repeatedly advertising objects that fail during download. The manifest
+and backing packs are separate GitHub cache entries; a manifest hit alone
+does not prove that its objects remain available.
+
+All jobs read the public `dvicory-homelab` Cachix cache and the signed upstream
+`https://cache.numtide.com` cache documented by the pinned `llm-agents` input.
+CI and shared Nix settings append its fixed public key
+`niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=`.
+The owner approved this signer for CI and shared fleet Nix settings. This grants
+Numtide trust to supply executable store outputs, not just package metadata.
+The key is not restricted to Codex or one package: it can authenticate any
+requested store output. Its configured scope belongs to Nix desired state;
+signature checks do not make an untrusted publisher safe.
+CI appends the upstream cache and key to the user configuration after Cachix:
+Cachix's base settings override installer-level `extra-*` values. The later
+Hestia configuration preserves this user configuration. Existing substituters
+and keys remain configured. This permits exact upstream package substitution
+without changing package sources or versions. Signature verification remains
+required; CI does not automatically accept PR-provided flake configuration or
+grant upstream cache-write access. Successful `main` push
+jobs publish their existing outputs, runtime closures, and realized build
+dependencies directly from the build runner; another job's failure does not
+prevent those uploads. Publication uses the derivation roots recorded by the
+successful build, including dependencies embedded in compressed images that
+have no runtime store references. It excludes the source/derivation-only
+closure and never builds missing outputs for publication. There is no second
 build on a separate publication runner. The `cachix-publish` environment remains
 restricted to `main`, and only the publication step receives its per-cache write
 token. Pull requests and manual dispatches remain read-only.
 
+A successful warm `main` job does not prove that a cold PR runner can substitute
+its dependencies. For a repeated compiled dependency, compare the exact
+derivation and every required output with the `main` log, then query each output
+using `nix path-info --store https://dvicory-homelab.cachix.org "$output"`.
+A 404 means the output is unavailable, not that its derivation changed; Cachix
+also hides paths whose closure is incomplete. The publisher's realized-only
+selection includes the patched Incus server, documentation, agent loader and
+client even when a VM image hides them from its runtime references.
+
+Restore unavailable dependencies only through owner-approved protected-main
+publication of the exact successful outputs and their closures. Never use PR
+credentials or accept unsigned NARs to make a cold-cache proof pass. Measure
+substitution from an empty isolated store with builds disabled before
+attributing a runtime improvement to the cache.
+
+Exact derivations, not changed-file guesses, determine cache reuse. Runtime
+fixtures must reference individual files, package-local directories (including
+the test's adjacent scripts), or explicit filesets rather than interpolate
+`self` paths that retain the entire flake source as a build input. The recovery
+fixture includes all of its copied manifests and no unrelated applications.
+Hermes image tags still identify the Git source revision; changing that
+deployment provenance is not a cache optimization.
+
 Nix store contents published by CI are public, so CI outputs must never contain
 decrypted secrets.
+
+### Required-green main Nix helper candidates
+
+`helper-release.yml` is reusable only: **Nix CI** calls it automatically for a
+same-repository `push` to `main`, after **Required CI** succeeds. That gate joins
+every required CI dependency, including all build matrix legs, the Darwin
+builder bootstrap and the Actions security audit. Every dependency must succeed;
+failed, cancelled or skipped dependencies refuse publication. PRs and manual or
+selected CI runs never publish. There is no early PR admission, `workflow_run`
+trigger, manual publisher dispatch or per-release approval click.
+
+Both caller and callee check the trusted repository, main push event, CI workflow
+path and immutable source/tooling SHA. The callee also checks GitHub's actual
+workflow ID, run ID, attempt, repository and main head facts, and the completed,
+successful **Required CI** job for that exact SHA/attempt. It repeats that check
+before publication. The parent run is still executing the publisher, so its
+overall conclusion is deliberately not the gate. The exact merged-main push SHA
+is retained even if a newer main push arrives; consumers never follow a branch
+or mutable image tag.
+
+The producer builds and audits four native x86-64 helpers in a read-only,
+sandboxed job. Only the caller's narrowly scoped reusable-workflow call grants
+`packages: write`; the callee reduces permissions for authorization, build and
+verification, leaving that authority only in its publisher job. No repository
+write permission, inherited repository secrets or approval environment is used.
+GitHub's token is repository-associated package authority, **not four
+package-scoped credentials**. Fixed destinations remain enforced by publisher
+code; artifact data cannot choose them.
+
+The publisher downloads an immutable artifact ID from its own read-only build
+and checks the independently recorded metadata fingerprint, every archive's
+actual checksum, config/rootfs and native platform. It checks out
+`github.workflow_sha`, which must equal the exact main producer SHA, and runs
+only that main-owned publisher tooling. It never executes transferred scripts
+or image entrypoints. Publication credentials live in an ephemeral
+authentication file removed on exit.
+
+Data separation does not make archives safe. The credentialed job still trusts
+its parsers, pinned Actions and tools. Hashes bind transferred bytes, and
+credential scanning detects recognizable material; neither proves those bytes
+harmless or free of every possible secret. No audit finding is suppressed.
+Publication keeps Docker schema 2 config bytes, which GHCR and K3s support.
+Converting them to OCI rewrites creation/history timestamps and is refused by
+the exact producer-config identity check.
+
+The fixed destinations are
+`ghcr.io/dvicory/homelab/{retained-directories,kanidm-provision,jellyfin-provisioner,jellarr}`.
+Automation requires a separately approved merge of this workflow and repository
+Actions package-write access to those destinations. This configuration does not
+authorize an unreviewed branch-owned publisher, personal token substitution or
+package visibility changes.
+
+New GHCR packages default private. Public visibility and repository Actions
+access are external package-settings prerequisites, not mutations this workflow
+performs. If visibility prevents verification, resolve it only with separate
+owner authorization, then rerun the failed **verify** job, not the successful
+publisher. The verification job has no package-write permission and
+uses `--no-creds`, verified TLS and full digest retrieval to compare the remote
+config/rootfs with the original Nix output. A private or mismatched candidate
+remains ineligible even if authenticated publication succeeded.
+
+`helper-verified-<sha>` records candidates for a separately tested/reviewed
+consumer PR; it does not deploy them. Seven-day Actions artifacts only transfer
+builds and evidence. Retain selected and supported rollback manifests/layers in
+GHCR without automatic pruning, plus their committed source/digest mappings.
+No GitHub Release archive or independent offline/exact-byte recovery guarantee
+is added. A lost registry version must be rebuilt from still-available locked
+inputs and may have a different digest; a GitHub-wide outage remains an
+availability limit, never permission to use a mutable fallback.
+
+The native disposable check is
+`checks.x86_64-linux.helper-release-runtime`; it builds the existing retained
+helper and a genuinely recompiled version, runs their Kubernetes Jobs through
+a real TLS registry without helper preloads/imports, and checks anonymous
+access, refusal, explicit old-digest rollback and retained-state identity.
+`checks.<system>.helper-source` exercises exact main-caller and completed
+required-job receipt authorization, including refusal of PR/manual/fork sources.
+`checks.<system>.helper-release` runs the registered archive/admission audit,
+including referenced extensionless layers, linked transfer files, metadata
+credentials and public-certificate controls.
 
 GitHub enforces full-SHA action pins and the repository action allowlist.
 Dependabot groups action updates into a weekly pull request after a seven-day
 cooldown. `.github/workflows/security.yml` runs zizmor when GitHub automation
-changes and rejects medium-or-higher findings.
+changes and is also called by every Nix CI run, rejecting medium-or-higher
+findings before helper publication.
+
+The reusable call uses GitHub's documented [same-commit local workflow
+reference](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#calling-a-reusable-workflow).
+The [caller context and permission
+rules](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations)
+mean the callee sees the caller's `github` facts and can only reduce the caller's
+token permissions, not elevate them. No environment secret or approval
+configuration is required for automatic helper promotion.

@@ -194,9 +194,40 @@ secret is missing, provisioning fails and Jellyfin does not start.
 
 ## Deliver helper images
 
-Kubernetes never pulls the provisioner and Jellarr images. Import each new
-revision into the guest before you sync manifests that reference it. Do not
-rebuild or activate the guest OS for this.
+Production still uses the procedure below until the separately reviewed
+all-helper digest cutover is merged. The publisher capability does not change
+these consumers or authorize an Argo sync.
+
+The [main helper candidate lane](../../.github/README.md#required-green-main-nix-helper-candidates)
+builds the existing Jellyfin provisioner and Jellarr alongside the retained
+directory and Kanidm helpers. It publishes automatically only from an exact
+merged-main push after all required CI succeeds, without a per-release approval
+click. It checks source/run/attempt, archive/config/rootfs/platform identity
+and anonymous access to immutable manifest digests. It does not automatically
+select a release; required tests, review and a separately approved consumer
+merge still govern selection.
+New package visibility must be made public through the explicitly approved
+GitHub operation before anonymous verification can succeed; public visibility
+is irreversible.
+
+Before publication, content audits inspect every Docker manifest-selected layer
+regardless of its filename, plus image configuration and metadata. Public
+certificate PEMs are allowed; private keys, credential directories and encrypted
+production-secret inputs are refused.
+
+Keep selected and supported rollback versions and layers in GHCR without
+automatic pruning. Keep their reviewed source and digest mappings. CI transfer
+artifacts expire and are not backups; there is no second archive store or
+promise of offline/exact-digest reconstruction. If a version is lost, rebuilding
+needs its locked sources/inputs and may produce a different digest. During a
+registry outage, a selected uncached image must fail visibly, not run a mutable
+fallback. After the digest cutover, explicit rollback means selecting a previous
+still-available verified digest through the reviewed application path, not
+recreating or activating the guest.
+
+For current production, Kubernetes never pulls the provisioner and Jellarr
+images. Import each new revision into the guest before syncing manifests that
+reference it. Do not rebuild or activate the guest OS for this:
 
 1. On the Linux Incus host, from the selected repository revision, build the
    images in Bash:
@@ -251,21 +282,34 @@ them together in one reviewed change:
    nix run .#sync-prod-home-manifests
    nix build .#checks."$system".jellyfin-contracts \
      .#checks."$system".prod-home-manifests-fresh
-   nix build .#checks.x86_64-linux.prod-home-replacement
+   nix build .#checks.x86_64-linux.prod-home-replacement \
+     .#checks.x86_64-linux.prod-home-consumer-resilience
    ```
 
-   `prod-home-replacement` needs x86_64 Linux with KVM, a builder that
-   permits `sandbox = relaxed`, and registry access.
+   Both runtime checks are required. Each uses an independent x86_64 Linux
+   KVM fixture, a builder permitting `sandbox = relaxed`, and registry access.
 5. After merge, deliver the new provisioner image as described above before
    the Argo sync.
 6. After the sync, accept hardware transcoding as described in "Accept
    hardware transcoding". A new release changes ffmpeg and the iHD driver.
 
 Expected result: evaluation fails if only the server image or digest, or only
-the provisioner source, changes. `jellyfin-contracts` passes and
-`prod-home-replacement` passes fresh provisioning, repeat provisioning after
-Pod recreation, the stock-server image check, Jellarr key reuse, and the
-provisioning-failure scenario.
+the provisioner source, changes. `jellyfin-contracts` and both runtime checks
+pass. Each runtime fixture bootstraps the genuine Incus/ZFS/MergerFS/K3s/Argo
+stack from canonical manifests, provisions Jellyfin, delivers staged secrets,
+and verifies the stock image, administrator, libraries, and playback state.
+
+The required runtime inventory is partitioned, not selected by changed files:
+
+| Check | Mandatory scenario families |
+| --- | --- |
+| `prod-home-replacement` | Preseed adoption conflict; missing retained mount and permission drift; missing secrets and incomplete/complete rotation; bootstrap without Git and recovery; retained-marker/volume refusal; mapped retained-path owners and writes; lifecycle lock and identity/effective-config refusals; in-place OS activation; fresh Incus/K3s replacement retaining bytes, ownership, credentials and identity; accelerator grant after replacement; Argo retirement retaining Namespace/PV/PVC and data. |
+| `prod-home-consumer-resilience` | Accelerator absence, hotplug, host/guest/workload permissions, ungranted/nonholder refusals, loss and return; Jellarr's declared-only encoding updates and key reuse; post-preflight provisioning failure, immutable partial state and kubelet refusal retries with the full 60-second observation; live media writer/read-only boundaries, mount loss/return without node restart, boot without media with the full 180-second observation, restoration; Argo self-healing retaining unmanaged objects and application data. |
+
+Fixture Git availability and retirement request an Argo hard refresh instead
+of waiting for its background polling interval. Argo still fetches the real
+Git origin and performs reconciliation; all health, refusal, and retained
+object assertions remain required.
 
 ### First real upgrade
 
@@ -281,8 +325,8 @@ record each item below in the upgrade pull request:
   mode replaced it and the patch is removed.
 - [ ] On the upgrade branch, a temporary edit that changes only the server
   image or digest, or only the provisioner source, fails evaluation.
-- [ ] `prod-home-replacement` passes fresh provisioning, repeat provisioning,
-  and the stock-server image check at the upgrade's head.
+- [ ] Both `prod-home-replacement` and `prod-home-consumer-resilience` pass
+  their complete required scenario inventories at the upgrade's head.
 - [ ] After the Argo sync, the `provision` log on the production host reports
   that `/config` is initialized and left unchanged, the server reports the
   new version, and the administrator, libraries, and playback still work.

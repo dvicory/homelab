@@ -119,3 +119,29 @@ Expected result: both Jobs complete.
 
 Each helper holds a lock file while it runs. Do not delete or replace a lock
 file while a helper runs.
+
+## Native media acceptance
+
+Run the pinned application suite against a disposable native Linux x86 Docker daemon:
+
+```sh
+nix run .#media-live-acceptance -- \
+  --docker-host unix:///var/run/docker.sock --platform linux/amd64
+```
+
+This requires a native Linux x86 Docker Engine with API 1.45 or newer.
+The suite creates its own internal network, containers and Linux volume,
+then verifies owned cleanup before reporting success. It does not use
+household data or secrets.
+
+Nix CI runs this entire suite as the required `media-runtime (x86_64-linux)`
+job, separately from sandboxed flake checks. To select it alone with
+`workflow_dispatch`, set `check` to `media-runtime`; it always uses the native
+x86 runner. The `media-runtime-<run-id>` artifact retains the final success,
+elapsed command time, runner/image/source identities and owned-cleanup
+diagnostics. The suite is executed on every full CI run even when its Nix app
+dependencies are cached.
+
+This exercises media application APIs and producer behavior. It does not prove
+Kubernetes RBAC, NetworkPolicy or Gateway behavior, or the
+Incus/MergerFS/ZFS/GPU storage and acceleration boundaries.
