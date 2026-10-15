@@ -48,6 +48,7 @@ import re
 import secrets
 import shlex
 import shutil
+import signal
 import socket
 import sqlite3
 import stat
@@ -720,6 +721,53 @@ def fetch_kubeconfig(runtime: Runtime, workspace: Path) -> Path:
     return kubeconfig
 
 
+def registry_pull_failure(pods: dict) -> str | None:
+    """Classify current image-pull failures without exporting native messages."""
+    for pod in pods.get("items") or []:
+        metadata = pod.get("metadata") or {}
+        if metadata.get("namespace") != "argocd" or metadata.get("deletionTimestamp"):
+            continue
+        status = pod.get("status") or {}
+        for container in (status.get("initContainerStatuses") or []) + (status.get("containerStatuses") or []):
+            waiting = (container.get("state") or {}).get("waiting") or {}
+            if waiting.get("reason") not in ("ErrImagePull", "ImagePullBackOff"):
+                continue
+            message = (waiting.get("message") or "").lower()
+            for category, markers in (
+                ("rate-limited", ("toomanyrequests", "too many requests", "rate limit")),
+                ("unauthorized", ("unauthorized", "authentication required", "access denied")),
+                ("manifest-not-found", ("manifest unknown", "no matching manifest")),
+                ("certificate", ("x509:", "certificate signed by unknown authority")),
+            ):
+                if any(marker in message for marker in markers):
+                    return category
+    return None
+
+
+def stop_owned_bootstrap(process: subprocess.Popen) -> None:
+    """Stop only the session/group created for this bootstrap and its children."""
+    if process.poll() is not None:
+        return
+    try:
+        if os.getpgid(process.pid) != process.pid:
+            raise ScenarioError("refusing to stop an unowned bootstrap process group")
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        process.wait()
+        return
+    # Keep the leader waitable: its PID must not be reused before group cleanup.
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG):
+            break
+        time.sleep(0.1)
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
+
+
 def run_bootstrap_host(bootstrap_host: Path, runtime: Runtime, kubeconfig: Path, seed: Path) -> None:
     """Invoke the shipped household-bootstrap-host against the fresh guest."""
     env = {**os.environ, "KUBECONFIG": str(kubeconfig), "HOUSEHOLD_BOOTSTRAP_MANIFESTS": str(seed)}
@@ -729,12 +777,24 @@ def run_bootstrap_host(bootstrap_host: Path, runtime: Runtime, kubeconfig: Path,
             ["timeout", "--kill-after=30s", "3600s", str(bootstrap_host),
              str(runtime.spec_path), "--confirm", runtime.instance],
             env=env,
+            start_new_session=True,
         ) as process:
             while True:
                 try:
                     status = process.wait(timeout=60)
                     break
                 except subprocess.TimeoutExpired:
+                    try:
+                        result = subprocess.run(
+                            ["kubectl", "--request-timeout=10s", "-n", "argocd", "get", "pods", "-o", "json"],
+                            env=env, capture_output=True, text=True, timeout=15, check=False,
+                        )
+                        reason = registry_pull_failure(json.loads(result.stdout)) if result.returncode == 0 else None
+                    except (OSError, ValueError, subprocess.TimeoutExpired):
+                        reason = None
+                    if reason and process.poll() is None:
+                        stop_owned_bootstrap(process)
+                        raise ScenarioError(f"online bootstrap registry image pull failed ({reason}); no preload or readiness bypass")
                     print("BOOTSTRAP WAIT: collecting read-only Argo diagnostics", flush=True)
                     for command in (
                         ["kubectl", "--request-timeout=10s", "-n", "argocd", "get", "pods", "-o", "wide"],

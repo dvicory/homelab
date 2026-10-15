@@ -41,6 +41,15 @@ unsupported on hosted runners without KVM; capable ARM builders can build them
 directly. Unknown required system features also receive an explicit unsupported
 reason rather than being scheduled on an incapable runner.
 
+Cold recovery deliberately discards the guest container cache and pulls the
+canonical public images online. The fixture's first bootstrap diagnostic
+interval fails promptly on classified registry refusals without preloading,
+retrying, weakening readiness or changing the shipped bootstrap command.
+Only its owned bootstrap process group is stopped. Other failures retain the
+existing readiness/deadline path. `prod-home-registry-failures` checks the
+classification boundary and real owned-child cleanup; it does not replace
+the two complete cold recovery scenarios.
+
 `agenix-restart-guard` alone uses the existing NixOS systemd-nspawn test driver on
 both native Linux architectures. It uses the same production generator/algorithm,
 rebuilt for the hypothetical native ARM fixture rather than changing hvn-hyp1's
