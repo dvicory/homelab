@@ -29,45 +29,39 @@
   perSystem =
     { pkgs, system, ... }:
     let
-      objects = self.nixidyEnvs.${system}.prod-home.config.applications.monitoring.objects;
-      data =
-        name:
-        (lib.findFirst (
-          object: object.kind == "ConfigMap" && object.metadata.name == name
-        ) (throw "monitoring ConfigMap ${name} is not rendered") objects).data;
-      rules = data "vmalert-rules";
-      alertmanager = data "alertmanager-config";
-      rendered = builtins.fromJSON alertmanager."alertmanager.yaml";
-      watchdogRule = lib.findFirst (rule: (rule.alert or null) == "Watchdog") null (
-        lib.concatMap (group: group.rules) (builtins.fromJSON rules."rules.json").groups
-      );
-      heartbeatReceiver = lib.findFirst (receiver: receiver.name == "heartbeat") null rendered.receivers;
-      # Test-only overrides: intervals and the critical receiver.
-      alertmanagerConfig = rendered // {
-        route = rendered.route // {
-          routes = map (
-            route:
-            if route.receiver == "heartbeat" then
-              route
-              // {
-                group_interval = "10s";
-                repeat_interval = "30s";
-              }
-            else
-              route
-          ) rendered.route.routes;
-        };
-        receivers = map (
-          receiver:
-          if receiver.name == "critical" then
-            {
-              name = "critical";
-              webhook_configs = [ { url = "http://127.0.0.1:9002/critical"; } ];
-            }
-          else
-            receiver
-        ) rendered.receivers;
-      };
+      # Native rendering remains covered by prod-home-manifests-fresh.
+      rendered = ../../generated/manifests/prod-home;
+      fixturePython = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
+      fixtures = pkgs.runCommand "monitoring-heartbeat-fixtures" {
+        nativeBuildInputs = [ fixturePython ];
+      } ''
+        mkdir "$out"
+        python - ${rendered} "$out" <<'PY'
+        import json, sys
+        from pathlib import Path
+        import yaml
+        root, out = map(Path, sys.argv[1:])
+        def data(name):
+            return yaml.safe_load((root / "monitoring" / f"ConfigMap-{name}.yaml").read_text())["data"]
+        rules = data("vmalert-rules")["rules.json"]
+        alertmanager = data("alertmanager-config")
+        (out / "rules.json").write_text(rules)
+        (out / "homelab.tmpl").write_text(alertmanager["homelab.tmpl"])
+        config = json.loads(alertmanager["alertmanager.yaml"])
+        watchdog = next(r for g in json.loads(rules)["groups"] for r in g["rules"] if r.get("alert") == "Watchdog")
+        heartbeat = next(r for r in config["receivers"] if r["name"] == "heartbeat")
+        (out / "originals.json").write_text(json.dumps({"watchdog": watchdog, "heartbeat": heartbeat}))
+        # Only repeat intervals and the critical test receiver differ.
+        for route in config["route"]["routes"]:
+            if route["receiver"] == "heartbeat":
+                route.update(group_interval="10s", repeat_interval="30s")
+        config["receivers"] = [
+            {"name": "critical", "webhook_configs": [{"url": "http://127.0.0.1:9002/critical"}]}
+            if receiver["name"] == "critical" else receiver for receiver in config["receivers"]
+        ]
+        (out / "alertmanager.json").write_text(json.dumps(config))
+        PY
+      '';
       sources = {
         kubelet = {
           port = 9101;
@@ -161,9 +155,10 @@
             };
             environment.etc = {
               "victoriametrics/scrape.json".text = builtins.toJSON scrape;
-              "vmalert/rules.json".text = rules."rules.json";
-              "alertmanager/config/alertmanager.yaml".text = builtins.toJSON alertmanagerConfig;
-              "alertmanager/templates/homelab.tmpl".text = alertmanager."homelab.tmpl";
+              "vmalert/rules.json".source = "${fixtures}/rules.json";
+              "alertmanager/config/alertmanager.yaml".source = "${fixtures}/alertmanager.json";
+              "alertmanager/templates/homelab.tmpl".source = "${fixtures}/homelab.tmpl";
+              "monitoring-originals.json".source = "${fixtures}/originals.json";
               # The heartbeat receiver reads its URL from this file.
               "alertmanager/delivery/heartbeat-url".text = "http://127.0.0.1:9001/ping\n";
             };
@@ -278,12 +273,13 @@
           machine.wait_for_open_port(9093)
 
           with subtest("the rendered Watchdog and heartbeat receiver are in use unchanged"):
+              originals = json.loads(machine.succeed("cat /etc/monitoring-originals.json"))
               rules = json.loads(machine.succeed("cat /etc/vmalert/rules.json"))
               watchdog = [r for g in rules["groups"] for r in g["rules"] if r.get("alert") == "Watchdog"]
-              assert watchdog == [json.loads(${builtins.toJSON (builtins.toJSON watchdogRule)})], watchdog
+              assert watchdog == [originals["watchdog"]], watchdog
               config = json.loads(machine.succeed("cat /etc/alertmanager/config/alertmanager.yaml"))
               heartbeat = [r for r in config["receivers"] if r["name"] == "heartbeat"]
-              assert heartbeat == [json.loads(${builtins.toJSON (builtins.toJSON heartbeatReceiver)})], heartbeat
+              assert heartbeat == [originals["heartbeat"]], heartbeat
 
           with subtest("the pinned VictoriaMetrics exports the metrics the rules read"):
               metrics = machine.succeed("curl -sf http://127.0.0.1:8428/metrics")

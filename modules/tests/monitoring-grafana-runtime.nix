@@ -20,18 +20,10 @@ in
   perSystem =
     { pkgs, system, ... }:
     let
-      objects = self.nixidyEnvs.${system}.prod-home.config.applications.monitoring.objects;
-      grafanaObjects = lib.filter (
-        object:
-        builtins.elem "${object.kind}/${object.metadata.name}" [
-          "ServiceAccount/grafana"
-          "ConfigMap/grafana"
-          "ConfigMap/grafana-dashboards"
-          "Service/grafana"
-          "Deployment/grafana"
-        ]
-      ) objects;
-      manifests = builtins.toJSON {
+      # Native rendering remains covered by prod-home-manifests-fresh.
+      rendered = ../../generated/manifests/prod-home;
+      python = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
+      testObjects = builtins.toJSON {
         apiVersion = "v1";
         kind = "List";
         items = [
@@ -61,9 +53,23 @@ in
             name = "grafana-admin";
             key = "secret-key";
           }
-        ]
-        ++ grafanaObjects;
+        ];
       };
+      manifests = pkgs.runCommand "grafana-test-objects.json" { nativeBuildInputs = [ python ]; } ''
+        python - ${rendered} > "$out" <<'PY'
+        import json, sys
+        from pathlib import Path
+        import yaml
+        manifest = json.loads(${builtins.toJSON testObjects})
+        for kind, name in (
+            ("ServiceAccount", "grafana"), ("ConfigMap", "grafana"),
+            ("ConfigMap", "grafana-dashboards"), ("Service", "grafana"), ("Deployment", "grafana"),
+        ):
+            path = Path(sys.argv[1]) / "monitoring" / f"{kind}-{name}.yaml"
+            manifest["items"].append(yaml.safe_load(path.read_text()))
+        json.dump(manifest, sys.stdout)
+        PY
+      '';
       test =
         (pkgs.testers.runNixOSTest {
           name = "monitoring-grafana-runtime";
@@ -82,7 +88,7 @@ in
               pkgs.curl
               pkgs.python3
             ];
-            environment.etc."grafana-test/objects.json".text = manifests;
+            environment.etc."grafana-test/objects.json".source = manifests;
             services.k3s = {
               enable = true;
               role = "server";
