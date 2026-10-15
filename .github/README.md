@@ -234,6 +234,13 @@ Gateway prerequisite failures also retain a bounded pre-cleanup witness:
 the pending condition/watch stage, fixed Gateway resources' current and observed
 generations, allowlisted status/reason categories, controller/ancestor matches,
 owned controller/proxy workload readiness, and node address types (not values).
+For one owned proxy, failure-only diagnostics use native `kubectl port-forward`
+bound to localhost, then read the actual readiness endpoint and allowlisted
+Envoy server/XDS/TLS/listener counters. Responses are byte/time bounded; native
+response bodies, dynamic stat names and addresses are discarded, and forwarding
+is stopped before fixture cleanup. These observations are not safety acceptance.
+The native API proxy separately reaches the readiness port by Pod IP from the
+owned K3s node network, distinguishing that path from port-forward's local socket.
 It exports no raw API objects, messages, logs, events or Secrets. An unavailable
 witness cannot turn the original prerequisite failure into acceptance.
 

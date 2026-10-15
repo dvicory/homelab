@@ -45,6 +45,53 @@ GATEWAY_PREREQUISITES = (
     ("EnvoyProxy", "household", "gateway"), ("ClientTrafficPolicy", "trusted-edges", "gateway"),
 )
 
+ENVOY_READINESS_STATS = (
+    "server.state", "control_plane.connected_state",
+    "cluster_manager.warming_clusters", "listener_manager.total_listeners_active",
+    "listener_manager.total_listeners_warming",
+) + tuple("cluster.xds_cluster." + suffix for suffix in (
+    "membership_total", "membership_healthy", "update_attempt", "update_success", "update_failure",
+    "upstream_cx_active", "upstream_cx_total", "upstream_cx_connect_fail", "upstream_cx_connect_timeout",
+    "ssl.handshake", "ssl.connection_error", "ssl.fail_verify_error", "ssl.fail_verify_san",
+    "ssl.fail_verify_no_cert",
+)) + tuple(prefix + "." + suffix for prefix in ("cluster_manager.cds", "listener_manager.lds")
+          for suffix in ("update_attempt", "update_success", "update_failure", "update_rejected", "control_plane.connected_state"))
+
+
+def envoy_readiness_witness(server_info, stats):
+    """Never export native version text, dynamically named stats or nonnumeric values."""
+    state = server_info.get("state")
+    values = {stat.get("name"): stat.get("value") for stat in (stats.get("stats") or [])[:64]
+              if isinstance(stat, dict) and isinstance(stat.get("name"), str)}
+    return {
+        "state": state if state in ("LIVE", "DRAINING", "PRE_INITIALIZING", "INITIALIZING") else "unknown",
+        "versionMatches": isinstance(server_info.get("version"), str)
+            and server_info["version"].split("/")[1:2] == ["1.39.1"],
+        "stats": {name: values[name] if type(values.get(name)) is int and 0 <= values[name] <= 2147483647
+                  else None for name in ENVOY_READINESS_STATS},
+    }
+
+
+def gateway_owned_workloads(workloads):
+    """Select only fixture controller/proxy Deployments and their Pod owner chains."""
+    objects = workloads.get("items") or []
+    deployments = [obj for obj in objects if obj.get("kind") == "Deployment" and (
+        (obj.get("metadata") or {}).get("name") == "envoy-gateway" or
+        all(((obj.get("metadata") or {}).get("labels") or {}).get(key) == value for key, value in (
+            ("gateway.envoyproxy.io/owning-gateway-name", "household"),
+            ("gateway.envoyproxy.io/owning-gateway-namespace", "gateway"),
+        )))][:4]
+    deployment_uids = {(obj.get("metadata") or {}).get("uid") for obj in deployments} - {None}
+
+    def owned(obj, kind, uids):
+        return any(owner.get("uid") in uids and owner.get("kind") == kind and owner.get("controller") is True
+                   for owner in (obj.get("metadata") or {}).get("ownerReferences") or [])
+
+    replica_uids = {(obj.get("metadata") or {}).get("uid") for obj in objects
+                    if obj.get("kind") == "ReplicaSet" and owned(obj, "Deployment", deployment_uids)} - {None}
+    pods = [obj for obj in objects if obj.get("kind") == "Pod" and owned(obj, "ReplicaSet", replica_uids)][:8]
+    return deployments, pods
+
 
 def gateway_prerequisite_witness(resources, workloads, node, expectation):
     """Fixed fixture status only; no messages, addresses, names, UIDs or spec export."""
@@ -103,21 +150,7 @@ def gateway_prerequisite_witness(resources, workloads, node, expectation):
         "status": enum(expectation.get("status"), ("True", "False", "Unknown")),
         "stage": enum(expectation.get("stage"), ("generation", "status", "assertion")),
     }
-    objects = items(workloads)
-    deployments = [obj for obj in objects if obj.get("kind") == "Deployment" and (
-        (obj.get("metadata") or {}).get("name") == "envoy-gateway" or
-        all(((obj.get("metadata") or {}).get("labels") or {}).get(key) == value for key, value in (
-            ("gateway.envoyproxy.io/owning-gateway-name", "household"),
-            ("gateway.envoyproxy.io/owning-gateway-namespace", "gateway"),
-        )))][:4]
-    deployment_uids = {(obj.get("metadata") or {}).get("uid") for obj in deployments} - {None}
-
-    def owned(obj, kind, uids):
-        return any(owner.get("uid") in uids and owner.get("kind") == kind and owner.get("controller") is True
-                   for owner in (obj.get("metadata") or {}).get("ownerReferences") or [])
-
-    replica_uids = {(obj.get("metadata") or {}).get("uid") for obj in objects
-                    if obj.get("kind") == "ReplicaSet" and owned(obj, "Deployment", deployment_uids)} - {None}
+    deployments, pods = gateway_owned_workloads(workloads)
     result["deployments"] = [{
         "controller": (obj.get("metadata") or {}).get("name") == "envoy-gateway",
         "generation": count((obj.get("metadata") or {}).get("generation")),
@@ -138,7 +171,7 @@ def gateway_prerequisite_witness(resources, workloads, node, expectation):
                 for state, value in (container.get("state") or {}).items() if state in ("waiting", "running", "terminated")],
         } for container in ((pod.get("status") or {}).get("initContainerStatuses") or [])[:4]
             + ((pod.get("status") or {}).get("containerStatuses") or [])[:4]],
-    } for pod in [obj for obj in objects if obj.get("kind") == "Pod" and owned(obj, "ReplicaSet", replica_uids)][:8]]
+    } for pod in pods]
     result["node"] = {
         "present": node.get("kind") == "Node",
         "hostnameMatches": ((node.get("metadata") or {}).get("labels") or {}).get("kubernetes.io/hostname") == "compute-1",
@@ -729,6 +762,26 @@ def self_check():
     missing_gateway = gateway_prerequisite_witness({}, {}, {}, {"resource": sensitive})
     assert not any(resource["present"] for resource in missing_gateway["resources"])
     assert missing_gateway["pods"] == [] and missing_gateway["waitingFor"]["resource"] == "unknown"
+    envoy = envoy_readiness_witness(
+        {"state": "INITIALIZING", "version": sensitive + "/1.39.1/clean/RELEASE/BoringSSL", "private": sensitive},
+        {"stats": [{"name": "control_plane.connected_state", "value": 0},
+                   {"name": "cluster.xds_cluster.ssl.fail_verify_error", "value": 3},
+                   {"name": "listener_manager.lds.update_rejected", "value": 1},
+                   {"name": "server.state", "value": True},
+                   {"name": "cluster_manager.warming_clusters", "value": -1},
+                   {"name": "cluster.xds_cluster.upstream_cx_total", "value": sensitive},
+                   {"name": sensitive, "value": 42}]})
+    assert sensitive not in json.dumps(envoy) and envoy["state"] == "INITIALIZING" and envoy["versionMatches"]
+    assert envoy["stats"]["control_plane.connected_state"] == 0
+    assert envoy["stats"]["cluster.xds_cluster.ssl.fail_verify_error"] == 3
+    assert envoy["stats"]["listener_manager.lds.update_rejected"] == 1
+    assert envoy["stats"]["server.state"] is None and envoy["stats"]["cluster_manager.warming_clusters"] is None
+    assert envoy["stats"]["cluster.xds_cluster.upstream_cx_total"] is None
+    assert envoy["stats"]["cluster.xds_cluster.update_success"] is None
+    assert set(envoy["stats"]) == set(ENVOY_READINESS_STATS)
+    absent_envoy = envoy_readiness_witness({"state": sensitive, "version": sensitive}, {})
+    assert absent_envoy["state"] == "unknown" and not absent_envoy["versionMatches"]
+    assert all(value is None for value in absent_envoy["stats"].values())
     enforcer_uid = "owned-enforcer"
     creation_message = f'failed to generate container spec: path "/{sensitive}" is mounted on "/{sensitive}" but it is not a shared or slave mount'
     enforcer = network_policy_witness(
