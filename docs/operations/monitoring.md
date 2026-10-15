@@ -21,14 +21,7 @@ or cert-manager. Only Grafana does.
 
 ## Before deploying monitoring changes
 
-Monitoring contracts, rule tests, Alertmanager checks and runtime fixtures read
-the committed `generated/manifests/prod-home` tree. Manifest assertions run
-when the checks build, not when CI discovers their derivation paths. This keeps
-discovery from requiring a foreign-platform Helm render.
-
-The independent `prod-home-manifests-fresh` check compares that tree with the
-native renderer. Run it alongside the monitoring checks; canonical-output
-checks alone do not prove the Nix declaration and committed manifests agree.
+Build the monitoring checks and manifest freshness together before deploying.
 For example, on an x86_64 Linux builder:
 
 ```sh

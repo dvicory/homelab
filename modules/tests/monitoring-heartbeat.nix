@@ -32,36 +32,39 @@
       # Native rendering remains covered by prod-home-manifests-fresh.
       rendered = ../../generated/manifests/prod-home;
       fixturePython = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
-      fixtures = pkgs.runCommand "monitoring-heartbeat-fixtures" {
-        nativeBuildInputs = [ fixturePython ];
-      } ''
-        mkdir "$out"
-        python - ${rendered} "$out" <<'PY'
-        import json, sys
-        from pathlib import Path
-        import yaml
-        root, out = map(Path, sys.argv[1:])
-        def data(name):
-            return yaml.safe_load((root / "monitoring" / f"ConfigMap-{name}.yaml").read_text())["data"]
-        rules = data("vmalert-rules")["rules.json"]
-        alertmanager = data("alertmanager-config")
-        (out / "rules.json").write_text(rules)
-        (out / "homelab.tmpl").write_text(alertmanager["homelab.tmpl"])
-        config = json.loads(alertmanager["alertmanager.yaml"])
-        watchdog = next(r for g in json.loads(rules)["groups"] for r in g["rules"] if r.get("alert") == "Watchdog")
-        heartbeat = next(r for r in config["receivers"] if r["name"] == "heartbeat")
-        (out / "originals.json").write_text(json.dumps({"watchdog": watchdog, "heartbeat": heartbeat}))
-        # Only repeat intervals and the critical test receiver differ.
-        for route in config["route"]["routes"]:
-            if route["receiver"] == "heartbeat":
-                route.update(group_interval="10s", repeat_interval="30s")
-        config["receivers"] = [
-            {"name": "critical", "webhook_configs": [{"url": "http://127.0.0.1:9002/critical"}]}
-            if receiver["name"] == "critical" else receiver for receiver in config["receivers"]
-        ]
-        (out / "alertmanager.json").write_text(json.dumps(config))
-        PY
-      '';
+      fixtures =
+        pkgs.runCommand "monitoring-heartbeat-fixtures"
+          {
+            nativeBuildInputs = [ fixturePython ];
+          }
+          ''
+            mkdir "$out"
+            python - ${rendered} "$out" <<'PY'
+            import json, sys
+            from pathlib import Path
+            import yaml
+            root, out = map(Path, sys.argv[1:])
+            def data(name):
+                return yaml.safe_load((root / "monitoring" / f"ConfigMap-{name}.yaml").read_text())["data"]
+            rules = data("vmalert-rules")["rules.json"]
+            alertmanager = data("alertmanager-config")
+            (out / "rules.json").write_text(rules)
+            (out / "homelab.tmpl").write_text(alertmanager["homelab.tmpl"])
+            config = json.loads(alertmanager["alertmanager.yaml"])
+            watchdog = next(r for g in json.loads(rules)["groups"] for r in g["rules"] if r.get("alert") == "Watchdog")
+            heartbeat = next(r for r in config["receivers"] if r["name"] == "heartbeat")
+            (out / "originals.json").write_text(json.dumps({"watchdog": watchdog, "heartbeat": heartbeat}))
+            # Only repeat intervals and the critical test receiver differ.
+            for route in config["route"]["routes"]:
+                if route["receiver"] == "heartbeat":
+                    route.update(group_interval="10s", repeat_interval="30s")
+            config["receivers"] = [
+                {"name": "critical", "webhook_configs": [{"url": "http://127.0.0.1:9002/critical"}]}
+                if receiver["name"] == "critical" else receiver for receiver in config["receivers"]
+            ]
+            (out / "alertmanager.json").write_text(json.dumps(config))
+            PY
+          '';
       sources = {
         kubelet = {
           port = 9101;
