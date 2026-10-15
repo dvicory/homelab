@@ -29,32 +29,15 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 MANIFESTS = ROOT / "generated/manifests/prod-home"
 
-class ContainerStartupError(AssertionError):
-    """Docker failed before an application refusal could be observed."""
-
-
-def startup_category(stderr):
-    # Fixed hints only: Docker/application output may contain credentials.
-    text = stderr[-16384:].lower()
-    for category, markers in (
-        ("disk-full", ("no space left",)),
-        ("image-store", ("content digest", "failed to unpack", "snapshotter", "unexpected eof", "invalid tar")),
-        ("rate-limited", ("toomanyrequests", "rate limit", "status code: 429")),
-        ("unauthorized", ("unauthorized", "authentication required", "access denied")),
-        ("platform", ("no matching manifest", "specified platform", "does not match the platform")),
-        ("missing-path", ("no such file or directory", "executable file not found")),
-        ("permission", ("permission denied", "operation not permitted")),
-        ("network", ("timed out", "connection refused", "connection reset", "no such host", "tls:", "x509:")),
-    ):
-        if any(marker in text for marker in markers):
-            return category
-    return "unclassified"
-
-
 
 def require(condition, label):
     if not condition:
         raise AssertionError(label)
+
+
+def require_application_exit(status, failure, label):
+    expected = 1 if failure else 0
+    require(status == expected, f"{label} (exit {status}, expected {expected})")
 
 
 def command(*args, timeout=60, env=None):
@@ -347,29 +330,12 @@ def main():
                 for key in environment or {}:
                     parameters += ["-e", key]
                 result = subprocess.run([*parameters, image, *argv], capture_output=True, text=True, timeout=timeout, env=env)
-                if result.returncode in (125, 126, 127):
-                    raise ContainerStartupError(f"{name} could not start (exit {result.returncode}, category {startup_category(result.stderr)})")
-                require(0 < result.returncode < 125 if failure else result.returncode == 0, f"{name} {'did not produce an application refusal' if failure else 'failed'} (exit {result.returncode})")
+                require_application_exit(result.returncode, failure, name)
                 return container
 
             # A root setup helper owns only this new Linux volume. Application
             # daemons retain production entrypoints, IDs and supplemental groups.
             keeper = run("fixture", apps["sabnzbd"]["image"], "-v", volume + ":/fixture", "--entrypoint", "/lsiopy/bin/python", argv=("-c", "import time; time.sleep(86400)"), detached=True)
-            try:
-                run("missing-entrypoint", apps["sabnzbd"]["image"], "--entrypoint", "/homelab-fixture-executable-does-not-exist", failure=True)
-            except ContainerStartupError:
-                pass
-            else:
-                raise AssertionError("a container startup failure satisfied an expected application refusal")
-            try:
-                run("signalled-process", apps["sabnzbd"]["image"], "--entrypoint", "/lsiopy/bin/python",
-                    argv=("-c", "import os,signal; os.kill(os.getpid(),signal.SIGKILL)"), failure=True)
-            except ContainerStartupError:
-                raise
-            except AssertionError:
-                pass
-            else:
-                raise AssertionError("a terminated application satisfied an expected application refusal")
             request = partial(request_from_container, docker, keeper)
             page = partial(page_from_container, docker, keeper)
 
@@ -707,7 +673,7 @@ console.log(queued);''', waiter_pid)
                 docker("unpause", holder)
                 for helper, failure in ((holder, failed_holder), (waiter, False)):
                     status = int(docker("wait", helper, timeout=900))
-                    require(status != 0 if failure else status == 0, "serialized Configarr producer returned an unexpected exit")
+                    require_application_exit(status, failure, "serialized Configarr producer")
                 require(not lock_held("configarr"), "Configarr producer exit retained its lock")
                 for app in ("radarr", "sonarr"):
                     verify_arr(app)
@@ -734,7 +700,7 @@ console.log(queued);''', waiter_pid)
             docker("rm", "-f", containers["sabnzbd"])
             runtime["SABNZBD_API_KEY"] = secrets.token_hex(32)
             reconcile_configarr(failure=True)
-            require(arr_snapshot() == rotated_baseline, "failed SAB handshake persisted rotated credentials")
+            require(arr_snapshot() == rotated_baseline, "failed SAB handshake changed visible Arr configuration")
             initialize_sab("sab-init-rotated")
             start("sabnzbd", 8080, restart=True)
             ready(request, ports["sabnzbd"], "/api?" + urlencode({"mode": "version", "output": "json", "apikey": runtime["SABNZBD_API_KEY"]}))
@@ -901,7 +867,7 @@ const target = 'https://kubernetes.default.svc/api/v1/namespaces/jellyfin/secret
 
             def wait_helper(container, failure=False, periodic=False):
                 status = int(docker("wait", container, timeout=(periodic_job if periodic else seerr_job)["activeDeadlineSeconds"]))
-                require((status != 0) if failure else (status == 0), "serialized native helper returned an unexpected exit status")
+                require_application_exit(status, failure, "serialized native helper")
 
             for failed_holder in (False, True):
                 before = seerr_api("/settings/main")

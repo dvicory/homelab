@@ -108,11 +108,12 @@ Its package carries the exact source, manifests and policy inputs; invocation
 does not borrow files from the caller's checkout. Nix owns its arguments,
 deadline and owned-resource prefix. The native executor records the package
 identity, runs the whole app and independently checks owned Docker cleanup.
-Docker startup failures (exit 125/126/127) and signal-terminated containers
-cannot satisfy expected application refusals. The native suite exercises an
-invalid entrypoint and a killed process to guard those boundaries; failure
-output contains only fixed diagnostic categories, never Docker/application
-stderr or generated credentials.
+The delivered Configarr and Seerr producers use exit 0 for success and exit 1
+for application failure. Synchronous and serialized runs require that exact
+outcome, alongside real API/state/lock assertions. `media-producer-exit` checks
+the small exit policy without Docker; the application suite does not inject
+Docker startup failures or deliberate crashes. Failure labels include only
+numeric status, not Docker/application stderr or generated credentials.
 Successful check jobs upload nonempty outputs as
 `check-output-<system>-<check-or-group>-<run-id>` artifacts; empty outputs retain
 their evidence in the job log. Linux runners enable available KVM acceleration.
