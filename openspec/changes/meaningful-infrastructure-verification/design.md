@@ -133,6 +133,7 @@ Tools: pinned nixpkgs Kubeconform 0.8.0, Kyverno CLI 1.19.0, and `kyverno-chains
 - Migration becomes a second framework or leaves duplicate authorities → use ordinary native policies/fixtures, keep context transport minimal, and delete old validators after equivalent required proof.
 - Shared cluster makes parallel tests interfere → isolate namespaces and serialize shared/cluster-scoped mutations.
 - Image/schema fetches dominate reliability → pin inputs and preload/fetch in explicit setup, never hide admission or configuration failures behind retries.
+- Test-only source edits change the retained-directories helper's Nix-derived image tag. The operator accepts this identity-only desired-state delta, not a change to intended production behavior or policy. Record the generated image identity and preserve its import-before-deploy prerequisite; no import, production activation or registry consumer cutover is authorized by this change.
 - Faster individual checks do not shorten package-dominated CI → measure and report critical-path effects separately.
 
 ## Migration Plan

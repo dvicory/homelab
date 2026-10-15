@@ -29,4 +29,6 @@ Affected areas are `modules/tests`, `modules/flake/kubernetes-manifests.nix`, CI
 
 The slice lands after the active application work and rebases onto its accepted revision. No production admission webhook, new application behavior, host activation, secret migration, destructive data operation, or production deployment is included. A live policy engine or a change to runtime security/storage guarantees requires a separate semantic decision.
 
+Removing assertions from Go test sources can change the Nix-derived retained-directories image identity even when its runtime code is unchanged. The operator accepts this identity-only generated-manifest delta; it does not introduce intended production behavior or policy. Keep the supported helper-image import-before-deploy prerequisite explicit until the separately authorized registry consumer cutover removes it. This tooling change does not perform that import or deployment.
+
 The real Argo source-error scenario depends on the separately approved `fail-closed-application-source-health` change. Its production health behavior and contract delta remain owned there; this CI migration consumes that revision and proves controller behavior without silently redefining it.
