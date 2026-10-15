@@ -235,8 +235,9 @@ the pending condition/watch stage, fixed Gateway resources' current and observed
 generations, allowlisted status/reason categories, controller/ancestor matches,
 owned controller/proxy workload readiness, and node address types (not values).
 For one owned proxy, failure-only diagnostics use native `kubectl port-forward`
-bound to localhost, then read the actual readiness endpoint and allowlisted
-Envoy server/XDS/TLS/listener counters. Curl ignores ambient configuration and
+bound to localhost. It reads allowlisted Envoy server/XDS/TLS/listener counters
+before the actual readiness endpoint: a refused remote readiness port terminates
+the shared forward, and that listener itself depends on XDS. Curl ignores ambient configuration and
 limits each response to 16 KiB and three seconds; native response bodies, dynamic
 stat names and addresses are discarded. Forwarding is stopped before fixture
 cleanup, with interrupts ignored during stop/reap/close and prior handlers restored
