@@ -86,10 +86,12 @@ def capture_envoy_readiness(kubectl_command, env, workloads):
                     ports[int(match[2])] = int(match[1])
         raw = {}
         stats_filter = "^(" + "|".join(re.escape(name) for name in ENVOY_READINESS_STATS) + ")$"
+        # A refused remote port ends kubectl's entire forward. Capture admin
+        # counters before /ready, whose listener itself arrives through XDS.
         for key, port, path in (
-            ("readiness", 19003, "/ready"),
-            ("serverInfo", 19000, "/server_info"),
             ("stats", 19000, "/stats?" + urlencode({"format": "json", "filter": stats_filter})),
+            ("serverInfo", 19000, "/server_info"),
+            ("readiness", 19003, "/ready"),
         ):
             try:
                 response = subprocess.run([
