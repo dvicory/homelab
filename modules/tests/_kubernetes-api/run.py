@@ -15,9 +15,120 @@ import time
 import uuid
 
 import yaml
-from report import ARGO_CRDS, ARGO_RECOVERY_APPS, ARGO_RECOVERY_JOBS, REQUIRED_SCENARIOS, argo_recovery_witness, check_acceptance, check_report, classify_docker_error, classify_kubectl_error, classify_network_policy_error, crd_condition_witness, gateway_prerequisite_witness, network_policy_witness, sanitize_tests
+from report import ARGO_CRDS, ARGO_RECOVERY_APPS, ARGO_RECOVERY_JOBS, ENVOY_READINESS_STATS, REQUIRED_SCENARIOS, argo_recovery_witness, check_acceptance, check_report, classify_docker_error, classify_kubectl_error, classify_network_policy_error, crd_condition_witness, envoy_readiness_witness, gateway_owned_workloads, gateway_prerequisite_witness, network_policy_witness, sanitize_tests
 
 OWNER_LABEL = "verification.homelab/fixture"
+
+
+def capture_envoy_readiness(kubectl_command, env, workloads):
+    """One owned proxy, readonly fixed endpoints, bounded localhost-only forwarding."""
+    import re
+    import selectors
+    from urllib.parse import urlencode
+
+    _, pods = gateway_owned_workloads(workloads)
+    proxies = [pod for pod in pods if all(
+        ((pod.get("metadata") or {}).get("labels") or {}).get(key) == value for key, value in (
+            ("gateway.envoyproxy.io/owning-gateway-name", "household"),
+            ("gateway.envoyproxy.io/owning-gateway-namespace", "gateway"),
+        )) and any(container.get("name") == "envoy" for container in
+                   (pod.get("spec") or {}).get("containers") or [])]
+    if not proxies:
+        return {"status": "unavailable", "capturePhase": "before-cleanup", "errorCategory": "owned-proxy-absent"}
+    pod = proxies[0]
+    container = next(container for container in pod["spec"]["containers"] if container.get("name") == "envoy")
+    witness = {
+        "status": "unavailable", "capturePhase": "before-cleanup",
+        "probeMatches": {kind: (container.get(kind) or {}).get("httpGet") ==
+                         {"path": "/ready", "port": 19003, "scheme": "HTTP"}
+                         for kind in ("startupProbe", "readinessProbe")},
+        "responses": {},
+    }
+    # Unlike port-forward, this native API proxy probes the Pod IP from inside
+    # the owned K3s node network (where its API server and kubelet both execute).
+    try:
+        api_probe = subprocess.run([
+            *kubectl_command, "get", "--raw",
+            "/api/v1/namespaces/gateway/pods/" + pod["metadata"]["name"] + ":19003/proxy/ready",
+            "--request-timeout=3s",
+        ], env=env, capture_output=True, text=True, timeout=5)
+        witness["apiReadiness"] = {
+            "returnCode": api_probe.returncode,
+            "errorCategory": classify_kubectl_error(api_probe.stderr) if api_probe.returncode else None,
+        }
+    except Exception as error:
+        witness["apiReadiness"] = {"errorCategory": "timeout" if isinstance(error, subprocess.TimeoutExpired) else "transport"}
+    process = None
+    try:
+        # The admin listener stays private. No Service/Pod/spec mutations or new
+        # tools/images: kubectl uses the same explicit disposable fixture context.
+        process = subprocess.Popen([
+            *kubectl_command, "-n", "gateway", "port-forward", "pod/" + pod["metadata"]["name"],
+            "--address=127.0.0.1", ":19000", ":19003", "--pod-running-timeout=5s",
+            "--request-timeout=10s",
+        ], env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        ports = {}
+        buffer = b""
+        deadline = time.monotonic() + 10
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while len(ports) != 2:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not selector.select(remaining):
+                    raise TimeoutError()
+                chunk = os.read(process.stdout.fileno(), 4096)
+                if not chunk:
+                    raise RuntimeError("forward-exited")
+                buffer += chunk
+                if len(buffer) > 8192:
+                    raise ValueError("forward-output-limit")
+                for match in re.finditer(rb"Forwarding from 127\.0\.0\.1:([0-9]+) -> (19000|19003)\n", buffer):
+                    ports[int(match[2])] = int(match[1])
+        raw = {}
+        stats_filter = "^(" + "|".join(re.escape(name) for name in ENVOY_READINESS_STATS) + ")$"
+        for key, port, path in (
+            ("readiness", 19003, "/ready"),
+            ("serverInfo", 19000, "/server_info"),
+            ("stats", 19000, "/stats?" + urlencode({"format": "json", "filter": stats_filter})),
+        ):
+            try:
+                response = subprocess.run([
+                    "curl", "--noproxy", "*", "--silent", "--show-error",
+                    "--connect-timeout", "2", "--max-time", "3", "--max-filesize", "16384",
+                    "--write-out", "\n%{http_code}", f"http://127.0.0.1:{ports[port]}{path}",
+                ], env=env, capture_output=True, timeout=5)
+                if response.returncode:
+                    witness["responses"][key] = {
+                        "returnCode": response.returncode,
+                        "errorCategory": {7: "connection-refused", 28: "timeout", 63: "response-size-limit"}.get(
+                            response.returncode, "transport"),
+                    }
+                    continue
+                body, _, status = response.stdout.rpartition(b"\n")
+                if len(body) > 16384 or len(status) != 3 or not status.isdigit() or not 100 <= int(status) <= 599:
+                    raise ValueError("unexpected-response")
+                witness["responses"][key] = {"httpStatus": int(status)}
+                if key != "readiness" and status == b"200":
+                    raw[key] = json.loads(body)
+            except Exception as error:
+                witness["responses"].setdefault(key, {})["errorCategory"] = (
+                    "timeout" if isinstance(error, subprocess.TimeoutExpired) else
+                    "invalid-response" if isinstance(error, ValueError) else "transport")
+        witness.update(envoy_readiness_witness(raw.get("serverInfo", {}), raw.get("stats", {})))
+        witness["status"] = "observed" if any("httpStatus" in response for response in witness["responses"].values()) else "unavailable"
+    except Exception as error:
+        witness["errorCategory"] = "forward-timeout" if isinstance(error, TimeoutError) else "forward-or-response-unavailable"
+    finally:
+        if process is not None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            process.stdout.close()
+            witness["forwardStopped"] = True
+    return witness
 
 
 def main():
@@ -442,6 +553,14 @@ def main():
                     capturePhase="before-cleanup", unavailable=unavailable)
             except Exception as witness_error:
                 report["gatewayPrerequisiteWitness"] = {
+                    "status": "unavailable", "type": type(witness_error).__name__,
+                    "capturePhase": "before-cleanup",
+                }
+            try:
+                report["gatewayEnvoyReadinessWitness"] = capture_envoy_readiness(
+                    [settings["kubectl"], "--context", name], env, observed.get("workloads", {}))
+            except Exception as witness_error:
+                report["gatewayEnvoyReadinessWitness"] = {
                     "status": "unavailable", "type": type(witness_error).__name__,
                     "capturePhase": "before-cleanup",
                 }
