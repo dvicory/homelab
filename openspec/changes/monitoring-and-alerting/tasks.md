@@ -1,6 +1,6 @@
 ## 1. Contract checks and scaffolding
 
-- [x] 1.1 Add `modules/tests/monitoring-contracts.nix` with evaluation-only checks. It must fail when:
+- [x] 1.1 Add `modules/tests/monitoring-contracts.nix` with native rendered-contract checks. It must fail when:
   - a non-monitoring Application declares sync wave ≥ 5;
   - any monitoring Application is below wave 5;
   - a route targets a monitoring Service other than Grafana, or the Grafana route is not `auth = "admin"`;
