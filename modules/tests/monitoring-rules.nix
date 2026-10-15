@@ -924,7 +924,10 @@ in
       checks.monitoring-rules =
         pkgs.runCommand "monitoring-rules"
           {
-            nativeBuildInputs = [ pkgs.victoriametrics python ];
+            nativeBuildInputs = [
+              pkgs.victoriametrics
+              python
+            ];
             # vmalert-tool serves its in-process store on loopback.
             __darwinAllowLocalNetworking = true;
           }
