@@ -10,27 +10,18 @@
 # unchanged.
 #
 # Four small HTTP servers stand in for the core sources under their job
-# names. The test shows:
-# (a) healthy: pings arrive at the repeat interval;
-# (b) stalled ingestion: with all four sources blocked by the firewall, the
-#     query API, vmalert and Alertmanager keep answering, pings stop, and no
-#     "resolved" request reaches the receiver;
-# (c) read-only store: below the free-space floor VictoriaMetrics reports
-#     read-only, queries still answer, and pings stop;
-# (d) one stale source: pings continue, and the critical receiver gets
-#     TelemetrySourceDown for it;
-# (e) recovery: pings resume.
-{
-  lib,
-  self,
-  ...
-}:
+# names. Three independent NixOS checks share the same VM and healthy cadence
+# setup, then prove ingestion-stop/recovery, read-only storage/recovery, or
+# critical source-down delivery with continued heartbeats after staleness.
+# The fault checks retain their full quiet windows and post-fault recovery.
+{ lib, ... }:
 {
   perSystem =
     { pkgs, system, ... }:
     let
       # Native rendering remains covered by prod-home-manifests-fresh.
-      rendered = ../../generated/manifests/prod-home;
+      rulesManifest = ../../generated/manifests/prod-home/monitoring/ConfigMap-vmalert-rules.yaml;
+      alertmanagerManifest = ../../generated/manifests/prod-home/monitoring/ConfigMap-alertmanager-config.yaml;
       fixturePython = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
       fixtures =
         pkgs.runCommand "monitoring-heartbeat-fixtures"
@@ -39,15 +30,13 @@
           }
           ''
             mkdir "$out"
-            python - ${rendered} "$out" <<'PY'
+            python - ${rulesManifest} ${alertmanagerManifest} "$out" <<'PY'
             import json, sys
             from pathlib import Path
             import yaml
-            root, out = map(Path, sys.argv[1:])
-            def data(name):
-                return yaml.safe_load((root / "monitoring" / f"ConfigMap-{name}.yaml").read_text())["data"]
-            rules = data("vmalert-rules")["rules.json"]
-            alertmanager = data("alertmanager-config")
+            rules_path, alertmanager_path, out = map(Path, sys.argv[1:])
+            rules = yaml.safe_load(rules_path.read_text())["data"]["rules.json"]
+            alertmanager = yaml.safe_load(alertmanager_path.read_text())["data"]
             (out / "rules.json").write_text(rules)
             (out / "homelab.tmpl").write_text(alertmanager["homelab.tmpl"])
             config = json.loads(alertmanager["alertmanager.yaml"])
@@ -139,8 +128,8 @@
         http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
       '';
       python = lib.getExe pkgs.python3;
-      test = pkgs.testers.runNixOSTest {
-        name = "monitoring-heartbeat";
+      test = name: scenario: pkgs.testers.runNixOSTest {
+        inherit name;
         requiredFeatures.kvm = true;
         nodes.machine =
           { pkgs, ... }:
@@ -269,6 +258,12 @@
               resolved = [entry for entry in pings() if '"status":"resolved"' in entry["body"].replace(" ", "")]
               assert not resolved, resolved
 
+          def wait_for_source_alert_clear():
+              machine.wait_until_succeeds(
+                  "curl -sf 'http://127.0.0.1:9093/api/v2/alerts?active=true&filter=alertname%3D%22TelemetrySourceDown%22&filter=job%3D%22kubelet%22' | grep -qx '\\[\\]'",
+                  timeout=300,
+              )
+
           start_all()
           for unit in ("victoriametrics", "vmalert", "alertmanager", "fake-heartbeat", "fake-critical"):
               machine.wait_for_unit(unit + ".service")
@@ -296,8 +291,14 @@
               gaps = [b - a for a, b in zip(times, times[1:])]
               assert all(20 <= gap <= 75 for gap in gaps), gaps
               print(f"EVIDENCE healthy ping gaps {[round(g) for g in gaps]} s")
-
-          with subtest("(b) stalled ingestion: pings stop while every service still answers"):
+        '' + scenario + ''
+          no_resolved_pings()
+          print(f"EVIDENCE {len(pings())} pings in total; none was a resolved message")
+        '';
+      };
+      scenarios = {
+        monitoring-heartbeat-ingestion-stop = ''
+          with subtest("stalled ingestion: pings stop while every service still answers"):
               machine.succeed("iptables -I OUTPUT -o lo -p tcp --dport 9101:9104 -j REJECT")
               assert_pings_stop("stalled ingestion", 240)
               machine.succeed("curl -sf 'http://127.0.0.1:8428/api/v1/query?query=up' >/dev/null")
@@ -307,8 +308,11 @@
               print("EVIDENCE stalled: query API, vmalert and Alertmanager answer; no resolved request reached the receiver")
               machine.succeed("iptables -D OUTPUT -o lo -p tcp --dport 9101:9104 -j REJECT")
               wait_for_pings(2, 360)
-
-          with subtest("(c) read-only store: pings stop, queries still answer"):
+              wait_for_source_alert_clear()
+              print("EVIDENCE ingestion recovered: two new pings after silence; prior kubelet source-down alert cleared")
+        '';
+        monitoring-heartbeat-storage-read-only = ''
+          with subtest("read-only store: pings stop, queries still answer"):
               free = int(machine.succeed("df --output=avail -B1 /var/lib/victoriametrics-test | tail -1"))
               fill = free - ${toString floorBytes} + 30 * 1024 * 1024
               machine.succeed(f"fallocate -l {fill} /var/lib/victoriametrics-test/fill")
@@ -320,14 +324,13 @@
               machine.succeed("rm /var/lib/victoriametrics-test/fill")
               machine.wait_until_succeeds("curl -sf http://127.0.0.1:8428/metrics | grep -q '^vm_storage_is_read_only{.*} 0$'", timeout=120)
               wait_for_pings(2, 360)
-
-          with subtest("(d) one stale source: pings continue, the critical receiver gets TelemetrySourceDown"):
-              # Earlier faults also fired TelemetrySourceDown for kubelet; wait
-              # until it has resolved, then count only notices sent after the stop.
-              machine.wait_until_succeeds(
-                  "curl -sf 'http://127.0.0.1:9093/api/v2/alerts?active=true&filter=alertname%3D%22TelemetrySourceDown%22&filter=job%3D%22kubelet%22' | grep -qx '\\[\\]'",
-                  timeout=300,
-              )
+              wait_for_source_alert_clear()
+              print("EVIDENCE storage recovered: vm_storage_is_read_only 0; two new pings after silence; prior kubelet source-down alert cleared")
+        '';
+        monitoring-heartbeat-single-source-down = ''
+          with subtest("one stale source: pings continue, the critical receiver gets TelemetrySourceDown"):
+              # Require a clear baseline and count only notices after this stop.
+              wait_for_source_alert_clear()
               machine.succeed("systemctl stop fake-kubelet.service")
               stopped = float(machine.succeed("date +%s.%N"))
               def kubelet_down():
@@ -351,21 +354,21 @@
               wait_for_pings(2, 120)
               print("EVIDENCE pings continued with one core source stale")
 
-          with subtest("(e) recovery: pings resume"):
-              machine.succeed("systemctl start fake-kubelet.service")
-              wait_for_pings(2, 120)
-              no_resolved_pings()
-              print(f"EVIDENCE {len(pings())} pings in total; none was a resolved message")
         '';
       };
     in
     {
-      checks = lib.optionalAttrs (system == "x86_64-linux") {
-        monitoring-heartbeat = test // {
-          meta = test.meta // {
-            hestia.group = "${system}-monitoring-heartbeat-runtime";
-          };
-        };
-      };
+      checks = lib.optionalAttrs (system == "x86_64-linux") (
+        lib.mapAttrs (name: scenario:
+          let
+            case = test name scenario;
+          in
+          case // {
+            meta = case.meta // {
+              hestia.group = "${system}-${name}-runtime";
+            };
+          }
+        ) scenarios
+      );
     };
 }
