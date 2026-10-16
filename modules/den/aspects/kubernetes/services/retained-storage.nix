@@ -1,4 +1,4 @@
-{ config, inputs, ... }:
+{ inputs, ... }:
 let
   namespace = "local-path-storage";
   storageClassName = "retained-local";
@@ -10,28 +10,23 @@ let
   };
 in
 {
-  den.aspects.kubernetes.services.retained-storage.compute-resources =
-    { cluster, ... }:
-    let
-      compute =
-        config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
-      guestSystem = inputs.self.nixosConfigurations.${compute.instance}.pkgs.stdenv.hostPlatform.system;
-    in
-    {
-      images = [ inputs.self.packages.${guestSystem}.retained-directories-image ];
-      retainedPaths.kubernetes-volumes = {
-        uid = 0;
-        gid = 0;
-        mode = "0700";
-      };
+  den.aspects.kubernetes.services.retained-storage.compute-resources = _: {
+    retainedPaths.kubernetes-volumes = {
+      uid = 0;
+      gid = 0;
+      mode = "0700";
     };
+  };
   den.aspects.kubernetes.services.retained-storage.k8s-manifests =
     { computeResources, lib, ... }:
     let
       retained = computeResources.retainedPaths."kubernetes-volumes";
       linuxSystem =
         inputs.self.nixosConfigurations.${computeResources.instance}.pkgs.stdenv.hostPlatform.system;
-      directories = inputs.self.packages.${linuxSystem}.retained-directories-image;
+      selected = builtins.fromJSON (
+        builtins.readFile (inputs.self + "/assets/helper-release/verified.json")
+      );
+      directories = selected.artifacts.retained-directories-image;
       chart = lib.helm.downloadHelmChart {
         repo = "oci://ghcr.io/rancher/local-path-provisioner/charts";
         chart = "local-path-provisioner";
@@ -74,6 +69,9 @@ in
         };
       };
     in
+    assert lib.assertMsg (
+      selected.system == linuxSystem
+    ) "Selected helper release must target the retained-storage compute guest's system";
     assert lib.assertMsg
       (retained.uid == 0 && retained.gid == 0 && retained.mode == "0700" && !retained.readOnly)
       "computeResources.retainedPaths.kubernetes-volumes must be a writable root-owned parent with mode 0700";
@@ -127,8 +125,8 @@ in
                 containers = [
                   {
                     name = "retained-directories";
-                    image = directories.imageReference;
-                    imagePullPolicy = "Never";
+                    image = "${directories.repository}@${directories.digest}";
+                    imagePullPolicy = "IfNotPresent";
                     env = [
                       {
                         name = "RETAINED_DIRECTORIES";

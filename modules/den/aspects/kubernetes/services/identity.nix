@@ -23,7 +23,6 @@
     let
       compute =
         config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
-      guestSystem = inputs.self.nixosConfigurations.${compute.instance}.pkgs.stdenv.hostPlatform.system;
       activated = cluster.settings.kubernetes.services.identity.phase != "initial";
       idmAdminAge =
         inputs.self
@@ -33,7 +32,6 @@
       !activated || builtins.pathExists idmAdminAge
     ) "Identity phases provisioning and normal require ${toString idmAdminAge}";
     {
-      images = [ inputs.self.packages.${guestSystem}.kanidm-provision-image ];
       retainedPaths.identity-kanidm = {
         uid = 1000;
         gid = 1000;
@@ -248,7 +246,10 @@
       # The image runs on the selected compute node, not on the renderer.
       linuxSystem =
         inputs.self.nixosConfigurations.${computeResources.instance}.pkgs.stdenv.hostPlatform.system;
-      provisioning = inputs.self.packages.${linuxSystem}.kanidm-provision-image;
+      selected = builtins.fromJSON (
+        builtins.readFile (inputs.self + "/assets/helper-release/verified.json")
+      );
+      provisioning = selected.artifacts.kanidm-provision-image;
       registry = config.den.users.registry;
       administrators = lib.filterAttrs (
         name: _:
@@ -313,6 +314,9 @@
         origin = "https://${domain}"
       '';
     in
+    assert lib.assertMsg (
+      selected.system == linuxSystem
+    ) "Selected helper release must target the identity compute guest's system";
     assert lib.assertMsg (
       cluster.routes.idm.namespace == namespace
       && cluster.routes.idm.service == "kanidm"
@@ -707,8 +711,8 @@
                     containers = [
                       {
                         name = "provision";
-                        image = provisioning.imageReference;
-                        imagePullPolicy = "Never";
+                        image = "${provisioning.repository}@${provisioning.digest}";
+                        imagePullPolicy = "IfNotPresent";
                         resources = {
                           requests = {
                             cpu = "50m";

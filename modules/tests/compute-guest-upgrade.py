@@ -6,10 +6,9 @@ capability and creates the guest under it. The scenario then activates the
 current declaration with switch-to-configuration test, records what each host
 unit and the lifecycle helper report while the old guest is still running,
 checks that the raised memory limit reaches the running guest without a
-restart, applies the operator procedure, and verifies the guest, its retained
-state and its staged credentials, delivers the Jellyfin helper images into the
-existing guest as docs/operations/jellyfin.md describes, and finishes with the
-documented guest replacement onto the current bundle.
+restart, applies the operator procedure, verifies the guest, its retained state
+and its staged credentials, and finishes with the documented guest replacement
+onto the current bundle.
 
 Runs only inside the disposable fixture-host VM of checks.compute-guest-upgrade.
 """
@@ -149,11 +148,6 @@ class Availability:
         return round((up if up is not None else self.samples[-1][0]) - down, 2)
 
 
-def helper_images(lib, project: str, name: str) -> list[str]:
-    listing = guest_exec(lib, project, name, "k3s", "ctr", "--namespace", "k8s.io", "images", "ls", "-q").stdout
-    return sorted(line for line in listing.splitlines() if "homelab/jellyfin-provisioner:" in line or "homelab/jellarr:" in line)
-
-
 def run_scenario(args) -> None:
     lib = load_library(args.library)
     check = lib.check
@@ -221,7 +215,7 @@ def run_scenario(args) -> None:
     with lib.phase("pre-capability guest"):
         lib.run("systemctl", "start", "compute-stage-secrets.service", timeout=300)
         lib.run("systemctl", "start", "incus-preseed.service", timeout=600)
-        result = helper(lib, args, "create", specs["old"], "--bundle", str(args.previous_bundle))
+        result = helper(lib, args, "create", specs["old"], "--bundle", str(args.bundle))
         check(result.returncode == 0, f"pre-capability guest is created: {(result.stdout + result.stderr).strip()}")
         runtime = lib.Runtime(new, specs["new"], args.helper, args.bundle)
         lib.wait_for("pre-capability K3s node", runtime.node_ready)
@@ -248,7 +242,6 @@ def run_scenario(args) -> None:
         runtime.kubectl("create", "configmap", "upgrade-sentinel", "--from-literal=value=keep", namespace="default")
         lib.wait_for("pre-capability runtime Secrets", lambda: runtime.kubectl(
             "get", "secret", "argocd-secret", "-o", "name", "--ignore-not-found", namespace="argocd") != "", timeout=300)
-        check(helper_images(lib, project, name) == [], "pre-capability guest has no Jellyfin helper images")
         observe("before.retained_host", lib.run("sh", "-c", f"stat -c '%n %u:%g %a' {old['devices']['state']['source']}/*"))
         observe("before.media_in_guest", guest_exec(lib, project, name, "findmnt", "-n", "/srv/media").stdout.strip())
         rootfs = f"{old['poolPath']}/containers/{project}_{name}/rootfs"
@@ -441,17 +434,7 @@ def run_scenario(args) -> None:
               "the media file is readable after the second restart")
         check(persistent_copies() == [], "the second start leaves no copy under the persistent store")
 
-    with lib.phase("helper images and Argo's jellyfin namespace"):
-        # docs/operations/jellyfin.md, "Deliver helper images".
-        for archive in args.images.split(","):
-            with open(archive, "rb") as stream:
-                result = subprocess.run(["incus", "--force-local", "--project", project, "exec", name, "--",
-                                         "k3s", "ctr", "--namespace", "k8s.io", "images", "import", "-"],
-                                        stdin=stream, capture_output=True, text=True, timeout=600, check=False)
-            check(result.returncode == 0, f"helper image imports into the existing guest: {result.stderr.strip()[-300:]}")
-        imported = helper_images(lib, project, name)
-        observe("images.imported", imported)
-        check(len(imported) == 2, "both Jellyfin helper images are present in the existing guest")
+    with lib.phase("Argo's jellyfin namespace"):
         runtime.kubectl("create", "namespace", "jellyfin")
         lib.wait_for("staged Jellyfin credential once its namespace exists", lambda: runtime.kubectl(
             "get", "secret", "jellyfin-admin", "-o", "name", "--ignore-not-found", namespace="jellyfin") == "secret/jellyfin-admin", timeout=300)
@@ -481,7 +464,6 @@ def run_scenario(args) -> None:
               "replacement discards the old K3s datastore, as designed")
         check("jellyfin\tjellyfin-admin" in runtime.guest("cat", "/srv/secrets/runtime-secrets.names"),
               "replacement attaches the staged credentials")
-        check(len(helper_images(lib, project, name)) == 2, "the current guest bundle imports the helper images at boot")
         check(guest_exec(lib, project, name, "stat", "-c", "%F %g %a", render_node).stdout.strip() == "character special file 506 660",
               "the replacement guest receives the render-node grant")
 
@@ -489,9 +471,7 @@ def run_scenario(args) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--library", required=True, type=Path)
-    parser.add_argument("--previous-bundle", required=True, type=Path)
     parser.add_argument("--bundle", required=True, type=Path)
-    parser.add_argument("--images", required=True)
     parser.add_argument("--helper", required=True, type=Path)
     parser.add_argument("--upgraded", required=True, type=Path)
     args = parser.parse_args()
