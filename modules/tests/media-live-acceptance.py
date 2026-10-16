@@ -5,6 +5,7 @@ Requires Python/PyYAML, openssl, Docker Engine 26+ (volume-subpath), and an
 explicit local unix Docker socket. Default linux/amd64 matches production;
 Docker Desktop/emulation does not prove the Incus/MergerFS/host storage seam.
 The synthetic HTTPS Secret responder tests bootstrap transport, NOT K8s RBAC.
+Failed detached launches report Docker stderr; attached application output stays private.
 """
 import argparse
 import base64
@@ -330,6 +331,10 @@ def main():
                 for key in environment or {}:
                     parameters += ["-e", key]
                 result = subprocess.run([*parameters, image, *argv], capture_output=True, text=True, timeout=timeout, env=env)
+                # Detached stderr is Docker's, not the application's; credentials
+                # reach these callers through named environment variables or files.
+                if detached and result.returncode:
+                    sys.stderr.write(result.stderr)
                 require_application_exit(result.returncode, failure, name)
                 return container
 

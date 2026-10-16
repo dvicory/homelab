@@ -8,8 +8,7 @@
     url = "github:numtide/devshell";
     inputs.nixpkgs.follows = "nixpkgs";
   };
-  flake-file.inputs.nixpkgs-multiverse.url =
-    "github:fzakaria/nixpkgs-multiverse/9e89229225547747c0150f396ffa413d80bc1427";
+  flake-file.inputs.nixpkgs-multiverse.url = "github:fzakaria/nixpkgs-multiverse/9e89229225547747c0150f396ffa413d80bc1427";
 
   imports = [
     inputs.devshell.flakeModule
@@ -34,6 +33,15 @@
         agenix-restart-guard = callPackage (self + "/pkgs/by-name/agenix-restart-guard/package.nix") { };
       };
       compute-runtime = callPackage (self + "/pkgs/by-name/compute-runtime/package.nix") { };
+      homelab-preserve = callPackage (self + "/pkgs/by-name/homelab-preserve/package.nix") { };
+      homelab-preserve-fixture-adapter = callPackage (
+        self + "/pkgs/by-name/homelab-preserve-fixture-adapter/package.nix"
+      ) { };
+      preserveLinux = lib.optionalAttrs isLinux {
+        homelab-preserve-zfs-reference = callPackage (
+          self + "/pkgs/by-name/homelab-preserve-zfs-reference/package.nix"
+        ) { };
+      };
       helper-release = callPackage (self + "/pkgs/by-name/helper-release/package.nix") { };
       prepare-luks-storage = lib.optionalAttrs isLinux {
         prepare-luks-storage = callPackage (self + "/pkgs/by-name/prepare-luks-storage/package.nix") { };
@@ -49,11 +57,11 @@
         ) { };
       };
       jellyfin-provisioner-image = lib.optionalAttrs isLinux {
-        jellyfin-provisioner-image = callPackage (
-          self + "/pkgs/by-name/jellyfin-provisioner-image/package.nix"
-        ) {
-          jellyfinMultiverse = inputs.nixpkgs-multiverse.multiverse.${pkgs.stdenv.hostPlatform.system};
-        };
+        jellyfin-provisioner-image =
+          callPackage (self + "/pkgs/by-name/jellyfin-provisioner-image/package.nix")
+            {
+              jellyfinMultiverse = inputs.nixpkgs-multiverse.multiverse.${pkgs.stdenv.hostPlatform.system};
+            };
       };
       jellarr-image = lib.optionalAttrs isLinux {
         jellarr-image = callPackage (self + "/pkgs/by-name/jellarr-image/package.nix") { };
@@ -71,10 +79,13 @@
           provision-keys
           install
           compute-runtime
+          homelab-preserve
+          homelab-preserve-fixture-adapter
           ;
         inherit helper-release;
       }
       // agenix-restart-guard
+      // preserveLinux
       // prepare-luks-storage
       // kanidm-provision-image
       // retained-directories-image
@@ -83,6 +94,7 @@
 
       checks = {
         compute-runtime = config.packages.compute-runtime;
+        inherit homelab-preserve homelab-preserve-fixture-adapter;
         helper-source =
           pkgs.runCommand "helper-source-authorization" { nativeBuildInputs = [ pkgs.python3 ]; } ''
             python ${self + "/.github/test-helper-source.py"} ${self + "/.github/helper-source.py"}

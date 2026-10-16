@@ -1,4 +1,36 @@
-{ lib, self, ... }: {
+{ lib, self, ... }:
+let
+  # One dataset map supplies both provisioning and the non-operational inventory.
+  rootDatasets = pool: {
+    "local/root" = {
+      type = "zfs_fs";
+      mountpoint = "/";
+      options.mountpoint = "legacy";
+      postCreateHook = "zfs list -t snapshot -H -o name | grep -E '^${pool.name}/local/root@blank$' || zfs snapshot ${pool.name}/local/root@blank";
+    };
+    "local/nix" = {
+      type = "zfs_fs";
+      mountpoint = "/nix";
+      options.mountpoint = "legacy";
+    };
+    "safe/home" = {
+      type = "zfs_fs";
+      mountpoint = "/home";
+      options.mountpoint = "legacy";
+    };
+    "safe/persist" = {
+      type = "zfs_fs";
+      mountpoint = "/persist";
+      options.mountpoint = "legacy";
+
+      postMountHook = ''
+        install -D -m 600 /tmp/runtime_host_key /mnt/persist/etc/ssh/ssh_host_ed25519_key
+        echo "Installed runtime host key at /persist/etc/ssh/ssh_host_ed25519_key for agenix rekeying"
+      '';
+    };
+  };
+in
+{
   den.aspects.disk.zfs.provides.pool = {
     age-secrets = { host, ... }: {
       age.secrets.zfs-passphrase = {
@@ -8,6 +40,45 @@
         group = "root";
       };
     };
+
+    preserve =
+      { host, ... }:
+      let
+        pool = host.zfs.rootPool;
+        datasets = rootDatasets pool;
+        contributionFor =
+          datasetName: binding:
+          if !(builtins.hasAttr datasetName datasets) then
+            throw "preserve: dataset '${datasetName}' is not declared in the ${pool.name} root dataset map"
+          else if !builtins.isString (binding.state.id_hash or null) then
+            throw "preserve: dataset '${datasetName}' does not reference a typed Preserve State instance"
+          else
+            {
+              state = binding.state;
+              realization = {
+                kind = "zfs-dataset";
+                owner = {
+                  kind = "host";
+                  id = host.name;
+                };
+                locator = "${pool.name}/${datasetName}";
+                path = datasets.${datasetName}.mountpoint;
+                capabilities = [
+                  "filesystem-read"
+                  "zfs-snapshot"
+                  "zfs-send"
+                ];
+                boundary = {
+                  recursive = false;
+                  requiredChildren = binding.requiredChildren;
+                  exclusions = [ ];
+                };
+                access = [ ];
+                physicalBacking = null;
+              };
+            };
+      in
+      lib.mapAttrsToList contributionFor host.settings.disk.zfs.preserve.datasets;
 
     nixos = { host, config, pkgs, ... }: let
       pool = host.zfs.rootPool or null;
@@ -125,34 +196,7 @@
             };
             preCreateHook = "pname=$name";
             postCreateHook = "zfs set keylocation=\"prompt\" $pname";
-            datasets = {
-              "local/root" = {
-                type = "zfs_fs";
-                mountpoint = "/";
-                options.mountpoint = "legacy";
-                postCreateHook = "zfs list -t snapshot -H -o name | grep -E '^${pool.name}/local/root@blank$' || zfs snapshot ${pool.name}/local/root@blank";
-              };
-              "local/nix" = {
-                type = "zfs_fs";
-                mountpoint = "/nix";
-                options.mountpoint = "legacy";
-              };
-              "safe/home" = {
-                type = "zfs_fs";
-                mountpoint = "/home";
-                options.mountpoint = "legacy";
-              };
-              "safe/persist" = {
-                type = "zfs_fs";
-                mountpoint = "/persist";
-                options.mountpoint = "legacy";
-
-                postMountHook = ''
-                  install -D -m 600 /tmp/runtime_host_key /mnt/persist/etc/ssh/ssh_host_ed25519_key
-                  echo "Installed runtime host key at /persist/etc/ssh/ssh_host_ed25519_key for agenix rekeying"
-                '';
-              };
-            };
+            datasets = rootDatasets pool;
           };
         };
 
