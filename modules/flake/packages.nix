@@ -48,11 +48,15 @@
           self + "/pkgs/by-name/kanidm-provision-image/package.nix"
         ) { };
       };
+      jellyfin-ldap-plugin = lib.optionalAttrs isLinux {
+        jellyfin-ldap-plugin = callPackage (self + "/pkgs/by-name/jellyfin-ldap-plugin/package.nix") { };
+      };
       jellyfin-provisioner-image = lib.optionalAttrs isLinux {
         jellyfin-provisioner-image = callPackage (
           self + "/pkgs/by-name/jellyfin-provisioner-image/package.nix"
         ) {
           jellyfinMultiverse = inputs.nixpkgs-multiverse.multiverse.${pkgs.stdenv.hostPlatform.system};
+          jellyfinLdapPlugin = jellyfin-ldap-plugin.jellyfin-ldap-plugin;
         };
       };
       jellarr-image = lib.optionalAttrs isLinux {
@@ -79,7 +83,8 @@
       // kanidm-provision-image
       // retained-directories-image
       // jellyfin-provisioner-image
-      // jellarr-image;
+      // jellarr-image
+      // jellyfin-ldap-plugin;
 
       checks = {
         compute-runtime = config.packages.compute-runtime;
