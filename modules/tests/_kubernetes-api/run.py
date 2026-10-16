@@ -15,7 +15,7 @@ import time
 import uuid
 
 import yaml
-from report import ARGO_CRDS, ARGO_RECOVERY_APPS, ARGO_RECOVERY_JOBS, ENVOY_READINESS_STATS, REQUIRED_SCENARIOS, argo_recovery_witness, bridge_netfilter_witness, check_acceptance, check_report, classify_docker_error, classify_kubectl_error, classify_network_policy_error, containerd_socket_failure, crd_condition_witness, dns_query_witness, envoy_readiness_witness, gateway_owned_workloads, gateway_prerequisite_witness, network_policy_witness, sanitize_tests
+from report import ARGO_CRDS, ARGO_RECOVERY_APPS, ARGO_RECOVERY_JOBS, ENVOY_READINESS_STATS, REQUIRED_SCENARIOS, argo_recovery_witness, bridge_netfilter_witness, check_acceptance, check_report, classify_docker_error, classify_kubectl_error, classify_network_policy_error, containerd_socket_failure, coredns_workload_witness, crd_condition_witness, dns_query_witness, dns_service_endpoints, envoy_readiness_witness, gateway_owned_workloads, gateway_prerequisite_witness, network_policy_witness, sanitize_tests
 
 OWNER_LABEL = "verification.homelab/fixture"
 
@@ -48,6 +48,11 @@ def capture_envoy_dns(kubectl_command, docker_command, env, node, pod):
         return result.stdout
     def get(*resource):
         return json.loads(read([*kubectl_command, "get", *resource, "-o", "json", "--request-timeout=3s"]))
+    def error_type(error):
+        name = type(error).__name__
+        return name if name in ("TypeError", "ValueError", "JSONDecodeError", "KeyError", "AttributeError",
+                                "StopIteration", "UnicodeDecodeError", "TimeoutExpired", "OSError",
+                                "RuntimeError", "FileNotFoundError", "PermissionError") else "unknown"
     witness["bridgeNetfilter"] = bridge_netfilter_witness(None, None, b"")
     try:
         module = subprocess.run([*docker_command, "exec", node, "sh", "-c",
@@ -63,7 +68,7 @@ def capture_envoy_dns(kubectl_command, docker_command, env, node, pod):
     try:
         dns = get("service/kube-dns", "-n", "kube-system")
         slices = get("endpointslices", "-n", "kube-system", "-l", "kubernetes.io/service-name=kube-dns")
-        endpoints = [endpoint for item in slices.get("items", []) for endpoint in item.get("endpoints", [])]
+        endpoints = dns_service_endpoints(slices)
         dns_ip = (dns.get("spec") or {}).get("clusterIP")
         witness["coreDNS"] = {
             "servicePresent": dns.get("kind") == "Service",
@@ -71,6 +76,11 @@ def capture_envoy_dns(kubectl_command, docker_command, env, node, pod):
             "endpointCount": len(endpoints),
             "readyEndpointCount": sum((endpoint.get("conditions") or {}).get("ready") is True for endpoint in endpoints),
         }
+        try:
+            witness["coreDNS"]["workload"] = coredns_workload_witness(
+                get("deployments,replicasets,pods", "-n", "kube-system", "-l", "k8s-app=kube-dns"))
+        except Exception as error:
+            witness["coreDNS"]["workload"] = {"status": "unavailable", "exceptionType": error_type(error)}
         xds = get("service/envoy-gateway", "-n", "gateway")
         xds_ip = (xds.get("spec") or {}).get("clusterIP")
         statuses = (pod.get("status") or {}).get("containerStatuses") or []
@@ -121,6 +131,7 @@ def capture_envoy_dns(kubectl_command, docker_command, env, node, pod):
                    "network-namespace-unavailable", "resolver-path-unavailable", "resolver-selection-unavailable"}
         witness["errorCategory"] = ("timeout" if isinstance(error, subprocess.TimeoutExpired) else
                                     str(error) if str(error) in allowed else "response-or-transport-unavailable")
+        witness["exceptionType"] = error_type(error)
     return witness
 
 
