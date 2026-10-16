@@ -529,6 +529,9 @@ jobs:
                 x86_64-linux/linux/x86_64|x86_64-linux/linux/amd64|aarch64-linux/linux/aarch64|aarch64-linux/linux/arm64) ;;
                 *) echo 'Native declared Linux Docker platform required' >&2; exit 1 ;;
               esac
+              # This disposable runner owns the kernel used by its Docker nodes.
+              sudo modprobe br_netfilter
+              test -d /sys/module/br_netfilter
             fi
           } 2>&1 | tee "$RUNNER_TEMP/native-evidence/inputs.log"
       - name: Build declared application package

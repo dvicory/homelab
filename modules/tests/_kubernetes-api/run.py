@@ -372,7 +372,7 @@ def main():
         for host in hosts:
             options += ["--add-host", f"{host}:{env['FIXTURE_NODE_IP']}"]
         if privileged:
-            options += ["--privileged"]
+            options += ["--privileged", "--sysctl", "net.bridge.bridge-nf-call-iptables=1"]
         if publish:
             options += ["--publish", "127.0.0.1::6443"]
         d(*options, image, *command)
