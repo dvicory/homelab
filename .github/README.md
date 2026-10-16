@@ -41,6 +41,27 @@ unsupported on hosted runners without KVM; capable ARM builders can build them
 directly. Unknown required system features also receive an explicit unsupported
 reason rather than being scheduled on an incapable runner.
 
+Cold recovery deliberately discards the guest container cache and pulls the
+canonical public images online. The fixture's first bootstrap diagnostic
+interval fails promptly on classified registry refusals without preloading,
+retrying, weakening readiness or changing the shipped bootstrap command.
+Only its owned bootstrap process group is stopped, including surviving children
+when the leader exits first. The leader stays unreaped until group shutdown.
+Children retain their full 30-second SIGTERM grace even if the leader exits first.
+Bootstrap output and interval diagnostics are deferred until the outcome is
+known; the classified refusal discards that output and skips the outer raw
+journal, containerd and workload dumps. This is not generic log redaction.
+Other failures retain the existing diagnostics and readiness/deadline path.
+`prod-home-registry-failures` checks the classification boundary and real
+owned-child cleanup for running and exited-but-unreaped leaders, with an
+unrelated session left alive. It does not replace the two complete cold
+recovery scenarios.
+
+Argo CD image repository, version and digest changes belong in
+`modules/den/aspects/kubernetes/services/argocd.nix`. Regenerate the canonical
+manifests with `sync-prod-home-manifests`; do not override those references
+only inside a recovery fixture.
+
 `agenix-restart-guard` alone uses the existing NixOS systemd-nspawn test driver on
 both native Linux architectures. It uses the same production generator/algorithm,
 rebuilt for the hypothetical native ARM fixture rather than changing hvn-hyp1's
@@ -93,6 +114,12 @@ Its package carries the exact source, manifests and policy inputs; invocation
 does not borrow files from the caller's checkout. Nix owns its arguments,
 deadline and owned-resource prefix. The native executor records the package
 identity, runs the whole app and independently checks owned Docker cleanup.
+The delivered Configarr and Seerr producers use exit 0 for success and exit 1
+for application failure. Synchronous and serialized runs require that exact
+outcome, alongside real API/state/lock assertions. `media-producer-exit` checks
+the small exit policy without Docker; the application suite does not inject
+Docker startup failures or deliberate crashes. Failure labels include only
+numeric status, not Docker/application stderr or generated credentials.
 Successful check jobs upload nonempty outputs as
 `check-output-<system>-<check-or-group>-<run-id>` artifacts; empty outputs retain
 their evidence in the job log. Linux runners enable available KVM acceleration.
@@ -173,6 +200,9 @@ before publication. The parent run is still executing the publisher, so its
 overall conclusion is deliberately not the gate. The exact merged-main push SHA
 is retained even if a newer main push arrives; consumers never follow a branch
 or mutable image tag.
+
+The producer's local Git reference declares `shallow=1` for Actions'
+detached checkout; its `rev` remains the exact authorized SHA.
 
 The producer builds and audits four native x86-64 helpers in a read-only,
 sandboxed job. Only the caller's narrowly scoped reusable-workflow call grants

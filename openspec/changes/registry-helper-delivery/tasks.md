@@ -13,7 +13,7 @@
 
 ## 3. Authorized real publication
 
-- [ ] 3.1 Record the owner's approval for automatic merged-main publication after required CI, the four public GHCR namespaces, irreversible visibility, and scoped package permission; obtain separate approval before merging the publisher PR.
+- [x] 3.1 Record the owner's approval for automatic merged-main publication after required CI, the four public GHCR namespaces, irreversible visibility, and scoped package permission; obtain separate approval before merging the publisher PR.
 - [ ] 3.2 After the reviewed publisher PR is merged, publish the exact native helper artifacts through the main-owned workflow; verify their real manifest/config/platform identities and that every required executor has succeeded for that exact source and attempt.
 - [ ] 3.3 Configure the approved public visibility through GitHub's supported interface and verify anonymous access to each exact digest; produce verified candidate identities and refuse private, missing, wrong-platform, altered, or mismatched releases.
 
