@@ -95,6 +95,14 @@ def dns_query_witness(return_code, output, service_ip):
                 and isinstance(service_ip, str) and service_ip.lower() in answers}
 
 
+def bridge_netfilter_witness(module_return_code, hook_return_code, hook_output):
+    """Absent/disabled are observed booleans; unreadable probes remain null."""
+    return {
+        "modulePresent": module_return_code == 0 if type(module_return_code) is int and module_return_code in (0, 1) else None,
+        "ipv4HookEnabled": hook_output.strip() == b"1" if type(hook_return_code) is int and hook_return_code == 0 and hook_output.strip() in (b"0", b"1") else None,
+    }
+
+
 def envoy_readiness_witness(server_info, stats):
     """Never export native version text, dynamically named stats or nonnumeric values."""
     state = server_info.get("state")
@@ -828,6 +836,11 @@ def self_check():
         assert sensitive not in json.dumps(dns)
     assert not dns_query_witness(0, b"Server: 10.43.1.2\nName: private.test\n", "10.43.1.2")["answerMatchesXdsService"]
     assert dns_query_witness(0, b"x" * 4097, "10.43.1.2")["errorCategory"] == "response-size-limit"
+    assert bridge_netfilter_witness(0, 0, b"1\n") == {"modulePresent": True, "ipv4HookEnabled": True}
+    assert bridge_netfilter_witness(1, 0, b"0\n") == {"modulePresent": False, "ipv4HookEnabled": False}
+    assert bridge_netfilter_witness(2, 1, sensitive.encode()) == {"modulePresent": None, "ipv4HookEnabled": None}
+    assert bridge_netfilter_witness(None, None, b"") == {"modulePresent": None, "ipv4HookEnabled": None}
+    assert bridge_netfilter_witness(False, False, b"1") == {"modulePresent": None, "ipv4HookEnabled": None}
     for text, expected in (
         ("connection refused", "connection-refused"),
         ("no such file or directory", "socket-absent"),
