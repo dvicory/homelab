@@ -256,6 +256,13 @@ separately reaches the readiness port by Pod IP from the owned K3s node network,
 distinguishing that path from port-forward's local socket. It discards stdout and
 stderr without buffering, records only the return code and a fixed failure
 category, and retains its three-second request and five-second process timeouts.
+Failure-only DNS evidence reads that owned Envoy container's CRI identity and
+resolver mount, then makes one bounded lookup of the fixed xDS Service name
+inside its actual network namespace. Only return codes, fixed error categories,
+answer/Service matching booleans and CoreDNS Service/endpoint counts survive.
+Missing tools, resolvers or namespace access remain unavailable evidence, not
+network root causes. Native resolver contents, names, addresses and output are
+discarded; no Pod, policy or readiness setting changes.
 It exports no raw API objects, messages, logs, events or Secrets. An unavailable
 witness cannot turn the original prerequisite failure into acceptance.
 
