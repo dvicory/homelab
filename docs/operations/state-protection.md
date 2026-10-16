@@ -51,12 +51,13 @@ A Realization supplies source capabilities and boundaries. It does not guarantee
 
 A Target identifies a logical destination or failure domain. Restic repositories, Borg repositories, ZFS receive datasets, buckets, remotes and credential references live in namespaced Integration+Target native wiring. Multiple Routes to one Target are distinct obligations, not independent disaster copies.
 
-Resolved Routes carry internal owner-emitted `targetBoundaries`: absolute
-operation-host `paths`, opaque `nativeLocators`, and the owner-defined
+Resolved Routes carry internal owner-emitted `targetBoundaries`: canonical
+absolute operation-host `paths`, opaque `nativeLocators`, and the owner-defined
 `nativeNamespace` for those locators. This is authorization metadata, not
 another Target registry or identity input. A registered projector derives
 it from resolved native configuration; an independently configured owner may
 supply the same typed data in shared Integration+Target wiring.
+Noncanonical filesystem fences report `invalid-target-boundaries`.
 
 Both documents carry required `protectedRealizations` and `protectedTargets`
 lists independently of executable States. They retain all authoritative source

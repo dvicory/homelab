@@ -309,7 +309,7 @@ let
     boundaries:
     builtins.isAttrs boundaries
     && builtins.isList (boundaries.paths or [ ])
-    && builtins.all (path: builtins.isString path && lib.hasPrefix "/" path) (boundaries.paths or [ ])
+    && builtins.all canonicalFilesystemPath (boundaries.paths or [ ])
     && builtins.isList (boundaries.nativeLocators or [ ])
     && builtins.all (locator: builtins.isString locator && locator != "") (
       boundaries.nativeLocators or [ ]

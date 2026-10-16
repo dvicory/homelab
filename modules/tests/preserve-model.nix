@@ -973,20 +973,29 @@ let
   plannedMissingExternalFences = compile (lib.recursiveUpdate missingExternalFencesDeclarations {
     states.application.mode = "plan-only";
   }) [ realizationSpec ];
-  invalidExternalFences = compile (
-    fencedExternalDeclarations
-    // {
-      integrationTargets = map (
-        wiring:
-        if wiring.integration == "zrepl" then
-          lib.recursiveUpdate wiring {
-            targetBoundaries.paths = [ "relative/target" ];
+  invalidExternalFences =
+    map
+      (
+        path:
+        compile (
+          fencedExternalDeclarations
+          // {
+            integrationTargets = map (
+              wiring:
+              if wiring.integration == "zrepl" then
+                lib.recursiveUpdate wiring {
+                  targetBoundaries.paths = [ path ];
+                }
+              else
+                wiring
+            ) fencedExternalDeclarations.integrationTargets;
           }
-        else
-          wiring
-      ) fencedExternalDeclarations.integrationTargets;
-    }
-  ) [ realizationSpec ];
+        ) [ realizationSpec ]
+      )
+      [
+        "relative/target"
+        "/archive/external/../x"
+      ];
   resticBoundaryFor =
     repository:
     let
@@ -2023,8 +2032,9 @@ let
       && fencedExternal.ownerProjections == { }
       && hasIssue "missing-target-boundaries" missingExternalFences
       && throws missingExternalFences.executablePlan
-      && hasIssue "invalid-target-boundaries" invalidExternalFences
-      && throws invalidExternalFences.executablePlan
+      && builtins.all (
+        result: hasIssue "invalid-target-boundaries" result && throws result.executablePlan
+      ) invalidExternalFences
       && hasIssue "missing-target-boundaries" plannedMissingExternalFences
       && builtins.isString (builtins.toJSON plannedMissingExternalFences.desiredInventory)
       && plannedMissingExternalFences.executablePlan.states == [ ];
