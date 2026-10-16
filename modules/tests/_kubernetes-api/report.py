@@ -73,6 +73,28 @@ def containerd_socket_failure(stderr):
     return "unclassified"
 
 
+def dns_query_witness(return_code, output, service_ip):
+    """Fixed projection only; DNS output may contain private names and addresses."""
+    text = output[:4096].decode(errors="replace").lower()
+    category = "none" if return_code == 0 else "unclassified"
+    if len(output) > 4096:
+        category = "response-size-limit"
+    elif return_code:
+        for match, value in (
+            ("no such file", "tool-unavailable"), ("not found", "tool-unavailable"),
+            ("operation not permitted", "namespace-denied"), ("nxdomain", "nxdomain"),
+            ("servfail", "server-failure"), ("refused", "refused"),
+            ("timed out", "timeout"), ("no servers could be reached", "timeout"),
+        ):
+            if match in text:
+                category = value
+                break
+    answers = text.partition("name:")[2].split()
+    return {"returnCode": return_code, "errorCategory": category,
+            "answerMatchesXdsService": return_code == 0 and category == "none"
+                and isinstance(service_ip, str) and service_ip.lower() in answers}
+
+
 def envoy_readiness_witness(server_info, stats):
     """Never export native version text, dynamically named stats or nonnumeric values."""
     state = server_info.get("state")
@@ -797,6 +819,15 @@ def self_check():
     absent_envoy = envoy_readiness_witness({"state": sensitive, "version": sensitive}, {})
     assert absent_envoy["state"] == "unknown" and not absent_envoy["versionMatches"]
     assert all(value is None for value in absent_envoy["stats"].values())
+    dns = dns_query_witness(0, b"Server: 10.43.0.10\nName: private.test\nAddress: 10.43.1.2\n", "10.43.1.2")
+    assert dns == {"returnCode": 0, "errorCategory": "none", "answerMatchesXdsService": True}
+    for message, category in ((b"NXDOMAIN", "nxdomain"), (b"SERVFAIL", "server-failure"),
+                              (b"connection timed out", "timeout"), (b"nslookup: not found", "tool-unavailable")):
+        dns = dns_query_witness(1, message + sensitive.encode(), "10.43.1.2")
+        assert dns["errorCategory"] == category and not dns["answerMatchesXdsService"]
+        assert sensitive not in json.dumps(dns)
+    assert not dns_query_witness(0, b"Server: 10.43.1.2\nName: private.test\n", "10.43.1.2")["answerMatchesXdsService"]
+    assert dns_query_witness(0, b"x" * 4097, "10.43.1.2")["errorCategory"] == "response-size-limit"
     for text, expected in (
         ("connection refused", "connection-refused"),
         ("no such file or directory", "socket-absent"),
