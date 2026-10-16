@@ -127,6 +127,11 @@ pinned target-version K3s fixture. Like the production guest, it disables K3s's
 embedded network-policy controller and uses nftables kube-proxy. It imports the
 canonical enforcer's pinned image, applies the canonical unprivileged
 `NET_ADMIN` DaemonSet and waits for readiness before the scenarios.
+The existing disposable Linux Docker executor loads the fixed `br_netfilter`
+kernel prerequisite and fails if it is unavailable. The owned K3s node explicitly
+enables its IPv4 bridge hook at creation, so same-bridge Service replies traverse
+the required NAT hooks. This prepares the ephemeral executor only; it is not a
+production-host module/sysctl operation or a fresh/reboot policy guarantee.
 Its report must list every required scenario identity, with no skip, failure
 or cleanup failure:
 
