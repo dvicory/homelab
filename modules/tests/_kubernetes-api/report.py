@@ -126,9 +126,11 @@ def _optional_array(value):
 
 
 def dns_service_endpoints(slices):
-    """Kubernetes can serialize empty EndpointSlice lists as null."""
-    return [endpoint for item in _optional_array(slices.get("items"))
-            for endpoint in _optional_array(item.get("endpoints"))]
+    """The API can serialize an empty EndpointSlice's endpoints as null."""
+    items = slices["items"]
+    if not isinstance(items, list):
+        raise ValueError("invalid-array-shape")
+    return [endpoint for item in items for endpoint in _optional_array(item["endpoints"])]
 
 
 def coredns_workload_witness(workloads):
@@ -140,7 +142,9 @@ def coredns_workload_witness(workloads):
     def owned(obj, kind, uids):
         return any(owner.get("uid") in uids and owner.get("kind") == kind and owner.get("controller") is True
                    for owner in _optional_array((obj.get("metadata") or {}).get("ownerReferences")))
-    objects = _optional_array(workloads.get("items"))
+    objects = workloads["items"]
+    if not isinstance(objects, list):
+        raise ValueError("invalid-array-shape")
     deployment = next((obj for obj in objects if obj.get("kind") == "Deployment"
                        and (obj.get("metadata") or {}).get("name") == "coredns"), {})
     uid = (deployment.get("metadata") or {}).get("uid")
@@ -901,7 +905,19 @@ def self_check():
     for value in (None, []):
         assert dns_service_endpoints({"items": [{"endpoints": value}]}) == []
         assert dns_service_endpoints({"items": [{"endpoints": value}, {"endpoints": [endpoint]}]}) == [endpoint]
-    assert dns_service_endpoints({"items": None}) == []
+    assert dns_service_endpoints({"items": []}) == []
+    for invalid in (None, 0, False, "", {}, [], {"items": None}):
+        for project in (dns_service_endpoints, coredns_workload_witness):
+            try:
+                project(invalid)
+                raise AssertionError("malformed List envelope accepted")
+            except (KeyError, TypeError, ValueError):
+                pass
+    try:
+        dns_service_endpoints({"items": [{}]})
+        raise AssertionError("missing required endpoints field accepted")
+    except KeyError:
+        pass
     for invalid in (0, False, "", {}):
         for value in ({"items": invalid}, {"items": [{"endpoints": invalid}]}):
             try:
@@ -943,7 +959,8 @@ def self_check():
     dns_workload = coredns_workload_witness(dns_workloads)
     assert dns_workload["readyPodCount"] == 1 and dns_workload["waitingReasonCounts"] == []
     assert dns_workload["desiredReplicas"] is None
-    assert coredns_workload_witness({})["desiredReplicas"] is None and coredns_workload_witness({})["observedPodCount"] == 0
+    assert coredns_workload_witness({"items": []})["desiredReplicas"] is None
+    assert coredns_workload_witness({"items": []})["observedPodCount"] == 0
     for text, expected in (
         ("connection refused", "connection-refused"),
         ("no such file or directory", "socket-absent"),

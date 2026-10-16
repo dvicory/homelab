@@ -266,8 +266,10 @@ resolver mount, then makes bounded lookups of the fixed xDS Service name through
 the configured DNS Service IP and one ready CoreDNS endpoint, from the same
 actual network namespace. Only return codes, fixed error categories,
 answer/Service matching booleans and CoreDNS Service/endpoint counts survive.
-Null or absent optional API arrays mean empty lists; malformed array shapes
-remain unavailable, not zero endpoints. The same bounded witness projects
+The API's null EndpointSlice `endpoints` representation means an empty list,
+as do absent/null optional workload arrays. Required List `items` must remain
+arrays; missing required fields and malformed shapes remain unavailable, not
+zero endpoints. The same bounded witness projects
 CoreDNS Deployment counts and at most four owned Pods' readiness/phase counts,
 plus fixed waiting-reason counts (`other` for unknown reasons); no names,
 messages or logs survive. Workload-read failure does not discard DNS query
