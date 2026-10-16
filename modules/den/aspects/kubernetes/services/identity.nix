@@ -250,6 +250,7 @@
         builtins.readFile (inputs.self + "/assets/helper-release/verified.json")
       );
       provisioning = selected.artifacts.kanidm-provision-image;
+      provisioningImage = "${provisioning.repository}@${provisioning.digest}";
       registry = config.den.users.registry;
       administrators = lib.filterAttrs (
         name: _:
@@ -663,6 +664,7 @@
               metadata = {
                 name = "kanidm-provision";
                 inherit namespace;
+                annotations."homelab.danielvicory/helper-image" = provisioningImage;
               };
               data = {
                 "state.json" = builtins.toJSON provisionState;
@@ -711,7 +713,7 @@
                     containers = [
                       {
                         name = "provision";
-                        image = "${provisioning.repository}@${provisioning.digest}";
+                        image = provisioningImage;
                         imagePullPolicy = "IfNotPresent";
                         resources = {
                           requests = {

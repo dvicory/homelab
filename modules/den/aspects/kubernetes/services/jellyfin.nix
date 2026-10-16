@@ -697,6 +697,7 @@ in
             metadata = {
               name = "jellarr-configuration";
               inherit namespace;
+              annotations."homelab.danielvicory/helper-image" = jellarrImage;
             };
             data = {
               "config.yml" = jellarrConfig;

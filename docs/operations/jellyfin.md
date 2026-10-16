@@ -247,6 +247,8 @@ To select a release:
    and submit the selection for review. Merge is a separate rollout decision:
    main-tracking Argo reconciles the selected images. Runtime Secrets remain
    in their existing delivery flow.
+   Helper-only upgrades and rollbacks rerun the application's provisioning hook
+   even when its desired configuration is unchanged.
 
 ## Upgrade Jellyfin
 

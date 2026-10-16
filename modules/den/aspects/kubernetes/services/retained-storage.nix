@@ -27,6 +27,7 @@ in
         builtins.readFile (inputs.self + "/assets/helper-release/verified.json")
       );
       directories = selected.artifacts.retained-directories-image;
+      helperImage = "${directories.repository}@${directories.digest}";
       chart = lib.helm.downloadHelmChart {
         repo = "oci://ghcr.io/rancher/local-path-provisioner/charts";
         chart = "local-path-provisioner";
@@ -53,9 +54,8 @@ in
           memory = "128Mi";
         };
       };
-      # Argo CD does not compare hook resources with Git. The directory list
-      # lives in a compared ConfigMap, so adding a retained path makes this
-      # Application OutOfSync, and the sync that follows reruns the hook Job.
+      # Hooks do not make Argo OutOfSync. Keep both the directory list and
+      # selected helper in the compared ConfigMap so either change reruns it.
       directoriesConfig = "retained-directories";
       directoriesKey = "directories.json";
       helperResources = {
@@ -96,7 +96,9 @@ in
             metadata = {
               name = directoriesConfig;
               inherit namespace;
-              annotations = protect;
+              annotations = protect // {
+                "homelab.danielvicory/helper-image" = helperImage;
+              };
             };
             data.${directoriesKey} = builtins.toJSON (
               lib.mapAttrs (_: entry: {
@@ -125,7 +127,7 @@ in
                 containers = [
                   {
                     name = "retained-directories";
-                    image = "${directories.repository}@${directories.digest}";
+                    image = helperImage;
                     imagePullPolicy = "IfNotPresent";
                     env = [
                       {
