@@ -257,9 +257,12 @@ distinguishing that path from port-forward's local socket. It discards stdout an
 stderr without buffering, records only the return code and a fixed failure
 category, and retains its three-second request and five-second process timeouts.
 Failure-only DNS evidence reads that owned Envoy container's CRI identity and
-resolver mount, then makes one bounded lookup of the fixed xDS Service name
-inside its actual network namespace. Only return codes, fixed error categories,
+resolver mount, then makes bounded lookups of the fixed xDS Service name through
+the configured DNS Service IP and one ready CoreDNS endpoint, from the same
+actual network namespace. Only return codes, fixed error categories,
 answer/Service matching booleans and CoreDNS Service/endpoint counts survive.
+Read-only node facts also project `br_netfilter` module presence and the
+node-network-namespace IPv4 bridge hook flag; unreadable facts remain null.
 Missing tools, resolvers or namespace access remain unavailable evidence, not
 network root causes. Native resolver contents, names, addresses and output are
 discarded; no Pod, policy or readiness setting changes.

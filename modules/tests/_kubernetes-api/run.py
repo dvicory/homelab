@@ -15,7 +15,7 @@ import time
 import uuid
 
 import yaml
-from report import ARGO_CRDS, ARGO_RECOVERY_APPS, ARGO_RECOVERY_JOBS, ENVOY_READINESS_STATS, REQUIRED_SCENARIOS, argo_recovery_witness, check_acceptance, check_report, classify_docker_error, classify_kubectl_error, classify_network_policy_error, containerd_socket_failure, crd_condition_witness, dns_query_witness, envoy_readiness_witness, gateway_owned_workloads, gateway_prerequisite_witness, network_policy_witness, sanitize_tests
+from report import ARGO_CRDS, ARGO_RECOVERY_APPS, ARGO_RECOVERY_JOBS, ENVOY_READINESS_STATS, REQUIRED_SCENARIOS, argo_recovery_witness, bridge_netfilter_witness, check_acceptance, check_report, classify_docker_error, classify_kubectl_error, classify_network_policy_error, containerd_socket_failure, crd_condition_witness, dns_query_witness, envoy_readiness_witness, gateway_owned_workloads, gateway_prerequisite_witness, network_policy_witness, sanitize_tests
 
 OWNER_LABEL = "verification.homelab/fixture"
 
@@ -48,6 +48,18 @@ def capture_envoy_dns(kubectl_command, docker_command, env, node, pod):
         return result.stdout
     def get(*resource):
         return json.loads(read([*kubectl_command, "get", *resource, "-o", "json", "--request-timeout=3s"]))
+    witness["bridgeNetfilter"] = bridge_netfilter_witness(None, None, b"")
+    try:
+        module = subprocess.run([*docker_command, "exec", node, "sh", "-c",
+                                 "test -d /sys/module || exit 2; test -d /sys/module/br_netfilter"],
+                                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+        witness["bridgeNetfilter"] = bridge_netfilter_witness(module.returncode, None, b"")
+        hook = subprocess.run([*docker_command, "exec", node, "cat",
+                               "/proc/sys/net/bridge/bridge-nf-call-iptables"],
+                              env=env, capture_output=True, timeout=5)
+        witness["bridgeNetfilter"] = bridge_netfilter_witness(module.returncode, hook.returncode, hook.stdout)
+    except Exception as error:
+        witness["bridgeNetfilter"]["errorCategory"] = "timeout" if isinstance(error, subprocess.TimeoutExpired) else "transport"
     try:
         dns = get("service/kube-dns", "-n", "kube-system")
         slices = get("endpointslices", "-n", "kube-system", "-l", "kubernetes.io/service-name=kube-dns")
@@ -86,11 +98,23 @@ def capture_envoy_dns(kubectl_command, docker_command, env, node, pod):
         witness["resolver"] = {"nameserverCount": len(servers), "matchesCoreDNS": dns_ip in servers}
         if len(servers) != 1:
             raise ValueError("resolver-selection-unavailable")
-        query = subprocess.run([
-            *docker_command, "exec", node, "nsenter", "--target", str(pid), "--net", "--",
-            "nslookup", "-type=A", "-timeout=2", "-retry=1", "envoy-gateway.gateway.svc.cluster.local.", servers[0],
-        ], env=env, capture_output=True, timeout=5)
-        witness["query"] = dns_query_witness(query.returncode, query.stdout + query.stderr, xds_ip)
+        ready_addresses = [address for endpoint in endpoints
+                           if (endpoint.get("conditions") or {}).get("ready") is True
+                           for address in endpoint.get("addresses", [])
+                           if ipaddress.ip_address(address).version == 4]
+        for key, server in (("query", servers[0]), ("endpointQuery", next(iter(ready_addresses), None))):
+            if server is None:
+                witness[key] = {"status": "unavailable", "errorCategory": "ready-endpoint-absent"}
+                continue
+            try:
+                query = subprocess.run([
+                    *docker_command, "exec", node, "nsenter", "--target", str(pid), "--net", "--",
+                    "nslookup", "-type=A", "-timeout=2", "-retry=1", "envoy-gateway.gateway.svc.cluster.local.", server,
+                ], env=env, capture_output=True, timeout=5)
+                witness[key] = dns_query_witness(query.returncode, query.stdout + query.stderr, xds_ip)
+            except Exception as error:
+                witness[key] = {"status": "unavailable", "errorCategory":
+                                "timeout" if isinstance(error, subprocess.TimeoutExpired) else "transport"}
         witness["status"] = "observed"
     except Exception as error:
         allowed = {"request-failed", "response-size-limit", "container-identity-unavailable", "container-ownership-mismatch",
