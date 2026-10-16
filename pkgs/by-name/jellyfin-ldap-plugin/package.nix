@@ -33,23 +33,24 @@ let
   # Jellyfin loads a plugin from /config/plugins/<name>_<version>. The
   # manifest is checked against the declaration, and autoUpdate is off so
   # Jellyfin's Update Plugins task never replaces the pinned build.
-  files = runCommand "jellyfin-plugin-ldap-authentication-${ldap.version}"
-    {
-      nativeBuildInputs = [
-        unzip
-        jq
-      ];
-    }
-    ''
-      mkdir -p "$out"
-      unzip -q ${src} -d "$out"
-      jq -e --arg name ${lib.escapeShellArg ldap.name} --arg guid ${ldap.guid} \
-        --arg version ${ldap.version} --arg abi ${ldap.targetAbi} \
-        '.name == $name and .guid == $guid and .version == $version and .targetAbi == $abi' \
-        "$out/meta.json" > /dev/null
-      jq '.autoUpdate = false' "$out/meta.json" > meta.json
-      mv meta.json "$out/meta.json"
-    '';
+  files =
+    runCommand "jellyfin-plugin-ldap-authentication-${ldap.version}"
+      {
+        nativeBuildInputs = [
+          unzip
+          jq
+        ];
+      }
+      ''
+        mkdir -p "$out"
+        unzip -q ${src} -d "$out"
+        jq -e --arg name ${lib.escapeShellArg ldap.name} --arg guid ${ldap.guid} \
+          --arg version ${ldap.version} --arg abi ${ldap.targetAbi} \
+          '.name == $name and .guid == $guid and .version == $version and .targetAbi == $abi' \
+          "$out/meta.json" > /dev/null
+        jq '.autoUpdate = false' "$out/meta.json" > meta.json
+        mv meta.json "$out/meta.json"
+      '';
 
   installer = writeShellApplication {
     name = "jellyfin-install-plugins";
