@@ -117,6 +117,61 @@ def envoy_readiness_witness(server_info, stats):
     }
 
 
+def _optional_array(value):
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("invalid-array-shape")
+    return value
+
+
+def dns_service_endpoints(slices):
+    """Kubernetes can serialize empty EndpointSlice lists as null."""
+    return [endpoint for item in _optional_array(slices.get("items"))
+            for endpoint in _optional_array(item.get("endpoints"))]
+
+
+def coredns_workload_witness(workloads):
+    """Only CoreDNS's Deployment owner chain; fixed counts/enums, no names or messages."""
+    def count(value):
+        return value if type(value) is int and 0 <= value <= 2147483647 else None
+    def enum(value, allowed):
+        return value if isinstance(value, str) and value in allowed else "other"
+    def owned(obj, kind, uids):
+        return any(owner.get("uid") in uids and owner.get("kind") == kind and owner.get("controller") is True
+                   for owner in _optional_array((obj.get("metadata") or {}).get("ownerReferences")))
+    objects = _optional_array(workloads.get("items"))
+    deployment = next((obj for obj in objects if obj.get("kind") == "Deployment"
+                       and (obj.get("metadata") or {}).get("name") == "coredns"), {})
+    uid = (deployment.get("metadata") or {}).get("uid")
+    replicas = {(obj.get("metadata") or {}).get("uid") for obj in objects
+                if uid and obj.get("kind") == "ReplicaSet" and owned(obj, "Deployment", {uid})} - {None}
+    pods = [obj for obj in objects if obj.get("kind") == "Pod" and owned(obj, "ReplicaSet", replicas)][:4]
+    phases = dict.fromkeys(("Pending", "Running", "Succeeded", "Failed", "Unknown", "other"), 0)
+    waiting = dict.fromkeys(("ContainerCreating", "PodInitializing", "CrashLoopBackOff", "ErrImagePull",
+                             "ImagePullBackOff", "CreateContainerConfigError", "CreateContainerError",
+                             "ContainerCannotRun", "other"), 0)
+    ready = 0
+    for pod in pods:
+        status = pod.get("status") or {}
+        phases[enum(status.get("phase"), phases)] += 1
+        ready += any(condition.get("type") == "Ready" and condition.get("status") == "True"
+                     for condition in _optional_array(status.get("conditions")))
+        for container in (_optional_array(status.get("initContainerStatuses"))[:4]
+                          + _optional_array(status.get("containerStatuses"))[:4]):
+            state = container.get("state") or {}
+            if "waiting" in state:
+                waiting[enum((state.get("waiting") or {}).get("reason"), waiting)] += 1
+    return {
+        "status": "observed", "deploymentPresent": bool(uid),
+        "desiredReplicas": count((deployment.get("spec") or {}).get("replicas")),
+        "readyReplicas": count((deployment.get("status") or {}).get("readyReplicas")),
+        "observedPodCount": len(pods), "readyPodCount": ready,
+        "phaseCounts": [{"phase": phase, "count": value} for phase, value in phases.items() if value],
+        "waitingReasonCounts": [{"reason": reason, "count": value} for reason, value in waiting.items() if value],
+    }
+
+
 def gateway_owned_workloads(workloads):
     """Select only fixture controller/proxy Deployments and their Pod owner chains."""
     objects = workloads.get("items") or []
@@ -842,6 +897,53 @@ def self_check():
     assert bridge_netfilter_witness(None, None, b"") == {"modulePresent": None, "ipv4HookEnabled": None}
     assert bridge_netfilter_witness(False, False, b"1") == {"modulePresent": None, "ipv4HookEnabled": None}
     assert bridge_netfilter_witness(1, 1, b"") == {"modulePresent": False, "ipv4HookEnabled": None}
+    endpoint = {"conditions": {"ready": True}, "addresses": ["192.0.2.10"]}
+    for value in (None, []):
+        assert dns_service_endpoints({"items": [{"endpoints": value}]}) == []
+        assert dns_service_endpoints({"items": [{"endpoints": value}, {"endpoints": [endpoint]}]}) == [endpoint]
+    assert dns_service_endpoints({"items": None}) == []
+    for invalid in (0, False, "", {}):
+        for value in ({"items": invalid}, {"items": [{"endpoints": invalid}]}):
+            try:
+                dns_service_endpoints(value)
+                raise AssertionError("malformed EndpointSlice array accepted")
+            except ValueError:
+                pass
+        try:
+            coredns_workload_witness({"items": invalid})
+            raise AssertionError("malformed workload array accepted")
+        except ValueError:
+            pass
+    dns_workloads = {"items": [
+        {"kind": "Deployment", "metadata": {"name": "coredns", "uid": "dns-owner"},
+         "spec": {"replicas": 1}, "status": {"readyReplicas": 0}},
+        {"kind": "ReplicaSet", "metadata": {"uid": "dns-replicas", "ownerReferences": [
+            {"kind": "Deployment", "uid": "dns-owner", "controller": True}]}},
+        {"kind": "Pod", "metadata": {"name": sensitive, "ownerReferences": [
+            {"kind": "ReplicaSet", "uid": "dns-replicas", "controller": True}]},
+         "status": {"phase": "Pending", "conditions": [{"type": "Ready", "status": "False"}],
+                    "containerStatuses": [{"name": sensitive, "ready": False, "restartCount": 0,
+                                           "state": {"waiting": {"reason": "ImagePullBackOff", "message": sensitive}}}]}},
+        {"kind": "Pod", "metadata": {"ownerReferences": [
+            {"kind": "ReplicaSet", "uid": sensitive, "controller": True}]}, "status": {"phase": sensitive}},
+    ]}
+    dns_workload = coredns_workload_witness(dns_workloads)
+    assert sensitive not in json.dumps(dns_workload) and dns_workload["observedPodCount"] == 1
+    assert dns_workload["desiredReplicas"] == 1 and dns_workload["readyReplicas"] == 0
+    assert dns_workload["readyPodCount"] == 0 and dns_workload["phaseCounts"] == [{"phase": "Pending", "count": 1}]
+    assert dns_workload["waitingReasonCounts"] == [{"reason": "ImagePullBackOff", "count": 1}]
+    container = dns_workloads["items"][2]["status"]["containerStatuses"][0]
+    container["state"] = {"waiting": {"reason": sensitive, "message": sensitive}}
+    dns_workload = coredns_workload_witness(dns_workloads)
+    assert dns_workload["waitingReasonCounts"] == [{"reason": "other", "count": 1}]
+    assert sensitive not in json.dumps(dns_workload)
+    container["state"] = {"running": {}}
+    dns_workloads["items"][2]["status"]["conditions"][0]["status"] = "True"
+    dns_workloads["items"][0]["spec"]["replicas"] = True
+    dns_workload = coredns_workload_witness(dns_workloads)
+    assert dns_workload["readyPodCount"] == 1 and dns_workload["waitingReasonCounts"] == []
+    assert dns_workload["desiredReplicas"] is None
+    assert coredns_workload_witness({})["desiredReplicas"] is None and coredns_workload_witness({})["observedPodCount"] == 0
     for text, expected in (
         ("connection refused", "connection-refused"),
         ("no such file or directory", "socket-absent"),
