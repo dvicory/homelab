@@ -15,7 +15,7 @@ import time
 import uuid
 
 import yaml
-from report import ARGO_CRDS, ARGO_RECOVERY_APPS, ARGO_RECOVERY_JOBS, ENVOY_READINESS_STATS, REQUIRED_SCENARIOS, argo_recovery_witness, check_acceptance, check_report, classify_docker_error, classify_kubectl_error, classify_network_policy_error, containerd_socket_failure, crd_condition_witness, envoy_readiness_witness, gateway_owned_workloads, gateway_prerequisite_witness, network_policy_witness, sanitize_tests
+from report import ARGO_CRDS, ARGO_RECOVERY_APPS, ARGO_RECOVERY_JOBS, ENVOY_READINESS_STATS, REQUIRED_SCENARIOS, argo_recovery_witness, check_acceptance, check_report, classify_docker_error, classify_kubectl_error, classify_network_policy_error, containerd_socket_failure, crd_condition_witness, dns_query_witness, envoy_readiness_witness, gateway_owned_workloads, gateway_prerequisite_witness, network_policy_witness, sanitize_tests
 
 OWNER_LABEL = "verification.homelab/fixture"
 
@@ -34,7 +34,73 @@ def capture_containerd_rpc(docker_command, env, node):
         return {"errorCategory": "transport"}
 
 
-def capture_envoy_readiness(kubectl_command, env, workloads):
+def capture_envoy_dns(kubectl_command, docker_command, env, node, pod):
+    """Probe the actual owned Envoy network namespace; never retain native bytes."""
+    import re
+
+    witness = {"status": "unavailable", "capturePhase": "before-cleanup"}
+    def read(command):
+        result = subprocess.run(command, env=env, capture_output=True, timeout=5)
+        if result.returncode:
+            raise RuntimeError("request-failed")
+        if len(result.stdout) > 65536:
+            raise ValueError("response-size-limit")
+        return result.stdout
+    def get(*resource):
+        return json.loads(read([*kubectl_command, "get", *resource, "-o", "json", "--request-timeout=3s"]))
+    try:
+        dns = get("service/kube-dns", "-n", "kube-system")
+        slices = get("endpointslices", "-n", "kube-system", "-l", "kubernetes.io/service-name=kube-dns")
+        endpoints = [endpoint for item in slices.get("items", []) for endpoint in item.get("endpoints", [])]
+        dns_ip = (dns.get("spec") or {}).get("clusterIP")
+        witness["coreDNS"] = {
+            "servicePresent": dns.get("kind") == "Service",
+            "clusterIPPresent": bool(dns_ip and dns_ip != "None"),
+            "endpointCount": len(endpoints),
+            "readyEndpointCount": sum((endpoint.get("conditions") or {}).get("ready") is True for endpoint in endpoints),
+        }
+        xds = get("service/envoy-gateway", "-n", "gateway")
+        xds_ip = (xds.get("spec") or {}).get("clusterIP")
+        statuses = (pod.get("status") or {}).get("containerStatuses") or []
+        container = next(item for item in statuses if item.get("name") == "envoy")
+        identity = container.get("containerID", "").removeprefix("containerd://")
+        if not re.fullmatch("[a-f0-9]{64}", identity):
+            raise ValueError("container-identity-unavailable")
+        inspected = json.loads(read([*docker_command, "exec", node, "crictl", "--runtime-endpoint",
+                                     "unix:///run/k3s/containerd/containerd.sock", "inspect", identity]))
+        status, info = inspected.get("status") or {}, inspected.get("info") or {}
+        if status.get("id") != identity or (status.get("labels") or {}).get("io.kubernetes.pod.uid") != pod["metadata"]["uid"]:
+            raise ValueError("container-ownership-mismatch")
+        pid = info.get("pid")
+        if type(pid) is not int or pid <= 0:
+            raise ValueError("network-namespace-unavailable")
+        mounts = (info.get("runtimeSpec") or {}).get("mounts") or []
+        resolver = next(mount.get("source", "") for mount in mounts if mount.get("destination") == "/etc/resolv.conf")
+        if not re.fullmatch("/var/lib/rancher/k3s/agent/containerd/io.containerd.grpc.v1.cri/sandboxes/[a-f0-9]{64}/resolv.conf", resolver):
+            raise ValueError("resolver-path-unavailable")
+        contents = read([*docker_command, "exec", node, "cat", resolver])
+        if len(contents) > 4096:
+            raise ValueError("response-size-limit")
+        servers = [ipaddress.ip_address(line.split()[1]).compressed for line in contents.decode().splitlines()
+                   if line.split()[:1] == ["nameserver"]]
+        witness["resolver"] = {"nameserverCount": len(servers), "matchesCoreDNS": dns_ip in servers}
+        if len(servers) != 1:
+            raise ValueError("resolver-selection-unavailable")
+        query = subprocess.run([
+            *docker_command, "exec", node, "nsenter", "--target", str(pid), "--net", "--",
+            "nslookup", "-type=A", "-timeout=2", "-retry=1", "envoy-gateway.gateway.svc.cluster.local.", servers[0],
+        ], env=env, capture_output=True, timeout=5)
+        witness["query"] = dns_query_witness(query.returncode, query.stdout + query.stderr, xds_ip)
+        witness["status"] = "observed"
+    except Exception as error:
+        allowed = {"request-failed", "response-size-limit", "container-identity-unavailable", "container-ownership-mismatch",
+                   "network-namespace-unavailable", "resolver-path-unavailable", "resolver-selection-unavailable"}
+        witness["errorCategory"] = ("timeout" if isinstance(error, subprocess.TimeoutExpired) else
+                                    str(error) if str(error) in allowed else "response-or-transport-unavailable")
+    return witness
+
+
+def capture_envoy_readiness(kubectl_command, env, workloads, docker_command, node):
     """One owned proxy, readonly fixed endpoints, bounded localhost-only forwarding."""
     import re
     import selectors
@@ -151,6 +217,7 @@ def capture_envoy_readiness(kubectl_command, env, workloads):
             finally:
                 for sig, handler in handlers.items():
                     signal.signal(sig, handler)
+    witness["dns"] = capture_envoy_dns(kubectl_command, docker_command, env, node, pod)
     return witness
 
 
@@ -587,7 +654,7 @@ def main():
                 }
             try:
                 report["gatewayEnvoyReadinessWitness"] = capture_envoy_readiness(
-                    [settings["kubectl"], "--context", name], env, observed.get("workloads", {}))
+                    [settings["kubectl"], "--context", name], env, observed.get("workloads", {}), docker, name)
             except Exception as witness_error:
                 report["gatewayEnvoyReadinessWitness"] = {
                     "status": "unavailable", "type": type(witness_error).__name__,
