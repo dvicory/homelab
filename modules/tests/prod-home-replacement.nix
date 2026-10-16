@@ -139,10 +139,10 @@
           ' "$out/root.yaml"
         '';
         bootstrapHost = self.packages.${system}.household-bootstrap-host;
-        mkTest = family:
+        mkTest =
+          family:
           (pkgs.testers.runNixOSTest {
-            name =
-              if family == "replacement" then "prod-home-replacement" else "prod-home-consumer-resilience";
+            name = if family == "replacement" then "prod-home-replacement" else "prod-home-consumer-resilience";
             globalTimeout = 4 * 60 * 60;
             requiredFeatures.kvm = true;
 
@@ -344,6 +344,15 @@
         consumerTest = mkTest "consumer-resilience";
       in
       {
+        checks.prod-home-registry-failures =
+          pkgs.runCommand "prod-home-registry-failures"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${./prod-home-registry-check.py} ${./prod-home-replacement.py}
+              touch "$out"
+            '';
         # The same inputs can exercise the scenario on a disposable native
         # x86_64 or aarch64 Linux host.
         legacyPackages.prod-home-replacement-test = replacementTest // {

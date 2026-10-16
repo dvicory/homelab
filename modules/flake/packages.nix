@@ -42,6 +42,7 @@
           self + "/pkgs/by-name/homelab-preserve-zfs-reference/package.nix"
         ) { };
       };
+      helper-release = callPackage (self + "/pkgs/by-name/helper-release/package.nix") { };
       prepare-luks-storage = lib.optionalAttrs isLinux {
         prepare-luks-storage = callPackage (self + "/pkgs/by-name/prepare-luks-storage/package.nix") { };
       };
@@ -81,6 +82,7 @@
           homelab-preserve
           homelab-preserve-fixture-adapter
           ;
+        inherit helper-release;
       }
       // agenix-restart-guard
       // preserveLinux
@@ -93,6 +95,16 @@
       checks = {
         compute-runtime = config.packages.compute-runtime;
         inherit homelab-preserve homelab-preserve-fixture-adapter;
+        helper-source =
+          pkgs.runCommand "helper-source-authorization" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+            python ${self + "/.github/test-helper-source.py"} ${self + "/.github/helper-source.py"}
+            touch "$out"
+          '';
+        helper-release =
+          pkgs.runCommand "helper-release-audit" { nativeBuildInputs = [ pkgs.python3 pkgs.openssl ]; } ''
+            python ${self + "/pkgs/by-name/helper-release/test.py"} ${self + "/pkgs/by-name/helper-release/helper-release.py"}
+            touch "$out"
+          '';
       }
       // lib.optionalAttrs isLinux {
         prepare-luks-storage =

@@ -35,6 +35,11 @@ def require(condition, label):
         raise AssertionError(label)
 
 
+def require_application_exit(status, failure, label):
+    expected = 1 if failure else 0
+    require(status == expected, f"{label} (exit {status}, expected {expected})")
+
+
 def command(*args, timeout=60, env=None):
     result = subprocess.run(args, text=True, capture_output=True, timeout=timeout, env=env)
     # Do not leak generated credentials or application output on failure.
@@ -325,7 +330,7 @@ def main():
                 for key in environment or {}:
                     parameters += ["-e", key]
                 result = subprocess.run([*parameters, image, *argv], capture_output=True, text=True, timeout=timeout, env=env)
-                require(result.returncode != 0 if failure else result.returncode == 0, f"{name} {'unexpectedly succeeded' if failure else 'failed'} (exit {result.returncode})")
+                require_application_exit(result.returncode, failure, name)
                 return container
 
             # A root setup helper owns only this new Linux volume. Application
@@ -668,7 +673,7 @@ console.log(queued);''', waiter_pid)
                 docker("unpause", holder)
                 for helper, failure in ((holder, failed_holder), (waiter, False)):
                     status = int(docker("wait", helper, timeout=900))
-                    require(status != 0 if failure else status == 0, "serialized Configarr producer returned an unexpected exit")
+                    require_application_exit(status, failure, "serialized Configarr producer")
                 require(not lock_held("configarr"), "Configarr producer exit retained its lock")
                 for app in ("radarr", "sonarr"):
                     verify_arr(app)
@@ -695,7 +700,7 @@ console.log(queued);''', waiter_pid)
             docker("rm", "-f", containers["sabnzbd"])
             runtime["SABNZBD_API_KEY"] = secrets.token_hex(32)
             reconcile_configarr(failure=True)
-            require(arr_snapshot() == rotated_baseline, "failed SAB handshake persisted rotated credentials")
+            require(arr_snapshot() == rotated_baseline, "failed SAB handshake changed visible Arr configuration")
             initialize_sab("sab-init-rotated")
             start("sabnzbd", 8080, restart=True)
             ready(request, ports["sabnzbd"], "/api?" + urlencode({"mode": "version", "output": "json", "apikey": runtime["SABNZBD_API_KEY"]}))
@@ -862,7 +867,7 @@ const target = 'https://kubernetes.default.svc/api/v1/namespaces/jellyfin/secret
 
             def wait_helper(container, failure=False, periodic=False):
                 status = int(docker("wait", container, timeout=(periodic_job if periodic else seerr_job)["activeDeadlineSeconds"]))
-                require((status != 0) if failure else (status == 0), "serialized native helper returned an unexpected exit status")
+                require_application_exit(status, failure, "serialized native helper")
 
             for failed_holder in (False, True):
                 before = seerr_api("/settings/main")

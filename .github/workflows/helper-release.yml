@@ -1,0 +1,205 @@
+name: Nix helper candidates
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact merged-main caller SHA
+        required: true
+        type: string
+      source_run:
+        description: Exact required-green Nix CI caller run
+        required: true
+        type: string
+      source_attempt:
+        description: Exact Nix CI caller attempt
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: helper-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    if: github.repository == 'dvicory/homelab' && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.sha == github.workflow_sha && inputs.source_sha == github.sha && inputs.source_run == github.run_id && inputs.source_attempt == github.run_attempt
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      run: ${{ steps.source.outputs.run }}
+      attempt: ${{ steps.source.outputs.attempt }}
+    steps:
+      - name: Check out main-owned authorization code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Verify exact main caller and completed Required CI receipt
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ inputs.source_run }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_ATTEMPT: ${{ inputs.source_attempt }}
+        run: python3 .github/helper-source.py --run "$SOURCE_RUN" --sha "$SOURCE_SHA" --attempt "$SOURCE_ATTEMPT" --output "$GITHUB_OUTPUT"
+
+  build:
+    needs: authorize
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      fingerprint: ${{ steps.build.outputs.fingerprint }}
+      artifact: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Check out trusted build tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Check out exact merged-main producer source (read only)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.authorize.outputs.sha }}
+          path: source
+          persist-credentials: false
+      - name: Install Nix with sandboxed producer builds
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: sandbox = true
+      - name: Configure durable cache (read only)
+        if: vars.CACHIX_CACHE != ''
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: ${{ vars.CACHIX_CACHE }}
+          skipPush: true
+      - name: Build and audit four native x86-64 helpers without publication authority
+        id: build
+        env:
+          SOURCE_SHA: ${{ needs.authorize.outputs.sha }}
+          SOURCE_RUN: ${{ needs.authorize.outputs.run }}
+        run: |
+          set -euo pipefail
+          tool=$(nix build --no-link --print-out-paths ./trusted#helper-release)
+          fingerprint=$("$tool/bin/helper-release" build --source "git+file://$GITHUB_WORKSPACE/source?rev=$SOURCE_SHA&shallow=1" --source-sha "$SOURCE_SHA" --source-run "$SOURCE_RUN" --system x86_64-linux --directory "$RUNNER_TEMP/candidate")
+          printf 'fingerprint=%s\n' "$fingerprint" >> "$GITHUB_OUTPUT"
+      - name: Transfer immutable candidate data
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: helper-candidate-${{ needs.authorize.outputs.sha }}
+          path: ${{ runner.temp }}/candidate/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [authorize, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    outputs:
+      artifact: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Check out only main-owned publisher code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Recheck exact main caller and required CI before publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ needs.authorize.outputs.run }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.sha }}
+          SOURCE_ATTEMPT: ${{ needs.authorize.outputs.attempt }}
+        run: python3 .github/helper-source.py --run "$SOURCE_RUN" --sha "$SOURCE_SHA" --attempt "$SOURCE_ATTEMPT" --output "$RUNNER_TEMP/source-facts"
+      - name: Download candidate data by immutable artifact ID
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact }}
+          path: ${{ runner.temp }}/candidate
+          merge-multiple: true
+      - name: Install Nix for trusted tools only
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - name: Configure durable cache (read only)
+        if: vars.CACHIX_CACHE != ''
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: ${{ vars.CACHIX_CACHE }}
+          skipPush: true
+      - name: Publish fixed packages from verified data, never producer scripts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REGISTRY_AUTH_FILE: ${{ runner.temp }}/helper-auth.json
+          SOURCE_SHA: ${{ needs.authorize.outputs.sha }}
+          SOURCE_RUN: ${{ needs.authorize.outputs.run }}
+          CANDIDATE_SHA256: ${{ needs.build.outputs.fingerprint }}
+        run: |
+          set -euo pipefail
+          tool=$(nix build --no-link --print-out-paths .#helper-release)
+          trap 'rm -f "$REGISTRY_AUTH_FILE"' EXIT
+          printf '%s' "$GH_TOKEN" | nix shell --inputs-from . nixpkgs#skopeo --command skopeo login --authfile "$REGISTRY_AUTH_FILE" --username "$GITHUB_ACTOR" --password-stdin ghcr.io
+          "$tool/bin/helper-release" publish --directory "$RUNNER_TEMP/candidate" --source-sha "$SOURCE_SHA" --source-run "$SOURCE_RUN" --system x86_64-linux --candidate-sha256 "$CANDIDATE_SHA256"
+      - name: Record immutable publication identities, not deployment approval
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: helper-publication-${{ needs.authorize.outputs.sha }}
+          path: ${{ runner.temp }}/candidate/publication.json
+          if-no-files-found: error
+          retention-days: 7
+
+  verify:
+    needs: [authorize, build, publish]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out main-owned anonymous verification code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Download exact original candidate data
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact }}
+          path: ${{ runner.temp }}/candidate
+          merge-multiple: true
+      - name: Download exact publication mapping
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.publish.outputs.artifact }}
+          path: ${{ runner.temp }}/candidate
+          merge-multiple: true
+      - name: Install Nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - name: Configure durable cache (read only)
+        if: vars.CACHIX_CACHE != ''
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: ${{ vars.CACHIX_CACHE }}
+          skipPush: true
+      - name: Verify public digest retrieval and exact native producer identity
+        env:
+          SOURCE_SHA: ${{ needs.authorize.outputs.sha }}
+          SOURCE_RUN: ${{ needs.authorize.outputs.run }}
+          CANDIDATE_SHA256: ${{ needs.build.outputs.fingerprint }}
+        run: |
+          set -euo pipefail
+          tool=$(nix build --no-link --print-out-paths .#helper-release)
+          "$tool/bin/helper-release" verify --directory "$RUNNER_TEMP/candidate" --source-sha "$SOURCE_SHA" --source-run "$SOURCE_RUN" --system x86_64-linux --candidate-sha256 "$CANDIDATE_SHA256" --output "$RUNNER_TEMP/verified.json"
+      - name: Record verified candidates for a separately reviewed consumer PR
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: helper-verified-${{ needs.authorize.outputs.sha }}
+          path: ${{ runner.temp }}/verified.json
+          if-no-files-found: error
+          retention-days: 7
