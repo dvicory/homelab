@@ -86,7 +86,7 @@ jobs:
         run: |
           set -euo pipefail
           tool=$(nix build --no-link --print-out-paths ./trusted#helper-release)
-          fingerprint=$("$tool/bin/helper-release" build --source "git+file://$GITHUB_WORKSPACE/source?rev=$SOURCE_SHA" --source-sha "$SOURCE_SHA" --source-run "$SOURCE_RUN" --system x86_64-linux --directory "$RUNNER_TEMP/candidate")
+          fingerprint=$("$tool/bin/helper-release" build --source "git+file://$GITHUB_WORKSPACE/source?rev=$SOURCE_SHA&shallow=1" --source-sha "$SOURCE_SHA" --source-run "$SOURCE_RUN" --system x86_64-linux --directory "$RUNNER_TEMP/candidate")
           printf 'fingerprint=%s\n' "$fingerprint" >> "$GITHUB_OUTPUT"
       - name: Transfer immutable candidate data
         id: upload

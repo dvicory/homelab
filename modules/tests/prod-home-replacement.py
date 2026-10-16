@@ -46,8 +46,10 @@ from pathlib import Path
 import platform
 import re
 import secrets
+import select
 import shlex
 import shutil
+import signal
 import socket
 import sqlite3
 import stat
@@ -92,6 +94,10 @@ CHARACTER_NODE = f"character special file {GPU_RENDER_GID} 660"
 
 class ScenarioError(RuntimeError):
     """A failed runtime assertion or an unavailable disposable prerequisite."""
+
+
+class RegistryPullError(ScenarioError):
+    """A classified refusal whose native registry diagnostics must stay private."""
 
 
 def completed(*command: str, timeout: int = COMMAND_TIMEOUT, input: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -720,22 +726,83 @@ def fetch_kubeconfig(runtime: Runtime, workspace: Path) -> Path:
     return kubeconfig
 
 
+def registry_pull_failure(pods: dict) -> str | None:
+    """Classify current image-pull failures without exporting native messages."""
+    for pod in pods.get("items") or []:
+        metadata = pod.get("metadata") or {}
+        if metadata.get("namespace") != "argocd" or metadata.get("deletionTimestamp"):
+            continue
+        status = pod.get("status") or {}
+        for container in (status.get("initContainerStatuses") or []) + (status.get("containerStatuses") or []):
+            waiting = (container.get("state") or {}).get("waiting") or {}
+            if waiting.get("reason") not in ("ErrImagePull", "ImagePullBackOff"):
+                continue
+            message = (waiting.get("message") or "").lower()
+            for category, markers in (
+                ("rate-limited", ("toomanyrequests", "too many requests", "rate limit")),
+                ("unauthorized", ("unauthorized", "authentication required", "access denied")),
+                ("manifest-not-found", ("manifest unknown", "no matching manifest")),
+                ("certificate", ("x509:", "certificate signed by unknown authority")),
+            ):
+                if any(marker in message for marker in markers):
+                    return category
+    return None
+
+
+def stop_owned_bootstrap(process: subprocess.Popen) -> None:
+    """Stop only the session/group created for this bootstrap and its children."""
+    if process.returncode is not None:
+        return
+    try:
+        if os.getpgid(process.pid) != process.pid or os.getsid(process.pid) != process.pid:
+            raise ScenarioError("refusing to stop an unowned bootstrap process group")
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        process.wait()
+        return
+    # Keep the leader waitable: its PID pins the group through its children's grace.
+    # ponytail: fixed 30s grace; track live group members only if cleanup latency matters.
+    time.sleep(30)
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
+
+
 def run_bootstrap_host(bootstrap_host: Path, runtime: Runtime, kubeconfig: Path, seed: Path) -> None:
     """Invoke the shipped household-bootstrap-host against the fresh guest."""
     env = {**os.environ, "KUBECONFIG": str(kubeconfig), "HOUSEHOLD_BOOTSTRAP_MANIFESTS": str(seed)}
     with phase("household-bootstrap-host (timeout: 3600s)"):
-        # GNU timeout bounds the bootstrap process group, including its children.
-        with subprocess.Popen(
-            ["timeout", "--kill-after=30s", "3600s", str(bootstrap_host),
-             str(runtime.spec_path), "--confirm", runtime.instance],
-            env=env,
-        ) as process:
-            while True:
-                try:
-                    status = process.wait(timeout=60)
-                    break
-                except subprocess.TimeoutExpired:
-                    print("BOOTSTRAP WAIT: collecting read-only Argo diagnostics", flush=True)
+        # Defer native output until the outcome is known: an earlier diagnostic
+        # interval or bootstrap subprocess can contain the same registry message.
+        with tempfile.TemporaryFile(mode="w+") as output:
+            # GNU timeout keeps the shipped 3600s deadline and 30s kill grace.
+            process = subprocess.Popen(
+                ["timeout", "--kill-after=30s", "3600s", str(bootstrap_host),
+                 str(runtime.spec_path), "--confirm", runtime.instance],
+                env=env, stdout=output, stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            pidfd = None
+            classified = False
+            try:
+                pidfd = os.pidfd_open(process.pid)
+                # Readability observes exit without reaping the group leader.
+                while not select.select([pidfd], [], [], 60)[0]:
+                    try:
+                        result = subprocess.run(
+                            ["kubectl", "--request-timeout=10s", "-n", "argocd", "get", "pods", "-o", "json"],
+                            env=env, capture_output=True, text=True, timeout=15, check=False,
+                        )
+                        reason = registry_pull_failure(json.loads(result.stdout)) if result.returncode == 0 else None
+                    except (OSError, ValueError, subprocess.TimeoutExpired):
+                        reason = None
+                    if reason:
+                        raise RegistryPullError(
+                            f"online bootstrap registry image pull failed ({reason}); no preload or readiness bypass"
+                        )
+                    print("BOOTSTRAP WAIT: collecting read-only Argo diagnostics (output deferred)", flush=True)
                     for command in (
                         ["kubectl", "--request-timeout=10s", "-n", "argocd", "get", "pods", "-o", "wide"],
                         ["kubectl", "--request-timeout=10s", "-n", "argocd", "get", "events", "--sort-by=.metadata.creationTimestamp"],
@@ -743,15 +810,33 @@ def run_bootstrap_host(bootstrap_host: Path, runtime: Runtime, kubeconfig: Path,
                         ["incus", "--force-local", "--project", runtime.project, "exec", runtime.instance,
                          "--", "k3s", "ctr", "-n", "k8s.io", "content", "active"],
                     ):
-                        if process.poll() is not None:
+                        if select.select([pidfd], [], [], 0)[0]:
                             break
-                        print(f"DIAGNOSTIC: {shlex.join(command)}", flush=True)
+                        print(f"DIAGNOSTIC: {shlex.join(command)}", file=output, flush=True)
                         try:
-                            subprocess.run(command, env=env, timeout=15, check=False)
+                            subprocess.run(command, env=env, stdout=output, stderr=subprocess.STDOUT,
+                                           timeout=15, check=False)
                         except subprocess.TimeoutExpired:
-                            print("DIAGNOSTIC: command exceeded 15s; bootstrap deadline unchanged", flush=True)
+                            print("DIAGNOSTIC: command exceeded 15s; bootstrap deadline unchanged",
+                                  file=output, flush=True)
+            except RegistryPullError:
+                classified = True
+                raise
+            finally:
+                try:
+                    # The leader's unreaped PID reserves its group identity until
+                    # all surviving owned members have received SIGKILL.
+                    stop_owned_bootstrap(process)
+                finally:
+                    if pidfd is not None:
+                        os.close(pidfd)
+                    if not classified:
+                        output.seek(0)
+                        shutil.copyfileobj(output, sys.stdout)
+                        sys.stdout.flush()
+            status = process.returncode
     if status != 0:
-        raise ScenarioError(f"household-bootstrap-host failed ({status}); see streamed output above")
+        raise ScenarioError(f"household-bootstrap-host failed ({status}); see bootstrap output above")
 
 
 def wait_argo_synced(kubeconfig: Path, names: tuple[str, ...], timeout: int = SYNC_TIMEOUT) -> None:
@@ -2107,7 +2192,7 @@ def run_scenario(args: argparse.Namespace) -> None:
                     check(not kubectl_absent(kubeconfig, "persistentvolumeclaim", "jellyfin-config", "jellyfin"), "Argo Delete=false leaves the retained PersistentVolumeClaim object in place after application retirement")
                     check(marker.read_text() == "retained-state\n", "host retained path keeps Jellyfin data through application retirement")
         finally:
-            if sys.exc_info()[0] is not None and runtime.created_instance:
+            if sys.exc_info()[0] is not None and not isinstance(sys.exc_info()[1], RegistryPullError) and runtime.created_instance:
                 diagnostics = completed("journalctl", "-k", "-n", "80", "--no-pager")
                 print(diagnostics.stdout or diagnostics.stderr, file=sys.stderr)
                 diagnostics = completed("incus", "--force-local", "--project", project, "exec", instance_name,
