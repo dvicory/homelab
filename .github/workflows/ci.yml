@@ -30,6 +30,12 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  workflow-security:
+    name: Workflow security
+    uses: ./.github/workflows/security.yml
+    permissions:
+      contents: read
+
   plan:
     name: Inventory hosted checks
     runs-on: ${{ inputs.check != '' && inputs.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || inputs.check != '' && inputs.system == 'aarch64-darwin' && 'macos-14' || 'ubuntu-24.04' }}
@@ -413,6 +419,43 @@ jobs:
               comm -13 "$RUNNER_TEMP/build-sources" "$RUNNER_TEMP/build-realized"
             } | cachix push "$CACHIX_CACHE"
           fi
+
+  required-ci:
+    name: Required CI
+    needs: [plan, bootstrap-darwin-builder, build, build-darwin-configuration, native-applications, workflow-security, all-required]
+    if: ${{ always() && github.event_name != 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every CI dependency to succeed
+        env:
+          CI_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 -c 'import json,os; results=json.loads(os.environ["CI_RESULTS"]); assert results and all(job["result"] == "success" for job in results.values()), results'
+      - name: Check out exact main-owned authorization code
+        if: github.repository == 'dvicory/homelab' && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.sha == github.workflow_sha
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify exact main CI source facts
+        if: github.repository == 'dvicory/homelab' && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.sha == github.workflow_sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/helper-source.py --caller --run "$GITHUB_RUN_ID" --sha "$GITHUB_SHA" --attempt "$GITHUB_RUN_ATTEMPT" --output "$RUNNER_TEMP/source-facts"
+
+  helper-release:
+    name: Publish main helpers
+    needs: required-ci
+    if: github.repository == 'dvicory/homelab' && github.event_name == 'push' && github.ref == 'refs/heads/main' && github.sha == github.workflow_sha && inputs.check == '' && inputs.system == ''
+    uses: ./.github/workflows/helper-release.yml
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    with:
+      source_sha: ${{ github.sha }}
+      source_run: ${{ github.run_id }}
+      source_attempt: ${{ github.run_attempt }}
 
   build-darwin-configuration:
     needs: [plan, bootstrap-darwin-builder]
