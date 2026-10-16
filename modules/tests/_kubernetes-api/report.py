@@ -841,6 +841,7 @@ def self_check():
     assert bridge_netfilter_witness(2, 1, sensitive.encode()) == {"modulePresent": None, "ipv4HookEnabled": None}
     assert bridge_netfilter_witness(None, None, b"") == {"modulePresent": None, "ipv4HookEnabled": None}
     assert bridge_netfilter_witness(False, False, b"1") == {"modulePresent": None, "ipv4HookEnabled": None}
+    assert bridge_netfilter_witness(1, 1, b"") == {"modulePresent": False, "ipv4HookEnabled": None}
     for text, expected in (
         ("connection refused", "connection-refused"),
         ("no such file or directory", "socket-absent"),
