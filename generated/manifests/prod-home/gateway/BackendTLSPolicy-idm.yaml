@@ -9,5 +9,5 @@ spec:
       kind: Service
       name: kanidm
   validation:
-    hostname: idm.plus2.danielvicory.dev
+    hostname: id.bzfx.net
     wellKnownCACertificates: System

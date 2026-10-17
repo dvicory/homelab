@@ -9,5 +9,5 @@ spec:
       kind: Backend
       name: kanidm-oidc
   validation:
-    hostname: idm.plus2.danielvicory.dev
+    hostname: id.bzfx.net
     wellKnownCACertificates: System
