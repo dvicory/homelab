@@ -39,12 +39,12 @@ let
       certificate = mkOption {
         type = types.nullOr types.str;
         default = null;
-        description = "TLS certificate for this edge's selected hostname family.";
+        description = "TLS certificate for this edge hostname input.";
       };
       key = mkOption {
         type = types.nullOr types.str;
         default = null;
-        description = "TLS private key for this edge's selected hostname family.";
+        description = "TLS private key for this edge hostname input.";
       };
     };
   };
@@ -105,10 +105,15 @@ let
             default = { };
             description = "Certificate input for the backup hostname family.";
           };
+          identity = mkOption {
+            type = tlsType;
+            default = { };
+            description = "Separate certificate input for the canonical identity hostname.";
+          };
         };
       };
       default = { };
-      description = "Separate primary and backup TLS inputs; no ACME or DNS automation.";
+      description = "Separate application-family and canonical identity TLS inputs; no ACME or DNS automation.";
     };
   };
 
@@ -169,44 +174,49 @@ let
           tlsConfig = cfg.tls;
           selectedTLS = if variant == 0 then tlsConfig.primary else tlsConfig.backup;
           selectedDomain = if variant == 0 then environment.domain else environment.backupDomain;
-          routeShapeValid = lib.all (
-            route:
-            builtins.length route.hostnames == 2
-            && lib.all (hostname: hostname != "") route.hostnames
-            && builtins.length (lib.unique route.hostnames) == 2
-          ) (builtins.attrValues routes);
+          applicationRoutes = builtins.removeAttrs routes [ "idm" ];
+          identityShapeValid =
+            !(routes ? idm)
+            || (builtins.length routes.idm.hostnames == 1 && builtins.head routes.idm.hostnames != "");
+          routeShapeValid =
+            identityShapeValid
+            && lib.all (
+              route:
+              builtins.length route.hostnames == 2
+              && lib.all (hostname: hostname != "") route.hostnames
+              && builtins.length (lib.unique route.hostnames) == 2
+            ) (builtins.attrValues applicationRoutes);
           routeDomainsValid =
             routeShapeValid
             && lib.all (
               route:
               lib.hasSuffix ".${environment.domain}" (builtins.elemAt route.hostnames 0)
               && lib.hasSuffix ".${environment.backupDomain}" (builtins.elemAt route.hostnames 1)
-            ) (builtins.attrValues routes);
+            ) (builtins.attrValues applicationRoutes);
           routePathsValid = lib.all (route: route.pathPrefix == "/") (builtins.attrValues routes);
           routesValid = routeShapeValid && routeDomainsValid && routePathsValid;
           routeEntries =
             if routesValid then
               lib.mapAttrsToList (name: route: {
-                inherit name;
-                hostname = builtins.elemAt route.hostnames variant;
-                tls = selectedTLS;
+                hostname = builtins.elemAt route.hostnames (if name == "idm" then 0 else variant);
+                tls = if name == "idm" then tlsConfig.identity else selectedTLS;
               }) routes
-              ++ lib.optionals (role == "home" && routes ? idm) [
-                {
-                  name = "idm-canonical";
-                  hostname = builtins.head routes.idm.hostnames;
-                  tls = tlsConfig.primary;
-                }
-              ]
             else
               [ ];
           routeHosts = map (entry: entry.hostname) routeEntries;
-          routeHostsUnique = builtins.length (lib.unique routeHosts) == builtins.length routeHosts;
+          routeHostsUnique =
+            let
+              hosts = routeHosts ++ lib.optional bareRoutePublishable selectedDomain;
+            in
+            builtins.length (lib.unique hosts) == builtins.length hosts;
           bareRouteValid =
             cfg.bareRoute != null && builtins.hasAttr cfg.bareRoute cluster.routes && routesValid;
           bareRoutePublishable = bareRouteValid && builtins.hasAttr cfg.bareRoute routes;
           bareTarget =
-            if bareRoutePublishable then builtins.elemAt routes.${cfg.bareRoute}.hostnames variant else "";
+            if bareRoutePublishable then
+              builtins.elemAt routes.${cfg.bareRoute}.hostnames (if cfg.bareRoute == "idm" then 0 else variant)
+            else
+              "";
           primaryTLS = tlsConfig.primary;
           backupTLS = tlsConfig.backup;
           tlsPairValid =
@@ -220,7 +230,12 @@ let
             && selectedTLS.certificate != null
             && selectedTLS.key != null
             && (
-              role != "home" || !(routes ? idm) || (primaryTLS.certificate != null && primaryTLS.key != null)
+              !(routes ? idm)
+              || (
+                tlsPairValid tlsConfig.identity
+                && tlsConfig.identity.certificate != null
+                && tlsConfig.identity.key != null
+              )
             );
           originValid =
             cfg.originHost != null
@@ -308,7 +323,7 @@ let
             }
             {
               assertion = routeShapeValid;
-              message = "${aspectName} requires exactly two distinct non-empty hostnames per route";
+              message = "${aspectName} requires one non-empty identity hostname and two distinct non-empty application hostnames";
             }
             {
               assertion = routeDomainsValid;
@@ -332,7 +347,7 @@ let
             }
             {
               assertion = tlsInputsValid;
-              message = "${aspectName} requires complete primary/backup TLS pairs and the selected family";
+              message = "${aspectName} requires complete application TLS pairs, the selected family and a separate identity TLS pair when published";
             }
             {
               assertion = peerIsDeclared;

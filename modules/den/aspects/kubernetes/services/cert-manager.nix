@@ -18,6 +18,10 @@
     let
       issuer = "letsencrypt-prod";
       version = "v1.21.1";
+      cloudflare.apiTokenSecretRef = {
+        name = "cloudflare-api-token";
+        key = "api-token";
+      };
       image = repository: digest: {
         inherit repository digest;
         tag = version;
@@ -78,10 +82,14 @@
               privateKeySecretRef.name = "letsencrypt-prod-account";
               solvers = [
                 {
-                  dns01.cloudflare.apiTokenSecretRef = {
-                    name = "cloudflare-api-token";
-                    key = "api-token";
+                  selector.dnsNames = cluster.routes.idm.hostnames;
+                  dns01 = {
+                    inherit cloudflare;
+                    cnameStrategy = "Follow";
                   };
+                }
+                {
+                  dns01 = { inherit cloudflare; };
                 }
               ];
             };

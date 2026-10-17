@@ -5,8 +5,7 @@ metadata:
   namespace: identity
 spec:
   dnsNames:
-    - idm.plus2.danielvicory.dev
-    - idm.backup.plus2.danielvicory.dev
+    - id.bzfx.net
   issuerRef:
     kind: ClusterIssuer
     name: letsencrypt-prod

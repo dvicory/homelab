@@ -18,7 +18,7 @@ spec:
       containers:
         - env:
             - name: KANIDM_URL
-              value: https://idm.plus2.danielvicory.dev
+              value: https://id.bzfx.net
             - name: KANIDM_ADMIN_GROUP
               value: homelab-admin
             - name: HOME

@@ -13,3 +13,12 @@ spec:
             apiTokenSecretRef:
               key: api-token
               name: cloudflare-api-token
+          cnameStrategy: Follow
+        selector:
+          dnsNames:
+            - id.bzfx.net
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              key: api-token
+              name: cloudflare-api-token

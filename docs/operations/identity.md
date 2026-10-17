@@ -3,6 +3,30 @@
 Kanidm runs in the `identity` namespace. The Gateway protects administrator
 routes with OIDC from Kanidm. Argo CD also signs users in through Kanidm.
 
+## Canonical name and certificate renewal
+
+Kanidm uses `https://id.bzfx.net` regardless of the application domain or
+entrance. Keep that hostname and its descendants exclusive to identity.
+
+`bzfx.net` remains on Porkbun DNS. Its fixed certificate-challenge alias is:
+
+```dns
+_acme-challenge.id.bzfx.net. CNAME _acme-challenge.id-bzfx-net.danielvicory.dev.
+```
+
+Cert-manager follows this alias only for the declared identity hostname and
+writes the temporary TXT proof in the existing Cloudflare zone. Other
+certificates keep their existing solver. The login address is configured
+separately; this alias does not route login traffic through Cloudflare.
+Control of the challenge target can authorize identity certificates.
+
+The Gateway references `identity/kanidm-tls` through a name-scoped
+ReferenceGrant. Each independent public edge needs its own
+`tls.identity.certificate` and `tls.identity.key` inputs covering the
+canonical identity name. Application wildcard certificates are not a
+substitute. Cert-manager remains the only writer of cluster TLS Secrets.
+
+
 ## Administrator applications in Kanidm
 
 Each administrator route has its own Kanidm OAuth2 client, named after the
@@ -146,6 +170,50 @@ This is a credential migration, not a Jellyfin account migration.
 
 POSIX accounts enter Kanidm's anonymous directory view; private LDAPS does
 not make the corresponding anonymous HTTPS Unix-account attributes private.
+
+## Changing the canonical domain
+
+A domain rename is an offline database operation, not a normal Argo rollout.
+It invalidates enrolled passkeys and regenerates account and group SPNs.
+Do not start until administrators have demonstrated fresh non-WebAuthn MFA
+login, stock-account recovery access and independent host management.
+
+1. Hold automated sync on `apps` and every affected child Application.
+   Holding the parent alone does not stop child reconciliation. End active
+   operations and provisioning retries before changing the database.
+2. Establish the new DNS and valid certificates. Do not replace the running
+   server's certificate without preserving its current hostname or entering
+   the maintenance window. Stop the identity Deployment and confirm that no
+   server or maintenance process is writing its data.
+3. Take a protected, restorable backup of the whole retained
+   `/srv/state/identity-kanidm` directory in the guest, or use the pinned
+   server's supported offline database backup. Keep an independent copy and
+   verify restoration with the same server version. Retention is not backup.
+4. With the Deployment still stopped, mount its existing `identity-kanidm`
+   PVC at `/data` and the new configuration at `/etc/kanidm/server.toml` in
+   one temporary maintenance Pod using the same pinned image and UID/GID.
+   Do not attach the serving workload's labels or start another server.
+   Run:
+
+   ```sh
+   /sbin/kanidmd domain rename -c /etc/kanidm/server.toml
+   ```
+
+   The command reads the new domain from configuration; it takes no
+   positional hostname. Require the successful rename outcome and remove
+   the maintenance Pod before starting the Deployment.
+5. Start a fresh Pod with coherent new configuration and TLS. Reconcile the
+   existing provisioning Job, OAuth consumers and Jellyfin configuration.
+   Verify retained UUIDs and application-user links, fresh sign-in and
+   independent recovery. Do not recreate people, reset credentials or
+   convert the local Jellyfin administrator. Restore child automation only
+   after acceptance, and restore `apps` last.
+
+Rollback after the rename requires the coherent pre-rename database,
+configuration, certificates and consumer values. A Git revert alone does
+not undo stored domain changes. Renaming back is another migration, not a
+backup restoration.
+
 
 ## Upgrade
 

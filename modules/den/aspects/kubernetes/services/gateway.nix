@@ -358,11 +358,36 @@
                       kind = "Secret";
                       name = "gateway-tls";
                     }
+                    {
+                      group = "";
+                      kind = "Secret";
+                      namespace = cluster.routes.idm.namespace;
+                      name = "kanidm-tls";
+                    }
                   ];
                 };
               }
             ];
           })
+          (object "gateway.networking.k8s.io/v1beta1" "ReferenceGrant" "gateway-identity-certificate"
+            cluster.routes.idm.namespace
+            {
+              from = [
+                {
+                  group = "gateway.networking.k8s.io";
+                  kind = "Gateway";
+                  inherit namespace;
+                }
+              ];
+              to = [
+                {
+                  group = "";
+                  kind = "Secret";
+                  name = "kanidm-tls";
+                }
+              ];
+            }
+          )
           (object "gateway.envoyproxy.io/v1alpha1" "ClientTrafficPolicy" "trusted-edges" namespace {
             targetRefs = gatewayTarget;
             clientIPDetection =
