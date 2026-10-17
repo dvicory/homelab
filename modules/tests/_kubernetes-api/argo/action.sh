@@ -12,7 +12,6 @@ settings=$(jq -c .argo "$FIXTURE_SETTINGS")
 bootstrap=$(jq -r .bootstrap <<< "$settings")
 manifests=$(jq -r .manifests <<< "$settings")
 probe=$(jq -r .probeImage <<< "$settings")
-directories=$(jq -r .directoriesImage <<< "$settings")
 work="$FIXTURE_WORK/argo"
 repo="$work/runtime.git"
 url="git://$FIXTURE_ARGO_GIT_IP/runtime.git"
@@ -136,7 +135,7 @@ LUA
   # The Job reads its directory list from this compared ConfigMap, which
   # Argo applies in an earlier wave of the same sync.
   canonical retained-storage/ConfigMap-retained-directories.yaml > "$repo/hook/directories.json"
-  canonical retained-storage/Job-retained-directories.yaml | jq --arg hostname "$hostname" --arg image "$directories" '.spec.template.spec.nodeSelector["kubernetes.io/hostname"]=$hostname | .spec.template.spec.containers[0].image=$image' > "$repo/hook/hook.json"
+  canonical retained-storage/Job-retained-directories.yaml | jq --arg hostname "$hostname" '.spec.template.spec.nodeSelector["kubernetes.io/hostname"]=$hostname' > "$repo/hook/hook.json"
   job after-retained-hook 'echo completed > /proof/hook-completed' 2 local-path-storage > "$repo/hook/after.json"
   commit 'dependency roots and exact retained hook' initial
   app failed-root failed-child-root "$(cat "$work/initial")" argocd | k apply -f - >&2

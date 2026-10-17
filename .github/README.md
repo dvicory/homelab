@@ -65,14 +65,15 @@ native suite; the replacement VM retains real data, ownership, mount and
 accelerator observations through guest replacement.
 
 This tooling slice changes no intended production behavior or policy.
-Removing Go assertions can still change the Nix-derived
-`retained-directories-image` identity and its generated Job reference.
-The operator accepts that identity-only delta; build the helper from the
-selected revision and follow the existing
-[helper image delivery procedure](../docs/operations/jellyfin.md#deliver-helper-images)
-before syncing `retained-storage`. Neither a green test nor packaging the
-image imports it into the guest, and this tooling change performs no import
-or deployment.
+Removing Go assertions can still change the current
+`retained-directories-image` producer identity without changing runtime code.
+Consumers remain on the independently selected verified release in
+`assets/helper-release/verified.json`, using its immutable GHCR digests.
+An unselected producer change does not move those consumers. Follow the
+[helper image delivery procedure](../docs/operations/jellyfin.md#deliver-helper-images):
+ordinary protected-main publication and anonymous verification precede a
+separately reviewed selection. There is no last manual import; this tooling
+change selects no new production helper and performs no production operation.
 
 Linux also requires the fast `prepare-luks-storage` check. It exercises real
 rsync transfers/checksum verification and refuses unsafe operations before
@@ -398,6 +399,14 @@ script/hash assertion. PAM, hardening, kernel, network and security boundary tes
 retain their VM gates. Only disposable Linux lanes requiring `uid-range` enable
 Nix auto-allocated UIDs and the cgroups experimental feature, after requiring a
 cgroup-v2 host. Darwin never schedules this Linux container test.
+
+`classify-legacy-media` retains its VM wrapper. The existing container backend
+under pinned Nix 2.35.2 reached the real ACL assertion, where `setfacl` failed
+with `Operation not supported` despite kernel POSIX ACL support. This matches
+the documented Linux build-sandbox xattr limitation in the
+[Nix 2.35 release notes](https://nix.dev/manual/nix/2.35/release-notes/rl-2.35.html#improvements),
+not an inherent private-kernel requirement for ACLs. No container parity or
+performance improvement is claimed; the ACL assertion remains required.
 
 Every registered check must be a derivation and belongs exactly once to the
 fast, hosted runtime, or unsupported partition. Future registrations join

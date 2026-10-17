@@ -110,7 +110,7 @@ kube-proxy reads its mode only from its configuration file in the guest OS, so t
 - [A deliberate stop or update of the DaemonSet leaves Pods unprotected for seconds.] → Updates are rare and pinned; the runbook check confirms readiness afterwards.
 - [Young project: v1.1.2 fixed an nfqueue packet-loss bug in September 2026.] → Pinned by digest; the check runs the committed manifests on the production envelope before any change ships.
 - [The image comes from a registry at first start, as for other registry-delivered components.] → Until it is pulled, no rules exist, so nothing is blocked; workloads wait for it in a later wave.
-- [The plain-K3s VM checks (gateway-runtime, media-ingress-runtime, identity-provision-runtime) run their own K3s with kube-router and iptables kube-proxy.] → They test policy and route content; this check tests the production enforcer and kube-proxy mode with the same probes. Task 4.2 tracks moving them.
+- [The remaining plain-K3s VM checks (media-ingress-runtime and identity-provision-runtime) run their own K3s with kube-router and iptables kube-proxy.] → Task 4.2 tracks moving those checks. The superseded Gateway-only wrapper is covered by the required native Gateway scenarios using the committed enforcer; that parity does not close the separate start-up-window decision in task 4.3.
 - [The in-place migration leaves a K3s config drop-in in the guest that is not declared in Nix.] → It only repeats the declared flag; guest replacement makes it redundant.
 
 ## Migration Plan

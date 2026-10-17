@@ -131,12 +131,11 @@ let
     '';
     config = { Cmd = [ "/bin/sh" "-c" "sleep infinity" ]; Env = [ "HOME=/root" "PATH=/bin" ]; };
   };
-  provisionImage = self.packages.x86_64-linux.kanidm-provision-image;
   helper = pkgs.writeShellScriptBin "gateway-case" (builtins.readFile ./case.sh);
   manifests = ../../../.. + "/generated/manifests/prod-home";
 in {
-  images = [ originImage toolsImage provisionImage ];
-  kubernetesImages = [ originRef "${provisionImage.imageName}:${provisionImage.imageTag}" ];
+  images = [ originImage toolsImage ];
+  kubernetesImages = [ originRef ];
   settings = {
     inherit administrator;
     inherit identityDataPath;
