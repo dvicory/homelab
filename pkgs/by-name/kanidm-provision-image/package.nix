@@ -25,7 +25,8 @@ let
       test -s /desired/state.json
       test -s /desired/members.json
       test -s /desired/clients.json
-      trap 'rm -f auth.json headers response request.json provision.log client.json client-spec.json client-secret.json groups undeclared secret-publish.log' EXIT
+      test -s /desired/policies.json
+      trap 'rm -f auth.json headers response request.json provision.log client.json client-spec.json client-secret.json groups undeclared secret-publish.log policy.json' EXIT
 
       # Authenticate using runtime body files. The upstream provisioner calls
       # this password a TOKEN, but it is the idm_admin recovery password.
@@ -83,12 +84,27 @@ let
       fi
       unset KANIDM_PROVISION_IDM_ADMIN_TOKEN
 
-      # The first phase leaves this group empty. Grant membership only after
-      # MFA policy and every declared client's exhaustive grants are applied.
-      printf '%s' '["account_policy"]' > request.json
-      api POST "/v1/group/$KANIDM_ADMIN_GROUP/_attr/class" --data-binary @request.json
-      printf '%s' '["mfa"]' > request.json
-      api PUT "/v1/group/$KANIDM_ADMIN_GROUP/_attr/credential_type_minimum" --data-binary @request.json
+      # The first phase leaves the administrator group empty. Grant membership
+      # only after every declared account policy, including the
+      # administrators' MFA minimum, and every declared client's exhaustive
+      # grants are applied. policies.json lists each group's policy.
+      policy_count=$(jq -er 'length' /desired/policies.json)
+      for ((index = 0; index < policy_count; index++)); do
+        jq -e --argjson index "$index" '.[$index]' /desired/policies.json > policy.json
+        group=$(jq -er '.group | select(test("^[a-z][a-z0-9_-]*$"))' policy.json)
+        api GET "/v1/group/$group"
+        if ! jq -e '.attrs.class | index("account_policy")' response > /dev/null; then
+          printf '%s' '["account_policy"]' > request.json
+          api POST "/v1/group/$group/_attr/class" --data-binary @request.json
+        fi
+        jq -ce '.credentialTypeMinimum | select(. == "any" or . == "mfa" or . == "passkey" or . == "attested_passkey") | [.]' \
+          policy.json > request.json
+        api PUT "/v1/group/$group/_attr/credential_type_minimum" --data-binary @request.json
+        if jq -e '.allowPrimaryCredFallback != null' policy.json > /dev/null; then
+          jq -ce '.allowPrimaryCredFallback | select(type == "boolean") | [tostring]' policy.json > request.json
+          api PUT "/v1/group/$group/_attr/allow_primary_cred_fallback" --data-binary @request.json
+        fi
+      done
 
       # clients.json lists each OAuth2 client, the scopes the administrator
       # group receives, and the declared Secrets that receive its credential.

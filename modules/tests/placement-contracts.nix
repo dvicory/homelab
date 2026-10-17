@@ -28,7 +28,6 @@ let
     };
     storageCapabilities = [ "media" ];
     runtimeSecrets = { };
-    images = [ "guest-image" ];
   };
   rendererBoundaryAssertions =
     let

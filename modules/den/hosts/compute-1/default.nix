@@ -1,6 +1,5 @@
 { config, den, ... }:
 let
-  clusterImages = config.flake.clusterResources.prod-home.images;
   mediaGid = config.den.groups.media.gid;
   ingress = config.den.clusters.prod-home.ingress;
 in
@@ -34,15 +33,12 @@ in
         metadata = config.system.build.images."lxc-metadata";
         # Keep the native archive inputs and format; favor preparation speed
         # over compressed size without changing the guest system closure.
-        rootfsPath = "${
-          rootfs.override { compressCommand = "pixz -0 -t"; }
-        }/${rootfs.passthru.filePath}";
+        rootfsPath = "${rootfs.override { compressCommand = "pixz -0 -t"; }}/${rootfs.passthru.filePath}";
         metadataPath = "${metadata}/${metadata.passthru.filePath}";
       in
       {
         boot.isContainer = true;
         hardware.enableAllHardware = false;
-        services.k3s.images = clusterImages;
         # Kubelet must traverse the unshifted root:media (2770) hostPath
         # before it can mount the library for media-capable pods.
         systemd.services.k3s.serviceConfig.SupplementaryGroups = [ (toString mediaGid) ];

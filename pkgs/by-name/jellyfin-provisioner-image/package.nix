@@ -2,6 +2,7 @@
   lib,
   fetchFromGitHub,
   jellyfinMultiverse,
+  jellyfinLdapPlugin,
   sqlite,
   fontconfig,
   freetype,
@@ -96,7 +97,10 @@ let
   image = dockerTools.buildLayeredImage {
     name = "homelab/jellyfin-provisioner";
     compressor = "none";
-    contents = [ runner ];
+    contents = [
+      runner
+      jellyfinLdapPlugin
+    ];
     config = {
       Entrypoint = [ "${runner}/bin/jellyfin-provision" ];
       Env = [
@@ -111,6 +115,8 @@ in
 image.overrideAttrs (old: {
   passthru = (old.passthru or { }) // {
     inherit provisioner preflight runner;
+    ldapPlugin = jellyfinLdapPlugin.passthru.ldapPlugin;
+    pluginInstaller = jellyfinLdapPlugin;
     release = {
       inherit
         version

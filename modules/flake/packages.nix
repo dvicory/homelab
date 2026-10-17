@@ -8,8 +8,7 @@
     url = "github:numtide/devshell";
     inputs.nixpkgs.follows = "nixpkgs";
   };
-  flake-file.inputs.nixpkgs-multiverse.url =
-    "github:fzakaria/nixpkgs-multiverse/9e89229225547747c0150f396ffa413d80bc1427";
+  flake-file.inputs.nixpkgs-multiverse.url = "github:fzakaria/nixpkgs-multiverse/9e89229225547747c0150f396ffa413d80bc1427";
 
   imports = [
     inputs.devshell.flakeModule
@@ -48,12 +47,16 @@
           self + "/pkgs/by-name/kanidm-provision-image/package.nix"
         ) { };
       };
+      jellyfin-ldap-plugin = lib.optionalAttrs isLinux {
+        jellyfin-ldap-plugin = callPackage (self + "/pkgs/by-name/jellyfin-ldap-plugin/package.nix") { };
+      };
       jellyfin-provisioner-image = lib.optionalAttrs isLinux {
-        jellyfin-provisioner-image = callPackage (
-          self + "/pkgs/by-name/jellyfin-provisioner-image/package.nix"
-        ) {
-          jellyfinMultiverse = inputs.nixpkgs-multiverse.multiverse.${pkgs.stdenv.hostPlatform.system};
-        };
+        jellyfin-provisioner-image =
+          callPackage (self + "/pkgs/by-name/jellyfin-provisioner-image/package.nix")
+            {
+              jellyfinMultiverse = inputs.nixpkgs-multiverse.multiverse.${pkgs.stdenv.hostPlatform.system};
+              jellyfinLdapPlugin = jellyfin-ldap-plugin.jellyfin-ldap-plugin;
+            };
       };
       jellarr-image = lib.optionalAttrs isLinux {
         jellarr-image = callPackage (self + "/pkgs/by-name/jellarr-image/package.nix") { };
@@ -79,20 +82,31 @@
       // kanidm-provision-image
       // retained-directories-image
       // jellyfin-provisioner-image
-      // jellarr-image;
+      // jellarr-image
+      // jellyfin-ldap-plugin;
 
       checks = {
         compute-runtime = config.packages.compute-runtime;
         helper-source =
-          pkgs.runCommand "helper-source-authorization" { nativeBuildInputs = [ pkgs.python3 ]; } ''
-            python ${self + "/.github/test-helper-source.py"} ${self + "/.github/helper-source.py"}
-            touch "$out"
-          '';
+          pkgs.runCommand "helper-source-authorization" { nativeBuildInputs = [ pkgs.python3 ]; }
+            ''
+              python ${self + "/.github/test-helper-source.py"} ${self + "/.github/helper-source.py"}
+              touch "$out"
+            '';
         helper-release =
-          pkgs.runCommand "helper-release-audit" { nativeBuildInputs = [ pkgs.python3 pkgs.openssl ]; } ''
-            python ${self + "/pkgs/by-name/helper-release/test.py"} ${self + "/pkgs/by-name/helper-release/helper-release.py"}
-            touch "$out"
-          '';
+          pkgs.runCommand "helper-release-audit"
+            {
+              nativeBuildInputs = [
+                pkgs.python3
+                pkgs.openssl
+              ];
+            }
+            ''
+              python ${self + "/pkgs/by-name/helper-release/test.py"} ${
+                self + "/pkgs/by-name/helper-release/helper-release.py"
+              }
+              touch "$out"
+            '';
       }
       // lib.optionalAttrs isLinux {
         prepare-luks-storage =

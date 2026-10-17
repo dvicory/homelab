@@ -90,9 +90,10 @@ in
     # provisioner checks only that the name is not blank, then fails partway
     # through provisioning on any other name. Accept the ASCII subset of that
     # rule here so a bad name fails evaluation instead.
-    type = lib.types.addCheck (lib.types.strMatching "[A-Za-z0-9_.'@+-]([A-Za-z0-9_ .'@+-]*[A-Za-z0-9_.'@+-])?") (
-      name: name != "." && name != ".."
-    );
+    type =
+      lib.types.addCheck
+        (lib.types.strMatching "[A-Za-z0-9_.'@+-]([A-Za-z0-9_ .'@+-]*[A-Za-z0-9_.'@+-])?")
+        (name: name != "." && name != "..");
     default = integration.administrator;
     description = ''
       Initial declarative Jellyfin administrator name: ASCII letters, digits,
@@ -115,30 +116,17 @@ in
     '';
   };
 
-  den.aspects.kubernetes.services.jellyfin.compute-resources =
-    { cluster, ... }:
-    let
-      hostCompute =
-        config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
-      linuxSystem =
-        inputs.self.nixosConfigurations.${hostCompute.instance}.pkgs.stdenv.hostPlatform.system;
-      packages = inputs.self.packages.${linuxSystem};
-    in
-    {
-      images = [
-        packages.jellyfin-provisioner-image
-        packages.jellarr-image
-      ];
-      retainedPaths.jellyfin-config = {
-        inherit (identity) uid gid;
-        mode = "0750";
-      };
-      runtimeSecrets."jellyfin--jellyfin-admin--password" = {
-        inherit namespace;
-        name = integration.adminSecret.name;
-        key = integration.adminSecret.key;
-      };
+  den.aspects.kubernetes.services.jellyfin.compute-resources = _: {
+    retainedPaths.jellyfin-config = {
+      inherit (identity) uid gid;
+      mode = "0750";
     };
+    runtimeSecrets."jellyfin--jellyfin-admin--password" = {
+      inherit namespace;
+      name = integration.adminSecret.name;
+      key = integration.adminSecret.key;
+    };
+  };
 
   den.aspects.kubernetes.services.jellyfin.k8s-manifests =
     {
@@ -149,14 +137,17 @@ in
     let
       linuxSystem =
         inputs.self.nixosConfigurations.${computeResources.instance}.pkgs.stdenv.hostPlatform.system;
-      packages = inputs.self.packages.${linuxSystem};
-      provisioner = packages.jellyfin-provisioner-image;
+      selected = builtins.fromJSON (
+        builtins.readFile (inputs.self + "/assets/helper-release/verified.json")
+      );
+      selectedSource = builtins.getFlake "github:dvicory/homelab/${selected.sourceSha}";
+      provisioner = selectedSource.packages.${selected.system}.jellyfin-provisioner-image;
       provisionerRelease = provisioner.passthru.release;
-      jellarr = packages.jellarr-image;
-      jellarrRelease = jellarr.passthru.release;
-      provisionerImage = "${provisioner.imageName}:${provisioner.imageTag}";
+      provisionerArtifact = selected.artifacts.jellyfin-provisioner-image;
+      jellarrArtifact = selected.artifacts.jellarr-image;
+      provisionerImage = "${provisionerArtifact.repository}@${provisionerArtifact.digest}";
       runtimeImage = "${provisionerRelease.runtimeImage}@${provisionerRelease.runtimeDigest}";
-      jellarrImage = "${jellarrRelease.imageName}:${jellarrRelease.imageTag}";
+      jellarrImage = "${jellarrArtifact.repository}@${jellarrArtifact.digest}";
       administrator = cluster.settings.kubernetes.services.jellyfin.administrator;
       transcoding = cluster.settings.kubernetes.services.jellyfin.transcoding;
       inherit (computeResources) accelerator;
@@ -282,17 +273,18 @@ in
       '';
     in
     assert lib.assertMsg (
+      selected.system == linuxSystem
+    ) "Selected helper release must target the Jellyfin compute guest's system";
+    assert lib.assertMsg (
       route.namespace == namespace
       && route.service == integration.service
       && route.port == integration.port
       && !route.backendTLS
     ) "Jellyfin route must target its declared HTTP Service";
-    # One coupled release identity. The provisioner build must use the
-    # declared source, the stock runtime tag must name the same version, and
-    # the whole declaration must equal the reviewed release below. A Jellyfin
-    # upgrade edits the package declaration, this reviewed release and the
-    # acceptance evidence in one change; moving either side alone fails here.
-    # modules/tests/jellyfin-contracts.nix proves each drift is rejected.
+    # Validate the selected immutable release, independently of the current
+    # producer. Its provisioner source and exact stock runtime stay coupled;
+    # an unpublished producer update cannot change this selected runtime.
+    # modules/tests/jellyfin-contracts.nix proves selected-release drift fails.
     assert lib.assertMsg (
       provisioner.passthru.provisioner.version == provisionerRelease.version
       && provisioner.passthru.provisioner.src.rev == provisionerRelease.sourceRev
@@ -384,7 +376,7 @@ in
                     {
                       name = "provision";
                       image = provisionerImage;
-                      imagePullPolicy = "Never";
+                      imagePullPolicy = "IfNotPresent";
                       command = [ "/bin/jellyfin-provision" ];
                       env = [
                         {
@@ -651,7 +643,8 @@ in
               ];
             };
           }
-        ] ++ lib.optionals initialSeerr [
+        ]
+        ++ lib.optionals initialSeerr [
           # Only the initial PostSync first-owner helper can read this Secret.
           # Ready-state helpers and every periodic run use an unprivileged SA.
           {
@@ -704,6 +697,7 @@ in
             metadata = {
               name = "jellarr-configuration";
               inherit namespace;
+              annotations."homelab.danielvicory/helper-image" = jellarrImage;
             };
             data = {
               "config.yml" = jellarrConfig;
@@ -740,7 +734,7 @@ in
                     {
                       name = "bootstrap";
                       image = jellarrImage;
-                      imagePullPolicy = "Never";
+                      imagePullPolicy = "IfNotPresent";
                       command = [ "node" ];
                       args = [ "/config/bootstrap.mjs" ];
                       env = [
@@ -788,7 +782,7 @@ in
                     {
                       name = "jellarr";
                       image = jellarrImage;
-                      imagePullPolicy = "Never";
+                      imagePullPolicy = "IfNotPresent";
                       resources = {
                         requests = {
                           cpu = "10m";
