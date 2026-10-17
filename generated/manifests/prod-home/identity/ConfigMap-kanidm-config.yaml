@@ -8,6 +8,7 @@ data:
     tls_key = "/etc/kanidm/tls/tls.key"
     domain = "idm.plus2.danielvicory.dev"
     origin = "https://idm.plus2.danielvicory.dev"
+    ldapbindaddress = "0.0.0.0:3636"
 kind: ConfigMap
 metadata:
   name: kanidm-config

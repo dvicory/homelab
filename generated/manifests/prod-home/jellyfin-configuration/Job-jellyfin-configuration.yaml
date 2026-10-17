@@ -4,7 +4,7 @@ metadata:
   annotations:
     argocd.argoproj.io/hook: PostSync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
-    homelab.danielvicory/jellarr-config: f6f2d69eb5d80b54da0d105f286a66c9f43b32c7df8f71a6781270971072243c
+    homelab.danielvicory/jellarr-config: 96be876e1ae0803c13ebc4a4720297e1f15ef9f4ce599c6d236c0a14769e1e2a
   labels:
     app.kubernetes.io/instance: jellyfin-configuration
     app.kubernetes.io/name: jellarr

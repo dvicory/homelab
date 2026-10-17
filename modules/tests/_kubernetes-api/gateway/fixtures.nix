@@ -14,7 +14,7 @@ let
         auth = "native"; exposure = "public"; backendPodSelector.app = "origin";
         hostnames = [ "origin.test" ]; pathPrefix = "/";
         backendTLS = false; backendHostname = null; timeouts = null;
-        sameNamespaceIngress = true;
+        sameNamespaceIngress = true; manageBackendIngress = true;
       };
     };
     ingress = cluster.ingress // { mode = "direct"; trustedProxyCIDRs = [ ]; };
@@ -39,7 +39,11 @@ let
       };
     } else object) (renderGateway inventory).applications.gateway.objects;
   renderIdentity = phase: identity.k8s-manifests {
-    cluster = lib.recursiveUpdate fixtureCluster { settings.kubernetes.services.identity.phase = phase; };
+    cluster = lib.recursiveUpdate fixtureCluster {
+      # Keep the directory peer selector without publishing another Gateway route.
+      routes.jellyfin = cluster.routes.jellyfin;
+      settings.kubernetes.services.identity.phase = phase;
+    };
     computeResources = config.flake.clusterResources.prod-home // { inherit instance; };
     inherit lib;
   };
