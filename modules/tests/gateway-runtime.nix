@@ -24,6 +24,7 @@ let
   peerAddress = "10.0.0.11";
   strangerAddress = "10.0.0.20";
   nodePort = toString cluster.ingress.nodePort;
+  identityHostname = builtins.head cluster.routes.idm.hostnames;
   instance = "compute-1";
   entranceKinds = [
     "GatewayClass"
@@ -31,6 +32,7 @@ let
     "Gateway"
     "ClientTrafficPolicy"
     "NetworkPolicy"
+    "ReferenceGrant"
   ];
   entranceObjects =
     inventory:
@@ -39,6 +41,7 @@ let
         object:
         lib.elem object.kind entranceKinds
         && (object.kind != "NetworkPolicy" || object.metadata.name == "private-origin")
+        && (object.kind != "ReferenceGrant" || object.metadata.name == "gateway-identity-certificate")
       )
       (gateway.k8s-manifests {
         cluster = inventory;
@@ -150,7 +153,10 @@ in
             };
             spec = {
               parentRefs = [ { name = "household"; } ];
-              hostnames = [ "origin.test" ];
+              hostnames = [
+                "origin.test"
+                identityHostname
+              ];
               rules = [
                 {
                   backendRefs = [
@@ -217,6 +223,7 @@ in
             };
             testScript = ''
               import json
+              import shlex
               import time
 
               kubectl = "${k3sPackage}/bin/k3s kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml"
@@ -225,6 +232,13 @@ in
 
               def request(path, headers=""):
                   return f"curl -ksS --max-time 5 {headers} {resolve} '{url}/{path}'"
+
+              def identity_request(path):
+                  return (
+                      "curl --fail --silent --show-error --max-time 5 --cacert /tmp/identity.crt "
+                      "--resolve ${identityHostname}:${nodePort}:${nodeAddress} "
+                      f"'https://${identityHostname}:${nodePort}/{path}'"
+                  )
 
               def access_log(path):
                   # Envoy flushes file access logs periodically, not per request.
@@ -245,11 +259,13 @@ in
               start_all()
               cluster.wait_until_succeeds(f"{kubectl} get --raw=/readyz", timeout=300)
               cluster.succeed(f"{kubectl} apply -f ${manifests}/gateway-retained")
+              cluster.succeed(f"{kubectl} create namespace ${cluster.routes.idm.namespace}")
               cluster.succeed(f"{kubectl} apply --server-side -f ${manifests}/gateway-crds")
               cluster.wait_until_succeeds(
                   f"{kubectl} wait --for=condition=Established --timeout=10s "
                   "crd/gateways.gateway.networking.k8s.io crd/envoyproxies.gateway.envoyproxy.io "
-                  "crd/clienttrafficpolicies.gateway.envoyproxy.io",
+                  "crd/clienttrafficpolicies.gateway.envoyproxy.io "
+                  "crd/referencegrants.gateway.networking.k8s.io",
                   timeout=120,
               )
               cluster.succeed(f"{kubectl} apply --server-side -f ${manifests}/gateway-controller")
@@ -266,12 +282,30 @@ in
                   f"{kubectl} create secret tls gateway-tls --namespace gateway "
                   "--cert=/tmp/tls.crt --key=/tmp/tls.key"
               )
+              cluster.succeed(
+                  "openssl req -x509 -newkey rsa:2048 -nodes -days 1 "
+                  "-subj ${lib.escapeShellArg "/CN=${identityHostname}"} "
+                  "-addext ${lib.escapeShellArg "subjectAltName=DNS:${identityHostname}"} "
+                  "-keyout /tmp/identity.key -out /tmp/identity.crt"
+              )
+              cluster.succeed(
+                  f"{kubectl} create secret tls kanidm-tls --namespace ${cluster.routes.idm.namespace} "
+                  "--cert=/tmp/identity.crt --key=/tmp/identity.key"
+              )
+              identity_certificate = cluster.succeed("cat /tmp/identity.crt")
+              for machine in (peer, stranger):
+                  machine.succeed(f"printf '%s' {shlex.quote(identity_certificate)} > /tmp/identity.crt")
               cluster.succeed(f"{kubectl} apply -f ${origin}")
               cluster.succeed(f"{kubectl} apply -f ${direct}")
 
               with subtest("a direct client reaches the origin through the NodePort"):
                   stranger.wait_until_succeeds(
                       request("index.html") + " | grep -qx origin", timeout=900
+                  )
+
+              with subtest("the independent identity name serves its verified certificate"):
+                  stranger.wait_until_succeeds(
+                      identity_request("index.html") + " | grep -qx origin", timeout=120
                   )
 
               with subtest("direct mode logs the connecting address and a fresh request ID, without the query"):
@@ -293,6 +327,9 @@ in
               # trusted edge must now pass through it.
               with subtest("a trusted edge reaches the origin through the enforced policy"):
                   peer.wait_until_succeeds(request("trusted-probe") + " | grep -qx origin", timeout=120)
+
+              with subtest("a trusted edge verifies the canonical identity certificate"):
+                  peer.succeed(identity_request("trusted-probe") + " | grep -qx origin")
 
               with subtest("a trusted edge's forwarded address and request ID are honoured"):
                   for attempt in range(30):
