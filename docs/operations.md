@@ -36,6 +36,7 @@ independently syncing child Applications.
 | Service | Exposure | Canonical URL | Secondary URL | Backend |
 | --- | --- | --- | --- | --- |
 | `argocd` | `public` | `https://argocd.plus2.danielvicory.dev` | `https://argocd.backup.plus2.danielvicory.dev` | `argocd/argocd-server:80` |
+| `grafana` | `public` | `https://grafana.plus2.danielvicory.dev` | `https://grafana.backup.plus2.danielvicory.dev` | `monitoring/grafana:80` |
 | `idm` | `public` | `https://idm.plus2.danielvicory.dev` | `https://idm.backup.plus2.danielvicory.dev` | `identity/kanidm:443` |
 | `jellyfin` | `private` | `https://jellyfin.plus2.danielvicory.dev` | `https://jellyfin.backup.plus2.danielvicory.dev` | `jellyfin/jellyfin:8096` |
 | `prowlarr` | `public` | `https://prowlarr.plus2.danielvicory.dev` | `https://prowlarr.backup.plus2.danielvicory.dev` | `media/prowlarr:9696` |
@@ -63,6 +64,7 @@ point DNS at the edge.
 | `jellyfin-config` | `/var/lib/homelab/compute-1/state/jellyfin-config` | `/srv/state/jellyfin-config` | `751:751` | `0750` | writable |
 | `kubernetes-volumes` | `/var/lib/homelab/compute-1/state/kubernetes-volumes` | `/srv/state/kubernetes-volumes` | `0:0` | `0700` | writable |
 | `media-seerr-configuration` | `/var/lib/homelab/compute-1/state/media-seerr-configuration` | `/srv/state/media-seerr-configuration` | `1000:1000` | `0700` | writable |
+| `monitoring-metrics` | `/var/lib/homelab/compute-1/state/monitoring-metrics` | `/srv/state/monitoring-metrics` | `3100:3100` | `0700` | writable |
 | `prowlarr` | `/var/lib/homelab/compute-1/state/prowlarr` | `/srv/state/prowlarr` | `755:755` | `0700` | writable |
 | `radarr` | `/var/lib/homelab/compute-1/state/radarr` | `/srv/state/radarr` | `752:752` | `0700` | writable |
 | `sabnzbd` | `/var/lib/homelab/compute-1/state/sabnzbd` | `/srv/state/sabnzbd` | `757:757` | `0700` | writable |
@@ -86,6 +88,30 @@ Manage operator secrets with `agenix edit` and rekey under
 Never put plaintext credentials or recovery output in Git, Nix
 outputs, images, documentation, or logs.
 
+For a single-line credential that must not end in a newline, run this
+in Bash at the repository root, replacing `<source>` with its table
+entry. Input is hidden and kept out of command arguments; the temporary
+editor contains only commands, never the credential:
+
+```sh
+(
+  set +x
+  umask 077
+  editor=$(mktemp)
+  trap 'rm -f "$editor"' EXIT
+  cat >"$editor" <<'BASH'
+read -rsp 'Secret: ' value || exit 1
+printf '\n'
+printf '%s' "$value" > "$1"
+BASH
+  EDITOR="bash $editor" agenix edit ".secrets/hosts/compute-1/<source>.age"
+)
+```
+
+Run `agenix rekey`, track new encrypted sources with `jj file track`,
+and commit them before following the deployment procedure. Do not
+commit plaintext or invent replacement values for unavailable secrets.
+
 | Kubernetes Secret | Source -> key | Type |
 | --- | --- | --- |
 | `argocd/argocd-secret` | `argocd--argocd-secret--admin.password` → `admin.password`, `argocd--argocd-secret--admin.passwordMtime` → `admin.passwordMtime`, `argocd--argocd-secret--server.secretkey` → `server.secretkey` | `Opaque` |
@@ -93,6 +119,7 @@ outputs, images, documentation, or logs.
 | `identity/kanidm-provision` | `identity--kanidm-provision--idm-admin-password` → `idm-admin-password` | `Opaque` |
 | `jellyfin/jellyfin-admin` | `jellyfin--jellyfin-admin--password` → `password` | `Opaque` |
 | `media/media-runtime` | `media--media-runtime--PROWLARR_API_KEY` → `PROWLARR_API_KEY`, `media--media-runtime--RADARR_API_KEY` → `RADARR_API_KEY`, `media--media-runtime--SABNZBD_API_KEY` → `SABNZBD_API_KEY`, `media--media-runtime--SEERR_API_KEY` → `SEERR_API_KEY`, `media--media-runtime--SONARR_API_KEY` → `SONARR_API_KEY` | `Opaque` |
+| `monitoring/grafana-admin` | `monitoring--grafana-admin--secret-key` → `secret-key` | `Opaque` |
 
 ## Certificates
 
@@ -235,4 +262,5 @@ over the replacement.
 - [`jellyfin`](operations/jellyfin.md)
 - [`luks-storage-migration`](operations/luks-storage-migration.md)
 - [`media`](operations/media.md)
+- [`monitoring`](operations/monitoring.md)
 
