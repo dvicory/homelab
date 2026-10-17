@@ -65,6 +65,12 @@ let
         inherit cluster;
         computeResources = releaseComputeResources;
       };
+  configurationFor =
+    rendered:
+    (lib.findFirst (
+      object: object.kind == "ConfigMap" && object.metadata.name == "jellarr-configuration"
+    ) (throw "Jellyfin render has no Jellarr ConfigMap") rendered.applications.jellyfin-configuration.objects)
+    .data."config.yml";
   # Jellarr configuration rendered for a declared transcoding mode.
   jellarrConfigFor =
     transcoding:
@@ -74,11 +80,8 @@ let
           settings.kubernetes.services.jellyfin = { inherit transcoding; };
         };
       };
-      configMap = lib.findFirst (
-        object: object.kind == "ConfigMap" && object.metadata.name == "jellarr-configuration"
-      ) (throw "Jellyfin render has no Jellarr ConfigMap") rendered.applications.jellyfin-configuration.objects;
     in
-    configMap.data."config.yml";
+    configurationFor rendered;
   # One side of selected A moves; everything else is its shipped package.
   drift =
     {
@@ -136,17 +139,36 @@ let
       release.provisionPatchRev = laterSourceRev;
     };
   };
+  # A plugin build for another Jellyfin major release must not render.
+  pluginTargets =
+    targetAbi:
+    provisionerPackage
+    // rec {
+      ldapPlugin = provisionerPackage.ldapPlugin // { inherit targetAbi; };
+      passthru = provisionerPackage.passthru // {
+        inherit ldapPlugin;
+      };
+    };
+  renders = arguments: (builtins.tryEval (renderJellyfinWith arguments)).success;
+  pluginFailures =
+    lib.optional (!(renders { provisioner = pluginTargets "12.0.0.0"; })) "plugin-for-12-renders"
+    ++ lib.optional (renders { provisioner = pluginTargets "13.0.0.0"; }) "plugin-for-13-rejected"
+    ++ lib.optional (renders { provisioner = pluginTargets "10.11.9.0"; }) "plugin-for-10.11-rejected";
   conformant = renderJellyfin provisionerPackage;
+  podFor =
+    rendered:
+    (lib.findFirst (
+      object: object.kind == "Deployment" && object.metadata.name == "jellyfin"
+    ) (throw "Jellyfin render has no Deployment") rendered.applications.jellyfin.objects)
+    .spec.template.spec;
   imagesFor =
     rendered:
     let
-      deployment = lib.findFirst (
-        object: object.kind == "Deployment" && object.metadata.name == "jellyfin"
-      ) (throw "Jellyfin render has no Deployment") rendered.applications.jellyfin.objects;
+      pod = podFor rendered;
     in
     {
-      provisioner = (builtins.head deployment.spec.template.spec.initContainers).image;
-      runtime = (builtins.head deployment.spec.template.spec.containers).image;
+      provisioner = (builtins.head pod.initContainers).image;
+      runtime = (builtins.head pod.containers).image;
     };
   conformantImages = imagesFor conformant;
   releaseFailures =
@@ -198,6 +220,72 @@ let
   administratorFailures =
     lib.attrNames (lib.filterAttrs (_: name: !(administratorAccepted name)) administratorCases)
     ++ lib.attrNames (lib.filterAttrs (_: administratorAccepted) rejectedAdministrators);
+  # New household controls stay with the Nix renderer; native policy owns
+  # the existing deployment/storage/security invariants.
+  householdFailures =
+    let
+      pod = podFor conformant;
+      provisioner = builtins.head pod.initContainers;
+      installer = builtins.elemAt pod.initContainers 1;
+      runtime = builtins.head pod.containers;
+      configMount = container: lib.findFirst (mount: mount.mountPath == "/config") null container.volumeMounts;
+      plugin = provisionerPackage.ldapPlugin;
+      jellarr = builtins.fromJSON (configurationFor conformant);
+      ldap = (builtins.head jellarr.plugins).configuration;
+      inherit (releaseCluster.settings.kubernetes.services.identity) adminGroup householdGroup directory;
+      host = builtins.head releaseCluster.routes.idm.hostnames;
+      base = lib.concatMapStringsSep "," (part: "dc=${part}") (lib.splitString "." host);
+      memberOf = group: "(memberof=spn=${group}@${host},${base})";
+    in
+    lib.attrNames (lib.filterAttrs (_: value: !value) {
+      plugin-reviewed-release =
+        plugin.name == "LDAP Authentication"
+        && plugin.version == "24.0.0.0"
+        && plugin.targetAbi == "12.0.0.0"
+        && plugin.sourceRev == "d11c86a47d51a0e3372bbff20e508302ad78f7bd"
+        && plugin.guid == "958aad66-3784-4d2a-b89a-a7b6fab6e25c"
+        && plugin.directory == "LDAP Authentication_${plugin.version}";
+      # Provisioning must see empty /config before plugin installation.
+      plugin-installation-after-provisioning =
+        builtins.length pod.containers == 1
+        && map (container: container.name) pod.initContainers == [ "provision" "plugins" ];
+      plugin-installer-selected-image =
+        installer.image == provisioner.image
+        && installer.image == "${selected.artifacts.jellyfin-provisioner-image.repository}@${selected.artifacts.jellyfin-provisioner-image.digest}"
+        && installer.command == [ "/bin/${provisionerPackage.pluginInstaller.meta.mainProgram}" ]
+        && installer.imagePullPolicy == "IfNotPresent";
+      plugin-installer-confined =
+        map (mount: mount.mountPath) installer.volumeMounts == [ "/config" ]
+        && (configMount installer).name == (configMount runtime).name
+        && (installer.env or [ ]) == [ ]
+        && (installer.envFrom or [ ]) == [ ]
+        && installer.securityContext.allowPrivilegeEscalation == false
+        && builtins.elem "ALL" installer.securityContext.capabilities.drop;
+      plugin-configuration-only =
+        map (entry: entry.name) jellarr.plugins == [ plugin.serverName ]
+        && !(jellarr.system ? pluginRepositories)
+        && !(ldap ? LdapUsers);
+      directory-verified-ldaps =
+        ldap.LdapServer == host
+        && ldap.LdapPort == directory.port
+        && ldap.LdapBaseDn == base
+        && ldap.UseSsl
+        && !ldap.UseStartTls
+        && !ldap.SkipSslVerify
+        && ldap.LdapRootCaPath == "";
+      directory-no-service-credential =
+        ldap.LdapBindUser == ""
+        && ldap.LdapBindPassword == "";
+      directory-household-and-admin-only =
+        ldap.LdapSearchFilter == "(&(class=person)(|${memberOf householdGroup}${memberOf adminGroup}))"
+        && ldap.LdapAdminFilter == "(&(class=person)${memberOf adminGroup})"
+        && !ldap.EnableLdapAdminFilterMemberUid;
+      directory-user-links-application-owned =
+        ldap.LdapUidAttribute == "uuid"
+        && ldap.LdapUsernameAttribute == "name"
+        && ldap.LdapSearchAttributes == "name"
+        && !ldap.AllowPassChange;
+    });
 in
 {
   perSystem =
@@ -224,8 +312,12 @@ in
       checks.jellyfin-contracts =
         assert lib.assertMsg (releaseFailures == [ ])
           "Jellyfin release invariant checks failed: ${lib.concatStringsSep ", " releaseFailures}";
+        assert lib.assertMsg (pluginFailures == [ ])
+          "Jellyfin plugin release checks failed: ${lib.concatStringsSep ", " pluginFailures}";
         assert lib.assertMsg (administratorFailures == [ ])
           "Jellyfin administrator name checks failed: ${lib.concatStringsSep ", " administratorFailures}";
+        assert lib.assertMsg (householdFailures == [ ])
+          "Jellyfin household contract checks failed: ${lib.concatStringsSep ", " householdFailures}";
         pkgs.runCommand "jellyfin-contracts"
           {
             nativeBuildInputs = [

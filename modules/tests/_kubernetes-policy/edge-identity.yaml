@@ -37,6 +37,8 @@ spec:
             variables.inventory.filter(n, (variables.inventory[n].auth != 'admin' || variables.phase ==
             'normal') && (n != 'requests' || variables.cluster.settings.kubernetes.services.seerr.phase
             == 'ready'))
+        - name: managed
+          expression: variables.active.filter(n, variables.inventory[n].manageBackendIngress)
         - name: admins
           expression: variables.inventory.filter(n, variables.inventory[n].auth == 'admin')
         - name: routes
@@ -350,10 +352,10 @@ spec:
         variables: *id001
         expressions:
         - expression: >-
-            variables.isolation.size() == variables.active.size() && variables.active.all(n, variables.isolation.filter(p,
+            variables.isolation.size() == variables.managed.size() && variables.managed.all(n, variables.isolation.filter(p,
             p.metadata.name == 'gateway-' + n + '-backend-ingress').size() == 1)
-          message: Each route must retain its own exact backend isolation policy, even for independent
-            same-namespace identities.
+          message: Each Gateway-managed route must retain its exact backend isolation policy;
+            backend-owned port-specific ingress must not acquire an all-port Gateway policy.
   - name: provisioning-serviceaccount
     match:
       any:
@@ -1086,8 +1088,11 @@ spec:
             in variables.inventory[n].backendPodSelector) || (e.operator == 'In' ? variables.inventory[n].backendPodSelector[e.key]
             in e.values : e.operator == 'NotIn' ? !(variables.inventory[n].backendPodSelector[e.key] in
             e.values) : e.operator == 'Exists'))))).all(p, !has(p.spec.ingress) || p.spec.ingress.all(i,
-            has(i.from) && i.from.size() > 0 && i.from.all(f, ((!has(f.namespaceSelector) && has(f.podSelector)
-            && !has(f.ipBlock)) || (has(f.namespaceSelector) && f.namespaceSelector == {'matchLabels':{'kubernetes.io/metadata.name':variables.inventory[n].namespace}}
+            has(i.from) && i.from.size() > 0 && i.from.all(f,
+            ((n != 'idm' || (has(i.ports) && i.ports.size() > 0 && i.ports.all(port,
+            port.port == 8443 && (!has(port.protocol) || port.protocol == 'TCP') && !has(port.endPort)))) &&
+            ((!has(f.namespaceSelector) && has(f.podSelector) && !has(f.ipBlock)) ||
+            (has(f.namespaceSelector) && f.namespaceSelector == {'matchLabels':{'kubernetes.io/metadata.name':variables.inventory[n].namespace}}
             && !has(f.ipBlock)) || (has(f.namespaceSelector) && f.namespaceSelector == {'matchLabels':{'kubernetes.io/metadata.name':'gateway'}}
             && has(f.podSelector.matchLabels) && 'gateway.envoyproxy.io/owning-gateway-name' in f.podSelector.matchLabels
             && f.podSelector.matchLabels['gateway.envoyproxy.io/owning-gateway-name'] == 'household' &&
@@ -1101,7 +1106,13 @@ spec:
             && 'app.kubernetes.io/name' in f.podSelector.matchLabels && f.podSelector.matchLabels['app.kubernetes.io/name']
             in ['seerr', 'media-config-seerr'] && !has(f.ipBlock) && has(i.ports) && i.ports.size() >
             0 && i.ports.all(port, port.port == variables.inventory[n].port && (!has(port.protocol) ||
-            port.protocol == 'TCP') && !has(port.endPort))))))))
+            port.protocol == 'TCP') && !has(port.endPort))))) ||
+            (n == 'idm' && has(f.namespaceSelector) && f.namespaceSelector ==
+            {'matchLabels':{'kubernetes.io/metadata.name':variables.inventory['jellyfin'].namespace}}
+            && has(f.podSelector.matchLabels) && f.podSelector.matchLabels == variables.inventory['jellyfin'].backendPodSelector
+            && !has(f.ipBlock) && has(i.ports) && i.ports.size() > 0 && i.ports.all(port,
+            port.port == variables.cluster.settings.kubernetes.services.identity.directory.port
+            && (!has(port.protocol) || port.protocol == 'TCP') && !has(port.endPort)))))))
           message: >-
             Every selecting NetworkPolicy must preserve backend ingress authority; additive allow-all
             policies cannot widen the union.

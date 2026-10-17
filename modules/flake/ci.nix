@@ -1,4 +1,5 @@
 {
+  config,
   self,
   withSystem,
   lib,
@@ -71,6 +72,7 @@ let
     "jellyfin-contracts"
     "media-contracts"
     "media-storage-contracts"
+    "media-producer-exit"
     "seerr-credential-boundary"
     "alnum-no-newline"
     "generator-failure-closed"
@@ -84,6 +86,7 @@ let
   requiredKubernetesApplications = [
     "public-edge-runtime"
     "media-ingress-runtime"
+    "household-directory-runtime"
   ];
   requiredHostRecovery = [
     "agenix-restart-guard"
@@ -103,6 +106,7 @@ let
   requiredNativeApplications = [
     "verify-kubernetes-api"
     "media-live-acceptance"
+    "household-sign-in-runtime"
   ];
 
   requiredFeaturesFor =
@@ -128,7 +132,8 @@ let
         ++ lib.optionals (lib.hasSuffix "-linux" system) [
           "prepare-luks-storage"
           "incus-mount-isolation-decisions"
-        ];
+        ]
+        ++ lib.optional (system == "x86_64-linux") "prod-home-registry-failures";
       runtimeRequired =
         lib.optionals (system == "x86_64-linux") (requiredKubernetesApplications ++ requiredHostRecovery)
         ++ lib.optional (system == "aarch64-linux") "agenix-restart-guard";
@@ -265,6 +270,19 @@ let
           cleanupPrefix = "homelab-media-live-";
         }
         {
+          name = "household-sign-in-runtime";
+          package = "packages.${system}.household-sign-in-runtime";
+          arguments = [ ];
+          timeoutSeconds = 3000;
+          requirements = {
+            docker = true;
+            root = true;
+            ownedStorage = true;
+          };
+          loopbackHost = builtins.head config.den.clusters."prod-home".routes.idm.hostnames;
+          cleanupPrefix = "household";
+        }
+        {
           name = "verify-kubernetes-api";
           package = "packages.${system}.verify-kubernetes-api";
           arguments = [
@@ -295,13 +313,22 @@ let
       ) "Required native CI apps must be registered exactly once";
       descriptors;
 
-  hostedPlanFor = system: {
-    inventory = builtins.mapAttrs (_: map (entry: builtins.removeAttrs entry [ "drvPath" ])) (
-      checkInventory system
-    );
-    groups = builtins.attrNames ciJobs.${system};
-    nativeApplications = nativeApplicationsFor system;
-  };
+  hostedPlanFor =
+    system:
+    let
+      nativeApplications = nativeApplicationsFor system;
+      names = builtins.attrNames (checksFor system) ++ map (app: app.name) nativeApplications;
+    in
+    assert lib.assertMsg (
+      builtins.length names == builtins.length (lib.unique names)
+    ) "Hosted CI checks and native applications must be uniquely registered on ${system}";
+    {
+      inventory = builtins.mapAttrs (_: map (entry: builtins.removeAttrs entry [ "drvPath" ])) (
+        checkInventory system
+      );
+      groups = builtins.attrNames ciJobs.${system};
+      inherit nativeApplications;
+    };
 in
 {
   flake = {
