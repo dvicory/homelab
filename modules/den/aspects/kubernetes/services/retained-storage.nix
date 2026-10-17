@@ -1,4 +1,4 @@
-{ config, inputs, ... }:
+{ inputs, ... }:
 let
   namespace = "local-path-storage";
   storageClassName = "retained-local";
@@ -10,28 +10,24 @@ let
   };
 in
 {
-  den.aspects.kubernetes.services.retained-storage.compute-resources =
-    { cluster, ... }:
-    let
-      compute =
-        config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
-      guestSystem = inputs.self.nixosConfigurations.${compute.instance}.pkgs.stdenv.hostPlatform.system;
-    in
-    {
-      images = [ inputs.self.packages.${guestSystem}.retained-directories-image ];
-      retainedPaths.kubernetes-volumes = {
-        uid = 0;
-        gid = 0;
-        mode = "0700";
-      };
+  den.aspects.kubernetes.services.retained-storage.compute-resources = _: {
+    retainedPaths.kubernetes-volumes = {
+      uid = 0;
+      gid = 0;
+      mode = "0700";
     };
+  };
   den.aspects.kubernetes.services.retained-storage.k8s-manifests =
     { computeResources, lib, ... }:
     let
       retained = computeResources.retainedPaths."kubernetes-volumes";
       linuxSystem =
         inputs.self.nixosConfigurations.${computeResources.instance}.pkgs.stdenv.hostPlatform.system;
-      directories = inputs.self.packages.${linuxSystem}.retained-directories-image;
+      selected = builtins.fromJSON (
+        builtins.readFile (inputs.self + "/assets/helper-release/verified.json")
+      );
+      directories = selected.artifacts.retained-directories-image;
+      helperImage = "${directories.repository}@${directories.digest}";
       chart = lib.helm.downloadHelmChart {
         repo = "oci://ghcr.io/rancher/local-path-provisioner/charts";
         chart = "local-path-provisioner";
@@ -58,9 +54,8 @@ in
           memory = "128Mi";
         };
       };
-      # Argo CD does not compare hook resources with Git. The directory list
-      # lives in a compared ConfigMap, so adding a retained path makes this
-      # Application OutOfSync, and the sync that follows reruns the hook Job.
+      # Hooks do not make Argo OutOfSync. Keep both the directory list and
+      # selected helper in the compared ConfigMap so either change reruns it.
       directoriesConfig = "retained-directories";
       directoriesKey = "directories.json";
       helperResources = {
@@ -74,6 +69,9 @@ in
         };
       };
     in
+    assert lib.assertMsg (
+      selected.system == linuxSystem
+    ) "Selected helper release must target the retained-storage compute guest's system";
     assert lib.assertMsg
       (retained.uid == 0 && retained.gid == 0 && retained.mode == "0700" && !retained.readOnly)
       "computeResources.retainedPaths.kubernetes-volumes must be a writable root-owned parent with mode 0700";
@@ -98,7 +96,9 @@ in
             metadata = {
               name = directoriesConfig;
               inherit namespace;
-              annotations = protect;
+              annotations = protect // {
+                "homelab.danielvicory/helper-image" = helperImage;
+              };
             };
             data.${directoriesKey} = builtins.toJSON (
               lib.mapAttrs (_: entry: {
@@ -127,8 +127,8 @@ in
                 containers = [
                   {
                     name = "retained-directories";
-                    image = directories.imageReference;
-                    imagePullPolicy = "Never";
+                    image = helperImage;
+                    imagePullPolicy = "IfNotPresent";
                     env = [
                       {
                         name = "RETAINED_DIRECTORIES";

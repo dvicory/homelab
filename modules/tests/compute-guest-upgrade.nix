@@ -66,22 +66,6 @@
           }).den.aspects.services."kubernetes-runtime-secrets".nixos;
         computeGuest = pkgs.callPackage (inputs.self + "/pkgs/by-name/compute-runtime/package.nix") { };
         guestBundle = guest.config.system.build.computeBundle;
-        # Jellyfin's helper images are the only guest difference: the earlier
-        # guest imports every other declared image at boot.
-        helperImages = [
-          self.packages.${system}.jellyfin-provisioner-image
-          self.packages.${system}.jellarr-image
-        ];
-        previousGuest = guest.extendModules {
-          modules = [
-            {
-              services.k3s.images = lib.mkForce (
-                lib.filter (image: !(lib.elem image helperImages)) guest.config.services.k3s.images
-              );
-            }
-          ];
-        };
-        previousBundle = previousGuest.config.system.build.computeBundle;
         descriptor = builtins.fromJSON hostConfig.environment.etc."homelab/compute.json".text;
         poolPath = descriptor.poolPath;
         scenario = ./compute-guest-upgrade.py;
@@ -150,9 +134,7 @@
                 additionalPaths = [
                   computeGuest
                   guestBundle
-                  previousBundle
-                ]
-                ++ helperImages;
+                ];
                 incus = {
                   enable = true;
                   package = hostConfig.virtualisation.incus.package;
@@ -271,10 +253,8 @@
             (status, _) = fixture_host.execute(
                 "python3 -u /tmp/compute-guest-upgrade.py"
                 " --library /tmp/prod_home_replacement.py"
-                " --previous-bundle ${previousBundle}"
                 " --bundle ${guestBundle}"
                 " --helper ${computeGuest}/bin/compute-guest"
-                " --images ${lib.concatStringsSep "," (map toString helperImages)}"
                 " --upgraded /run/current-system/specialisation/upgraded"
                 f" < /dev/null > {console} 2>&1",
                 timeout=2 * 60 * 60,
@@ -285,8 +265,7 @@
       in
       {
         legacyPackages.compute-guest-upgrade-test = test // {
-          inherit guestBundle previousBundle;
-          previousGuestSystem = previousGuest.config.system.build.toplevel;
+          inherit guestBundle;
           previousDescriptor =
             (computeAspect {
               host = previousHost;

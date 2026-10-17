@@ -691,6 +691,26 @@ class GitOrigin:
         run(*git, "-c", "user.email=recovery@test", "-c", "user.name=recovery", "commit", "-m", "retire fixture applications")
         run(*git, "push", str(self.bare), "main:main")
 
+    def select_retained_helper(self, image: str) -> str:
+        check(self.work is not None and self.bare is not None, "Git origin exists before helper selection")
+        job_path = self.work / "retained-storage" / "Job-retained-directories.yaml"
+        config_path = self.work / "retained-storage" / "ConfigMap-retained-directories.yaml"
+        job = json.loads(run("yq", "-o=json", str(job_path)))
+        config_map = json.loads(run("yq", "-o=json", str(config_path)))
+        job["spec"]["template"]["spec"]["containers"][0]["image"] = image
+        annotations = config_map["metadata"].get("annotations", {})
+        # Only propagate the production projection when it exists. Adding it
+        # here would repair the old source and make the regression vacuous.
+        if "homelab.danielvicory/helper-image" in annotations:
+            annotations["homelab.danielvicory/helper-image"] = image
+        job_path.write_text(json.dumps(job, indent=2) + "\n")
+        config_path.write_text(json.dumps(config_map, indent=2) + "\n")
+        git = ["git", "-C", str(self.work)]
+        run(*git, "-c", "user.email=recovery@test", "-c", "user.name=recovery", "add", "-A")
+        run(*git, "-c", "user.email=recovery@test", "-c", "user.name=recovery", "commit", "-m", "select retained helper")
+        run(*git, "push", str(self.bare), "main:main")
+        return run(*git, "rev-parse", "HEAD")
+
     def stop(self) -> None:
         proc, self.process = self.process, None
         if proc is None:
@@ -1539,6 +1559,131 @@ def verify_accelerator(runtime: Runtime, kubeconfig: Path, workspace: Path, smok
               "Jellyfin opens the returned render node no later than its next start")
 
 
+def verify_helper_selection(runtime: Runtime, kubeconfig: Path, origin: GitOrigin,
+                            args: argparse.Namespace, workspace: Path, marker: Path) -> None:
+    """Already-Synced Argo must run a real helper-only upgrade and rollback."""
+    check(args.helper_image_b is not None and args.helper_b is not None and args.helper_tls is not None,
+          "replacement has the compiled B and disposable TLS registry inputs")
+    check(run(str(args.helper_b), "--version") == "fixture-v2", "B has the genuinely compiled CLI capability")
+    wait_argo_synced(kubeconfig, ("retained-storage",))
+    job_path = origin.work / "retained-storage" / "Job-retained-directories.yaml"
+    config_path = origin.work / "retained-storage" / "ConfigMap-retained-directories.yaml"
+    original_job = json.loads(run("yq", "-o=json", str(job_path)))
+    original_config = json.loads(run("yq", "-o=json", str(config_path)))
+    image_a = original_job["spec"]["template"]["spec"]["containers"][0]["image"]
+    probe_entry = runtime.descriptor["retainedPaths"]["identity-kanidm"]
+    probe = Path(probe_entry["path"])
+    payload = (marker.read_bytes(), marker.stat())
+
+    def identity():
+        return {
+            "instance": instance_query(runtime.project, runtime.instance)["config"]["volatile.uuid"],
+            "system": runtime.guest("readlink", "-f", "/run/current-system"),
+            "boot": runtime.guest("cat", "/proc/sys/kernel/random/boot_id"),
+            "machine": runtime.guest("cat", "/etc/machine-id"),
+            "node": runtime.kubectl_json("get", "node", runtime.instance, "-o", "json")["metadata"]["uid"],
+            "k3s": runtime.guest("systemctl", "show", "k3s", "-p", "MainPID", "--value"),
+        }
+
+    before = identity()
+    registry_root = workspace / "helper-selection-registry"
+    registry_root.mkdir(mode=0o700)
+    policy = registry_root / "policy.json"
+    # This exact Nix archive is unsigned; all other source transports stay refused.
+    policy.write_text(json.dumps({
+        "default": [{"type": "reject"}],
+        "transports": {"docker-archive": {"": [{"type": "insecureAcceptAnything"}]}},
+    }))
+    registry_config = registry_root / "registry.json"
+    address = f"{origin.address}:5000"
+    registry_config.write_text(json.dumps({
+        "version": 0.1,
+        "storage": {"filesystem": {"rootdirectory": str(registry_root / "data")}},
+        "http": {"addr": address, "tls": {
+            "certificate": str(args.helper_tls / "server.crt"),
+            "key": str(args.helper_tls / "server.key"),
+        }},
+    }))
+    registry_log = workspace / "helper-selection-registry.log"
+    with registry_log.open("w") as log:
+        registry = subprocess.Popen(["registry", "serve", str(registry_config)], stdout=log, stderr=subprocess.STDOUT)
+        try:
+            wait_for("disposable verified-TLS registry", lambda: completed(
+                "curl", "--fail", "--silent", "--cacert", str(args.helper_tls / "client/ca.crt"),
+                f"https://{address}/v2/").returncode == 0, timeout=60)
+            digest_file = registry_root / "digest"
+            repository = f"{address}/helper-selection/retained-directories"
+            run("skopeo", "--policy", str(policy), "copy", "--dest-no-creds", "--dest-tls-verify=true",
+                "--dest-cert-dir", str(args.helper_tls / "client"), "--format", "v2s2",
+                "--digestfile", str(digest_file), f"docker-archive:{args.helper_image_b}",
+                f"docker://{repository}:fixture-b", timeout=600)
+            image_b = f"{repository}@{digest_file.read_text().strip()}"
+            check(image_b.rsplit("@", 1)[1] != image_a.rsplit("@", 1)[1], "compiled B has a different manifest from A")
+            for label, image in (("upgrade-b", image_b), ("rollback-a", image_a)):
+                # This directory is unused by the Jellyfin-only fixture.
+                # rmdir refuses to remove retained contents if that changes.
+                probe.rmdir()
+                check(not probe.exists(), f"{label}: the canonical empty retained directory is absent")
+                revision = origin.select_retained_helper(image)
+                desired_job = json.loads(run("yq", "-o=json", str(job_path)))
+                desired_config = json.loads(run("yq", "-o=json", str(config_path)))
+                original_spec = copy.deepcopy(original_job["spec"])
+                desired_spec = copy.deepcopy(desired_job["spec"])
+                original_spec["template"]["spec"]["containers"][0].pop("image")
+                desired_spec["template"]["spec"]["containers"][0].pop("image")
+                check(desired_spec == original_spec and desired_config["data"] == original_config["data"],
+                      f"{label}: helper arguments and desired payload remain unchanged")
+                runtime.kubectl("annotate", "application/retained-storage",
+                                "argocd.argoproj.io/refresh=hard", "--overwrite", namespace="argocd")
+
+                def applied():
+                    app = runtime.kubectl_json("get", "application", "retained-storage", "-o", "json", namespace="argocd")
+                    job = runtime.kubectl_json("get", "job/retained-directories", "-o", "json", namespace="local-path-storage")
+                    status = app.get("status", {})
+                    if (not probe.is_dir() or status.get("sync", {}).get("revision") != revision
+                            or status.get("sync", {}).get("status") != "Synced"
+                            or job["spec"]["template"]["spec"]["containers"][0]["image"] != image
+                            or job.get("status", {}).get("succeeded") != 1):
+                        raise AssertionError(json.dumps({
+                            "probeExists": probe.is_dir(), "sync": status.get("sync"),
+                            "operation": status.get("operationState", {}).get("phase"),
+                            "jobImage": job["spec"]["template"]["spec"]["containers"][0]["image"],
+                            "jobStatus": job.get("status", {}),
+                        }, sort_keys=True))
+                    return job
+
+                job = wait_for(f"automatic helper-only {label} creates the retained directory", applied, timeout=300)
+                wait_argo_synced(kubeconfig, ("retained-storage",))
+                info = probe.stat()
+                check(info.st_uid == runtime.descriptor["idmapBase"] + probe_entry["uid"]
+                      and info.st_gid == runtime.descriptor["idmapBase"] + probe_entry["gid"]
+                      and stat.S_IMODE(info.st_mode) == int(probe_entry["mode"], 8),
+                      f"{label}: the helper recreates the canonical mapped ownership and mode")
+                current = marker.stat()
+                check(marker.read_bytes() == payload[0]
+                      and (current.st_dev, current.st_ino, current.st_uid, current.st_gid, current.st_mode)
+                      == (payload[1].st_dev, payload[1].st_ino, payload[1].st_uid, payload[1].st_gid, payload[1].st_mode),
+                      f"{label}: retained application payload, inode, ownership and mode survive")
+                check(identity() == before, f"{label}: guest generation and control-plane identities remain unchanged")
+                print("HELPER_SELECTION " + json.dumps({
+                    "transition": label, "revision": revision, "image": image,
+                    "jobUid": job["metadata"]["uid"], "probe": {"uid": info.st_uid, "gid": info.st_gid,
+                    "mode": oct(stat.S_IMODE(info.st_mode))}, "identity": before,
+                    "retainedPayloadSha256": hashlib.sha256(payload[0]).hexdigest(),
+                    "retainedPayloadInode": current.st_ino,
+                }, sort_keys=True), flush=True)
+        finally:
+            registry.terminate()
+            try:
+                registry.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                registry.kill()
+                registry.wait(timeout=30)
+            shutil.rmtree(registry_root)
+            check(not registry_root.exists() and registry.poll() is not None,
+                  "disposable helper registry process and writable state are removed")
+
+
 def run_scenario(args: argparse.Namespace) -> None:
     fixture_architecture = platform.machine()
     spec = importlib.util.spec_from_file_location("jellyfin_smoke", args.smoke)
@@ -1937,6 +2082,10 @@ def run_scenario(args: argparse.Namespace) -> None:
             marker_stat = marker.stat()
             check(marker.read_text() == "retained-state\n" and marker_stat.st_uid == descriptor["idmapBase"] + 751,
                   "Jellyfin writes retained application data as its declared mapped identity")
+            if args.scenario == "replacement":
+                with phase("already-synced-helper-selection-and-rollback"):
+                    verify_helper_selection(runtime, kubeconfig, origin, args, workspace, marker)
+                    smoke.verify_state(base, username, password, "Movies", item_id)
             if args.scenario == "consumer-resilience":
                 with phase("post-preflight-provision-failure"):
                     verify_post_preflight_provision_failure(runtime, kubeconfig, workspace, secret_values)
@@ -2257,6 +2406,9 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--acceleration-check", required=True, type=Path, help="docs/operations/jellyfin-acceleration-check.sh")
     result.add_argument("--bootstrap-host", required=True, type=Path, help="shipped household-bootstrap-host executable")
     result.add_argument("--helper", type=Path, default=Path("/run/current-system/sw/bin/compute-guest"), help="generic compute lifecycle executable")
+    result.add_argument("--helper-image-b", type=Path, help="test-only compiled B archive, published only to the disposable registry")
+    result.add_argument("--helper-b", type=Path, help="native compiled B CLI capability control")
+    result.add_argument("--helper-tls", type=Path, help="initial-fixture TLS identity and trusted CA")
     return result
 
 

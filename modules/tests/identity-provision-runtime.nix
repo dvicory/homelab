@@ -10,8 +10,8 @@
 # password. identity-provision-runtime.py reads Kanidm without printing any
 # credential.
 #
-# The Kanidm image comes from its registry by digest, so the builder must
-# permit __noChroot (sandbox = relaxed).
+# Kanidm and the provisioning helper come from their registries by digest,
+# so the builder must permit __noChroot (sandbox = relaxed).
 {
   config,
   lib,
@@ -39,7 +39,6 @@ in
     { pkgs, system, ... }:
     lib.optionalAttrs (system == "x86_64-linux") (
       let
-        provisionImage = self.packages.${system}.kanidm-provision-image;
         # Test-only: trust the test CA. Everything else is the committed Job.
         trustJob = pkgs.writeText "trust-test-ca.jq" ''
           .spec.template.spec.containers[0].env += [{name: "SSL_CERT_FILE", value: "/test-trust/ca.crt"}]
@@ -86,7 +85,6 @@ in
                   disable = [ "traefik" ];
                   images = [
                     k3sPackage.airgap-images
-                    provisionImage
                   ];
                 };
               };
@@ -346,7 +344,7 @@ in
             '';
           }).overrideTestDerivation
             (_: {
-              # Registry pull of the digest-pinned Kanidm image.
+              # Registry pulls of the digest-pinned server and helper.
               __noChroot = true;
             });
       in

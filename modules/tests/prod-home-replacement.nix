@@ -94,7 +94,42 @@
               ffmpeg -hide_banner -loglevel error                 -f lavfi -i color=c=black:s=64x64:d=1                 -f lavfi -i anullsrc=r=8000:cl=mono                 -t 1 -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest                 "$out"
             '';
         computeGuest = pkgs.callPackage (inputs.self + "/pkgs/by-name/compute-runtime/package.nix") { };
-        guestBundle = guest.config.system.build.computeBundle;
+        selected = builtins.fromJSON (
+          builtins.readFile (inputs.self + /assets/helper-release/verified.json)
+        );
+        selectedSource = builtins.getFlake "github:dvicory/homelab/${selected.sourceSha}";
+        # The same genuine compiled B capability used by helper-release-runtime.
+        helperRuntimeB = selectedSource.packages.${system}.compute-runtime.overrideAttrs (old: {
+          postPatch = (old.postPatch or "") + ''
+            substituteInPlace cmd/retained-directories/main.go --replace-fail 'func main() {' 'func main() {
+              if len(os.Args) == 2 && os.Args[1] == "--version" {
+                fmt.Println("fixture-v2")
+                return
+              }'
+          '';
+        });
+        helperImageB =
+          pkgs.callPackage (selectedSource + "/pkgs/by-name/retained-directories-image/package.nix")
+            {
+              compute-runtime = helperRuntimeB;
+            };
+        helperTls = pkgs.runCommand "argo-helper-selection-tls" { nativeBuildInputs = [ pkgs.openssl ]; } ''
+          mkdir -p "$out/client"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 36500 \
+            -subj /CN=argo-helper-selection \
+            -addext subjectAltName=IP:${bridgeAddress} \
+            -addext basicConstraints=critical,CA:TRUE \
+            -keyout "$out/server.key" -out "$out/server.crt"
+          cp "$out/server.crt" "$out/client/ca.crt"
+          chmod 0444 "$out/server.key"
+        '';
+        # Initial fixture trust only: transitions do not restart or reconfigure K3s.
+        helperGuestBundle =
+          (guest.extendModules {
+            modules = [
+              { security.pki.certificateFiles = [ "${helperTls}/client/ca.crt" ]; }
+            ];
+          }).config.system.build.computeBundle;
         canonical = lib.fileset.toSource {
           root = ../../generated/manifests/prod-home;
           fileset = lib.fileset.unions [
@@ -112,9 +147,8 @@
         };
         seedManifests = self.packages.${system}.household-bootstrap-manifests;
         # Canonical seed inputs are Argo namespace, CRDs, controllers and root
-        # handoff only; Jellyfin and Argo workloads remain pinned registry
-        # images from the canonical manifests, with no fixture image rewrites.
-        # The scenario copies them into disposable local inputs.
+        # handoff only. Initial recovery uses canonical registry images; the
+        # later helper-only transition selects disposable compiled B, then A.
         testRepo = pkgs.runCommand "prod-home-recovery-repo" { } ''
           mkdir -p "$out"/{apps,retained-storage,jellyfin,jellyfin-retained,jellyfin-configuration}
           cp ${canonical}/apps/Application-retained-storage.yaml ${canonical}/apps/Application-jellyfin.yaml ${canonical}/apps/Application-jellyfin-retained.yaml ${canonical}/apps/Application-jellyfin-configuration.yaml "$out/apps/"
@@ -141,6 +175,10 @@
         bootstrapHost = self.packages.${system}.household-bootstrap-host;
         mkTest =
           family:
+          let
+            guestBundle =
+              if family == "replacement" then helperGuestBundle else guest.config.system.build.computeBundle;
+          in
           (pkgs.testers.runNixOSTest {
             name = if family == "replacement" then "prod-home-replacement" else "prod-home-consumer-resilience";
             globalTimeout = 4 * 60 * 60;
@@ -209,6 +247,11 @@
                     testRepo
                     testSeed
                     bootstrapHost
+                  ]
+                  ++ lib.optionals (family == "replacement") [
+                    helperImageB
+                    helperRuntimeB
+                    helperTls
                   ];
 
                   incus = {
@@ -243,6 +286,11 @@
                   pkgs.xz
                   pkgs.yq-go
                   computeGuest
+                ]
+                ++ lib.optionals (family == "replacement") [
+                  pkgs.curl
+                  pkgs.distribution
+                  pkgs.skopeo
                 ];
 
                 # Exercise the exact production substrate rather than the
@@ -261,7 +309,7 @@
                   hostConfig.networking.firewall.interfaces.${descriptor.network};
                 # The disposable Git origin fixture serves the guest over the
                 # Incus bridge; registry pulls use normal outbound access.
-                networking.firewall.allowedTCPPorts = [ 9418 ];
+                networking.firewall.allowedTCPPorts = [ 9418 ] ++ lib.optional (family == "replacement") 5000;
                 networking.nftables.enable = true;
 
                 # Bootstrap restages through this unit, not the direct script.
@@ -329,6 +377,11 @@
                   " --acceleration-check /tmp/jellyfin-acceleration-check.sh"
                   " --bootstrap-host ${bootstrapHost}/bin/household-bootstrap-host"
                   " --helper ${computeGuest}/bin/compute-guest"
+                  ${lib.optionalString (family == "replacement") ''
+                    " --helper-image-b ${helperImageB}"
+                    " --helper-b ${helperRuntimeB}/bin/retained-directories"
+                    " --helper-tls ${helperTls}"
+                  ''}
                   f" < /dev/null > {console} 2>&1",
                   timeout=4 * 60 * 60,
               )
@@ -360,8 +413,8 @@
             fixture
             testRepo
             testSeed
-            guestBundle
             ;
+          guestBundle = helperGuestBundle;
         };
         legacyPackages.prod-home-consumer-resilience-test = consumerTest;
         checks.prod-home-replacement = replacementTest // {

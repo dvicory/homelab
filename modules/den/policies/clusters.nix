@@ -82,11 +82,6 @@ in
                     };
                   };
                   options.runtimeSecrets = den.aspects.virtualization.compute.settings.runtimeSecrets;
-                  options.images = lib.mkOption {
-                    type = lib.types.listOf lib.types.package;
-                    default = [ ];
-                    description = "Locally built workload images imported by the compute guest's K3s service.";
-                  };
                 }
               ];
             };
@@ -111,13 +106,11 @@ in
           storageCapabilities = hostCompute.storageCapabilities;
           runtimeSecrets = resources.runtimeSecrets;
           mediaPaths = resources.mediaPaths;
-          images = resources.images;
         };
       in
       assert lib.assertMsg (
         lib.sort builtins.lessThan (builtins.attrNames computeResources) == [
           "accelerator"
-          "images"
           "instance"
           "mediaPaths"
           "retainedPaths"

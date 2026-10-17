@@ -14,12 +14,12 @@
 ## 3. Authorized real publication
 
 - [x] 3.1 Record the owner's approval for automatic merged-main publication after required CI, the four public GHCR namespaces, irreversible visibility, and scoped package permission; obtain separate approval before merging the publisher PR.
-- [ ] 3.2 After the reviewed publisher PR is merged, publish the exact native helper artifacts through the main-owned workflow; verify their real manifest/config/platform identities and that every required executor has succeeded for that exact source and attempt.
-- [ ] 3.3 Configure the approved public visibility through GitHub's supported interface and verify anonymous access to each exact digest; produce verified candidate identities and refuse private, missing, wrong-platform, altered, or mismatched releases.
+- [x] 3.2 After the reviewed publisher PR is merged, publish the exact native helper artifacts through the main-owned workflow; verify their real manifest/config/platform identities and that every required executor has succeeded for that exact source and attempt.
+- [x] 3.3 Configure the approved public visibility through GitHub's supported interface and verify anonymous access to each exact digest; produce verified candidate identities and refuse private, missing, wrong-platform, altered, or mismatched releases.
 
 ## 4. Clean consumer cutover and acceptance
 
-- [ ] 4.1 Select the actual verified digests for all four helper consumers and migrate affected fixtures; verify generated resources use only the selected identities and that producer input file sets cannot create a digest-lock/source cycle.
-- [ ] 4.2 Remove the corresponding helper preloads, obsolete Never-only pull policy and routine manual staging paths; verify unrelated K3s platform airgap inputs and runtime secret ownership are unchanged, with no empty-lock fallback or dual-mode resolver.
-- [ ] 4.3 Regenerate tracked outputs and run the existing freshness, schema, security and relevant consumer contracts once after edits; smoke the final changed application path, preserving meaningful cases from later fleet changes.
+- [x] 4.1 Select the actual verified digests for all four helper consumers and migrate affected fixtures; verify generated resources use only the selected identities and that producer input file sets cannot create a digest-lock/source cycle.
+- [x] 4.2 Remove the corresponding helper preloads, obsolete Never-only pull policy and routine manual staging paths; verify unrelated K3s platform airgap inputs and runtime secret ownership are unchanged, with no empty-lock fallback or dual-mode resolver.
+- [x] 4.3 Regenerate tracked outputs and run the existing freshness, schema, security and relevant consumer contracts once after edits; smoke the final changed application path, preserving meaningful cases from later fleet changes.
 - [ ] 4.4 Open the consumer cutover PR with exact publication evidence and operator gates; after separate owner merge/rollout approval, observe application reconciliation without helper import, host activation or guest replacement and record retained identity/state and explicit rollback acceptance.
