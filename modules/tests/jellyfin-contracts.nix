@@ -2,14 +2,11 @@
   config,
   inputs,
   lib,
-  self,
   ...
 }:
 let
-  # Version acceptance: render the real Jellyfin k8s-manifests aspect with the
-  # cluster and the compute facts it reads from the cluster-to-nixidy
-  # projection, varying only the provisioner package that jellyfin.nix reads
-  # from inputs.self.packages.
+  # Exercise the real renderer's selected-release assertions, independently
+  # of the current producer packages.
   releaseCluster = config.den.clusters.prod-home;
   releaseCompute =
     config.den.hosts.${releaseCluster.hostSystem}.${releaseCluster.hostName}.settings.virtualization.compute;
@@ -19,25 +16,51 @@ let
   };
   releaseSystem =
     inputs.self.nixosConfigurations.${releaseComputeResources.instance}.pkgs.stdenv.hostPlatform.system;
-  provisionerPackage = inputs.self.packages.${releaseSystem}.jellyfin-provisioner-image;
+  selected = builtins.fromJSON (
+    builtins.readFile (inputs.self + /assets/helper-release/verified.json)
+  );
+  selectedReference = "github:dvicory/homelab/${selected.sourceSha}";
+  selectedSource = builtins.getFlake selectedReference;
+  provisionerPackage = selectedSource.packages.${selected.system}.jellyfin-provisioner-image;
   renderJellyfin = provisioner: renderJellyfinWith { inherit provisioner; };
   renderJellyfinWith =
     {
       provisioner ? provisionerPackage,
+      producer ? inputs.self.packages.${releaseSystem}.jellyfin-provisioner-image,
       cluster ? releaseCluster,
     }:
-    (import ../den/aspects/kubernetes/services/jellyfin.nix {
-      inherit config lib;
-      inputs = inputs // {
-        self = inputs.self // {
-          packages = inputs.self.packages // {
-            ${releaseSystem} = inputs.self.packages.${releaseSystem} // {
-              jellyfin-provisioner-image = provisioner;
+    (builtins.scopedImport
+      {
+        builtins = builtins // {
+          getFlake =
+            reference:
+            if reference == selectedReference then
+              selectedSource
+              // {
+                packages = selectedSource.packages // {
+                  ${selected.system} = selectedSource.packages.${selected.system} // {
+                    jellyfin-provisioner-image = provisioner;
+                  };
+                };
+              }
+            else
+              builtins.getFlake reference;
+        };
+      }
+      ../den/aspects/kubernetes/services/jellyfin.nix
+      {
+        inherit config lib;
+        inputs = inputs // {
+          self = inputs.self // {
+            packages = inputs.self.packages // {
+              ${releaseSystem} = inputs.self.packages.${releaseSystem} // {
+                jellyfin-provisioner-image = producer;
+              };
             };
           };
         };
-      };
-    }).den.aspects.kubernetes.services.jellyfin.k8s-manifests
+      }
+    ).den.aspects.kubernetes.services.jellyfin.k8s-manifests
       {
         inherit cluster;
         computeResources = releaseComputeResources;
@@ -56,7 +79,7 @@ let
       ) (throw "Jellyfin render has no Jellarr ConfigMap") rendered.applications.jellyfin-configuration.objects;
     in
     configMap.data."config.yml";
-  # One side of the release moves; everything else is the shipped package.
+  # One side of selected A moves; everything else is its shipped package.
   drift =
     {
       release ? { },
@@ -114,18 +137,38 @@ let
     };
   };
   conformant = renderJellyfin provisionerPackage;
-  conformantDeployment = lib.findFirst (
-    object: object.kind == "Deployment" && object.metadata.name == "jellyfin"
-  ) (throw "conformant Jellyfin render has no Deployment") conformant.applications.jellyfin.objects;
-  conformantImages = {
-    provisioner = (builtins.head conformantDeployment.spec.template.spec.initContainers).image;
-    runtime = (builtins.head conformantDeployment.spec.template.spec.containers).image;
-  };
+  imagesFor =
+    rendered:
+    let
+      deployment = lib.findFirst (
+        object: object.kind == "Deployment" && object.metadata.name == "jellyfin"
+      ) (throw "Jellyfin render has no Deployment") rendered.applications.jellyfin.objects;
+    in
+    {
+      provisioner = (builtins.head deployment.spec.template.spec.initContainers).image;
+      runtime = (builtins.head deployment.spec.template.spec.containers).image;
+    };
+  conformantImages = imagesFor conformant;
   releaseFailures =
     lib.optional (
       !(builtins.tryEval (builtins.deepSeq conformantImages true)).success
     ) "conformant-release-renders"
-    ++ lib.attrNames (lib.filterAttrs (_: provisioner: !(rejected provisioner)) driftCases);
+    ++ lib.attrNames (lib.filterAttrs (_: provisioner: !(rejected provisioner)) driftCases)
+    # Those same changes in unselected producer B cannot move or refuse A.
+    ++ map (name: "unselected-producer-${name}") (
+      lib.attrNames (
+        lib.filterAttrs (
+          _: producer:
+          !(builtins.tryEval (
+            assert
+              imagesFor (renderJellyfinWith {
+                inherit producer;
+              }) == conformantImages;
+            true
+          )).success
+        ) driftCases
+      )
+    );
   # Administrator names: evaluate the real option declaration on its own, so
   # a rejection can only come from its type check.
   administratorOption =
@@ -167,10 +210,10 @@ in
           software = jellarrConfigFor "software";
         }
       );
-      # Jellarr validates its whole configuration against a strict schema
-      # before it reads the API key, so the pinned CLI checks a file offline.
+      # Validate with selected A's native CLI, never the guest's Linux binary.
+      # A exports this package only on Linux; Darwin keeps its existing skip.
       jellarrCli = lib.optionalString pkgs.stdenv.hostPlatform.isLinux (
-        lib.getExe self.packages.${system}.jellarr-image.passthru.jellarr
+        lib.getExe selectedSource.packages.${system}.jellarr-image.passthru.jellarr
       );
       renderedImages = pkgs.writeText "jellyfin-release-render.json" (
         builtins.unsafeDiscardStringContext (builtins.toJSON conformantImages)
@@ -248,7 +291,9 @@ in
             # against empty, initialized and partial /config fixtures.
             preflight() {
               JELLYFIN_DATA_DIR="$1" JELLYFIN_CONFIG_DIR="$1/config" \
-                bash -o errexit -o nounset -o pipefail ${../../pkgs/by-name/jellyfin-provisioner-image/preflight.sh} \
+                bash -o errexit -o nounset -o pipefail ${
+                  selectedSource + "/pkgs/by-name/jellyfin-provisioner-image/preflight.sh"
+                } \
                 >"$1.out" 2>"$1.err"
             }
             listing() {

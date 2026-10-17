@@ -347,8 +347,8 @@ def main():
             def gateway_headers(app):
                 # The HTTP shape of a request the Gateway forwards after Kanidm
                 # sign-in: the route's public Host and an outside client in
-                # X-Forwarded-For. Who may reach the port is the NetworkPolicy's
-                # job, proven by gateway-runtime, not by this Docker network.
+                # X-Forwarded-For. Caller admission is proved separately by
+                # media-ingress-runtime, not by this Docker network.
                 return {"Host": gateway_hosts[app], "X-Forwarded-For": "203.0.113.7", "X-Forwarded-Proto": "https"}
             setup = {
                 "identities": identities, "media_gid": media_gid,

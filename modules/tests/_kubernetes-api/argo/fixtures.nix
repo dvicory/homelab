@@ -1,6 +1,5 @@
 { pkgs, linuxPkgs, lib, config, inputs, self }:
 let
-  directories = self.packages.x86_64-linux.retained-directories-image;
   probe = linuxPkgs.dockerTools.buildImage {
     name = "homelab/native-argo-probe";
     tag = "1";
@@ -41,13 +40,12 @@ in
       exec ${pkgs.python3}/bin/python3 ${../report.py} --capture-retained
     '';
     probeImage = probeRef;
-    directoriesImage = directories.imageReference;
     registryManifestDirectories = [ self.packages.${pkgs.stdenv.hostPlatform.system}.household-bootstrap-manifests ];
     inherit action;
     paths = [ pkgs.yq-go pkgs.coreutils ];
   };
-  images = [ probe directories git ];
-  kubernetesImages = [ probeRef directories.imageReference ];
+  images = [ probe git ];
+  kubernetesImages = [ probeRef ];
   containers = [ {
     suffix = "argo-git";
     image = gitRef;
