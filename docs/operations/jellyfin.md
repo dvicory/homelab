@@ -78,8 +78,7 @@ do not redirect the production hostname on a production host.
 
 This application lane exercises authentication and certificate verification.
 The directory K3s/kernel VM gate separately proves NetworkPolicy enforcement;
-Docker success cannot prove that boundary. These instructions do not record
-a pass for the revised packaging or native lane, and neither fixture replaces
+Docker success cannot prove that boundary. Neither fixture replaces
 owner-approved deployment and real-device household acceptance.
 
 ## Storage
