@@ -21,8 +21,8 @@ spec:
     spec:
       automountServiceAccountToken: false
       containers:
-        - image: homelab/jellarr:nqgawjdjhwp2nq6q0j9xspjxwmbb168h
-          imagePullPolicy: Never
+        - image: ghcr.io/dvicory/homelab/jellarr@sha256:ad2cb13fc89dc1dfe9e9d6713dc23f2e7edcd4ccff1bf3fea5f21d5b89bd2be9
+          imagePullPolicy: IfNotPresent
           name: jellarr
           resources:
             limits:
@@ -60,8 +60,8 @@ spec:
               value: http://jellyfin.jellyfin.svc.cluster.local:8096
             - name: JELLYFIN_ADMINISTRATOR
               value: daniel
-          image: homelab/jellarr:nqgawjdjhwp2nq6q0j9xspjxwmbb168h
-          imagePullPolicy: Never
+          image: ghcr.io/dvicory/homelab/jellarr@sha256:ad2cb13fc89dc1dfe9e9d6713dc23f2e7edcd4ccff1bf3fea5f21d5b89bd2be9
+          imagePullPolicy: IfNotPresent
           name: bootstrap
           resources:
             limits:

@@ -12,14 +12,17 @@ compute guest listed under "Current stack" in
 
 ## Household directory sign-in
 
-The `plugins` initContainer uses the same `jellyfin-provisioner-image` as
-fresh-state provisioning, with the explicit `jellyfin-install-plugins`
-command. The normal Linux flake package `jellyfin-ldap-plugin` supplies the
-Nix-pinned official LDAP Authentication v24 files and installer bundled in
-that image; no additional helper image is needed. Installation runs after
-fresh-state provisioning and before the stock runtime. Jellarr configures
-the loaded plugin through its native API, preserving its user links. Do not
-install another version through the dashboard or disable TLS verification.
+The household integration declares a `plugins` initContainer using the same
+`jellyfin-provisioner-image` as fresh-state provisioning, with the explicit
+`jellyfin-install-plugins` command. The normal Linux flake package
+`jellyfin-ldap-plugin` supplies the Nix-pinned official LDAP Authentication v24
+files and installer bundled in that producer; no additional helper image or
+registry namespace is needed. Deployment requires a selected verified release
+containing that installer, not merely an updated producer in the checkout.
+Installation runs after fresh-state provisioning and before the stock runtime.
+Jellarr configures only declared settings of the loaded plugin through its
+native API, preserving plugin-owned user links. Do not install another version
+through the dashboard or disable TLS verification.
 
 Enroll people as described in [Identity operations](identity.md#household-media-credentials).
 Use the ordinary Jellyfin username/password login, and Seerr's ordinary
@@ -33,11 +36,22 @@ administrator can obtain a directory-backed Jellyfin administrator account.
 If Kanidm is down, directory login fails and the local administrator still
 works.
 
-Before deployment, import the changed `jellyfin-provisioner-image`,
-`kanidm-provision-image` and `jellarr-image` as described in "Deliver helper
-images". Keep Seerr in phase `initial` until the owner accepts household
-sign-in from an actual media client and Seerr. Disposable fixture success
-is not production acceptance; live household acceptance remains open.
+Only `jellyfin-users` or `homelab-admin` membership permits directory sign-in;
+outsiders are refused without creating a Jellyfin account. Membership and
+directory-backed administration are checked again at each sign-in. Removing
+membership denies fresh sign-in but does not revoke established sessions:
+an existing session can still return HTTP 200 with the same Jellyfin user ID.
+
+Before deploying directory integration, select a genuinely published and
+anonymously verified helper release containing the LDAP installer and Kanidm
+`policies.json` reconciliation, as described in "Deliver helper images".
+Do not derive consumer digests from the current producers or import their
+archives to bypass selection. Publication and selection do not authorize
+account enrollment, policy activation or auth rollout.
+Keep Seerr in phase `initial` until the owner accepts household sign-in from
+an actual media client and Seerr and separately approves the live transition.
+Disposable fixture success is not production acceptance; live household
+acceptance remains open.
 
 To roll back directory integration, revert the plugin initContainer and
 Jellarr LDAP settings together and restart Jellyfin. Preserve retained users,
@@ -48,8 +62,10 @@ only after directory consumers are removed.
 ### Disposable household acceptance
 
 The native `household-sign-in-runtime` flake app and CI lane materialize the
-same Python suite, committed manifests and three helper-image archives:
-`jellyfin-provisioner-image`, `kanidm-provision-image` and `jellarr-image`.
+same Python suite and committed manifests. The Jellyfin provisioner, Kanidm
+provisioner and Jellarr use actual selected immutable verified GHCR identities
+and normal registry pulls, not local archives, preloads or compatibility aliases.
+Updating an unselected producer must not change those consumer identities.
 They run against real pinned services in an owned disposable Docker fixture,
 not on the production host and not inside a new Docker VM test envelope.
 
@@ -199,11 +215,10 @@ start.
    `sudo incus --project compute exec "$instance" -- ls -ln /dev/dri` shows
    GID 506, `crw-rw----`. A udev rule change applies to an existing node only
    after `sudo udevadm trigger --subsystem-match=drm`, or after the next boot.
-2. Update the guest with the new bundle (`compute-guest replace`, in
-   [`docs/operations.md`](../operations.md)). The bundle creates `/dev/dri`
-   at boot and carries the new `retained-directories` image. If you defer
-   the replacement, import that image into the guest as in "Deliver helper
-   images" before merging. Until the replacement, a guest that restarts
+2. If the guest predates the boot-time `/dev/dri` directory, update it with
+   the new bundle (`compute-guest replace`, in
+   [`docs/operations.md`](../operations.md)). This is a guest filesystem
+   migration, not helper-image delivery. Without it, a guest that restarts
    while the GPU is missing has no `/dev/dri`, and Jellyfin cannot start.
 3. Merge. Argo syncs; Jellyfin restarts with the render node and the
    `gpu-render` group, and the Job applies QSV.
@@ -251,47 +266,67 @@ secret is missing, provisioning fails and Jellyfin does not start.
 
 ## Deliver helper images
 
-Kubernetes never pulls the Jellyfin provisioner, Kanidm provisioner or Jellarr
-images. The Jellyfin provisioner image also carries the LDAP installer.
-Import each new revision into the guest before you sync manifests that
-reference it. Do not rebuild or activate the guest OS for this.
+All four Nix-built helpers use the immutable GHCR digests in
+`assets/helper-release/verified.json`. Kubernetes pulls them normally; routine
+helper updates need no image import, guest activation or replacement.
 
-1. On the Linux Incus host, from the selected repository revision, build the
-   images in Bash:
+The [main helper candidate lane](../../.github/README.md#required-green-main-nix-helper-candidates)
+builds the existing Jellyfin provisioner and Jellarr alongside the retained
+directory and Kanidm helpers. It publishes automatically only from an exact
+merged-main push after all required CI succeeds, without a per-release approval
+click. It checks source/run/attempt, archive/config/rootfs/platform identity
+and anonymous access to immutable manifest digests. It does not automatically
+select a release; required tests, review and a separately approved consumer
+merge still govern selection.
+New package visibility must be made public through the explicitly approved
+GitHub operation before anonymous verification can succeed; public visibility
+is irreversible.
+
+Before publication, content audits inspect every Docker manifest-selected layer
+regardless of its filename, plus image configuration and metadata. Public
+certificate PEMs are allowed; private keys, credential directories and encrypted
+production-secret inputs are refused.
+
+Keep selected and supported rollback versions and layers in GHCR without
+automatic pruning. Keep their reviewed source and digest mappings. CI transfer
+artifacts expire and are not backups; there is no second archive store or
+promise of offline/exact-digest reconstruction. If a version is lost, rebuilding
+needs its locked sources/inputs and may produce a different digest. During a
+registry outage, a selected uncached image must fail visibly, not run a mutable
+fallback. Explicit rollback selects a previous still-available verified release
+through the reviewed application path, not guest recreation or activation.
+
+To select a release:
+
+1. Choose an exact successful main run whose Required CI and all helper
+   publication and anonymous verification jobs passed. Publication is not
+   selection; leave existing consumers unchanged while preparing producers.
+2. Download that run's `helper-verified-<source SHA>` artifact into a temporary
+   directory. Set `run` and `sha` to the reviewed run and source:
 
    ```sh
-   archives=$(nix build --no-link --print-out-paths \
-     .#packages."$system".jellyfin-provisioner-image \
-     .#packages."$system".kanidm-provision-image \
-     .#packages."$system".jellarr-image) || exit 1
+   release_dir=$(mktemp -d) || exit 1
+   gh run download "$run" --repo dvicory/homelab \
+     --name "helper-verified-$sha" --dir "$release_dir"
    ```
 
-2. Import each archive into the existing guest. The command forwards stdin on
-   purpose:
-
-   ```sh
-   while IFS= read -r archive; do
-     sudo incus --project compute exec "$instance" -- \
-       k3s ctr --namespace k8s.io images import - < "$archive" || exit 1
-   done <<< "$archives"
-   ```
-
-3. Before the Argo sync, confirm that containerd lists every `homelab/`
-   image the manifests declare:
-
-   ```sh
-   grep -rhoE 'homelab/[a-z-]+:[a-z0-9]+' \
-     generated/manifests/prod-home/jellyfin \
-     generated/manifests/prod-home/jellyfin-configuration \
-     generated/manifests/prod-home/identity | sort -u
-   sudo incus --project compute exec "$instance" -- \
-     k3s ctr --namespace k8s.io images ls -q
-   ```
+3. Review its source/run, native system and four repository/digest identities.
+   Copy its unmodified `verified.json` to
+   `assets/helper-release/verified.json`, then remove the temporary directory.
+   Do not reconstruct a selection from mutable tags or a publication-only
+   receipt. The committed record keeps the original producer identities;
+   they need not match producers in the new checkout.
+4. Regenerate manifests, run the affected contracts and real consumer checks,
+   and submit the selection for review. Merge is a separate rollout decision:
+   main-tracking Argo reconciles the selected images. Runtime Secrets remain
+   in their existing delivery flow.
+   Helper-only upgrades and rollbacks rerun the application's provisioning hook
+   even when its desired configuration is unchanged.
 
 ## Upgrade Jellyfin
 
-The provisioner and the server must run the same Jellyfin release. Change
-them together in one reviewed change:
+The provisioner and stock server must use one reviewed release. Prepare the
+producer first, then select it only after normal main publication verifies it:
 
 1. In `pkgs/by-name/jellyfin-provisioner-image/package.nix`, set `version`,
    `sourceRev` and its source hash, `runtimeImage`, and the
@@ -301,11 +336,16 @@ them together in one reviewed change:
    `provisionPatchRev` together. When upstream ships an equivalent Provision
    mode, remove the patch and keep the initContainer and the stock server as
    they are.
-3. Make the same release change in the reviewed release in
-   `modules/den/aspects/kubernetes/services/jellyfin.nix`, the expected
-   release in `modules/tests/jellyfin-contracts.nix`, and the stock image
-   constants in `modules/tests/prod-home-replacement.py`.
-4. Regenerate the manifests and run the checks:
+3. Leave `assets/helper-release/verified.json` and the selected consumer release
+   unchanged in the producer PR. After its separately approved merge, wait for
+   the normal main workflow to publish and anonymously verify the new release.
+4. In the consumer PR, select that verified record as above and update the
+   reviewed release in `modules/den/aspects/kubernetes/services/jellyfin.nix`,
+   the expected release in `modules/tests/jellyfin-contracts.nix`, and stock
+   image constants in `modules/tests/prod-home-replacement.py`. Selected
+   source, patch and stock runtime metadata come from the same immutable
+   release; changing an unselected producer must not change the running one.
+5. Regenerate the manifests and run the checks:
 
    ```sh
    nix run .#sync-prod-home-manifests
@@ -317,16 +357,17 @@ them together in one reviewed change:
 
    Both runtime checks are required. Each uses an independent x86_64 Linux
    KVM fixture, a builder permitting `sandbox = relaxed`, and registry access.
-5. After merge, deliver the new provisioner image as described above before
-   the Argo sync.
-6. After the sync, accept hardware transcoding as described in "Accept
-   hardware transcoding". A new release changes ffmpeg and the iHD driver.
+6. Obtain separate consumer merge/rollout approval. Argo pulls the selected
+   images; do not import helpers or activate the guest to deliver them.
+7. After sync, accept hardware transcoding as described in "Accept hardware
+   transcoding". A new release changes ffmpeg and the iHD driver.
 
-Expected result: evaluation fails if only the server image or digest, or only
-the provisioner source, changes. `jellyfin-contracts` and both runtime checks
-pass. Each runtime fixture bootstraps the genuine Incus/ZFS/MergerFS/K3s/Argo
-stack from canonical manifests, provisions Jellyfin, delivers staged secrets,
-and verifies the stock image, administrator, libraries, and playback state.
+Expected result: selected source, patch and stock runtime cannot drift
+independently; changing an unselected producer leaves the selected release
+unchanged. `jellyfin-contracts` and both runtime checks pass. Each runtime
+fixture bootstraps the genuine Incus/ZFS/MergerFS/K3s/Argo stack from canonical
+manifests, provisions Jellyfin, delivers staged secrets, and verifies the stock
+image, administrator, libraries, and playback state.
 
 The required runtime inventory is partitioned, not selected by changed files:
 

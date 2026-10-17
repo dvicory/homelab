@@ -6,7 +6,11 @@
 }:
 let
   cluster = config.den.clusters.prod-home;
-  computeResources = config.clusterResources.prod-home;
+  compute =
+    config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
+  computeResources = config.flake.clusterResources.prod-home // {
+    inherit (compute) instance;
+  };
   identity =
     (import ../den/aspects/kubernetes/services/identity.nix {
       inherit config inputs lib;

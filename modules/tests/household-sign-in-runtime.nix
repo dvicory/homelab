@@ -26,12 +26,6 @@ in
         ];
         text =
           let
-            packages = self.packages.${system};
-            images = [
-              packages.kanidm-provision-image
-              packages.jellyfin-provisioner-image
-              packages.jellarr-image
-            ];
             source = lib.fileset.toSource {
               root = ../..;
               fileset = lib.fileset.unions [
@@ -98,11 +92,7 @@ in
             trap cleanup EXIT
             trap 'exit 130' INT
             trap 'exit 143' TERM
-          ''
-          + lib.concatMapStrings (image: ''
-            docker load < ${image}
-          '') images
-          + ''
+            # Docker pulls the selected digest references from the committed manifests.
             python ${source}/modules/tests/household-sign-in-runtime.py --domain ${domain} --work-dir "$work"
           '';
       };

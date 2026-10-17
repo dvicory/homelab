@@ -2,14 +2,11 @@
   config,
   inputs,
   lib,
-  self,
   ...
 }:
 let
-  # Version acceptance: render the real Jellyfin k8s-manifests aspect with the
-  # cluster and the compute facts it reads from the cluster-to-nixidy
-  # projection, varying only the provisioner package that jellyfin.nix reads
-  # from inputs.self.packages.
+  # Exercise the real renderer's selected-release assertions, independently
+  # of the current producer packages.
   releaseCluster = config.den.clusters.prod-home;
   releaseCompute =
     config.den.hosts.${releaseCluster.hostSystem}.${releaseCluster.hostName}.settings.virtualization.compute;
@@ -19,25 +16,51 @@ let
   };
   releaseSystem =
     inputs.self.nixosConfigurations.${releaseComputeResources.instance}.pkgs.stdenv.hostPlatform.system;
-  provisionerPackage = inputs.self.packages.${releaseSystem}.jellyfin-provisioner-image;
+  selected = builtins.fromJSON (
+    builtins.readFile (inputs.self + /assets/helper-release/verified.json)
+  );
+  selectedReference = "github:dvicory/homelab/${selected.sourceSha}";
+  selectedSource = builtins.getFlake selectedReference;
+  provisionerPackage = selectedSource.packages.${selected.system}.jellyfin-provisioner-image;
   renderJellyfin = provisioner: renderJellyfinWith { inherit provisioner; };
   renderJellyfinWith =
     {
       provisioner ? provisionerPackage,
+      producer ? inputs.self.packages.${releaseSystem}.jellyfin-provisioner-image,
       cluster ? releaseCluster,
     }:
-    (import ../den/aspects/kubernetes/services/jellyfin.nix {
-      inherit config lib;
-      inputs = inputs // {
-        self = inputs.self // {
-          packages = inputs.self.packages // {
-            ${releaseSystem} = inputs.self.packages.${releaseSystem} // {
-              jellyfin-provisioner-image = provisioner;
+    (builtins.scopedImport
+      {
+        builtins = builtins // {
+          getFlake =
+            reference:
+            if reference == selectedReference then
+              selectedSource
+              // {
+                packages = selectedSource.packages // {
+                  ${selected.system} = selectedSource.packages.${selected.system} // {
+                    jellyfin-provisioner-image = provisioner;
+                  };
+                };
+              }
+            else
+              builtins.getFlake reference;
+        };
+      }
+      ../den/aspects/kubernetes/services/jellyfin.nix
+      {
+        inherit config lib;
+        inputs = inputs // {
+          self = inputs.self // {
+            packages = inputs.self.packages // {
+              ${releaseSystem} = inputs.self.packages.${releaseSystem} // {
+                jellyfin-provisioner-image = producer;
+              };
             };
           };
         };
-      };
-    }).den.aspects.kubernetes.services.jellyfin.k8s-manifests
+      }
+    ).den.aspects.kubernetes.services.jellyfin.k8s-manifests
       {
         inherit cluster;
         computeResources = releaseComputeResources;
@@ -56,7 +79,7 @@ let
       ) (throw "Jellyfin render has no Jellarr ConfigMap") rendered.applications.jellyfin-configuration.objects;
     in
     configMap.data."config.yml";
-  # One side of the release moves; everything else is the shipped package.
+  # One side of selected A moves; everything else is its shipped package.
   drift =
     {
       release ? { },
@@ -129,18 +152,38 @@ let
     ++ lib.optional (renders { provisioner = pluginTargets "13.0.0.0"; }) "plugin-for-13-rejected"
     ++ lib.optional (renders { provisioner = pluginTargets "10.11.9.0"; }) "plugin-for-10.11-rejected";
   conformant = renderJellyfin provisionerPackage;
-  conformantDeployment = lib.findFirst (
-    object: object.kind == "Deployment" && object.metadata.name == "jellyfin"
-  ) (throw "conformant Jellyfin render has no Deployment") conformant.applications.jellyfin.objects;
-  conformantImages = {
-    provisioner = (builtins.head conformantDeployment.spec.template.spec.initContainers).image;
-    runtime = (builtins.head conformantDeployment.spec.template.spec.containers).image;
-  };
+  imagesFor =
+    rendered:
+    let
+      deployment = lib.findFirst (
+        object: object.kind == "Deployment" && object.metadata.name == "jellyfin"
+      ) (throw "Jellyfin render has no Deployment") rendered.applications.jellyfin.objects;
+    in
+    {
+      provisioner = (builtins.head deployment.spec.template.spec.initContainers).image;
+      runtime = (builtins.head deployment.spec.template.spec.containers).image;
+    };
+  conformantImages = imagesFor conformant;
   releaseFailures =
     lib.optional (
       !(builtins.tryEval (builtins.deepSeq conformantImages true)).success
     ) "conformant-release-renders"
-    ++ lib.attrNames (lib.filterAttrs (_: provisioner: !(rejected provisioner)) driftCases);
+    ++ lib.attrNames (lib.filterAttrs (_: provisioner: !(rejected provisioner)) driftCases)
+    # Those same changes in unselected producer B cannot move or refuse A.
+    ++ map (name: "unselected-producer-${name}") (
+      lib.attrNames (
+        lib.filterAttrs (
+          _: producer:
+          !(builtins.tryEval (
+            assert
+              imagesFor (renderJellyfinWith {
+                inherit producer;
+              }) == conformantImages;
+            true
+          )).success
+        ) driftCases
+      )
+    );
   # Administrator names: evaluate the real option declaration on its own, so
   # a rejection can only come from its type check.
   administratorOption =
@@ -179,7 +222,6 @@ in
       cluster = config.den.clusters.prod-home;
       compute =
         config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
-      provisioner = self.packages.${cluster.hostSystem}.jellyfin-provisioner-image;
       storage = pkgs.writeText "jellyfin-storage-contract.json" (
         builtins.toJSON {
           inherit (compute) retainedPaths;
@@ -187,10 +229,10 @@ in
         }
       );
       release = pkgs.writeText "jellyfin-release-contract.json" (
-        builtins.toJSON provisioner.passthru.release
+        builtins.toJSON provisionerPackage.passthru.release
       );
       jellarrRelease = pkgs.writeText "jellarr-release-contract.json" (
-        builtins.toJSON self.packages.${cluster.hostSystem}.jellarr-image.passthru.release
+        builtins.toJSON selectedSource.packages.${selected.system}.jellarr-image.passthru.release
       );
       contractInputs = pkgs.writeText "jellyfin-contract-inputs.json" (
         builtins.toJSON {
@@ -199,7 +241,7 @@ in
           inherit (cluster.settings.kubernetes.services.identity) adminGroup householdGroup directory;
           directoryHost = builtins.head cluster.routes.idm.hostnames;
           ldapPlugin = {
-            inherit (provisioner.ldapPlugin)
+            inherit (provisionerPackage.ldapPlugin)
               name
               serverName
               guid
@@ -209,8 +251,8 @@ in
               directory
               ;
           };
-          provisionerImage = builtins.unsafeDiscardStringContext "${provisioner.imageName}:${provisioner.imageTag}";
-          pluginInstaller = "/bin/${provisioner.pluginInstaller.meta.mainProgram}";
+          provisionerImage = "${selected.artifacts.jellyfin-provisioner-image.repository}@${selected.artifacts.jellyfin-provisioner-image.digest}";
+          pluginInstaller = "/bin/${provisionerPackage.pluginInstaller.meta.mainProgram}";
         }
       );
       encodingVariants = pkgs.writeText "jellyfin-encoding-variants.json" (
@@ -219,10 +261,10 @@ in
           software = jellarrConfigFor "software";
         }
       );
-      # Jellarr validates its whole configuration against a strict schema
-      # before it reads the API key, so the pinned CLI checks a file offline.
+      # Validate with selected A's native CLI, never the guest's Linux binary.
+      # A exports this package only on Linux; Darwin keeps its existing skip.
       jellarrCli = lib.optionalString pkgs.stdenv.hostPlatform.isLinux (
-        lib.getExe self.packages.${system}.jellarr-image.passthru.jellarr
+        lib.getExe selectedSource.packages.${system}.jellarr-image.passthru.jellarr
       );
       runtimeSecrets = pkgs.writeText "jellyfin-runtime-secrets-contract.json" (
         builtins.toJSON config.flake.clusterResources.prod-home.runtimeSecrets
@@ -337,7 +379,7 @@ in
             assert runtime["name"] == "jellyfin" and provisioner["name"] == "provision"
             assert plugins_init["image"] == provisioner["image"] == contract_inputs["provisionerImage"], "the bundled provisioner image installs plugins"
             assert plugins_init["command"] == [contract_inputs["pluginInstaller"]], "the bundled installer is invoked explicitly"
-            assert plugins_init.get("imagePullPolicy") == "Never"
+            assert plugins_init.get("imagePullPolicy") == "IfNotPresent"
             assert [m["mountPath"] for m in plugins_init["volumeMounts"]] == ["/config"], "the plugin installer touches only /config"
             assert mount(plugins_init, "/config")["name"] == mount(runtime, "/config")["name"]
             assert not plugins_init.get("env") and not plugins_init.get("envFrom"), "the plugin installer gets no credential"
@@ -656,7 +698,9 @@ in
             # against empty, initialized and partial /config fixtures.
             preflight() {
               JELLYFIN_DATA_DIR="$1" JELLYFIN_CONFIG_DIR="$1/config" \
-                bash -o errexit -o nounset -o pipefail ${../../pkgs/by-name/jellyfin-provisioner-image/preflight.sh} \
+                bash -o errexit -o nounset -o pipefail ${
+                  selectedSource + "/pkgs/by-name/jellyfin-provisioner-image/preflight.sh"
+                } \
                 >"$1.out" 2>"$1.err"
             }
             listing() {
