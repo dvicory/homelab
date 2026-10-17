@@ -143,6 +143,7 @@ in
       selectedSource = builtins.getFlake "github:dvicory/homelab/${selected.sourceSha}";
       provisioner = selectedSource.packages.${selected.system}.jellyfin-provisioner-image;
       provisionerRelease = provisioner.passthru.release;
+      ldapPlugin = provisioner.ldapPlugin;
       provisionerArtifact = selected.artifacts.jellyfin-provisioner-image;
       jellarrArtifact = selected.artifacts.jellarr-image;
       provisionerImage = "${provisionerArtifact.repository}@${provisionerArtifact.digest}";
@@ -159,6 +160,39 @@ in
         else
           (hardwareEncoding accelerator.path).${accelerator.vendor};
       mediaPath = computeResources.mediaPaths.library;
+      # Household sign-in: Jellyfin's LDAP plugin asks Kanidm's LDAPS gateway
+      # whether a person may sign in and whether they administer Jellyfin.
+      # It binds anonymously to search, then as the person to check the
+      # password, so it holds no directory credential. People Jellyfin
+      # already knows by a local password keep it; see
+      # docs/operations/jellyfin.md.
+      identitySettings = cluster.settings.kubernetes.services.identity;
+      directoryHost = builtins.head cluster.routes.idm.hostnames;
+      directoryBase = lib.concatMapStringsSep "," (part: "dc=${part}") (lib.splitString "." directoryHost);
+      memberOf = group: "(memberof=spn=${group}@${directoryHost},${directoryBase})";
+      ldapConfiguration = {
+        LdapServer = directoryHost;
+        LdapPort = identitySettings.directory.port;
+        UseSsl = true;
+        UseStartTls = false;
+        SkipSslVerify = false;
+        # Empty: the server certificate is checked against the system trust store.
+        LdapRootCaPath = "";
+        LdapBindUser = "";
+        LdapBindPassword = "";
+        LdapBaseDn = directoryBase;
+        LdapSearchFilter = "(&(class=person)(|${memberOf identitySettings.householdGroup}${memberOf identitySettings.adminGroup}))";
+        LdapSearchAttributes = "name";
+        LdapUidAttribute = "uuid";
+        LdapUsernameAttribute = "name";
+        LdapAdminBaseDn = "";
+        LdapAdminFilter = "(&(class=person)${memberOf identitySettings.adminGroup})";
+        EnableLdapAdminFilterMemberUid = false;
+        CreateUsersFromLdap = true;
+        AllowPassChange = false;
+        EnableAllFolders = true;
+        EnableLdapProfileImageSync = false;
+      };
       initialSeerr = cluster.settings.kubernetes.services.seerr.phase == "initial";
       route = cluster.routes.jellyfin;
       prefix = lib.optionalString (route.pathPrefix != "/") (lib.removeSuffix "/" route.pathPrefix);
@@ -191,6 +225,15 @@ in
           inherit (library) name collectionType;
           libraryOptions.pathInfos = [ { path = "/media/${library.directory}"; } ];
         }) integration.libraries;
+        # The plugins initContainer installs the plugin; Jellarr finds it by
+        # the name the loaded plugin reports and reconciles only these keys.
+        # The plugin's own LdapUsers links stay plugin-owned.
+        plugins = [
+          {
+            name = ldapPlugin.serverName;
+            configuration = ldapConfiguration;
+          }
+        ];
       };
       bootstrapScript = ''
         import fs from "node:fs";
@@ -212,7 +255,7 @@ in
         for (let attempt = 0; attempt < 60; attempt += 1) {
           try {
             const response = await fetch(baseUrl + "/health");
-            if (response.ok) {
+            if (response.ok && (await response.text()).trim() === "Healthy") {
               healthy = true;
               break;
             }
@@ -301,6 +344,10 @@ in
         provisionPatchRev = "8b0a2c269d5a3d9d7084b5295fd818a8a67af6f2";
       }
     ) "Jellyfin release declaration differs from the reviewed coupled release";
+    # A plugin built for another Jellyfin major release does not load.
+    assert lib.assertMsg (
+      lib.versions.major ldapPlugin.targetAbi == lib.versions.major provisionerRelease.version
+    ) "Jellyfin LDAP plugin targets Jellyfin ${ldapPlugin.targetAbi}, not ${provisionerRelease.version}";
     {
       applications.jellyfin-retained = {
         inherit namespace;
@@ -414,6 +461,32 @@ in
                           mountPath = "/run/secrets/password";
                           subPath = "password";
                           readOnly = true;
+                        }
+                      ];
+                    }
+                    # After provisioning: the provisioner refuses a /config
+                    # that holds anything before setup completes.
+                    {
+                      name = "plugins";
+                      image = provisionerImage;
+                      imagePullPolicy = "IfNotPresent";
+                      command = [ "/bin/${provisioner.pluginInstaller.meta.mainProgram}" ];
+                      resources = {
+                        requests = {
+                          cpu = "10m";
+                          memory = "16Mi";
+                        };
+                        limits = {
+                          cpu = "250m";
+                          memory = "64Mi";
+                          ephemeral-storage = "16Mi";
+                        };
+                      };
+                      securityContext = containerSecurity;
+                      volumeMounts = [
+                        {
+                          name = "config";
+                          mountPath = "/config";
                         }
                       ];
                     }

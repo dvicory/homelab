@@ -83,12 +83,12 @@
     },
     "jellyfin-provisioner-image": {
       "architecture": "amd64",
-      "archivePath": "/nix/store/6yq4kj7fsh0apqhm4fqkzrs8gm2szmri-jellyfin-provisioner.tar",
-      "archiveSha256": "dc0c055b433a44106dff658f5b49f21fdf0fd83979cedd72dc425fe3c2d02b16",
-      "auditedFiles": 2955,
-      "configDigest": "sha256:4f9a1ea4001109067b1eb5a0fb28807053cdd036221e3f6cf6d0ebd136f21aa5",
-      "derivation": "/nix/store/7yji7mzd16k7cr437fpbk59ya6jsicxv-jellyfin-provisioner.tar.drv",
-      "digest": "sha256:1fa305e464f2c10200a82e045f674f4fa58a58331f2bc6332f6f46ef3aae2cf0",
+      "archivePath": "/nix/store/ms5sx09pqci13sq1q2816wy2zhqxygnf-jellyfin-provisioner.tar",
+      "archiveSha256": "da33fade9984e7247e5210beea4386fd572c28b99c05fa64e58e65a09bc69ae9",
+      "auditedFiles": 2959,
+      "configDigest": "sha256:b804d8dd18c108320a1caa35552fc23beffa143b0c4adb93e2d105a7620bb6e2",
+      "derivation": "/nix/store/f80khzxkc8gvl8rh7jzw1dzn2ck1hvwi-jellyfin-provisioner.tar.drv",
+      "digest": "sha256:599c58002a736668df14ca3a2ec601bebe63378c0faaf21857f6a2fe74eab939",
       "os": "linux",
       "repository": "ghcr.io/dvicory/homelab/jellyfin-provisioner",
       "rootfs": {
@@ -99,8 +99,9 @@
           "sha256:3238397de98e86ba42e10a371c57a619070860ebb0f64313a9844101d86ffd26",
           "sha256:511898adcd2460e32d578f0c37b686f647ad4c6cc0099ea400af6e1aa86fd5aa",
           "sha256:4fcd79a65f45b93e314a43f186c486ce31f40bdf08a1d88c8b361300cb639244",
-          "sha256:09fbe7160ed29fb907bb0808e095f891a300d9ccd4058bf9f682280b42137be5",
+          "sha256:b4dea0b8cad688f7894fa6572dc903ac55229354d0445b2c8adb1a1a71a55842",
           "sha256:796e311b310654d825393751a83951500591955ce4f687e6e18f6e9399eedd86",
+          "sha256:09fbe7160ed29fb907bb0808e095f891a300d9ccd4058bf9f682280b42137be5",
           "sha256:6d274e16f7c17a749157bd97c0676882a75e1a606229115a6e60361006b6011b",
           "sha256:4544005240a47b234e6a6b0feb5c764f53c13f86cf8274b87afcc901e26df9d0",
           "sha256:96e435a48952f67495b9a313d7ada2189fec3e469408d86e946ba79e6e1c08bb",
@@ -148,24 +149,25 @@
           "sha256:33c91a7049cb3197afa781fee6ded6c09cc1faf941a915267e8719d7da51e375",
           "sha256:9715c1afe5c7c0d51bd9b29a9a03e00bf81346054fa13456d8fe6f793d661577",
           "sha256:4f5b058b21556154207043fa88a7ff6c7dd48165543c7b726a3f547de8550632",
+          "sha256:745f8649072ede505c223562e694b1ecdb5b9f0020ca5155fb1a73d3f7ae6e0a",
           "sha256:ad6de043cc4d586d877871a1746f2cc76f8d3aeee8923e64609b5a6eb9e11105",
           "sha256:d4f8d672d993dd1cf72459fc72f75853cebd28ae5f7f4844c8c727817b062584",
           "sha256:779e4282f3a2eba9cfc19d02b38724d1f39dbd512e9e542db6bec90fa406bdce",
           "sha256:5b2fdf3ea9604adb921fbb2c8ddc9d4dd4293c2fb2ce6f17f1d36c930fe39891",
           "sha256:ae0314585c20011bca5bd19374b50116e2a0097ffab9b3fccd9ee22c204c3341",
-          "sha256:70402015cd72bd2b838196d239d3684153630ecd9f4c9248f3788cd16adb92cb"
+          "sha256:3bf039d2e99b63d3ccee2961ef4da7162dc582d3e52b88c7425c10697056900d"
         ],
         "type": "layers"
       }
     },
     "kanidm-provision-image": {
       "architecture": "amd64",
-      "archivePath": "/nix/store/63jrr8b6ai1p0n4zxq4kpbyh5ncdvrzm-kanidm-provision.tar",
-      "archiveSha256": "52206b6519e32aae8a946713a24c2ea9f784617114f67e8e080c723a60f70c5e",
+      "archivePath": "/nix/store/mmn23d4k2zaz7s6y2z33nyar2iwyfab8-kanidm-provision.tar",
+      "archiveSha256": "b76cd93f6e5a421e226de807bdbc9c68fb85810f7a3cb611041911ac612e03c5",
       "auditedFiles": 2357,
-      "configDigest": "sha256:42751dee9121514bfa0f84102e26f265c720fcd3ab4e716269fa0a9600845967",
-      "derivation": "/nix/store/2w6mb9yg86y59zwbw8xaig8flqqdbf7k-kanidm-provision.tar.drv",
-      "digest": "sha256:446a31966e0f0e288c9f6da7203b0ba71846e6995efe340550a65da67b4b80ad",
+      "configDigest": "sha256:d5f53cc2fe5c6a74ff36cdeace7d31318518e3faf5d486926ede3a255d824f54",
+      "derivation": "/nix/store/awxgm24lfkgdk87cbmvl04ymgjzj7pz0-kanidm-provision.tar.drv",
+      "digest": "sha256:1a96d652036147873cbae462f0f664a6aac730747b0b52385566945499ea628a",
       "os": "linux",
       "repository": "ghcr.io/dvicory/homelab/kanidm-provision",
       "rootfs": {
@@ -204,8 +206,8 @@
           "sha256:9b2dfac12bb8bb860a28eaea1e44a22ccd027ca238613aed4f919ba2bb46dffe",
           "sha256:7a73bf0e56d39c4839f8a0c8d572c5b474ed8814311eea900e09df07cb1507de",
           "sha256:00b94056ab5bcbe19017dd31e198018adf11acb79339a95e173ccdc28658e1c6",
-          "sha256:87b4d16818ab910e7b6036d898cb59a1a50543fe6fd9c47d6b960380aea0734d",
-          "sha256:5e2580e0cb787f6d946a5e363856b042c38ea6d964056aa21049593bf5e371bd"
+          "sha256:2b460734142688f77726a29729142de6725dfebbccfe362f79b5a14ed44a10ba",
+          "sha256:58bd711e2d3a799271ce0463dba3e48161c08b50e4444f6856d70f7f00ad140c"
         ],
         "type": "layers"
       }
@@ -231,7 +233,7 @@
     }
   },
   "schema": 1,
-  "sourceRun": 38873572368,
-  "sourceSha": "dce93a0910398531423a84254f943ac2fb25dc10",
+  "sourceRun": 39022184716,
+  "sourceSha": "d3302d353df020cccef16d80173033c508e4a6ad",
   "system": "x86_64-linux"
 }

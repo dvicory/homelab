@@ -109,17 +109,60 @@ gh workflow run ci.yml --ref "$REF" -f system=aarch64-linux
 Check names and implementations belong in Nix, not workflow branches. Single
 dispatch validates a check or native application's registration and platform;
 unsupported or ambiguous selections fail rather than silently skipping.
-`check=media-live-acceptance` selects the declared native x86-64 Docker suite.
-Its package carries the exact source, manifests and policy inputs; invocation
-does not borrow files from the caller's checkout. Nix owns its arguments,
-deadline and owned-resource prefix. The native executor records the package
-identity, runs the whole app and independently checks owned Docker cleanup.
+
+`modules/flake/ci.nix` owns native app package identities, arguments, deadlines,
+cleanup prefixes and executor requirements through `hostedCiPlan`. Every
+declared app receives exactly one matrix row, on full runs and single dispatch.
+The native executor builds that package, runs the whole app even when its
+dependencies are cached, and independently checks owned Docker cleanup.
+
+`check=media-live-acceptance` selects the standard native x86-64 Docker suite;
+it does not require root-owned storage or change host resolution.
+`check=household-sign-in-runtime` selects the complete native x86-64 household
+suite. Both packages carry their exact source, canonical manifests and policy
+inputs, rather than borrowing files from the caller's checkout. The household
+package materializes its Python suite and manifests; its three helpers use
+the selected immutable verified GHCR identities and are pulled normally,
+never loaded from local archives or aliased from current producer outputs.
+The suite retains LDAP/Jellyfin/Seerr authentication, MFA and POSIX-password
+migration, recovery, certificate/group security, and established-session
+HTTP 200 plus original-user-ID acceptance while fresh login is denied after
+membership removal. Directory NetworkPolicy remains a separate real
+K3s/kernel VM gate.
+
 The delivered Configarr and Seerr producers use exit 0 for success and exit 1
 for application failure. Synchronous and serialized runs require that exact
 outcome, alongside real API/state/lock assertions. `media-producer-exit` checks
 the small exit policy without Docker; the application suite does not inject
 Docker startup failures or deliberate crashes. Failure labels include only
 numeric status, not Docker/application stderr or generated credentials.
+
+The household app is also available as `nix run .#household-sign-in-runtime`.
+Run it only as root in an exclusive disposable native x86 Linux Docker
+fixture, with the Nix-declared canonical directory hostname resolving to
+`127.0.0.1`. Its existing `TMPDIR` parent (default `/root`) is canonicalized;
+the `household` child must not exist, including a dangling symlink. The app
+refuses existing fixture containers and network before pulling images, never
+edits host resolution, and cleans only owned containers, network and synthetic
+credentials on exit. No production account, credential or Seerr publication
+is part of this acceptance.
+
+The generic native executor dispatches `requirements.root`,
+`requirements.ownedStorage` and `loopbackHost`, never application names.
+Owned storage is restricted to an exclusive disposable Linux Docker runner:
+it places `/nix`, Docker and containerd data on its owned Btrfs loop image.
+Setup refuses an existing image (including dangling symlinks), `/nix`, daemon
+storage symlinks and existing target mounts. Cleanup validates the recorded
+image UUID and exact FSROOT of every mount before stopping Docker/containerd,
+unmounting their bind mounts or deleting owned scratch. The Nix store remains
+mounted through post-actions; final mount/loop/image teardown belongs to the
+exclusive disposable runner's lifetime. Independent acceptance cleanup checks
+the whole daemon and owned scratch, not just a name prefix. The executor adds
+the declared canonical-domain loopback entry; the app itself never does.
+Owned `TMPDIR` is selected only after Nix installation and cache setup:
+installation can change ownership under `/nix` and break its own temporary
+directory if pointed there early.
+
 Successful check jobs upload nonempty outputs as
 `check-output-<system>-<check-or-group>-<run-id>` artifacts; empty outputs retain
 their evidence in the job log. Linux runners enable available KVM acceleration.

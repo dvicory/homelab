@@ -175,7 +175,7 @@
                 }
               ];
           }
-        ) routeSet;
+        ) (lib.filterAttrs (_: route: route.manageBackendIngress) routeSet);
       routes = routeObjects publishedRoutes;
       backendGrants = grantObjects publishedRoutes;
       backendTLS = tlsObjects publishedRoutes;

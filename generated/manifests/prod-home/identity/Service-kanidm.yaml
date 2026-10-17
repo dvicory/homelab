@@ -11,6 +11,10 @@ spec:
       port: 443
       protocol: TCP
       targetPort: https
+    - name: ldaps
+      port: 3636
+      protocol: TCP
+      targetPort: ldaps
   selector:
     app.kubernetes.io/name: kanidm
   type: ClusterIP

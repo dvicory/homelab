@@ -1,4 +1,5 @@
 {
+  config,
   self,
   withSystem,
   lib,
@@ -181,15 +182,37 @@ let
         requirements.docker = true;
         cleanupPrefix = "homelab-media-live-";
       }
+      {
+        name = "household-sign-in-runtime";
+        package = "packages.${system}.household-sign-in-runtime";
+        arguments = [ ];
+        timeoutSeconds = 3000;
+        requirements = {
+          docker = true;
+          root = true;
+          ownedStorage = true;
+        };
+        loopbackHost = builtins.head config.den.clusters."prod-home".routes.idm.hostnames;
+        cleanupPrefix = "household";
+      }
     ];
 
-  hostedPlanFor = system: {
-    inventory = builtins.mapAttrs (_: map (entry: builtins.removeAttrs entry [ "drvPath" ])) (
-      checkInventory system
-    );
-    groups = builtins.attrNames ciJobs.${system};
-    nativeApplications = nativeApplicationsFor system;
-  };
+  hostedPlanFor =
+    system:
+    let
+      nativeApplications = nativeApplicationsFor system;
+      names = builtins.attrNames (checksFor system) ++ map (app: app.name) nativeApplications;
+    in
+    assert lib.assertMsg (
+      builtins.length names == builtins.length (lib.unique names)
+    ) "Hosted CI checks and native applications must be uniquely registered on ${system}";
+    {
+      inventory = builtins.mapAttrs (_: map (entry: builtins.removeAttrs entry [ "drvPath" ])) (
+        checkInventory system
+      );
+      groups = builtins.attrNames ciJobs.${system};
+      inherit nativeApplications;
+    };
 in
 {
   flake = {

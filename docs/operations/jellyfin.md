@@ -3,11 +3,83 @@
 Jellyfin runs in the `jellyfin` namespace on the compute guest. Before the
 server starts, the `provision` initContainer prepares retained state. The
 `jellyfin-configuration` Job then applies the declared libraries and
-settings.
+settings. Its API-key bootstrap waits for the native `Healthy` response:
+HTTP 200 alone also includes `Degraded` while the stock server starts.
 
 In the commands below, set `system` to the host system and `instance` to the
 compute guest listed under "Current stack" in
 [`docs/operations.md`](../operations.md).
+
+## Household directory sign-in
+
+The household integration declares a `plugins` initContainer using the same
+`jellyfin-provisioner-image` as fresh-state provisioning, with the explicit
+`jellyfin-install-plugins` command. The normal Linux flake package
+`jellyfin-ldap-plugin` supplies the Nix-pinned official LDAP Authentication v24
+files and installer bundled in that producer; no additional helper image or
+registry namespace is needed. Deployment requires a selected verified release
+containing that installer, not merely an updated producer in the checkout.
+Installation runs after fresh-state provisioning and before the stock runtime.
+Jellarr configures only declared settings of the loaded plugin through its
+native API, preserving plugin-owned user links. Do not install another version
+through the dashboard or disable TLS verification.
+
+Enroll people as described in [Identity operations](identity.md#household-media-credentials).
+Use the ordinary Jellyfin username/password login, and Seerr's ordinary
+Jellyfin login, with the person's primary password or separate POSIX password.
+This is LDAP authentication, not OIDC, and LDAP itself does not perform MFA.
+
+The declared Jellyfin administrator remains local, with its existing agenix
+password and user ID. A same-named Kanidm account does not convert it; its
+directory password cannot log in to that local account. A different central
+administrator can obtain a directory-backed Jellyfin administrator account.
+If Kanidm is down, directory login fails and the local administrator still
+works.
+
+Only `jellyfin-users` or `homelab-admin` membership permits directory sign-in;
+outsiders are refused without creating a Jellyfin account. Membership and
+directory-backed administration are checked again at each sign-in. Removing
+membership denies fresh sign-in but does not revoke established sessions:
+an existing session can still return HTTP 200 with the same Jellyfin user ID.
+
+Before deploying directory integration, select a genuinely published and
+anonymously verified helper release containing the LDAP installer and Kanidm
+`policies.json` reconciliation, as described in "Deliver helper images".
+Do not derive consumer digests from the current producers or import their
+archives to bypass selection. Publication and selection do not authorize
+account enrollment, policy activation or auth rollout.
+Keep Seerr in phase `initial` until the owner accepts household sign-in from
+an actual media client and Seerr and separately approves the live transition.
+Disposable fixture success is not production acceptance; live household
+acceptance remains open.
+
+To roll back directory integration, revert the plugin initContainer and
+Jellarr LDAP settings together and restart Jellyfin. Preserve retained users,
+plugin configuration and credentials; do not reset `/config` or convert
+directory users to local accounts. Revert Kanidm listener/policy declarations
+only after directory consumers are removed.
+
+### Disposable household acceptance
+
+The native `household-sign-in-runtime` flake app and CI lane materialize the
+same Python suite and committed manifests. The Jellyfin provisioner, Kanidm
+provisioner and Jellarr use actual selected immutable verified GHCR identities
+and normal registry pulls, not local archives, preloads or compatibility aliases.
+Updating an unselected producer must not change those consumer identities.
+They run against real pinned services in an owned disposable Docker fixture,
+not on the production host and not inside a new Docker VM test envelope.
+
+Run as root on disposable native x86_64 Linux with a running Docker daemon.
+Reserve the fixture's workload names, state and loopback ports for the suite.
+Before starting, the canonical hostname `idm.plus2.danielvicory.dev` must
+resolve to `127.0.0.1` on that host. The app never edits host resolution.
+The disposable GitHub runner may explicitly add that loopback hosts entry;
+do not redirect the production hostname on a production host.
+
+This application lane exercises authentication and certificate verification.
+The directory K3s/kernel VM gate separately proves NetworkPolicy enforcement;
+Docker success cannot prove that boundary. Neither fixture replaces
+owner-approved deployment and real-device household acceptance.
 
 ## Storage
 
