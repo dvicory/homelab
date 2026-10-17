@@ -14,4 +14,4 @@
 ## 3. Operator handoff
 
 - [x] 3.1 Document membership, POSIX enrollment, credential boundaries, later MFA migration, verified registry release selection, native disposable Docker prerequisites and rollback; regenerate manifests and documentation with no drift and pass focused checks after binding the actual verified release.
-- [ ] 3.2 After explicit consumer merge/authentication rollout approval, accept live household sign-in from a real media client and Seerr; publish Seerr only after that acceptance. Owner port-forward local-administrator sign-in was accepted on 2026-10-13; household/live deployment remains open. Registry delivery requires no manual helper import or host activation.
+- [ ] 3.2 After explicit consumer merge/authentication rollout approval, accept live household sign-in from a real media client and Seerr; publish Seerr only after that acceptance. The owner's port-forward Seerr sign-in using a Jellyfin account is accepted separately; household directory sign-in and live deployment remain open. Registry delivery requires no manual helper import or host activation.
