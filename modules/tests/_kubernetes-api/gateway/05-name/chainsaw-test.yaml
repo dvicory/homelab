@@ -1,0 +1,12 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: gateway-backend-name-deny-restore
+spec:
+  timeouts:
+    exec: 900s
+  steps:
+    - name: accepted-wrong-name-policy-real-upstream-handshake-failure-and-recovery
+      try:
+        - script:
+            content: exec gateway-case name

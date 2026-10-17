@@ -17,7 +17,7 @@
 ## 4. Operations
 
 - [x] 4.1 Rewrite the runbook's post-reboot check for the new enforcer and kube-proxy, and add the kube-router cleanup from `_kube-router-cleanup.sh`, the same file the check runs; verify `files/docs/operations.md` passes.
-- [ ] 4.2 Move gateway-runtime, media-ingress-runtime and identity-provision-runtime from K3s's embedded controller to the committed enforcer; verify each still passes.
+- [ ] 4.2 Move media-ingress-runtime and identity-provision-runtime from K3s's embedded controller to the committed enforcer; verify each still passes. The superseded Gateway-only wrapper is covered by required native Gateway scenarios using the committed enforcer, not a new start-up guarantee.
 - [ ] 4.3 Decide whether to close the start-up window in design.md ("Accept a start-up window"), for example with a node taint the enforcer removes or by seeding the enforcer before Argo; verify with a check that probes a policy-selected Pod from its first start.
 - [ ] 4.4 Migrate hvn-hyp1 in the order of design.md (Migration Plan); verify the enforcer is ready, the cleanup leaves no kube-router rule and the post-reboot check is clean.
 

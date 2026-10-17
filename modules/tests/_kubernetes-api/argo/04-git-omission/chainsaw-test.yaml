@@ -1,0 +1,35 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: argo-04-git-omission
+  labels:
+    verification.homelab/layer: controller-node-local
+spec:
+  timeouts:
+    assert: 180s
+    exec: 300s
+  steps:
+    - name: current-source-observes-omission-without-pruning
+      try:
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" omit
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" revision omission
+            outputs:
+              - name: omission
+                value: ($stdout)
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: retained
+                namespace: argocd
+              (status.sync.revision == $omission): true
+              (status.sync.comparedTo.source == spec.source): true
+              (length(status.resources[?kind == 'PersistentVolumeClaim' && name == 'identity-kanidm' && requiresPruning == `true`] || `[]`) > `0`): true
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" preserve

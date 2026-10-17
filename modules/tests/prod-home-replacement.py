@@ -15,8 +15,9 @@ over the network. Jellyfin behavior itself is exercised through the
 jellyfin_smoke helper; this driver owns only platform orchestration.
 
 CI requires both fixture families on independent KVM runners. Replacement
-owns lifecycle/refusal/retirement; consumer resilience owns accelerator,
-provision-failure, media-loss, and self-healing transitions.
+owns lifecycle/refusal and retained-state replacement; consumer resilience owns
+accelerator, provision-failure, media-loss, and self-healing transitions.
+Detailed Argo resource retirement is required through the native API suite.
 
   sudo modules/tests/prod-home-replacement.py \
     --scenario replacement \
@@ -679,17 +680,6 @@ class GitOrigin:
              f"--listen={self.address}", "--port=9418", str(self.parent)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-
-    def retire(self, names: tuple[str, ...]) -> None:
-        check(self.work is not None and self.bare is not None, "Git origin was published before retirement")
-        for name in names:
-            path = self.work / "apps" / f"Application-{name}.yaml"
-            check(path.is_file(), f"retirement input exists for {name}")
-            path.unlink()
-        git = ["git", "-C", str(self.work)]
-        run(*git, "-c", "user.email=recovery@test", "-c", "user.name=recovery", "add", "-A")
-        run(*git, "-c", "user.email=recovery@test", "-c", "user.name=recovery", "commit", "-m", "retire fixture applications")
-        run(*git, "push", str(self.bare), "main:main")
 
     def select_retained_helper(self, image: str) -> str:
         check(self.work is not None and self.bare is not None, "Git origin exists before helper selection")
@@ -2316,30 +2306,6 @@ def run_scenario(args: argparse.Namespace) -> None:
                 check(replacement_pool_mount == pool_mount,
                       "Incus storage pool remains on the same ZFS dataset through guest replacement")
                 runtime.forward_stop()
-                with phase("argo-resource-retirement"):
-                    origin.retire(CHILD_APPS)
-                    runtime.kubectl("annotate", f"application/{ROOT_APP}",
-                                    "argocd.argoproj.io/refresh=hard", "--overwrite", namespace="argocd")
-                    wait_argo_synced(kubeconfig, (ROOT_APP,))
-                    wait_for(
-                        "retired child Applications",
-                        lambda: all(kubectl_absent(kubeconfig, "application", name, "argocd") for name in CHILD_APPS),
-                        timeout=600,
-                    )
-                    wait_for(
-                        "retired Jellyfin workload",
-                        lambda: kubectl_absent(kubeconfig, "deployment", "jellyfin", "jellyfin"),
-                        timeout=600,
-                    )
-                    # This proves Argo honored Delete=false on the retained
-                    # objects and that the host retained path kept its data. It
-                    # does not exercise PV reclaim: the marker is read from the
-                    # host path and would survive even if the PV object were gone,
-                    # so the object existence checks below are the Argo evidence.
-                    check(not kubectl_absent(kubeconfig, "namespace", "jellyfin", ""), "Argo Delete=false leaves the retained Namespace object in place after application retirement")
-                    check(not kubectl_absent(kubeconfig, "persistentvolume", "jellyfin-config", ""), "Argo Delete=false leaves the retained PersistentVolume object in place after application retirement")
-                    check(not kubectl_absent(kubeconfig, "persistentvolumeclaim", "jellyfin-config", "jellyfin"), "Argo Delete=false leaves the retained PersistentVolumeClaim object in place after application retirement")
-                    check(marker.read_text() == "retained-state\n", "host retained path keeps Jellyfin data through application retirement")
         finally:
             if sys.exc_info()[0] is not None and not isinstance(sys.exc_info()[1], RegistryPullError) and runtime.created_instance:
                 diagnostics = completed("journalctl", "-k", "-n", "80", "--no-pager")

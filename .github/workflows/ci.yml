@@ -134,6 +134,7 @@ jobs:
         with:
           name: required-check-inventory-${{ github.run_id }}
           path: ${{ runner.temp }}/check-inventory.json
+          if-no-files-found: error
 
   bootstrap-darwin-builder:
     name: Bootstrap Darwin Linux builder
@@ -180,7 +181,8 @@ jobs:
         run: |
           sudo mkdir -p /mnt/darwin-builder-cache
           sudo chown "$USER" /mnt/darwin-builder-cache
-          system_path=$(nix build --no-link --print-out-paths '.#darwinConfigurations.daniels-2021-mbp.config.nix.linux-builder.package.nixosConfig.system.build.toplevel')
+          nix build --no-link --json '.#darwinConfigurations.daniels-2021-mbp.config.nix.linux-builder.package.nixosConfig.system.build.toplevel' > "$RUNNER_TEMP/build.json"
+          system_path=$(jq -er '.[0].outputs.out' "$RUNNER_TEMP/build.json")
           nix copy --to "file:///mnt/darwin-builder-cache?compression=zstd" "$system_path"
           printf '%s\n' "$system_path" > /mnt/darwin-builder-cache/system-path
 
@@ -191,6 +193,18 @@ jobs:
           path: /mnt/darwin-builder-cache
           overwrite: true
           retention-days: 1
+
+      - name: Record successful Darwin bootstrap execution
+        run: |
+          jq -n --slurpfile build "$RUNNER_TEMP/build.json" \
+            '{role: "bootstrap", system: "aarch64-linux", group: "darwinLinuxBuilder", check: "", build: $build[0], checks: []}' \
+            > "$RUNNER_TEMP/ci-receipt.json"
+      - name: Upload successful bootstrap receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-receipt-bootstrap-${{ github.run_id }}
+          path: ${{ runner.temp }}/ci-receipt.json
+          if-no-files-found: error
 
   # Nix discovers runtime checks and their capabilities for each native runner.
   # Only the real Darwin configuration consumer waits for the bootstrap closure.
@@ -354,6 +368,33 @@ jobs:
         with:
           name: check-inventory-${{ matrix.system }}-${{ matrix.artifact || matrix.group }}-${{ github.run_id }}
           path: ${{ runner.temp }}/check-inventory.json
+          if-no-files-found: error
+
+      - name: Record successful declared build execution
+        env:
+          SYSTEM: ${{ matrix.system }}
+          GROUP: ${{ matrix.group }}
+          CHECK: ${{ matrix.check }}
+        run: |
+          set -euo pipefail
+          if [ "$GROUP" = checks ] && [ -z "$CHECK" ]; then
+            jq '.fast | map({name, drvPath})' "$RUNNER_TEMP/check-inventory.json" > "$RUNNER_TEMP/executed-checks.json"
+          elif [ -n "$CHECK" ]; then
+            jq --arg name "$CHECK" '[{name: $name, drvPath: .[0].drvPath}]' "$RUNNER_TEMP/build.json" > "$RUNNER_TEMP/executed-checks.json"
+          else
+            printf '[]\n' > "$RUNNER_TEMP/executed-checks.json"
+          fi
+          jq -n --arg system "$SYSTEM" --arg group "$GROUP" --arg check "$CHECK" \
+            --slurpfile build "$RUNNER_TEMP/build.json" --slurpfile checks "$RUNNER_TEMP/executed-checks.json" \
+            '{role: "build", system: $system, group: $group, check: $check, build: $build[0], checks: $checks[0]}' \
+            > "$RUNNER_TEMP/ci-receipt.json"
+
+      - name: Upload successful build receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-receipt-${{ matrix.system }}-${{ matrix.group }}-${{ matrix.artifact || 'group' }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/ci-receipt.json
+          if-no-files-found: error
 
       - name: Publish successful outputs and build dependencies to Cachix
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.CACHIX_CACHE != ''
@@ -381,7 +422,7 @@ jobs:
 
   required-ci:
     name: Required CI
-    needs: [plan, bootstrap-darwin-builder, build, build-darwin-configuration, native-applications, workflow-security]
+    needs: [plan, bootstrap-darwin-builder, build, build-darwin-configuration, native-applications, workflow-security, all-required]
     if: ${{ always() && github.event_name != 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     steps:
@@ -531,6 +572,9 @@ jobs:
               done
             fi
             if [ "$(jq -r .requirements.docker <<< "$APPLICATION")" = true ]; then
+              test -S /var/run/docker.sock
+              endpoint=$(env -u DOCKER_HOST -u DOCKER_CONTEXT docker context inspect default --format '{{ .Endpoints.docker.Host }}')
+              test "$endpoint" = unix:///var/run/docker.sock
               docker --host unix:///var/run/docker.sock version
               docker --host unix:///var/run/docker.sock info
               server=$(docker --host unix:///var/run/docker.sock info --format '{{.OSType}}/{{.Architecture}}')
@@ -539,6 +583,9 @@ jobs:
                 x86_64-linux/linux/x86_64|x86_64-linux/linux/amd64|aarch64-linux/linux/aarch64|aarch64-linux/linux/arm64) ;;
                 *) echo 'Native declared Linux Docker platform required' >&2; exit 1 ;;
               esac
+              # This disposable runner owns the kernel used by its Docker nodes.
+              sudo modprobe br_netfilter
+              test -d /sys/module/br_netfilter
             fi
           } 2>&1 | tee "$RUNNER_TEMP/native-evidence/inputs.log"
       - name: Build declared application package
@@ -557,12 +604,27 @@ jobs:
           program=$(nix eval --raw ".#apps.$system.$name.program")
           jq -j '.arguments[] | . + "\u0000"' <<< "$APPLICATION" > "$RUNNER_TEMP/native-arguments"
           mapfile -d '' -t arguments < "$RUNNER_TEMP/native-arguments"
+          printf '%s\n' "$program" > "$RUNNER_TEMP/native-evidence/program"
+          # Relative declared report paths live only in this job's owned evidence.
+          if jq -e 'has("reportFile")' <<< "$APPLICATION" > /dev/null; then
+            report=$(jq -er .reportFile <<< "$APPLICATION")
+            [[ "$report" =~ ^[a-zA-Z0-9_-]+[.]json$ ]]
+            cd "$RUNNER_TEMP/native-evidence"
+            test ! -e "$report"
+          fi
           runner=()
           if [ "$(jq -r .requirements.root <<< "$APPLICATION")" = true ]; then
             runner=(sudo env "TMPDIR=$TMPDIR")
           fi
           "${runner[@]}" /usr/bin/time -p timeout --signal=INT "${deadline}s" "$program" "${arguments[@]}" \
             2>&1 | tee "$RUNNER_TEMP/native-evidence/acceptance.log"
+          if jq -e 'has("reportFile")' <<< "$APPLICATION" > /dev/null; then
+            test -f "$report"
+            jq -j '.reportCheckArguments[] | . + "\u0000"' <<< "$APPLICATION" > "$RUNNER_TEMP/report-arguments"
+            mapfile -d '' -t report_arguments < "$RUNNER_TEMP/report-arguments"
+            "$program" "${report_arguments[@]}"
+            sha256sum "$report" | cut -d ' ' -f 1 > "$RUNNER_TEMP/native-report-sha256"
+          fi
       - name: Record independent owned cleanup
         if: always()
         run: |
@@ -634,3 +696,69 @@ jobs:
         with:
           name: native-${{ matrix.system }}-${{ matrix.name }}-${{ github.run_id }}
           path: ${{ runner.temp }}/native-evidence
+          if-no-files-found: error
+
+      - name: Record successful native execution and checked report
+        run: |
+          set -euo pipefail
+          digest=""
+          if jq -e 'has("reportFile")' <<< "$APPLICATION" > /dev/null; then
+            digest=$(cat "$RUNNER_TEMP/native-report-sha256")
+          fi
+          program=$(cat "$RUNNER_TEMP/native-evidence/program")
+          jq -n --argjson application "$APPLICATION" --arg digest "$digest" --arg program "$program" \
+            --slurpfile build "$RUNNER_TEMP/native-evidence/build.json" \
+            '{role: "native", system: $application.system, group: $application.name, check: "",
+              build: $build[0], checks: [], application: $application, program: $program, reportSha256: $digest}' \
+            > "$RUNNER_TEMP/ci-receipt.json"
+      - name: Upload successful native receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-receipt-native-${{ matrix.system }}-${{ matrix.name }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/ci-receipt.json
+          if-no-files-found: error
+
+  all-required:
+    name: All required CI
+    needs: [plan, bootstrap-darwin-builder, build, build-darwin-configuration, native-applications]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require full successful executor roles
+        env:
+          CHECK: ${{ inputs.check }}
+          SYSTEM: ${{ inputs.system }}
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          test -z "$CHECK"
+          [[ -z "$SYSTEM" || "$SYSTEM" = all ]]
+          jq -e 'all(.[]; .result == "success")' <<< "$RESULTS"
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download required plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: required-check-inventory-${{ github.run_id }}
+          path: ${{ runner.temp }}/required-plan
+      - name: Download evaluated platform inventories
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: check-inventory-*-checks-${{ github.run_id }}
+          path: ${{ runner.temp }}/required-inventories
+      - name: Download successful execution receipts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: ci-receipt-*-${{ github.run_id }}
+          path: ${{ runner.temp }}/required-receipts
+      - name: Download native evidence and approved reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: native-*-${{ github.run_id }}
+          path: ${{ runner.temp }}/required-native
+      - name: Reject missing platforms executions or checked report bytes
+        env:
+          RUN_ID: ${{ github.run_id }}
+        run: python3 .github/required-ci.py "$RUNNER_TEMP"

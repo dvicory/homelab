@@ -27,6 +27,337 @@ nix build .#ciJobs.x86_64-linux.nixosConfigurations
 nix build .#checks.aarch64-linux.den-semantics
 ```
 
+### Required evidence layers
+
+`modules/flake/ci.nix` keeps the mandatory semantic/schema/policy,
+Kubernetes application, host-recovery and native-application identities.
+They are registration contracts, not execution groups. Missing checks,
+non-derivation replacements, fast checks replaced by runtime tests, runtime
+gates replaced by non-runtime checks, or required gates made unsupported on
+their hosted platform fail evaluation. Native apps must have matching
+executable packages and exactly one native descriptor; packaging is not
+acceptance.
+
+The generic fast projection is `hostedCiJobs.<system>.checks`. Every hosted
+runtime check gets its own native runner according to its actual capabilities.
+All standard `ciJobs` groups still come from Nix, including packages,
+development outputs and system configurations. `ciBundles` includes every
+registered check, including checks unsupported by hosted runners.
+
+`All required CI` joins the successful plan, build matrix, native matrix,
+Darwin configuration and Darwin Linux-builder bootstrap. It requires all
+three planned and evaluated platform inventories, every standard output
+group, every hosted runtime registration, every native execution, and the
+bootstrap receipt. Receipts record real successful Nix build derivations and
+outputs; check receipts retain exact check derivations. Native receipts record
+the executable from the built package, complete descriptor and checked report
+SHA-256. Missing/duplicate/unexpected receipts, replacement check derivations,
+changed or missing persisted report bytes, failed/skipped executor roles and
+scoped dispatches cannot satisfy the aggregate. Make this stable context
+required in branch protection; that configuration remains a maintainer action.
+
+Mandatory host recovery includes `compute-network-policy-runtime`,
+`compute-guest-upgrade`, `prod-home-replacement` and
+`prod-home-consumer-resilience`. The two recovery families retain separate
+replacement and consumer-resilience evidence; neither is replaced by native
+Kubernetes coverage. Detailed Argo resource retirement runs in the required
+native suite; the replacement VM retains real data, ownership, mount and
+accelerator observations through guest replacement.
+
+This tooling slice changes no intended production behavior or policy.
+Removing Go assertions can still change the current
+`retained-directories-image` producer identity without changing runtime code.
+Consumers remain on the independently selected verified release in
+`assets/helper-release/verified.json`, using its immutable GHCR digests.
+An unselected producer change does not move those consumers. Follow the
+[helper image delivery procedure](../docs/operations/jellyfin.md#deliver-helper-images):
+ordinary protected-main publication and anonymous verification precede a
+separately reviewed selection. There is no last manual import; this tooling
+change selects no new production helper and performs no production operation.
+
+Linux also requires the fast `prepare-luks-storage` check. It exercises real
+rsync transfers/checksum verification and refuses unsafe operations before
+simulated block/format mutators. It does not prove real partitioning or LUKS
+formatting; `prepare-luks-storage-runtime` does. It runs the packaged tool on
+disposable VM disks through preflight, format, the documented realization,
+quiesce, copy and verify, and refuses an in-use disk and a disk without a WWN.
+Every call of the block, partition, LUKS, measurement and transfer tools in
+the packaged script, found in its syntax tree, must run the real binary and
+succeed; only findmnt's silent "no mount" exit 1 is accepted. Error-wording
+probes of external utilities are not retained as safety evidence; unsupported
+fixture xattrs are reported as unexercised.
+
+The schema gate checks original canonical YAML against pinned local schemas,
+with duplicate-key and complete document/schema accounting. It does not prove
+CEL, admission, controller reconciliation or traffic; the official CRD envelope
+schema also permits some extra fields. Kyverno owns rendered semantic policy;
+`argocd-application-health` separately executes the production health Lua.
+
+`prod-home-manifests-policy` runs pinned offline Kyverno against canonical
+manifests and twelve genuine identity/Seerr/ingress renders. Each family
+declaration in `modules/tests/_kubernetes-policy/fixtures/` lists the rules
+that must pass for every rendered resource and the scenarios that must fail.
+The inputs derivation turns them into native Tests whose resources come from
+the genuine renders, changed only by a small `yq` mutation. Tests retain exact
+rule/resource outcomes; missing coverage, skips and evaluation errors fail.
+The accelerator grant admits only the declared Jellyfin holder's `/dev/dri`
+mount and evaluated `gpu-render` group. No workload may be privileged, including
+the network-policy enforcer; a dedicated negative fixture guards that boundary.
+
+The gate runs as five independent derivations: `transport`, `gitops`,
+`edge-identity` and two round-robin halves of `workloads`
+(`prod-home-manifests-policy-<family>[-<half>]`). The aggregate
+`prod-home-manifests-policy` check requires every declared scenario to pass
+in exactly one part, then runs the per-render schema and CRD provenance
+checks and the schema counterfactuals once.
+
+Schema counterfactuals assert native invalid-resource status and validation
+paths, not error-message wording.
+
+```sh
+nix build --no-link ".#checks.$(nix eval --impure --raw --expr builtins.currentSystem).prod-home-manifests-policy" -L
+```
+
+Superseded rendered Nix/Python semantic validators have been removed after
+complete native positive, negative and fail-closed coverage. Genuine input,
+application/Lua execution and generation checks remain separate.
+No production admission controller is installed.
+
+`verify-kubernetes-api` runs pinned Chainsaw scenarios against a disposable,
+pinned target-version K3s fixture. Like the production guest, it disables K3s's
+embedded network-policy controller and uses nftables kube-proxy. It imports the
+canonical enforcer's pinned image, applies the canonical unprivileged
+`NET_ADMIN` DaemonSet and waits for readiness before the scenarios.
+The existing disposable Linux Docker executor loads the fixed `br_netfilter`
+kernel prerequisite and fails if it is unavailable. The owned K3s node explicitly
+enables its IPv4 bridge hook at creation, so same-bridge Service replies traverse
+the required NAT hooks. This prepares the ephemeral executor only; it is not a
+production-host module/sysctl operation or a fresh/reboot policy guarantee.
+Its report must list every required scenario identity, with no skip, failure
+or cleanup failure:
+
+- Gateway CEL admission: the actual tracked CRD admits a valid resource,
+  rejects HTTP-with-TLS for the intended reason and preserves prior state.
+- Runtime-Secret API: the exact evaluated production reconciliation script
+  preserves foreign keys and replacement UIDs, refuses malformed or stale
+  inventory without mutation, keeps the prior acknowledgment when UID
+  recording fails, and retires same-UID shared and sole-owner TLS objects.
+  Two kubelet scenarios check projected Secret file readability.
+- Argo: real controllers with disposable Git cover current-revision failed and
+  missing child blocking and recovery, retained-directory hook sequencing,
+  self-heal, Git omission without pruning, and direct and root-child
+  retirement that preserves usable retained Namespace/PV/PVC identities.
+- Gateway: generation-aware controller status, distinct trusted and untrusted
+  source addresses with actual CNI denial, spoofed metadata replacement,
+  ReferenceGrant and backend TLS name/CA denial and recovery, real Chromium
+  WebAuthn/Kanidm/OIDC authorization through
+  `modules/tests/_gateway-runtime/authorization.py`, and access/error-log
+  privacy.
+
+These scenarios replace the `gateway-runtime` NixOS VM check and the
+Kubernetes API cases of `runtime-secret-k3s`. The Argo scenarios are new
+controller coverage. They are disposable fixtures, not
+production availability or deployment proof. Node-local storage and Docker
+bridge peers do not prove Incus mounts, ID maps or host nftables.
+
+`runtime-secret-k3s` keeps the host seam the native fixture cannot observe:
+the evaluated production systemd unit starts, creates its state directory,
+acknowledges the exact generation, fails with `Result=exit-code` on incomplete
+delivery without changing prior state, and succeeds again after repair.
+`public-edge-runtime` covers public-edge TLS/header/request/logging boundaries.
+Host checks retain mount/ID-map/filesystem/firewall/service-delivery evidence;
+no Kubernetes-only replacement justifies removing that coverage.
+
+`media-live-acceptance` executes the unchanged pinned native media suite on the
+hosted Docker daemon, using the packaged runner's exact source/manifests/policy
+inputs rather than the invoking checkout. It proves actual libraries,
+profiles/scores, wrong credentials/configuration and denied access, stable
+managed identities, preserved unmanaged video bytes, Seerr first-owner and
+steady-state boundaries, serialized producer entry points and owned cleanup.
+It does not prove Kubernetes RBAC or host mount propagation. Required
+`compute-guest-upgrade`, `prod-home-replacement` and
+`prod-home-consumer-resilience` separately retain existing guest activation,
+real Incus/ZFS/MergerFS/K3s replacement and consumer-resilience evidence.
+
+`media-ingress-runtime` applies the committed media NetworkPolicies on a K3s
+node that enforces them. The Gateway proxy and each declared client reach
+Radarr, Sonarr, Prowlarr and SABnzbd, which have no login of their own; every
+other pod is refused.
+
+### Reproduction and omission probe
+
+On a native x86-64 Linux builder with KVM:
+
+```sh
+nix eval --json .#hostedCiPlan > hosted-plan.json
+nix eval --json .#hostedCiInventory.x86_64-linux > hosted-inventory.json
+nix build -L .#hostedCiJobs.x86_64-linux.checks
+jq -r '.runtime[].drvPath' hosted-inventory.json | while IFS= read -r drv; do
+  nix build -L --max-jobs 1 "$drv^*"
+done
+# Native interactive interface is unchanged.
+nix build .#checks.x86_64-linux.runtime-secret-k3s.driver
+(
+  run_dir=$(mktemp -d /var/tmp/homelab-test.XXXXXX)
+  trap 'rm -rf -- "$run_dir"' EXIT
+  XDG_RUNTIME_DIR="$run_dir" ./result/bin/nixos-test-driver
+)
+```
+
+Manual drivers prefer `XDG_RUNTIME_DIR` over `TMPDIR` and retain VM disks after
+shutdown. Use owned, mode-0700 disk-backed scratch as above: accumulated VM
+images can exhaust `/run/user/$UID` tmpfs and cause guest block-device I/O
+failures. Hosted builds already use the disk-backed `/nix/build` directory.
+
+Native descriptors build both runners; their full execution is separately
+required. The API descriptor supplies `--docker-context default`, its owned
+fresh `reportFile`, and `reportCheckArguments` for the same packaged app.
+The generic executor runs in its job-owned evidence directory, refuses an
+existing report, checks the completed report, and binds the uploaded exact
+bytes to the success receipt. Applications without a persisted report need
+neither additional field; the standard media arguments and suite are unchanged.
+
+```sh
+nix run .#verify-kubernetes-api -- \
+  --docker-context default --report ./kubernetes-api-result.json
+nix run .#verify-kubernetes-api -- --check-report ./kubernetes-api-result.json
+nix run .#media-live-acceptance -- \
+  --docker-host unix:///var/run/docker.sock --platform linux/amd64
+```
+
+Hosted execution verifies that `default` addresses exactly
+`unix:///var/run/docker.sock`; local reproduction may explicitly select another
+Unix-socket context, such as `colima`. The app ignores ambient Docker/Kubernetes
+credentials, creates its own loopback-only API and kubeconfig, and removes its
+owned container, anonymous volumes and credentials even on scenario failure.
+Cleanup failure makes the gate fail. The approved sanitized report is included
+in the generic `native-<system>-<application>-<run-id>` evidence artifact even
+on failure; raw fixture logs, kubeconfig and assertion errors are not exported.
+
+Owned image-import failures distinguish archive copy, `ctr` import and archive
+cleanup, retaining only the zero-based archive ordinal rather than archive names or command arguments. A failed import
+also projects only known dial-failure categories for the fixture's fixed
+containerd socket from at most 8 KiB of stderr, then performs a readonly `ctr version`
+server RPC with one-second connect, two-second request and four-second process
+deadlines. Both RPC output streams are discarded; its return code or fixed
+timeout/transport category is diagnostic only. The original command failure and
+full cleanup remain authoritative; neither socket existence nor API `/readyz`
+alone establishes containerd RPC readiness.
+
+Argo failure witnesses capture only owned, whitelisted status fields before
+cleanup. Native catch scripts use Chainsaw's injected current context.
+Gateway prerequisite failures also retain a bounded pre-cleanup witness:
+the pending condition/watch stage, fixed Gateway resources' current and observed
+generations, allowlisted status/reason categories, controller/ancestor matches,
+owned controller/proxy workload readiness, and node address types (not values).
+For one owned proxy, failure-only diagnostics use native `kubectl port-forward`
+bound to localhost. It reads allowlisted Envoy server/XDS/TLS/listener counters
+before the actual readiness endpoint: a refused remote readiness port terminates
+the shared forward, and that listener itself depends on XDS. Curl ignores ambient configuration and
+limits each response to 16 KiB and three seconds; native response bodies, dynamic
+stat names and addresses are discarded. Forwarding is stopped before fixture
+cleanup, with interrupts ignored during stop/reap/close and prior handlers restored
+afterward. These observations are not safety acceptance. The native API proxy
+separately reaches the readiness port by Pod IP from the owned K3s node network,
+distinguishing that path from port-forward's local socket. It discards stdout and
+stderr without buffering, records only the return code and a fixed failure
+category, and retains its three-second request and five-second process timeouts.
+Failure-only DNS evidence reads that owned Envoy container's CRI identity and
+resolver mount, then makes bounded lookups of the fixed xDS Service name through
+the configured DNS Service IP and one ready CoreDNS endpoint, from the same
+actual network namespace. Only return codes, fixed error categories,
+answer/Service matching booleans and CoreDNS Service/endpoint counts survive.
+The API's null EndpointSlice `endpoints` representation means an empty list,
+as do absent/null optional workload arrays. Required List `items` must remain
+arrays; missing required fields and malformed shapes remain unavailable, not
+zero endpoints. The same bounded witness projects
+CoreDNS Deployment counts and at most four owned Pods' readiness/phase counts,
+standard scheduling/sandbox/init/container conditions and fixed waiting-reason
+counts. Events are queried only by those Pods' actual UIDs; at most
+32 events retain fixed Kubernetes reasons, counts and the existing curated error
+categories. Only Pod indices survive, never names, UIDs, specs, messages or logs;
+unknown reasons/categories remain explicit rather than guessing a cause.
+Workload/event read failure does not discard DNS query evidence. Unexpected
+collector errors expose only a fixed exception-type category.
+Read-only node facts also project `br_netfilter` module presence and the
+node-network-namespace IPv4 bridge hook flag; unreadable facts remain null.
+Missing tools, resolvers or namespace access remain unavailable evidence, not
+network root causes. Native resolver contents, names, addresses and output are
+discarded; no Pod, policy or readiness setting changes.
+It exports no raw API objects, messages, logs, events or Secrets. An unavailable
+witness cannot turn the original prerequisite failure into acceptance.
+
+Behavior counterfactuals use the same app with a new report filename. Each
+must fail, and its report must show the failure at the intended scenario step;
+a mutation that passes every scenario fails with
+`negative-mutation-unexpectedly-passed`, which is not a valid rejection:
+
+```sh
+nix run .#verify-kubernetes-api -- --docker-context default \
+  --remove-gateway-tls-cel --report ./kubernetes-api-no-cel.json
+nix run .#verify-kubernetes-api -- --docker-context default \
+  --argo-mutation always-healthy --report ./kubernetes-api-always-healthy.json
+```
+
+The other Argo mutations are `source-error-ignored` (removes only the health
+Lua's source-comparison guard) and `cascade-retained` (removes the retained
+objects' `Prune=false,Delete=false` sync options and adds a cascading
+finalizer).
+
+This mutation removes a real registration from the actual flake checks without
+editing source or executing test outputs. Evaluation can still realize Helm
+and other import-from-derivation inputs. Run from the checkout on native Linux;
+require the named missing-check diagnostic, not merely any nonzero exit:
+
+```sh
+nix eval --json --impure --max-jobs 1 --cores 4 --expr '
+  let
+    f = builtins.getFlake (toString ./.);
+    ci = import ./modules/flake/ci.nix {
+      lib = f.inputs.nixpkgs.lib;
+      withSystem = system: action: action {
+        pkgs = import f.inputs.nixpkgs { inherit system; };
+      };
+      self = f // {
+        checks = f.checks // {
+          x86_64-linux = builtins.removeAttrs f.checks.x86_64-linux [
+            "runtime-secret-k3s"
+          ];
+        };
+      };
+    };
+  in ci.flake.hostedCiPlan.x86_64-linux
+'
+# Expected: Missing required CI checks for x86_64-linux: runtime-secret-k3s
+```
+
+Removing `prod-home-manifests-schema`, `compute-guest-upgrade`,
+`prod-home-replacement` or `prod-home-consumer-resilience` instead must fail
+with the corresponding identity. ARM Linux also requires native
+`agenix-restart-guard` registration and runtime capability.
+Removing any required native app or its package, replacing the package with a
+non-derivation or changing the app away from its executable package must fail
+with `Required native CI apps must have matching executable packages`.
+Removing the required-name list entry changes the verification contract; it is
+not a registration-loss probe. API empty selection, nonexistent selector,
+removed TLS CEL or Argo mutations remain negative probes, not exclusions.
+For workflow accounting, remove one successful receipt, one evaluated platform
+inventory or one persisted report from a disposable artifact copy; the final
+aggregation must fail. Replacing a recorded check derivation, moving a native
+program outside its built output or changing accepted report bytes must fail.
+The accounting self-check and real downloaded-artifact join are runnable:
+
+```sh
+python3 .github/required-ci.py --self-test
+# After downloading the full workflow artifacts into the documented directories:
+RUN_ID="$RUN_ID" python3 .github/required-ci.py "$RUNNER_TEMP"
+```
+
+The join reads `required-plan/check-inventory.json`, one
+`required-inventories/check-inventory-<system>-checks-<run-id>/check-inventory.json`
+per platform, `required-receipts/*/ci-receipt.json`, and
+`required-native/native-<system>-<application>-<run-id>/<reportFile>`.
+
 Linux VM checks remain directly buildable for x86-64 and ARM64. Hosted CI
 partitions actual derivations using NixOS test drivers and declared
 `requiredSystemFeatures`, never check names or Hestia groups. A driver identifies
@@ -62,7 +393,7 @@ Argo CD image repository, version and digest changes belong in
 manifests with `sync-prod-home-manifests`; do not override those references
 only inside a recovery fixture.
 
-`agenix-restart-guard` alone uses the existing NixOS systemd-nspawn test driver on
+`agenix-restart-guard` uses the existing NixOS systemd-nspawn test driver on
 both native Linux architectures. It uses the same production generator/algorithm,
 rebuilt for the hypothetical native ARM fixture rather than changing hvn-hyp1's
 deployed architecture, and preserves the private stamp modes (700/600), initial
@@ -73,6 +404,14 @@ retain their VM gates. Only disposable Linux lanes requiring `uid-range` enable
 Nix auto-allocated UIDs and the cgroups experimental feature, after requiring a
 cgroup-v2 host. Darwin never schedules this Linux container test.
 
+`classify-legacy-media` retains its VM wrapper. The existing container backend
+under pinned Nix 2.35.2 reached the real ACL assertion, where `setfacl` failed
+with `Operation not supported` despite kernel POSIX ACL support. This matches
+the documented Linux build-sandbox xattr limitation in the
+[Nix 2.35 release notes](https://nix.dev/manual/nix/2.35/release-notes/rl-2.35.html#improvements),
+not an inherent private-kernel requirement for ACLs. No container parity or
+performance improvement is claimed; the ACL assertion remains required.
+
 Every registered check must be a derivation and belongs exactly once to the
 fast, hosted runtime, or unsupported partition. Future registrations join
 automatically. Planning reads lazy feature declarations across the selected
@@ -82,12 +421,9 @@ unsupported entries retain `drvPath = null`, so a Darwin receipt cannot force an
 unsupported Linux build graph. Runtime receipts retain their exact derivations.
 
 Build jobs release their separate `nix eval` heap before building the exact
-derivation, preserving memory for the test. No runner executes competing suites.
-
-A hosted x86-64 runner has 4 vCPUs and 16 GiB of memory. A VM check must fit
-there: request at most 4 cores, and leave the runner several GiB beyond the
-guest's memory. A VM that oversubscribes the runner does not fail cleanly;
-GitHub loses the runner and the job ends without the test's result.
+derivation, preserving memory for the test. A hosted x86-64 runner has 4 vCPUs
+and 16 GiB of memory: VM fixtures must fit, leaving several GiB beyond guest
+memory. Oversubscription can lose the runner without producing a test result.
 
 Hosted CI builds the full ARM64 Darwin configuration. An ARM64 Linux job first
 builds the Linux system closure used by its `nix.linux-builder` VM and passes
@@ -97,9 +433,10 @@ groups do not. This breaks the first-build cycle without weakening the
 production configuration. The workstation builds the same configuration as
 its activation gate.
 
-Manual dispatch builds the full projection by default. Set `system` to build
+Manual dispatch builds all hosted groups by default. Set `system` to build
 only that platform, or set `check` to run one check (defaulting to x86-64 when
-no specific platform is selected):
+no specific platform is selected). A single-check dispatch or an ARM-only
+dispatch is not complete infrastructure verification:
 
 ```sh
 gh workflow run ci.yml --ref "$REF" -f check=den-semantics
@@ -230,7 +567,8 @@ decrypted secrets.
 `helper-release.yml` is reusable only: **Nix CI** calls it automatically for a
 same-repository `push` to `main`, after **Required CI** succeeds. That gate joins
 every required CI dependency, including all build matrix legs, the Darwin
-builder bootstrap and the Actions security audit. Every dependency must succeed;
+builder bootstrap, the Actions security audit and `All required CI`'s strict
+inventory/execution/report join. Every dependency must succeed;
 failed, cancelled or skipped dependencies refuse publication. PRs and manual or
 selected CI runs never publish. There is no early PR admission, `workflow_run`
 trigger, manual publisher dispatch or per-release approval click.

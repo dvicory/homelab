@@ -65,6 +65,12 @@ let
         inherit cluster;
         computeResources = releaseComputeResources;
       };
+  configurationFor =
+    rendered:
+    (lib.findFirst (
+      object: object.kind == "ConfigMap" && object.metadata.name == "jellarr-configuration"
+    ) (throw "Jellyfin render has no Jellarr ConfigMap") rendered.applications.jellyfin-configuration.objects)
+    .data."config.yml";
   # Jellarr configuration rendered for a declared transcoding mode.
   jellarrConfigFor =
     transcoding:
@@ -74,11 +80,8 @@ let
           settings.kubernetes.services.jellyfin = { inherit transcoding; };
         };
       };
-      configMap = lib.findFirst (
-        object: object.kind == "ConfigMap" && object.metadata.name == "jellarr-configuration"
-      ) (throw "Jellyfin render has no Jellarr ConfigMap") rendered.applications.jellyfin-configuration.objects;
     in
-    configMap.data."config.yml";
+    configurationFor rendered;
   # One side of selected A moves; everything else is its shipped package.
   drift =
     {
@@ -152,16 +155,20 @@ let
     ++ lib.optional (renders { provisioner = pluginTargets "13.0.0.0"; }) "plugin-for-13-rejected"
     ++ lib.optional (renders { provisioner = pluginTargets "10.11.9.0"; }) "plugin-for-10.11-rejected";
   conformant = renderJellyfin provisionerPackage;
+  podFor =
+    rendered:
+    (lib.findFirst (
+      object: object.kind == "Deployment" && object.metadata.name == "jellyfin"
+    ) (throw "Jellyfin render has no Deployment") rendered.applications.jellyfin.objects)
+    .spec.template.spec;
   imagesFor =
     rendered:
     let
-      deployment = lib.findFirst (
-        object: object.kind == "Deployment" && object.metadata.name == "jellyfin"
-      ) (throw "Jellyfin render has no Deployment") rendered.applications.jellyfin.objects;
+      pod = podFor rendered;
     in
     {
-      provisioner = (builtins.head deployment.spec.template.spec.initContainers).image;
-      runtime = (builtins.head deployment.spec.template.spec.containers).image;
+      provisioner = (builtins.head pod.initContainers).image;
+      runtime = (builtins.head pod.containers).image;
     };
   conformantImages = imagesFor conformant;
   releaseFailures =
@@ -213,48 +220,78 @@ let
   administratorFailures =
     lib.attrNames (lib.filterAttrs (_: name: !(administratorAccepted name)) administratorCases)
     ++ lib.attrNames (lib.filterAttrs (_: administratorAccepted) rejectedAdministrators);
+  # New household controls stay with the Nix renderer; native policy owns
+  # the existing deployment/storage/security invariants.
+  householdFailures =
+    let
+      pod = podFor conformant;
+      provisioner = builtins.head pod.initContainers;
+      installer = builtins.elemAt pod.initContainers 1;
+      runtime = builtins.head pod.containers;
+      configMount = container: lib.findFirst (mount: mount.mountPath == "/config") null container.volumeMounts;
+      plugin = provisionerPackage.ldapPlugin;
+      jellarr = builtins.fromJSON (configurationFor conformant);
+      ldap = (builtins.head jellarr.plugins).configuration;
+      inherit (releaseCluster.settings.kubernetes.services.identity) adminGroup householdGroup directory;
+      host = builtins.head releaseCluster.routes.idm.hostnames;
+      base = lib.concatMapStringsSep "," (part: "dc=${part}") (lib.splitString "." host);
+      memberOf = group: "(memberof=spn=${group}@${host},${base})";
+    in
+    lib.attrNames (lib.filterAttrs (_: value: !value) {
+      plugin-reviewed-release =
+        plugin.name == "LDAP Authentication"
+        && plugin.version == "24.0.0.0"
+        && plugin.targetAbi == "12.0.0.0"
+        && plugin.sourceRev == "d11c86a47d51a0e3372bbff20e508302ad78f7bd"
+        && plugin.guid == "958aad66-3784-4d2a-b89a-a7b6fab6e25c"
+        && plugin.directory == "LDAP Authentication_${plugin.version}";
+      # Provisioning must see empty /config before plugin installation.
+      plugin-installation-after-provisioning =
+        builtins.length pod.containers == 1
+        && map (container: container.name) pod.initContainers == [ "provision" "plugins" ];
+      plugin-installer-selected-image =
+        installer.image == provisioner.image
+        && installer.image == "${selected.artifacts.jellyfin-provisioner-image.repository}@${selected.artifacts.jellyfin-provisioner-image.digest}"
+        && installer.command == [ "/bin/${provisionerPackage.pluginInstaller.meta.mainProgram}" ]
+        && installer.imagePullPolicy == "IfNotPresent";
+      plugin-installer-confined =
+        map (mount: mount.mountPath) installer.volumeMounts == [ "/config" ]
+        && (configMount installer).name == (configMount runtime).name
+        && (installer.env or [ ]) == [ ]
+        && (installer.envFrom or [ ]) == [ ]
+        && installer.securityContext.allowPrivilegeEscalation == false
+        && builtins.elem "ALL" installer.securityContext.capabilities.drop;
+      plugin-configuration-only =
+        map (entry: entry.name) jellarr.plugins == [ plugin.serverName ]
+        && !(jellarr.system ? pluginRepositories)
+        && !(ldap ? LdapUsers);
+      directory-verified-ldaps =
+        ldap.LdapServer == host
+        && ldap.LdapPort == directory.port
+        && ldap.LdapBaseDn == base
+        && ldap.UseSsl
+        && !ldap.UseStartTls
+        && !ldap.SkipSslVerify
+        && ldap.LdapRootCaPath == "";
+      directory-no-service-credential =
+        ldap.LdapBindUser == ""
+        && ldap.LdapBindPassword == "";
+      directory-household-and-admin-only =
+        ldap.LdapSearchFilter == "(&(class=person)(|${memberOf householdGroup}${memberOf adminGroup}))"
+        && ldap.LdapAdminFilter == "(&(class=person)${memberOf adminGroup})"
+        && !ldap.EnableLdapAdminFilterMemberUid;
+      directory-user-links-application-owned =
+        ldap.LdapUidAttribute == "uuid"
+        && ldap.LdapUsernameAttribute == "name"
+        && ldap.LdapSearchAttributes == "name"
+        && !ldap.AllowPassChange;
+    });
 in
 {
   perSystem =
     { pkgs, system, ... }:
     let
       environment = ../../generated/manifests/prod-home;
-      cluster = config.den.clusters.prod-home;
-      compute =
-        config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
-      storage = pkgs.writeText "jellyfin-storage-contract.json" (
-        builtins.toJSON {
-          inherit (compute) retainedPaths;
-          inherit (config.flake.clusterResources.prod-home) mediaPaths;
-        }
-      );
-      release = pkgs.writeText "jellyfin-release-contract.json" (
-        builtins.toJSON provisionerPackage.passthru.release
-      );
-      jellarrRelease = pkgs.writeText "jellarr-release-contract.json" (
-        builtins.toJSON selectedSource.packages.${selected.system}.jellarr-image.passthru.release
-      );
-      contractInputs = pkgs.writeText "jellyfin-contract-inputs.json" (
-        builtins.toJSON {
-          administrator = cluster.settings.kubernetes.services.jellyfin.administrator;
-          gpuRenderGid = config.den.groups.gpu-render.gid;
-          inherit (cluster.settings.kubernetes.services.identity) adminGroup householdGroup directory;
-          directoryHost = builtins.head cluster.routes.idm.hostnames;
-          ldapPlugin = {
-            inherit (provisionerPackage.ldapPlugin)
-              name
-              serverName
-              guid
-              version
-              targetAbi
-              sourceRev
-              directory
-              ;
-          };
-          provisionerImage = "${selected.artifacts.jellyfin-provisioner-image.repository}@${selected.artifacts.jellyfin-provisioner-image.digest}";
-          pluginInstaller = "/bin/${provisionerPackage.pluginInstaller.meta.mainProgram}";
-        }
-      );
       encodingVariants = pkgs.writeText "jellyfin-encoding-variants.json" (
         builtins.toJSON {
           hardware = jellarrConfigFor "hardware";
@@ -265,9 +302,6 @@ in
       # A exports this package only on Linux; Darwin keeps its existing skip.
       jellarrCli = lib.optionalString pkgs.stdenv.hostPlatform.isLinux (
         lib.getExe selectedSource.packages.${system}.jellarr-image.passthru.jellarr
-      );
-      runtimeSecrets = pkgs.writeText "jellyfin-runtime-secrets-contract.json" (
-        builtins.toJSON config.flake.clusterResources.prod-home.runtimeSecrets
       );
       renderedImages = pkgs.writeText "jellyfin-release-render.json" (
         builtins.unsafeDiscardStringContext (builtins.toJSON conformantImages)
@@ -282,6 +316,8 @@ in
           "Jellyfin plugin release checks failed: ${lib.concatStringsSep ", " pluginFailures}";
         assert lib.assertMsg (administratorFailures == [ ])
           "Jellyfin administrator name checks failed: ${lib.concatStringsSep ", " administratorFailures}";
+        assert lib.assertMsg (householdFailures == [ ])
+          "Jellyfin household contract checks failed: ${lib.concatStringsSep ", " householdFailures}";
         pkgs.runCommand "jellyfin-contracts"
           {
             nativeBuildInputs = [
@@ -293,7 +329,7 @@ in
             ];
           }
           ''
-            python - ${environment} ${storage} ${release} ${runtimeSecrets} ${jellarrRelease} ${contractInputs} ${renderedImages} ${encodingVariants} <<'PY'
+            python - ${environment} ${renderedImages} ${encodingVariants} <<'PY'
             import copy
             import json
             import pathlib
@@ -301,379 +337,28 @@ in
             import yaml
 
             environment = pathlib.Path(sys.argv[1])
-            storage = json.loads(pathlib.Path(sys.argv[2]).read_text())
-            release = json.loads(pathlib.Path(sys.argv[3]).read_text())
-            runtime_secrets = json.loads(pathlib.Path(sys.argv[4]).read_text())
-            jellarr_release = json.loads(pathlib.Path(sys.argv[5]).read_text())
-            contract_inputs = json.loads(pathlib.Path(sys.argv[6]).read_text())
-            release_render = json.loads(pathlib.Path(sys.argv[7]).read_text())
-            encoding_variants = json.loads(pathlib.Path(sys.argv[8]).read_text())
-            resources = []
-            application_objects = {}
-            for application in ("jellyfin-retained", "jellyfin", "jellyfin-configuration", "gateway"):
-                objects = [
-                    resource
-                    for path in (environment / application).rglob("*.yaml")
-                    for resource in yaml.safe_load_all(path.read_text())
-                    if resource
-                ]
-                application_objects[application] = objects
-                resources.extend(objects)
-
-            def find(kind, name, namespace="jellyfin"):
-                return next(
-                    resource
-                    for resource in resources
-                    if resource["kind"] == kind
-                    and resource["metadata"]["name"] == name
-                    and resource["metadata"].get("namespace", namespace) == namespace
-                )
-
-            def pod_spec(resource):
-                return resource["spec"]["template"]["spec"]
-
-            def mount(container, path):
-                return next(item for item in container.get("volumeMounts", []) if item["mountPath"] == path)
-
-            def secret_names(pod):
-                names = {
-                    volume["secret"]["secretName"]
-                    for volume in pod.get("volumes", [])
-                    if "secret" in volume
-                }
-                for container in pod.get("containers", []) + pod.get("initContainers", []):
-                    names.update(
-                        env["valueFrom"]["secretKeyRef"]["name"]
-                        for env in container.get("env", [])
-                        if "valueFrom" in env and "secretKeyRef" in env["valueFrom"]
-                    )
-                return names
-
-            expected_release = {
-                "version": "12.1",
-                "sourceRev": "ee91c75e777da41a9c4f4855e70adc604fbf2ef8",
-                "runtimeImage": "docker.io/jellyfin/jellyfin:12.1",
-                "runtimeDigest": "sha256:78d3ea1207d1322471fcac39a614f004f2ccf7e878f95ab2977d752f07e4dd7e",
-                "provisionPatchRev": "8b0a2c269d5a3d9d7084b5295fd818a8a67af6f2",
-            }
-            assert release == expected_release, "provisioner passthru.release is the coupled Jellyfin identity"
-            assert all(
-                jellarr_release.get(key) == value
-                for key, value in {
-                    "version": "0.1.0",
-                    "sourceRev": "f94c24f26c0264a7c331b016968d5b6e8d1504b7",
-                }.items()
-            ), "Jellarr package pin is the reviewed API client release"
-            runtime_image = f"{release['runtimeImage']}@{release['runtimeDigest']}"
-            retained = storage["retainedPaths"]["jellyfin-config"]
-            deployment = find("Deployment", "jellyfin")
-            pod = pod_spec(deployment)
-            containers = pod["containers"]
-            init_containers = pod.get("initContainers", [])
-            assert len(containers) == 1, "Jellyfin has one stock container"
-            # The provisioner refuses a non-empty /config before setup, so
-            # the plugin installer must run after it.
-            assert [c["name"] for c in init_containers] == ["provision", "plugins"], init_containers
-            runtime = containers[0]
-            provisioner, plugins_init = init_containers
-            assert runtime["name"] == "jellyfin" and provisioner["name"] == "provision"
-            assert plugins_init["image"] == provisioner["image"] == contract_inputs["provisionerImage"], "the bundled provisioner image installs plugins"
-            assert plugins_init["command"] == [contract_inputs["pluginInstaller"]], "the bundled installer is invoked explicitly"
-            assert plugins_init.get("imagePullPolicy") == "IfNotPresent"
-            assert [m["mountPath"] for m in plugins_init["volumeMounts"]] == ["/config"], "the plugin installer touches only /config"
-            assert mount(plugins_init, "/config")["name"] == mount(runtime, "/config")["name"]
-            assert not plugins_init.get("env") and not plugins_init.get("envFrom"), "the plugin installer gets no credential"
-            assert plugins_init["securityContext"]["allowPrivilegeEscalation"] is False
-            assert "ALL" in plugins_init["securityContext"]["capabilities"]["drop"]
-            assert runtime["image"] == runtime_image, "long-lived Jellyfin uses the exact stock runtime digest"
-            assert runtime["image"].startswith("docker.io/jellyfin/jellyfin:12.1@sha256:")
-            assert provisioner["image"] != runtime["image"], "patched provisioner bytes cannot become the long-lived runtime"
+            release_render = json.loads(pathlib.Path(sys.argv[2]).read_text())
+            encoding_variants = json.loads(pathlib.Path(sys.argv[3]).read_text())
+            deployment = yaml.safe_load((environment / "jellyfin" / "Deployment-jellyfin.yaml").read_text())
+            pod = deployment["spec"]["template"]["spec"]
             # The release-drift cases in this check render through the same
             # harness; it must reproduce the delivered images exactly.
             assert release_render == {
-                "provisioner": provisioner["image"],
-                "runtime": runtime["image"],
+                "provisioner": pod["initContainers"][0]["image"],
+                "runtime": pod["containers"][0]["image"],
             }, "the release-drift harness renders the delivered Jellyfin images"
-            assert mount(provisioner, "/config")["name"] == mount(runtime, "/config")["name"]
-            assert mount(provisioner, "/run/provision")["name"] != mount(runtime, "/config")["name"]
-            assert mount(provisioner, "/run/secrets/password")["readOnly"] is True
-            volumes = {volume["name"]: volume for volume in pod.get("volumes", [])}
-            provision_volume = volumes[mount(provisioner, "/run/provision")["name"]]
-            assert provision_volume["emptyDir"].get("medium") == "Memory"
-            provisioner_env = {
-                e["name"]: e["value"] for e in provisioner.get("env", [])
-            }
-            assert provisioner_env["JELLYFIN_ADMINISTRATOR"] == contract_inputs["administrator"], (
-                "the provisioner creates the declared administrator, not an embedded name"
+
+            configuration = yaml.safe_load(
+                (environment / "jellyfin-configuration" / "ConfigMap-jellarr-configuration.yaml").read_text()
             )
-            assert "readinessProbe" in runtime and "readinessProbe" not in provisioner
-            assert "startupProbe" in runtime and "livenessProbe" in runtime
-            assert runtime["securityContext"]["allowPrivilegeEscalation"] is False
-            assert "ALL" in runtime["securityContext"]["capabilities"]["drop"]
-            assert runtime.get("ports", []) == []
-            assert provisioner.get("ports", []) == []
-            assert pod["securityContext"]["runAsNonRoot"]
-            assert pod["securityContext"]["runAsUser"] == retained["uid"]
-            assert pod["securityContext"]["runAsGroup"] == retained["gid"]
-            media_mount = mount(runtime, "/media")
-            assert not any(m["mountPath"] == "/media" for m in provisioner["volumeMounts"]), "provisioner does not access media"
-            assert media_mount.get("readOnly") is True
-            assert deployment["spec"]["strategy"]["type"] == "Recreate"
-            media_volume = volumes[media_mount["name"]]
-            assert media_volume["hostPath"] == {
-                "path": storage["mediaPaths"]["library"],
-                "type": "Directory",
-            }, "Jellyfin consumes the semantic media-library projection"
-            assert storage["mediaPaths"]["library"] == storage["mediaPaths"]["data"] + "/library"
-            assert volumes[mount(runtime, "/cache")["name"]]["emptyDir"]["sizeLimit"] == "64Gi"
-            assert runtime["resources"]["limits"]["ephemeral-storage"] == "65Gi"
-            assert runtime["resources"]["requests"]["ephemeral-storage"] == "8Gi"
-            cache_gib = int(volumes[mount(runtime, "/cache")["name"]]["emptyDir"]["sizeLimit"].removesuffix("Gi"))
-            requested_gib = int(runtime["resources"]["requests"]["ephemeral-storage"].removesuffix("Gi"))
-            limited_gib = int(runtime["resources"]["limits"]["ephemeral-storage"].removesuffix("Gi"))
-            assert 0 < requested_gib <= cache_gib < limited_gib, \
-                "the request is a baseline within the cache, and the limit bounds the cache with headroom"
-
-            pv = find("PersistentVolume", "jellyfin-config")
-            pvc = find("PersistentVolumeClaim", "jellyfin-config")
-            assert pv["spec"]["storageClassName"] == ""
-            assert pv["spec"]["persistentVolumeReclaimPolicy"] == "Retain"
-            assert pv["spec"]["claimRef"] == {
-                "namespace": "jellyfin",
-                "name": "jellyfin-config",
-            }
-            assert pvc["spec"]["storageClassName"] == ""
-            assert pvc["spec"]["volumeName"] == "jellyfin-config"
-
-            admin_source = runtime_secrets["jellyfin--jellyfin-admin--password"]
-            assert admin_source["namespace"] == "jellyfin"
-            assert admin_source["name"] == "jellyfin-admin"
-            assert admin_source["key"] == "password"
-            assert "jellyfin-admin" in secret_names(pod)
-
-            jellyfin_objects = [resource for resource in resources if resource["metadata"].get("namespace") == "jellyfin"]
-            assert not any(
-                resource["kind"] == "ConfigMap"
-                and (
-                    resource["metadata"]["name"] == "network"
-                    or "network.xml" in resource.get("data", {})
-                )
-                for resource in jellyfin_objects
-            ), "Jellyfin does not own a generated network.xml ConfigMap"
-            assert not any(
-                volume["name"] == "network"
-                for volume in pod.get("volumes", [])
-            ), "Jellyfin does not mount a network.xml writer"
-            for resource in jellyfin_objects:
-                if resource["kind"] == "Secret" and resource["metadata"]["name"] == "jellyfin-admin":
-                    assert not resource.get("data") and not resource.get("stringData"), "admin Secret values are runtime-only"
-
-            configuration = find("ConfigMap", "jellarr-configuration")
-            assert set(configuration.get("data", {})) == {"config.yml", "bootstrap.mjs"}
-            jellarr_config = yaml.safe_load(configuration["data"]["config.yml"])
-            # Each library reads one media-class directory of the read-only
-            # /media projection; the replacement acceptance proves the
-            # libraries in a running Jellyfin.
-            library_paths = {
-                folder["name"]: [info["path"] for info in folder["libraryOptions"]["pathInfos"]]
-                for folder in jellarr_config["library"]["virtualFolders"]
-            }
-            assert all(
-                len(paths) == 1 and paths[0].startswith("/media/") for paths in library_paths.values()
-            ), library_paths
-            assert len({paths[0] for paths in library_paths.values()}) == len(library_paths), library_paths
-            assert "startup" not in jellarr_config
-
-            # Household sign-in: Jellarr configures the installed LDAP plugin.
-            ldap_plugin = contract_inputs["ldapPlugin"]
-            assert ldap_plugin["name"] == "LDAP Authentication"
-            assert ldap_plugin["version"] == "24.0.0.0"
-            assert ldap_plugin["targetAbi"] == "12.0.0.0"
-            assert ldap_plugin["sourceRev"] == "d11c86a47d51a0e3372bbff20e508302ad78f7bd"
-            assert ldap_plugin["guid"] == "958aad66-3784-4d2a-b89a-a7b6fab6e25c"
-            assert ldap_plugin["directory"] == "LDAP Authentication_" + ldap_plugin["version"]
-            assert [p["name"] for p in jellarr_config["plugins"]] == [ldap_plugin["serverName"]], (
-                "Jellarr names only the loaded plugin, so it never installs one from a repository"
-            )
-            assert "pluginRepositories" not in jellarr_config.get("system", {})
-            ldap = jellarr_config["plugins"][0]["configuration"]
-            host = contract_inputs["directoryHost"]
-            base = ",".join("dc=" + part for part in host.split("."))
-            def member_of(group):
-                return f"(memberof=spn={group}@{host},{base})"
-            assert (ldap["LdapServer"], ldap["LdapPort"], ldap["LdapBaseDn"]) == (host, contract_inputs["directory"]["port"], base)
-            assert ldap["UseSsl"] is True and ldap["UseStartTls"] is False, "LDAPS only"
-            assert ldap["SkipSslVerify"] is False and ldap["LdapRootCaPath"] == "", "the server certificate is verified"
-            assert ldap["LdapBindUser"] == "" and ldap["LdapBindPassword"] == "", "the plugin holds no directory credential"
-            assert ldap["LdapSearchFilter"] == (
-                f"(&(class=person)(|{member_of(contract_inputs['householdGroup'])}{member_of(contract_inputs['adminGroup'])}))"
-            ), "only household and administrator group members may sign in"
-            assert ldap["LdapAdminFilter"] == f"(&(class=person){member_of(contract_inputs['adminGroup'])})", (
-                "only administrator group members administer Jellyfin"
-            )
-            assert ldap["EnableLdapAdminFilterMemberUid"] is False
-            assert ldap["LdapUidAttribute"] == "uuid" and ldap["LdapUsernameAttribute"] == "name"
-            assert ldap["LdapSearchAttributes"] == "name", "people sign in by Kanidm name only"
-            assert ldap["AllowPassChange"] is False
-            assert "LdapUsers" not in ldap, "plugin-owned user links stay application-owned"
-
             variants = {mode: yaml.safe_load(text) for mode, text in encoding_variants.items()}
             pathlib.Path("jellarr-hardware.yml").write_text(encoding_variants["hardware"])
             pathlib.Path("jellarr-software.yml").write_text(encoding_variants["software"])
             unknown = copy.deepcopy(variants["hardware"])
             unknown["encoding"]["enableToneMapping"] = True
             pathlib.Path("jellarr-unknown-key.yml").write_text(yaml.safe_dump(unknown))
-
-            job = find("Job", "jellyfin-configuration")
-            annotations = job["metadata"].get("annotations", {})
-            assert annotations.get("argocd.argoproj.io/hook") == "PostSync"
-            job_pod = pod_spec(job)
-            job_containers = job_pod["containers"]
-            job_init = job_pod.get("initContainers", [])
-            assert len(job_containers) == 1 and len(job_init) == 1, "Jellarr is one post-health one-shot with one API bootstrap init"
-            assert job_containers[0]["name"] == "jellarr" and job_init[0]["name"] == "bootstrap"
-            bootstrap_env = {
-                e["name"]: e["value"] for e in job_init[0].get("env", [])
-            }
-            assert bootstrap_env["JELLYFIN_ADMINISTRATOR"] == contract_inputs["administrator"]
-            assert "jellyfin-admin" in secret_names(job_pod)
-            admin_volumes = {
-                volume["name"]
-                for volume in job_pod["volumes"]
-                if volume.get("secret", {}).get("secretName") == "jellyfin-admin"
-            }
-            assert admin_volumes
-            assert admin_volumes <= {
-                mount["name"] for mount in job_init[0].get("volumeMounts", [])
-            }
-            assert not admin_volumes & {
-                mount["name"] for mount in job_containers[0].get("volumeMounts", [])
-            }
-            jellarr_mount = mount(job_containers[0], "/run/jellarr")
-            assert mount(job_init[0], "/run/jellarr")["name"] == jellarr_mount["name"]
-            jellarr_volume = next(volume for volume in job_pod["volumes"] if volume["name"] == jellarr_mount["name"])
-            assert jellarr_volume["emptyDir"].get("medium") == "Memory"
-            assert not any(
-                resource["kind"] == "Secret"
-                and any(fragment in resource["metadata"]["name"].lower() for fragment in ("jellarr", "api-key", "apikey"))
-                for resource in jellyfin_objects
-            ), "Jellarr API-key bootstrap has no durable Secret resource"
             pathlib.Path("bootstrap.mjs").write_text(configuration["data"]["bootstrap.mjs"])
 
-            # Once any NetworkPolicy in the jellyfin Application selects the
-            # Jellyfin pod, the same Application must admit the Jellarr
-            # configuration Job on 8096; another Application's policy cannot
-            # cover it where the Jellyfin app is deployed alone.
-            deployment_labels = deployment["spec"]["template"]["metadata"]["labels"]
-            job_labels = job["spec"]["template"]["metadata"]["labels"]
-            jellyfin_policies = [
-                resource
-                for resource in application_objects["jellyfin"]
-                if resource["kind"] == "NetworkPolicy"
-            ]
-            selecting = [
-                policy
-                for policy in jellyfin_policies
-                if set(policy["spec"].get("podSelector", {}).get("matchLabels", {}).items())
-                <= set(deployment_labels.items())
-            ]
-
-            def admits_configuration_job(policy):
-                for rule in policy["spec"].get("ingress", []):
-                    ports = rule.get("ports", [])
-                    port_ok = not ports or any(
-                        entry.get("port") == 8096 for entry in ports
-                    )
-                    for source in rule.get("from", []):
-                        pod_labels = source.get("podSelector", {}).get("matchLabels", {})
-                        namespace = (
-                            source.get("namespaceSelector", {})
-                            .get("matchLabels", {})
-                            .get("kubernetes.io/metadata.name")
-                        )
-                        if (
-                            namespace == "jellyfin"
-                            and set(pod_labels.items()) <= set(job_labels.items())
-                            and port_ok
-                        ):
-                            return True
-                return False
-
-            if selecting:
-                assert any(
-                    admits_configuration_job(policy) for policy in jellyfin_policies
-                ), "the jellyfin Application admits the jellyfin-configuration Job on 8096"
-
-            service = find("Service", "jellyfin")
-            service_spec = service["spec"]
-            assert service_spec.get("type", "ClusterIP") == "ClusterIP"
-            assert not service_spec.get("externalIPs") and not service_spec.get("loadBalancerIP")
-            assert all("nodePort" not in port for port in service_spec["ports"])
-            assert service_spec["selector"] == deployment["spec"]["selector"]["matchLabels"]
-            assert any(port["port"] == 8096 and port["targetPort"] == 8096 for port in service_spec["ports"])
-
-            route = find("HTTPRoute", "jellyfin", "gateway")
-            assert route["spec"]["rules"][0]["timeouts"] == {
-                "request": "0s",
-                "backendRequest": "0s",
-            }, "Jellyfin request and backend deadlines remain streaming-safe"
-
-            # Only declared grant holders mount /dev/dri or hold gpu-render.
-            cluster_resources = []
-            for path in sorted(environment.rglob("*.yaml")):
-                if path.name.startswith("CustomResourceDefinition-"):
-                    continue
-                cluster_resources.extend(resource for resource in yaml.safe_load_all(path.read_text()) if resource)
-
-            def workloads(items):
-                for resource in items:
-                    spec = resource.get("spec") or {}
-                    if resource.get("kind") == "Pod":
-                        yield resource, spec
-                        continue
-                    template = spec.get("template") or spec.get("jobTemplate", {}).get("spec", {}).get("template")
-                    if isinstance(template, dict) and isinstance(template.get("spec"), dict):
-                        yield resource, template["spec"]
-
-            def containers_of(spec):
-                return spec.get("containers", []) + spec.get("initContainers", []) + spec.get("ephemeralContainers", [])
-
-            def owner_of(resource):
-                return (resource["kind"], resource["metadata"].get("namespace"), resource["metadata"]["name"])
-
-            # Adding a holder is a reviewed edit here and in its manifests.
-            declared_grant_holders = {("Deployment", "jellyfin", "jellyfin"): {"jellyfin"}}
-
-            def accelerator_grants(items):
-                gid = contract_inputs["gpuRenderGid"]
-                holders = set()
-                for resource, spec in workloads(items):
-                    owner = owner_of(resource)
-                    security = spec.get("securityContext", {})
-                    claims = gid in security.get("supplementalGroups", []) or gid in (
-                        security.get("fsGroup"), security.get("runAsGroup"))
-                    device_volumes = set()
-                    for volume in spec.get("volumes", []):
-                        path = volume.get("hostPath", {}).get("path", "").rstrip("/")
-                        if path == "/dev" or path.startswith("/dev/"):
-                            assert volume["hostPath"] == {"path": "/dev/dri", "type": "Directory"}, (
-                                f"{owner} mounts {path}; a grant mounts only /dev/dri"
-                            )
-                            device_volumes.add(volume["name"])
-                    for container in containers_of(spec):
-                        container_security = container.get("securityContext", {})
-                        assert not container_security.get("privileged"), f"{owner} {container['name']} is privileged"
-                        claims = claims or container_security.get("runAsGroup") == gid
-                        if any(m["name"] in device_volumes for m in container.get("volumeMounts", [])):
-                            assert container["name"] in declared_grant_holders.get(owner, set()), (
-                                f"{owner} {container['name']} mounts /dev/dri without a declared grant"
-                            )
-                    if claims or device_volumes:
-                        assert owner in declared_grant_holders, f"{owner} claims the accelerator without a declared grant"
-                        holders.add(owner)
-                assert holders == set(declared_grant_holders), f"declared grant holders: {sorted(holders)}"
-
-            accelerator_grants(cluster_resources)
             PY
 
             # Both transcoding variants pass Jellarr's strict schema; an

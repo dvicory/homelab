@@ -112,23 +112,19 @@
         prepare-luks-storage =
           pkgs.runCommand "prepare-luks-storage-check"
             {
-              # The real tools the script runs: test.sh uses rsync and
-              # python3 for copy and verify, and checks every other command
-              # line's options against these binaries.
+              # Real filesystem transfer/verification; block probes and format
+              # mutators remain isolated fakes in the refusal scenarios. The
+              # prepare-luks-storage-runtime VM check runs every production
+              # call of those tools against the real binaries.
               nativeBuildInputs = [
                 pkgs.bash
                 pkgs.coreutils
-                pkgs.cryptsetup
                 pkgs.findutils
                 pkgs.gnugrep
                 pkgs.gnused
-                pkgs.gptfdisk
                 pkgs.python3
                 pkgs.rsync
-                pkgs.systemdMinimal
-                pkgs.util-linux
               ];
-              REQUIRE_REAL_TOOL_CHECKS = "1";
             }
             ''
               ${pkgs.bash}/bin/bash ${../../pkgs/by-name/prepare-luks-storage}/test.sh

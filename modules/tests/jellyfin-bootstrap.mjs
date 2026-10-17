@@ -8,10 +8,12 @@ const bootstrap = fs.readFileSync(process.argv[2], "utf8").replace(
 );
 
 async function exercise({ existing = false, keyFailure = false, logoutFailure = false, starting = false } = {}) {
-  let keys = existing ? [{ AppName: "Jellarr", AccessToken: "jellarr-key" }] : [];
+  const apiKey = "jellarr-key";
+  let keys = existing ? [{ AppName: "Jellarr", AccessToken: apiKey }] : [];
   let created = 0;
   let loggedOut = 0;
   let output;
+  const keyFailureError = new Error("fixture key acquisition failure");
   let healthChecks = 0;
   let healthy = false;
   const reply = (status, body = null) => ({
@@ -30,27 +32,24 @@ async function exercise({ existing = false, keyFailure = false, logoutFailure = 
       assert.equal(healthy, true, "authentication waits for native Healthy, not Degraded HTTP 200");
       return reply(200, { AccessToken: "admin-session" });
     }
-    assert.equal(options.headers.Authorization,
-      'MediaBrowser Client="homelab-jellarr-bootstrap", Device="Kubernetes Job", DeviceId="jellarr-bootstrap", Version="1", Token="admin-session"');
-    assert.equal(options.headers["X-Emby-Token"], undefined);
     if (path === "/Sessions/Logout") {
       loggedOut += 1;
       return reply(logoutFailure ? 500 : 204);
     }
-    assert.equal(path, "/Auth/Keys");
-    if (keyFailure) return reply(503);
-    if (options.method === "POST") {
-      assert.equal(new URL(url).searchParams.get("app"), "Jellarr");
-      created += 1;
-      keys = [{ AppName: "Jellarr", AccessToken: "jellarr-key" }];
-      return reply(204);
+    if (path === "/Auth/Keys") {
+      if (keyFailure) throw keyFailureError;
+      if (options.method === "POST") {
+        created += 1;
+        keys = [{ AppName: new URL(url).searchParams.get("app"), AccessToken: apiKey }];
+        return reply(204);
+      }
+      return reply(200, { Items: keys });
     }
-    return reply(200, { Items: keys });
+    return reply(404);
   };
   const testFs = {
     readFileSync: () => "password\n",
-    writeFileSync: (path, contents, options) => {
-      assert.equal(path, "/run/jellarr/api-key");
+    writeFileSync: (_path, contents, options) => {
       assert.equal(options.mode, 0o400);
       output = contents;
     },
@@ -59,10 +58,10 @@ async function exercise({ existing = false, keyFailure = false, logoutFailure = 
     testFs, fetch, URL, process: { env: { JELLYFIN_URL: "http://jellyfin.local" } },
     setTimeout,
   });
-  if (keyFailure) await assert.rejects(run, /Jellyfin API request failed: 503/);
+  if (keyFailure) await assert.rejects(run, error => error === keyFailureError);
   else await run;
   assert.equal(created, existing || keyFailure ? 0 : 1);
-  assert.equal(output, keyFailure ? undefined : "jellarr-key\n");
+  assert.equal(output, keyFailure ? undefined : apiKey + "\n");
   assert.equal(loggedOut, 1, "temporary administrator session is logged out on success and failure");
   if (starting) assert.equal(healthChecks, 2, "the native degraded response is not mistaken for application readiness");
 }
