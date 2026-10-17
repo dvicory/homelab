@@ -120,11 +120,12 @@ in
           "app.kubernetes.io/name" = "kanidm";
         })
         // {
+          hostnames = [ "id.bzfx.net" ];
           # Kanidm owns port-specific HTTPS and LDAPS admission. A second
           # all-port Gateway policy would override that directory boundary.
           manageBackendIngress = false;
           backendTLS = true;
-          backendHostname = builtins.head (hosts "idm");
+          backendHostname = builtins.head cluster.routes.idm.hostnames;
         };
     };
     # The existing Arr instances intentionally share the host-owned media

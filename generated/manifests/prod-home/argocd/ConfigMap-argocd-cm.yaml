@@ -6,7 +6,7 @@ data:
   application.resourceTrackingMethod: annotation
   application.sync.impersonation.enabled: "false"
   exec.enabled: "false"
-  oidc.config: '{"clientID":"argocd","clientSecret":"$argocd-kanidm-oidc:clientSecret","enablePKCEAuthentication":true,"issuer":"https://idm.plus2.danielvicory.dev/oauth2/openid/argocd","name":"Kanidm","requestedScopes":["openid","profile","email","groups_name"]}'
+  oidc.config: '{"clientID":"argocd","clientSecret":"$argocd-kanidm-oidc:clientSecret","enablePKCEAuthentication":true,"issuer":"https://id.bzfx.net/oauth2/openid/argocd","name":"Kanidm","requestedScopes":["openid","profile","email","groups_name"]}'
   resource.customizations.health.argoproj.io_Application: |
     hs = {}
     hs.status = "Progressing"
