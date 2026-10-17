@@ -36,7 +36,7 @@ independently syncing child Applications.
 | Service | Exposure | Canonical URL | Secondary URL | Backend |
 | --- | --- | --- | --- | --- |
 | `argocd` | `public` | `https://argocd.plus2.danielvicory.dev` | `https://argocd.backup.plus2.danielvicory.dev` | `argocd/argocd-server:80` |
-| `idm` | `public` | `https://idm.plus2.danielvicory.dev` | `https://idm.backup.plus2.danielvicory.dev` | `identity/kanidm:443` |
+| `idm` | `public` | `https://id.bzfx.net` | `not declared` | `identity/kanidm:443` |
 | `jellyfin` | `private` | `https://jellyfin.plus2.danielvicory.dev` | `https://jellyfin.backup.plus2.danielvicory.dev` | `jellyfin/jellyfin:8096` |
 | `prowlarr` | `public` | `https://prowlarr.plus2.danielvicory.dev` | `https://prowlarr.backup.plus2.danielvicory.dev` | `media/prowlarr:9696` |
 | `radarr` | `public` | `https://radarr.plus2.danielvicory.dev` | `https://radarr.backup.plus2.danielvicory.dev` | `media/radarr:7878` |
@@ -99,7 +99,13 @@ outputs, images, documentation, or logs.
 cert-manager issues TLS in the cluster: the `letsencrypt-prod`
 ClusterIssuer does Cloudflare DNS-01 (the `cloudflare-api-token` runtime
 Secret) and writes `gateway-tls` in `gateway` and `kanidm-tls` in
-`identity`. Check issuance inside the guest:
+`identity`.
+The token must cover each certificate zone, including the canonical
+identity zone; see [identity operations](operations/identity.md#canonical-name-and-certificate-renewal).
+Gateway reads that identity certificate through its name-scoped grant;
+application wildcard certificates remain separate.
+
+Check issuance inside the guest:
 
 ```sh
 kubectl get clusterissuer letsencrypt-prod

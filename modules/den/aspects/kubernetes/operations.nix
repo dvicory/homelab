@@ -145,7 +145,13 @@ in
         cert-manager issues TLS in the cluster: the `letsencrypt-prod`
         ClusterIssuer does Cloudflare DNS-01 (the `cloudflare-api-token` runtime
         Secret) and writes `gateway-tls` in `gateway` and `kanidm-tls` in
-        `identity`. Check issuance inside the guest:
+        `identity`.
+        The token must cover each certificate zone, including the canonical
+        identity zone; see [identity operations](operations/identity.md#canonical-name-and-certificate-renewal).
+        Gateway reads that identity certificate through its name-scoped grant;
+        application wildcard certificates remain separate.
+
+        Check issuance inside the guest:
 
         ```sh
         kubectl get clusterissuer letsencrypt-prod

@@ -3,6 +3,27 @@
 Kanidm runs in the `identity` namespace. The Gateway protects administrator
 routes with OIDC from Kanidm. Argo CD also signs users in through Kanidm.
 
+## Canonical name and certificate renewal
+
+Kanidm uses `https://id.bzfx.net` regardless of the application domain or
+entrance. Keep that hostname and its descendants exclusive to identity.
+
+Cloudflare must be authoritative for the certificate zones, including
+`bzfx.net`, before issuance. The existing `cloudflare-api-token` runtime
+Secret needs `Zone - DNS - Edit` and `Zone - Zone - Read` permissions on
+`bzfx.net` and the existing application-certificate zones. Do not grant a
+global API key or assume an old zone-scoped token includes a new zone.
+
+Cert-manager uses the existing direct Cloudflare DNS-01 solver. If the
+token must change, use the existing agenix/rekey runtime-secret flow;
+never put the token in manifests or command arguments.
+
+The Gateway references `identity/kanidm-tls` through a name-scoped
+ReferenceGrant. Each independent public edge needs its own
+`tls.identity.certificate` and `tls.identity.key` inputs covering the
+canonical identity name. Application wildcard certificates are not a
+substitute. Cert-manager remains the only writer of cluster TLS Secrets.
+
 ## Administrator applications in Kanidm
 
 Each administrator route has its own Kanidm OAuth2 client, named after the

@@ -71,7 +71,7 @@ not on the production host and not inside a new Docker VM test envelope.
 
 Run as root on disposable native x86_64 Linux with a running Docker daemon.
 Reserve the fixture's workload names, state and loopback ports for the suite.
-Before starting, the canonical hostname `idm.plus2.danielvicory.dev` must
+Before starting, the canonical hostname `id.bzfx.net` must
 resolve to `127.0.0.1` on that host. The app never edits host resolution.
 The disposable GitHub runner may explicitly add that loopback hosts entry;
 do not redirect the production hostname on a production host.
