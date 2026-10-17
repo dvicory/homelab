@@ -492,6 +492,42 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Only the declared root-owned storage capability relocates daemon data.
+      - name: Prepare owned native acceptance storage
+        if: matrix.requirements.ownedStorage == true
+        run: |
+          set -euo pipefail
+          test ! -e /mnt/nix.img
+          test ! -L /mnt/nix.img
+          test ! -e /nix
+          test ! -L /nix
+          for target in /nix /var/lib/docker /var/lib/containerd; do
+            test ! -L "$target"
+            if mountpoint -q "$target"; then
+              printf 'refusing existing storage mount: %s\n' "$target" >&2
+              exit 1
+            fi
+          done
+          free_space=$(df -m --output=avail /mnt | tail -n 1)
+          disk_size=$((free_space - 1024))
+          test "$disk_size" -gt 1024
+          sudo fallocate -l "${disk_size}M" /mnt/nix.img
+          loop_dev=$(sudo losetup --find --show /mnt/nix.img)
+          printf '%s\n' "$loop_dev" > "$RUNNER_TEMP/native-storage-loop"
+          sudo mkfs.btrfs -L nix --nodiscard "$loop_dev"
+          sudo blkid -s UUID -o value "$loop_dev" | tee "$RUNNER_TEMP/native-storage-uuid"
+          test -s "$RUNNER_TEMP/native-storage-uuid"
+          sudo mkdir /nix
+          sudo mount "$loop_dev" /nix -o noatime,nobarrier,nodiscard,compress=zstd:1,space_cache=v2,commit=120
+          sudo mkdir -p /nix/build
+          sudo chattr +C /nix/build
+          sudo mkdir -p /nix/build/native-acceptance/{docker,containerd,tmp}
+          sudo chmod 1777 /nix/build/native-acceptance/tmp
+          sudo systemctl stop docker.service docker.socket containerd.service
+          sudo mkdir -p /var/lib/docker /var/lib/containerd
+          sudo mount --bind /nix/build/native-acceptance/docker /var/lib/docker
+          sudo mount --bind /nix/build/native-acceptance/containerd /var/lib/containerd
+          sudo systemctl start containerd.service docker.service
       - name: Install Nix
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
@@ -506,6 +542,18 @@ jobs:
           name: ${{ vars.CACHIX_CACHE }}
           skipPush: true
       - *signed-upstream-cache
+      - name: Select owned fixture scratch after Nix installation
+        if: matrix.requirements.ownedStorage == true
+        run: |
+          # Installation and cache setup must not use scratch owned beneath /nix.
+          printf 'TMPDIR=/nix/build/native-acceptance/tmp\n' >> "$GITHUB_ENV"
+          printf 'build-dir = /nix/build\n' >> "${XDG_CONFIG_HOME:-$HOME/.config}/nix/nix.conf"
+      - name: Configure declared canonical loopback host
+        if: matrix.loopbackHost != ''
+        run: |
+          set -euo pipefail
+          host=$(jq -er .loopbackHost <<< "$APPLICATION")
+          printf '127.0.0.1 %s\n' "$host" | sudo tee -a /etc/hosts
       - name: Record native runner and declared inputs
         run: |
           set -euo pipefail
@@ -515,8 +563,14 @@ jobs:
             printf 'runner_image=%s\nrunner_image_version=%s\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
             uname -a
             nix --version
-            git rev-parse HEAD
+            git rev-parse HEAD HEAD:generated/manifests/prod-home
             sha256sum flake.lock
+            if [ "$(jq -r .requirements.ownedStorage <<< "$APPLICATION")" = true ]; then
+              df -h / /nix
+              for target in /nix /var/lib/docker /var/lib/containerd; do
+                findmnt -rn -M "$target" -o TARGET,SOURCE,FSTYPE,FSROOT,UUID
+              done
+            fi
             if [ "$(jq -r .requirements.docker <<< "$APPLICATION")" = true ]; then
               test -S /var/run/docker.sock
               endpoint=$(env -u DOCKER_HOST -u DOCKER_CONTEXT docker context inspect default --format '{{ .Endpoints.docker.Host }}')
@@ -558,7 +612,11 @@ jobs:
             cd "$RUNNER_TEMP/native-evidence"
             test ! -e "$report"
           fi
-          /usr/bin/time -p timeout --signal=INT "${deadline}s" "$program" "${arguments[@]}" \
+          runner=()
+          if [ "$(jq -r .requirements.root <<< "$APPLICATION")" = true ]; then
+            runner=(sudo env "TMPDIR=$TMPDIR")
+          fi
+          "${runner[@]}" /usr/bin/time -p timeout --signal=INT "${deadline}s" "$program" "${arguments[@]}" \
             2>&1 | tee "$RUNNER_TEMP/native-evidence/acceptance.log"
           if jq -e 'has("reportFile")' <<< "$APPLICATION" > /dev/null; then
             test -f "$report"
@@ -588,7 +646,50 @@ jobs:
                 test -z "$remaining"
               done
             fi
+            if [ "$(jq -r .requirements.ownedStorage <<< "$APPLICATION")" = true ]; then
+              # This capability owns an exclusive disposable daemon, not a name subset.
+              test -z "$(docker --host unix:///var/run/docker.sock container ls --all --quiet)"
+              test -z "$(docker --host unix:///var/run/docker.sock network ls --filter type=custom --quiet)"
+              test -z "$(docker --host unix:///var/run/docker.sock volume ls --quiet)"
+              test -z "$(sudo find "$TMPDIR" -mindepth 1 -maxdepth 1 -print -quit)"
+              printf 'remaining_fixture_resources=false\n'
+            fi
           } 2>&1 | tee "$RUNNER_TEMP/native-evidence/cleanup.log"
+      - name: Clean owned native acceptance storage
+        if: always() && matrix.requirements.ownedStorage == true
+        run: |
+          set -euo pipefail
+          if test -s "$RUNNER_TEMP/native-storage-uuid"; then
+            uuid=$(cat "$RUNNER_TEMP/native-storage-uuid")
+            loop_dev=$(cat "$RUNNER_TEMP/native-storage-loop")
+            test ! -L /mnt/nix.img
+            test "$(sudo losetup --noheadings --output BACK-FILE "$loop_dev")" = /mnt/nix.img
+            test "$(sudo blkid -s UUID -o value "$loop_dev")" = "$uuid"
+            # Validate every owned mount before stopping daemons or deleting data.
+            for target in /nix /var/lib/docker /var/lib/containerd; do
+              if mountpoint -q "$target"; then
+                test "$(findmnt -rn -M "$target" -o UUID)" = "$uuid"
+                case "$target" in
+                  /nix) root=/ ;;
+                  *) root="/build/native-acceptance/${target##*/}" ;;
+                esac
+                test "$(findmnt -rn -M "$target" -o FSROOT)" = "$root"
+              fi
+            done
+            sudo systemctl stop docker.service docker.socket containerd.service
+            for name in docker containerd; do
+              if mountpoint -q "/var/lib/$name"; then
+                sudo umount "/var/lib/$name"
+              fi
+            done
+            if mountpoint -q /nix; then
+              sudo rm -rf /nix/build/native-acceptance
+              sudo test ! -e /nix/build/native-acceptance
+            fi
+            # The tool store must survive Cachix/Nix post-actions. The exclusive
+            # disposable runner owns final /nix mount, loop and image teardown.
+          fi
+          printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Upload native execution diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

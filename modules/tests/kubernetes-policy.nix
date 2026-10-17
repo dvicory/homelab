@@ -56,6 +56,7 @@
         cluster = {
           settings.kubernetes.services = {
             identity.phase = inventory.settings.kubernetes.services.identity.phase;
+            identity.directory.port = inventory.settings.kubernetes.services.identity.directory.port;
             seerr.phase = inventory.settings.kubernetes.services.seerr.phase;
             media = lib.genAttrs [ "radarr" "sonarr" ] (family:
               lib.mapAttrs (_: instance: { inherit (instance) state; }) inventory.settings.kubernetes.services.media.${family}
@@ -64,7 +65,7 @@
           ingress = { inherit (inventory.ingress) mode trustedProxyCIDRs nodePort; };
           routes = lib.mapAttrs (_: route: {
             inherit (route) namespace service port auth exposure hostnames pathPrefix backendTLS backendPodSelector
-              sameNamespaceIngress;
+              sameNamespaceIngress manageBackendIngress;
             backendHostname = route.backendHostname or null;
             timeouts = route.timeouts or null;
           }) inventory.routes;

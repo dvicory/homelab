@@ -335,7 +335,7 @@ Removing `prod-home-manifests-schema`, `compute-guest-upgrade`,
 `prod-home-replacement` or `prod-home-consumer-resilience` instead must fail
 with the corresponding identity. ARM Linux also requires native
 `agenix-restart-guard` registration and runtime capability.
-Removing either required native app or package, replacing the package with a
+Removing any required native app or its package, replacing the package with a
 non-derivation or changing the app away from its executable package must fail
 with `Required native CI apps must have matching executable packages`.
 Removing the required-name list entry changes the verification contract; it is
