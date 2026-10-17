@@ -133,12 +133,8 @@ def dns_service_endpoints(slices):
     return [endpoint for item in items for endpoint in _optional_array(item["endpoints"])]
 
 
-def coredns_workload_witness(workloads):
-    """Only CoreDNS's Deployment owner chain; fixed counts/enums, no names or messages."""
-    def count(value):
-        return value if type(value) is int and 0 <= value <= 2147483647 else None
-    def enum(value, allowed):
-        return value if isinstance(value, str) and value in allowed else "other"
+def coredns_owned_workloads(workloads):
+    """Use the Deployment/ReplicaSet owner chain, not labels alone."""
     def owned(obj, kind, uids):
         return any(owner.get("uid") in uids and owner.get("kind") == kind and owner.get("controller") is True
                    for owner in _optional_array((obj.get("metadata") or {}).get("ownerReferences")))
@@ -150,7 +146,16 @@ def coredns_workload_witness(workloads):
     uid = (deployment.get("metadata") or {}).get("uid")
     replicas = {(obj.get("metadata") or {}).get("uid") for obj in objects
                 if uid and obj.get("kind") == "ReplicaSet" and owned(obj, "Deployment", {uid})} - {None}
-    pods = [obj for obj in objects if obj.get("kind") == "Pod" and owned(obj, "ReplicaSet", replicas)][:4]
+    return deployment, [obj for obj in objects if obj.get("kind") == "Pod" and owned(obj, "ReplicaSet", replicas)][:4]
+
+
+def coredns_workload_witness(workloads):
+    """Only the owned CoreDNS chain; fixed status fields, never specs or messages."""
+    def count(value):
+        return value if type(value) is int and 0 <= value <= 2147483647 else None
+    def enum(value, allowed):
+        return value if isinstance(value, str) and value in allowed else "other"
+    deployment, pods = coredns_owned_workloads(workloads)
     phases = dict.fromkeys(("Pending", "Running", "Succeeded", "Failed", "Unknown", "other"), 0)
     waiting = dict.fromkeys(("ContainerCreating", "PodInitializing", "CrashLoopBackOff", "ErrImagePull",
                              "ImagePullBackOff", "CreateContainerConfigError", "CreateContainerError",
@@ -167,13 +172,44 @@ def coredns_workload_witness(workloads):
             if "waiting" in state:
                 waiting[enum((state.get("waiting") or {}).get("reason"), waiting)] += 1
     return {
-        "status": "observed", "deploymentPresent": bool(uid),
+        "status": "observed", "deploymentPresent": bool((deployment.get("metadata") or {}).get("uid")),
         "desiredReplicas": count((deployment.get("spec") or {}).get("replicas")),
         "readyReplicas": count((deployment.get("status") or {}).get("readyReplicas")),
         "observedPodCount": len(pods), "readyPodCount": ready,
         "phaseCounts": [{"phase": phase, "count": value} for phase, value in phases.items() if value],
         "waitingReasonCounts": [{"reason": reason, "count": value} for reason, value in waiting.items() if value],
+        "pods": [{
+            "index": index,
+            "conditions": [{
+                "type": condition["type"],
+                "status": enum(condition.get("status"), ("True", "False", "Unknown")),
+            } for condition in _optional_array((pod.get("status") or {}).get("conditions"))[:16]
+                if condition.get("type") in ("PodScheduled", "PodReadyToStartContainers",
+                                            "Initialized", "ContainersReady", "Ready")],
+        } for index, pod in enumerate(pods, 1)],
     }
+
+
+def coredns_pod_events_witness(owned_pods, events):
+    """Only events for the selected owned Pod UIDs; reuse existing fixed categories."""
+    items = events["items"]
+    if not isinstance(items, list):
+        raise ValueError("invalid-array-shape")
+    indices = {(pod.get("metadata") or {}).get("uid"): index
+               for index, pod in enumerate(owned_pods[:4], 1)
+               if isinstance((pod.get("metadata") or {}).get("uid"), str)
+               and (pod.get("metadata") or {}).get("uid")}
+    return {"status": "observed", "items": [{
+        "podIndex": indices[(event.get("involvedObject") or {}).get("uid")],
+        "type": event.get("type") if event.get("type") in ("Normal", "Warning") else "other",
+        "reason": event.get("reason") if event.get("reason") in (
+            "FailedCreatePodSandBox", "SandboxChanged", "FailedCreate", "FailedScheduling",
+            "FailedMount", "FailedAttachVolume", "Failed", "BackOff", "Unhealthy", "Pulling",
+            "Pulled", "Created", "Started", "SuccessfulCreate", "Killing", "FailedSync",
+        ) else "other",
+        "count": event.get("count") if type(event.get("count")) is int and 0 <= event["count"] <= 2147483647 else None,
+        "errorCategory": classify_network_policy_error(event.get("message") or ""),
+    } for event in items if (event.get("involvedObject") or {}).get("uid") in indices][:32]}
 
 
 def gateway_owned_workloads(workloads):
@@ -961,6 +997,55 @@ def self_check():
     assert dns_workload["desiredReplicas"] is None
     assert coredns_workload_witness({"items": []})["desiredReplicas"] is None
     assert coredns_workload_witness({"items": []})["observedPodCount"] == 0
+    dns_pod = dns_workloads["items"][2]
+    dns_uid = "12345678-1234-1234-1234-123456789abc"
+    dns_pod["metadata"]["uid"] = dns_uid
+    dns_pod["spec"] = {"private": sensitive}
+    dns_pod["status"]["conditions"] = [
+        {"type": kind, "status": state, "reason": sensitive, "message": sensitive}
+        for kind, state in (("PodScheduled", "True"), ("PodReadyToStartContainers", "False"),
+                            ("Initialized", "False"), ("ContainersReady", "False"), ("Ready", "False"),
+                            (sensitive, sensitive))
+    ]
+    dns_pod["status"]["initContainerStatuses"] = [{
+        "name": sensitive, "ready": False, "restartCount": 1,
+        "state": {"waiting": {"reason": "PodInitializing", "message": sensitive}},
+        "lastState": {"terminated": {"reason": "Error", "exitCode": 1,
+                                     "message": "permission denied " + sensitive}},
+    }]
+    container["state"] = {"waiting": {"reason": "ContainerCreating", "message": sensitive}}
+    dns_workload = coredns_workload_witness(dns_workloads)
+    assert sensitive not in json.dumps(dns_workload) and dns_uid not in json.dumps(dns_workload)
+    assert dns_workload["pods"][0]["conditions"][1] == {"type": "PodReadyToStartContainers", "status": "False"}
+    assert len(dns_workload["pods"][0]["conditions"]) == 5
+    _, dns_pods = coredns_owned_workloads(dns_workloads)
+    dns_events = {"items": [
+        {"involvedObject": {"uid": dns_uid, "name": sensitive}, "type": "Warning",
+         "reason": "FailedCreatePodSandBox", "message": sensitive, "count": 2},
+        {"involvedObject": {"uid": dns_uid}, "type": sensitive,
+         "reason": sensitive, "message": sensitive, "count": True},
+        {"involvedObject": {"uid": "dns-owner"}, "type": "Warning", "reason": "Failed"},
+        {"involvedObject": {"uid": sensitive}, "type": "Warning", "reason": "Failed"},
+    ]}
+    dns_event_witness = coredns_pod_events_witness(dns_pods, dns_events)
+    assert dns_event_witness["items"] == [
+        {"podIndex": 1, "type": "Warning", "reason": "FailedCreatePodSandBox",
+         "count": 2, "errorCategory": "unclassified"},
+        {"podIndex": 1, "type": "other", "reason": "other", "count": None,
+         "errorCategory": "unclassified"},
+    ]
+    assert sensitive not in json.dumps(dns_event_witness) and dns_uid not in json.dumps(dns_event_witness)
+    assert len(coredns_pod_events_witness(dns_pods, {"items": dns_events["items"] * 40})["items"]) == 32
+    for invalid in (None, 0, False, "", {}):
+        try:
+            coredns_pod_events_witness(dns_pods, {"items": invalid})
+            raise AssertionError("malformed event List envelope accepted")
+        except ValueError:
+            pass
+    dns_pod["status"]["conditions"] = None
+    dns_pod["status"]["initContainerStatuses"] = None
+    dns_workload = coredns_workload_witness(dns_workloads)
+    assert dns_workload["pods"][0]["conditions"] == []
     for text, expected in (
         ("connection refused", "connection-refused"),
         ("no such file or directory", "socket-absent"),

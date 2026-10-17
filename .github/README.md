@@ -272,9 +272,13 @@ as do absent/null optional workload arrays. Required List `items` must remain
 arrays; missing required fields and malformed shapes remain unavailable, not
 zero endpoints. The same bounded witness projects
 CoreDNS Deployment counts and at most four owned Pods' readiness/phase counts,
-plus fixed waiting-reason counts (`other` for unknown reasons); no names,
-messages or logs survive. Workload-read failure does not discard DNS query
-evidence. Unexpected collector errors expose only a fixed exception-type category.
+standard scheduling/sandbox/init/container conditions and fixed waiting-reason
+counts. Events are queried only by those Pods' actual UIDs; at most
+32 events retain fixed Kubernetes reasons, counts and the existing curated error
+categories. Only Pod indices survive, never names, UIDs, specs, messages or logs;
+unknown reasons/categories remain explicit rather than guessing a cause.
+Workload/event read failure does not discard DNS query evidence. Unexpected
+collector errors expose only a fixed exception-type category.
 Read-only node facts also project `br_netfilter` module presence and the
 node-network-namespace IPv4 bridge hook flag; unreadable facts remain null.
 Missing tools, resolvers or namespace access remain unavailable evidence, not

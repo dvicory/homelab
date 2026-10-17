@@ -15,7 +15,7 @@ import time
 import uuid
 
 import yaml
-from report import ARGO_CRDS, ARGO_RECOVERY_APPS, ARGO_RECOVERY_JOBS, ENVOY_READINESS_STATS, REQUIRED_SCENARIOS, argo_recovery_witness, bridge_netfilter_witness, check_acceptance, check_report, classify_docker_error, classify_kubectl_error, classify_network_policy_error, containerd_socket_failure, coredns_workload_witness, crd_condition_witness, dns_query_witness, dns_service_endpoints, envoy_readiness_witness, gateway_owned_workloads, gateway_prerequisite_witness, network_policy_witness, sanitize_tests
+from report import ARGO_CRDS, ARGO_RECOVERY_APPS, ARGO_RECOVERY_JOBS, ENVOY_READINESS_STATS, REQUIRED_SCENARIOS, argo_recovery_witness, bridge_netfilter_witness, check_acceptance, check_report, classify_docker_error, classify_kubectl_error, classify_network_policy_error, containerd_socket_failure, coredns_owned_workloads, coredns_pod_events_witness, coredns_workload_witness, crd_condition_witness, dns_query_witness, dns_service_endpoints, envoy_readiness_witness, gateway_owned_workloads, gateway_prerequisite_witness, network_policy_witness, sanitize_tests
 
 OWNER_LABEL = "verification.homelab/fixture"
 
@@ -77,8 +77,25 @@ def capture_envoy_dns(kubectl_command, docker_command, env, node, pod):
             "readyEndpointCount": sum((endpoint.get("conditions") or {}).get("ready") is True for endpoint in endpoints),
         }
         try:
-            witness["coreDNS"]["workload"] = coredns_workload_witness(
-                get("deployments,replicasets,pods", "-n", "kube-system", "-l", "k8s-app=kube-dns"))
+            workloads = get("deployments,replicasets,pods", "-n", "kube-system", "-l", "k8s-app=kube-dns")
+            workload = coredns_workload_witness(workloads)
+            witness["coreDNS"]["workload"] = workload
+            try:
+                _, owned_pods = coredns_owned_workloads(workloads)
+                events = {"items": []}
+                for owned_pod in owned_pods:
+                    if len(events["items"]) == 32:
+                        break
+                    uid = (owned_pod.get("metadata") or {}).get("uid")
+                    if not isinstance(uid, str) or not re.fullmatch("[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", uid):
+                        raise ValueError("pod-identity-unavailable")
+                    items = get("events", "-n", "kube-system", "--field-selector", f"involvedObject.uid={uid}")["items"]
+                    if not isinstance(items, list):
+                        raise ValueError("invalid-array-shape")
+                    events["items"].extend(items[:32 - len(events["items"])])
+                workload["events"] = coredns_pod_events_witness(owned_pods, events)
+            except Exception as error:
+                workload["events"] = {"status": "unavailable", "exceptionType": error_type(error)}
         except Exception as error:
             witness["coreDNS"]["workload"] = {"status": "unavailable", "exceptionType": error_type(error)}
         xds = get("service/envoy-gateway", "-n", "gateway")
@@ -651,7 +668,7 @@ def main():
         }
         report["failureReason"] = str(error) if isinstance(error, (ValueError, RuntimeError)) and str(error) in allowed else type(error).__name__
         if phase == "gateway-fixture-prerequisites" and "KUBECONFIG" in env:
-            # Read only the owned fixture context before cleanup; no events,
+            # Read only the owned fixture context before cleanup; no raw events,
             # logs, Secrets or arbitrary API fields survive the sanitizer.
             observed = {}
             unavailable = {}
