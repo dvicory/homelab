@@ -213,6 +213,8 @@ def main():
     provision_data = manifest("identity", "ConfigMap-kanidm-provision.yaml")["data"]
     provision_job = container(manifest("identity", "Job-kanidm-provision.yaml")["spec"]["template"]["spec"], "provision")
     jellyfin_pod = manifest("jellyfin", "Deployment-jellyfin.yaml")["spec"]["template"]["spec"]
+    provisioner = container(jellyfin_pod, "provision", init=True)
+    local_admin = next(item["value"] for item in provisioner["env"] if item["name"] == "JELLYFIN_ADMINISTRATOR")
     jellarr_data = manifest("jellyfin-configuration", "ConfigMap-jellarr-configuration.yaml")["data"]
     jellarr_pod = manifest("jellyfin-configuration", "Job-jellyfin-configuration.yaml")["spec"]["template"]["spec"]
     seerr_image = container(manifest("seerr", "StatefulSet-seerr.yaml")["spec"]["template"]["spec"], "main")["image"]
@@ -227,7 +229,7 @@ def main():
     admin_group = next(item["value"] for item in provision_job["env"] if item["name"] == "KANIDM_ADMIN_GROUP")
     administrators = json.loads(provision_data["members.json"])
     require(administrators, "the committed state declares an administrator", administrators)
-    owner = administrators[0]
+    directory_owner = administrators[0]
 
     shutil.rmtree(WORK, ignore_errors=True)
     pki = WORK / "pki"
@@ -324,20 +326,24 @@ def main():
     # Bad-password probes must not softlock the identities used by later
     # success/migration cases. Keep native anti-bruteforce policy unchanged.
     negative_members = ("empty-password", "wrong-password", "posix-password")
-    primary = {name: secrets.token_urlsafe(24) for name in (owner, "ana", "hana", "mallory", "admin-password", *negative_members)}
-    unix = {name: secrets.token_urlsafe(24) for name in (owner, "ana", "hana", "mallory", "admin-password", "posix-password")}
+    collision_user = "local-collision-" + secrets.token_hex(4)
+    primary = {name: secrets.token_urlsafe(24) for name in (directory_owner, collision_user, "ana", "hana", "mallory", "admin-password", *negative_members)}
+    unix = {name: secrets.token_urlsafe(24) for name in (directory_owner, collision_user, "ana", "hana", "mallory", "admin-password", "posix-password")}
     person("hana", [household_group])
     person("mallory", [])
     person("ana", [admin_group, household_group])
     person("admin-password", [admin_group])
+    # A fixture-only person will collide with an ordinary local Jellyfin user,
+    # never a reserved Kanidm account matching the recovery administrator.
+    person(collision_user, [admin_group])
     for name in negative_members:
         person(name, [household_group])
-    kanidm.api("POST", f"/v1/person/{owner}/_unix", {"shell": None, "gidnumber": None})
+    kanidm.api("POST", f"/v1/person/{directory_owner}/_unix", {"shell": None, "gidnumber": None})
 
     committed, _, warnings = kanidm.enroll("ana", primary["ana"], mfa=False)
     require(not committed and "MfaRequired" in (warnings or []), "an administrator cannot enrol a password-only credential", warnings)
     otps = {}
-    for name in (owner, "ana", "admin-password"):
+    for name in (directory_owner, collision_user, "ana", "admin-password"):
         committed, otps[name], warnings = kanidm.enroll(name, primary[name], mfa=True)
         require(committed, f"{name} enrols password and TOTP", warnings)
     for name in ("hana", "mallory", *negative_members):
@@ -346,7 +352,7 @@ def main():
     require(kanidm.login("hana", primary["hana"]) is not None, "a household member signs in to Kanidm with only a password")
 
     # Each administrator sets their own POSIX password.
-    for name in (owner, "ana", "admin-password"):
+    for name in (directory_owner, collision_user, "ana", "admin-password"):
         session = kanidm.login(name, primary[name], otps[name])
         require(session is not None, f"{name} authenticates with web MFA")
         status, _ = kanidm.api("PUT", f"/v1/person/{name}/_unix/_credential", {"value": unix[name]}, token=session)
@@ -355,9 +361,9 @@ def main():
         require(privileged is not None, f"{name} completes native reauthentication")
         status, _ = kanidm.api("PUT", f"/v1/person/{name}/_unix/_credential", {"value": unix[name]}, token=privileged)
         require(status == 200, f"{name} sets a POSIX password after reauthentication", status)
-    require(kanidm.login(owner, unix[owner]) is None, "a POSIX password does not sign in to Kanidm")
-    require(kanidm.login(owner, primary[owner], otps[owner]) is not None, "the administrator's MFA sign-in still works")
-    require(kanidm.login(owner, primary[owner]) is None, "the administrator's web password alone cannot bypass MFA")
+    require(kanidm.login(directory_owner, unix[directory_owner]) is None, "a POSIX password does not sign in to Kanidm")
+    require(kanidm.login(directory_owner, primary[directory_owner], otps[directory_owner]) is not None, "the administrator's MFA sign-in still works")
+    require(kanidm.login(directory_owner, primary[directory_owner]) is None, "the administrator's web password alone cannot bypass MFA")
     # A nonmember must have a working directory credential: otherwise Kanidm's
     # disabled primary fallback could hide a broken Jellyfin group filter.
     session = kanidm.login("mallory", primary["mallory"])
@@ -383,8 +389,8 @@ def main():
         require(bind(name, primary[name]), f"the {label}-password LDAP case has a valid positive control")
         require(not bind(name, password), f"an {label} password does not bind")
     require(bind("mallory", unix["mallory"]), "the outsider has valid LDAP credentials before application refusal")
-    require(bind(owner, unix[owner]), "an administrator binds with their POSIX password")
-    require(not bind(owner, primary[owner]), "an administrator's web password does not bind")
+    require(bind(directory_owner, unix[directory_owner]), "an administrator binds with their POSIX password")
+    require(not bind(directory_owner, primary[directory_owner]), "an administrator's web password does not bind")
 
     # Jellyfin: provisioner, plugin installer, stock runtime, as the Deployment orders them.
     jf = WORK / "jellyfin"
@@ -394,7 +400,6 @@ def main():
     (jf / "secrets/password").write_text(local_password + "\n")
     run("chown", "-R", "751:751", str(jf))
     uid = f"{jellyfin_pod['securityContext']['runAsUser']}:{jellyfin_pod['securityContext']['runAsGroup']}"
-    provisioner = container(jellyfin_pod, "provision", init=True)
     plugins = container(jellyfin_pod, "plugins", init=True)
     runtime = container(jellyfin_pod, "jellyfin")
 
@@ -441,7 +446,7 @@ def main():
         evidence("jellyfin-auth", {"name": name, "http": status, "user": summary})
         return status, payload["AccessToken"], summary
 
-    status, admin_token, local_owner = authenticate(owner, local_password)
+    status, admin_token, local_owner = authenticate(local_admin, local_password)
     require(status == 200 and local_owner["admin"] and local_owner["provider"] == DEFAULT_PROVIDER,
             "the provisioned local administrator signs in", {"status": status, "user": local_owner})
     admin = jellyfin_headers(admin_token)
@@ -489,7 +494,21 @@ def main():
         _, _, listed = jelly.call("GET", "/Users", None, admin)
         return {user["Name"]: user["Id"] for user in listed}
 
+    collision_password = secrets.token_urlsafe(24)
+    status, _, created_collision = jelly.call("POST", "/Users/New", {"Name": collision_user, "Password": collision_password}, admin)
+    require(status == 200, "the operator creates an ordinary local Jellyfin collision user", status)
+    status, _, local_collision = authenticate(collision_user, collision_password)
+    require(status == 200 and local_collision["id"] == created_collision["Id"]
+            and not local_collision["admin"] and local_collision["provider"] == DEFAULT_PROVIDER,
+            "the collision user starts as a local nonadministrator", local_collision)
+
     # Sign-in through the directory.
+    status, _, directory_admin = authenticate(directory_owner, unix[directory_owner])
+    require(status == 200 and directory_admin["admin"] and directory_admin["provider"] == LDAP_PROVIDER
+            and directory_admin["id"] != local_owner["id"],
+            "the personal directory administrator has a separate LDAP-backed Jellyfin account", directory_admin)
+    require(authenticate(directory_owner, unix[directory_owner])[2]["id"] == directory_admin["id"],
+            "the personal directory administrator returns to the same Jellyfin account")
     status, hana_token, hana = authenticate("hana", primary["hana"])
     require(status == 200 and not hana["admin"] and hana["provider"] == LDAP_PROVIDER,
             "a household member signs in to Jellyfin with their Kanidm password", hana)
@@ -514,8 +533,13 @@ def main():
     require(status == 200, "the separate-password negative case sets a POSIX password", status)
     require(authenticate("posix-password", unix["posix-password"])[0] == 200, "the primary-fallback refusal has a valid POSIX positive control")
     require(authenticate("posix-password", primary["posix-password"])[0] != 200, "a set POSIX password replaces LDAP primary-password fallback")
-    require(authenticate(owner, unix[owner])[0] != 200, "the directory credential does not sign in to the local administrator")
-    status, _, again = authenticate(owner, local_password)
+    require(bind(collision_user, unix[collision_user]), "the same-name directory administrator has valid LDAP credentials")
+    require(authenticate(collision_user, unix[collision_user])[0] != 200, "the same-name directory credential does not sign in to the local collision user")
+    status, _, collision_again = authenticate(collision_user, collision_password)
+    require(status == 200 and collision_again["id"] == local_collision["id"]
+            and not collision_again["admin"] and collision_again["provider"] == DEFAULT_PROVIDER,
+            "the collision keeps the local account, password and nonadministrator policy", collision_again)
+    status, _, again = authenticate(local_admin, local_password)
     require(status == 200 and again["id"] == local_owner["id"] and again["provider"] == DEFAULT_PROVIDER,
             "the local administrator keeps its account and local password", again)
 
@@ -567,10 +591,15 @@ def main():
     jellyfin_init()
     require(not stray.exists(), "the plugin installer removes another version of the plugin")
     start_jellyfin()
-    status, admin_token, _ = authenticate(owner, local_password)
+    status, admin_token, after_local = authenticate(local_admin, local_password)
+    require(status == 200 and after_local["id"] == local_owner["id"] and after_local["provider"] == DEFAULT_PROVIDER,
+            "after a restart the local administrator retains its local account", after_local)
     admin = jellyfin_headers(admin_token)
     status, _, after = authenticate("hana", primary["hana"])
     require(status == 200 and after["id"] == hana["id"], "after a restart the household member reaches the same user", after)
+    status, _, after_directory = authenticate(directory_owner, unix[directory_owner])
+    require(status == 200 and after_directory["id"] == directory_admin["id"] and after_directory["provider"] == LDAP_PROVIDER,
+            "after a restart the personal administrator retains the same directory account", after_directory)
 
     # Seerr signs people in through Jellyfin.
     seerr_dir = WORK / "seerr"
@@ -581,13 +610,13 @@ def main():
     seerr_owner = Http("http://127.0.0.1:5055", cookies=True)
     wait(lambda: seerr_owner.call("GET", "/api/v1/settings/public")[0] == 200, "Seerr", 300)
     status, _, claimed = seerr_owner.call("POST", "/api/v1/auth/jellyfin", {
-        "username": owner, "password": local_password, "hostname": JELLYFIN_HOST, "port": 8096,
+        "username": local_admin, "password": local_password, "hostname": JELLYFIN_HOST, "port": 8096,
         "useSsl": False, "urlBase": "", "email": "owner@household.invalid", "serverType": 2})
     require(status == 200 and claimed["id"] == 1, "the local administrator claims Seerr", status)
 
     def seerr_login(name, password):
         session = Http("http://127.0.0.1:5055", cookies=True)
-        status, _, _ = session.call("POST", "/api/v1/auth/jellyfin", {"username": name, "password": password})
+        status, _, _ = session.call("POST", "/api/v1/auth/jellyfin", {"username": name, "password": password, "email": name})
         me_status, _, me = session.call("GET", "/api/v1/auth/me")
         evidence("seerr-auth", {"name": name, "http": status, "me_http": me_status,
                                "user": {key: (me or {}).get(key) for key in ("id", "jellyfinUsername", "permissions")}})
@@ -596,7 +625,11 @@ def main():
     status, seerr_hana = seerr_login("hana", primary["hana"])
     require(status == 200 and seerr_hana["jellyfinUsername"] == "hana", "a household member signs in to Seerr")
     require(seerr_login("mallory", unix["mallory"])[0] != 200, "Seerr refuses an outsider with valid LDAP credentials")
-    require(seerr_login(owner, local_password)[0] == 200, "the local administrator still signs in to Seerr")
+    status, seerr_local = seerr_login(local_admin, local_password)
+    require(status == 200 and seerr_local["id"] == 1, "the local administrator still signs in to the same Seerr owner")
+    status, seerr_directory = seerr_login(directory_owner, unix[directory_owner])
+    require(status == 200 and seerr_directory["jellyfinUsername"] == directory_owner and seerr_directory["id"] != 1,
+            "the personal directory administrator signs in to Seerr separately from its local owner", seerr_directory)
 
     # Later MFA adoption changes credentials, not Jellyfin or Seerr identities.
     hana_session = kanidm.login("hana", primary["hana"])
@@ -625,8 +658,12 @@ def main():
 
     # Kanidm down: the local administrator is the break-glass sign-in.
     require(authenticate("ana", unix["ana"])[0] == 200, "the directory-outage case has an unlocked positive control")
+    require(authenticate(directory_owner, unix[directory_owner])[0] == 200, "the personal directory administrator signs in before the outage")
     run("docker", "stop", "kanidm")
-    require(authenticate(owner, local_password)[0] == 200, "with Kanidm down the local administrator signs in")
+    status, _, recovery = authenticate(local_admin, local_password)
+    require(status == 200 and recovery["id"] == local_owner["id"] and recovery["provider"] == DEFAULT_PROVIDER,
+            "with Kanidm down the local administrator reaches the same local account", recovery)
+    require(authenticate(directory_owner, unix[directory_owner])[0] != 200, "with Kanidm down the personal directory administrator cannot sign in")
     require(authenticate("ana", unix["ana"])[0] != 200, "with Kanidm down directory sign-in is refused")
     print("HOUSEHOLD_SIGN_IN_OK", flush=True)
 
