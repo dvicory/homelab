@@ -11,7 +11,7 @@ let
     service = "jellyfin";
     port = 8096;
     host = "jellyfin.jellyfin.svc.cluster.local";
-    administrator = "daniel";
+    administrator = "admin";
     adminSecret = {
       name = "jellyfin-admin";
       key = "password";

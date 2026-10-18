@@ -134,8 +134,12 @@
               # require the switch to leave the primary ESP mounted at /boot.
               mirror_system = machine.succeed("readlink -f /run/current-system").strip()
               machine.succeed("/run/current-system/specialisation/legacy-boot/bin/switch-to-configuration test")
+              # The mirror-aware initrd leaves udev claims on both ESPs.
+              # Reload the legacy rules and retrigger both devices so udev
+              # withdraws those claims before the old-to-new switch.
+              machine.succeed("test $(systemctl show -p ActiveState --value root-esp-link.service) = inactive && udevadm control --reload && udevadm settle")
               machine.succeed("udevadm trigger --action=change --settle $(readlink -f /dev/disk/by-partlabel/disk-root-ESP) $(readlink -f /dev/disk/by-partlabel/disk-root-mirror-ESP)")
-              machine.succeed("test ! -e /dev/disk/root-esp")
+              machine.succeed("test ! -e /dev/disk/root-esp && test ! -L /dev/disk/root-esp")
               machine.succeed("test $(readlink -f $(findmnt -nro SOURCE --mountpoint /boot)) = $(readlink -f /dev/disk/by-partlabel/disk-root-ESP)")
               machine.succeed(f"{mirror_system}/bin/switch-to-configuration test")
               machine.succeed("test -L /dev/disk/root-esp")

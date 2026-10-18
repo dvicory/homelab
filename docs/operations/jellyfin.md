@@ -29,12 +29,16 @@ Use the ordinary Jellyfin username/password login, and Seerr's ordinary
 Jellyfin login, with the person's primary password or separate POSIX password.
 This is LDAP authentication, not OIDC, and LDAP itself does not perform MFA.
 
-The declared Jellyfin administrator remains local, with its existing agenix
-password and user ID. A same-named Kanidm account does not convert it; its
-directory password cannot log in to that local account. A different central
-administrator can obtain a directory-backed Jellyfin administrator account.
-If Kanidm is down, directory login fails and the local administrator still
-works.
+The declared local administrator is `admin`. Its agenix-managed
+password serves local recovery and Jellarr's API-key bootstrap, independently
+of Kanidm. Keep this account local; personal directory administrators use
+their own LDAP-backed accounts. A same-named directory person cannot
+authenticate an existing local account with their directory password.
+
+First-start provisioning creates the declared administrator only on empty
+retained state. Changing its declared name does not create, convert or reset
+users on an initialized server. Retain the local account and its matching
+credential when restoring `/config`.
 
 Only `jellyfin-users` or `homelab-admin` membership permits directory sign-in;
 outsiders are refused without creating a Jellyfin account. Membership and

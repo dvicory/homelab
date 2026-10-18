@@ -84,7 +84,7 @@ spec:
             - /bin/jellyfin-provision
           env:
             - name: JELLYFIN_ADMINISTRATOR
-              value: daniel
+              value: admin
           image: ghcr.io/dvicory/homelab/jellyfin-provisioner@sha256:599c58002a736668df14ca3a2ec601bebe63378c0faaf21857f6a2fe74eab939
           imagePullPolicy: IfNotPresent
           name: provision

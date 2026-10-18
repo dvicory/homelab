@@ -152,11 +152,16 @@ only until they set a POSIX password. The declared `idm_all_persons` floor is
 only this group. Administrator policy explicitly requires MFA or stronger
 and disables primary-password LDAP fallback.
 
-Administrators retain web MFA/passkeys and set a **separate POSIX password**
-with `kanidm person posix set-password <name>`, authenticating and
-reauthenticating as themselves. That password authenticates LDAP, not Kanidm
-web sign-in. Do not grant household members machine access or use an
-administrator's web password as the directory password.
+Administrators retain web MFA/passkeys and set a **separate POSIX password**.
+In [Credentials](https://id.bzfx.net/ui/update_credentials), reauthenticate
+as yourself, choose **UNIX Password → Set UNIX Password**, submit the new
+password, then choose **Save Changes**. Household members can use the same
+self-service page if they want a separate directory password; operators do
+not set passwords for them.
+
+That password authenticates LDAP, not Kanidm web sign-in. Do not grant
+household members machine access or use an administrator's web password as
+the directory password.
 
 For later all-persons web MFA adoption, first enroll every affected person's
 MFA/passkey and separate POSIX password. Verify media login with that password,
