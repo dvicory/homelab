@@ -45,7 +45,7 @@ in
       trustedProxyCIDRs = [ ];
     };
     settings.kubernetes.services.identity.phase = "normal";
-    settings.kubernetes.services.seerr.phase = "initial";
+    settings.kubernetes.services.seerr.phase = "ready";
     routes = {
       argocd =
         (route "argocd" "argocd" "argocd-server" 80 "admin" "public" {

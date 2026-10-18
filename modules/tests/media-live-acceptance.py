@@ -226,6 +226,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--docker-host", required=True, help="explicit local unix:// Docker socket")
     parser.add_argument("--platform", default="linux/amd64", choices=("linux/amd64", "linux/arm64"))
+    parser.add_argument("--seerr-phases", required=True, type=Path, help="Nix-rendered initial and ready Seerr Jobs")
     args = parser.parse_args()
     require(args.docker_host.startswith("unix:///") and Path(args.docker_host[7:]).is_socket(), "only an existing explicit local Unix Docker socket is allowed")
     require(not os.environ.get("PYTHONOPTIMIZE"), "acceptance cannot run with Python optimization")
@@ -245,7 +246,11 @@ def main():
     seed = one(configarr_pod["initContainers"], "name", "seed-policy")
     periodic_configarr_pod = manifest("media-configuration", "CronJob-media-configarr.yaml")["spec"]["jobTemplate"]["spec"]["template"]["spec"]
     periodic_configarr = one(periodic_configarr_pod["containers"], "name", "configarr")
-    seerr_job = manifest("media-configuration", "Job-media-config-seerr.yaml")["spec"]
+    seerr_phases = json.loads(args.seerr_phases.read_text())
+    initial_job = seerr_phases["initial"]["spec"]
+    initial_pod = initial_job["template"]["spec"]
+    initial_configure = one(initial_pod["containers"], "name", "configure")
+    seerr_job = seerr_phases["ready"]["spec"]
     seerr_pod = seerr_job["template"]["spec"]
     configure = one(seerr_pod["containers"], "name", "configure")
     periodic_job = manifest("media-configuration", "CronJob-media-config-seerr.yaml")["spec"]["jobTemplate"]["spec"]
@@ -254,7 +259,7 @@ def main():
     pods = {app: pod(app, f"Deployment-{app}.yaml") for app in ("radarr", "sonarr", "prowlarr", "sabnzbd", "jellyfin")}
     pods["seerr"] = pod("seerr", "StatefulSet-seerr.yaml")
     apps = {app: one(value["containers"], "name", "jellyfin" if app == "jellyfin" else "main") for app, value in pods.items()}
-    for container in (*apps.values(), configarr, configure, periodic_configure):
+    for container in (*apps.values(), configarr, initial_configure, configure, periodic_configure):
         require("@sha256:" in container["image"], "native scenario requires digest-pinned images")
     identities = {}
     for app, container in apps.items():
@@ -697,7 +702,7 @@ console.log(queued);''', waiter_pid)
             reconcile_configarr()
             verify_arr("sonarr")
             rotated_baseline = arr_snapshot()
-            docker("rm", "-f", containers["sabnzbd"])
+            docker("rm", "-f", "-v", containers["sabnzbd"])
             runtime["SABNZBD_API_KEY"] = secrets.token_hex(32)
             reconcile_configarr(failure=True)
             require(arr_snapshot() == rotated_baseline, "failed SAB handshake changed visible Arr configuration")
@@ -737,6 +742,7 @@ console.log(queued);''', waiter_pid)
             token = secrets.token_hex(32)
             copy_text("kube/token", token + "\n")
             command("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(root / "key"), "-out", str(root / "cert"), "-days", "1", "-subj", "/CN=kubernetes.default.svc", "-addext", "subjectAltName=DNS:kubernetes.default.svc")
+            (root / "cert").chmod(0o644)
             docker("cp", str(root / "key"), keeper + ":/fixture/kube/key")
             docker("cp", str(root / "cert"), keeper + ":/fixture/kube/cert")
             docker("cp", str(root / "cert"), keeper + ":/fixture/kube/ca.crt")
@@ -756,24 +762,25 @@ server.socket = context.wrap_socket(server.socket, server_side=True)
 server.serve_forever()
 ''')
             secret_server = run("synthetic-secret", apps["sabnzbd"]["image"], "--network-alias", "kubernetes.default.svc", *mount("kube", "/fixture", True), "--entrypoint", "/lsiopy/bin/python", argv=("/fixture/server.py",), detached=True)
-            run("secret-ready", configure["image"], *mount("kube", "/fixture", True), argv=("node", "-e", '''const fs = require('node:fs');
-const target = 'https://kubernetes.default.svc/api/v1/namespaces/jellyfin/secrets/jellyfin-admin';
-(async () => {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    try {
-      const response = await fetch(target, {headers: {Authorization: 'Bearer ' + fs.readFileSync('/fixture/token', 'utf8').trim()}});
-      if (response.ok && typeof (await response.json()).data?.password === 'string') return;
-    } catch {}
-    await new Promise(resolve => setTimeout(resolve, 1000));
-  }
-  process.exitCode = 1;
-})().catch(() => { process.exitCode = 1; });'''), environment={"NODE_EXTRA_CA_CERTS": "/fixture/cert"})
+            run("secret-ready", initial_configure["image"], *security_options(initial_pod, initial_configure), *mount("kube", "/fixture", True), argv=("node", "-e", '''const fs = require('node:fs');
+            const target = 'https://kubernetes.default.svc/api/v1/namespaces/jellyfin/secrets/jellyfin-admin';
+            (async () => {
+              for (let attempt = 0; attempt < 30; attempt++) {
+                try {
+                  const response = await fetch(target, {headers: {Authorization: 'Bearer ' + fs.readFileSync('/fixture/token', 'utf8').trim()}});
+                  if (response.ok && typeof (await response.json()).data?.password === 'string') return;
+                } catch {}
+                await new Promise(resolve => setTimeout(resolve, 1000));
+              }
+              process.exitCode = 1;
+            })().catch(() => { process.exitCode = 1; });'''), environment={"NODE_EXTRA_CA_CERTS": "/fixture/cert"})
             seerr_sequence = 0
-            def reconcile_seerr(failure=False, periodic=False, detached=False, inputs_name="seerr-inputs", secrets_name="secrets"):
+            def reconcile_seerr(failure=False, periodic=False, detached=False, inputs_name="seerr-inputs", secrets_name="secrets", initial=False):
                 nonlocal seerr_sequence
                 seerr_sequence += 1
-                source_pod = periodic_pod if periodic else seerr_pod
-                source = periodic_configure if periodic else configure
+                job = initial_job if initial else periodic_job if periodic else seerr_job
+                source_pod = job["template"]["spec"]
+                source = one(source_pod["containers"], "name", "configure")
                 subpaths = {
                     "configuration": inputs_name, "secrets": secrets_name,
                     "seerr-state": "seerr", "coordination": "coordination",
@@ -785,26 +792,37 @@ const target = 'https://kubernetes.default.svc/api/v1/namespaces/jellyfin/secret
                 environment = {item["name"]: item["value"] for item in source.get("env", [])}
                 return run("seerr-reconcile-" + str(seerr_sequence), source["image"], *options,
                            argv=tuple(source["command"]), environment=environment, failure=failure, detached=detached,
-                           timeout=(periodic_job if periodic else seerr_job)["activeDeadlineSeconds"])
+                           timeout=job["activeDeadlineSeconds"])
 
-            # The periodic producer cannot claim even pristine retained state.
+            # Neither ready PostSync nor periodic delivery may claim pristine state.
+            reconcile_seerr(failure=True)
+            require(seerr_api("/settings/public") == public, "ready delivery changed unclaimed Seerr")
             reconcile_seerr(failure=True, periodic=True)
             require(seerr_api("/settings/public") == public, "periodic delivery changed unclaimed Seerr")
 
             copy_text("kube/password", "wrong-" + owner_password)
-            reconcile_seerr(failure=True)
-            require(seerr_api("/settings/public")["initialized"] is False, "wrong owner credential initialized Seerr")
+            reconcile_seerr(failure=True, initial=True)
+            require(seerr_api("/settings/public") == public, "wrong owner credential changed unclaimed Seerr")
             copy_text("kube/password", owner_password + "\n")
-            reconcile_seerr(failure=True)  # Required Shows library is genuinely absent.
-            require(seerr_api("/settings/public")["initialized"] is False, "missing native library initialized Seerr")
+            reconcile_seerr(failure=True, initial=True)  # Required Shows library is genuinely absent.
+            partial_owner = seerr_api("/auth/me")
+            require(seerr_api("/settings/public")["initialized"] is False and
+                    partial_owner["id"] == 1 and partial_owner["jellyfinUsername"] == policy["jellyfin"]["username"],
+                    "missing native library must leave the valid first owner claimed but Seerr uninitialized")
             add_library(libraries[-1])
             library_ids = verify_libraries()
-            reconcile_seerr()
+            reconcile_seerr(initial=True)
+            claimed_owner = seerr_api("/auth/me")
+            require(claimed_owner["id"] == 1 and claimed_owner["jellyfinUsername"] == policy["jellyfin"]["username"],
+                    "initial delivery did not claim the declared Jellyfin owner")
             scan = seerr_api("/settings/jellyfin/sync")
             require(scan["running"] is False and scan["progress"] > scan["total"], "fixture scan did not finish past the Movies batch with progress above the empty Shows total")
 
             def verify_seerr():
-                require(seerr_api("/settings/public")["initialized"] is True and seerr_api("/auth/me")["id"] == 1, "Seerr owner/initialization state differs")
+                owner = seerr_api("/auth/me")
+                require(seerr_api("/settings/public")["initialized"] is True and
+                        (owner["id"], owner["jellyfinUsername"]) == (claimed_owner["id"], claimed_owner["jellyfinUsername"]),
+                        "reconciliation changed Seerr initialization or retained owner")
                 enabled = {item["id"]: (item["name"], item["type"]) for item in seerr_api("/settings/jellyfin")["libraries"] if item["enabled"]}
                 expected = {library_ids[item["name"]]: (item["name"], {"movies": "movie", "tvshows": "show"}[item["collectionType"]]) for item in policy["jellyfin"]["libraries"]}
                 require(all(enabled.get(key) == value for key, value in expected.items()), "Seerr native library identity/type/enable mapping differs")
@@ -822,6 +840,7 @@ const target = 'https://kubernetes.default.svc/api/v1/namespaces/jellyfin/secret
                 require(verify_libraries() == library_ids, "native library identities changed")
                 return result
             seerr_baseline = verify_seerr()
+            docker("rm", "-f", "-v", secret_server)
             # Unmarked connections, including the generic names and a 4K tier
             # with no declared role, are UI-owned. A marked 4K connection left
             # by an earlier declared role is managed and must be removed.
@@ -848,7 +867,6 @@ const target = 'https://kubernetes.default.svc/api/v1/namespaces/jellyfin/secret
             reconcile_seerr(failure=True, periodic=True)
             require({app: seerr_api("/settings/" + app) for app in ("radarr", "sonarr")} == seerr_connections, "wrong Arr credential changed native Seerr connections")
             copy_text("secrets/RADARR_API_KEY", keys["radarr"] + "\n")
-            docker("rm", "-f", secret_server)
             reconcile_seerr(periodic=True)  # No bootstrap Secret mount or authority.
             require(verify_seerr() == seerr_baseline, "second reconcile changed native Seerr connection identities/state")
 
