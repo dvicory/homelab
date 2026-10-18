@@ -1,11 +1,42 @@
 # Real pinned media services and producer jobs, on an owned Docker Linux volume.
 # No live data/secrets; Kubernetes RBAC and Incus/MergerFS remain separate gates.
-{ lib, ... }:
+{ config, lib, ... }:
 {
   perSystem =
     { pkgs, ... }:
     let
       python = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
+      cluster = config.den.clusters.prod-home;
+      compute =
+        config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
+      computeResources = {
+        inherit (compute) instance retainedPaths;
+        inherit (config.flake.clusterResources.prod-home) mediaPaths;
+      };
+      # Fresh-state onboarding must not depend on production's publication phase.
+      seerrPhases = pkgs.writeText "media-seerr-phase-fixtures.json" (
+        builtins.toJSON (
+          lib.genAttrs [ "initial" "ready" ] (
+            phase:
+            let
+              applications =
+                (config.den.aspects.kubernetes.services.media.configuration."k8s-manifests" {
+                  cluster = cluster // {
+                    settings = lib.recursiveUpdate cluster.settings {
+                      kubernetes.services.seerr.phase = phase;
+                    };
+                  };
+                  inherit computeResources;
+                }).applications;
+            in
+            builtins.head (
+              builtins.filter (
+                object: object.kind == "Job" && object.metadata.name == "media-config-seerr"
+              ) applications.media-configuration.objects
+            )
+          )
+        )
+      );
       source = lib.fileset.toSource {
         root = ../..;
         fileset = lib.fileset.unions [
@@ -22,7 +53,7 @@
           pkgs.openssl
         ];
         text = ''
-          exec python ${source}/modules/tests/media-live-acceptance.py "$@"
+          exec python ${source}/modules/tests/media-live-acceptance.py --seerr-phases ${seerrPhases} "$@"
         '';
       };
     in

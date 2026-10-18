@@ -25,11 +25,7 @@ spec:
             - /coordination/seerr.lock
             - node
             - /configuration/seerr.mjs
-          env:
-            - name: SEERR_INITIAL_OWNER
-              value: "true"
-            - name: NODE_EXTRA_CA_CERTS
-              value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          env: []
           image: docker.io/library/node:22.14.0-bookworm-slim@sha256:1c18d9ab3af4585870b92e4dbc5cac5a0dc77dd13df1a5905cea89fc720eb05b
           name: configure
           resources:
@@ -54,12 +50,6 @@ spec:
               readOnly: true
             - mountPath: /coordination
               name: coordination
-            - mountPath: /seerr-state
-              name: seerr-state
-              readOnly: true
-            - mountPath: /var/run/secrets/kubernetes.io/serviceaccount
-              name: kubernetes-api
-              readOnly: true
       nodeSelector:
         kubernetes.io/hostname: compute-1
       restartPolicy: OnFailure
@@ -69,7 +59,7 @@ spec:
         runAsUser: 1000
         seccompProfile:
           type: RuntimeDefault
-      serviceAccountName: media-config-seerr-bootstrap
+      serviceAccountName: media-config-seerr
       volumes:
         - configMap:
             name: media-configuration
@@ -77,21 +67,6 @@ spec:
         - name: coordination
           persistentVolumeClaim:
             claimName: media-seerr-configuration
-        - name: seerr-state
-          persistentVolumeClaim:
-            claimName: media-seerr
-        - name: kubernetes-api
-          projected:
-            defaultMode: 292
-            sources:
-              - serviceAccountToken:
-                  expirationSeconds: 600
-                  path: token
-              - configMap:
-                  items:
-                    - key: ca.crt
-                      path: ca.crt
-                  name: kube-root-ca.crt
         - name: secrets
           projected:
             defaultMode: 292

@@ -14,6 +14,9 @@ Open Radarr, Sonarr, Prowlarr and SABnzbd from their Kanidm tiles. The
 Gateway asks for Kanidm sign-in as a member of `homelab-admin`; the apps
 themselves have no login. Their APIs still require each app's API key.
 
+Open Seerr at <https://requests.plus2.danielvicory.dev> and use its native
+Jellyfin sign-in. There is no Gateway OIDC sign-in in front of Seerr.
+
 Inside the cluster, NetworkPolicy admits only the Gateway proxy and, on the
 app's port, each app's declared callers:
 
@@ -46,10 +49,12 @@ tier.
 
 ## Publish Seerr
 
-Seerr starts in the `initial` phase, listed under "Current stack" in
-[`docs/operations.md`](../operations.md). In that phase the `requests`
-route is not published, and only the Seerr PostSync Job may claim Seerr's
-first owner, the Jellyfin administrator.
+The current Seerr publication phase is listed under "Current stack" in
+[`docs/operations.md`](../operations.md). In the `initial` phase the
+`requests` route is not published, and only the Seerr PostSync Job may
+claim the first owner. Fresh state uses the declared Jellyfin administrator;
+initialized installations retain their existing owner (`daniel` in this
+household). Changing the declared administrator does not transfer ownership.
 
 Never select `ready` before that claim succeeds: until then, the Seerr
 setup page lets anyone who reaches it claim the server.
@@ -72,8 +77,8 @@ setup page lets anyone who reaches it claim the server.
    curl -s http://localhost:5055/api/v1/settings/public
    ```
 
-3. Through the forwarded port, sign in as the Jellyfin administrator and
-   check:
+3. Through the forwarded port, sign in as the retained Seerr owner, not
+   automatically the current Jellyfin administrator, and check:
    - Under Jellyfin settings, the `Movies` and `Shows` libraries are enabled.
    - Under Services, `Radarr (Homelab)` and `Sonarr (Homelab)` use the
      profiles declared in `seerr.json`:
@@ -89,8 +94,9 @@ setup page lets anyone who reaches it claim the server.
    [`docs/operations.md`](../operations.md).
 
 Expected result: Argo CD publishes the `requests` route with Seerr's native
-sign-in and removes the first-owner authority. Later Seerr runs use the
-`SEERR_API_KEY` runtime Secret.
+sign-in and removes only the first-owner authority. The owner and retained
+data stay unchanged. Later Seerr runs use the `SEERR_API_KEY` runtime Secret;
+the `jellyfin-admin` Secret remains available to Jellyfin and Jellarr.
 
 If `initialized` is `false`, do not complete the setup page by hand. Fix the
 Job failure as described below.
@@ -131,8 +137,11 @@ nix run .#media-live-acceptance -- \
 
 This requires a native Linux x86 Docker Engine with API 1.45 or newer.
 The suite creates its own internal network, containers and Linux volume,
-then verifies owned cleanup before reporting success. It does not use
-household data or secrets.
+then verifies owned cleanup before reporting success. It renders explicit
+`initial` and `ready` Seerr Jobs to test first-owner refusal/claim and later
+API-key reconciliation independently of the production publication phase.
+Bootstrap transport checks use the Job's declared non-root identity.
+It does not use household data or secrets.
 
 Nix CI runs this entire suite as the required `media-live-acceptance (x86_64-linux)`
 job, separately from sandboxed flake checks. To select it alone with

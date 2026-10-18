@@ -9,7 +9,7 @@
 - **Compute guest:** `compute-1`
 - **Ingress:** `direct` on NodePort `30443`
 - **Identity phase:** `normal`
-- **Seerr publication phase:** `initial`
+- **Seerr publication phase:** `ready`
 
 ## Deploy configuration
 
@@ -47,9 +47,6 @@ independently syncing child Applications.
 Public edges publish only `public` routes. The `idm` canonical hostname
 remains the identity issuer across direct and secondary-edge access;
 failover changes DNS, not the issuer or certificate identity.
-
-The `requests` route is declared public but is omitted from Gateway and
-edge configuration while Seerr remains in the `initial` phase.
 
 For `direct` ingress, point each hostname at the host's LAN or Tailscale
 address. TCP 443 forwards to the guest's NodePort. For `trustedEdges`,
