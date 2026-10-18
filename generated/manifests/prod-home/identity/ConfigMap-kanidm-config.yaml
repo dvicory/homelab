@@ -6,8 +6,8 @@ data:
     db_path = "/data/kanidm.db"
     tls_chain = "/etc/kanidm/tls/tls.crt"
     tls_key = "/etc/kanidm/tls/tls.key"
-    domain = "idm.plus2.danielvicory.dev"
-    origin = "https://idm.plus2.danielvicory.dev"
+    domain = "id.bzfx.net"
+    origin = "https://id.bzfx.net"
     ldapbindaddress = "0.0.0.0:3636"
 kind: ConfigMap
 metadata:

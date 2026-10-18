@@ -14,7 +14,7 @@ spec:
     logoutPath: /logout
     passThroughAuthHeader: false
     provider:
-      authorizationEndpoint: https://idm.plus2.danielvicory.dev/ui/oauth2
+      authorizationEndpoint: https://id.bzfx.net/ui/oauth2
       backendRefs:
         - group: gateway.envoyproxy.io
           kind: Backend
@@ -22,8 +22,8 @@ spec:
           namespace: identity
           port: 443
           weight: 1
-      issuer: https://idm.plus2.danielvicory.dev/oauth2/openid/argocd
-      tokenEndpoint: https://idm.plus2.danielvicory.dev/oauth2/token
+      issuer: https://id.bzfx.net/oauth2/openid/argocd
+      tokenEndpoint: https://id.bzfx.net/oauth2/token
     redirectURL: https://%REQ(:authority)%/oauth2/callback
     refreshToken: true
     scopes:

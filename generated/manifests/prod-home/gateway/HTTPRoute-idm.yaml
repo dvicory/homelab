@@ -5,8 +5,7 @@ metadata:
   namespace: gateway
 spec:
   hostnames:
-    - idm.plus2.danielvicory.dev
-    - idm.backup.plus2.danielvicory.dev
+    - id.bzfx.net
   parentRefs:
     - group: gateway.networking.k8s.io
       kind: Gateway
