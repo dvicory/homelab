@@ -1,3 +1,19 @@
+## Evidence scope
+
+The checked implementation tasks and receipts below record historical engineering
+proof, culminating in published head `143c7d842b6065717b7a2f686b4af844290a54d8`
+and CI run [38876132180](https://github.com/dvicory/homelab/actions/runs/38876132180).
+That proof does not certify the current-main integration based on
+`bc198ca9802c99eeb02cc11d3964a25539100371`; the successor needs its own generated
+output, native checks and exact-source CI receipt.
+
+The owner completed the Grafana host-ciphertext rekey before that published head.
+No new rekey is required merely to integrate current main. The five delivery
+values, the existing disk and early-Namespace signoffs, separately authorized
+staging and merge, and every live acceptance task remain open. Disposable
+runtime or browser proof is not evidence of actual provider delivery, production
+access control or persistence after a live guest replacement.
+
 ## 1. Contract checks and scaffolding
 
 - [x] 1.1 Add `modules/tests/monitoring-contracts.nix` with native rendered-contract checks. It must fail when:
