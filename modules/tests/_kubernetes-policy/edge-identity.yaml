@@ -685,6 +685,7 @@ spec:
         expressions:
         - expression: >-
             has(object.spec.hostnames) && object.spec.hostnames.size() > 0 && object.spec.hostnames.all(h,
+            h == params.metadata.annotations['route.idm.backendHostname'] ||
             [params.metadata.annotations.domain, params.metadata.annotations.backupDomain].exists(d, h == d || h.endsWith('.' + d)))
           message: route domain placement
         paramKind:
@@ -865,7 +866,9 @@ spec:
             object.spec.gatewayClassName == 'envoy' && object.spec.infrastructure.parametersRef == {'group':'gateway.envoyproxy.io',
             'kind':'EnvoyProxy', 'name':'household'} && object.spec.listeners == [{'name':dyn('https'), 'protocol':dyn('HTTPS'),
             'port':dyn(443), 'allowedRoutes':dyn({'namespaces':{'from':'Same'}}),
-            'tls':dyn({'mode':dyn('Terminate'), 'certificateRefs':dyn([{'group':'', 'kind':'Secret', 'name':'gateway-tls'}])})}]
+            'tls':dyn({'mode':dyn('Terminate'), 'certificateRefs':dyn([
+            {'group':'', 'kind':'Secret', 'name':'gateway-tls'},
+            {'group':'', 'kind':'Secret', 'name':'kanidm-tls', 'namespace':'identity'}])})}]
           message: gateway native origin
   - name: proxy-native-origin
     match:

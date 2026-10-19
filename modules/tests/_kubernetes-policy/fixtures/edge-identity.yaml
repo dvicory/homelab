@@ -317,6 +317,10 @@ scenarios:
   base: gateway.networking.k8s.io/v1/Gateway/gateway/household
   mutate: .spec.listeners[0].protocol = "HTTP"
   fail: [gateway-native-origin]
+- name: native-gateway-identity-certificate-missing
+  base: gateway.networking.k8s.io/v1/Gateway/gateway/household
+  mutate: del(.spec.listeners[0].tls.certificateRefs[] | select(.name == "kanidm-tls"))
+  fail: [gateway-native-origin]
 - name: gateway-controller-image-unpinned
   base: apps/v1/Deployment/gateway/envoy-gateway
   mutate: .spec.template.spec.containers[0].image = "docker.io/envoyproxy/gateway:latest"

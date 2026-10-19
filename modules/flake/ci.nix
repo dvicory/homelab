@@ -82,6 +82,7 @@ let
     "prod-home-manifests-schema"
     "prod-home-manifests-policy"
     "argocd-application-health"
+    "verification-reports"
   ];
   requiredKubernetesApplications = [
     "public-edge-runtime"
@@ -329,6 +330,41 @@ let
       groups = builtins.attrNames ciJobs.${system};
       inherit nativeApplications;
     };
+
+  artifactFor = package: {
+    inherit (package) drvPath;
+    outputs = lib.genAttrs package.outputs (output: package.${output}.outPath);
+  };
+
+  # Select one leaf on its executor, after platform/bootstrap preparation.
+  # In particular, never serialize foreign or unsupported derivations in the plan.
+  hostedArtifactsFor =
+    system:
+    let
+      inventory = checkInventory system;
+    in
+    {
+      groups = lib.mapAttrs (_: artifactFor) (ciJobs.${system} // self.hostedCiJobs.${system});
+      checks = lib.listToAttrs (
+        map (entry: lib.nameValuePair entry.name (artifactFor (checksFor system).${entry.name})) (
+          inventory.fast ++ inventory.runtime
+        )
+      );
+      nativeApplications = lib.listToAttrs (
+        map (
+          application:
+          lib.nameValuePair application.name (
+            artifactFor (lib.getAttrFromPath (lib.splitString "." application.package) self)
+            // {
+              program = self.apps.${system}.${application.name}.program;
+            }
+          )
+        ) (nativeApplicationsFor system)
+      );
+      bootstrap = lib.optionalAttrs (system == "aarch64-linux") {
+        darwinLinuxBuilder = artifactFor self.darwinConfigurations.daniels-2021-mbp.config.nix.linux-builder.package.nixosConfig.system.build.toplevel;
+      };
+    };
 in
 {
   flake = {
@@ -336,6 +372,7 @@ in
     inherit ciJobs;
     hostedCiInventory = lib.genAttrs ciSystems checkInventory;
     hostedCiPlan = lib.genAttrs ciSystems hostedPlanFor;
+    hostedCiArtifacts = lib.genAttrs ciSystems hostedArtifactsFor;
     ciBundles = lib.mapAttrs (
       system: jobs: withSystem system ({ pkgs, ... }: pkgs.linkFarm "ci-${system}" jobs)
     ) ciJobs;

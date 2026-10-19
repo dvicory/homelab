@@ -1,9 +1,10 @@
-"""Negative cases against the real offline gate; each must fail for its boundary."""
+"""Schema boundary checks against the real offline gate."""
 
 import argparse
 import copy
 import json
 from pathlib import Path
+import runpy
 import shlex
 import shutil
 import subprocess
@@ -80,6 +81,26 @@ def main():
                         and entry["apiVersion"] == route["apiVersion"])
     rejected("missing served custom schema", route, "missing served custom schema", missing=route_schema)
     rejected("duplicate original YAML key", "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: first\n  name: second\n", "duplicate YAML key")
+    rejected("duplicate key in original YAML merge",
+             "apiVersion: v1\nkind: Namespace\nmetadata: {<<: {name: first, name: second}}\n",
+             "duplicate YAML key")
+    rejected("duplicate key in original YAML merge sequence",
+             "apiVersion: v1\nkind: Namespace\nmetadata: {<<: [{name: first, name: second}]}\n",
+             "duplicate YAML key")
+    with tempfile.TemporaryDirectory(prefix="schema-merge-") as temporary:
+        work = Path(temporary)
+        manifests = work / "manifests"
+        manifests.mkdir()
+        (manifests / "case.yaml").write_text(
+            "apiVersion: v1\nkind: Namespace\nmetadata:\n"
+            "  <<: &defaults {<<: {name: original}, name: selected}\n"
+            "  labels: *defaults\n"
+        )
+        # Kubeconform independently parses raw YAML; check our loader's merge semantics.
+        documents = runpy.run_path(str(args.helper))["documents"]
+        _, document = next(documents(manifests))
+        assert document["metadata"] == {"name": "selected", "labels": {"name": "selected"}}
+        print("original-YAML loader preserves nested merge aliases")
     rejected("empty directory", None, "zero effective deployment documents")
     rejected("empty YAML", "", "zero effective deployment documents")
     rejected("comment-only YAML", "# no resources\n---\n# still empty\n", "zero effective deployment documents")

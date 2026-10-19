@@ -9,7 +9,31 @@ import subprocess
 
 import yaml
 
-Loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+class Loader(getattr(yaml, "CSafeLoader", yaml.SafeLoader)):
+    def __init__(self, stream):
+        super().__init__(stream)
+        self._validated_mappings = set()
+
+    def flatten_mapping(self, node):
+        # Merge expansion mutates source nodes before aliases are constructed.
+        if node not in self._validated_mappings:
+            self._validated_mappings.add(node)
+            keys = set()
+            merge_seen = False
+            for key_node, _ in node.value:
+                if key_node.tag == "tag:yaml.org,2002:merge":
+                    if merge_seen:
+                        raise ValueError(f"{key_node.start_mark}: duplicate YAML key '<<'")
+                    merge_seen = True
+                    continue
+                key = self.construct_object(key_node)
+                if key in keys:
+                    raise ValueError(f"{key_node.start_mark}: duplicate YAML key {key!r}")
+                keys.add(key)
+        return super().flatten_mapping(node)
+
+
 Dumper = getattr(yaml, "CSafeDumper", yaml.SafeDumper)
 Loader.add_constructor("tag:yaml.org,2002:value", Loader.construct_scalar)
 SOURCE = Path(__file__).parent
