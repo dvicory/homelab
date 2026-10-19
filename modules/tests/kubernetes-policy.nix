@@ -186,7 +186,7 @@
             ${lib.getExe schemaRunner} "$reports/schema-counterfactuals"
         '';
       };
-      # The full gate takes most of an hour in one process. Each part runs one
+      # Each part runs one
       # family's native Tests (workloads in two round-robin halves) so Nix can
       # build them in parallel; the aggregate check below requires every
       # declared scenario to pass in exactly one part.

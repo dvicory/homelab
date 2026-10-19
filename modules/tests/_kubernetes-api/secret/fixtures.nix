@@ -1,4 +1,11 @@
-{ pkgs, linuxPkgs, lib, config, inputs, self }:
+{
+  pkgs,
+  linuxPkgs,
+  lib,
+  config,
+  inputs,
+  self,
+}:
 let
   configurations = import ../../_compute-configurations.nix {
     inherit self lib;
@@ -6,7 +13,8 @@ let
     hostName = config.den.clusters.prod-home.hostName;
   };
   guest = configurations.guest.config;
-  instance = (builtins.fromJSON configurations.hostConfig.environment.etc."homelab/compute.json".text).instance;
+  instance =
+    (builtins.fromJSON configurations.hostConfig.environment.etc."homelab/compute.json".text).instance;
   service = guest.systemd.services.kubernetes-runtime-secrets;
   deployedSystem = self.nixosConfigurations.${instance}.config.nixpkgs.hostPlatform.system;
   # Preserve every absolute path and Nix reference in the evaluated production
@@ -18,8 +26,15 @@ let
   image = linuxPkgs.dockerTools.buildLayeredImage {
     name = "homelab/native-runtime-secret";
     tag = "1";
-    contents = [ reconcile linuxPkgs.coreutils linuxPkgs.findutils ];
-    config.Cmd = [ "${linuxPkgs.coreutils}/bin/sleep" "infinity" ];
+    contents = [
+      reconcile
+      linuxPkgs.coreutils
+      linuxPkgs.findutils
+    ];
+    config.Cmd = [
+      "${linuxPkgs.coreutils}/bin/sleep"
+      "infinity"
+    ];
   };
   imageReference = "${image.imageName}:${image.imageTag}";
   readabilityImage = linuxPkgs.dockerTools.buildImage {
@@ -65,16 +80,28 @@ in
     coreutils = "${linuxPkgs.coreutils}/bin";
     find = lib.getExe' linuxPkgs.findutils "find";
     readabilityImage = "${readabilityImage.imageName}:${readabilityImage.imageTag}";
-    paths = [ pkgs.coreutils pkgs.diffutils pkgs.bash ];
+    paths = [
+      pkgs.coreutils
+      pkgs.diffutils
+      pkgs.bash
+    ];
   };
-  images = [ image readabilityImage ];
+  images = [
+    image
+    readabilityImage
+  ];
   kubernetesImages = [ "${readabilityImage.imageName}:${readabilityImage.imageTag}" ];
   inherit setup;
-  containers = [{
-    suffix = "secret";
-    image = imageReference;
-    command = [ "${linuxPkgs.coreutils}/bin/sleep" "infinity" ];
-  }];
+  containers = [
+    {
+      suffix = "secret";
+      image = imageReference;
+      command = [
+        "${linuxPkgs.coreutils}/bin/sleep"
+        "infinity"
+      ];
+    }
+  ];
   scenarios = [
     "runtime-secret-initial-exact-ack"
     "runtime-secret-missing-desired-inventory"

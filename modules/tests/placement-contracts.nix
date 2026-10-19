@@ -42,7 +42,8 @@ let
         };
       nodePaths =
         retained:
-        (render retained).applications.local-path-provisioner.helm.releases.local-path-provisioner.values.nodePathMap;
+        (render retained)
+        .applications.local-path-provisioner.helm.releases.local-path-provisioner.values.nodePathMap;
       retained = rendererFixture.retainedPaths.kubernetes-volumes;
     in
     nodePaths retained == [
@@ -51,15 +52,15 @@ let
         paths = [ retained.guestPath ];
       }
     ]
-    && lib.all (
-      unsafe:
-      !(builtins.tryEval (builtins.deepSeq (nodePaths (retained // unsafe)) true)).success
-    ) [
-      { uid = 1000; }
-      { gid = 1000; }
-      { mode = "0755"; }
-      { readOnly = true; }
-    ];
+    &&
+      lib.all
+        (unsafe: !(builtins.tryEval (builtins.deepSeq (nodePaths (retained // unsafe)) true)).success)
+        [
+          { uid = 1000; }
+          { gid = 1000; }
+          { mode = "0755"; }
+          { readOnly = true; }
+        ];
   retainedObjects =
     paths:
     (retainedStorageRenderer {

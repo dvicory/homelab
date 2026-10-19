@@ -28,21 +28,27 @@
               "_definitions.json";
         in
         "cp ${source} \"$out/${filename}\"";
-      schemas = pkgs.runCommand "prod-home-kubernetes-schemas-1.35.8" {
-        nativeBuildInputs = [ python ];
-      } ''
-        mkdir -p "$out"
-        ${lib.concatMapStringsSep "\n" copyInput schemaInputs}
-        ${python}/bin/python ${helper} derive \
-          --manifests ${manifests} --schemas "$out" --converter ${converter}
-      '';
+      schemas =
+        pkgs.runCommand "prod-home-kubernetes-schemas-1.35.8"
+          {
+            nativeBuildInputs = [ python ];
+          }
+          ''
+            mkdir -p "$out"
+            ${lib.concatMapStringsSep "\n" copyInput schemaInputs}
+            ${python}/bin/python ${helper} derive \
+              --manifests ${manifests} --schemas "$out" --converter ${converter}
+          '';
       # Strict built-ins, but the official recursive CRD envelope permits extra
       # fields. Converted CRDs also do not prove ObjectMeta, CEL, admission,
       # pruning/defaulting, immutable updates or controller behavior. Preserve
       # metadata and semantic joins in prod-home-manifests-policy and API checks.
       runner = pkgs.writeShellApplication {
         name = "check-prod-home-manifests-schema";
-        runtimeInputs = [ python pkgs.kubeconform ];
+        runtimeInputs = [
+          python
+          pkgs.kubeconform
+        ];
         text = ''
           if [ "$#" -gt 3 ]; then
             echo "usage: check-prod-home-manifests-schema [manifest-root [schema-root [report.json]]]" >&2
@@ -57,14 +63,13 @@
       };
     in
     {
-      checks.prod-home-manifests-schema =
-        pkgs.runCommandLocal "prod-home-manifests-schema" { } ''
-          mkdir -p "$out"
-          ${lib.getExe runner} ${manifests} ${schemas} "$out/report.json"
-          ${python}/bin/python ${./_kubernetes-schema-mutations.py} \
-            --helper ${helper} --manifests ${manifests} --schemas ${schemas} \
-            --converter ${converter} --kubeconform ${lib.getExe pkgs.kubeconform}
-        '';
+      checks.prod-home-manifests-schema = pkgs.runCommandLocal "prod-home-manifests-schema" { } ''
+        mkdir -p "$out"
+        ${lib.getExe runner} ${manifests} ${schemas} "$out/report.json"
+        ${python}/bin/python ${./_kubernetes-schema-mutations.py} \
+          --helper ${helper} --manifests ${manifests} --schemas ${schemas} \
+          --converter ${converter} --kubeconform ${lib.getExe pkgs.kubeconform}
+      '';
       packages.prod-home-manifests-schema = runner;
       packages.prod-home-kubernetes-schemas = schemas;
     };

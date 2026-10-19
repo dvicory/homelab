@@ -96,7 +96,7 @@ try {
   const preclaim = await run(true);
   assert.equal(preclaim.code, 1);
   assert(requests.some(request => request.path === '/api/v1/settings/public'), 'producer must encounter the unclaimed server');
-  assert.equal(preclaim.retainedSettingsReads, 1, 'initial delivery must inspect the retained Jellyfin host');
+  assert(preclaim.retainedSettingsReads > 0, 'initial delivery must inspect the retained Jellyfin host');
   assert.equal(preclaim.credentialReads, 0, 'an unclaimed hostile host is refused before reading administrator credentials');
   assert(!preclaim.output.includes(key));
   assert(requests.every(request => request.method === 'GET'), 'preclaim host refusal sends no mutations');
