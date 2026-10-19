@@ -169,7 +169,7 @@ in
             with subtest("Grafana manages a real external Alertmanager silence"):
                 machine.wait_until_succeeds(f"{kubectl} rollout status deployment/alertmanager --timeout=30s", timeout=300)
                 endpoint = "http://127.0.0.1:3000/api/alertmanager/alertmanager/api/v2/silences"
-                now = datetime.now(timezone.utc)
+                now = datetime.fromtimestamp(float(machine.succeed("date +%s.%N")), timezone.utc)
                 silence = json.dumps({
                     "matchers": [{"name": "alertname", "value": "GrafanaSilenceRegression", "isRegex": False, "isEqual": True}],
                     "startsAt": now.isoformat(),
