@@ -1,4 +1,11 @@
-{ pkgs, linuxPkgs, lib, config, inputs, self }:
+{
+  pkgs,
+  linuxPkgs,
+  lib,
+  config,
+  inputs,
+  self,
+}:
 let
   probe = linuxPkgs.dockerTools.buildImage {
     name = "homelab/native-argo-probe";
@@ -15,19 +22,35 @@ let
     tag = "1";
     copyToRoot = linuxPkgs.buildEnv {
       name = "native-argo-git-root";
-      paths = [ linuxPkgs.git linuxPkgs.busybox ];
+      paths = [
+        linuxPkgs.git
+        linuxPkgs.busybox
+      ];
       pathsToLink = [ "/bin" ];
     };
     extraCommands = ''
       mkdir -p srv/git tmp
       chmod 1777 tmp
     '';
-    config.Cmd = [ "/bin/git" "daemon" "--reuseaddr" "--export-all" "--base-path=/srv/git" "--listen=0.0.0.0" "/srv/git" ];
+    config.Cmd = [
+      "/bin/git"
+      "daemon"
+      "--reuseaddr"
+      "--export-all"
+      "--base-path=/srv/git"
+      "--listen=0.0.0.0"
+      "/srv/git"
+    ];
   };
   probeRef = "${probe.imageName}:${probe.imageTag}";
   gitRef = "${git.imageName}:${git.imageTag}";
   action = pkgs.writeShellScript "native-argo-action" ''
-    export PATH=${lib.makeBinPath [ pkgs.yq-go pkgs.coreutils ]}:"$PATH"
+    export PATH=${
+      lib.makeBinPath [
+        pkgs.yq-go
+        pkgs.coreutils
+      ]
+    }:"$PATH"
     exec ${pkgs.bash}/bin/bash ${./action.sh} "$@"
   '';
 in
@@ -40,18 +63,36 @@ in
       exec ${pkgs.python3}/bin/python3 ${../report.py} --capture-retained
     '';
     probeImage = probeRef;
-    registryManifestDirectories = [ self.packages.${pkgs.stdenv.hostPlatform.system}.household-bootstrap-manifests ];
+    registryManifestDirectories = [
+      self.packages.${pkgs.stdenv.hostPlatform.system}.household-bootstrap-manifests
+    ];
     inherit action;
-    paths = [ pkgs.yq-go pkgs.coreutils ];
+    paths = [
+      pkgs.yq-go
+      pkgs.coreutils
+    ];
   };
-  images = [ probe git ];
+  images = [
+    probe
+    git
+  ];
   kubernetesImages = [ probeRef ];
-  containers = [ {
-    suffix = "argo-git";
-    image = gitRef;
-    ip = 30;
-    command = [ "/bin/git" "daemon" "--reuseaddr" "--export-all" "--base-path=/srv/git" "--listen=0.0.0.0" "/srv/git" ];
-  } ];
+  containers = [
+    {
+      suffix = "argo-git";
+      image = gitRef;
+      ip = 30;
+      command = [
+        "/bin/git"
+        "daemon"
+        "--reuseaddr"
+        "--export-all"
+        "--base-path=/srv/git"
+        "--listen=0.0.0.0"
+        "/srv/git"
+      ];
+    }
+  ];
   setup = pkgs.writeShellScript "native-argo-setup" ''
     exec ${action} setup
   '';

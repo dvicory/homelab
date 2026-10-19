@@ -283,9 +283,14 @@
           )) true
         );
       withAuth = auth: route: route // { inherit auth; };
-      nativeRouteRejected = lib.all (
-        name: !(mediaWithRoutes { ${name} = withAuth "native" fixtureCluster.routes.${name}; }).success
-      ) [ "sonarr" "prowlarr" "sabnzbd" ];
+      nativeRouteRejected =
+        lib.all
+          (name: !(mediaWithRoutes { ${name} = withAuth "native" fixtureCluster.routes.${name}; }).success)
+          [
+            "sonarr"
+            "prowlarr"
+            "sabnzbd"
+          ];
       extraRoute =
         auth:
         (mediaWithRoutes {
@@ -295,14 +300,22 @@
       extraAdminRouteAccepted = extraRoute "admin";
       # The Gateway policy of such a route must not also admit the whole
       # media namespace.
-      namespaceWideRouteRejected = lib.all (
-        name:
-        !(mediaWithRoutes {
-          ${name} = fixtureCluster.routes.${name} // {
-            sameNamespaceIngress = true;
-          };
-        }).success
-      ) [ "radarr" "sonarr" "prowlarr" "sabnzbd" ];
+      namespaceWideRouteRejected =
+        lib.all
+          (
+            name:
+            !(mediaWithRoutes {
+              ${name} = fixtureCluster.routes.${name} // {
+                sameNamespaceIngress = true;
+              };
+            }).success
+          )
+          [
+            "radarr"
+            "sonarr"
+            "prowlarr"
+            "sabnzbd"
+          ];
       # Ingress and client configuration for every instance, including those
       # without a route, and for an instance without a Seerr role.
       ingressFixture =
@@ -360,19 +373,25 @@
             }).config.${kind}.${kind}.category
             true
         )).success;
-      unsafeCategoriesRejected = lib.all (
-        kind:
-        lib.all (unsafeCategoryRejected kind) [
-          "*"
-          ""
-          "."
-          ".."
-          "../movies"
-          "movies/hd"
-          "movies\\hd"
-          "movies\nhd"
-        ]
-      ) [ "radarr" "sonarr" ];
+      unsafeCategoriesRejected =
+        lib.all
+          (
+            kind:
+            lib.all (unsafeCategoryRejected kind) [
+              "*"
+              ""
+              "."
+              ".."
+              "../movies"
+              "movies/hd"
+              "movies\\hd"
+              "movies\nhd"
+            ]
+          )
+          [
+            "radarr"
+            "sonarr"
+          ];
       mediaRootCollision = mediaWith { radarr.uhd.root = "/data/library/movies/hd"; };
       mediaNestedRoot = mediaWith { radarr.uhd.root = "/data/library/movies/hd/remux"; };
       sharedLibrary = [

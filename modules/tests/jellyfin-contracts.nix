@@ -67,10 +67,11 @@ let
       };
   configurationFor =
     rendered:
-    (lib.findFirst (
-      object: object.kind == "ConfigMap" && object.metadata.name == "jellarr-configuration"
-    ) (throw "Jellyfin render has no Jellarr ConfigMap") rendered.applications.jellyfin-configuration.objects)
-    .data."config.yml";
+    (lib.findFirst
+      (object: object.kind == "ConfigMap" && object.metadata.name == "jellarr-configuration")
+      (throw "Jellyfin render has no Jellarr ConfigMap")
+      rendered.applications.jellyfin-configuration.objects
+    ).data."config.yml";
   # Jellarr configuration rendered for a declared transcoding mode.
   jellarrConfigFor =
     transcoding:
@@ -144,7 +145,9 @@ let
     targetAbi:
     provisionerPackage
     // rec {
-      ldapPlugin = provisionerPackage.ldapPlugin // { inherit targetAbi; };
+      ldapPlugin = provisionerPackage.ldapPlugin // {
+        inherit targetAbi;
+      };
       passthru = provisionerPackage.passthru // {
         inherit ldapPlugin;
       };
@@ -228,7 +231,8 @@ let
       provisioner = builtins.head pod.initContainers;
       installer = builtins.elemAt pod.initContainers 1;
       runtime = builtins.head pod.containers;
-      configMount = container: lib.findFirst (mount: mount.mountPath == "/config") null container.volumeMounts;
+      configMount =
+        container: lib.findFirst (mount: mount.mountPath == "/config") null container.volumeMounts;
       plugin = provisionerPackage.ldapPlugin;
       jellarr = builtins.fromJSON (configurationFor conformant);
       ldap = (builtins.head jellarr.plugins).configuration;
@@ -237,55 +241,61 @@ let
       base = lib.concatMapStringsSep "," (part: "dc=${part}") (lib.splitString "." host);
       memberOf = group: "(memberof=spn=${group}@${host},${base})";
     in
-    lib.attrNames (lib.filterAttrs (_: value: !value) {
-      plugin-reviewed-release =
-        plugin.name == "LDAP Authentication"
-        && plugin.version == "24.0.0.0"
-        && plugin.targetAbi == "12.0.0.0"
-        && plugin.sourceRev == "d11c86a47d51a0e3372bbff20e508302ad78f7bd"
-        && plugin.guid == "958aad66-3784-4d2a-b89a-a7b6fab6e25c"
-        && plugin.directory == "LDAP Authentication_${plugin.version}";
-      # Provisioning must see empty /config before plugin installation.
-      plugin-installation-after-provisioning =
-        builtins.length pod.containers == 1
-        && map (container: container.name) pod.initContainers == [ "provision" "plugins" ];
-      plugin-installer-selected-image =
-        installer.image == provisioner.image
-        && installer.image == "${selected.artifacts.jellyfin-provisioner-image.repository}@${selected.artifacts.jellyfin-provisioner-image.digest}"
-        && installer.command == [ "/bin/${provisionerPackage.pluginInstaller.meta.mainProgram}" ]
-        && installer.imagePullPolicy == "IfNotPresent";
-      plugin-installer-confined =
-        map (mount: mount.mountPath) installer.volumeMounts == [ "/config" ]
-        && (configMount installer).name == (configMount runtime).name
-        && (installer.env or [ ]) == [ ]
-        && (installer.envFrom or [ ]) == [ ]
-        && installer.securityContext.allowPrivilegeEscalation == false
-        && builtins.elem "ALL" installer.securityContext.capabilities.drop;
-      plugin-configuration-only =
-        map (entry: entry.name) jellarr.plugins == [ plugin.serverName ]
-        && !(jellarr.system ? pluginRepositories)
-        && !(ldap ? LdapUsers);
-      directory-verified-ldaps =
-        ldap.LdapServer == host
-        && ldap.LdapPort == directory.port
-        && ldap.LdapBaseDn == base
-        && ldap.UseSsl
-        && !ldap.UseStartTls
-        && !ldap.SkipSslVerify
-        && ldap.LdapRootCaPath == "";
-      directory-no-service-credential =
-        ldap.LdapBindUser == ""
-        && ldap.LdapBindPassword == "";
-      directory-household-and-admin-only =
-        ldap.LdapSearchFilter == "(&(class=person)(|${memberOf householdGroup}${memberOf adminGroup}))"
-        && ldap.LdapAdminFilter == "(&(class=person)${memberOf adminGroup})"
-        && !ldap.EnableLdapAdminFilterMemberUid;
-      directory-user-links-application-owned =
-        ldap.LdapUidAttribute == "uuid"
-        && ldap.LdapUsernameAttribute == "name"
-        && ldap.LdapSearchAttributes == "name"
-        && !ldap.AllowPassChange;
-    });
+    lib.attrNames (
+      lib.filterAttrs (_: value: !value) {
+        plugin-reviewed-release =
+          plugin.name == "LDAP Authentication"
+          && plugin.version == "24.0.0.0"
+          && plugin.targetAbi == "12.0.0.0"
+          && plugin.sourceRev == "d11c86a47d51a0e3372bbff20e508302ad78f7bd"
+          && plugin.guid == "958aad66-3784-4d2a-b89a-a7b6fab6e25c"
+          && plugin.directory == "LDAP Authentication_${plugin.version}";
+        # Provisioning must see empty /config before plugin installation.
+        plugin-installation-after-provisioning =
+          builtins.length pod.containers == 1
+          &&
+            map (container: container.name) pod.initContainers == [
+              "provision"
+              "plugins"
+            ];
+        plugin-installer-selected-image =
+          installer.image == provisioner.image
+          &&
+            installer.image
+            == "${selected.artifacts.jellyfin-provisioner-image.repository}@${selected.artifacts.jellyfin-provisioner-image.digest}"
+          && installer.command == [ "/bin/${provisionerPackage.pluginInstaller.meta.mainProgram}" ]
+          && installer.imagePullPolicy == "IfNotPresent";
+        plugin-installer-confined =
+          map (mount: mount.mountPath) installer.volumeMounts == [ "/config" ]
+          && (configMount installer).name == (configMount runtime).name
+          && (installer.env or [ ]) == [ ]
+          && (installer.envFrom or [ ]) == [ ]
+          && installer.securityContext.allowPrivilegeEscalation == false
+          && builtins.elem "ALL" installer.securityContext.capabilities.drop;
+        plugin-configuration-only =
+          map (entry: entry.name) jellarr.plugins == [ plugin.serverName ]
+          && !(jellarr.system ? pluginRepositories)
+          && !(ldap ? LdapUsers);
+        directory-verified-ldaps =
+          ldap.LdapServer == host
+          && ldap.LdapPort == directory.port
+          && ldap.LdapBaseDn == base
+          && ldap.UseSsl
+          && !ldap.UseStartTls
+          && !ldap.SkipSslVerify
+          && ldap.LdapRootCaPath == "";
+        directory-no-service-credential = ldap.LdapBindUser == "" && ldap.LdapBindPassword == "";
+        directory-household-and-admin-only =
+          ldap.LdapSearchFilter == "(&(class=person)(|${memberOf householdGroup}${memberOf adminGroup}))"
+          && ldap.LdapAdminFilter == "(&(class=person)${memberOf adminGroup})"
+          && !ldap.EnableLdapAdminFilterMemberUid;
+        directory-user-links-application-owned =
+          ldap.LdapUidAttribute == "uuid"
+          && ldap.LdapUsernameAttribute == "name"
+          && ldap.LdapSearchAttributes == "name"
+          && !ldap.AllowPassChange;
+      }
+    );
 in
 {
   perSystem =
@@ -310,14 +320,18 @@ in
     in
     {
       checks.jellyfin-contracts =
-        assert lib.assertMsg (releaseFailures == [ ])
-          "Jellyfin release invariant checks failed: ${lib.concatStringsSep ", " releaseFailures}";
-        assert lib.assertMsg (pluginFailures == [ ])
-          "Jellyfin plugin release checks failed: ${lib.concatStringsSep ", " pluginFailures}";
-        assert lib.assertMsg (administratorFailures == [ ])
-          "Jellyfin administrator name checks failed: ${lib.concatStringsSep ", " administratorFailures}";
-        assert lib.assertMsg (householdFailures == [ ])
-          "Jellyfin household contract checks failed: ${lib.concatStringsSep ", " householdFailures}";
+        assert lib.assertMsg (
+          releaseFailures == [ ]
+        ) "Jellyfin release invariant checks failed: ${lib.concatStringsSep ", " releaseFailures}";
+        assert lib.assertMsg (
+          pluginFailures == [ ]
+        ) "Jellyfin plugin release checks failed: ${lib.concatStringsSep ", " pluginFailures}";
+        assert lib.assertMsg (
+          administratorFailures == [ ]
+        ) "Jellyfin administrator name checks failed: ${lib.concatStringsSep ", " administratorFailures}";
+        assert lib.assertMsg (
+          householdFailures == [ ]
+        ) "Jellyfin household contract checks failed: ${lib.concatStringsSep ", " householdFailures}";
         pkgs.runCommand "jellyfin-contracts"
           {
             nativeBuildInputs = [

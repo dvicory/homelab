@@ -111,7 +111,8 @@ let
     };
   renderedState =
     inventory:
-    builtins.fromJSON (provisionData (renderIdentity inventory).applications.identity.objects)."state.json";
+    builtins.fromJSON
+      (provisionData (renderIdentity inventory).applications.identity.objects)."state.json";
   rendersIdentity =
     inventory:
     (builtins.tryEval (
@@ -137,13 +138,18 @@ let
   # NetworkPolicies are additive, regardless of name or application owner.
   admissionObjects =
     identityRendered: gatewayRendered:
-    lib.concatMap (
-      application:
-      if application.condition or true then
-        application.content.objects or (application.objects or [ ])
-      else
-        [ ]
-    ) (builtins.attrValues identityRendered.applications ++ builtins.attrValues gatewayRendered.applications);
+    lib.concatMap
+      (
+        application:
+        if application.condition or true then
+          application.content.objects or (application.objects or [ ])
+        else
+          [ ]
+      )
+      (
+        builtins.attrValues identityRendered.applications
+        ++ builtins.attrValues gatewayRendered.applications
+      );
   kanidmLabels = kanidmDeployment.spec.template.metadata.labels;
   selectsKanidm =
     selector:
@@ -154,41 +160,56 @@ let
         present = builtins.hasAttr expression.key kanidmLabels;
         listed = present && lib.elem kanidmLabels.${expression.key} (expression.values or [ ]);
       in
-      if expression.operator == "In" then listed
-      else if expression.operator == "NotIn" then !listed
-      else if expression.operator == "Exists" then present
-      else if expression.operator == "DoesNotExist" then !present
-      else throw "Unsupported Kubernetes selector operator"
+      if expression.operator == "In" then
+        listed
+      else if expression.operator == "NotIn" then
+        !listed
+      else if expression.operator == "Exists" then
+        present
+      else if expression.operator == "DoesNotExist" then
+        !present
+      else
+        throw "Unsupported Kubernetes selector operator"
     ) (selector.matchExpressions or [ ]);
   directoryPeers =
     objects:
-    lib.unique (lib.concatMap (
-      policy:
-      lib.concatMap (
-        rule:
-        let
-          ports = rule.ports or [ ];
-          admits = port:
-            (port.protocol or "TCP") == "TCP"
-            && (
-              !(port ? port)
-              || port.port == "ldaps"
-              || (builtins.isInt port.port
-                && port.port <= directory.port
-                && directory.port <= (port.endPort or port.port))
-            );
-        in
-        if ports == [ ] || lib.any admits ports then
-          if rule.from or [ ] == [ ] then [ "anyone" ] else rule.from
-        else [ ]
-      ) (policy.spec.ingress or [ ])
-    ) (lib.filter (
-      object:
-      object.kind == "NetworkPolicy"
-      && object.metadata.namespace == namespace
-      && selectsKanidm object.spec.podSelector
-      && lib.elem "Ingress" (object.spec.policyTypes or [ "Ingress" ])
-    ) objects));
+    lib.unique (
+      lib.concatMap
+        (
+          policy:
+          lib.concatMap (
+            rule:
+            let
+              ports = rule.ports or [ ];
+              admits =
+                port:
+                (port.protocol or "TCP") == "TCP"
+                && (
+                  !(port ? port)
+                  || port.port == "ldaps"
+                  || (
+                    builtins.isInt port.port
+                    && port.port <= directory.port
+                    && directory.port <= (port.endPort or port.port)
+                  )
+                );
+            in
+            if ports == [ ] || lib.any admits ports then
+              if rule.from or [ ] == [ ] then [ "anyone" ] else rule.from
+            else
+              [ ]
+          ) (policy.spec.ingress or [ ])
+        )
+        (
+          lib.filter (
+            object:
+            object.kind == "NetworkPolicy"
+            && object.metadata.namespace == namespace
+            && selectsKanidm object.spec.podSelector
+            && lib.elem "Ingress" (object.spec.policyTypes or [ "Ingress" ])
+          ) objects
+        )
+    );
   allowsArgocdServer = lib.any (
     rule:
     lib.any (
@@ -202,7 +223,9 @@ let
     let
       secret = findObject objects "Secret" declared.namespace declared.name;
       role = findObject objects "Role" declared.namespace "kanidm-client-secret-${declared.name}";
-      binding = findObject objects "RoleBinding" declared.namespace "kanidm-client-secret-${declared.name}";
+      binding =
+        findObject objects "RoleBinding" declared.namespace
+          "kanidm-client-secret-${declared.name}";
     in
     secret != null
     && !(secret ? data)
@@ -247,19 +270,22 @@ let
         protocol = "TCP";
       } kanidmService.spec.ports;
     # Only Jellyfin's pods reach the directory, in every phase.
-    directory-admits-only-jellyfin = lib.all (
-      objects:
-      directoryPeers objects == [
-        {
-          namespaceSelector.matchLabels."kubernetes.io/metadata.name" = jellyfinRoute.namespace;
-          podSelector.matchLabels = jellyfinRoute.backendPodSelector;
-        }
-      ]
-    ) [
-      (admissionObjects initial initialGateway)
-      (admissionObjects provisioning provisioningGateway)
-      (admissionObjects normal normalGateway)
-    ];
+    directory-admits-only-jellyfin =
+      lib.all
+        (
+          objects:
+          directoryPeers objects == [
+            {
+              namespaceSelector.matchLabels."kubernetes.io/metadata.name" = jellyfinRoute.namespace;
+              podSelector.matchLabels = jellyfinRoute.backendPodSelector;
+            }
+          ]
+        )
+        [
+          (admissionObjects initial initialGateway)
+          (admissionObjects provisioning provisioningGateway)
+          (admissionObjects normal normalGateway)
+        ];
     # Kanidm applies the strictest value of each setting across a person's
     # groups. Administrators state an MFA-or-stronger minimum themselves and
     # never bind to LDAP with their primary password. Household members bind
@@ -316,9 +342,10 @@ let
       && rendersIdentity (extraAdminRoute "extra" "Extra")
       && !(rendersIdentity (extraAdminRoute "extra" null))
       && !(rendersIdentity (extraAdminRoute "extra.app" "Extra"))
-      && (renderedState (extraAdminRoute "extra" "Extra")).systems.oauth2.extra.originUrl == [
-        "https://extra.example.test/extra/oauth2/callback"
-      ];
+      &&
+        (renderedState (extraAdminRoute "extra" "Extra")).systems.oauth2.extra.originUrl == [
+          "https://extra.example.test/extra/oauth2/callback"
+        ];
     # Each administrator route's Gateway sign-in uses that route's client and
     # a Gateway Secret the Job publishes for it.
     admin-policy-uses-route-client =
@@ -332,7 +359,8 @@ let
         policy != null
         && client != null
         && policy.spec.oidc.clientID == name
-        && policy.spec.oidc.provider.issuer
+        &&
+          policy.spec.oidc.provider.issuer
           == "https://${builtins.head cluster.routes.idm.hostnames}/oauth2/openid/${name}"
         && builtins.elem {
           namespace = "gateway";
@@ -347,7 +375,8 @@ let
     argocd-shares-route-client =
       (findObject normalPolicyObjects "SecurityPolicy" "gateway" "argocd-admin").spec.oidc.clientID
       == normalOidc.clientID
-      && normalState.systems.oauth2.${normalOidc.clientID}.originLanding
+      &&
+        normalState.systems.oauth2.${normalOidc.clientID}.originLanding
         == "${builtins.head (routeUrls argocdRoute)}/auth/login";
     admin-gateway-session-renews = lib.all (policy: policy.spec.oidc.refreshToken) (
       lib.filter (object: object.kind == "SecurityPolicy") normalPolicyObjects
@@ -390,10 +419,11 @@ let
       && !(builtins.elem "groups" normalOidc.requestedScopes)
       && normalArgocd.rbac.scopes == "[groups]"
       && envValue "KANIDM_ADMIN_GROUP" == cluster.settings.kubernetes.services.identity.adminGroup
-      && builtins.attrNames normalState.groups == lib.sort builtins.lessThan [
-        (envValue "KANIDM_ADMIN_GROUP")
-        householdGroup
-      ]
+      &&
+        builtins.attrNames normalState.groups == lib.sort builtins.lessThan [
+          (envValue "KANIDM_ADMIN_GROUP")
+          householdGroup
+        ]
       && normalArgocd.rbac."policy.csv" == "g, ${envValue "KANIDM_ADMIN_GROUP"}, role:admin\n"
       && normalArgocd.rbac."policy.default" == "";
     argocd-client-secret-reference =

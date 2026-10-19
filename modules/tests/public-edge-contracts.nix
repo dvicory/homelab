@@ -131,21 +131,28 @@ let
     mkHost "home-edge" homeSettings
   );
   seerrPhaseContract =
-    lib.all (
-      module:
-      !(builtins.hasAttr (builtins.head routes.requests.hostnames) module.services.nginx.virtualHosts)
-      && !(builtins.hasAttr (builtins.elemAt routes.requests.hostnames 1) module.services.nginx.virtualHosts)
-    ) [ seerrInitialRemote seerrInitialHome ]
+    lib.all
+      (
+        module:
+        !(builtins.hasAttr (builtins.head routes.requests.hostnames) module.services.nginx.virtualHosts)
+        && !(builtins.hasAttr (builtins.elemAt routes.requests.hostnames 1) module.services.nginx.virtualHosts)
+      )
+      [
+        seerrInitialRemote
+        seerrInitialHome
+      ]
     && builtins.hasAttr (builtins.head routes.requests.hostnames) remoteModule.services.nginx.virtualHosts
     && builtins.hasAttr (builtins.elemAt routes.requests.hostnames 1) homeModule.services.nginx.virtualHosts;
   gatewayRenderSucceeds =
     inventory:
-    (builtins.tryEval (builtins.seq (gateway.k8s-manifests {
-      cluster = inventory;
-      computeResources.instance = "compute-1";
-      charts = { };
-      inherit lib;
-    }) true)).success;
+    (builtins.tryEval (
+      builtins.seq (gateway.k8s-manifests {
+        cluster = inventory;
+        computeResources.instance = "compute-1";
+        charts = { };
+        inherit lib;
+      }) true
+    )).success;
   emptySelectorCluster = testCluster // {
     routes = routes // {
       argocd = routes.argocd // {
@@ -186,8 +193,7 @@ let
     module.services.nginx.enable
     && sorted (builtins.attrNames virtualHosts) == sorted expectedHosts
     && lib.all (
-      location:
-      location.proxyPass == "https://${settings.originHost}:${toString settings.originPort}"
+      location: location.proxyPass == "https://${settings.originHost}:${toString settings.originPort}"
     ) locations
     && lib.all (
       hostname:
