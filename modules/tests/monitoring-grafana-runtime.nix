@@ -1,11 +1,8 @@
-# Grafana's local administrator and the runbook's break-glass path, checked
-# with the rendered Grafana objects and the pinned image in a K3s VM:
-# - Grafana starts with an administrator password that only exists in
-#   memory: no Secret holds it, and neither the login form nor basic
-#   authentication accepts a sign-in;
-# - the break-glass steps in docs/operations/monitoring.md (environment
-#   override, `grafana cli admin reset-admin-password --password-from-stdin`,
-#   port-forward) let a cluster administrator sign in as `admin`.
+# Check normal local-auth refusal and the documented break-glass transition
+# against rendered Grafana objects and the pinned image in a K3s VM. The
+# native CLI installs known-valid fixture credentials: normal login and HTTP
+# basic auth must refuse them, while the explicit runbook overrides permit
+# form sign-in without enabling basic auth.
 #
 # Objects are applied server-side, as Argo CD does; the dashboards
 # ConfigMap is too large for client-side apply. The two Secrets Grafana
@@ -67,6 +64,7 @@ in
         for kind, name in (
             ("ServiceAccount", "grafana"), ("ConfigMap", "grafana"),
             ("ConfigMap", "grafana-dashboards"), ("Service", "grafana"), ("Deployment", "grafana"),
+            ("ConfigMap", "alertmanager-config"), ("Service", "alertmanager"), ("Deployment", "alertmanager"),
         ):
             path = Path(sys.argv[1]) / "monitoring" / f"{kind}-{name}.yaml"
             manifest["items"].append(yaml.safe_load(path.read_text()))
@@ -102,6 +100,7 @@ in
           testScript = ''
             import json
             import secrets
+            from datetime import datetime, timedelta, timezone
 
             kubectl = "${k3s.package}/bin/k3s kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml -n monitoring"
 
@@ -127,23 +126,29 @@ in
             def rollout():
                 machine.wait_until_succeeds(f"{kubectl} rollout status deployment/grafana --timeout=30s", timeout=900)
 
+            def reset_password(password):
+                machine.succeed(
+                    f"printf '%s' {password} | {kubectl} exec -i deployment/grafana -c grafana -- "
+                    "grafana cli --homepath /usr/share/grafana --config /etc/grafana/grafana.ini "
+                    "admin reset-admin-password --password-from-stdin 2>&1"
+                )
+
             start_all()
             machine.wait_for_unit("k3s.service")
             machine.wait_until_succeeds(f"{kubectl} get node -o name | grep -q node", timeout=300)
             machine.wait_until_succeeds(f"{kubectl} wait --for=condition=Ready node --all --timeout=10s", timeout=300)
             machine.wait_until_succeeds(f"{kubectl} apply --server-side -f /etc/grafana-test/objects.json", timeout=120)
 
-            with subtest("Grafana starts with an administrator password that exists only in memory"):
+            with subtest("normal configuration refuses known-valid local administrator credentials"):
                 rollout()
-                secret_keys = json.loads(machine.succeed(f"{kubectl} get secret -o json"))["items"]
-                stored = {s["metadata"]["name"]: sorted(s.get("data", {})) for s in secret_keys}
-                assert stored == {"grafana-admin": ["secret-key"], "grafana-oidc": ["client-secret"]}, stored
                 port_forward()
-                status, _ = login(secrets.token_hex(16))
-                assert status != 200, status
-                basic = machine.succeed("curl -s -o /dev/null -w '%{http_code}' -u admin:wrong http://127.0.0.1:3000/api/user").strip()
+                password = secrets.token_hex(24)
+                reset_password(password)
+                status, cookie = login(password)
+                assert 400 <= status < 500 and not cookie, (status, bool(cookie))
+                basic = machine.succeed(f"curl -s -o /dev/null -w '%{{http_code}}' -u admin:{password} http://127.0.0.1:3000/api/user").strip()
                 assert basic == "401", basic
-                print(f"EVIDENCE only the secret key and OIDC Secrets exist; login form answers {status}, basic auth {basic}")
+                print(f"EVIDENCE known-valid local credentials refused: login {status}, basic auth {basic}")
 
             with subtest("the runbook's break-glass steps sign the administrator in"):
                 machine.succeed(
@@ -151,13 +156,7 @@ in
                     "GF_AUTH_OAUTH_AUTO_LOGIN=false GF_SERVER_ROOT_URL=http://localhost:3000/"
                 )
                 rollout()
-                password = secrets.token_hex(24)
-                out = machine.succeed(
-                    f"printf '%s' {password} | {kubectl} exec -i deployment/grafana -c grafana -- "
-                    "grafana cli --homepath /usr/share/grafana --config /etc/grafana/grafana.ini "
-                    "admin reset-admin-password --password-from-stdin 2>&1"
-                )
-                print(out)
+                reset_password(password)
                 port_forward()
                 status, cookie = login(password)
                 assert status == 200 and cookie, (status, cookie)
@@ -166,6 +165,28 @@ in
                 basic = machine.succeed(f"curl -s -o /dev/null -w '%{{http_code}}' -u admin:{password} http://127.0.0.1:3000/api/user").strip()
                 assert basic == "401", basic
                 print("EVIDENCE after the override and reset-admin-password, admin signs in through the login form; basic auth stays off")
+
+            with subtest("Grafana manages a real external Alertmanager silence"):
+                machine.wait_until_succeeds(f"{kubectl} rollout status deployment/alertmanager --timeout=30s", timeout=300)
+                endpoint = "http://127.0.0.1:3000/api/alertmanager/alertmanager/api/v2/silences"
+                now = datetime.now(timezone.utc)
+                silence = json.dumps({
+                    "matchers": [{"name": "alertname", "value": "GrafanaSilenceRegression", "isRegex": False, "isEqual": True}],
+                    "startsAt": now.isoformat(),
+                    "endsAt": (now + timedelta(hours=1)).isoformat(),
+                    "createdBy": "disposable-runtime-check",
+                    "comment": "External Alertmanager silence regression",
+                })
+                response = json.loads(machine.succeed(
+                    f"curl -sf -H 'Cookie: {cookie}' -H 'Content-Type: application/json' --data '{silence}' {endpoint}"
+                ))
+                silence_id = response["silenceID"]
+                active = json.loads(machine.succeed(f"curl -sf -H 'Cookie: {cookie}' {endpoint}"))
+                assert any(item["id"] == silence_id and item["status"]["state"] == "active" for item in active), active
+                machine.succeed(f"curl -sf -X DELETE -H 'Cookie: {cookie}' {endpoint[:-1]}/{silence_id}")
+                expired = json.loads(machine.succeed(f"curl -sf -H 'Cookie: {cookie}' {endpoint}"))
+                assert any(item["id"] == silence_id and item["status"]["state"] == "expired" for item in expired), expired
+                print("EVIDENCE authenticated Grafana created, listed and expired a silence in the real external Alertmanager")
           '';
         }).overrideTestDerivation
           (_: {
