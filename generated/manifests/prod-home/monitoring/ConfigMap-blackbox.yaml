@@ -1,0 +1,170 @@
+apiVersion: v1
+data:
+  blackbox.yaml: |
+    modules:
+      http_2xx:
+        http:
+          follow_redirects: true
+          preferred_ip_protocol: ip4
+          valid_http_versions:
+          - HTTP/1.1
+          - HTTP/2.0
+        prober: http
+        timeout: 5s
+      route-argocd:
+        http:
+          fail_if_header_not_matches:
+          - allow_missing: false
+            header: Location
+            regexp: ^https://id\.bzfx\.net/
+          fail_if_not_ssl: true
+          follow_redirects: false
+          headers:
+            Host: argocd.plus2.danielvicory.dev
+          method: GET
+          preferred_ip_protocol: ip4
+          tls_config:
+            server_name: argocd.plus2.danielvicory.dev
+          valid_status_codes:
+          - 302
+        prober: http
+        timeout: 10s
+      route-grafana:
+        http:
+          fail_if_header_not_matches:
+          - allow_missing: false
+            header: Location
+            regexp: ^https://id\.bzfx\.net/
+          fail_if_not_ssl: true
+          follow_redirects: false
+          headers:
+            Host: grafana.plus2.danielvicory.dev
+          method: GET
+          preferred_ip_protocol: ip4
+          tls_config:
+            server_name: grafana.plus2.danielvicory.dev
+          valid_status_codes:
+          - 302
+        prober: http
+        timeout: 10s
+      route-idm:
+        http:
+          fail_if_not_ssl: true
+          follow_redirects: false
+          headers:
+            Host: id.bzfx.net
+          method: GET
+          preferred_ip_protocol: ip4
+          tls_config:
+            server_name: id.bzfx.net
+          valid_status_codes: []
+        prober: http
+        timeout: 10s
+      route-jellyfin:
+        http:
+          fail_if_not_ssl: true
+          follow_redirects: false
+          headers:
+            Host: jellyfin.plus2.danielvicory.dev
+          method: GET
+          preferred_ip_protocol: ip4
+          tls_config:
+            server_name: jellyfin.plus2.danielvicory.dev
+          valid_status_codes: []
+        prober: http
+        timeout: 10s
+      route-prowlarr:
+        http:
+          fail_if_header_not_matches:
+          - allow_missing: false
+            header: Location
+            regexp: ^https://id\.bzfx\.net/
+          fail_if_not_ssl: true
+          follow_redirects: false
+          headers:
+            Host: prowlarr.plus2.danielvicory.dev
+          method: GET
+          preferred_ip_protocol: ip4
+          tls_config:
+            server_name: prowlarr.plus2.danielvicory.dev
+          valid_status_codes:
+          - 302
+        prober: http
+        timeout: 10s
+      route-radarr:
+        http:
+          fail_if_header_not_matches:
+          - allow_missing: false
+            header: Location
+            regexp: ^https://id\.bzfx\.net/
+          fail_if_not_ssl: true
+          follow_redirects: false
+          headers:
+            Host: radarr.plus2.danielvicory.dev
+          method: GET
+          preferred_ip_protocol: ip4
+          tls_config:
+            server_name: radarr.plus2.danielvicory.dev
+          valid_status_codes:
+          - 302
+        prober: http
+        timeout: 10s
+      route-requests:
+        http:
+          fail_if_not_ssl: true
+          follow_redirects: false
+          headers:
+            Host: requests.plus2.danielvicory.dev
+          method: GET
+          preferred_ip_protocol: ip4
+          tls_config:
+            server_name: requests.plus2.danielvicory.dev
+          valid_status_codes: []
+        prober: http
+        timeout: 10s
+      route-sabnzbd:
+        http:
+          fail_if_header_not_matches:
+          - allow_missing: false
+            header: Location
+            regexp: ^https://id\.bzfx\.net/
+          fail_if_not_ssl: true
+          follow_redirects: false
+          headers:
+            Host: sabnzbd.plus2.danielvicory.dev
+          method: GET
+          preferred_ip_protocol: ip4
+          tls_config:
+            server_name: sabnzbd.plus2.danielvicory.dev
+          valid_status_codes:
+          - 302
+        prober: http
+        timeout: 10s
+      route-sonarr:
+        http:
+          fail_if_header_not_matches:
+          - allow_missing: false
+            header: Location
+            regexp: ^https://id\.bzfx\.net/
+          fail_if_not_ssl: true
+          follow_redirects: false
+          headers:
+            Host: sonarr.plus2.danielvicory.dev
+          method: GET
+          preferred_ip_protocol: ip4
+          tls_config:
+            server_name: sonarr.plus2.danielvicory.dev
+          valid_status_codes:
+          - 302
+        prober: http
+        timeout: 10s
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/instance: blackbox
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: prometheus-blackbox-exporter
+    app.kubernetes.io/version: v0.28.0
+    helm.sh/chart: prometheus-blackbox-exporter-11.18.0
+  name: blackbox
+  namespace: monitoring

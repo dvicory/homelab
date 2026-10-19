@@ -1,0 +1,185 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/instance: grafana
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/version: 13.2.3
+    helm.sh/chart: grafana-13.5.0
+  name: grafana
+  namespace: monitoring
+spec:
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: grafana
+      app.kubernetes.io/name: grafana
+  strategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+        checksum/config: 54fbb2a2437eeb404af435d8ab44771b0d9d374f138f0611365c1bbb706d8a5f
+        checksum/sc-dashboard-provider-config: e70bf6a851099d385178a76de9757bb0bef8299da6d8443602590e44f05fdf24
+        kubectl.kubernetes.io/default-container: grafana
+      labels:
+        app.kubernetes.io/instance: grafana
+        app.kubernetes.io/name: grafana
+        app.kubernetes.io/version: 13.2.3
+        helm.sh/chart: grafana-13.5.0
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: GF_PATHS_DATA
+              value: /var/lib/grafana/
+            - name: GF_PATHS_LOGS
+              value: /var/log/grafana
+            - name: GF_PATHS_PLUGINS
+              value: /var/lib/grafana/plugins
+            - name: GF_PATHS_PROVISIONING
+              value: /etc/grafana/provisioning
+            - name: GF_UNIFIED_STORAGE_INDEX_PATH
+              value: /var/lib/grafana-search/bleve
+            - name: GOMEMLIMIT
+              value: 921MiB
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: $__file{/run/grafana-admin/password}
+            - name: GF_SECURITY_ADMIN_USER
+              value: admin
+          image: docker.io/grafana/grafana:13.2.3-distroless@sha256:202e5d5b3f8499e70ccac7991eea6d7da72d2790eb2e0597e7987acf724e7180
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            failureThreshold: 10
+            httpGet:
+              path: /api/health
+              port: grafana
+            initialDelaySeconds: 60
+            timeoutSeconds: 30
+          name: grafana
+          ports:
+            - containerPort: 3000
+              name: grafana
+              protocol: TCP
+            - containerPort: 9094
+              name: gossip-tcp
+              protocol: TCP
+            - containerPort: 9094
+              name: gossip-udp
+              protocol: UDP
+            - containerPort: 6060
+              name: profiling
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: grafana
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi
+            requests:
+              cpu: 50m
+              memory: 192Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - mountPath: /tmp
+              name: tmp
+            - mountPath: /etc/grafana/grafana.ini
+              name: config
+              subPath: grafana.ini
+            - mountPath: /var/lib/grafana
+              name: storage
+            - mountPath: /var/lib/grafana-search
+              name: search
+            - mountPath: /var/lib/grafana/dashboards/homelab
+              name: dashboards-homelab
+            - mountPath: /etc/grafana/provisioning/datasources/datasources.yaml
+              name: config
+              subPath: datasources.yaml
+            - mountPath: /etc/grafana/provisioning/dashboards/dashboardproviders.yaml
+              name: config
+              subPath: dashboardproviders.yaml
+            - mountPath: /etc/secrets/grafana-admin
+              name: grafana-admin
+              readOnly: true
+            - mountPath: /etc/secrets/grafana-oidc
+              name: grafana-oidc
+              readOnly: true
+            - mountPath: /run/grafana-admin
+              name: admin-password
+              readOnly: true
+      enableServiceLinks: true
+      initContainers:
+        - command:
+            - sh
+            - -c
+            - umask 077 && head -c 48 /dev/urandom | od -An -tx1 | tr -d ' \n' > /run/grafana-admin/password
+          image: docker.io/rancher/mirrored-library-busybox:1.37.0@sha256:101b4afd76732482eff9b95cae5f94bcf295e521fbec4e01b69c5421f3f3f3e5
+          imagePullPolicy: IfNotPresent
+          name: admin-password
+          resources:
+            limits:
+              cpu: 50m
+              memory: 16Mi
+            requests:
+              cpu: 10m
+              memory: 8Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - mountPath: /run/grafana-admin
+              name: admin-password
+      nodeSelector:
+        kubernetes.io/hostname: compute-1
+      securityContext:
+        fsGroup: 472
+        runAsGroup: 472
+        runAsNonRoot: true
+        runAsUser: 472
+      serviceAccountName: grafana
+      shareProcessNamespace: false
+      volumes:
+        - emptyDir: {}
+          name: tmp
+        - configMap:
+            name: grafana
+          name: config
+        - configMap:
+            name: grafana-dashboards
+          name: dashboards-homelab
+        - emptyDir: {}
+          name: storage
+        - emptyDir: {}
+          name: search
+        - name: grafana-admin
+          secret:
+            defaultMode: 288
+            secretName: grafana-admin
+        - name: grafana-oidc
+          secret:
+            defaultMode: 288
+            secretName: grafana-oidc
+        - emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+          name: admin-password

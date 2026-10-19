@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/name: victoriametrics
+    app.kubernetes.io/part-of: monitoring
+  name: victoriametrics
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: victoriametrics
+      app.kubernetes.io/part-of: monitoring
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        homelab.danielvicory/config-sha256: 15af7731cf1c7aec473b78645b5a44cd6f6128a46e37a1157601cd00d743cfe7
+      labels:
+        app.kubernetes.io/name: victoriametrics
+        app.kubernetes.io/part-of: monitoring
+    spec:
+      automountServiceAccountToken: true
+      containers:
+        - args:
+            - -storageDataPath=/storage
+            - -retentionPeriod=90d
+            - -storage.minFreeDiskSpaceBytes=50GiB
+            - -promscrape.config=/etc/victoriametrics/scrape.json
+            - -promscrape.config.strictParse=true
+            - -httpListenAddr=:8428
+          image: docker.io/victoriametrics/victoria-metrics:v1.151.0@sha256:6d164540a04f49ba4e696cbdb70f9fee78be1e94b8f2a1292743a0b1ab8275bd
+          imagePullPolicy: IfNotPresent
+          name: victoriametrics
+          ports:
+            - containerPort: 8428
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8428
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1536Mi
+            requests:
+              cpu: 100m
+              memory: 384Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - mountPath: /storage
+              name: storage
+            - mountPath: /etc/victoriametrics
+              name: scrape
+              readOnly: true
+            - mountPath: /run/homelab-state-root
+              name: state-marker
+              readOnly: true
+      enableServiceLinks: false
+      nodeSelector:
+        kubernetes.io/hostname: compute-1
+      securityContext:
+        runAsGroup: 3100
+        runAsNonRoot: true
+        runAsUser: 3100
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: victoriametrics
+      volumes:
+        - name: storage
+          persistentVolumeClaim:
+            claimName: monitoring-metrics
+        - configMap:
+            name: victoriametrics-scrape
+          name: scrape
+        - hostPath:
+            path: /srv/state/.homelab-state-root
+            type: File
+          name: state-marker

@@ -1,0 +1,21 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vmalert
+  namespace: monitoring
+spec:
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: victoriametrics
+              app.kubernetes.io/part-of: monitoring
+      ports:
+        - port: 8880
+          protocol: TCP
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: vmalert
+      app.kubernetes.io/part-of: monitoring
+  policyTypes:
+    - Ingress
