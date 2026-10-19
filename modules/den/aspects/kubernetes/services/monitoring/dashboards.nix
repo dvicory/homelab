@@ -90,10 +90,11 @@ in
       in
       assert lib.assertMsg (
         !(cluster.routes ? grafana)
-        || route.namespace == namespace
-        && route.service == "grafana"
-        && route.auth == "admin"
-        && route.pathPrefix == "/"
+        ||
+          route.namespace == namespace
+          && route.service == "grafana"
+          && route.auth == "admin"
+          && route.pathPrefix == "/"
       ) "The grafana route must be an administrator route to monitoring/grafana at the hostname root";
       lib.optionalAttrs enabled {
         applications.monitoring = {

@@ -41,8 +41,9 @@ in
               builtins.attrNames disks
             );
           in
-          assert lib.assertMsg (invalid == [ ])
-            "host-telemetry disk names must be lowercase labels: ${lib.concatStringsSep ", " invalid}";
+          assert lib.assertMsg (
+            invalid == [ ]
+          ) "host-telemetry disk names must be lowercase labels: ${lib.concatStringsSep ", " invalid}";
           assert lib.assertMsg (
             builtins.length (lib.unique (builtins.attrValues disks))
             == builtins.length (builtins.attrValues disks)
