@@ -33,10 +33,10 @@ in
         telemetry = host.settings.services.host-telemetry;
         # The host's address on the compute network is the Incus bridge
         # address that the compute aspect declares for that network.
-        network = lib.findFirst (
-          entry: entry.name == compute.network
-        ) (throw "compute network ${compute.network} is not in the Incus preseed")
-          config.virtualisation.incus.preseed.networks;
+        network =
+          lib.findFirst (entry: entry.name == compute.network)
+            (throw "compute network ${compute.network} is not in the Incus preseed")
+            config.virtualisation.incus.preseed.networks;
         listenAddress = builtins.head (lib.splitString "/" network.config."ipv4.address");
         # The pipe also collects other hosts' targets; only this host's are
         # served here.
@@ -84,8 +84,7 @@ in
           # interface and the source, so the LAN, the tailnet and the
           # internet cannot reach the ports.
           networking.firewall.extraInputRules = lib.concatMapStringsSep "\n" (
-            port:
-            ''iifname "${compute.network}" ip saddr ${compute.address} tcp dport ${toString port} accept''
+            port: ''iifname "${compute.network}" ip saddr ${compute.address} tcp dport ${toString port} accept''
           ) ports;
         };
       };
