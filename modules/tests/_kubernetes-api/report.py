@@ -156,6 +156,8 @@ def coredns_workload_witness(workloads):
     def enum(value, allowed):
         return value if isinstance(value, str) and value in allowed else "other"
     deployment, pods = coredns_owned_workloads(workloads)
+    deployment_present = bool((deployment.get("metadata") or {}).get("uid"))
+    deployment_status = deployment.get("status")
     phases = dict.fromkeys(("Pending", "Running", "Succeeded", "Failed", "Unknown", "other"), 0)
     waiting = dict.fromkeys(("ContainerCreating", "PodInitializing", "CrashLoopBackOff", "ErrImagePull",
                              "ImagePullBackOff", "CreateContainerConfigError", "CreateContainerError",
@@ -172,9 +174,10 @@ def coredns_workload_witness(workloads):
             if "waiting" in state:
                 waiting[enum((state.get("waiting") or {}).get("reason"), waiting)] += 1
     return {
-        "status": "observed", "deploymentPresent": bool((deployment.get("metadata") or {}).get("uid")),
+        "status": "observed", "deploymentPresent": deployment_present,
         "desiredReplicas": count((deployment.get("spec") or {}).get("replicas")),
-        "readyReplicas": count((deployment.get("status") or {}).get("readyReplicas")),
+        "readyReplicas": count(deployment_status.get("readyReplicas", 0)
+                               if deployment_present and isinstance(deployment_status, dict) else None),
         "observedPodCount": len(pods), "readyPodCount": ready,
         "phaseCounts": [{"phase": phase, "count": value} for phase, value in phases.items() if value],
         "waitingReasonCounts": [{"reason": reason, "count": value} for reason, value in waiting.items() if value],
@@ -968,7 +971,7 @@ def self_check():
             pass
     dns_workloads = {"items": [
         {"kind": "Deployment", "metadata": {"name": "coredns", "uid": "dns-owner"},
-         "spec": {"replicas": 1}, "status": {"readyReplicas": 0}},
+         "spec": {"replicas": 1}, "status": {"replicas": 1, "unavailableReplicas": 1}},
         {"kind": "ReplicaSet", "metadata": {"uid": "dns-replicas", "ownerReferences": [
             {"kind": "Deployment", "uid": "dns-owner", "controller": True}]}},
         {"kind": "Pod", "metadata": {"name": sensitive, "ownerReferences": [
@@ -984,6 +987,22 @@ def self_check():
     assert dns_workload["desiredReplicas"] == 1 and dns_workload["readyReplicas"] == 0
     assert dns_workload["readyPodCount"] == 0 and dns_workload["phaseCounts"] == [{"phase": "Pending", "count": 1}]
     assert dns_workload["waitingReasonCounts"] == [{"reason": "ImagePullBackOff", "count": 1}]
+    deployment = dns_workloads["items"][0]
+    for invalid in (None, False, "0", -1, 2147483648):
+        deployment["status"]["readyReplicas"] = invalid
+        assert coredns_workload_witness(dns_workloads)["readyReplicas"] is None
+    deployment["status"]["readyReplicas"] = 2147483647
+    assert coredns_workload_witness(dns_workloads)["readyReplicas"] == 2147483647
+    del deployment["status"]["readyReplicas"]
+    for invalid in (None, False, "invalid", []):
+        deployment["status"] = invalid
+        assert coredns_workload_witness(dns_workloads)["readyReplicas"] is None
+    del deployment["status"]
+    assert coredns_workload_witness(dns_workloads)["readyReplicas"] is None
+    assert coredns_workload_witness({"items": []})["readyReplicas"] is None
+    unobserved = copy.deepcopy(dns_workloads)
+    del unobserved["items"][0]["metadata"]["uid"]
+    assert coredns_workload_witness(unobserved)["readyReplicas"] is None
     container = dns_workloads["items"][2]["status"]["containerStatuses"][0]
     container["state"] = {"waiting": {"reason": sensitive, "message": sensitive}}
     dns_workload = coredns_workload_witness(dns_workloads)

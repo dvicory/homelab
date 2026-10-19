@@ -338,6 +338,9 @@ def main():
         checkpoint()
         result = subprocess.run(command, env=env, cwd=work, input=input, text=True, capture_output=True, timeout=timeout)
         if check and result.returncode:
+            # Cleanup must fail too, without replacing the original enriched failure.
+            if "commandFailure" in report:
+                raise RuntimeError("command-failed")
             report["commandFailure"] = {"program": Path(command[0]).name, "returnCode": result.returncode}
             if phase in ("network-policy-apply", "network-policy-readiness"):
                 report["commandFailure"]["errorCategory"] = classify_network_policy_error(result.stderr)
@@ -893,6 +896,81 @@ def main():
         output.close()
         print(json.dumps(report, sort_keys=True))
     return 0 if report["status"] == "passed" else 1
+
+
+def self_check(runner=None):
+    """Real subprocess failures through main/finally, without creating a cluster."""
+    import contextlib
+    import io
+    from unittest.mock import patch
+
+    runner = runner or sys.modules[__name__]
+    real_run = subprocess.run
+    sensitive = "private-native-regression-marker"
+    handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        with tempfile.TemporaryDirectory(prefix="homelab-native-check-") as directory:
+            root = Path(directory)
+            settings = {
+                "docker": "fixture-docker", "kubectl": "fixture-kubectl", "path": "",
+                "scenarios": str(root), "requiredScenarios": runner.REQUIRED_SCENARIOS,
+                "image": "fixture@sha256:" + "0" * 64, "secret": {},
+            }
+            settings_path = root / "settings.json"
+            settings_path.write_text(json.dumps(settings))
+
+            def exercise(primary, cleanup):
+                def dispatch(command, **options):
+                    args = command[5:] if command[1:2] == ["--host"] else command[1:]
+                    if args[:1] == ["pull"] or cleanup and args[:1] == ["ps"]:
+                        code, diagnostic = (23, "no space left on device") if args[0] == "pull" else (29, "permission denied")
+                        return real_run([sys.executable, "-c",
+                                         "import sys; sys.stderr.write(sys.argv[1]); sys.exit(int(sys.argv[2]))",
+                                         diagnostic + " " + sensitive, str(code)], **options)
+                    if args[:2] == ["context", "inspect"]:
+                        text = json.dumps([{"Endpoints": {"docker": {"Host": "unix:///fixture.sock"}}}])
+                    else:
+                        assert args == ["info"] or args[:1] == ["ps"] or args[:2] == ["image", "inspect"], command
+                        text = ""
+                    return subprocess.CompletedProcess(command, int(primary and args[:2] == ["image", "inspect"]), text, "")
+
+                report_path = root / f"{primary}-{cleanup}.json"
+                argv = ["run.py", "--fixture-settings", str(settings_path),
+                        "--docker-context", "synthetic", "--report", str(report_path)]
+                with patch.object(subprocess, "run", dispatch), patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()):
+                    assert runner.main() == 1
+                result = json.loads(report_path.read_text())
+                assert sensitive not in json.dumps(result)
+                assert result["status"] == "failed" and result["fullAcceptance"] is False
+                assert result["cleanup"]["credentials"] is True
+                return result
+
+            baseline = exercise(True, False)
+            assert all(baseline["cleanup"].values())
+            failure = baseline["commandFailure"]
+            assert (failure["returnCode"], failure["subcommand"], failure["errorCategory"]) == (23, "pull", "disk-full")
+            result = exercise(True, True)
+            assert result["commandFailure"] == baseline["commandFailure"]
+            assert result["failurePhase"] == baseline["failurePhase"] == "image-fetch"
+            assert result["failureReason"] == baseline["failureReason"] == "command-failed"
+            assert not all(result["cleanup"].values())
+
+            # Missing images stops setup with a real KeyError, not a command failure.
+            # The only checked command failure is then cleanup's ps.
+            result = exercise(False, True)
+            assert result["failureReason"] == "KeyError"
+            failure = result["commandFailure"]
+            assert (failure["returnCode"], failure["subcommand"], failure["errorCategory"]) == (29, "ps", "permission")
+            assert not all(result["cleanup"].values())
+            try:
+                runner.check_acceptance(result)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("cleanup failure accepted")
+    finally:
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
 
 
 if __name__ == "__main__":

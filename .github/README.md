@@ -19,6 +19,12 @@ plan; it does not maintain a second list of output categories or branch on a
 test/application name. Platform-specific Darwin bootstrap remains an executor
 dependency, not a workload-selection rule.
 
+`hostedCiArtifacts.<system>` supplies lazy `groups`, `checks`,
+`nativeApplications` and `bootstrap` leaves. Each executor evaluates only its
+own leaf immediately before building. A leaf declares the exact derivation
+and output paths; native leaves also declare the executable. This preserves
+same-host evaluation without forcing foreign or unsupported derivations.
+
 On a builder for the selected system:
 
 ```sh
@@ -48,13 +54,17 @@ registered check, including checks unsupported by hosted runners.
 Darwin configuration and Darwin Linux-builder bootstrap. It requires all
 three planned and evaluated platform inventories, every standard output
 group, every hosted runtime registration, every native execution, and the
-bootstrap receipt. Receipts record real successful Nix build derivations and
-outputs; check receipts retain exact check derivations. Native receipts record
-the executable from the built package, complete descriptor and checked report
-SHA-256. Missing/duplicate/unexpected receipts, replacement check derivations,
-changed or missing persisted report bytes, failed/skipped executor roles and
-scoped dispatches cannot satisfy the aggregate. Make this stable context
-required in branch protection; that configuration remains a maintainer action.
+bootstrap receipt. Every executor uploads its separately evaluated
+`ci-artifact.json` declaration alongside `ci-receipt.json`. The join compares
+the successful build's exact derivation and output paths with that declaration;
+check receipts also retain exact check derivations. Native receipts require the
+declared executable, complete descriptor and checked report SHA-256.
+Missing/duplicate/unexpected declarations or receipts, unrelated builds,
+replaced output paths, changed persisted report bytes, failed/skipped roles and
+scoped dispatches cannot satisfy the aggregate. This is dispatch/build
+integrity within workflow artifact provenance, not an attestation against an
+executor forging both files. Make this stable context required in branch
+protection; that configuration remains a maintainer action.
 
 Mandatory host recovery includes `compute-network-policy-runtime`,
 `compute-guest-upgrade`, `prod-home-replacement` and
@@ -100,6 +110,9 @@ that must pass for every rendered resource and the scenarios that must fail.
 The inputs derivation turns them into native Tests whose resources come from
 the genuine renders, changed only by a small `yq` mutation. Tests retain exact
 rule/resource outcomes; missing coverage, skips and evaluation errors fail.
+Policy, fixture and generated Test loading rejects duplicate YAML mapping keys,
+including keys inside merge sources, before generating expected outcomes.
+Valid merge overrides and aliases remain supported.
 The accelerator grant admits only the declared Jellyfin holder's `/dev/dri`
 mount and evaluated `gpu-render` group. No workload may be privileged, including
 the network-policy enforcer; a dedicated negative fixture guards that boundary.
@@ -133,7 +146,14 @@ kernel prerequisite and fails if it is unavailable. The owned K3s node explicitl
 enables its IPv4 bridge hook at creation, so same-bridge Service replies traverse
 the required NAT hooks. This prepares the ephemeral executor only; it is not a
 production-host module/sysctl operation or a fresh/reboot policy guarantee.
-Its report must list every required scenario identity, with no skip, failure
+
+The fast `verification-reports` check exercises report acceptance, first
+command-failure preservation through failed cleanup, CoreDNS zero-versus-unknown
+evidence and declared-build receipt rejection without a cluster. An observed
+Deployment with a usable status mapping defaults omitted `readyReplicas` to zero;
+absent or malformed status remains unknown.
+
+The native execution report must list every required scenario identity, with no skip, failure
 or cleanup failure:
 
 - Gateway CEL admission: the actual tracked CRD admits a valid resource,
@@ -343,8 +363,9 @@ not a registration-loss probe. API empty selection, nonexistent selector,
 removed TLS CEL or Argo mutations remain negative probes, not exclusions.
 For workflow accounting, remove one successful receipt, one evaluated platform
 inventory or one persisted report from a disposable artifact copy; the final
-aggregation must fail. Replacing a recorded check derivation, moving a native
-program outside its built output or changing accepted report bytes must fail.
+aggregation must fail. Replacing an executor's successful build with an
+unrelated derivation, changing its declared output paths, substituting a native
+program or changing accepted report bytes must fail.
 The accounting self-check and real downloaded-artifact join are runnable:
 
 ```sh
@@ -355,7 +376,8 @@ RUN_ID="$RUN_ID" python3 .github/required-ci.py "$RUNNER_TEMP"
 
 The join reads `required-plan/check-inventory.json`, one
 `required-inventories/check-inventory-<system>-checks-<run-id>/check-inventory.json`
-per platform, `required-receipts/*/ci-receipt.json`, and
+per platform, `required-receipts/*/ci-receipt.json` and its independently
+evaluated `ci-artifact.json`, and
 `required-native/native-<system>-<application>-<run-id>/<reportFile>`.
 
 Linux VM checks remain directly buildable for x86-64 and ARM64. Hosted CI
@@ -446,17 +468,60 @@ gh workflow run ci.yml --ref "$REF" -f system=aarch64-linux
 Check names and implementations belong in Nix, not workflow branches. Single
 dispatch validates a check or native application's registration and platform;
 unsupported or ambiguous selections fail rather than silently skipping.
-`check=media-live-acceptance` selects the declared native x86-64 Docker suite.
-Its package carries the exact source, manifests and policy inputs; invocation
-does not borrow files from the caller's checkout. Nix owns its arguments,
-deadline and owned-resource prefix. The native executor records the package
-identity, runs the whole app and independently checks owned Docker cleanup.
+
+`modules/flake/ci.nix` owns native app package identities, arguments, deadlines,
+cleanup prefixes and executor requirements through `hostedCiPlan`. Every
+declared app receives exactly one matrix row, on full runs and single dispatch.
+The native executor builds that package, runs the whole app even when its
+dependencies are cached, and independently checks owned Docker cleanup.
+
+`check=media-live-acceptance` selects the standard native x86-64 Docker suite;
+it does not require root-owned storage or change host resolution.
+`check=household-sign-in-runtime` selects the complete native x86-64 household
+suite. Both packages carry their exact source, canonical manifests and policy
+inputs, rather than borrowing files from the caller's checkout. The household
+package materializes its Python suite and manifests; its three helpers use
+the selected immutable verified GHCR identities and are pulled normally,
+never loaded from local archives or aliased from current producer outputs.
+The suite retains LDAP/Jellyfin/Seerr authentication, MFA and POSIX-password
+migration, recovery, certificate/group security, and established-session
+HTTP 200 plus original-user-ID acceptance while fresh login is denied after
+membership removal. Directory NetworkPolicy remains a separate real
+K3s/kernel VM gate.
+
 The delivered Configarr and Seerr producers use exit 0 for success and exit 1
 for application failure. Synchronous and serialized runs require that exact
 outcome, alongside real API/state/lock assertions. `media-producer-exit` checks
 the small exit policy without Docker; the application suite does not inject
 Docker startup failures or deliberate crashes. Failure labels include only
 numeric status, not Docker/application stderr or generated credentials.
+
+The household app is also available as `nix run .#household-sign-in-runtime`.
+Run it only as root in an exclusive disposable native x86 Linux Docker
+fixture, with the Nix-declared canonical directory hostname resolving to
+`127.0.0.1`. Its existing `TMPDIR` parent (default `/root`) is canonicalized;
+the `household` child must not exist, including a dangling symlink. The app
+refuses existing fixture containers and network before pulling images, never
+edits host resolution, and cleans only owned containers, network and synthetic
+credentials on exit. No production account, credential or Seerr publication
+is part of this acceptance.
+
+The generic native executor dispatches `requirements.root`,
+`requirements.ownedStorage` and `loopbackHost`, never application names.
+Owned storage is restricted to an exclusive disposable Linux Docker runner:
+it places `/nix`, Docker and containerd data on its owned Btrfs loop image.
+Setup refuses an existing image (including dangling symlinks), `/nix`, daemon
+storage symlinks and existing target mounts. Cleanup validates the recorded
+image UUID and exact FSROOT of every mount before stopping Docker/containerd,
+unmounting their bind mounts or deleting owned scratch. The Nix store remains
+mounted through post-actions; final mount/loop/image teardown belongs to the
+exclusive disposable runner's lifetime. Independent acceptance cleanup checks
+the whole daemon and owned scratch, not just a name prefix. The executor adds
+the declared canonical-domain loopback entry; the app itself never does.
+Owned `TMPDIR` is selected only after Nix installation and cache setup:
+installation can change ownership under `/nix` and break its own temporary
+directory if pointed there early.
+
 Successful check jobs upload nonempty outputs as
 `check-output-<system>-<check-or-group>-<run-id>` artifacts; empty outputs retain
 their evidence in the job log. Linux runners enable available KVM acceleration.

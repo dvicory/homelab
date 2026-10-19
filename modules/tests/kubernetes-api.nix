@@ -128,6 +128,14 @@
       '';
     in
     {
+      checks.verification-reports = pkgs.runCommand "verification-reports" { } ''
+        export PYTHONDONTWRITEBYTECODE=1
+        export PYTHONPATH=${./_kubernetes-api}
+        ${python}/bin/python3 ${./_kubernetes-api}/report.py
+        ${python}/bin/python3 -c 'import run; run.self_check()'
+        ${python}/bin/python3 ${../../.github/required-ci.py} --self-test
+        touch "$out"
+      '';
       apps.verify-kubernetes-api = {
         type = "app";
         program = lib.getExe runner;

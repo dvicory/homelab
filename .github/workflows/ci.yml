@@ -130,7 +130,7 @@ jobs:
           cat "$RUNNER_TEMP/execution-plan.json"
       - name: Upload required check inventory
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: required-check-inventory-${{ github.run_id }}
           path: ${{ runner.temp }}/check-inventory.json
@@ -181,13 +181,18 @@ jobs:
         run: |
           sudo mkdir -p /mnt/darwin-builder-cache
           sudo chown "$USER" /mnt/darwin-builder-cache
-          nix build --no-link --json '.#darwinConfigurations.daniels-2021-mbp.config.nix.linux-builder.package.nixosConfig.system.build.toplevel' > "$RUNNER_TEMP/build.json"
+          nix eval --json .#hostedCiArtifacts.aarch64-linux.bootstrap.darwinLinuxBuilder > "$RUNNER_TEMP/artifact.json"
+          jq -n --slurpfile artifact "$RUNNER_TEMP/artifact.json" \
+            '{role: "bootstrap", system: "aarch64-linux", group: "darwinLinuxBuilder", check: "", artifact: $artifact[0]}' \
+            > "$RUNNER_TEMP/ci-artifact.json"
+          drv=$(jq -er .drvPath "$RUNNER_TEMP/artifact.json")
+          nix build --no-link --json "$drv^*" > "$RUNNER_TEMP/build.json"
           system_path=$(jq -er '.[0].outputs.out' "$RUNNER_TEMP/build.json")
           nix copy --to "file:///mnt/darwin-builder-cache?compression=zstd" "$system_path"
           printf '%s\n' "$system_path" > /mnt/darwin-builder-cache/system-path
 
       - name: Upload Darwin Linux builder closure
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: darwin-builder-${{ github.run_id }}
           path: /mnt/darwin-builder-cache
@@ -203,7 +208,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ci-receipt-bootstrap-${{ github.run_id }}
-          path: ${{ runner.temp }}/ci-receipt.json
+          path: |
+            ${{ runner.temp }}/ci-receipt.json
+            ${{ runner.temp }}/ci-artifact.json
           if-no-files-found: error
 
   # Nix discovers runtime checks and their capabilities for each native runner.
@@ -221,7 +228,7 @@ jobs:
     steps: &build-steps
       - name: Monitor cache publication runner
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.CACHIX_CACHE != ''
-        uses: step-security/harden-runner@351661ca32ac09a36dc5ee2d536e3128f2a3c8ed # v2.22.0
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25 # v2.22.1
         with:
           egress-policy: audit
 
@@ -314,7 +321,7 @@ jobs:
 
       - name: Download Darwin Linux builder closure
         if: matrix.system == 'aarch64-darwin' && matrix.group == 'darwinConfigurations'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: darwin-builder-${{ github.run_id }}
           path: ${{ runner.temp }}/darwin-builder-cache
@@ -338,11 +345,9 @@ jobs:
           fi
           if [ -n "$CHECK" ]; then
             check_attr=$(jq -rn --arg check "$CHECK" '$check | @json')
-            attr=".#checks.$SYSTEM.$check_attr"
-          elif [ "$GROUP" = checks ]; then
-            attr=".#hostedCiJobs.$SYSTEM.checks"
+            attr=".#hostedCiArtifacts.$SYSTEM.checks.$check_attr"
           else
-            attr=".#ciJobs.$SYSTEM.$GROUP"
+            attr=".#hostedCiArtifacts.$SYSTEM.groups.$GROUP"
           fi
           build_args=(--keep-going --fallback)
           if [ "$GROUP" = runtime ]; then
@@ -350,12 +355,17 @@ jobs:
             build_args+=(--max-jobs 1)
           fi
           # Release the evaluation heap before any build/VM starts (PR #64).
-          drv=$(nix eval --raw "$attr.drvPath")
+          nix eval --json "$attr" > "$RUNNER_TEMP/artifact.json"
+          jq -n --arg system "$SYSTEM" --arg group "$GROUP" --arg check "$CHECK" \
+            --slurpfile artifact "$RUNNER_TEMP/artifact.json" \
+            '{role: "build", system: $system, group: $group, check: $check, artifact: $artifact[0]}' \
+            > "$RUNNER_TEMP/ci-artifact.json"
+          drv=$(jq -er .drvPath "$RUNNER_TEMP/artifact.json")
           nix build -L --out-link "$RUNNER_TEMP/result" --json "${build_args[@]}" "$drv^*" > "$RUNNER_TEMP/build.json"
 
       - name: Upload successful check outputs
         if: matrix.group == 'checks' || matrix.group == 'runtime'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: check-output-${{ matrix.system }}-${{ matrix.artifact || matrix.group }}-${{ github.run_id }}
           path: ${{ runner.temp }}/result*
@@ -364,7 +374,7 @@ jobs:
 
       - name: Upload platform check inventory
         if: always() && matrix.group == 'checks'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: check-inventory-${{ matrix.system }}-${{ matrix.artifact || matrix.group }}-${{ github.run_id }}
           path: ${{ runner.temp }}/check-inventory.json
@@ -393,7 +403,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ci-receipt-${{ matrix.system }}-${{ matrix.group }}-${{ matrix.artifact || 'group' }}-${{ github.run_id }}
-          path: ${{ runner.temp }}/ci-receipt.json
+          path: |
+            ${{ runner.temp }}/ci-receipt.json
+            ${{ runner.temp }}/ci-artifact.json
           if-no-files-found: error
 
       - name: Publish successful outputs and build dependencies to Cachix
@@ -591,17 +603,20 @@ jobs:
       - name: Build declared application package
         run: |
           set -euo pipefail
-          package=$(jq -er .package <<< "$APPLICATION")
-          drv=$(nix eval --raw ".#$package.drvPath")
+          system=$(jq -er .system <<< "$APPLICATION")
+          name=$(jq -r '.name | @json' <<< "$APPLICATION")
+          nix eval --json ".#hostedCiArtifacts.$system.nativeApplications.$name" > "$RUNNER_TEMP/artifact.json"
+          jq -n --argjson application "$APPLICATION" --slurpfile artifact "$RUNNER_TEMP/artifact.json" \
+            '{role: "native", system: $application.system, group: $application.name, check: "", artifact: $artifact[0]}' \
+            > "$RUNNER_TEMP/ci-artifact.json"
+          drv=$(jq -er .drvPath "$RUNNER_TEMP/artifact.json")
           /usr/bin/time -p nix build "$drv^*" --out-link "$RUNNER_TEMP/native-app" --json \
             > "$RUNNER_TEMP/native-evidence/build.json"
       - name: Run complete declared native acceptance
         run: |
           set -euo pipefail
-          system=$(jq -er .system <<< "$APPLICATION")
-          name=$(jq -er .name <<< "$APPLICATION")
           deadline=$(jq -er .timeoutSeconds <<< "$APPLICATION")
-          program=$(nix eval --raw ".#apps.$system.$name.program")
+          program=$(jq -er .program "$RUNNER_TEMP/artifact.json")
           jq -j '.arguments[] | . + "\u0000"' <<< "$APPLICATION" > "$RUNNER_TEMP/native-arguments"
           mapfile -d '' -t arguments < "$RUNNER_TEMP/native-arguments"
           printf '%s\n' "$program" > "$RUNNER_TEMP/native-evidence/program"
@@ -692,7 +707,7 @@ jobs:
           printf 'TMPDIR=%s\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Upload native execution diagnostics
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-${{ matrix.system }}-${{ matrix.name }}-${{ github.run_id }}
           path: ${{ runner.temp }}/native-evidence
@@ -715,7 +730,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ci-receipt-native-${{ matrix.system }}-${{ matrix.name }}-${{ github.run_id }}
-          path: ${{ runner.temp }}/ci-receipt.json
+          path: |
+            ${{ runner.temp }}/ci-receipt.json
+            ${{ runner.temp }}/ci-artifact.json
           if-no-files-found: error
 
   all-required:

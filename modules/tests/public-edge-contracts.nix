@@ -40,6 +40,10 @@ let
       certificate = "/run/edge/backup.crt";
       key = "/run/edge/backup.key";
     };
+    identity = {
+      certificate = "/run/edge/identity.crt";
+      key = "/run/edge/identity.key";
+    };
   };
   baseSettings = {
     enable = true;
@@ -110,7 +114,10 @@ let
   );
   publicRoutes = lib.filterAttrs (_: route: route.exposure == "public") routes;
   routeHosts =
-    variant: map (route: builtins.elemAt route.hostnames variant) (builtins.attrValues publicRoutes);
+    variant:
+    lib.mapAttrsToList (
+      name: route: builtins.elemAt route.hostnames (if name == "idm" then 0 else variant)
+    ) publicRoutes;
   sorted = values: lib.sort builtins.lessThan values;
   allAssertions = module: lib.all (assertion: assertion.assertion) module.assertions;
   seerrInitialCluster = lib.recursiveUpdate testCluster {
@@ -158,12 +165,10 @@ let
       variant,
       domain,
       tlsFamily,
-      canonicalHost ? null,
-      canonicalTLS ? null,
     }:
     let
       virtualHosts = module.services.nginx.virtualHosts;
-      hosts = routeHosts variant ++ lib.optional (canonicalHost != null) canonicalHost;
+      hosts = routeHosts variant;
       expectedHosts = hosts ++ [
         "_"
         domain
@@ -173,8 +178,10 @@ let
         domain
       ];
       tlsFor =
-        hostname: if canonicalHost != null && hostname == canonicalHost then canonicalTLS else tlsFamily;
-      target = builtins.elemAt routes.${settings.bareRoute}.hostnames variant;
+        hostname: if hostname == builtins.head routes.idm.hostnames then tls.identity else tlsFamily;
+      target = builtins.elemAt routes.${settings.bareRoute}.hostnames (
+        if settings.bareRoute == "idm" then 0 else variant
+      );
     in
     module.services.nginx.enable
     && sorted (builtins.attrNames virtualHosts) == sorted expectedHosts
@@ -205,10 +212,218 @@ let
       variant = 1;
       domain = environment.backupDomain;
       tlsFamily = tls.backup;
-      canonicalHost = builtins.head routes.idm.hostnames;
-      canonicalTLS = tls.primary;
     };
-  missingCanonicalTLSModule = roleModule homeAspect (
+  rejectedEdge =
+    module: !allAssertions module && builtins.attrNames module.services.nginx.virtualHosts == [ "_" ];
+  identityTLSPairsRejected =
+    lib.all
+      (
+        identity:
+        lib.all rejectedEdge [
+          (roleModule remoteAspect (
+            mkHost "remote-edge" (
+              remoteSettings
+              // {
+                tls = tls // {
+                  inherit identity;
+                };
+              }
+            )
+          ))
+          (roleModule homeAspect (
+            mkHost "home-edge" (
+              homeSettings
+              // {
+                tls = tls // {
+                  inherit identity;
+                };
+              }
+            )
+          ))
+        ]
+      )
+      [
+        {
+          certificate = null;
+          key = null;
+        }
+        {
+          certificate = tls.identity.certificate;
+          key = null;
+        }
+        {
+          certificate = null;
+          key = tls.identity.key;
+        }
+        {
+          certificate = "";
+          key = tls.identity.key;
+        }
+        {
+          certificate = tls.identity.certificate;
+          key = "";
+        }
+      ];
+  rejectedRoute =
+    name: changes:
+    let
+      inventory = testCluster // {
+        routes = routes // {
+          ${name} = routes.${name} // changes;
+        };
+      };
+      invalidEdge = sourceFor inventory;
+    in
+    lib.all rejectedEdge [
+      (roleModule invalidEdge.den.aspects.services.remote-edge (mkHost "remote-edge" remoteSettings))
+      (roleModule invalidEdge.den.aspects.services.home-edge (mkHost "home-edge" homeSettings))
+    ];
+  identityShapesRejected = lib.all (hostnames: rejectedRoute "idm" { inherit hostnames; }) [
+    [ ]
+    [ "" ]
+    [
+      "id.bzfx.net"
+      "id.backup.test"
+    ]
+    [
+      "id.bzfx.net"
+      "id.bzfx.net"
+    ]
+  ];
+  applicationShapesRejected = lib.all (hostnames: rejectedRoute "argocd" { inherit hostnames; }) [
+    [ ]
+    [ (builtins.head routes.argocd.hostnames) ]
+    [
+      ""
+      (builtins.elemAt routes.argocd.hostnames 1)
+    ]
+    [
+      (builtins.head routes.argocd.hostnames)
+      (builtins.head routes.argocd.hostnames)
+    ]
+    (lib.reverseList routes.argocd.hostnames)
+    [
+      "argocd.other.test"
+      (builtins.elemAt routes.argocd.hostnames 1)
+    ]
+  ];
+  identityCollisionsRejected =
+    lib.all
+      (
+        entry:
+        lib.all
+          (
+            hostname:
+            let
+              collisionEdge = sourceFor (
+                testCluster
+                // {
+                  routes = routes // {
+                    idm = routes.idm // {
+                      hostnames = [ hostname ];
+                    };
+                  };
+                }
+              );
+            in
+            rejectedEdge (
+              roleModule collisionEdge.den.aspects.services.${entry.name} (mkHost entry.name entry.settings)
+            )
+          )
+          [
+            entry.domain
+            (builtins.elemAt routes.argocd.hostnames entry.variant)
+          ]
+      )
+      [
+        {
+          name = "remote-edge";
+          settings = remoteSettings;
+          domain = environment.domain;
+          variant = 0;
+        }
+        {
+          name = "home-edge";
+          settings = homeSettings;
+          domain = environment.backupDomain;
+          variant = 1;
+        }
+      ];
+  identityBareRouteContract =
+    lib.all
+      (
+        entry:
+        let
+          module = roleModule entry.aspect (mkHost entry.name (entry.settings // { bareRoute = "idm"; }));
+        in
+        allAssertions module
+        &&
+          module.services.nginx.virtualHosts.${entry.domain}.locations."/".return
+          == "308 https://${builtins.head routes.idm.hostnames}$request_uri"
+      )
+      [
+        {
+          aspect = remoteAspect;
+          name = "remote-edge";
+          settings = remoteSettings;
+          domain = environment.domain;
+        }
+        {
+          aspect = homeAspect;
+          name = "home-edge";
+          settings = homeSettings;
+          domain = environment.backupDomain;
+        }
+      ];
+  noIdentityTLS = tls // {
+    identity = {
+      certificate = null;
+      key = null;
+    };
+  };
+  gatedIdentityNeedsNoTLS =
+    lib.all
+      (
+        phaseEdge:
+        lib.all allAssertions [
+          (roleModule phaseEdge.den.aspects.services.remote-edge (
+            mkHost "remote-edge" (remoteSettings // { tls = noIdentityTLS; })
+          ))
+          (roleModule phaseEdge.den.aspects.services.home-edge (
+            mkHost "home-edge" (homeSettings // { tls = noIdentityTLS; })
+          ))
+        ]
+      )
+      [
+        initialEdge
+        provisioningEdge
+      ];
+  privateIdentityEdge = sourceFor (
+    testCluster
+    // {
+      routes = routes // {
+        idm = routes.idm // {
+          exposure = "private";
+        };
+      };
+    }
+  );
+  privateIdentityUnpublished =
+    lib.all
+      (
+        module:
+        allAssertions module
+        && !(builtins.hasAttr (builtins.head routes.idm.hostnames) module.services.nginx.virtualHosts)
+      )
+      [
+        (roleModule privateIdentityEdge.den.aspects.services.remote-edge (
+          mkHost "remote-edge" (remoteSettings // { tls = noIdentityTLS; })
+        ))
+        (roleModule privateIdentityEdge.den.aspects.services.home-edge (
+          mkHost "home-edge" (homeSettings // { tls = noIdentityTLS; })
+        ))
+      ];
+  homeWithoutPrimaryTLS = roleModule homeAspect (
     mkHost "home-edge" (
       homeSettings
       // {
@@ -273,7 +488,6 @@ let
   );
   failures = lib.filterAttrs (_: value: !value) {
     route-proxy-bijection = routeProxyBijection;
-    route-inventory-nonempty = routes != { };
     valid-origin-and-peer-configuration = allAssertions remoteModule && allAssertions homeModule;
     initial-private-edge-rejects-unmatched =
       privatePhaseEdge initialRemoteModule && privatePhaseEdge initialHomeModule;
@@ -286,7 +500,15 @@ let
     public-origin-rejected = !allAssertions badOriginModule;
     undeclared-peer-rejected = !allAssertions badPeerModule;
     incomplete-tls-rejected = !allAssertions badTLSModule;
-    missing-canonical-tls-rejected = !allAssertions missingCanonicalTLSModule;
+    invalid-identity-tls-fails-closed = identityTLSPairsRejected;
+    malformed-identity-routes-fail-closed = identityShapesRejected;
+    malformed-application-routes-fail-closed = applicationShapesRejected;
+    identity-hostname-collisions-fail-closed = identityCollisionsRejected;
+    unsupported-identity-prefix-rejected = rejectedRoute "idm" { pathPrefix = "/unsupported"; };
+    identity-bare-domain-redirect = identityBareRouteContract;
+    gated-identity-needs-no-certificate = gatedIdentityNeedsNoTLS;
+    private-identity-unpublished = privateIdentityUnpublished;
+    home-identity-independent-of-primary-tls = allAssertions homeWithoutPrimaryTLS;
     unsupported-prefix-rejected = !allAssertions badPathModule;
     direct-mode-edge-rejected = !allAssertions badModeModule;
     gateway-direct-with-peers-rejected = !gatewayRenderSucceeds badModeCluster;

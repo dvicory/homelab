@@ -163,7 +163,8 @@ setup() {
     -extfile "$g/idm.ext" -out "$g/idm.crt" >/dev/null 2>&1
   chmod 0644 "$g/idm.key"
   openssl req -new -newkey rsa:2048 -nodes -subj /CN=origin.test -keyout "$g/tls.key" -out "$g/tls.csr" >/dev/null 2>&1
-  printf 'subjectAltName=DNS:origin.test,DNS:%s,DNS:%s\nextendedKeyUsage=serverAuth\n' "$idm" "$admin" > "$g/gateway.ext"
+  # The application certificate must not mask a missing identity certificate.
+  printf 'subjectAltName=DNS:origin.test,DNS:%s\nextendedKeyUsage=serverAuth\n' "$admin" > "$g/gateway.ext"
   openssl x509 -req -in "$g/tls.csr" -CA "$g/ca.crt" -CAkey "$g/ca.key" -CAcreateserial -days 2 \
     -extfile "$g/gateway.ext" -out "$g/tls.crt" >/dev/null 2>&1
   k create configmap fixture-ca -n gateway --from-file="ca-certificates.crt=$g/ca.crt"
@@ -264,6 +265,7 @@ case "${1:?required gateway safety case}" in
     test "$(positive "$FIXTURE_TRUSTED" origin.test trusted-probe)" = origin
     entry trusted-probe '' 200
     jq -e --arg ip "$FIXTURE_TRUSTED_IP" '.client == $ip' "$g/entry.json" >/dev/null
+    test "$(positive "$FIXTURE_STRANGER" "$idm" status -o /fixture/direct-idm-response -w '%{http_code}')" = 200
     ;;
   cni-prepare)
     trusted
@@ -282,6 +284,7 @@ case "${1:?required gateway safety case}" in
       fi
     done
     test "$(positive "$FIXTURE_TRUSTED" origin.test trusted-probe)" = origin
+    idm_status 200 trusted-identity-certificate
     ;;
   cni-forwarded)
     # Permit 30 metadata convergence attempts, each with a fresh ID so an
@@ -326,14 +329,17 @@ case "${1:?required gateway safety case}" in
       -keyout "$g/wrong-ca.key" -out "$g/wrong-ca.crt" >/dev/null 2>&1
     openssl x509 -req -in "$g/idm.csr" -CA "$g/wrong-ca.crt" -CAkey "$g/wrong-ca.key" -CAcreateserial -days 2 \
       -extfile "$g/idm.ext" -out "$g/untrusted-idm.crt" >/dev/null 2>&1
+    # Keep the canonical frontend certificate intact while faulting backend trust.
+    k create secret tls fixture-backend-tls -n identity --cert="$g/untrusted-idm.crt" --key="$g/idm.key"
     for state in untrusted restored; do
-      if [ "$state" = untrusted ]; then cert="$g/untrusted-idm.crt"; code=503; else cert="$g/idm.crt"; code=200; fi
-      k create secret tls kanidm-tls -n identity --cert="$cert" --key="$g/idm.key" --dry-run=client -o yaml | k apply -f -
-      k rollout restart deployment/kanidm -n identity
+      if [ "$state" = untrusted ]; then secret=fixture-backend-tls; code=503; else secret=kanidm-tls; code=200; fi
+      k patch deployment kanidm -n identity --type=strategic -p \
+        "$(jq -cn --arg secret "$secret" '{spec:{template:{spec:{volumes:[{name:"tls",secret:{secretName:$secret}}]}}}}')"
       k rollout status deployment/kanidm -n identity --timeout=180s
       route_ready idm; condition backendtlspolicy idm identity Accepted True
       idm_status "$code" "tls-ca-$state"
     done
+    k delete secret fixture-backend-tls -n identity
     ;;
   browser)
     trusted; route_ready argocd; condition securitypolicy argocd-admin gateway Accepted True

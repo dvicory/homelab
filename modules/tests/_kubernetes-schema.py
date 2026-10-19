@@ -15,18 +15,29 @@ import yaml
 
 
 class UniqueLoader(yaml.SafeLoader):
-    def construct_mapping(self, node, deep=False):
-        keys = set()
-        for key_node, _ in node.value:
-            if key_node.tag == "tag:yaml.org,2002:merge":
-                continue
-            key = self.construct_object(key_node, deep=deep)
-            if not isinstance(key, str):
-                raise ValueError(f"{key_node.start_mark}: Kubernetes mapping keys must be strings")
-            if key in keys:
-                raise ValueError(f"{key_node.start_mark}: duplicate YAML key {key!r}")
-            keys.add(key)
-        return super().construct_mapping(node, deep=deep)
+    def __init__(self, stream):
+        super().__init__(stream)
+        self._validated_mappings = set()
+
+    def flatten_mapping(self, node):
+        # Merge expansion mutates source nodes before aliases are constructed.
+        if node not in self._validated_mappings:
+            self._validated_mappings.add(node)
+            keys = set()
+            merge_seen = False
+            for key_node, _ in node.value:
+                if key_node.tag == "tag:yaml.org,2002:merge":
+                    if merge_seen:
+                        raise ValueError(f"{key_node.start_mark}: duplicate YAML key '<<'")
+                    merge_seen = True
+                    continue
+                key = self.construct_object(key_node)
+                if not isinstance(key, str):
+                    raise ValueError(f"{key_node.start_mark}: Kubernetes mapping keys must be strings")
+                if key in keys:
+                    raise ValueError(f"{key_node.start_mark}: duplicate YAML key {key!r}")
+                keys.add(key)
+        return super().flatten_mapping(node)
 
 
 # CRD enums can contain bare '=' (PyYAML's otherwise unsupported value tag).

@@ -61,6 +61,16 @@ The native fixture's `/var/run/netns` propagation setup is confined to its
 owned privileged Docker node. It does not change the host's mount propagation
 or establish a production node-startup NetworkPolicy barrier.
 
+The rendered policy accepts identity's configured hostname independently of
+the application base domains and requires its cross-namespace certificate.
+Native Gateway cases verify that certificate in direct and trusted-edge modes.
+The application fixture certificate excludes the identity hostname, so fallback
+certificate selection fails.
+The backend CA negative changes only the owned Kanidm backend TLS volume,
+leaving the frontend identity certificate and its cross-namespace grant intact.
+The separate public-edge VM retains identity-host trust/name transitions,
+cross-edge SNI refusal, queryless logging, upstream TLS recovery and failover.
+
 ## Retained host and recovery verification
 
 `runtime-secret-k3s` retains the real host/systemd staging and acknowledgment
