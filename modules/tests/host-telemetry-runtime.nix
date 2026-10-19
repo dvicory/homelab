@@ -229,11 +229,11 @@ in
             (pkgs.callPackage (self + "/pkgs/by-name/host-telemetry/package.nix") { }).passthru.tests;
         }
         // lib.optionalAttrs (system == "x86_64-linux") {
-        host-telemetry-runtime = test // {
-          meta = test.meta // {
-            hestia.group = "${system}-host-telemetry-runtime";
+          host-telemetry-runtime = test // {
+            meta = test.meta // {
+              hestia.group = "${system}-host-telemetry-runtime";
+            };
           };
         };
-      };
     };
 }

@@ -16,7 +16,7 @@ data:
           fail_if_header_not_matches:
           - allow_missing: false
             header: Location
-            regexp: ^https://idm\.plus2\.danielvicory\.dev/
+            regexp: ^https://id\.bzfx\.net/
           fail_if_not_ssl: true
           follow_redirects: false
           headers:
@@ -34,7 +34,7 @@ data:
           fail_if_header_not_matches:
           - allow_missing: false
             header: Location
-            regexp: ^https://idm\.plus2\.danielvicory\.dev/
+            regexp: ^https://id\.bzfx\.net/
           fail_if_not_ssl: true
           follow_redirects: false
           headers:
@@ -52,11 +52,11 @@ data:
           fail_if_not_ssl: true
           follow_redirects: false
           headers:
-            Host: idm.plus2.danielvicory.dev
+            Host: id.bzfx.net
           method: GET
           preferred_ip_protocol: ip4
           tls_config:
-            server_name: idm.plus2.danielvicory.dev
+            server_name: id.bzfx.net
           valid_status_codes: []
         prober: http
         timeout: 10s
@@ -78,7 +78,7 @@ data:
           fail_if_header_not_matches:
           - allow_missing: false
             header: Location
-            regexp: ^https://idm\.plus2\.danielvicory\.dev/
+            regexp: ^https://id\.bzfx\.net/
           fail_if_not_ssl: true
           follow_redirects: false
           headers:
@@ -96,7 +96,7 @@ data:
           fail_if_header_not_matches:
           - allow_missing: false
             header: Location
-            regexp: ^https://idm\.plus2\.danielvicory\.dev/
+            regexp: ^https://id\.bzfx\.net/
           fail_if_not_ssl: true
           follow_redirects: false
           headers:
@@ -127,7 +127,7 @@ data:
           fail_if_header_not_matches:
           - allow_missing: false
             header: Location
-            regexp: ^https://idm\.plus2\.danielvicory\.dev/
+            regexp: ^https://id\.bzfx\.net/
           fail_if_not_ssl: true
           follow_redirects: false
           headers:
@@ -145,7 +145,7 @@ data:
           fail_if_header_not_matches:
           - allow_missing: false
             header: Location
-            regexp: ^https://idm\.plus2\.danielvicory\.dev/
+            regexp: ^https://id\.bzfx\.net/
           fail_if_not_ssl: true
           follow_redirects: false
           headers:
