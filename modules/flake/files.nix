@@ -17,9 +17,9 @@
             name = exeFilename;
             runtimeInputs = [ pkgs.jujutsu ];
             text = ''
-              # Upstream discovers the working tree through Git, including in JJ workspaces.
-              if root=$(jj root 2>/dev/null); then
-                GIT_DIR=$(jj git root)
+              # Discover the workspace without importing an inherited Git HEAD into JJ.
+              if root=$(jj --ignore-working-copy root 2>/dev/null); then
+                GIT_DIR=$(jj --ignore-working-copy git root)
                 export GIT_DIR GIT_WORK_TREE="$root"
               fi
               exec ${lib.getExe drv} "$@"
