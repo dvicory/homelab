@@ -535,8 +535,9 @@ def main():
         phase = "network-policy-mounts"
         # HostToContainer needs a propagation-capable netns mount in this
         # owned Docker node, not a change to the runner's host mounts.
+        # Preserve namespace mounts that K3s may already have created here.
         d("exec", name, "mkdir", "-p", "/var/run/netns")
-        d("exec", name, "mount", "--bind", "/var/run/netns", "/var/run/netns")
+        d("exec", name, "mount", "--rbind", "/var/run/netns", "/var/run/netns")
         d("exec", name, "mount", "--make-rshared", "/var/run/netns")
         phase = "network-policy-apply"
         kubectl("apply", "-f", settings["networkPolicy"])
