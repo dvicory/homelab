@@ -24,7 +24,7 @@ spec:
   template:
     metadata:
       annotations:
-        checksum/config: 4ae23318a6ee96661c51502a2f5ef3f96ab31cdefe70b4d0674720ea6f20eca8
+        checksum/config: 25b617ad0f8eeed28fa81145eeb564f944baa007693a643205cab4b410875415
       labels:
         app.kubernetes.io/instance: blackbox
         app.kubernetes.io/managed-by: Helm

@@ -87,29 +87,37 @@ let
       ];
 
       workloads = [
-        (alert "KubeContainerOOMKilled" "critical" "0s" ''
-          (
-            increase(kube_pod_container_status_restarts_total{${ksm}}[10m]) > 0
-            and on (namespace, pod, container)
-            kube_pod_container_status_last_terminated_reason{${ksm}, reason="OOMKilled"} == 1
-          )
-          or on (namespace, pod, container)
-          (
-            sum by (namespace, pod, container) (
-              increase(container_oom_events_total{job="cadvisor", container!=""}[10m])
-            ) > 0
-          )
-        '' "{{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} was OOMKilled and restarted." { })
+        (alert "KubeContainerOOMKilled" "critical" "0s"
+          ''
+            (
+              increase(kube_pod_container_status_restarts_total{${ksm}}[10m]) > 0
+              and on (namespace, pod, container)
+              kube_pod_container_status_last_terminated_reason{${ksm}, reason="OOMKilled"} == 1
+            )
+            or on (namespace, pod, container)
+            (
+              sum by (namespace, pod, container) (
+                increase(container_oom_events_total{job="cadvisor", container!=""}[10m])
+              ) > 0
+            )
+          ''
+          "{{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} was OOMKilled and restarted."
+          { }
+        )
         (alert "KubeContainerRestarted" "warning" "0s" ''
           increase(kube_pod_container_status_restarts_total{${ksm}}[10m]) > 0
           unless on (namespace, pod, container)
           kube_pod_container_status_last_terminated_reason{${ksm}, reason="OOMKilled"} == 1
         '' "{{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} restarted." { })
-        (alert "KubePodCrashLooping" "critical" "15m" ''
-          max by (namespace, pod, container) (
-            max_over_time(kube_pod_container_status_waiting_reason{${ksm}, reason="CrashLoopBackOff"}[5m])
-          ) >= 1
-        '' "{{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} is crash-looping." { })
+        (alert "KubePodCrashLooping" "critical" "15m"
+          ''
+            max by (namespace, pod, container) (
+              max_over_time(kube_pod_container_status_waiting_reason{${ksm}, reason="CrashLoopBackOff"}[5m])
+            ) >= 1
+          ''
+          "{{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} is crash-looping."
+          { }
+        )
         # Finished pods (Succeeded, or Failed including evicted) never count.
         (alert "KubePodNotReady" "critical" "15m" ''
           max by (namespace, pod) (kube_pod_status_ready{${ksm}, condition="true"} == 0)
@@ -135,31 +143,39 @@ let
         # 15 minutes: the container keeps running out of its CPU limit, not
         # just bursting at start-up. kubernetes-mixin's CPUThrottlingHigh uses
         # the same bound. Only containers with a CPU limit have CFS quota.
-        (alert "KubeContainerCPUThrottled" "warning" "15m" ''
-          (
-            sum by (namespace, pod, container) (
-              rate(container_cpu_cfs_throttled_periods_total{job="cadvisor", container!=""}[5m])
-            )
-            /
-            sum by (namespace, pod, container) (
-              rate(container_cpu_cfs_periods_total{job="cadvisor", container!=""}[5m])
-            )
-          ) > 0.25
-          and on (namespace, pod, container)
-          kube_pod_container_resource_limits{${ksm}, resource="cpu"} > 0
-        '' "{{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} was CPU-throttled in {{ $value | humanizePercentage }} of its periods for 15 minutes." { })
+        (alert "KubeContainerCPUThrottled" "warning" "15m"
+          ''
+            (
+              sum by (namespace, pod, container) (
+                rate(container_cpu_cfs_throttled_periods_total{job="cadvisor", container!=""}[5m])
+              )
+              /
+              sum by (namespace, pod, container) (
+                rate(container_cpu_cfs_periods_total{job="cadvisor", container!=""}[5m])
+              )
+            ) > 0.25
+            and on (namespace, pod, container)
+            kube_pod_container_resource_limits{${ksm}, resource="cpu"} > 0
+          ''
+          "{{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} was CPU-throttled in {{ $value | humanizePercentage }} of its periods for 15 minutes."
+          { }
+        )
         # The working set is what the kernel counts against the memory
         # limit; above 90 % for 10 minutes, an OOM kill is close.
-        (alert "KubeContainerMemoryNearLimit" "warning" "10m" ''
-          max by (namespace, pod, container) (
-            container_memory_working_set_bytes{job="cadvisor", container!="", image!=""}
-          )
-          / on (namespace, pod, container)
-          max by (namespace, pod, container) (
-            kube_pod_container_resource_limits{${ksm}, resource="memory"}
-          )
-          > 0.9
-        '' "{{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} has used {{ $value | humanizePercentage }} of its memory limit for 10 minutes." { })
+        (alert "KubeContainerMemoryNearLimit" "warning" "10m"
+          ''
+            max by (namespace, pod, container) (
+              container_memory_working_set_bytes{job="cadvisor", container!="", image!=""}
+            )
+            / on (namespace, pod, container)
+            max by (namespace, pod, container) (
+              kube_pod_container_resource_limits{${ksm}, resource="memory"}
+            )
+            > 0.9
+          ''
+          "{{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} has used {{ $value | humanizePercentage }} of its memory limit for 10 minutes."
+          { }
+        )
       ];
 
       # The root Application `apps` only mirrors its children's health, so
@@ -191,23 +207,34 @@ let
         (alert "HostZpoolScrubOverdue" "warning" "1h" ''
           time() - max_over_time(homelab_zpool_scrub_end_time_seconds{${node}}[3d]) > ${days 35}
         '' "ZFS pool {{ $labels.pool }} on {{ $labels.host }} has not completed a scrub in 35 days." { })
-        (alert "HostDiskSmartFailing" "critical" "0s" ''
-          ${held "homelab_smart_healthy{${node}}"} == 0
-          or
-          ${held "homelab_smart_nvme_critical_warning{${node}}"} > 0
-        '' "Disk {{ $labels.disk }} ({{ $labels.id }}) on {{ $labels.host }} reports failing SMART health." { })
-        (alert "HostDiskSmartFailing" "warning" "0s" ''
-          delta(homelab_smart_scsi_grown_defects{${node}}[2h]) > 0
-          or delta(homelab_smart_ata_pending_sectors{${node}}[2h]) > 0
-          or delta(homelab_smart_ata_reallocated_sectors{${node}}[2h]) > 0
-          or delta(homelab_smart_nvme_media_errors{${node}}[2h]) > 0
-        '' "Disk {{ $labels.disk }} ({{ $labels.id }}) on {{ $labels.host }} reports more defective sectors." { })
+        (alert "HostDiskSmartFailing" "critical" "0s"
+          ''
+            ${held "homelab_smart_healthy{${node}}"} == 0
+            or
+            ${held "homelab_smart_nvme_critical_warning{${node}}"} > 0
+          ''
+          "Disk {{ $labels.disk }} ({{ $labels.id }}) on {{ $labels.host }} reports failing SMART health."
+          { }
+        )
+        (alert "HostDiskSmartFailing" "warning" "0s"
+          ''
+            delta(homelab_smart_scsi_grown_defects{${node}}[2h]) > 0
+            or delta(homelab_smart_ata_pending_sectors{${node}}[2h]) > 0
+            or delta(homelab_smart_ata_reallocated_sectors{${node}}[2h]) > 0
+            or delta(homelab_smart_nvme_media_errors{${node}}[2h]) > 0
+          ''
+          "Disk {{ $labels.disk }} ({{ $labels.id }}) on {{ $labels.host }} reports more defective sectors."
+          { }
+        )
       ]
       ++ map (
         mountpoint:
-        alert "HostRequiredMountMissing" "critical" "2m" ''
-          absent(node_filesystem_size_bytes{${node}, host=${quote host.name}, mountpoint=${quote mountpoint}})
-        '' "Required mount ${mountpoint} on ${host.name} is not mounted." (hostLabels // { inherit mountpoint; })
+        alert "HostRequiredMountMissing" "critical" "2m"
+          ''
+            absent(node_filesystem_size_bytes{${node}, host=${quote host.name}, mountpoint=${quote mountpoint}})
+          ''
+          "Required mount ${mountpoint} on ${host.name} is not mounted."
+          (hostLabels // { inherit mountpoint; })
       ) host.requiredMounts
       ++ bySeverity (
         severity:
@@ -262,13 +289,17 @@ let
       sourceDown =
         map (
           job:
-          alert "TelemetrySourceDown" (if builtins.elem job coreJobs then "critical" else "warning") "5m" ''
-            up{job=${quote job}} == 0 or absent(up{job=${quote job}})
-          '' "Telemetry source ${job}{{ with $labels.instance }} ({{ . }}){{ end }} is not reporting." { inherit job; }
+          alert "TelemetrySourceDown" (if builtins.elem job coreJobs then "critical" else "warning") "5m"
+            ''
+              up{job=${quote job}} == 0 or absent(up{job=${quote job}})
+            ''
+            "Telemetry source ${job}{{ with $labels.instance }} ({{ . }}){{ end }} is not reporting."
+            { inherit job; }
         ) clusterJobs
         ++ map (
           target:
-          alert "TelemetrySourceDown" (if builtins.elem target.job coreJobs then "critical" else "warning") "5m"
+          alert "TelemetrySourceDown" (if builtins.elem target.job coreJobs then "critical" else "warning")
+            "5m"
             ''
               up{job=${quote target.job}, host=${quote host.name}} == 0
               or absent(up{job=${quote target.job}, host=${quote host.name}})
@@ -277,8 +308,12 @@ let
             (hostLabels // { inherit (target) job; })
         ) host.scrapeTargets;
 
-      stale = file: bound: ''time() - node_textfile_mtime_seconds{${node}, file=~"(.*/)?${file}\\.prom"} > ${toString bound}'';
-      absentFile = file: ''absent(node_textfile_mtime_seconds{${node}, host=${quote host.name}, file=~"(.*/)?${file}\\.prom"})'';
+      stale =
+        file: bound:
+        ''time() - node_textfile_mtime_seconds{${node}, file=~"(.*/)?${file}\\.prom"} > ${toString bound}'';
+      absentFile =
+        file:
+        ''absent(node_textfile_mtime_seconds{${node}, host=${quote host.name}, file=~"(.*/)?${file}\\.prom"})'';
       staleness = [
         # Five missed 2-minute runs.
         (alert "HostZpoolStatusStale" "critical" "0s" ''
@@ -300,15 +335,18 @@ let
       ) host.pools
       ++ lib.mapAttrsToList (
         disk: path:
-        alert "HostDiskTelemetryMissing" "critical" "20m" ''
-          absent(homelab_smart_device_up{${node}, host=${quote host.name}, disk=${quote disk}} == 1)
-        '' "Disk ${disk} (${baseNameOf path}) on ${host.name} was not read in the last two SMART runs." (
-          hostLabels
-          // {
-            inherit disk;
-            id = baseNameOf path;
-          }
-        )
+        alert "HostDiskTelemetryMissing" "critical" "20m"
+          ''
+            absent(homelab_smart_device_up{${node}, host=${quote host.name}, disk=${quote disk}} == 1)
+          ''
+          "Disk ${disk} (${baseNameOf path}) on ${host.name} was not read in the last two SMART runs."
+          (
+            hostLabels
+            // {
+              inherit disk;
+              id = baseNameOf path;
+            }
+          )
       ) host.disks;
 
       storage =
@@ -405,18 +443,20 @@ let
       file = name: "${credentialDirectory}/${name}";
       matcher = name: value: "${name}=${builtins.toJSON value}";
       # Priority 1 bypasses the owner's Pushover quiet hours; 0 respects them.
-      pushover = priority: {
-        user_key_file = file "pushover-user-key";
-        token_file = file "pushover-token";
-        priority = toString priority;
-        send_resolved = true;
-        title = ''{{ template "homelab.title" . }}'';
-        message = ''{{ template "homelab.message" . }}'';
-      }
-      // lib.optionalAttrs (grafanaUrl != null) {
-        url = grafanaUrl;
-        url_title = "Grafana";
-      };
+      pushover =
+        priority:
+        {
+          user_key_file = file "pushover-user-key";
+          token_file = file "pushover-token";
+          priority = toString priority;
+          send_resolved = true;
+          title = ''{{ template "homelab.title" . }}'';
+          message = ''{{ template "homelab.message" . }}'';
+        }
+        // lib.optionalAttrs (grafanaUrl != null) {
+          url = grafanaUrl;
+          url_title = "Grafana";
+        };
       telegram = {
         bot_token_file = file "telegram-bot-token";
         chat_id_file = file "telegram-chat-id";
@@ -713,7 +753,10 @@ in
           name = cluster.hostName;
         };
         grafanaUrl =
-          if cluster.routes ? grafana then "https://${builtins.head cluster.routes.grafana.hostnames}" else null;
+          if cluster.routes ? grafana then
+            "https://${builtins.head cluster.routes.grafana.hostnames}"
+          else
+            null;
         grafanaPods = lib.optional (cluster.routes ? grafana) cluster.routes.grafana.backendPodSelector;
         nodeSelector."kubernetes.io/hostname" = computeResources.instance;
         rulesConfig = builtins.toJSON (rulesFor host);
@@ -722,198 +765,197 @@ in
         victoriametrics = "http://victoriametrics.${namespace}.svc:8428";
       in
       {
-        applications.monitoring.objects =
-          [
-            {
-              apiVersion = "v1";
-              kind = "ConfigMap";
-              metadata = {
-                name = "vmalert-rules";
-                inherit namespace;
-              };
-              data."rules.json" = rulesConfig;
-            }
-            {
-              apiVersion = "v1";
-              kind = "ConfigMap";
-              metadata = {
-                name = "alertmanager-config";
-                inherit namespace;
-              };
-              data = {
-                "alertmanager.yaml" = alertmanagerConfig;
-              }
-              // alertmanager.templates;
-            }
-          ]
-          ++ workload {
-            name = "vmalert";
-            uid = 65534;
-            configText = rulesConfig;
-            inherit nodeSelector;
-            container = {
-              image = images.vmalert;
-              args = [
-                "-datasource.url=${victoriametrics}"
-                # Alert state goes back to the store, so a vmalert restart
-                # keeps each alert's `for` progress.
-                "-remoteWrite.url=${victoriametrics}"
-                "-remoteRead.url=${victoriametrics}"
-                "-notifier.url=http://alertmanager.${namespace}.svc:9093"
-                "-rule=/etc/vmalert/rules.json"
-                "-evaluationInterval=30s"
-                "-httpListenAddr=:8880"
-              ]
-              ++ lib.optional (grafanaUrl != null) "-external.url=${grafanaUrl}";
-              ports = [
-                {
-                  name = "http";
-                  containerPort = 8880;
-                }
-              ];
-              readinessProbe = {
-                httpGet = {
-                  path = "/health";
-                  port = 8880;
-                };
-                periodSeconds = 10;
-              };
-              resources = {
-                requests = {
-                  cpu = "25m";
-                  memory = "64Mi";
-                };
-                limits = {
-                  cpu = "250m";
-                  memory = "256Mi";
-                };
-              };
-              volumeMounts = [
-                {
-                  name = "rules";
-                  mountPath = "/etc/vmalert";
-                  readOnly = true;
-                }
-              ];
+        applications.monitoring.objects = [
+          {
+            apiVersion = "v1";
+            kind = "ConfigMap";
+            metadata = {
+              name = "vmalert-rules";
+              inherit namespace;
             };
-            volumes = [
+            data."rules.json" = rulesConfig;
+          }
+          {
+            apiVersion = "v1";
+            kind = "ConfigMap";
+            metadata = {
+              name = "alertmanager-config";
+              inherit namespace;
+            };
+            data = {
+              "alertmanager.yaml" = alertmanagerConfig;
+            }
+            // alertmanager.templates;
+          }
+        ]
+        ++ workload {
+          name = "vmalert";
+          uid = 65534;
+          configText = rulesConfig;
+          inherit nodeSelector;
+          container = {
+            image = images.vmalert;
+            args = [
+              "-datasource.url=${victoriametrics}"
+              # Alert state goes back to the store, so a vmalert restart
+              # keeps each alert's `for` progress.
+              "-remoteWrite.url=${victoriametrics}"
+              "-remoteRead.url=${victoriametrics}"
+              "-notifier.url=http://alertmanager.${namespace}.svc:9093"
+              "-rule=/etc/vmalert/rules.json"
+              "-evaluationInterval=30s"
+              "-httpListenAddr=:8880"
+            ]
+            ++ lib.optional (grafanaUrl != null) "-external.url=${grafanaUrl}";
+            ports = [
               {
-                name = "rules";
-                configMap.name = "vmalert-rules";
+                name = "http";
+                containerPort = 8880;
               }
             ];
-          }
-          ++ workload {
-            name = "alertmanager";
-            uid = 65534;
-            configText = alertmanagerConfig + alertmanager.templates."homelab.tmpl";
-            inherit nodeSelector;
-            container = {
-              image = images.alertmanager;
-              args = [
-                "--config.file=/etc/alertmanager/config/alertmanager.yaml"
-                "--storage.path=/alertmanager"
-                "--web.listen-address=:9093"
-                # One replica: no gossip listener.
-                "--cluster.listen-address="
-              ];
-              ports = [
-                {
-                  name = "http";
-                  containerPort = 9093;
-                }
-              ];
-              readinessProbe = {
-                httpGet = {
-                  path = "/-/ready";
-                  port = 9093;
-                };
-                periodSeconds = 10;
+            readinessProbe = {
+              httpGet = {
+                path = "/health";
+                port = 8880;
               };
-              resources = {
-                requests = {
-                  cpu = "25m";
-                  memory = "48Mi";
-                };
-                limits = {
-                  cpu = "250m";
-                  memory = "128Mi";
-                };
-              };
-              volumeMounts = [
-                {
-                  name = "config";
-                  mountPath = "/etc/alertmanager/config";
-                  readOnly = true;
-                }
-                {
-                  name = "templates";
-                  mountPath = "/etc/alertmanager/templates";
-                  readOnly = true;
-                }
-                {
-                  name = "delivery";
-                  mountPath = credentialDirectory;
-                  readOnly = true;
-                }
-                {
-                  name = "storage";
-                  mountPath = "/alertmanager";
-                }
-              ];
+              periodSeconds = 10;
             };
-            volumes = [
+            resources = {
+              requests = {
+                cpu = "25m";
+                memory = "64Mi";
+              };
+              limits = {
+                cpu = "250m";
+                memory = "256Mi";
+              };
+            };
+            volumeMounts = [
+              {
+                name = "rules";
+                mountPath = "/etc/vmalert";
+                readOnly = true;
+              }
+            ];
+          };
+          volumes = [
+            {
+              name = "rules";
+              configMap.name = "vmalert-rules";
+            }
+          ];
+        }
+        ++ workload {
+          name = "alertmanager";
+          uid = 65534;
+          configText = alertmanagerConfig + alertmanager.templates."homelab.tmpl";
+          inherit nodeSelector;
+          container = {
+            image = images.alertmanager;
+            args = [
+              "--config.file=/etc/alertmanager/config/alertmanager.yaml"
+              "--storage.path=/alertmanager"
+              "--web.listen-address=:9093"
+              # One replica: no gossip listener.
+              "--cluster.listen-address="
+            ];
+            ports = [
+              {
+                name = "http";
+                containerPort = 9093;
+              }
+            ];
+            readinessProbe = {
+              httpGet = {
+                path = "/-/ready";
+                port = 9093;
+              };
+              periodSeconds = 10;
+            };
+            resources = {
+              requests = {
+                cpu = "25m";
+                memory = "48Mi";
+              };
+              limits = {
+                cpu = "250m";
+                memory = "128Mi";
+              };
+            };
+            volumeMounts = [
               {
                 name = "config";
-                configMap = {
-                  name = "alertmanager-config";
-                  items = [
-                    {
-                      key = "alertmanager.yaml";
-                      path = "alertmanager.yaml";
-                    }
-                  ];
-                };
+                mountPath = "/etc/alertmanager/config";
+                readOnly = true;
               }
               {
                 name = "templates";
-                configMap = {
-                  name = "alertmanager-config";
-                  items = [
-                    {
-                      key = "homelab.tmpl";
-                      path = "homelab.tmpl";
-                    }
-                  ];
-                };
+                mountPath = "/etc/alertmanager/templates";
+                readOnly = true;
               }
-              # Optional: a missing credential makes only its channel fail at
-              # send time, which AlertDeliveryFailing and the heartbeat report.
               {
                 name = "delivery";
-                secret = {
-                  secretName = "alertmanager-delivery";
-                  optional = true;
-                  defaultMode = 292;
-                };
+                mountPath = credentialDirectory;
+                readOnly = true;
               }
-              # Silences and the notification log are disposable.
               {
                 name = "storage";
-                emptyDir.sizeLimit = "64Mi";
+                mountPath = "/alertmanager";
               }
             ];
-          }
-          ++ [
-            (ingressFrom "vmalert" 8880 [ (labelsFor "victoriametrics") ])
-            (ingressFrom "alertmanager" 9093 (
-              [
-                (labelsFor "vmalert")
-                (labelsFor "victoriametrics")
-              ]
-              ++ grafanaPods
-            ))
+          };
+          volumes = [
+            {
+              name = "config";
+              configMap = {
+                name = "alertmanager-config";
+                items = [
+                  {
+                    key = "alertmanager.yaml";
+                    path = "alertmanager.yaml";
+                  }
+                ];
+              };
+            }
+            {
+              name = "templates";
+              configMap = {
+                name = "alertmanager-config";
+                items = [
+                  {
+                    key = "homelab.tmpl";
+                    path = "homelab.tmpl";
+                  }
+                ];
+              };
+            }
+            # Optional: a missing credential makes only its channel fail at
+            # send time, which AlertDeliveryFailing and the heartbeat report.
+            {
+              name = "delivery";
+              secret = {
+                secretName = "alertmanager-delivery";
+                optional = true;
+                defaultMode = 292;
+              };
+            }
+            # Silences and the notification log are disposable.
+            {
+              name = "storage";
+              emptyDir.sizeLimit = "64Mi";
+            }
           ];
+        }
+        ++ [
+          (ingressFrom "vmalert" 8880 [ (labelsFor "victoriametrics") ])
+          (ingressFrom "alertmanager" 9093 (
+            [
+              (labelsFor "vmalert")
+              (labelsFor "victoriametrics")
+            ]
+            ++ grafanaPods
+          ))
+        ];
       };
   };
 }
