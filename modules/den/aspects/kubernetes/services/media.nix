@@ -58,20 +58,7 @@ in
         # a route to one of them must be an administrator route whose Gateway
         # policy admits only the proxy, and media-ingress below admits only
         # the in-cluster clients each app is configured to serve.
-        serviceName = kind: name: if name == kind then kind else "${kind}-${name}";
-        # Ports match arr.nix, prowlarr.nix and sabnzbd.nix.
-        arrPorts = {
-          radarr = 7878;
-          sonarr = 8989;
-        };
-        arrInstances = lib.concatMap (
-          kind:
-          lib.mapAttrsToList (name: cfg: {
-            service = serviceName kind name;
-            port = arrPorts.${kind};
-            inherit cfg;
-          }) settings.${kind}
-        ) [ "radarr" "sonarr" ];
+        arrInstances = map (cfg: cfg.integration // { inherit cfg; }) instances;
         appPods = service: {
           "app.kubernetes.io/controller" = "main";
           "app.kubernetes.io/instance" = service;

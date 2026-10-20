@@ -79,25 +79,15 @@
           inherit routeKey;
           inherit (route) namespace service port;
         };
-      arrFacts =
-        kind: port:
-        lib.mapAttrs (
-          instanceName: cfg:
-          factFor {
-            namespace = "media";
-            service = if instanceName == kind then kind else "${kind}-${instanceName}";
-            inherit port;
-            inherit (cfg) routeKey apiSecretKey;
-          }
-        ) settings.${kind};
+      arrFacts = kind: lib.mapAttrs (_: cfg: factFor cfg.integration) settings.${kind};
       services = {
         prowlarr = routeFact "prowlarr" // {
           apiSecretKey = "PROWLARR_API_KEY";
         };
         sabnzbd = routeFact "sabnzbd";
         seerr = routeFact "requests";
-        radarr = arrFacts "radarr" 7878;
-        sonarr = arrFacts "sonarr" 8989;
+        radarr = arrFacts "radarr";
+        sonarr = arrFacts "sonarr";
       };
       apps = {
         jellyfin = cluster.settings.kubernetes.services.jellyfin.integration;
@@ -813,12 +803,7 @@
                   }
                 ]
                 ++ map (secretEnv secretName) (
-                  lib.unique (
-                    map (cfg: cfg.apiSecretKey) (
-                      builtins.attrValues cluster.settings.kubernetes.services.media.radarr
-                      ++ builtins.attrValues cluster.settings.kubernetes.services.media.sonarr
-                    )
-                  )
+                  arrSecretKeys
                   ++ [
                     "SABNZBD_API_KEY"
                     prowlarrSecretKey

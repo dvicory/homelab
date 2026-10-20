@@ -35,6 +35,18 @@ access. Port-forwarding is not subject to NetworkPolicy, and the forwarded
 port has no login, so treat that access like the cluster access it comes
 from.
 
+## Arr instances
+
+Declare instances under `settings.kubernetes.services.media.radarr` and
+`.sonarr`. Deployment names, integration endpoints and NetworkPolicy targets
+follow those declarations; do not maintain separate generated URLs or rules.
+Each instance's `routeKey` names its declared browser route; use `null` for
+an instance without one.
+Its `role` selects a Seerr backend (`standard` or `4k`); `null` excludes it
+from Seerr, but Configarr and Prowlarr still configure it.
+Each instance exposes read-only `integration` settings for other Den aspects;
+change its declarations rather than maintaining separate integration facts.
+
 ## Records the household may change
 
 Managed records end in `(Homelab)`: the `SABnzbd (Homelab)` download client
