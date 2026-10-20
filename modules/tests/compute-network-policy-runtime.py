@@ -11,26 +11,28 @@ Migration: the guest first runs as a guest from before this change, with
 K3s's embedded controller (kube-router) and the host's runtime send-buffer
 stopgap. The committed enforcer is applied, K3s is restarted with the
 controller disabled, and the stale kube-router rules are removed, as the
-runbook describes. A Pod that must be refused probes throughout and must
-never get through.
+runbook describes. A Pod that must be refused probes throughout; no recorded
+probe may get through.
 
 Then, at the kernel's default send buffer, on the migrated boot and after a
 guest restart (every Pod gets a new address), it checks the representative
 boundaries, a new Pod's first connection, the enforcer's health and metrics,
 that no kube-router rule is left, that neither K3s's controller nor
 kube-proxy reports a failed restore and that kube-proxy's tables fit the
-buffer. On the migrated boot it also kills the enforcer and checks that new
-connections are refused, not admitted, until it is back (fail-closed), and
-that it holds only NET_ADMIN and cannot reach a render node hotplugged into
-the guest, which a privileged control container can open.
+buffer. On the migrated boot it also kills the enforcer, requires an observed
+caller refusal in the kill-to-ready timestamp window and a fresh successful
+connection after readiness. It also checks NET_ADMIN-only effective capabilities,
+render-node visibility and mknod refusal under the declared security context,
+with a privileged control that can open the synthetic render node.
 
 Independent traffic rows overlap in four I/O workers; each keeps its own
 probe and retry deadlines. Pod creation/deletion, controller migration,
 crashes and guest restarts stay ordered, with watchers running throughout
 their original observation windows.
 
-Runs only inside the disposable fixture-host VM of
-checks.compute-network-policy-runtime.
+The VM scenario runs only inside the disposable fixture-host VM of
+checks.compute-network-policy-runtime; --self-test checks recovery acceptance
+without a guest.
 """
 
 from __future__ import annotations
@@ -62,8 +64,11 @@ KUBE_ROUTER = re.compile(r"KUBE-ROUTER|KUBE-POD-FW|KUBE-NWPLCY")
 POD_CHAIN = re.compile(
     r"^-A KUBE-ROUTER-FORWARD -d (?P<ip>[0-9.]+)/32 .*destined to POD name:(?P<name>\S+) namespace: (?P<namespace>\S+) ")
 ENFORCER = ("kube-system", "kube-network-policies")
-WATCH = ("setsid sh -c 'while :; do if wget -q -T 2 -O /dev/null http://{address}:{port}/; "
-         "then echo \"$(date +%s) reached\"; else echo \"$(date +%s) refused\"; fi; sleep 0.5; done' "
+WATCH = ("for tool in wget date sleep setsid; do command -v \"$tool\" >/dev/null || exit 127; done; "
+         "setsid sh -c 'while :; do wget -q -T 2 -O /dev/null http://{address}:{port}/ 2>/dev/null; "
+         "status=$?; case \"$status\" in 0) state=reached;; 1) state=refused;; "
+         "*) echo \"$(date +%s) error-$status\"; exit 1;; esac; "
+         "echo \"$(date +%s) $state\"; sleep 0.5; done' "
          "> /tmp/watch-{name}.log 2>&1 < /dev/null & echo $! > /tmp/watch-{name}.pid")
 
 
@@ -81,6 +86,115 @@ def observe(key: str, value) -> None:
 
 def iov_bytes(line: str) -> int:
     return sum(map(int, re.findall(r"iov_len=(\d+)", line)))
+
+
+def check_recovery(check, admitted, refused, recovered, label, crash_window=None) -> None:
+    check(bool(admitted), f"{label}: the caller watcher recorded connections")
+    if crash_window is not None:
+        killed, ready = crash_window
+        check(any(killed <= at <= ready and state == "refused" for at, state in admitted),
+              f"{label}: a caller refusal completed within the observed kill-to-ready timestamp window")
+    check(bool(refused) and all(state == "refused" for _, state in refused),
+          f"{label}: every recorded stranger connection was refused")
+    check(recovered, f"{label}: a fresh post-ready caller connection reaches radarr")
+
+
+def self_check() -> None:
+    from contextlib import redirect_stdout
+    from io import StringIO
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    def check(condition, message):
+        if not condition:
+            raise AssertionError(message)
+
+    class CrashGuest:
+        def __init__(self, admitted, refused, recovered):
+            self.admitted, self.refused, self.recovered = admitted, refused, recovered
+            self.restarts, self.clock = 0, 10
+            self.ready_observed = False
+
+        def enforcer(self):
+            return {"restarts": self.restarts, "ready": self.restarts == 2}
+
+        def now(self):
+            return self.clock
+
+        def kill(self, *command):
+            self.restarts += 1
+            self.clock = 11 if self.restarts == 1 else 20
+
+        def wait_for(self, label, predicate, **kwargs):
+            check(predicate(), label)
+            self.ready_observed = self.enforcer()["ready"]
+
+        def watch_start(self, client, *args):
+            return client
+
+        def watch_read(self, client, name):
+            return self.admitted if client == "gateway-proxy" else self.refused
+
+        def reaches(self, *args):
+            check(self.ready_observed, "recovery was initiated before readiness was observed")
+            return self.recovered
+
+    caller = [(9, "reached"), (11, "refused")]
+    stranger = [(9, "refused"), (11, "refused")]
+    cases = (
+        (caller, stranger, True, True),  # Historical final refusal, fresh success.
+        ([(11, "refused"), (19, "reached")], stranger, False, False),
+        ([(11, "reached")], stranger, True, False),
+        ([(9, "refused"), (11, "reached")], stranger, True, False),
+        ([(21, "refused")], stranger, True, False),  # Only after readiness.
+        (caller, [(9, "refused"), (11, "reached"), (12, "refused")], True, False),
+        ([], stranger, True, False),
+        (caller, [], True, False),
+    )
+    with patch.object(time, "sleep"), redirect_stdout(StringIO()):
+        for admitted, refused, recovered, accepted in cases:
+            guest = CrashGuest(admitted, refused, recovered)
+            lib = SimpleNamespace(check=check, run=guest.kill, wait_for=guest.wait_for)
+            try:
+                crash(lib, guest)
+            except AssertionError:
+                if accepted:
+                    raise
+            else:
+                check(accepted, f"invalid crash recovery accepted: {admitted}, {refused}, {recovered}")
+    check_recovery(check, caller, stranger, True, "migration")
+
+    # Exercise the real reaches method: exec failures are not traffic refusals.
+    probe = SimpleNamespace(project="fixture", instance="compute", plan={"names": {"client": "media"}},
+                            address=lambda server: "192.0.2.1")
+    for status, output, expected in (
+        (0, "wget-exit:0\n", True),
+        (0, "wget-exit:1\n", False),
+        (125, "wget-exit:1\n", None),
+        (0, "", None),
+        (0, "unrelated output\n", None),
+        (0, "wget-exit:127\n", None),
+    ):
+        probe.lib = SimpleNamespace(completed=lambda *args, **kwargs: subprocess.CompletedProcess(
+            args, status, stdout=output, stderr=""))
+        try:
+            reached = Guest.reaches(probe, "client", "server", 80)
+        except AssertionError:
+            if expected is not None:
+                raise
+        else:
+            check(expected is not None and reached == expected, "invalid exec outcome satisfied a traffic probe")
+    probe.exec_in = lambda *args: "11 refused\n"
+    check(Guest.watch_read(probe, "client", "watch") == [(11, "refused")],
+          "a recorded wget refusal must remain observable")
+    probe.exec_in = lambda *args: "11 error-127\n"
+    try:
+        Guest.watch_read(probe, "client", "watch")
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("a watcher execution error satisfied traffic denial")
+    print("PASS: crash recovery uses fresh traffic, bounded refusal and nonempty denial; exec failures reject")
 
 
 class Guest:
@@ -161,10 +275,20 @@ class Guest:
 
     def reaches(self, client: str, server: str, port: int, namespace: str | None = None) -> bool:
         namespace = namespace or self.plan["names"][client]
+        # Stand-ins use BusyBox wget: 0 is success, 1 is a failed connection.
+        # Keep that outcome separate from incus/kubectl or missing-tool errors.
         command = ["incus", "--force-local", "--project", self.project, "exec", self.instance,
                    "--mode=non-interactive", "--", "k3s", "kubectl", "exec", client, "-n", namespace,
-                   "--", "wget", "-q", "-O", "/dev/null", "-T", "3", f"http://{self.address(server)}:{port}/"]
-        return self.lib.completed(*command, timeout=60).returncode == 0
+                   "--", "sh", "-c", 'command -v wget >/dev/null || exit 127; '
+                   'wget -q -O /dev/null -T 3 "$1"; status=$?; '
+                   'case "$status" in 0|1) printf "wget-exit:%s\\n" "$status";; *) exit "$status";; esac',
+                   "probe", f"http://{self.address(server)}:{port}/"]
+        result = self.lib.completed(*command, timeout=60)
+        outcome = result.stdout.strip()
+        if result.returncode != 0 or outcome not in ("wget-exit:0", "wget-exit:1"):
+            raise AssertionError(f"{client} -> {server}:{port}: probe execution failed "
+                                 f"(exit {result.returncode}): {(result.stdout + result.stderr)[-400:]}")
+        return outcome == "wget-exit:0"
 
     def exec_in(self, client: str, *command: str) -> str:
         """kubectl exec, retried: the API server's tunnel to the kubelet can
@@ -182,7 +306,13 @@ class Guest:
         if stop:
             command = f"kill $(cat /tmp/watch-{name}.pid) 2>/dev/null; {command}"
         text = self.exec_in(client, "sh", "-c", command)
-        return [(int(line.split()[0]), line.split()[1]) for line in text.splitlines() if len(line.split()) == 2]
+        samples = []
+        for line in text.splitlines():
+            match = re.fullmatch(r"(\d+) (reached|refused)", line)
+            if match is None:
+                raise AssertionError(f"{client}: malformed watcher observation: {line[:200]}")
+            samples.append((int(match[1]), match[2]))
+        return samples
 
     def waiting(self) -> list[str]:
         return [f"{pod['metadata']['namespace']}/{pod['metadata']['name']}: {pod['status'].get('phase')}"
@@ -394,45 +524,67 @@ def migrate(lib, guest: Guest, args) -> None:
     observe("migration.cleanup", {"returncode": result.returncode, "output": (result.stdout + result.stderr)[-400:]})
     lib.check(result.returncode == 0, "the runbook's kube-router cleanup succeeds")
     time.sleep(10)
+    recovery_started = guest.now()
+    recovered = guest.reaches("gateway-proxy", "radarr", 7878)
+    recovery_completed = guest.now()
     refused = guest.watch_read("stranger", stranger)
     admitted = guest.watch_read("gateway-proxy", caller)
     observe("migration.window", {
         "seconds": guest.now() - started,
         "stranger": {state: sum(1 for _, s in refused if s == state) for state in ("reached", "refused")},
         "caller": {state: sum(1 for _, s in admitted if s == state) for state in ("reached", "refused")},
+        "caller_tail": admitted[-20:], "stranger_tail": refused[-20:],
+        "recovery": {"started": recovery_started, "completed": recovery_completed, "reached": recovered},
     })
     lib.check(stale > 0, "K3s leaves kube-router's rules behind when the controller is disabled")
     lib.check(guest.router_rules() == 0, "no kube-router rule is left after the cleanup")
-    lib.check(refused and all(state == "refused" for _, state in refused),
-              "the stranger is refused at radarr throughout the migration")
-    lib.check(admitted and admitted[-1][1] == "reached", "the Gateway proxy reaches radarr after the migration")
+    check_recovery(lib.check, admitted, refused, recovered, "migration")
     WMEM.write_text(str(KERNEL_DEFAULT))
 
 
 def crash(lib, guest: Guest) -> None:
-    """Kill the enforcer twice so the kubelet backs off, and watch a declared
-    caller and a stranger while it is down."""
+    """Kill the enforcer twice, observe caller refusal in the kill-to-ready
+    timestamp window and stranger denial, then require fresh caller recovery.
+
+    Completion-second samples can straddle the kill marker; they do not
+    independently identify the down interval or prove continuous denial.
+    A refused wget can also mean a transport error.
+    """
     before = guest.enforcer()["restarts"]
     caller = guest.watch_start("gateway-proxy", "radarr", 7878)
     stranger = guest.watch_start("stranger", "radarr", 7878)
     time.sleep(3)
-    killed = int(time.time())
+    killed = guest.now()
     lib.run("pkill", "-9", "-f", "/bin/netpol")
     lib.wait_for("enforcer restarted once", lambda: guest.enforcer()["restarts"] > before, timeout=120)
     time.sleep(2)
+    killed_again = guest.now()
     lib.run("pkill", "-9", "-f", "/bin/netpol")
     lib.wait_for("enforcer back after the back-off", lambda: guest.enforcer()["ready"]
                  and guest.enforcer()["restarts"] >= before + 2, timeout=300)
+    ready = guest.now()
     time.sleep(10)
+    recovery_started = guest.now()
+    recovered = guest.reaches("gateway-proxy", "radarr", 7878)
+    recovery_completed = guest.now()
     admitted = guest.watch_read("gateway-proxy", caller)
     refused = guest.watch_read("stranger", stranger)
-    down = [state for at, state in admitted if at >= killed]
-    observe("crash", {"caller_after_kill": {s: down.count(s) for s in ("reached", "refused")},
+    after_kill = [state for at, state in admitted if at >= killed]
+    crash_window = [state for at, state in admitted if killed <= at <= ready]
+    observe("crash", {"caller_after_kill": {s: after_kill.count(s) for s in ("reached", "refused")},
+                      "caller_kill_to_ready": {s: crash_window.count(s) for s in ("reached", "refused")},
                       "stranger": {s: sum(1 for _, x in refused if x == s) for s in ("reached", "refused")},
+                      "first_kill": killed, "second_kill": killed_again, "ready_observed": ready,
+                      "caller_tail": admitted[-20:], "stranger_tail": refused[-20:],
+                      "first_caller_refusal_in_crash_window": next(
+                          (sample for sample in admitted if killed <= sample[0] <= ready
+                           and sample[1] == "refused"), None),
+                      "first_caller_success_after_kill": next(
+                          (sample for sample in admitted if sample[0] >= killed and sample[1] == "reached"), None),
+                      "first_stranger_success": next((sample for sample in refused if sample[1] == "reached"), None),
+                      "recovery": {"started": recovery_started, "completed": recovery_completed, "reached": recovered},
                       "restarts": guest.enforcer()["restarts"] - before})
-    lib.check("refused" in down, "fail-closed: while the enforcer is down a declared caller's new connection is refused")
-    lib.check(admitted[-1][1] == "reached", "the declared caller reaches radarr again once the enforcer is back")
-    lib.check(all(state == "refused" for _, state in refused), "the stranger is refused throughout the crash")
+    check_recovery(lib.check, admitted, refused, recovered, "crash", (killed, ready))
 
 
 RENDER_NODE = "/dev/dri/renderD128"
@@ -532,8 +684,8 @@ def enforce(lib, guest: Guest, label: str, since: int, expect_nftables: bool) ->
 
 
 def boot_window(guest: Guest) -> dict:
-    """How long policy-selected Pods ran after the guest started before the
-    enforcer was ready: the window a boot leaves unenforced."""
+    """Policy-selected Pod start times relative to enforcer readiness.
+    These timestamps are not an observation of traffic enforcement."""
     def stamp(value: str) -> float:
         return time.mktime(time.strptime(value, "%Y-%m-%dT%H:%M:%SZ"))
 
@@ -601,8 +753,8 @@ def run_scenario(args) -> None:
         lib.run("incus", "--force-local", "--project", runtime.project, "restart", runtime.instance, "--timeout=120",
                 timeout=900)
         lib.wait_for("K3s node after the restart", runtime.node_ready, timeout=600)
-        guest.wait_ready("restarted", lambda: guest.enforcer()["ready"] and all(
-            ip and ip != before.get(key) for key, ip in guest.selected_pods().items()))
+        guest.wait_ready("restarted", lambda: guest.enforcer()["ready"] and (selected := guest.selected_pods()) and all(
+            ip and ip != before.get(key) for key, ip in selected.items()))
         observe("restarted.boot_window", boot_window(guest))
         # The restart drops the pre-change unit: this is the guest as the
         # bundle declares it, kube-proxy in nftables mode.
@@ -610,6 +762,9 @@ def run_scenario(args) -> None:
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        self_check()
+        return 0
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--library", required=True, type=Path)
     parser.add_argument("--bundle", required=True, type=Path)

@@ -94,6 +94,10 @@ checks declaring `__noChroot`, rather than weakening the host's sandbox. Each
 driver owns its VM, final synchronization and shutdown. Do not run these
 fixtures against production Docker, Incus, mounts or credentials.
 
+Use `python3 modules/tests/compute-network-policy-runtime.py --self-test` for
+portable observer regression checks. The real VM check still exercises traffic,
+migration and recovery; API/exec errors fail rather than count as policy denial.
+
 ## Media verification
 
 On native x86_64 Linux with Docker Engine 26+, `nix run .#media-live-acceptance -- --docker-host unix:///var/run/docker.sock --platform linux/amd64` runs the full pinned media API suite using packaged manifests/policy inputs and owned disposable Docker volumes, without production mounts or credentials. Hosted CI requires its execution, not merely building the runner; Kubernetes/Incus/recovery evidence remains separate.
