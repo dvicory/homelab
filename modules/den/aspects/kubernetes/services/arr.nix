@@ -1,6 +1,5 @@
 { config, lib, ... }:
 let
-  serviceName = kind: name: if name == kind then kind else "${kind}-${name}";
   routePrefix =
     route:
     if route == null || route.pathPrefix == "/" then "" else lib.removeSuffix "/" route.pathPrefix;
@@ -39,9 +38,19 @@ let
         )
       );
       instanceType = lib.types.submodule (
-        { name, ... }:
+        { name, config, ... }:
         {
           options = {
+            integration = lib.mkOption {
+              type = lib.types.attrs;
+              readOnly = true;
+              default = {
+                inherit (app) namespace port;
+                service = if name == kind then kind else "${kind}-${name}";
+                inherit (config) routeKey apiSecretKey;
+              };
+              description = "Read-only instance endpoint, route and API-key reference for consumers.";
+            };
             state = lib.mkOption {
               type = lib.types.strMatching "[a-z0-9]([-a-z0-9]*[a-z0-9])?";
               default = name;
@@ -96,11 +105,7 @@ let
         }:
         let
           routeKey = cfg.routeKey;
-          expected = {
-            namespace = app.namespace;
-            service = serviceName kind instanceName;
-            inherit port;
-          };
+          expected = cfg.integration;
         in
         if routeKey == null then
           null
@@ -130,7 +135,7 @@ let
           state = retainedEntry computeResources cfg.state;
           route = routeFor { inherit cluster instanceName cfg; };
           prefix = routePrefix route;
-          service = serviceName kind instanceName;
+          service = cfg.integration.service;
           secretName = cluster.settings.kubernetes.services.media.configurationSecret;
           envPrefix = lib.toUpper kind;
           apiKeyEnv = "${envPrefix}__AUTH__APIKEY";
@@ -227,10 +232,10 @@ let
         in
         lib.mapAttrs' (
           instanceName: cfg:
-          lib.nameValuePair (serviceName kind instanceName) {
+          lib.nameValuePair cfg.integration.service {
             namespace = app.namespace;
             annotations."argocd.argoproj.io/sync-wave" = "1";
-            helm.releases.${serviceName kind instanceName} = {
+            helm.releases.${cfg.integration.service} = {
               chart = charts.bjw-s-labs.app-template;
               values = mkArrValues {
                 inherit
