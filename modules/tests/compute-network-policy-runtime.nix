@@ -13,18 +13,21 @@
 # The scenario first runs the guest as one from before this change (K3s's
 # embedded controller and kube-proxy in iptables mode, with the runtime
 # send-buffer stopgap), migrates it in the runbook's order and requires that
-# a Pod that must be refused never gets through. Then, at the kernel's default
-# send buffer, after the migration and again after a guest restart (which drops
-# the pre-change unit), it requires the representative boundaries (Kanidm's
-# private policy, a Gateway backend policy, the media caller boundary), a new
+# no recorded probe from a Pod that must be refused gets through. Then, at the
+# kernel's default send buffer, after the migration and again after a guest
+# restart (which drops the pre-change unit), it requires the representative
+# boundaries (Kanidm's private policy, a Gateway backend policy, the media caller boundary), a new
 # Pod's first connection to be decided by policy, a ready enforcer whose
 # metrics count verdicts, no kube-router rule, no failed restore, and working
 # ClusterIP and NodePort forwarding. After the restart kube-proxy must run in
 # nftables mode with its whole table accepted at the default buffers. It also
-# kills the enforcer and requires new connections to be refused until it is
-# back (fail-closed). With a render node hotplugged into the guest, it
-# requires the enforcer to hold only NET_ADMIN and to have no way to the node,
-# which a privileged control container in the same guest can open.
+# kills the enforcer, requires a caller refusal in the observed kill-to-ready
+# timestamp window and a fresh successful connection after readiness, plus
+# refusal of every recorded stranger connection. These samples do not prove
+# continuous denial throughout an independently observed down interval.
+# A synthetic render node also checks device visibility and mknod refusal
+# under the declared NET_ADMIN-only security context; a privileged control
+# in the same guest can open it. This is not a general authority proof.
 # Independent traffic rows overlap in four bounded I/O workers without
 # shortening a refusal probe, convergence deadline or observation window.
 # Lifecycle transitions remain serial; readiness is required after entering
@@ -216,6 +219,8 @@ in
               };
 
             testScript = ''
+              import runpy
+              runpy.run_path("${scenario}")["self_check"]()
               start_all()
               fixture_host.wait_for_unit("incus.service", timeout=600)
               fixture_host.succeed("modprobe zfs")
