@@ -40,6 +40,17 @@ def require_application_exit(status, failure, label):
     require(status == expected, f"{label} (exit {status}, expected {expected})")
 
 
+def require_container_exit(result, failure, name):
+    # Only the initial setup fixture reports Docker startup errors.
+    if name == "fixture" and result.returncode and result.stderr:
+        # Escape controls before bounding the diagnostic, including its marker.
+        output = json.dumps(result.stderr, ensure_ascii=True)
+        if len(output) > 2048:
+            output = output[:2034] + "...[truncated]"
+        print(f"media-live-acceptance: fixture startup stderr: {output}", file=sys.stderr)
+    require_application_exit(result.returncode, failure, name)
+
+
 def command(*args, timeout=60, env=None):
     result = subprocess.run(args, text=True, capture_output=True, timeout=timeout, env=env)
     # Do not leak generated credentials or application output on failure.
@@ -335,10 +346,10 @@ def main():
                 for key in environment or {}:
                     parameters += ["-e", key]
                 result = subprocess.run([*parameters, image, *argv], capture_output=True, text=True, timeout=timeout, env=env)
-                require_application_exit(result.returncode, failure, name)
+                require_container_exit(result, failure, name)
                 return container
 
-            # A root setup helper owns only this new Linux volume. Application
+            # The setup helper owns only this new Linux volume; application
             # daemons retain production entrypoints, IDs and supplemental groups.
             keeper = run("fixture", apps["sabnzbd"]["image"], "-v", volume + ":/fixture", "--entrypoint", "/lsiopy/bin/python", argv=("-c", "import time; time.sleep(86400)"), detached=True)
             request = partial(request_from_container, docker, keeper)
