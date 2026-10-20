@@ -127,7 +127,7 @@
             ;
           sharedWritablePaths = [ "/data" ];
         };
-      fixtureInstances = {
+      fixtureDefinitions = {
         radarr = {
           radarr = instance {
             role = "standard";
@@ -169,20 +169,29 @@
           };
         };
       };
-      fixtureMutatedInstances = fixtureInstances // {
-        radarr = fixtureInstances.radarr // {
-          uhd = fixtureInstances.radarr.uhd // {
-            root = "/data/library/movies/uhd-remux";
-            category = "movies-uhd-remux";
-            bundle = "web-1080p";
-          };
+      fixtureClusterWith =
+        overrides:
+        let
+          media = lib.recursiveUpdate (cluster.settings.kubernetes.services.media // fixtureDefinitions) overrides;
+          evaluated =
+            (lib.evalModules {
+              modules = [
+                {
+                  options = lib.genAttrs [ "radarr" "sonarr" ] (
+                    kind: config.den.aspects.kubernetes.services.media.settings.${kind}
+                  );
+                  config = { inherit (media) radarr sonarr; };
+                }
+              ];
+            }).config;
+        in
+        cluster // {
+          settings = lib.recursiveUpdateUntil (path: _: _: path == [ "kubernetes" "services" "media" ])
+            cluster.settings
+            { kubernetes.services.media = media // evaluated; };
         };
-      };
-      fixtureCluster = cluster // {
-        settings = lib.recursiveUpdate cluster.settings {
-          kubernetes.services.media = fixtureInstances;
-        };
-      };
+      fixtureCluster = fixtureClusterWith { };
+      fixtureInstances = lib.getAttrs [ "radarr" "sonarr" ] fixtureCluster.settings.kubernetes.services.media;
       fixtureCompute = computeResources // {
         retainedPaths =
           computeResources.retainedPaths
@@ -229,11 +238,17 @@
         renderApplications fixtureCluster fixtureCompute "radarr"
         // renderApplications fixtureCluster fixtureCompute "sonarr"
       );
-      fixtureMutatedCluster = cluster // {
-        settings = lib.recursiveUpdate cluster.settings {
-          kubernetes.services.media = fixtureMutatedInstances;
+      fixtureMutatedCluster = fixtureClusterWith {
+        radarr.uhd = {
+          root = "/data/library/movies/uhd-remux";
+          category = "movies-uhd-remux";
+          bundle = "web-1080p";
         };
       };
+      fixtureMutatedInstances = lib.getAttrs [
+        "radarr"
+        "sonarr"
+      ] fixtureMutatedCluster.settings.kubernetes.services.media;
       fixtureMutatedApplications = projectApplications (
         renderApplications fixtureMutatedCluster fixtureCompute "radarr"
         // renderApplications fixtureMutatedCluster fixtureCompute "sonarr"
@@ -247,24 +262,13 @@
       mediaWith =
         overrides:
         builtins.tryEval (
-          builtins.deepSeq (mediaManifests (
-            fixtureCluster
-            // {
-              settings = lib.recursiveUpdate fixtureCluster.settings {
-                kubernetes.services.media = overrides;
-              };
-            }
-          )) true
+          builtins.deepSeq (mediaManifests (fixtureClusterWith overrides)) true
         );
       configurationWith =
         overrides:
         builtins.tryEval (
           builtins.deepSeq ((config.den.aspects.kubernetes.services.media.configuration."k8s-manifests" {
-            cluster = fixtureCluster // {
-              settings = lib.recursiveUpdate fixtureCluster.settings {
-                kubernetes.services.media = overrides;
-              };
-            };
+            cluster = fixtureClusterWith overrides;
             computeResources = fixtureCompute;
           }).applications.media-configuration.objects
           ) true
@@ -321,11 +325,7 @@
       ingressFixture =
         overrides:
         let
-          target = fixtureCluster // {
-            settings = lib.recursiveUpdate fixtureCluster.settings {
-              kubernetes.services.media = overrides;
-            };
-          };
+          target = fixtureClusterWith overrides;
         in
         {
           ingress = (mediaManifests target).applications.media-ingress.objects;
