@@ -98,4 +98,8 @@ fixtures against production Docker, Incus, mounts or credentials.
 
 On native x86_64 Linux with Docker Engine 26+, `nix run .#media-live-acceptance -- --docker-host unix:///var/run/docker.sock --platform linux/amd64` runs the full pinned media API suite using packaged manifests/policy inputs and owned disposable Docker volumes, without production mounts or credentials. Hosted CI requires its execution, not merely building the runner; Kubernetes/Incus/recovery evidence remains separate.
 
+Initial Docker fixture failures include bounded, escaped stderr. Successful
+setup and later application output stay quiet; infrastructure errors do not
+count as expected application refusals.
+
 Native service behavior is the category-integration proof. SABnzbd owns its default `*` category; the local initializer checks must not equate its complete category inventory with the configured Arr instances.
