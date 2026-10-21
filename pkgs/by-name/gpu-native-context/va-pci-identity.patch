@@ -1,0 +1,72 @@
+--- a/_studio/mfx_lib/shared/src/libmfxsw.cpp
++++ b/_studio/mfx_lib/shared/src/libmfxsw.cpp
+@@ -38,6 +38,7 @@
+ #include "mfx_interface_scheduler.h"
+ #include "libmfx_core_interface.h"
+ #include "mfx_platform_caps.h"
++#include "mfx_utils.h"
+ 
+ #include "mfx_unified_decode_logging.h"
+ 
+@@ -634,7 +635,9 @@
+     for (int i = 0; i < 64; ++i)
+     {
+         std::string path;
+-
++        mfxU32 deviceId = 0;
++
++#if !VA_CHECK_VERSION(1, 15, 0)
+         {
+             mfxU32 vendorId = 0;
+ 
+@@ -651,7 +654,6 @@
+                 continue;
+         }
+ 
+-        mfxU32 deviceId = 0;
+         {
+             path = std::string("/sys/class/drm/renderD") + std::to_string(128 + i) + "/device/device";
+ 
+@@ -665,6 +667,7 @@
+             if (nread != 1)
+                 break;
+         }
++#endif
+ 
+         path = std::string("/dev/dri/renderD") + std::to_string(128 + i);
+ 
+@@ -672,16 +675,32 @@
+         if (fd < 0)
+             continue;
+ 
+-        std::shared_ptr<int> closeFile(&fd, [fd](int*) { close(fd); });
++        mfx::OnExit closeFile([fd] { close(fd); });
+ 
+         {
+             auto displ = vaGetDisplayDRM(fd);
++            if (!displ)
++                continue;
++
++            mfx::OnExit closeVA([displ] { vaTerminate(displ); });
+ 
+             int vamajor = 0, vaminor = 0;
+             if (VA_STATUS_SUCCESS != vaInitialize(displ, &vamajor, &vaminor))
+                 continue;
+ 
+-            std::shared_ptr<VADisplay> closeVA(&displ, [displ](VADisplay*) { vaTerminate(displ); });
++#if VA_CHECK_VERSION(1, 15, 0)
++            // The VA backend may differ from the render node's PCI transport.
++            VADisplayAttribute pciId = {};
++            pciId.type = VADisplayPCIID;
++            auto pciSts = vaGetDisplayAttributes(displ, &pciId, 1);
++            std::ignore = MFX_STS_TRACE(pciSts);
++            if (VA_STATUS_SUCCESS != pciSts ||
++                !(pciId.flags & VA_DISPLAY_ATTRIB_GETTABLE) ||
++                (static_cast<mfxU32>(pciId.value) >> 16) != 0x8086)
++                continue;
++
++            deviceId = static_cast<mfxU32>(pciId.value) & 0xffff;
++#endif
+ 
+             VADisplayAttribute attr = {};
+             attr.type = VADisplayAttribSubDevice;

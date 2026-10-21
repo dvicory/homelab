@@ -1,0 +1,22 @@
+--- a/meson.options
++++ b/meson.options
+@@ -140,7 +140,7 @@
+   'gallium-rusticl-enable-drivers',
+   type : 'array',
+   value : ['auto'],
+-  choices : ['auto', 'asahi', 'freedreno', 'panfrost', 'radeonsi'],
++  choices : ['auto', 'asahi', 'freedreno', 'iris', 'panfrost', 'radeonsi'],
+   description : 'List of gallium drivers for which rusticl will be enabled ' +
+                 'by default',
+ )
+--- a/src/gallium/frontends/rusticl/mesa/pipe/device.rs
++++ b/src/gallium/frontends/rusticl/mesa/pipe/device.rs
+@@ -69,6 +69,8 @@
+         "asahi",
+         #[cfg(any(rusticl_enable_freedreno, rusticl_enable_auto))]
+         "freedreno",
++        #[cfg(rusticl_enable_iris)]
++        "iris",
+         #[cfg(any(rusticl_enable_panfrost, rusticl_enable_auto))]
+         "panfrost",
+         #[cfg(rusticl_enable_radeonsi)]

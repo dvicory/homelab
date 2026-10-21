@@ -1,0 +1,86 @@
+--- a/lib/SPIRV/SPIRVWriter.cpp
++++ b/lib/SPIRV/SPIRVWriter.cpp
+@@ -2692,7 +2692,8 @@
+             dyn_cast_or_null<llvm::GlobalAlias>(CI->getCalledOperand())) {
+       CI->setCalledFunction(cast<Function>(Alias->getAliasee()));
+     }
+-    return mapValue(V, transCallInst(CI, BB));
++    SPIRVValue *BV = transCallInst(CI, BB);
++    return BV ? mapValue(V, BV) : nullptr;
+   }
+ 
+   if (Instruction *Inst = dyn_cast<Instruction>(V)) {
+@@ -5443,8 +5444,12 @@
+ SPIRVValue *LLVMToSPIRVBase::transCallInst(CallInst *CI, SPIRVBasicBlock *BB) {
+   assert(CI);
+   Function *F = CI->getFunction();
+-  if (isa<InlineAsm>(CI->getCalledOperand()) &&
+-      BM->isAllowedToUseExtension(ExtensionID::SPV_INTEL_inline_assembly)) {
++  if (isa<InlineAsm>(CI->getCalledOperand())) {
++    if (!BM->isAllowedToUseExtension(ExtensionID::SPV_INTEL_inline_assembly)) {
++      BM->getErrorLog().setError(SPIRVEC_RequiresExtension,
++                                "SPV_INTEL_inline_assembly\n");
++      return nullptr;
++    }
+     // Inline asm is opaque, so we cannot reason about its FP contraction
+     // requirements.
+     SPIRVDBG(dbgs() << "[fp-contract] disabled for " << F->getName()
+@@ -5976,7 +5981,7 @@
+                     StablePreDominatorIterator());
+ }
+ 
+-void LLVMToSPIRVBase::transFunction(Function *I) {
++bool LLVMToSPIRVBase::transFunction(Function *I) {
+   SPIRVFunction *BF = transFunctionDecl(I);
+   // Creating all basic blocks before creating any instruction. SPIR-V requires
+   // that blocks appear after their dominators, so stablePreDominatorTraversal
+@@ -5990,7 +5995,11 @@
+     SPIRVBasicBlock *BB =
+         static_cast<SPIRVBasicBlock *>(transValue(&FI, nullptr));
+     for (auto &BI : FI) {
+-      transValue(&BI, BB, false);
++      if (!transValue(&BI, BB, false)) {
++        std::string Error;
++        if (getErrorLog().getError(Error) != SPIRVEC_Success)
++          return false;
++      }
+     }
+   }
+   // Enable FP contraction unless proven otherwise
+@@ -6002,6 +6011,7 @@
+     BM->addEntryPoint(ExecutionModelKernel, BF->getId(), BF->getName(),
+                       Interface);
+   }
++  return true;
+ }
+ 
+ bool isEmptyLLVMModule(Module *M) {
+@@ -6056,7 +6066,8 @@
+   for (auto *I : Decls)
+     transFunctionDecl(I);
+   for (auto *I : Defs)
+-    transFunction(I);
++    if (!transFunction(I))
++      return false;
+ 
+   if (!transMetadata())
+     return false;
+--- a/lib/SPIRV/SPIRVWriter.h
++++ b/lib/SPIRV/SPIRVWriter.h
+@@ -256,7 +256,7 @@
+   SPIRVValue *oclTransSpvcCastSampler(CallInst *CI, SPIRVBasicBlock *BB);
+   SPIRVValue *transUnaryInst(UnaryInstruction *U, SPIRVBasicBlock *BB);
+ 
+-  void transFunction(Function *I);
++  bool transFunction(Function *I);
+   SPIRV::SPIRVLinkageTypeKind transLinkageType(const GlobalValue *GV);
+ 
+   bool isAnyFunctionReachableFromFunction(
+--- a/test/extensions/INTEL/SPV_INTEL_inline_assembly/inline_asm_basic.cl
++++ b/test/extensions/INTEL/SPV_INTEL_inline_assembly/inline_asm_basic.cl
+@@ -1,4 +1,5 @@
+ // RUN: %clang_cc1 -triple spir64-unknown-unknown -x cl -cl-std=CL2.0 -O0 -emit-llvm-bc %s -o %t.bc
++// RUN: not llvm-spirv -spirv-ext=-SPV_INTEL_inline_assembly %t.bc -o %t.disabled.spv
+ // RUN: llvm-spirv -spirv-ext=+SPV_INTEL_inline_assembly %t.bc -o %t.spv
+ // RUN: llvm-spirv %t.spv -to-text -o %t.spt
+ // RUN: FileCheck < %t.spt %s --check-prefix=CHECK-SPIRV

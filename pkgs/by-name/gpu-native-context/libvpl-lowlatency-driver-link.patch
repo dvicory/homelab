@@ -1,0 +1,10 @@
+--- a/libvpl/src/mfx_dispatcher_vpl_lowlatency.cpp
++++ b/libvpl/src/mfx_dispatcher_vpl_lowlatency.cpp
+@@ -201,6 +201,7 @@
+         "/usr/lib",
+         "/lib64",
+         "/usr/lib64",
++        "@driverLink@/lib",
+     };
+ 
+     // clang-format on

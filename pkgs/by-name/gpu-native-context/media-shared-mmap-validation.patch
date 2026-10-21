@@ -1,0 +1,17 @@
+--- a/src/intel/dev/virtio/intel_media_virtio.c
++++ b/src/intel/dev/virtio/intel_media_virtio.c
+@@ -146,14 +146,6 @@
+          goto out;
+       }
+    }
+-   /* FIXED preserves the allocation's WB/WC type. The pinned renderer's
+-    * setter instead chooses WC; the actual BO map still validates the handle.
+-    */
+-   if (cmd == DRM_IOCTL_I915_GEM_MMAP_OFFSET &&
+-       ((const struct drm_i915_gem_mmap_offset *)arg)->flags == I915_MMAP_OFFSET_FIXED) {
+-      ret = 0;
+-      goto out;
+-   }
+    if (dev->vdrm->caps.wire_format_version == 3 &&
+        (cmd == DRM_IOCTL_I915_GEM_EXECBUFFER2 ||
+         cmd == DRM_IOCTL_I915_GEM_EXECBUFFER2_WR)) {

@@ -139,6 +139,104 @@ setting stay as they are set in Jellyfin.
   sudo udevadm trigger --action=add /sys/bus/pci/devices/0000:85:00.0
   ```
 
+### Opt-in native-context k3s VM experiment
+
+On an already configured Incus host, the explicit
+`den.aspects.virtualization.i915-native-host` aspect selects the matched QEMU
+binary/helpers and scopes its private GBM/EGL provider to the Incus service.
+It does not enable Incus, select a GPU device, change the host kernel, or alter
+network, ACL or security policy. Activating that generation is a manager
+userspace change: stop the owned VM first, retain old provider roots until every
+VM using them has stopped, and obtain manager/bridge-maintenance approval.
+This provider applies to the manager, not just one VM; coordinate other VM owners
+without stopping their guests. Do not infer activation permission from a package
+build or disposable guest result.
+
+For an owned disposable x86_64 NixOS VM, include
+`den.aspects.virtualization.i915-native-guest.provides.k3s` instead of the base
+guest aspect, and configure `services.k3s` normally. The sub-aspect includes the
+base guest drivers, derives `gpu-render` from the Den group registry, assigns
+only the guest's real `renderD128` to that group with mode `0660`, and retains an
+empty `/dev/dri` without hardware. It does not change physical-host ownership.
+
+The public x86_64 packages are `i915-native-qemu`, `i915-native-drivers` and
+`i915-native-test-tools`. Component recipes remain internal dependencies, not
+separate supported package interfaces. CI still builds the matched software
+closure through these roots; compiler-contract and CPU-oracle checks run
+separately. Neither package builds nor CPU checks establish hardware acceptance.
+
+The separate `i915-native-test-tools` package provides `i915-native-check` and
+its workload fixtures. Neither GPU aspect installs it; add it explicitly to a
+disposable test VM when checking the stack.
+
+Tone-map gates retain the directly downloaded `.nv12` pixels and derive planar
+`.yuv` by lossless byte-layout reordering. Do not append a software planar-format
+filter to that hardware download: negotiation can also convert BT.709 back to
+the input's BT.2020 matrix. The same semantic oracle checks those native pixels
+and the independently CPU-decoded hardware bitstream; no tone curve or
+neutrality tolerance is changed.
+
+The generic `media qsv-tonemap` gate tests the QSV VPP API, not the Linux Jellyfin
+application graph. Jellyfin 12.1 on Linux selects VA-API or OpenCL tone mapping
+when its application-owned flags and discovered capabilities permit it; direct
+`vpp_qsv` tone mapping is a different application path. Record effective encoding
+settings, the actual application-generated command and encoded output before
+claiming Linux HDR acceptance. A diagnostic mode override or unused-path result
+does not replace that proof or authorize changing a production preference.
+
+The tools also provide `ioctl-errno --transport-ready RENDER_NODE` and
+`fence-wait --transport-ready RENDER_NODE VGEM_NODE`. Run them only in the
+disposable guest. The latter requires the guest's `vgem` module: its kernel
+software fences expire independently of the test process. These checks exercise
+native error/deadline handling, not physical GPU completion; retain the real
+FFmpeg and OpenVINO gates.
+
+The evaluated VM exposes `system.build.i915NativeK3sRuntimeSpec` (directory
+containing `baseline.json`, `config.json` and finite `store-paths`) and
+`system.build.i915NativeK3sRuntimeClass` (standard Kubernetes JSON). The latter
+is also available in the guest at
+`/etc/homelab/i915-native-k3s/runtime-class.json`; explicitly apply it for the
+experiment and select `runtimeClassName: i915-native` in the owned test pod.
+There is no automatic AddOn, production selection or custom runtime binary.
+Kubernetes receives only the stable handler name, not Nix hashes.
+
+The node generates the complete baseline using its installed `k3s ctr oci spec`
+and extends the supported v3 base template with an `io.containerd.runc.v2`
+handler, retaining the node's `SystemdCgroup` choice. Competing legacy or v3
+templates are refused, not overwritten. The baseline adds finite read-only
+canonical closure binds, individual VA/oneVPL/OpenCL discovery files for the
+retained Jellyfin 12.1 image layout, and only character device `226:128` `rw`
+after normal deny-all. It does not add a required render inode, mount `/dev/dri`,
+grant group membership to a workload, replace image libc/loader, or add an
+application environment/preload. Validate a different image layout against its
+natural loader; Jellyfin results do not establish Immich support.
+
+When the node publishes `system.build.retainedRuntimeHook`, the selected handler
+keeps that exact native `createRuntime` admission hook and its 30-second deadline.
+The ordinary retained runtime producer remains separate; selecting GPU userspace
+does not bypass retained-root admission or mount the hook's closure into the app.
+
+This handler is an opt-in delivery/permission boundary, not admission policy.
+The existing workload owner must still authorize runtime selection, retain the
+non-root user, drop-all/no-new-privileges settings, supplemental group and
+optional directory mount. RuntimeClass affects init containers too; do not
+grant them device visibility. CRI mounts overlapping `/nix/store`, the entry
+files or their parents can hide the injected files and are outside this profile.
+
+Update this experimental profile by replacing the owned VM with a fresh node,
+not by switching drivers under running containers. Keep the old system
+generation rooted until the old VM and all its containers are stopped. Boot the
+replacement with the updated generation, confirm embedded containerd has loaded
+the new handler, then recreate workloads. Only then retire the old roots.
+Restarting k3s alone neither recreates existing containers nor replaces their
+driver mounts. The container compute-replacement command does not provision VMs.
+
+Before using the handler, check startup without a GPU, unchanged-image non-root
+GPU work, separate Unix-permission and cgroup denials, and absence of device
+visibility in init containers and pods without the device mount. Source
+generation is not proof of runtime enforcement. Independent QSV/OpenCL success
+does not establish media sharing.
+
 ### Check hardware acceleration
 
 Run the check as root on the host, from the repository revision in service.
