@@ -344,6 +344,7 @@ let
       inventory = checkInventory system;
     in
     {
+      inherit inventory;
       groups = lib.mapAttrs (_: artifactFor) (ciJobs.${system} // self.hostedCiJobs.${system});
       checks = lib.listToAttrs (
         map (entry: lib.nameValuePair entry.name (artifactFor (checksFor system).${entry.name})) (
