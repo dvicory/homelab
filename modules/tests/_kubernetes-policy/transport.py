@@ -1,8 +1,10 @@
-"""Original-resource/context transport and fail-closed native Test report plumbing."""
+"""Original-resource transport; declaration-complete Tests and content-bound native evidence."""
 import argparse
 from collections import Counter
+import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -222,6 +224,16 @@ def native_results(policy, outcomes, order):
     return results
 
 
+def family_scenarios(family, declaration):
+    positives = [{"name": declaration["positive"]["name"].format(variant=variant), "variant": variant,
+                  "scope": "population"} for variant in VARIANTS]
+    for scenario in positives + declaration["scenarios"]:
+        yield scenario, {
+            "directory": f"fixtures/{family}/{scenario['name']}", "name": scenario["name"],
+            "variant": scenario.get("variant", DEFAULT_VARIANT),
+            **({"expectGate": "reject", "rejectionCategory": scenario["reject"]} if "reject" in scenario else {})}
+
+
 def generate(args):
     """Materialize native Tests from the family declarations in fixtures/<family>.yaml.
 
@@ -264,12 +276,11 @@ def generate(args):
         raise ValueError(f"Missing genuine base {ident} in {variant}")
 
     for family, declaration in declarations.items():
-        positives = [{"name": declaration["positive"]["name"].format(variant=variant), "variant": variant,
-                      "scope": "population"} for variant in VARIANTS]
+        scenarios = family_scenarios(family, declaration)
         (policies / "fixtures" / family).mkdir()
         if "values" in declaration:
             dump(policies / "fixtures" / family / "values.yaml", declaration["values"])
-        for scenario in positives + declaration["scenarios"]:
+        for scenario, entry in scenarios:
             variant = scenario.get("variant", DEFAULT_VARIANT)
             owner = declarations[scenario.get("family", family)]
             directory = policies / "fixtures" / family / scenario["name"]
@@ -308,9 +319,7 @@ def generate(args):
                     "results": native_results(owner["policy"], outcomes, rule_names(owner)),
                     **scenario.get("test", {})}
             dump(directory / "kyverno-test.yaml", test)
-            registry.append({"directory": f"fixtures/{family}/{scenario['name']}", "name": scenario["name"],
-                             "variant": variant, **({"expectGate": "reject", "rejectionCategory": scenario["reject"]}
-                                                    if "reject" in scenario else {})})
+            registry.append(entry)
     (policies / "scenarios.json").write_text(json.dumps({"scenarios": registry}, indent=1) + "\n")
 
 
@@ -321,32 +330,43 @@ def policy_inventory(policies):
         actual = [rule["name"] for rule in policy["spec"]["rules"]]
         declared = rule_names(declaration)
         if not declared or len(declared) != len(set(declared)) or len(actual) != len(set(actual)) or set(actual) != set(declared):
-            raise ValueError(f"Missing/unknown/duplicate required native rules: {family}")
+            raise NativeRejection("incomplete-coverage", f"Missing/unknown/duplicate required native rules: {family}")
         if policy["metadata"]["name"] != declaration["policy"]:
-            raise ValueError(f"Wrong required native policy identity: {family}")
+            raise NativeRejection("incomplete-coverage", f"Wrong required native policy identity: {family}")
 
 
-def prepare_tests(inputs, output):
+def required_scenarios(inputs):
     policies = inputs / "policies"
     policy_inventory(policies)
     inventory = json.loads((policies / "scenarios.json").read_text())
+    expected = {"scenarios": [entry for family in FAMILIES
+                             for _, entry in family_scenarios(
+                                 family, load(policies / "fixtures" / f"{family}.yaml"))]}
+    if inventory != expected:
+        raise NativeRejection("incomplete-coverage", "Native scenarios differ from the family declarations")
     declared = {scenario["directory"] + "/kyverno-test.yaml" for scenario in inventory["scenarios"]}
     discovered = {path.relative_to(policies).as_posix() for path in policies.rglob("kyverno-test.yaml")}
     if declared != discovered or len(declared) != len(inventory["scenarios"]):
-        raise ValueError("Missing/unknown/duplicate declared native scenarios")
-    shutil.copytree(policies, output, copy_function=shutil.copyfile)
+        raise NativeRejection("incomplete-coverage", "Missing/unknown/duplicate declared native scenarios")
+    if not inventory["scenarios"] or any(scenario["variant"] not in VARIANTS for scenario in inventory["scenarios"]):
+        raise NativeRejection("incomplete-coverage", "Empty/unknown-phase declared native scenario inventory")
+    return inventory
+
+
+def prepare_tests(inputs, output):
+    inventory = required_scenarios(inputs)
+    shutil.copytree(inputs / "policies", output, copy_function=shutil.copyfile)
     for directory, _, _ in os.walk(output):
         Path(directory).chmod(0o755)
-    if not inventory["scenarios"] or any(scenario["variant"] not in VARIANTS for scenario in inventory["scenarios"]):
-        raise ValueError("Empty/unknown-phase declared native scenario inventory")
     return inventory
 
 
 def materialize(inputs, contexts, output, scenario, yq):
     directory = output / scenario["directory"]
     test = load(directory / "kyverno-test.yaml")
-    if test["metadata"]["name"] != scenario["name"]:
-        raise ValueError(f"Changed declared native scenario: {scenario['name']}")
+    if (test["metadata"]["name"] != scenario["name"] or
+            test["metadata"]["annotations"]["verification.homelab/variant"] != scenario["variant"]):
+        raise NativeRejection("incomplete-coverage", f"Changed declared native scenario: {scenario['name']}")
     variant = contexts / scenario["variant"]
     objects = None
     if not (directory / "resources.yaml").exists():
@@ -410,9 +430,9 @@ class NativeRejection(ValueError):
         super().__init__(detail)
 
 
-def native_rows(text):
+def native_rows(text, single=False):
     decoder = json.JSONDecoder()
-    rows, cursor = [], 0
+    rows, cursor, reports = [], 0, 0
     while (index := text.find("[", cursor)) >= 0:
         cursor = index + 1
         try:
@@ -420,10 +440,11 @@ def native_rows(text):
         except json.JSONDecodeError:
             continue
         cursor = index + end
-        if isinstance(value, list) and value and all(isinstance(row, dict) and "POLICY" in row for row in value):
+        if isinstance(value, list) and all(isinstance(row, dict) and "POLICY" in row for row in value):
             rows.extend(value)
-    if not rows:
-        raise NativeRejection("incomplete-coverage", "Missing/empty native Kyverno JSON report")
+            reports += 1
+    if not rows or (single and reports != 1):
+        raise NativeRejection("incomplete-coverage", "Missing/empty/ambiguous native Kyverno JSON report")
     return rows
 
 
@@ -449,6 +470,104 @@ def native_outcomes(results):
 def expected_identities(outcomes):
     return Counter((policy, rule, f"{api}/{kind}/{namespace}/{name}")
                    for policy, rule, api, kind, namespace, name, _ in outcomes)
+
+
+def validate_rows(rows, expected, name):
+    fields = ("POLICY", "RULE", "RESOURCE", "RESULT", "REASON", "Message")
+    if any(not isinstance(row.get(field), str) for row in rows for field in fields):
+        raise NativeRejection("incomplete-coverage", f"Malformed native outcome: {name}")
+    # Pinned 1.19 can report CEL/compiler errors with RESULT Pass.
+    diagnostics = ("resulted in error:", "fails to compile:", "fails to evaluate:",
+                   "compilation failed:", "error in parameterized resource:")
+    if any(marker in row["Message"].lower() for row in rows for marker in diagnostics):
+        raise NativeRejection("native-evaluation-error", f"Native evaluation/compiler/parameter error: {name}")
+    statuses = [row["REASON"].partition(", got ")[2] for row in rows]
+    if "error" in statuses or any(row["REASON"] in ("Invalid Policy", "Error") for row in rows):
+        raise NativeRejection("native-evaluation-error", f"Native error status: {name}")
+    # Only nonrequired Excluded/Pass rows may disappear from the exact population.
+    rows = [row for row in rows if not (
+        row["RESULT"] == "Pass" and row["REASON"] == "Excluded" and
+        (row["POLICY"], row["RULE"], row["RESOURCE"]) not in expected)]
+    if "skip" in statuses or any(row["REASON"] in ("Excluded", "Not found", "Skip") for row in rows):
+        raise NativeRejection("scope-not-exercised", f"Native skipped/unmatched scope: {name}")
+    actual = Counter((row["POLICY"], row["RULE"], row["RESOURCE"]) for row in rows)
+    if actual != expected:
+        raise NativeRejection("incomplete-coverage", f"Missing/duplicate/unknown native outcomes: {name}")
+    if any(row["RESULT"] != "Pass" for row in rows):
+        raise NativeRejection("native-test-failure", f"Native Kyverno Test failed: {name}")
+
+
+def batch_rows(text, expected):
+    # ee97ce0 runTest prints the legacy Test.Name, but CheckTest forbids it;
+    # metadata.name is the declared logical name, not the blank banner field.
+    # Bind each JSON array to its exact native Test file path, never row order/count.
+    headers = list(re.finditer(r"^Loading test (.*?) \( (.*?) \) \.\.\.\s*$", text, re.MULTILINE))
+    if headers and text[:headers[0].start()].strip():
+        raise NativeRejection("incomplete-coverage", "Unattributed native output before first Test")
+    actual = {}
+    for index, header in enumerate(headers):
+        path = header[2]
+        if header[1] != "" or path not in expected or path in actual:
+            raise NativeRejection("incomplete-coverage", f"Unknown/duplicate native Test path: {path}")
+        if index == 0 and path != next(iter(expected)):
+            raise NativeRejection("incomplete-coverage", "Native discovery prelude did not run first")
+        end = headers[index + 1].start() if index + 1 < len(headers) else len(text)
+        rows = native_rows(text[header.end():end], single=True)
+        validate_rows(rows, expected[path], path)
+        actual[path] = rows
+    if actual.keys() != expected.keys():
+        raise NativeRejection("incomplete-coverage", "Missing native Test provenance")
+    return actual
+
+
+def execute_batch(scenarios, kyverno, report, discovery, contexts, tests):
+    directory = report.with_suffix("")
+    directory.mkdir()
+    first = load(tests / discovery["directory"] / "kyverno-test.yaml")
+    variant = contexts / discovery["variant"]
+    # Keep the real 1.19 discovery prelude before ANY complete resource input.
+    first["resources"] = [str((variant / "resource.json").resolve())]
+    first["clusterResources"] = [str((variant / "native-discovery.yaml").resolve())]
+    first["paramResources"] = [str((variant / "policy-facts.yaml").resolve())]
+    documents = [(directory, tests / discovery["directory"], first)]
+    for scenario in scenarios:
+        base = tests / scenario["directory"]
+        documents.append((base, base, load(base / "kyverno-test.yaml")))
+    expected, provenance = {}, []
+    for destination, base, test in documents:
+        if not test.get("results"):
+            raise NativeRejection("incomplete-coverage", "Missing required native target outcomes")
+        for field, category in (("policies", "missing-policy"), ("resources", "missing-resource"),
+                                ("paramResources", "missing-parameters"), ("clusterResources", "missing-api-context"),
+                                ("variables", "missing-values"), ("context", "missing-api-context"),
+                                ("userinfo", "missing-values")):
+            paths = test.get(field, [])
+            paths = [paths] if isinstance(paths, str) else paths
+            if any(not (base / path).exists() for path in paths):
+                raise NativeRejection(category, f"Missing declared native input: {field}")
+        for field in ("policies", "resources", "paramResources", "clusterResources", "targetResources"):
+            if test.get(field):
+                test[field] = [str((base / path).resolve()) for path in test[field]]
+        for field in ("variables", "context", "userinfo"):
+            if test.get(field):
+                test[field] = os.path.relpath((base / test[field]).resolve(), destination.resolve())
+        path = (destination / "native-test.yaml").resolve()
+        if str(path) in expected:
+            raise NativeRejection("incomplete-coverage", f"Duplicate native Test path: {path}")
+        dump(path, test)
+        outcomes = native_outcomes(test["results"])
+        expected[str(path)] = expected_identities(outcomes)
+        provenance.append({"declaredName": test["metadata"]["name"], "path": str(path),
+                           "directory": base.relative_to(tests).as_posix(),
+                           "prelude": destination == directory, "outcomes": outcomes})
+    result = subprocess.run([kyverno, "test", *[str(destination.resolve()) for destination, _, _ in documents],
+                             "--file-name", "native-test.yaml", "--require-tests", "--remove-color",
+                             "--detailed-results", "--output-format", "json"], text=True, capture_output=True)
+    report.write_text(result.stdout + result.stderr)
+    report.with_suffix(".expected.json").write_text(json.dumps(provenance, indent=1) + "\n")
+    batch_rows(result.stdout, expected)
+    if result.returncode:
+        raise NativeRejection("native-test-failure", f"Native Kyverno batch failed; see {report}")
 
 
 def execute(directory, scenario, kyverno, report, discovery, contexts, tests):
@@ -486,28 +605,9 @@ def execute(directory, scenario, kyverno, report, discovery, contexts, tests):
                              "--output-format", "json"], text=True, capture_output=True)
     report.write_text(result.stdout + result.stderr)
     rows = native_rows(result.stdout)
-    # Pinned CLI exposes compiler/CEL failures as diagnostic Message strings, sometimes with RESULT Pass.
-    # Interpret those diagnostics here; counterfactual contracts assert only the typed category below.
-    diagnostics = ("resulted in error:", "fails to compile:", "fails to evaluate:",
-                   "compilation failed:", "error in parameterized resource:")
-    if any(marker in row["Message"].lower() for row in rows for marker in diagnostics):
-        raise NativeRejection("native-evaluation-error", f"Native evaluation/compiler/parameter error: {scenario['name']}")
-    # REASON is the CLI's structured enum/status-template field, not a fixture wording expectation.
-    statuses = [row["REASON"].partition(", got ")[2] for row in rows]
-    if "error" in statuses or any(row["REASON"] in ("Invalid Policy", "Error") for row in rows):
-        raise NativeRejection("native-evaluation-error", f"Native error status: {scenario['name']}")
     expected = expected_identities(native_outcomes(first["results"])) + expected_identities(native_outcomes(test["results"]))
-    # Native Test emits Excluded/Pass rows for nonapplicable identities omitted from expectations.
-    # Ignore only that exact combination; required exclusions, all errors and applicable extras still reject.
-    rows = [row for row in rows if not (
-        row["RESULT"] == "Pass" and row["REASON"] == "Excluded" and
-        (row["POLICY"], row["RULE"], row["RESOURCE"]) not in expected)]
-    if "skip" in statuses or any(row["REASON"] in ("Excluded", "Not found", "Skip") for row in rows):
-        raise NativeRejection("scope-not-exercised", f"Native skipped/unmatched scope: {scenario['name']}")
-    actual = Counter((r["POLICY"], r["RULE"], r["RESOURCE"]) for r in rows)
-    if actual != expected:
-        raise NativeRejection("incomplete-coverage", f"Missing/duplicate/unknown native outcomes: {scenario['name']}")
-    if result.returncode or any(row["RESULT"] != "Pass" for row in rows):
+    validate_rows(rows, expected, scenario["name"])
+    if result.returncode:
         raise NativeRejection("native-test-failure", f"Native Kyverno Test failed: {scenario['name']}; see {report}")
 
 
@@ -520,9 +620,86 @@ def part_scenarios(inventory, family, shard, shards):
     return [scenario for index, scenario in enumerate(owned) if index % shards == shard - 1]
 
 
+def prepared_inputs(inputs, args):
+    # Only the exact immutable derivation can carry reusable successful evidence.
+    marker = inputs / "prepared.json"
+    if not (args.prepared_inputs is not None and
+            inputs.resolve() == Path(args.prepared_inputs).resolve() and
+            inputs.resolve().parent == Path("/nix/store") and marker.is_file()):
+        return False
+    binding = json.loads(marker.read_text())
+    return (re.fullmatch(r"[0-9a-f]{64}", binding.get("inputSha256", "")) is not None and
+            binding == {"schemaRunner": args.schema_runner, "schemas": args.schemas,
+                        "schemaManifests": args.schema_manifests, "inputSha256": binding["inputSha256"]})
+
+
+def content_binding(path, exclude=()):
+    """Hash file names and bytes, including symlink targets, never mtimes."""
+    path = Path(path)
+    digest = hashlib.sha256()
+
+    def consume(current, relative):
+        if current.is_dir():
+            digest.update(json.dumps(["directory", relative]).encode())
+            for child in sorted(current.iterdir()):
+                if relative != "." or child.name not in exclude:
+                    consume(child, f"{relative}/{child.name}")
+        elif current.is_file():
+            digest.update(json.dumps(["file", relative, hashlib.sha256(current.read_bytes()).hexdigest()]).encode())
+        elif not current.exists():
+            digest.update(json.dumps(["missing", relative]).encode())
+        else:
+            raise NativeRejection("source-mismatch", f"Unsupported native input: {current}")
+
+    consume(path, ".")
+    return digest.hexdigest()
+
+
+def prepare(args):
+    inputs = Path(args.inputs)
+    # Exclude only this output marker, not any consumed source population.
+    marker = {"schemaRunner": args.schema_runner, "schemas": args.schemas,
+              "schemaManifests": args.schema_manifests,
+              "inputSha256": content_binding(inputs, exclude=("prepared.json",))}
+    (inputs / "prepared.json").write_text(json.dumps(marker, indent=1) + "\n")
+
+
+def source_binding(inputs, args):
+    # Only an exact immutable prepared identity can supply a cached content hash.
+    # Writable copies recompute it; prepared.json is metadata, not its own input.
+    fingerprint = (json.loads((inputs / "prepared.json").read_text())["inputSha256"]
+                   if prepared_inputs(inputs, args)
+                   else content_binding(inputs, exclude=("prepared.json",)))
+    binding = {"inputs": {"sha256": fingerprint},
+               "adapter": content_binding(SOURCE / "transport.py"),
+               "builtinScopes": content_binding(SOURCE / "builtin-scopes.json")}
+    # Custom Tests can consume files outside the tree; bind those bytes too.
+    # Missing files remain available to genuine input-rejection scenarios.
+    external = {}
+    for test_path in (inputs / "policies").rglob("kyverno-test.yaml"):
+        test = load(test_path)
+        for field in ("policies", "resources", "paramResources", "clusterResources", "targetResources",
+                      "variables", "context", "userinfo"):
+            paths = test.get(field, [])
+            for value in ([paths] if isinstance(paths, str) else paths):
+                path = (test_path.parent / value).resolve()
+                if not path.is_relative_to(inputs.resolve()):
+                    external[str(path)] = content_binding(path)
+                if field == "clusterResources" and path.is_file():
+                    for value in load(path).get("spec", {}).get("crds", []):
+                        crd = (path.parent / value).resolve()
+                        if not crd.is_relative_to(inputs.resolve()):
+                            external[str(crd)] = content_binding(crd)
+    binding["external"] = external
+    return binding
+
+
 def check_schemas(inputs, output, args):
     for variant in VARIANTS:
         original = inputs / variant
+        if prepared_inputs(inputs, args):
+            shutil.copyfile(original / "schema-report.json", output / f"schema--{variant}.json")
+            continue
         subprocess.run([args.schema_runner, str(original / "manifests"), args.schemas,
                         str(output / f"schema--{variant}.json")], check=True)
         crd_provenance(argparse.Namespace(manifests=original / "manifests", reference=args.schema_manifests))
@@ -534,6 +711,10 @@ def run(args):
     contexts = output / "contexts"
     tests = output / "tests"
     inventory = prepare_tests(inputs, tests)
+    binding = source_binding(inputs, args)
+    prepared = prepared_inputs(inputs, args)
+    if prepared:
+        contexts = inputs
     if args.family is None:
         # Whole gate in one process: every scenario plus the schema prerequisites.
         selected = inventory["scenarios"]
@@ -549,8 +730,9 @@ def run(args):
         if not any(scenario["variant"] == variant for scenario in selected):
             continue
         original = inputs / variant
-        bundle(argparse.Namespace(manifests=original / "manifests", bootstrap=original / "bootstrap",
-                                  expected=original / "expected.json", variant=variant, output=contexts / variant))
+        if not prepared:
+            bundle(argparse.Namespace(manifests=original / "manifests", bootstrap=original / "bootstrap",
+                                      expected=original / "expected.json", variant=variant, output=contexts / variant))
         discoveries = [scenario for scenario in inventory["scenarios"]
                        if scenario["variant"] == variant and
                        scenario["directory"].startswith("fixtures/transport/transport-positive-")]
@@ -558,10 +740,14 @@ def run(args):
             raise ValueError(f"Missing/ambiguous independent native transport positive: {variant}")
         discovery = discoveries[0]
         materialize(inputs, contexts, tests, discovery, args.yq)
+        batches = {family: [] for family in FAMILIES}
         for scenario in inventory["scenarios"]:
             if scenario["variant"] != variant or scenario["directory"] not in selected_directories:
                 continue
             materialize(inputs, contexts, tests, scenario, args.yq)
+            if scenario.get("expectGate", "pass") != "reject":
+                batches[scenario["directory"].split("/")[1]].append(scenario)
+                continue
             report_name = scenario["directory"].replace("/", "--")
             report = output / f"{report_name}.json"
             rejected = None
@@ -571,47 +757,56 @@ def run(args):
             except NativeRejection as error:
                 rejected = NativeRejection(error.category,
                                            f"{error}; scenario {scenario['directory']}; native report {report}")
-            if scenario.get("expectGate", "pass") == "reject":
-                if rejected is None:
-                    raise ValueError(f"Fail-open required native counterfactual: {scenario['directory']}; report {report}")
-                if rejected.category != scenario["rejectionCategory"]:
-                    raise ValueError(f"Counterfactual rejection category mismatch: {scenario['directory']}: {rejected.category}; report {report}")
-                (output / f"{report_name}.rejected.json").write_text(json.dumps(
-                    {"scenario": scenario["directory"], "name": scenario["name"],
-                     "report": str(report) if report.exists() else None, "category": rejected.category}) + "\n")
-            elif rejected:
-                raise rejected
+            if rejected is None:
+                raise ValueError(f"Fail-open required native counterfactual: {scenario['directory']}; report {report}")
+            if rejected.category != scenario["rejectionCategory"]:
+                raise ValueError(f"Counterfactual rejection category mismatch: {scenario['directory']}: {rejected.category}; report {report}")
+            (output / f"{report_name}.rejected.json").write_text(json.dumps(
+                {"scenario": scenario["directory"], "name": scenario["name"],
+                 "report": str(report) if report.exists() else None, "category": rejected.category}) + "\n")
             executed.append(scenario["directory"])
+        for family, scenarios in batches.items():
+            if scenarios:
+                execute_batch(scenarios, args.kyverno, output / f"batch--{family}--{variant}.json",
+                              discovery, contexts, tests)
+                executed.extend(scenario["directory"] for scenario in scenarios)
     if sorted(executed) != sorted(selected_directories):
-        raise ValueError("Selected native scenarios were not all executed")
+        raise NativeRejection("incomplete-coverage", "Selected native scenarios were not all executed")
+    if source_binding(inputs, args) != binding:
+        raise NativeRejection("source-mismatch", "Native inputs changed during execution")
     shutil.copyfile(inputs / "policies" / "scenarios.json", output / "required-scenarios.json")
     (output / "executed.json").write_text(json.dumps(
         {"family": args.family, "shard": args.shard, "shards": args.shards,
-         "scenarios": sorted(executed)}, indent=1) + "\n")
+         "source": binding, "scenarios": sorted(executed)}, indent=1) + "\n")
 
 
 def aggregate(args):
-    """Require every declared scenario to pass in exactly one part, and check schemas once."""
+    """Require every scenario in exactly one part, with bound or freshly checked schema evidence."""
     inputs, output = Path(args.inputs), Path(args.output)
     output.mkdir(parents=True)
-    declared = json.loads((inputs / "policies" / "scenarios.json").read_text())
+    declared = required_scenarios(inputs)
+    binding = source_binding(inputs, args)
     required = Counter(scenario["directory"] for scenario in declared["scenarios"])
     if not required or any(count != 1 for count in required.values()):
-        raise ValueError("Empty or duplicate declared native scenario inventory")
+        raise NativeRejection("incomplete-coverage", "Empty or duplicate declared native scenario inventory")
     executed, parts = Counter(), set()
     for report in map(Path, args.parts):
         result = json.loads((report / "executed.json").read_text())
+        if result.get("source") != binding:
+            raise NativeRejection("source-mismatch", f"Native policy part used another source: {report}")
         if json.loads((report / "required-scenarios.json").read_text()) != declared:
-            raise ValueError(f"Native policy part used another scenario inventory: {report}")
+            raise NativeRejection("incomplete-coverage", f"Native policy part used another scenario inventory: {report}")
         part = (result["family"], result["shard"], result["shards"])
         owned = {scenario["directory"] for scenario in part_scenarios(declared, *part)}
         if part in parts or set(result["scenarios"]) != owned:
-            raise ValueError(f"Duplicate or incomplete native policy part: {report}")
+            raise NativeRejection("incomplete-coverage", f"Duplicate or incomplete native policy part: {report}")
         parts.add(part)
         executed.update(result["scenarios"])
     if executed != required:
-        raise ValueError("Native policy parts do not cover every declared scenario exactly once")
+        raise NativeRejection("incomplete-coverage", "Native policy parts do not cover every declared scenario exactly once")
     check_schemas(inputs, output, args)
+    if source_binding(inputs, args) != binding:
+        raise NativeRejection("source-mismatch", "Native inputs changed during aggregation")
     shutil.copyfile(inputs / "policies" / "scenarios.json", output / "required-scenarios.json")
 
 
@@ -627,19 +822,24 @@ def main():
     fixtures = commands.add_parser("generate")
     for key in ("inputs", "yq"):
         fixtures.add_argument(f"--{key}", required=True)
+    prepared = commands.add_parser("prepare")
+    for key in ("inputs", "schema-runner", "schemas", "schema-manifests"):
+        prepared.add_argument(f"--{key}", required=True)
     runner = commands.add_parser("run")
     for key in ("inputs", "output", "kyverno", "yq", "schema-runner", "schemas", "schema-manifests"):
         runner.add_argument(f"--{key}", required=True)
     runner.add_argument("--family", choices=FAMILIES)
     runner.add_argument("--shard", type=int, default=1)
     runner.add_argument("--shards", type=int, default=1)
+    runner.add_argument("--prepared-inputs")
     combine = commands.add_parser("aggregate")
     for key in ("inputs", "output", "schema-runner", "schemas", "schema-manifests"):
         combine.add_argument(f"--{key}", required=True)
+    combine.add_argument("--prepared-inputs")
     combine.add_argument("parts", nargs="+")
     args = parser.parse_args()
-    {"bundle": bundle, "bind-crds": crd_provenance, "generate": generate, "run": run,
-     "aggregate": aggregate}[args.command](args)
+    {"bundle": bundle, "bind-crds": crd_provenance, "generate": generate, "prepare": prepare,
+     "run": run, "aggregate": aggregate}[args.command](args)
 
 
 if __name__ == "__main__":
