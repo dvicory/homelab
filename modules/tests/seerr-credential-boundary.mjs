@@ -25,9 +25,14 @@ const credentialObserver = 'data:text/javascript,' + encodeURIComponent(`
   syncBuiltinESMExports();
 `);
 const key = 'fixture-seerr-api-key';
+const apiSecretKey = 'SEERR_KEY_FIXTURE';
 let fresh = false;
 const server = createServer((request, response) => {
   requests.push({ path: request.url, method: request.method });
+  if (request.headers['x-api-key'] !== key) {
+    response.writeHead(401).end();
+    return;
+  }
   const body = request.url === '/api/v1/settings/public'
     ? { mediaServerType: fresh ? 4 : 2, initialized: !fresh }
     : request.url === '/api/v1/settings/jellyfin'
@@ -41,9 +46,9 @@ try {
   await mkdir(join(root, 'configuration'));
   await mkdir(join(root, 'secrets'));
   await mkdir(join(root, 'seerr-state'));
-  await writeFile(join(root, 'secrets', 'SEERR_API_KEY'), key);
+  await writeFile(join(root, 'secrets', apiSecretKey), key);
   await writeFile(join(root, 'configuration', 'seerr.json'), JSON.stringify({
-    seerr: { url: `http://127.0.0.1:${server.address().port}` },
+    seerr: { url: `http://127.0.0.1:${server.address().port}`, apiSecretKey },
     jellyfin: {
       ip: 'jellyfin.media.svc', port: 8096, useSsl: false, urlBase: '',
       username: 'admin', namespace: 'jellyfin', secret: { name: 'administrator', key: 'password' },

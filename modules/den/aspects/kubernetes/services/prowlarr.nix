@@ -10,13 +10,13 @@ let
     service = "prowlarr";
     port = 9696;
     memory = "1Gi";
+    apiSecretKey = "PROWLARR_API_KEY";
   };
   image = {
     repository = "ghcr.io/linuxserver/prowlarr";
     tag = "2.5.2.5491-ls159";
     digest = "sha256:c7502a75b021d964481c129c84590b9cbc40f83aadd4e553f173871bc0deaa3c";
   };
-  apiSecretKey = "PROWLARR_API_KEY";
   retainedEntry =
     computeResources: key:
     assert lib.assertMsg (builtins.hasAttr key computeResources.retainedPaths)
@@ -31,16 +31,29 @@ let
   };
 in
 {
+  den.aspects.kubernetes.services.prowlarr.settings.integration = lib.mkOption {
+    type = lib.types.attrs;
+    readOnly = true;
+    default = {
+      inherit (app)
+        namespace
+        service
+        port
+        apiSecretKey
+        ;
+    };
+    description = "Read-only Prowlarr Service endpoint and API Secret key for consumers.";
+  };
   den.aspects.kubernetes.services.prowlarr.compute-resources = { cluster, ... }: {
     retainedPaths.prowlarr = {
       inherit (identity) uid gid;
       mode = "0700";
     };
-    runtimeSecrets."media--${cluster.settings.kubernetes.services.media.configurationSecret}--${apiSecretKey}" =
+    runtimeSecrets."${app.namespace}--${cluster.settings.kubernetes.services.media.configurationSecret}--${app.apiSecretKey}" =
       {
-        namespace = "media";
+        namespace = app.namespace;
         name = cluster.settings.kubernetes.services.media.configurationSecret;
-        key = apiSecretKey;
+        key = app.apiSecretKey;
         generator = "api-key";
       };
   };
@@ -91,7 +104,7 @@ in
                   PUID = toString identity.uid;
                   PGID = toString identity.gid;
                   UMASK = "007";
-                  PROWLARR__AUTH__APIKEY = secretRef secretName apiSecretKey;
+                  PROWLARR__AUTH__APIKEY = secretRef secretName app.apiSecretKey;
                   PROWLARR__SERVER__URLBASE = prefix;
                   # Gateway-only browser sign-in, as for Radarr and Sonarr
                   # (see arr.nix).

@@ -1,10 +1,11 @@
 { lib, ... }:
 let
-  apps.seerr = {
+  app = {
     namespace = "media";
     service = "seerr";
     port = 5055;
     memory = "1Gi";
+    apiSecretKey = "SEERR_API_KEY";
   };
   images.seerr = {
     repository = "ghcr.io/seerr-team/seerr";
@@ -18,17 +19,30 @@ let
     builtins.getAttr key computeResources.retainedPaths;
 in
 {
+  den.aspects.kubernetes.services.seerr.settings.integration = lib.mkOption {
+    type = lib.types.attrs;
+    readOnly = true;
+    default = {
+      inherit (app)
+        namespace
+        service
+        port
+        apiSecretKey
+        ;
+    };
+    description = "Read-only Seerr Service endpoint and API Secret key for consumers.";
+  };
   den.aspects.kubernetes.services.seerr.compute-resources = { cluster, ... }: {
     retainedPaths.seerr = {
       uid = 1000;
       gid = 1000;
       mode = "0700";
     };
-    runtimeSecrets."media--${cluster.settings.kubernetes.services.media.configurationSecret}--SEERR_API_KEY" =
+    runtimeSecrets."${app.namespace}--${cluster.settings.kubernetes.services.media.configurationSecret}--${app.apiSecretKey}" =
       {
-        namespace = "media";
+        namespace = app.namespace;
         name = cluster.settings.kubernetes.services.media.configurationSecret;
-        key = "SEERR_API_KEY";
+        key = app.apiSecretKey;
       };
   };
   den.aspects.kubernetes.services.seerr.settings.phase = lib.mkOption {
@@ -48,7 +62,6 @@ in
       ...
     }:
     let
-      app = apps.seerr;
       state = retainedEntry computeResources "seerr";
       route =
         assert lib.assertMsg (builtins.hasAttr "requests" cluster.routes)
@@ -72,7 +85,7 @@ in
         helm.releases.seerr = {
           chart = charts.bjw-s-labs.app-template;
           values = {
-            fullnameOverride = "seerr";
+            fullnameOverride = app.service;
             defaultPodOptions = {
               nodeSelector."kubernetes.io/hostname" = computeResources.instance;
               automountServiceAccountToken = false;
@@ -87,7 +100,7 @@ in
                   TZ = "UTC";
                   API_KEY.valueFrom.secretKeyRef = {
                     name = cluster.settings.kubernetes.services.media.configurationSecret;
-                    key = "SEERR_API_KEY";
+                    key = app.apiSecretKey;
                   };
                 };
                 securityContext = {

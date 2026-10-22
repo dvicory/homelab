@@ -74,22 +74,17 @@
           routePrefix = prefix;
           externalUrl = if route == null then null else "https://${builtins.head route.hostnames}${prefix}";
         };
-      routeFact =
-        routeKey:
-        let
-          route = builtins.getAttr routeKey cluster.routes;
-        in
-        factFor {
-          inherit routeKey;
-          inherit (route) namespace service port;
-        };
       arrFacts = kind: lib.mapAttrs (_: cfg: factFor cfg.integration) settings.${kind};
       services = {
-        prowlarr = routeFact "prowlarr" // {
-          apiSecretKey = "PROWLARR_API_KEY";
-        };
-        sabnzbd = routeFact "sabnzbd";
-        seerr = routeFact "requests";
+        prowlarr = factFor (
+          cluster.settings.kubernetes.services.prowlarr.integration // { routeKey = "prowlarr"; }
+        );
+        sabnzbd = factFor (
+          cluster.settings.kubernetes.services.sabnzbd.integration // { routeKey = "sabnzbd"; }
+        );
+        seerr = factFor (
+          cluster.settings.kubernetes.services.seerr.integration // { routeKey = "requests"; }
+        );
         radarr = arrFacts "radarr";
         sonarr = arrFacts "sonarr";
       };
@@ -226,7 +221,7 @@
                       port: ${toString apps.sabnzbd.port}
                       use_ssl: false
                       url_base: ""
-                      api_key: !env SABNZBD_API_KEY
+                      api_key: !env ${apps.sabnzbd.apiSecretKey}
                       # SABnzbd has no web login; clear any stored one.
                       username: ""
                       password: ""
@@ -336,6 +331,7 @@
               sonarr = seerrPolicy cluster "sonarr" settings.sonarr;
             };
             seerr = {
+              inherit (apps.seerr) apiSecretKey;
               url = endpoint apps.seerr;
               applicationUrl = apps.seerr.externalUrl;
             };
@@ -506,7 +502,7 @@
           "/configuration/seerr.mjs"
         ];
         secretName = secretName;
-        secretKeys = arrSecretKeys ++ [ "SEERR_API_KEY" ];
+        secretKeys = arrSecretKeys ++ [ apps.seerr.apiSecretKey ];
         serviceAccountName = if bootstrap then "media-config-seerr-bootstrap" else "media-config-seerr";
         nodeSelector."kubernetes.io/hostname" = computeResources.instance;
         env = lib.optionals bootstrap [
@@ -727,7 +723,7 @@
                 ++ map (secretEnv secretName) (
                   arrSecretKeys
                   ++ [
-                    "SABNZBD_API_KEY"
+                    apps.sabnzbd.apiSecretKey
                     prowlarrSecretKey
                   ]
                 );
