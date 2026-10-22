@@ -190,15 +190,17 @@ def main():
     labels, ports = workloads[(FILLER_NAMESPACE, FILLER_LIKE)]
     selected = selecting(FILLER_NAMESPACE, labels)
     assert selected, "filler Pods must be selected by a committed policy"
+    # Match the real policy without letting the ReplicaSet adopt the named stand-in.
+    filler_labels = {**labels, "homelab.test/role": "policy-filler"}
     filler = {
         "apiVersion": "apps/v1",
         "kind": "Deployment",
         "metadata": {"name": "policy-filler", "namespace": FILLER_NAMESPACE},
         "spec": {
             "replicas": 0,
-            "selector": {"matchLabels": labels},
+            "selector": {"matchLabels": filler_labels},
             "template": {
-                "metadata": {"labels": labels},
+                "metadata": {"labels": filler_labels},
                 "spec": {"terminationGracePeriodSeconds": 0, "containers": [container(args.image, ports)]},
             },
         },
