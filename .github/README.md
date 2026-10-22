@@ -120,9 +120,16 @@ the network-policy enforcer; a dedicated negative fixture guards that boundary.
 The gate runs as five independent derivations: `transport`, `gitops`,
 `edge-identity` and two round-robin halves of `workloads`
 (`prod-home-manifests-policy-<family>[-<half>]`). The aggregate
-`prod-home-manifests-policy` check requires every declared scenario to pass
-in exactly one part, then runs the per-render schema and CRD provenance
-checks and the schema counterfactuals once.
+`prod-home-manifests-policy` check requires every declaration-derived scenario
+to pass in exactly one part. Compatible Tests share native Kyverno invocations;
+each result remains bound to its engine-emitted Test path, declared name and
+complete rule/resource outcomes. Parts and the aggregate must use the same
+prepared input contents; editing a report and its inventory together cannot
+remove required coverage.
+
+Schema evidence is prepared once in immutable Nix inputs and reused by the
+parts. Mutable input copies are revalidated. The aggregate checks schema and
+CRD provenance and runs the schema counterfactuals once.
 
 Schema counterfactuals assert native invalid-resource status and validation
 paths, not error-message wording.
