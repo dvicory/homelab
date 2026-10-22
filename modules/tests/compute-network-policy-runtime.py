@@ -467,6 +467,10 @@ def restart_k3s(lib, guest: Guest) -> None:
     guest.runtime.guest("systemctl", "daemon-reload")
     guest.runtime.guest("systemctl", "restart", "k3s", timeout=600)
     lib.wait_for("K3s node after the K3s restart", guest.runtime.node_ready, timeout=600)
+    # Node status survives restart; require the live kubelet/CRI path, without
+    # sending or retrying a network probe, or restarting existing watchers.
+    for client in ("gateway-proxy", "stranger"):
+        guest.exec_in(client, "true")
 
 
 def as_before_change(lib, guest: Guest, args) -> None:
