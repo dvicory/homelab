@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 spec = importlib.util.spec_from_file_location("recovery", sys.argv[1])
 recovery = importlib.util.module_from_spec(spec)
@@ -43,16 +44,29 @@ signal.signal(signal.SIGTERM, stop)
 print("ready", flush=True)
 time.sleep(60)
 """
-unrelated = subprocess.Popen([sys.executable, "-c", "import signal; signal.pause()"], start_new_session=True)
+unrelated_churn = """import os
+while True:
+    child = os.fork()
+    if child == 0:
+        os._exit(0)
+    os.waitpid(child, 0)
+"""
+unrelated = subprocess.Popen([sys.executable, "-c", unrelated_churn], start_new_session=True)
 try:
     for leader_status, child_script, expect_cleanup in (
+        (0, None, False), (7, None, False),
         (None, child, False), (0, child, False), (7, child, False), (7, slow_child, True),
     ):
+        leader_script = (
+            "import subprocess,sys; "
+            f"p=subprocess.Popen({[sys.executable, '-u', '-c', child_script]!r},stdout=subprocess.PIPE,text=True); "
+            "assert p.stdout.readline().strip()=='ready'; print(p.pid,flush=True); "
+            + ("p.wait()" if leader_status is None else f"sys.exit({leader_status})")
+            if child_script is not None else
+            f"import os,sys; print(os.getpid(),flush=True); sys.exit({leader_status})"
+        )
         owned = subprocess.Popen(
-            [sys.executable, "-u", "-c", "import subprocess,sys; "
-             f"p=subprocess.Popen({[sys.executable, '-u', '-c', child_script]!r},stdout=subprocess.PIPE,text=True); "
-             "assert p.stdout.readline().strip()=='ready'; print(p.pid,flush=True); "
-             + ("p.wait()" if leader_status is None else f"sys.exit({leader_status})")],
+            [sys.executable, "-u", "-c", leader_script],
             stdout=subprocess.PIPE, text=True, start_new_session=True,
         )
         child_fd = leader_fd = None
@@ -66,8 +80,17 @@ try:
                 exited = os.waitid(os.P_PID, owned.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG)
                 assert exited.si_pid == owned.pid and exited.si_status == leader_status
                 assert owned.returncode is None, "leader was reaped before group cleanup"
-                assert not select.select([child_fd], [], [], 0)[0], "child exited before group cleanup"
+                if child_script is not None:
+                    assert not select.select([child_fd], [], [], 0)[0], "child exited before group cleanup"
+            started = time.monotonic()
             recovery.stop_owned_bootstrap(owned)
+            elapsed = time.monotonic() - started
+            if child_script == child:
+                assert 30 <= elapsed < 45, "live TERM-resistant child did not receive the full bounded grace"
+            else:
+                assert elapsed < 15, "empty owned group consumed the remaining cleanup grace"
+                if expect_cleanup:
+                    assert elapsed >= 1, "graceful child cleanup was cut short"
             assert owned.returncode is not None
             if leader_status is not None:
                 assert owned.returncode == leader_status, "cleanup lost the leader's exit status"
@@ -95,4 +118,4 @@ finally:
     unrelated.terminate()
     unrelated.wait(timeout=5)
     scratch.cleanup()
-print("registry failures are classified without messages; application/unrelated/retiring state is not an upstream failure; running and exited-but-unreaped leaders lose owned children without touching unrelated sessions")
+print("registry failures are classified without messages; empty groups retire early, live children retain cleanup grace, leader status survives and unrelated sessions remain running")
