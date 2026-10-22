@@ -31,7 +31,7 @@ let
         else
           "not declared";
     in
-    "| `${name}` | `${route.exposure}` | `${url (builtins.head route.hostnames)}` | `${secondary}` | `${route.namespace}/${route.service}:${toString route.port}` |"
+    "| `${name}` | `${route.exposure}` | `${url (builtins.head route.hostnames)}` | `${secondary}` | `${route.namespace}/${route.service}:${toString route.port}` | `${route.auth}` |"
   ) cluster.routes;
   stateRows = lib.mapAttrsToList (
     name: entry:
@@ -101,9 +101,12 @@ in
 
         ## Declared routes
 
-        | Service | Exposure | Canonical URL | Secondary URL | Backend |
-        | --- | --- | --- | --- | --- |
+        | Service | Exposure | Canonical URL | Secondary URL | Backend | Auth |
+        | --- | --- | --- | --- | --- | --- |
         ${lib.concatStringsSep "\n" routeRows}
+
+        `admin` requires Gateway administrator sign-in; `native` uses the
+        application's own sign-in.
 
         Public edges publish only `public` routes. The `idm` canonical hostname
         remains the identity issuer across direct and secondary-edge access;
