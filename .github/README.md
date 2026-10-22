@@ -17,12 +17,16 @@ builds the complete projection; neither target requires GitHub Actions.
 inventory and native application descriptors. The workflow dispatches that
 plan; it does not maintain a second list of output categories or branch on a
 test/application name. Platform-specific Darwin bootstrap remains an executor
-dependency, not a workload-selection rule.
+dependency, not a workload-selection rule. Complete fast-check aggregates are
+listed first in the build matrix to request runners early; GitHub still controls
+actual runner availability and start order.
 
 `hostedCiArtifacts.<system>` supplies lazy `groups`, `checks`,
 `nativeApplications` and `bootstrap` leaves, plus the local check `inventory`.
-Fast-check executors evaluate their inventory and selected artifact together,
-then release the evaluator before building. Other executors force only their
+Complete fast-check executors evaluate their inventory and aggregate together,
+then release the evaluator before building. A selected-check dispatch forces only
+its artifact leaf and records its exact selected receipt, without evaluating or
+uploading a complete platform inventory. Other executors also force only their
 own artifact leaf. Each leaf declares exact derivation/output paths; native
 leaves also declare the executable. Foreign and unsupported derivations stay
 unforced.
@@ -76,6 +80,12 @@ Kubernetes coverage. Detailed Argo resource retirement runs in the required
 native suite; the replacement VM retains real data, ownership, mount and
 accelerator observations through guest replacement.
 
+After restarting K3s, the NetworkPolicy fixture waits for actual execution in
+its probe containers, not persisted Node Ready status. This readiness check
+sends no traffic: first network connections remain single-shot and existing
+continuous watchers are not restarted. Filler Pods use a distinct controller
+selector so their ReplicaSet cannot adopt the named service stand-ins.
+
 This tooling slice changes no intended production behavior or policy.
 Removing Go assertions can still change the current
 `retained-directories-image` producer identity without changing runtime code.
@@ -100,7 +110,8 @@ probes of external utilities are not retained as safety evidence; unsupported
 fixture xattrs are reported as unexercised.
 
 The schema gate checks original canonical YAML against pinned local schemas,
-with duplicate-key and complete document/schema accounting. It does not prove
+using PyYAML's libyaml parser where available while retaining strict duplicate,
+merge and string-key checks and complete document/schema accounting. It does not prove
 CEL, admission, controller reconciliation or traffic; the official CRD envelope
 schema also permits some extra fields. Kyverno owns rendered semantic policy;
 `argocd-application-health` separately executes the production health Lua.
