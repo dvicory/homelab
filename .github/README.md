@@ -535,10 +535,16 @@ Owned `TMPDIR` is selected only after Nix installation and cache setup:
 installation can change ownership under `/nix` and break its own temporary
 directory if pointed there early.
 
-Successful check jobs upload nonempty outputs as
-`check-output-<system>-<check-or-group>-<run-id>` artifacts; empty outputs retain
-their evidence in the job log. Linux runners enable available KVM acceleration.
-System builds and checks can reuse narinfo and objects uploaded by other jobs.
+Successful check jobs upload complete outputs as
+`check-output-<system>-<check-or-group>-<run-id>` artifacts containing
+`check-outputs.tar.zst`. GNU tar follows the immutable result links, retains
+hardlink records and compresses the stream once with Zstandard; Actions does
+not recompress it. Extract in an empty directory with
+`tar --use-compress-program=unzstd --no-same-owner -xf check-outputs.tar.zst`.
+These are diagnostic outputs; required receipts and native report artifacts
+remain separate and unchanged. Empty check outputs retain their job-log evidence.
+Linux runners enable available KVM acceleration. System builds and checks can
+reuse narinfo and objects uploaded by other jobs.
 Hestia's binary version is pinned alongside its action. Use core v3.1.0 or
 newer: it rejects cached narinfos whose backing packs are unavailable, rather
 than repeatedly advertising objects that fail during download. The manifest

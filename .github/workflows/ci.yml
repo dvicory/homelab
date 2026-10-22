@@ -372,14 +372,24 @@ jobs:
           drv=$(jq -er .drvPath "$RUNNER_TEMP/artifact.json")
           nix build -L --out-link "$RUNNER_TEMP/result" --json "${build_args[@]}" "$drv^*" > "$RUNNER_TEMP/build.json"
 
+      - name: Pack successful check outputs
+        if: matrix.group == 'checks' || matrix.group == 'runtime'
+        run: |
+          nix shell --inputs-from . nixpkgs#gnutar nixpkgs#zstd \
+            --command bash -euo pipefail -c '
+              cd "$RUNNER_TEMP"
+              tar --dereference -cf - result* |
+                zstd --threads=2 --quiet -3 -o check-outputs.tar.zst
+            '
+
       - name: Upload successful check outputs
         if: matrix.group == 'checks' || matrix.group == 'runtime'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: check-output-${{ matrix.system }}-${{ matrix.artifact || matrix.group }}-${{ github.run_id }}
-          path: ${{ runner.temp }}/result*
-          # Some checks have empty successful outputs; their evidence is the job log.
-          if-no-files-found: ignore
+          path: ${{ runner.temp }}/check-outputs.tar.zst
+          compression-level: 0
+          if-no-files-found: error
 
       - name: Upload platform check inventory
         if: always() && matrix.group == 'checks' && matrix.check == ''
