@@ -16,7 +16,17 @@
       manifestSource = rootPath + "/generated/manifests/prod-home";
       environment =
         if builtins.pathExists manifestSource then
-          manifestSource
+          lib.fileset.toSource {
+            root = manifestSource;
+            fileset = lib.fileset.unions [
+              (manifestSource + "/argocd")
+              (manifestSource + "/argocd-retained/Namespace-argocd.yaml")
+              (manifestSource + "/bootstrap.yaml")
+              (lib.fileset.fileFilter (file: lib.hasPrefix "AppProject-" file.name && file.hasExt "yaml") (
+                manifestSource + "/apps"
+              ))
+            ];
+          }
         else
           throw ''
             Canonical production manifests are missing. Generate them with:
