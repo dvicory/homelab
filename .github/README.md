@@ -138,6 +138,10 @@ paths, not error-message wording.
 nix build --no-link ".#checks.$(nix eval --impure --raw --expr builtins.currentSystem).prod-home-manifests-policy" -L
 ```
 
+The static Argo bootstrap bundle consumes the Argo controller/CRD tree, retained
+Argo Namespace, root Application and AppProject. Unrelated application manifests
+do not invalidate it; seed equality, project checks and CRD checks remain required.
+
 Superseded rendered Nix/Python semantic validators have been removed after
 complete native positive, negative and fail-closed coverage. Genuine input,
 application/Lua execution and generation checks remain separate.
