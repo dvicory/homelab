@@ -535,10 +535,8 @@ Owned `TMPDIR` is selected only after Nix installation and cache setup:
 installation can change ownership under `/nix` and break its own temporary
 directory if pointed there early.
 
-Successful check jobs upload nonempty outputs as
-`check-output-<system>-<check-or-group>-<run-id>` artifacts; empty outputs retain
-their evidence in the job log. Linux runners enable available KVM acceleration.
-System builds and checks can reuse narinfo and objects uploaded by other jobs.
+Linux runners enable available KVM acceleration. System builds and checks can
+reuse narinfo and objects uploaded by other jobs.
 Hestia's binary version is pinned alongside its action. Use core v3.1.0 or
 newer: it rejects cached narinfos whose backing packs are unavailable, rather
 than repeatedly advertising objects that fail during download. The manifest
