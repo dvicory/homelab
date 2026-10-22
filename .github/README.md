@@ -20,10 +20,12 @@ test/application name. Platform-specific Darwin bootstrap remains an executor
 dependency, not a workload-selection rule.
 
 `hostedCiArtifacts.<system>` supplies lazy `groups`, `checks`,
-`nativeApplications` and `bootstrap` leaves. Each executor evaluates only its
-own leaf immediately before building. A leaf declares the exact derivation
-and output paths; native leaves also declare the executable. This preserves
-same-host evaluation without forcing foreign or unsupported derivations.
+`nativeApplications` and `bootstrap` leaves, plus the local check `inventory`.
+Fast-check executors evaluate their inventory and selected artifact together,
+then release the evaluator before building. Other executors force only their
+own artifact leaf. Each leaf declares exact derivation/output paths; native
+leaves also declare the executable. Foreign and unsupported derivations stay
+unforced.
 
 On a builder for the selected system:
 
