@@ -6,11 +6,12 @@ let
     uid = 757;
     gid = 757;
   };
-  apps.sabnzbd = {
+  app = {
     namespace = "media";
     service = "sabnzbd";
     port = 8080;
     memory = "2Gi";
+    apiSecretKey = "SABNZBD_API_KEY";
   };
   images.sabnzbd = {
     repository = "ghcr.io/linuxserver/sabnzbd";
@@ -33,7 +34,9 @@ let
       route = builtins.getAttr name cluster.routes;
     in
     assert lib.assertMsg (
-      route.namespace == app.namespace && route.service == app.service && route.port == app.port
+      route.namespace == app.namespace
+      && route.service == app.service
+      && route.port == app.port
       && route.pathPrefix == "/"
     ) "Media route ${name} must target ${app.namespace}/${app.service}:${toString app.port} at /.";
     route;
@@ -47,7 +50,7 @@ let
   inherit (lib) mkOption types;
   # SABnzbd has no web login: the Gateway's Kanidm sign-in is the only one.
   # The API key stays for Radarr, Sonarr and Configarr.
-  ownSecretKeys = [ "SABNZBD_API_KEY" ];
+  ownSecretKeys = [ app.apiSecretKey ];
   providerEnvName = name: lib.toUpper (builtins.replaceStrings [ "-" "." ] [ "_" "_" ] name);
   providerSecretKeys =
     providers:
@@ -103,6 +106,19 @@ let
     providers;
 in
 {
+  den.aspects.kubernetes.services.sabnzbd.settings.integration = mkOption {
+    type = types.attrs;
+    readOnly = true;
+    default = {
+      inherit (app)
+        namespace
+        service
+        port
+        apiSecretKey
+        ;
+    };
+    description = "Read-only SABnzbd Service endpoint and API Secret key for consumers.";
+  };
   den.aspects.kubernetes.services.media.settings.sabnzbd = mkOption {
     type = types.submodule {
       options.providers = mkOption {
@@ -124,7 +140,7 @@ in
     let
       settings = cluster.settings.kubernetes.services.media;
       providers = checkedProviders settings.sabnzbd.providers;
-      generators.SABNZBD_API_KEY = "api-key";
+      generators.${app.apiSecretKey} = "api-key";
     in
     {
       # LinuxServer PUID/PGID are guest-local; media is a supplemental capability.
@@ -134,9 +150,9 @@ in
       };
       runtimeSecrets = lib.listToAttrs (
         map (key: {
-          name = "media--${settings.configurationSecret}--${key}";
+          name = "${app.namespace}--${settings.configurationSecret}--${key}";
           value = {
-            namespace = "media";
+            namespace = app.namespace;
             name = settings.configurationSecret;
             inherit key;
             generator = generators.${key} or null;
@@ -152,7 +168,6 @@ in
       ...
     }:
     let
-      app = apps.sabnzbd;
       state = retainedEntry computeResources "sabnzbd";
       route = fixedRoute {
         cluster = cluster;
@@ -184,16 +199,16 @@ in
         # SABnzbd, decides who reaches the port: the Gateway proxy and the
         # Arr instances (media.nix).
         misc.update({
-            'host': '0.0.0.0', 'port': '8080',
-            'api_key': os.environ['SABNZBD_API_KEY'],
+            'host': '0.0.0.0', 'port': '${toString app.port}',
+            'api_key': os.environ['${app.apiSecretKey}'],
             'username': "", 'password': "",
             'host_whitelist': ${
               builtins.toJSON (
                 lib.concatStringsSep ", " (
                   route.hostnames
                   ++ [
-                    "sabnzbd"
-                    "sabnzbd.media.svc"
+                    app.service
+                    "${app.service}.${app.namespace}.svc"
                   ]
                 )
               )
@@ -250,7 +265,7 @@ in
         helm.releases.sabnzbd = {
           chart = charts.bjw-s-labs.app-template;
           values = lib.recursiveUpdate (import ./_linuxserver-media.nix mediaGid) {
-            fullnameOverride = "sabnzbd";
+            fullnameOverride = app.service;
             defaultPodOptions = {
               nodeSelector."kubernetes.io/hostname" = computeResources.instance;
               automountServiceAccountToken = false;

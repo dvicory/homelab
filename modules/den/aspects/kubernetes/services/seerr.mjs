@@ -72,7 +72,7 @@ function checkedStatus(status, libraryIds) {
 
 async function configure() {
   const base = policy.seerr.url + '/api/v1';
-  const headers = { Origin: policy.seerr.url, 'X-Api-Key': secret('SEERR_API_KEY') };
+  const headers = { Origin: policy.seerr.url, 'X-Api-Key': secret(policy.seerr.apiSecretKey) };
   const request = api(base, headers);
   const publicSettings = await request('/settings/public');
   if (![2, 4].includes(publicSettings?.mediaServerType)) throw new Error('Seerr is not available for Jellyfin onboarding');

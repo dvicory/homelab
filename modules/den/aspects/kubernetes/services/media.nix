@@ -17,6 +17,9 @@ in
       { cluster, computeResources, ... }:
       let
         settings = cluster.settings.kubernetes.services.media;
+        prowlarr = cluster.settings.kubernetes.services.prowlarr.integration;
+        sabnzbd = cluster.settings.kubernetes.services.sabnzbd.integration;
+        seerr = cluster.settings.kubernetes.services.seerr.integration;
         instances = lib.concatLists [
           (builtins.attrValues settings.radarr)
           (builtins.attrValues settings.sonarr)
@@ -69,8 +72,8 @@ in
         clients = {
           configarr."app.kubernetes.io/name" = "media-configarr";
           seerrHelper."app.kubernetes.io/name" = "media-config-seerr";
-          seerr = appPods "seerr";
-          prowlarr = appPods "prowlarr";
+          seerr = appPods seerr.service;
+          prowlarr = appPods prowlarr.service;
         };
         arrClients = map (instance: appPods instance.service) arrInstances;
         # Who calls whom, from the media configuration:
@@ -93,13 +96,11 @@ in
           }) arrInstances
           ++ [
             {
-              service = "prowlarr";
-              port = 9696;
+              inherit (prowlarr) service port;
               consumers = [ clients.configarr ] ++ arrClients;
             }
             {
-              service = "sabnzbd";
-              port = 8080;
+              inherit (sabnzbd) service port;
               consumers = arrClients;
             }
           ];
@@ -305,12 +306,8 @@ in
                     {
                       from = [
                         {
-                          namespaceSelector.matchLabels."kubernetes.io/metadata.name" = "media";
-                          podSelector.matchLabels = {
-                            "app.kubernetes.io/controller" = "main";
-                            "app.kubernetes.io/instance" = "seerr";
-                            "app.kubernetes.io/name" = "seerr";
-                          };
+                          namespaceSelector.matchLabels."kubernetes.io/metadata.name" = seerr.namespace;
+                          podSelector.matchLabels = clients.seerr;
                         }
                       ];
                       ports = [
