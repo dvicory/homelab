@@ -36,7 +36,7 @@
             "--disable-network-policy"
           ];
           extraKubeletConfig = {
-            featureGates.KubeletInUserNamespace = true;
+            featureGates.KubeletInUserNamespace = config.boot.isContainer;
           };
           extraKubeProxyConfig = {
             # iptables mode writes whole tables as one iptables-nft batch,

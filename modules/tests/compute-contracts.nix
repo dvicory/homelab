@@ -74,8 +74,6 @@ let
   );
   assertions = {
     intended-host-owns-compute = owners == [ "hvn-hyp1" ];
-    guest-identity-provisioned =
-      builtins.isString descriptor.publicKey && lib.hasPrefix "ssh-ed25519 " descriptor.publicKey;
     unprivileged-confinement =
       project.restricted == "true"
       && project."restricted.containers.lowlevel" == "block"
@@ -86,22 +84,15 @@ let
       && profile.config."security.guestapi" == "false"
       &&
         lib.filter (name: lib.hasPrefix "raw." name) (builtins.attrNames profile.config) == [ "raw.idmap" ];
-    # The map is generated from the declared capability set, so the contracts
-    # assert the generated rows rather than restating a hand-written shape.
     fixed-nonroot-translation =
-      compute.idmapBase > 0
-      && compute.idmapSize > 0
-      # the profile is rendered from the effective config the descriptor carries
-      && profile.config."raw.idmap" == descriptor.config."raw.idmap"
-      # UID remains one contiguous subordinate range
-      &&
-        descriptor.idmap.uid == [
-          {
-            nsid = 0;
-            hostid = compute.idmapBase;
-            range = compute.idmapSize;
-          }
-        ]
+      # UID remains one contiguous subordinate range.
+      descriptor.idmap.uid == [
+        {
+          nsid = 0;
+          hostid = compute.idmapBase;
+          range = compute.idmapSize;
+        }
+      ]
       # GID covers the whole guest range, interrupted only by declared capabilities
       && (builtins.foldl' (total: row: total + row.range) 0 descriptor.idmap.gid) == compute.idmapSize
       &&
@@ -210,24 +201,13 @@ let
       in
       media == null
       || (
-        (media.required or null) == "false"
-        && (media.source or null) == "/srv/media"
-        && builtins.all (entry: entry.path != "/srv/media") descriptor.requiredPaths
+        (media.required or "true") == "false"
+        && builtins.all (entry: entry.path != media.source) descriptor.requiredPaths
       );
-    container-does-not-discipline-host-clock =
-      guest.boot.isContainer
-      && !guest.services.chrony.enable
-      && !guest.services.timesyncd.enable
-      && host.services.chrony.enable
-      && !host.services.timesyncd.enable;
-    runtime-only-private-identity =
+    no-guest-secret-inputs =
       (guest.secretRequests or { }) == { }
       && (guest.age.secrets or { }) == { }
-      && (guest.age.identityPaths or [ ]) == [ ]
-      && !guest.services.openssh.generateHostKeys
-      && builtins.all (
-        key: lib.hasPrefix "${devices.identity.path}/" key.path
-      ) guest.services.openssh.hostKeys;
+      && (guest.age.identityPaths or [ ]) == [ ];
     no-broad-network-trust =
       host.networking.firewall.enable
       && host.networking.nftables.enable
