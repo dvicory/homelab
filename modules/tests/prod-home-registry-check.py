@@ -20,15 +20,14 @@ def pods(reason, message, namespace="argocd", deleting=False):
                        "status": {"containerStatuses": [{"state": {"waiting": {"reason": reason, "message": message}}}]}}]}
 
 
-secret = "synthetic-sensitive-value"
-assert recovery.registry_pull_failure(pods("ErrImagePull", "429 TooManyRequests " + secret)) == "rate-limited"
-assert recovery.registry_pull_failure(pods("ImagePullBackOff", "unauthorized " + secret)) == "unauthorized"
-assert recovery.registry_pull_failure(pods("ErrImagePull", "manifest unknown " + secret)) == "manifest-not-found"
-assert recovery.registry_pull_failure(pods("ErrImagePull", "x509: " + secret)) == "certificate"
+assert recovery.registry_pull_failure(pods("ErrImagePull", "429 TooManyRequests")) == "rate-limited"
+assert recovery.registry_pull_failure(pods("ImagePullBackOff", "unauthorized")) == "unauthorized"
+assert recovery.registry_pull_failure(pods("ErrImagePull", "manifest unknown")) == "manifest-not-found"
+assert recovery.registry_pull_failure(pods("ErrImagePull", "x509: certificate expired")) == "certificate"
 assert recovery.registry_pull_failure(pods("CrashLoopBackOff", "429 TooManyRequests")) is None
 assert recovery.registry_pull_failure(pods("ErrImagePull", "429 TooManyRequests", namespace="other")) is None
 assert recovery.registry_pull_failure(pods("ErrImagePull", "429 TooManyRequests", deleting=True)) is None
-assert recovery.registry_pull_failure(pods("ErrImagePull", secret)) is None
+assert recovery.registry_pull_failure(pods("ErrImagePull", "connection reset")) is None
 assert recovery.registry_pull_failure({}) is None
 
 child = "import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); print('ready',flush=True); time.sleep(60)"

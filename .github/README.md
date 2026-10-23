@@ -425,14 +425,15 @@ retrying, weakening readiness or changing the shipped bootstrap command.
 Only its owned bootstrap process group is stopped, including surviving children
 when the leader exits first. The leader stays unreaped until group shutdown.
 Children retain their full 30-second SIGTERM grace even if the leader exits first.
-Bootstrap output and interval diagnostics are deferred until the outcome is
-known; the classified refusal discards that output and skips the outer raw
-journal, containerd and workload dumps. This is not generic log redaction.
-Other failures retain the existing diagnostics and readiness/deadline path.
-`prod-home-registry-failures` checks the classification boundary and real
+Bootstrap output and interval diagnostics are captured while supervising the
+owned process group, then printed on every outcome. Classified registry
+refusals retain the outer journal, containerd and workload dumps too. Disposable
+fixture credential values do not suppress diagnostics; assertions still reject
+credential leaks from shipped staging and application commands.
+`prod-home-registry-failures` checks the pure classification boundary and real
 owned-child cleanup for running and exited-but-unreaped leaders, with an
-unrelated session left alive. It does not replace the two complete cold
-recovery scenarios.
+unrelated session left alive. It does not simulate registry APIs or replace
+the two complete cold recovery scenarios.
 
 Argo CD image repository, version and digest changes belong in
 `modules/den/aspects/kubernetes/services/argocd.nix`. Regenerate the canonical
