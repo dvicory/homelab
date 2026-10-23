@@ -39,6 +39,8 @@ in
       {
         boot.isContainer = true;
         hardware.enableAllHardware = false;
+        # The native Incus image otherwise permits an empty root console password.
+        users.users.root.initialHashedPassword = lib.mkIf (!config.boot.isContainer) (lib.mkForce "!");
         # Kubelet must traverse the unshifted root:media (2770) hostPath
         # before it can mount the library for media-capable pods.
         systemd.services.k3s.serviceConfig.SupplementaryGroups = [ (toString mediaGid) ];
