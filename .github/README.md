@@ -435,6 +435,15 @@ owned-child cleanup for running and exited-but-unreaped leaders, with an
 unrelated session left alive. It does not simulate registry APIs or replace
 the two complete cold recovery scenarios.
 
+Replacement refusals reach native boundaries: bind a retained directory
+Job's helper exit and missing-marker path to that exact Job UID. Bind the
+Pod's FailedMount event to its owned UID and required retained-volume path.
+Identity mismatch uses a second valid SSH key, not malformed key syntax.
+Inherited-lock refusal is paired with identical inspection after rebinding
+only that descriptor to the selected held lock. Preserve successful marker
+publication, helper-only upgrade/rollback and cold guest replacement as
+independent positive controls when changing these fixtures.
+
 Argo CD image repository, version and digest changes belong in
 `modules/den/aspects/kubernetes/services/argocd.nix`. Regenerate the canonical
 manifests with `sync-prod-home-manifests`; do not override those references
