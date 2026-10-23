@@ -176,6 +176,9 @@ in
         and `system` interface. Rootfs compression uses pixz level 0 to reduce
         preparation time at the cost of a larger archive; the decompressed
         guest payload and metadata are unchanged.
+        The production guest remains an unprivileged container. Do not substitute
+        a qcow2 disk or change its Incus instance type for this bundle; changing
+        backends requires a separately validated retained-data handoff.
 
         Run guest lifecycle commands as root.
 
