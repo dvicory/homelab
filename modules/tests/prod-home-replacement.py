@@ -2001,11 +2001,24 @@ def run_scenario(args: argparse.Namespace) -> None:
                                               "-o", "json", namespace="local-path-storage")
                         if not raw.strip():
                             return False
+                        job = json.loads(raw)
                         if not any(condition.get("type") == "Failed" and condition.get("status") == "True"
-                                   for condition in json.loads(raw).get("status", {}).get("conditions", [])):
+                                   for condition in job.get("status", {}).get("conditions", [])):
                             return False
-                        return True
-                    wait_for("retained directory Job fails without the persistent marker",
+                        # Hook retries may retire a failed Job while its logs are read.
+                        # Wait for the native guard evidence from this exact Job UID.
+                        failed_pods = runtime.kubectl_json(
+                            "get", "pods", "-l", f"controller-uid={job['metadata']['uid']}", "-o", "json",
+                            namespace="local-path-storage")["items"]
+                        return any(
+                            container.get("state", {}).get("terminated", {}).get("exitCode") == 1
+                            and "/srv/state/.homelab-state-root" in runtime.kubectl(
+                                "logs", pod["metadata"]["name"], "-c", container["name"],
+                                namespace="local-path-storage")
+                            for pod in failed_pods
+                            for container in pod.get("status", {}).get("containerStatuses", [])
+                            if container["name"] == "retained-directories")
+                    wait_for("the delivered retained helper refuses the missing persistent marker",
                              directory_job_failed, timeout=600)
                     check(all(not Path(entry["path"]).exists() for entry in descriptor["retainedPaths"].values()),
                           "missing persistent marker creates no retained application directories")
@@ -2026,7 +2039,11 @@ def run_scenario(args: argparse.Namespace) -> None:
                         events = runtime.kubectl_json(
                             "get", "events", "--field-selector", "reason=FailedMount", "-o", "json",
                             namespace="jellyfin")["items"]
-                        return any(event.get("involvedObject", {}).get("uid") in uids for event in events)
+                        return any(
+                            event.get("involvedObject", {}).get("uid") in uids
+                            and descriptor["retainedPaths"]["jellyfin-config"]["guestPath"]
+                            in event.get("message", "")
+                            for event in events)
                     wait_for("Jellyfin refuses its unavailable required volume", jellyfin_storage_blocked)
                     check(all(not Path(entry["path"]).exists() for entry in descriptor["retainedPaths"].values()),
                           "blocked Jellyfin creates no replacement retained application data")
@@ -2129,13 +2146,15 @@ def run_scenario(args: argparse.Namespace) -> None:
                 with Path(f"/run/lock/compute-{project}-{instance_name}.lock").open("a") as lock:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     runtime.helper_expect_failure("replace", "concurrent maintenance", "cannot acquire lifecycle lock")
-                    command = runtime.helper_command("inspect") + ["--lock-fd", str(lock.fileno())]
-                    inspected = subprocess.run(command, pass_fds=(lock.fileno(),), capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
-                    check(inspected.returncode == 0, "inspection reuses the selected held lifecycle lock")
-                    with runtime.spec_path.open("r") as wrong_lock:
-                        command = runtime.helper_command("inspect") + ["--lock-fd", str(wrong_lock.fileno())]
-                        rejected = subprocess.run(command, pass_fds=(wrong_lock.fileno(),), capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
-                        check(rejected.returncode != 0, "an unrelated inherited descriptor cannot bypass lifecycle serialization")
+                    with runtime.spec_path.open("r") as probe_lock:
+                        command = runtime.helper_command("inspect") + ["--lock-fd", str(probe_lock.fileno())]
+                        rejected = subprocess.run(command, pass_fds=(probe_lock.fileno(),), capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
+                        check(rejected.returncode == 1,
+                              "an unrelated inherited descriptor is refused")
+                        os.dup2(lock.fileno(), probe_lock.fileno())
+                        inspected = subprocess.run(command, pass_fds=(probe_lock.fileno(),), capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
+                        check(inspected.returncode == 0,
+                              "identical inspection succeeds when that descriptor refers to the selected held lock")
                 check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid,
                       "concurrent maintenance cannot replace the guest")
                 runtime.guest("nix-env", "--profile", "/nix/var/nix/profiles/system", "--set", str((args.bundle / "system").resolve()))
@@ -2144,8 +2163,10 @@ def run_scenario(args: argparse.Namespace) -> None:
                 check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid,
                       "in-place system activation preserves the guest instance")
                 smoke.verify_state(base, username, password, "Movies", item_id)
+                other_key = workspace / "other-identity"
+                run("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(other_key))
                 bad_descriptor = json_copy(descriptor)
-                bad_descriptor["publicKey"] = public_key.replace("ssh-ed25519", "ssh-ed25519-bad", 1)
+                bad_descriptor["publicKey"] = other_key.with_suffix(".pub").read_text().strip()
                 bad_spec = workspace / "bad-public.json"
                 bad_spec.write_text(json.dumps(bad_descriptor) + "\n")
                 bad_spec.chmod(0o400)
@@ -2153,8 +2174,6 @@ def run_scenario(args: argparse.Namespace) -> None:
                 check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid, "mismatched identity does not mutate the instance")
                 public_path = Path(descriptor["identityPath"]) / "ssh_host_ed25519_key.pub"
                 trusted_public = public_path.read_text()
-                other_key = workspace / "other-identity"
-                run("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(other_key))
                 runtime.guest("systemctl", "stop", "sshd.service")
                 public_path.write_text(other_key.with_suffix(".pub").read_text())
                 try:
