@@ -1,4 +1,9 @@
-{ config, lib, den, ... }:
+{
+  config,
+  lib,
+  den,
+  ...
+}:
 let
   retained = {
     "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
@@ -17,6 +22,9 @@ in
       { cluster, computeResources, ... }:
       let
         settings = cluster.settings.kubernetes.services.media;
+        prowlarr = cluster.settings.kubernetes.services.prowlarr.integration;
+        sabnzbd = cluster.settings.kubernetes.services.sabnzbd.integration;
+        seerr = cluster.settings.kubernetes.services.seerr.integration;
         instances = lib.concatLists [
           (builtins.attrValues settings.radarr)
           (builtins.attrValues settings.sonarr)
@@ -59,19 +67,25 @@ in
         # policy admits only the proxy, and media-ingress below admits only
         # the in-cluster clients each app is configured to serve.
         serviceName = kind: name: if name == kind then kind else "${kind}-${name}";
-        # Ports match arr.nix, prowlarr.nix and sabnzbd.nix.
+        # Ports match arr.nix.
         arrPorts = {
           radarr = 7878;
           sonarr = 8989;
         };
-        arrInstances = lib.concatMap (
-          kind:
-          lib.mapAttrsToList (name: cfg: {
-            service = serviceName kind name;
-            port = arrPorts.${kind};
-            inherit cfg;
-          }) settings.${kind}
-        ) [ "radarr" "sonarr" ];
+        arrInstances =
+          lib.concatMap
+            (
+              kind:
+              lib.mapAttrsToList (name: cfg: {
+                service = serviceName kind name;
+                port = arrPorts.${kind};
+                inherit cfg;
+              }) settings.${kind}
+            )
+            [
+              "radarr"
+              "sonarr"
+            ];
         appPods = service: {
           "app.kubernetes.io/controller" = "main";
           "app.kubernetes.io/instance" = service;
@@ -82,8 +96,8 @@ in
         clients = {
           configarr."app.kubernetes.io/name" = "media-configarr";
           seerrHelper."app.kubernetes.io/name" = "media-config-seerr";
-          seerr = appPods "seerr";
-          prowlarr = appPods "prowlarr";
+          seerr = appPods seerr.service;
+          prowlarr = appPods prowlarr.service;
         };
         arrClients = map (instance: appPods instance.service) arrInstances;
         # Who calls whom, from the media configuration:
@@ -106,13 +120,11 @@ in
           }) arrInstances
           ++ [
             {
-              service = "prowlarr";
-              port = 9696;
+              inherit (prowlarr) service port;
               consumers = [ clients.configarr ] ++ arrClients;
             }
             {
-              service = "sabnzbd";
-              port = 8080;
+              inherit (sabnzbd) service port;
               consumers = arrClients;
             }
           ];
@@ -157,7 +169,8 @@ in
           name:
           map (secret: secret.key) (
             builtins.attrValues (
-              (config.den.aspects.kubernetes.services.${name}.compute-resources { inherit cluster; }).runtimeSecrets
+              (config.den.aspects.kubernetes.services.${name}.compute-resources { inherit cluster; })
+              .runtimeSecrets
             )
           )
         ) reserved;
@@ -276,9 +289,9 @@ in
       assert lib.assertMsg (
         lib.unique secretKeys == secretKeys
       ) "Media instances must not share private API credentials.";
-      assert lib.assertMsg (lib.all (
-        key: !(lib.elem key reservedSecretKeys)
-      ) secretKeys) "Media instance API credentials may not reuse credentials owned by another media service.";
+      assert lib.assertMsg (lib.all (key: !(lib.elem key reservedSecretKeys))
+        secretKeys
+      ) "Media instance API credentials may not reuse credentials owned by another media service.";
       assert lib.assertMsg (
         !unapprovedRootOverlap instances
       ) "Overlapping library roots require both instances to grant a common library path below /data.";
@@ -318,12 +331,8 @@ in
                     {
                       from = [
                         {
-                          namespaceSelector.matchLabels."kubernetes.io/metadata.name" = "media";
-                          podSelector.matchLabels = {
-                            "app.kubernetes.io/controller" = "main";
-                            "app.kubernetes.io/instance" = "seerr";
-                            "app.kubernetes.io/name" = "seerr";
-                          };
+                          namespaceSelector.matchLabels."kubernetes.io/metadata.name" = seerr.namespace;
+                          podSelector.matchLabels = clients.seerr;
                         }
                       ];
                       ports = [
