@@ -13,7 +13,7 @@ spec:
     name: jellyfin-config
     namespace: jellyfin
   local:
-    path: /srv/state/jellyfin-config
+    path: /srv/retained/state/jellyfin-config
   nodeAffinity:
     required:
       nodeSelectorTerms:

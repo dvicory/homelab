@@ -7,6 +7,38 @@
   self,
 }:
 let
+  retainedCommand = self.packages.x86_64-linux.compute-runtime.overrideAttrs (old: {
+    pname = "native-argo-retained-directories";
+    subPackages = [ "cmd/retained-directories" ];
+    postInstall = "";
+    env = (old.env or { }) // {
+      CGO_ENABLED = 0;
+    };
+  });
+  retainedSpec = pkgs.writeText "native-argo-retained-spec.json" (
+    builtins.toJSON {
+      version = 1;
+      root = {
+        id = "native-argo-scratch-root";
+        path = "/srv/retained/state";
+        marker = ".homelab-retained-root.json";
+        source = {
+          fsType = "tmpfs";
+          name = "homelab-api-retained";
+          root = "/state";
+        };
+        uid = 0;
+        gid = 0;
+        mode = "0755";
+      };
+      entries.identity-kanidm = lib.getAttrs [
+        "id"
+        "uid"
+        "gid"
+        "mode"
+      ] config.flake.clusterResources.prod-home.retainedPaths.identity-kanidm;
+    }
+  );
   probe = linuxPkgs.dockerTools.buildImage {
     name = "homelab/native-argo-probe";
     tag = "1";
@@ -63,6 +95,11 @@ in
       exec ${pkgs.python3}/bin/python3 ${../report.py} --capture-retained
     '';
     probeImage = probeRef;
+    retainedCommand = "${retainedCommand}/bin/retained-directories";
+    inherit retainedSpec;
+    # Docker K3s has no production systemd/runc guard boundary. This suite
+    # proves explicit scratch provisioning and controller/consumer gates only.
+    runtimeHookProof = false;
     registryManifestDirectories = [
       self.packages.${pkgs.stdenv.hostPlatform.system}.household-bootstrap-manifests
     ];
@@ -98,7 +135,7 @@ in
   '';
   testDirectories = [
     ./01-child-gating
-    ./02-retained-hook
+    ./02-retained-provisioning
     ./03-self-heal
     ./04-git-omission
     ./05-direct-retirement
@@ -106,7 +143,7 @@ in
   ];
   scenarios = [
     "argo-01-child-gating-recovery"
-    "argo-02-retained-hook-sequencing"
+    "argo-02-retained-provisioning-gating"
     "argo-03-workload-self-heal"
     "argo-04-git-omission"
     "argo-05-direct-retirement"

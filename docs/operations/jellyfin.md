@@ -269,9 +269,13 @@ secret is missing, provisioning fails and Jellyfin does not start.
 
 ## Deliver helper images
 
-All four Nix-built helpers use the immutable GHCR digests in
+The Jellyfin, Jellarr and Kanidm containers use immutable GHCR digests in
 `assets/helper-release/verified.json`. Kubernetes pulls them normally; routine
-helper updates need no image import, guest activation or replacement.
+image updates need no image import, guest activation or replacement. The
+published retained-directory helper is not an automatic Argo provisioning Job:
+retained identities are established only through the explicit operator workflow
+in [retained-state operations](../operations.md#retained-state), and the mandatory
+native runtime validates every affected container start.
 
 The [main helper candidate lane](../../.github/README.md#required-green-main-nix-helper-candidates)
 builds the existing Jellyfin provisioner and Jellarr alongside the retained
@@ -323,8 +327,8 @@ To select a release:
    and submit the selection for review. Merge is a separate rollout decision:
    main-tracking Argo reconciles the selected images. Runtime Secrets remain
    in their existing delivery flow.
-   Helper-only upgrades and rollbacks rerun the application's provisioning hook
-   even when its desired configuration is unchanged.
+   An initContainer image change recreates the application's Pod through its
+   template; it does not authorize missing or replacement retained data.
 
 ## Upgrade Jellyfin
 

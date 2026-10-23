@@ -5,7 +5,7 @@
 REQUIRED_SCENARIOS = [
     "gateway-cel-admission",
     "argo-01-child-gating-recovery",
-    "argo-02-retained-hook-sequencing",
+    "argo-02-retained-provisioning-gating",
     "argo-03-workload-self-heal",
     "argo-04-git-omission",
     "argo-05-direct-retirement",
@@ -37,7 +37,7 @@ REQUIRED_SCENARIOS = [
 ARGO_CRDS = ("applications.argoproj.io", "appprojects.argoproj.io", "applicationsets.argoproj.io")
 ARGO_RECOVERY_APPS = ("failed-child", "missing-child", "failed-root", "missing-root")
 ARGO_RECOVERY_JOBS = ("failed-child-late", "missing-child-late")
-ARGO_RETAINED_APPS = ("hook",)
+ARGO_RETAINED_APPS = ("retained-gate", "retained-consumer")
 ARGO_ROOT_RETIREMENT_APPS = ("retained", "retirement-root")
 
 GATEWAY_PREREQUISITES = (
@@ -428,7 +428,7 @@ def argo_recovery_witness(raw, raw_jobs, fixture_sources, app_names=ARGO_RECOVER
 
 
 def capture_retained_witness():
-    """Capture safe owned hook or selected root state before native cleanup."""
+    """Capture owned provisioning/gating state, never claim native hook proof."""
     import json
     import os
     from pathlib import Path
@@ -442,8 +442,8 @@ def capture_retained_witness():
     try:
         settings = json.loads(Path(os.environ["FIXTURE_SETTINGS"]).read_text())
         result = subprocess.run([
-            settings["kubectl"],
-            "-n", "argocd", "get", "application", "hook", "--ignore-not-found",
+            settings["kubectl"], "-n", "argocd", "get", "application",
+            *ARGO_RETAINED_APPS, "--ignore-not-found",
             "-o", "json", "--request-timeout=10s",
         ], capture_output=True, text=True, timeout=15, check=False)
         if result.returncode:
@@ -451,77 +451,40 @@ def capture_retained_witness():
                        "errorCategory": classify_kubectl_error(result.stderr)}
         else:
             raw = json.loads(result.stdout) if result.stdout.strip() else {}
-            initial = (work / "initial").read_text().strip()
-            source = {"repoURL": f"git://{os.environ['FIXTURE_ARGO_GIT_IP']}/runtime.git",
-                      "path": "hook", "targetRevision": initial}
+            sources = {
+                name: {"repoURL": f"git://{os.environ['FIXTURE_ARGO_GIT_IP']}/runtime.git",
+                       "path": name, "targetRevision": (work / pin).read_text().strip()}
+                for name, pin in (("retained-gate", "initial"), ("retained-consumer", "payload"))
+            }
             witness = {
                 "status": "observed",
                 "responseShape": "list" if "items" in raw else "single" if raw.get("kind") == "Application" else "empty",
-                "applications": argo_recovery_witness(raw, {}, {"hook": source}, ARGO_RETAINED_APPS)["applications"],
+                "applications": argo_recovery_witness(raw, {}, sources, ARGO_RETAINED_APPS)["applications"],
             }
-            operation = (raw.get("status") or {}).get("operationState") or {}
-            outcomes = (operation.get("syncResult") or {}).get("resources") or []
-            messages = " ".join(str(value) for value in [
-                operation.get("message", ""),
-                *(item.get("message", "") for item in outcomes if item.get("kind") == "Job" and item.get("name") in ("retained-directories", "after-retained-hook")),
-            ]).lower()
-            witness["hookOperationHints"] = [name for name, marker in (
-                ("immutable-field", "field is immutable"),
-                ("delete-failed", "failed to delete"),
-                ("create-failed", "failed to create"),
-                ("namespace-missing", "namespace"),
-                ("forbidden", "forbidden"),
-                ("not-found", "not found"),
-                ("operation-conflict", "operation is already"),
-                ("deletion-in-progress", "being deleted"),
-                ("namespace-terminating", "terminating"),
-                ("validation", "invalid"),
-                ("resource-exists", "already exists"),
-                ("timeout", "timeout"),
-                ("deadline", "deadline exceeded"),
-            ) if marker in messages]
-            witness["hookResourceOutcomes"] = [
-                {"name": item["name"],
-                 "status": item.get("status") if item.get("status") in ("Synced", "SyncFailed", "PruneSkipped", "Pruned") else "unknown",
-                 "hookPhase": item.get("hookPhase") if item.get("hookPhase") in ("Pending", "Running", "Succeeded", "Failed", "Error") else "unknown"}
-                for item in outcomes if item.get("kind") == "Job" and item.get("name") in ("retained-directories", "after-retained-hook")
-            ]
-            try:
-                job_probe = subprocess.run([
-                    settings["kubectl"], "-n", "local-path-storage", "get",
-                    "job", "retained-directories", "--ignore-not-found",
-                    "-o", "json", "--request-timeout=10s",
-                ], capture_output=True, text=True, timeout=15, check=False)
-                job = json.loads(job_probe.stdout) if job_probe.returncode == 0 and job_probe.stdout.strip() else {}
-                uid_file = work / "hook.uid"
-                witness["retainedJob"] = {
-                    "returnCode": job_probe.returncode,
-                    "present": bool(job) if job_probe.returncode == 0 else None,
-                    "sameInitialUid": (job.get("metadata") or {}).get("uid") == uid_file.read_text().strip() if job and uid_file.exists() else None,
-                    "failed": any(item.get("type") == "Failed" and item.get("status") == "True" for item in (job.get("status") or {}).get("conditions") or []) if job_probe.returncode == 0 else None,
-                }
-                logs = subprocess.run([
-                    settings["kubectl"], "-n", "local-path-storage", "logs",
-                    "job/retained-directories", "--tail=40", "--request-timeout=10s",
-                ], capture_output=True, text=True, timeout=15, check=False)
-                witness["retainedConsumer"] = {
-                    "returnCode": logs.returncode,
-                    "errorCategory": classify_kubectl_error(logs.stderr) if logs.returncode else None,
-                    "hints": [name for name, marker in (
-                        ("missing-marker", "state root marker"),
-                        ("ownership-mode-mismatch", "not repairing"),
-                        ("permission-denied", "permission denied"),
-                        ("readonly-filesystem", "read-only file system"),
-                        ("invalid-entry", "invalid entries"),
-                        ("invalid-arguments", "usage: retained-directories"),
-                    ) if marker in logs.stdout.lower()],
-                }
-            except Exception as diagnostic_error:
-                witness["retainedConsumer"] = {"status": "unavailable", "type": type(diagnostic_error).__name__}
+            consumer = subprocess.run([
+                settings["kubectl"], "-n", "runtime", "get", "pods",
+                "-l", "app=directory-consumer", "-o", "json", "--request-timeout=10s",
+            ], capture_output=True, text=True, timeout=15, check=False)
+            pods = json.loads(consumer.stdout).get("items", []) if consumer.returncode == 0 else []
+            witness["retainedConsumer"] = {
+                "returnCode": consumer.returncode,
+                "errorCategory": classify_kubectl_error(consumer.stderr) if consumer.returncode else None,
+                "pods": [
+                    {"phase": (pod.get("status") or {}).get("phase")
+                        if (pod.get("status") or {}).get("phase") in ("Pending", "Running", "Succeeded", "Failed", "Unknown") else "unknown",
+                     "started": any(item.get("state", {}).get("running") or item.get("state", {}).get("terminated")
+                                    for item in (pod.get("status") or {}).get("containerStatuses", [])),
+                     "ready": any(item.get("type") == "Ready" and item.get("status") == "True"
+                                  for item in (pod.get("status") or {}).get("conditions", []))}
+                    for pod in pods[:4]
+                ],
+            }
     except Exception as error:
         witness = {"status": "unavailable", "type": type(error).__name__}
+    witness["runtimeHookProof"] = False
+    witness["acceptanceBoundary"] = "explicit-fixture-provisioning-and-controller-gating"
     witness["capturePhase"] = "native-catch-before-cleanup"
-    (work / "hook-witness.json").write_text(json.dumps(witness))
+    (work / "retained-witness.json").write_text(json.dumps(witness))
 
 
 def capture_root_retirement_witness():
@@ -810,6 +773,9 @@ def check_acceptance(report):
         raise ValueError("acceptance-report-shape")
     if report.get("scenario") != "kubernetes-native-safety":
         raise ValueError("acceptance-scenario")
+    retained_boundary = report.get("argoRetainedBoundary")
+    if not isinstance(retained_boundary, dict) or set(retained_boundary) != {"scenario", "runtimeHookProof"} or retained_boundary.get("scenario") != "explicit-fixture-provisioning-and-controller-gating" or retained_boundary.get("runtimeHookProof") is not False:
+        raise ValueError("retained-acceptance-boundary")
     supplied = report.get("requiredScenarios")
     if not isinstance(supplied, list) or len(supplied) != len(REQUIRED_SCENARIOS) or set(supplied) != set(REQUIRED_SCENARIOS):
         raise ValueError("required-scenario-inventory")
@@ -1155,7 +1121,7 @@ def self_check():
     untrusted = argo_recovery_witness({"items": [{"metadata": {"name": "failed-child"}, "spec": {"source": {"targetRevision": sensitive}}}]}, {}, {})
     assert untrusted["applications"][0]["desiredRevision"] == "non-sha" and sensitive not in json.dumps(untrusted)
     retained = argo_recovery_witness({"items": [{
-        "metadata": {"name": "hook", "generation": 3},
+        "metadata": {"name": "retained-gate", "generation": 3},
         "spec": {"source": source},
         "status": {
             "sync": {"revision": "a" * 40, "status": "Synced", "comparedTo": {"source": source}},
@@ -1163,17 +1129,17 @@ def self_check():
             "conditions": None,
             "operationState": {"phase": "Failed", "message": sensitive, "syncResult": {"revision": "a" * 40}},
         },
-    }]}, {}, {"hook": source}, ("hook", sensitive))
+    }]}, {}, {"retained-gate": source}, ("retained-gate", sensitive))
     assert sensitive not in json.dumps(retained)
-    assert len(retained["applications"]) == 1 and retained["applications"][0]["name"] == "hook"
+    assert len(retained["applications"]) == 1 and retained["applications"][0]["name"] == "retained-gate"
     assert retained["applications"][0]["sourceMatchesFixture"] and retained["applications"][0]["operationPhase"] == "Failed"
     assert not retained["applications"][0]["comparisonErrorPresent"]
     singleton = {"apiVersion": "argoproj.io/v1alpha1", "kind": "Application",
-                 "metadata": {"name": "hook"}, "spec": {"source": source},
+                 "metadata": {"name": "retained-gate"}, "spec": {"source": source},
                  "status": {"conditions": None, "health": {"status": "Degraded", "message": sensitive},
                             "operationState": {"phase": "Failed", "syncResult": {"revision": "a" * 40}}}}
-    single_witness = argo_recovery_witness(singleton, {}, {"hook": source}, ARGO_RETAINED_APPS)
-    list_witness = argo_recovery_witness({"items": [singleton]}, {}, {"hook": source}, ARGO_RETAINED_APPS)
+    single_witness = argo_recovery_witness(singleton, {}, {"retained-gate": source}, ARGO_RETAINED_APPS)
+    list_witness = argo_recovery_witness({"items": [singleton]}, {}, {"retained-gate": source}, ARGO_RETAINED_APPS)
     assert single_witness == list_witness and single_witness["applications"][0]["present"]
     assert sensitive not in json.dumps(single_witness)
     assert not argo_recovery_witness({}, {}, {}, ARGO_RETAINED_APPS)["applications"][0]["present"]
@@ -1221,6 +1187,10 @@ def self_check():
         ]} for name in REQUIRED_SCENARIOS),
         "status": "passed", "fullAcceptance": True, "scoped": False,
         "mutation": {"gatewayTLSCEL": False, "argo": ""},
+        "argoRetainedBoundary": {
+            "scenario": "explicit-fixture-provisioning-and-controller-gating",
+            "runtimeHookProof": False,
+        },
         "cleanup": {key: True for key in ("containers", "volumes", "network", "credentials")},
     }
     check_acceptance(complete)
@@ -1235,6 +1205,10 @@ def self_check():
         ("mutation", {"gatewayTLSCEL": True, "argo": ""}), ("failureReason", "command-failed"),
         ("mutation", {"gatewayTLSCEL": 0, "argo": ""}),
         ("failurePhase", "cleanup"), ("commandFailure", {"returnCode": 1}),
+        ("argoRetainedBoundary", None),
+        ("argoRetainedBoundary", {"scenario": "explicit-fixture-provisioning-and-controller-gating", "runtimeHookProof": True}),
+        ("argoRetainedBoundary", {"scenario": "explicit-fixture-provisioning-and-controller-gating", "runtimeHookProof": 0}),
+        ("argoRetainedBoundary", {"scenario": "runtime-protection", "runtimeHookProof": False}),
         ("cleanup", {**complete["cleanup"], "extra": False}),
     ):
         bad = copy.deepcopy(complete)

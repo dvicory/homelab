@@ -1,0 +1,208 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: argo-02-retained-provisioning-gating
+  labels:
+    verification.homelab/layer: controller-node-local
+    verification.homelab/retained-boundary: explicit-fixture-provisioning
+spec:
+  timeouts:
+    assert: 180s
+    exec: 300s
+  # Docker K3s does not install the production systemd/runc guard. FailedMount
+  # below proves the real local-PV existence gate, not mandatory runtime identity
+  # protection; that acceptance belongs to the separate exact native hook proof.
+  steps:
+    - name: missing-state-blocks-real-consumer-and-dependent-wave
+      try:
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" start-retained
+            outputs:
+              - name: initial
+                value: ($stdout)
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" revision payload
+            outputs:
+              - name: payload
+                value: ($stdout)
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: PersistentVolumeClaim
+              metadata:
+                name: native-argo-consumer
+                namespace: runtime
+              status:
+                phase: Bound
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                namespace: runtime
+                labels:
+                  app: directory-consumer
+              status:
+                phase: Pending
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: retained-consumer
+                namespace: argocd
+              (status.sync.revision == $payload): true
+              (status.sync.comparedTo.source == spec.source): true
+              (status.operationState.syncResult.revision == $payload): true
+              status:
+                health:
+                  status: Progressing
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: retained-gate
+                namespace: argocd
+              (status.sync.revision == $initial): true
+              (status.sync.comparedTo.source == spec.source): true
+              (status.operationState.syncResult.revision == $initial): true
+              status:
+                operationState:
+                  phase: Running
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" consumer-uid
+            outputs:
+              - name: consumerUid
+                value: ($stdout)
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: Event
+              metadata:
+                namespace: runtime
+              involvedObject:
+                uid: ($consumerUid)
+              reason: FailedMount
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" retained-blocked
+      catch:
+        - script:
+            content: |
+              exec "$(jq -r .argo.captureRetained "$FIXTURE_SETTINGS")"
+    - name: explicit-single-root-and-entry-provisioning-unblocks-consumer
+      try:
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" revision initial
+            outputs:
+              - name: initial
+                value: ($stdout)
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" revision payload
+            outputs:
+              - name: payload
+                value: ($stdout)
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" provision-retained
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: retained-consumer
+                namespace: argocd
+              (status.sync.revision == $payload): true
+              (status.sync.comparedTo.source == spec.source): true
+              (status.operationState.syncResult.revision == $payload): true
+              status:
+                sync:
+                  status: Synced
+                health:
+                  status: Healthy
+                operationState:
+                  phase: Succeeded
+              (length(status.conditions[?type == 'ComparisonError'] || `[]`) == `0`): true
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: retained-gate
+                namespace: argocd
+              (status.sync.revision == $initial): true
+              (status.sync.comparedTo.source == spec.source): true
+              (status.operationState.syncResult.revision == $initial): true
+              status:
+                sync:
+                  status: Synced
+                health:
+                  status: Healthy
+                operationState:
+                  phase: Succeeded
+              (length(status.conditions[?type == 'ComparisonError'] || `[]`) == `0`): true
+        - assert:
+            resource:
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                name: after-retained-consumer
+                namespace: runtime
+              (length(status.conditions[?type == 'Complete' && status == 'True'] || `[]`) > `0`): true
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" retained-proof
+      catch:
+        - script:
+            content: |
+              exec "$(jq -r .argo.captureRetained "$FIXTURE_SETTINGS")"
+    - name: reconciliation-does-not-repair-invalid-retained-metadata
+      try:
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" reconcile-invalid-retained
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: retained-consumer
+                namespace: argocd
+              (operation == `null`): true
+              (status.sync.comparedTo.source == spec.source): true
+              status:
+                sync:
+                  status: Synced
+                health:
+                  status: Healthy
+                operationState:
+                  phase: Succeeded
+        - assert:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: retained-gate
+                namespace: argocd
+              (operation == `null`): true
+              (status.sync.comparedTo.source == spec.source): true
+              status:
+                sync:
+                  status: Synced
+                health:
+                  status: Healthy
+                operationState:
+                  phase: Succeeded
+        - script:
+            content: |
+              exec "$(jq -r .argo.action "$FIXTURE_SETTINGS")" nonmutating-proof
+      catch:
+        - script:
+            content: |
+              exec "$(jq -r .argo.captureRetained "$FIXTURE_SETTINGS")"

@@ -32,6 +32,11 @@ let
         };
       };
       config = host;
+      utils = import (self.nixosConfigurations.hvn-hyp1.pkgs.path + "/nixos/lib/utils.nix") {
+        config = host;
+        inherit lib;
+        inherit (self.nixosConfigurations.hvn-hyp1) pkgs;
+      };
       inherit lib;
       inherit (self.nixosConfigurations.hvn-hyp1) pkgs;
     };
@@ -41,7 +46,12 @@ let
     .success;
   withDevice =
     name: device: current:
-    current // { devices = current.devices // { ${name} = device; }; };
+    current
+    // {
+      devices = current.devices // {
+        ${name} = device;
+      };
+    };
   ungranted =
     builtins.fromJSON
       (evaluateWith (current: current // { accelerator = null; }))
@@ -145,7 +155,7 @@ let
         project."restricted.devices.disk.paths" == lib.concatStringsSep "," (
           lib.unique (
             [
-              compute.stateRoot
+              compute.stateExportRoot
               compute.identityPath
             ]
             ++ baseDiskPaths
@@ -161,7 +171,9 @@ let
         "unix-hotplug"
         "usb"
       ]
-      && project."restricted.devices.unix-char" == (if compute.accelerator != null then "allow" else "block");
+      &&
+        project."restricted.devices.unix-char"
+        == (if compute.accelerator != null then "allow" else "block");
     # gpu-render never enters the guest's ID map.
     accelerator-grant-leaves-id-map =
       descriptor.config."raw.idmap" == ungranted.config."raw.idmap"
@@ -193,8 +205,12 @@ let
       in
       retained != [ ]
       && builtins.all (path: !(builtins.elem path allowed) && !(builtins.elem path sources)) retained
-      && devices.state.source == compute.stateRoot
-      && devices.state.required == "true";
+      && devices.state.source == compute.stateExportRoot
+      && devices.state.path == builtins.dirOf compute.stateGuestPath
+      && devices.state.propagation == "rslave"
+      && devices.state.recursive == "true"
+      && devices.state.required == "true"
+      && builtins.all (path: path.path != compute.stateRoot) descriptor.requiredPaths;
     optional-media-device =
       let
         media = devices.media or null;

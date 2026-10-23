@@ -21,6 +21,34 @@
           guest
           ;
         descriptor = builtins.fromJSON hostConfig.environment.etc."homelab/compute.json".text;
+        retainedRoot = builtins.fromJSON hostConfig.environment.etc."homelab/retained-root.json".text;
+        fixtureSource = retainedRoot.root.source // {
+          name = "prod-home-replacement/persist";
+        };
+        fixtureRoot = retainedRoot // {
+          root = retainedRoot.root // {
+            source = fixtureSource;
+          };
+        };
+        guestNodeText = guest.config.environment.etc."homelab/retained-node.json".text;
+        guestNode = builtins.fromJSON (builtins.unsafeDiscardStringContext guestNodeText);
+        fixtureGuestBundle =
+          (guest.extendModules {
+            modules = [
+              {
+                environment.etc."homelab/retained-node.json".text = lib.mkForce (
+                  builtins.appendContext (builtins.toJSON (
+                    guestNode
+                    // {
+                      root = guestNode.root // {
+                        source = fixtureSource;
+                      };
+                    }
+                  )) (builtins.getContext guestNodeText)
+                );
+              }
+            ];
+          }).config.system.build.computeBundle;
         poolPath = descriptor.poolPath;
         renderNodeRule =
           let
@@ -73,7 +101,7 @@
               stop = mediaPoolUnit.serviceConfig.ExecStop;
             };
             mediaRootScript = hostConfig.systemd.services.media-namespace.script;
-            stateMarkerScript = hostConfig.systemd.services.compute-state-marker.script;
+            retainedRootSpec = fixtureRoot;
             secretStageScript = hostConfig.systemd.services.compute-stage-secrets.script;
             secretStagePath = lib.makeBinPath hostConfig.systemd.services.compute-stage-secrets.path;
             acceleratorSourceCheck =
@@ -94,49 +122,6 @@
               ffmpeg -hide_banner -loglevel error                 -f lavfi -i color=c=black:s=64x64:d=1                 -f lavfi -i anullsrc=r=8000:cl=mono                 -t 1 -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest                 "$out"
             '';
         computeGuest = pkgs.callPackage (inputs.self + "/pkgs/by-name/compute-runtime/package.nix") { };
-        selected = builtins.fromJSON (
-          builtins.readFile (inputs.self + /assets/helper-release/verified.json)
-        );
-        selectedSource = builtins.getFlake "github:dvicory/homelab/${selected.sourceSha}";
-        # Reuse the image's single-command build for the genuine compiled B capability.
-        helperRuntimeB = selectedSource.packages.${system}.compute-runtime.overrideAttrs (old: {
-          pname = "retained-directories";
-          subPackages = [ "cmd/retained-directories" ];
-          postInstall = "";
-          postPatch = (old.postPatch or "") + ''
-            substituteInPlace cmd/retained-directories/main.go --replace-fail 'func main() {' 'func main() {
-              if len(os.Args) == 2 && os.Args[1] == "--version" {
-                fmt.Println("fixture-v2")
-                return
-              }'
-          '';
-        });
-        helperImageB =
-          pkgs.callPackage (selectedSource + "/pkgs/by-name/retained-directories-image/package.nix")
-            {
-              compute-runtime = helperRuntimeB;
-            };
-        # Public test-only key and fixed validity keep independently cached guest
-        # trust and registry identity identical when this derivation is rebuilt.
-        helperTls = pkgs.runCommand "argo-helper-selection-tls" { nativeBuildInputs = [ pkgs.openssl ]; } ''
-          mkdir -p "$out/client"
-          cp ${./prod-home-replacement-test-key.pem} "$out/server.key"
-          openssl req -x509 -new -key "$out/server.key" -sha256 -set_serial 1 \
-            -not_before 20250101000000Z -not_after 21250101000000Z \
-            -subj /CN=argo-helper-selection \
-            -addext subjectAltName=IP:${bridgeAddress} \
-            -addext basicConstraints=critical,CA:TRUE \
-            -out "$out/server.crt"
-          cp "$out/server.crt" "$out/client/ca.crt"
-          chmod 0444 "$out/server.key"
-        '';
-        # Initial fixture trust only: transitions do not restart or reconfigure K3s.
-        helperGuestBundle =
-          (guest.extendModules {
-            modules = [
-              { security.pki.certificateFiles = [ "${helperTls}/client/ca.crt" ]; }
-            ];
-          }).config.system.build.computeBundle;
         canonical = lib.fileset.toSource {
           root = ../../generated/manifests/prod-home;
           fileset = lib.fileset.unions [
@@ -183,8 +168,7 @@
         mkTest =
           family:
           let
-            guestBundle =
-              if family == "replacement" then helperGuestBundle else guest.config.system.build.computeBundle;
+            guestBundle = fixtureGuestBundle;
           in
           (pkgs.testers.runNixOSTest {
             name = if family == "replacement" then "prod-home-replacement" else "prod-home-consumer-resilience";
@@ -254,11 +238,6 @@
                     testRepo
                     testSeed
                     bootstrapHost
-                  ]
-                  ++ lib.optionals (family == "replacement") [
-                    helperImageB
-                    helperRuntimeB
-                    helperTls
                   ];
 
                   incus = {
@@ -354,6 +333,10 @@
                   "prod-home-replacement/incus-compute"
               )
               fixture_host.succeed(
+                  "zfs create -o mountpoint=/persist "
+                  "prod-home-replacement/persist"
+              )
+              fixture_host.succeed(
                   "findmnt -n -o FSTYPE -M ${poolPath} | grep -qx zfs"
               )
               fixture_host.succeed(
@@ -384,11 +367,6 @@
                   " --acceleration-check /tmp/jellyfin-acceleration-check.sh"
                   " --bootstrap-host ${bootstrapHost}/bin/household-bootstrap-host"
                   " --helper ${computeGuest}/bin/compute-guest"
-                  ${lib.optionalString (family == "replacement") ''
-                    " --helper-image-b ${helperImageB}"
-                    " --helper-b ${helperRuntimeB}/bin/retained-directories"
-                    " --helper-tls ${helperTls}"
-                  ''}
                   f" < /dev/null > {console} 2>&1",
                   timeout=4 * 60 * 60,
               )
@@ -421,7 +399,7 @@
             testRepo
             testSeed
             ;
-          guestBundle = helperGuestBundle;
+          guestBundle = fixtureGuestBundle;
         };
         legacyPackages.prod-home-consumer-resilience-test = consumerTest;
         checks.prod-home-replacement = replacementTest // {
