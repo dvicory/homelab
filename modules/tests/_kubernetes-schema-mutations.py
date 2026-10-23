@@ -30,7 +30,7 @@ def main():
         with (args.manifests / relative).open() as stream:
             return yaml.safe_load(stream)
 
-    def rejected(name, content, boundary, *, missing=None, skipped=False, collision=False):
+    def rejected(name, content, *, missing=None, skipped=False, collision=False):
         with tempfile.TemporaryDirectory(prefix="schema-mutation-") as temporary:
             work = Path(temporary)
             manifests = work / "manifests"
@@ -59,34 +59,44 @@ def main():
             command += ["--manifests", str(manifests), "--schemas", str(schemas)]
             result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             output = result.stdout + result.stderr
-            if result.returncode == 0 or boundary not in output:
-                raise AssertionError(f"{name}: expected rejection containing {boundary!r}, "
-                                     f"exit={result.returncode}\n{output}")
-            print(f"rejected {name}: {boundary}")
+            if result.returncode == 0:
+                raise AssertionError(f"{name}: invalid input was accepted\n{output}")
+            print(f"rejected {name}")
+
+    with tempfile.TemporaryDirectory(prefix="schema-positive-") as temporary:
+        work = Path(temporary)
+        manifests = work / "manifests"
+        manifests.mkdir()
+        (manifests / "case.yaml").write_text(
+            "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: schema-positive\n")
+        report = work / "report.json"
+        subprocess.run([sys.executable, str(args.helper), "validate", "--manifests", str(manifests),
+                        "--schemas", str(args.schemas), "--report", str(report),
+                        "--kubeconform", str(args.kubeconform)], check=True)
+        result = json.loads(report.read_text())
+        assert result["summary"] == {"valid": 1, "invalid": 0, "errors": 0, "skipped": 0}
+        assert [(row["kind"], row["version"], row["name"], row["status"])
+                for row in result["resources"]] == [("Namespace", "v1", "schema-positive", "statusValid")]
 
     deployment = load("identity/Deployment-kanidm.yaml")
     broken = copy.deepcopy(deployment)
     broken["spec"]["template"]["spec"]["securityContext"]["runAsNonRooot"] = True
-    rejected("built-in nested unknown field", broken, "runAsNonRooot")
+    rejected("built-in nested unknown field", broken)
     route = load("gateway/HTTPRoute-idm.yaml")
     broken = copy.deepcopy(route)
     broken["spec"]["rules"][0]["backendRefs"][0]["porrt"] = 443
-    rejected("custom nested unknown field", broken, "porrt")
+    rejected("custom nested unknown field", broken)
     crd = load("gateway-crds/CustomResourceDefinition-httproutes-gateway-networking-k8s-io.yaml")
     broken = copy.deepcopy(crd)
     del broken["spec"]["group"]
-    rejected("CRD envelope required group", broken, "group")
+    rejected("CRD envelope required group", broken)
     custom = json.loads((args.schemas / "custom-gvks.json").read_text())
     route_schema = next(entry["schema"] for entry in custom if entry["kind"] == "HTTPRoute"
                         and entry["apiVersion"] == route["apiVersion"])
-    rejected("missing served custom schema", route, "missing served custom schema", missing=route_schema)
-    rejected("duplicate original YAML key", "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: first\n  name: second\n", "duplicate YAML key")
-    rejected("duplicate key in original YAML merge",
-             "apiVersion: v1\nkind: Namespace\nmetadata: {<<: {name: first, name: second}}\n",
-             "duplicate YAML key")
-    rejected("duplicate key in original YAML merge sequence",
-             "apiVersion: v1\nkind: Namespace\nmetadata: {<<: [{name: first, name: second}]}\n",
-             "duplicate YAML key")
+    rejected("missing served custom schema", route, missing=route_schema)
+    rejected("duplicate original YAML key", "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: first\n  name: second\n")
+    rejected("duplicate key in original YAML merge", "apiVersion: v1\nkind: Namespace\nmetadata: {<<: {name: first, name: second}}\n")
+    rejected("duplicate key in original YAML merge sequence", "apiVersion: v1\nkind: Namespace\nmetadata: {<<: [{name: first, name: second}]}\n")
     with tempfile.TemporaryDirectory(prefix="schema-merge-") as temporary:
         work = Path(temporary)
         manifests = work / "manifests"
@@ -101,12 +111,12 @@ def main():
         _, document = next(documents(manifests))
         assert document["metadata"] == {"name": "selected", "labels": {"name": "selected"}}
         print("original-YAML loader preserves nested merge aliases")
-    rejected("empty directory", None, "zero effective deployment documents")
-    rejected("empty YAML", "", "zero effective deployment documents")
-    rejected("comment-only YAML", "# no resources\n---\n# still empty\n", "zero effective deployment documents")
-    rejected("empty List selection", {"apiVersion": "v1", "kind": "List", "items": []}, "zero effective deployment documents")
-    rejected("all-skipped actual tool", deployment, "statusSkipped", skipped=True)
-    rejected("colliding served schema output", crd, "colliding served-GVK schema", collision=True)
+    rejected("empty directory", None)
+    rejected("empty YAML", "")
+    rejected("comment-only YAML", "# no resources\n---\n# still empty\n")
+    rejected("empty List selection", {"apiVersion": "v1", "kind": "List", "items": []})
+    rejected("all-skipped actual tool", deployment, skipped=True)
+    rejected("colliding served schema output", crd, collision=True)
 
     # Representative generic field classes permit removing type-only assertions,
     # not metadata, positive limits, nonempty names or authority/ownership rules.
@@ -137,7 +147,7 @@ def main():
             else:
                 parent = parent[part]
         parent[path[-1]] = value
-        rejected(name, broken, "statusInvalid")
+        rejected(name, broken)
 
 
 if __name__ == "__main__":

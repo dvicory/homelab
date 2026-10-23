@@ -17,13 +17,19 @@ builds the complete projection; neither target requires GitHub Actions.
 inventory and native application descriptors. The workflow dispatches that
 plan; it does not maintain a second list of output categories or branch on a
 test/application name. Platform-specific Darwin bootstrap remains an executor
-dependency, not a workload-selection rule.
+dependency, not a workload-selection rule. Complete fast-check aggregates are
+listed first in the build matrix to request runners early; GitHub still controls
+actual runner availability and start order.
 
 `hostedCiArtifacts.<system>` supplies lazy `groups`, `checks`,
-`nativeApplications` and `bootstrap` leaves. Each executor evaluates only its
-own leaf immediately before building. A leaf declares the exact derivation
-and output paths; native leaves also declare the executable. This preserves
-same-host evaluation without forcing foreign or unsupported derivations.
+`nativeApplications` and `bootstrap` leaves, plus the local check `inventory`.
+Complete fast-check executors evaluate their inventory and aggregate together,
+then release the evaluator before building. A selected-check dispatch forces only
+its artifact leaf and records its exact selected receipt, without evaluating or
+uploading a complete platform inventory. Other executors also force only their
+own artifact leaf. Each leaf declares exact derivation/output paths; native
+leaves also declare the executable. Foreign and unsupported derivations stay
+unforced.
 
 On a builder for the selected system:
 
@@ -74,6 +80,12 @@ Kubernetes coverage. Detailed Argo resource retirement runs in the required
 native suite; the replacement VM retains real data, ownership, mount and
 accelerator observations through guest replacement.
 
+After restarting K3s, the NetworkPolicy fixture waits for actual execution in
+its probe containers, not persisted Node Ready status. This readiness check
+sends no traffic: first network connections remain single-shot and existing
+continuous watchers are not restarted. Filler Pods use a distinct controller
+selector so their ReplicaSet cannot adopt the named service stand-ins.
+
 This tooling slice changes no intended production behavior or policy.
 Removing Go assertions can still change the current
 `retained-directories-image` producer identity without changing runtime code.
@@ -98,7 +110,8 @@ probes of external utilities are not retained as safety evidence; unsupported
 fixture xattrs are reported as unexercised.
 
 The schema gate checks original canonical YAML against pinned local schemas,
-with duplicate-key and complete document/schema accounting. It does not prove
+using PyYAML's libyaml parser where available while retaining strict duplicate,
+merge and string-key checks and complete document/schema accounting. It does not prove
 CEL, admission, controller reconciliation or traffic; the official CRD envelope
 schema also permits some extra fields. Kyverno owns rendered semantic policy;
 `argocd-application-health` separately executes the production health Lua.
@@ -120,9 +133,16 @@ the network-policy enforcer; a dedicated negative fixture guards that boundary.
 The gate runs as five independent derivations: `transport`, `gitops`,
 `edge-identity` and two round-robin halves of `workloads`
 (`prod-home-manifests-policy-<family>[-<half>]`). The aggregate
-`prod-home-manifests-policy` check requires every declared scenario to pass
-in exactly one part, then runs the per-render schema and CRD provenance
-checks and the schema counterfactuals once.
+`prod-home-manifests-policy` check requires every declaration-derived scenario
+to pass in exactly one part. Compatible Tests share native Kyverno invocations;
+each result remains bound to its engine-emitted Test path, declared name and
+complete rule/resource outcomes. Parts and the aggregate must use the same
+prepared input contents; editing a report and its inventory together cannot
+remove required coverage.
+
+Schema evidence is prepared once in immutable Nix inputs and reused by the
+parts. Mutable input copies are revalidated. The aggregate checks schema and
+CRD provenance and runs the schema counterfactuals once.
 
 Schema counterfactuals assert native invalid-resource status and validation
 paths, not error-message wording.
@@ -130,6 +150,10 @@ paths, not error-message wording.
 ```sh
 nix build --no-link ".#checks.$(nix eval --impure --raw --expr builtins.currentSystem).prod-home-manifests-policy" -L
 ```
+
+The static Argo bootstrap bundle consumes the Argo controller/CRD tree, retained
+Argo Namespace, root Application and AppProject. Unrelated application manifests
+do not invalidate it; seed equality, project checks and CRD checks remain required.
 
 Superseded rendered Nix/Python semantic validators have been removed after
 complete native positive, negative and fail-closed coverage. Genuine input,
@@ -522,10 +546,16 @@ Owned `TMPDIR` is selected only after Nix installation and cache setup:
 installation can change ownership under `/nix` and break its own temporary
 directory if pointed there early.
 
-Successful check jobs upload nonempty outputs as
-`check-output-<system>-<check-or-group>-<run-id>` artifacts; empty outputs retain
-their evidence in the job log. Linux runners enable available KVM acceleration.
-System builds and checks can reuse narinfo and objects uploaded by other jobs.
+Successful check jobs upload complete outputs as
+`check-output-<system>-<check-or-group>-<run-id>` artifacts containing
+`check-outputs.tar.zst`. GNU tar follows the immutable result links, retains
+hardlink records and compresses the stream once with Zstandard; Actions does
+not recompress it. Extract in an empty directory with
+`tar --use-compress-program=unzstd --no-same-owner -xf check-outputs.tar.zst`.
+These are diagnostic outputs; required receipts and native report artifacts
+remain separate and unchanged. Empty check outputs retain their job-log evidence.
+Linux runners enable available KVM acceleration. System builds and checks can
+reuse narinfo and objects uploaded by other jobs.
 Hestia's binary version is pinned alongside its action. Use core v3.1.0 or
 newer: it rejects cached narinfos whose backing packs are unavailable, rather
 than repeatedly advertising objects that fail during download. The manifest
@@ -557,6 +587,13 @@ closure and never builds missing outputs for publication. There is no second
 build on a separate publication runner. The `cachix-publish` environment remains
 restricted to `main`, and only the publication step receives its per-cache write
 token. Pull requests and manual dispatches remain read-only.
+
+The generated-manifest package retains each declared application's Helm chart
+as an evaluation input, so ordinary `main` publication includes those realized
+fixed-output charts even though IFD rendering embeds only their resulting YAML.
+The app-template chart uses upstream's OCI distribution with the locked version
+and unpacked-content hash; a different chart tree still fails the pinned hash.
+This changes neither rendered desired state nor cache trust.
 
 A successful warm `main` job does not prove that a cold PR runner can substitute
 its dependencies. For a repeated compiled dependency, compare the exact

@@ -759,6 +759,43 @@ def registry_pull_failure(pods: dict) -> str | None:
     return None
 
 
+def _bootstrap_group_has_executable_members(pgid: int, deadline: float) -> bool:
+    """Fail closed unless two stable /proc inventories show only dead members."""
+    previous = None
+    try:
+        for _ in range(2):
+            identities = {}
+            with os.scandir("/proc") as entries:
+                for entry in entries:
+                    if time.monotonic() >= deadline:
+                        return True
+                    if not entry.name.isdecimal():
+                        continue
+                    # comm may contain spaces and ')'; fields after its last ')'
+                    # start at state (3), with pgrp (5) and starttime (22).
+                    try:
+                        fields = (Path("/proc") / entry.name / "stat").read_bytes().rsplit(b")", 1)[1].split()
+                    except FileNotFoundError:
+                        continue
+                    if int(fields[2]) != pgid:
+                        continue
+                    identities[entry.name] = int(fields[19])
+                    # A zombie thread-group leader can still have live threads.
+                    # Only a single-threaded Z/X member is certainly non-executable.
+                    if fields[0] not in (b"Z", b"X") or int(fields[17]) != 1:
+                        return True
+            if str(pgid) not in identities:
+                return True
+            if previous is not None and identities != previous:
+                return True
+            previous = identities
+    except (OSError, ValueError, IndexError):
+        # Unknown unreadable/malformed ownership or an unstable owned identity
+        # must not retire descendants still completing SIGTERM cleanup.
+        return True
+    return False
+
+
 def stop_owned_bootstrap(process: subprocess.Popen) -> None:
     """Stop only the session/group created for this bootstrap and its children."""
     if process.returncode is not None:
@@ -771,8 +808,12 @@ def stop_owned_bootstrap(process: subprocess.Popen) -> None:
         process.wait()
         return
     # Keep the leader waitable: its PID pins the group through its children's grace.
-    # ponytail: fixed 30s grace; track live group members only if cleanup latency matters.
-    time.sleep(30)
+    deadline = time.monotonic() + 30
+    while _bootstrap_group_has_executable_members(process.pid, deadline):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(1.0, remaining))
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:

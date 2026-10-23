@@ -109,10 +109,13 @@ jobs:
               end
             else
               {matrix: {include: (
-                 [to_entries[] as $platform | $platform.value.inventory.runtime[] |
+                 [to_entries[] as $platform | $platform.value.groups[] as $group |
+                    select($group == "checks") |
+                    {system: $platform.key, group: $group, check: "", artifact: "", requirements: {}}]
+                 + [to_entries[] as $platform | $platform.value.inventory.runtime[] |
                     check_row($platform.key)]
                  + [to_entries[] as $platform | $platform.value.groups[] as $group |
-                    select($platform.key != "aarch64-darwin" or $group != "darwinConfigurations") |
+                    select($group != "checks" and ($platform.key != "aarch64-darwin" or $group != "darwinConfigurations")) |
                     {system: $platform.key, group: $group, check: "", artifact: "", requirements: {}}]
                )},
                applications: {include: [to_entries[] as $platform |
@@ -339,15 +342,11 @@ jobs:
           CHECK: ${{ matrix.check }}
         run: |
           set -euo pipefail
-          if [ "$GROUP" = checks ]; then
-            nix eval --json ".#hostedCiInventory.$SYSTEM" > "$RUNNER_TEMP/check-inventory.json"
-            cat "$RUNNER_TEMP/check-inventory.json"
-          fi
           if [ -n "$CHECK" ]; then
             check_attr=$(jq -rn --arg check "$CHECK" '$check | @json')
-            attr=".#hostedCiArtifacts.$SYSTEM.checks.$check_attr"
+            artifact_attr="checks.$check_attr"
           else
-            attr=".#hostedCiArtifacts.$SYSTEM.groups.$GROUP"
+            artifact_attr="groups.$GROUP"
           fi
           build_args=(--keep-going --fallback)
           if [ "$GROUP" = runtime ]; then
@@ -355,7 +354,17 @@ jobs:
             build_args+=(--max-jobs 1)
           fi
           # Release the evaluation heap before any build/VM starts (PR #64).
-          nix eval --json "$attr" > "$RUNNER_TEMP/artifact.json"
+          if [ "$GROUP" = checks ] && [ -z "$CHECK" ]; then
+            # Share the full inventory only with its complete aggregate.
+            nix eval --json ".#hostedCiArtifacts.$SYSTEM" \
+              --apply "p: { inherit (p) inventory; artifact = p.$artifact_attr; }" \
+              > "$RUNNER_TEMP/check-projection.json"
+            jq -c .inventory "$RUNNER_TEMP/check-projection.json" > "$RUNNER_TEMP/check-inventory.json"
+            jq -c .artifact "$RUNNER_TEMP/check-projection.json" > "$RUNNER_TEMP/artifact.json"
+            cat "$RUNNER_TEMP/check-inventory.json"
+          else
+            nix eval --json ".#hostedCiArtifacts.$SYSTEM.$artifact_attr" > "$RUNNER_TEMP/artifact.json"
+          fi
           jq -n --arg system "$SYSTEM" --arg group "$GROUP" --arg check "$CHECK" \
             --slurpfile artifact "$RUNNER_TEMP/artifact.json" \
             '{role: "build", system: $system, group: $group, check: $check, artifact: $artifact[0]}' \
@@ -363,17 +372,27 @@ jobs:
           drv=$(jq -er .drvPath "$RUNNER_TEMP/artifact.json")
           nix build -L --out-link "$RUNNER_TEMP/result" --json "${build_args[@]}" "$drv^*" > "$RUNNER_TEMP/build.json"
 
+      - name: Pack successful check outputs
+        if: matrix.group == 'checks' || matrix.group == 'runtime'
+        run: |
+          nix shell --inputs-from . nixpkgs#gnutar nixpkgs#zstd \
+            --command bash -euo pipefail -c '
+              cd "$RUNNER_TEMP"
+              tar --dereference -cf - result* |
+                zstd --threads=2 --quiet -3 -o check-outputs.tar.zst
+            '
+
       - name: Upload successful check outputs
         if: matrix.group == 'checks' || matrix.group == 'runtime'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: check-output-${{ matrix.system }}-${{ matrix.artifact || matrix.group }}-${{ github.run_id }}
-          path: ${{ runner.temp }}/result*
-          # Some checks have empty successful outputs; their evidence is the job log.
-          if-no-files-found: ignore
+          path: ${{ runner.temp }}/check-outputs.tar.zst
+          compression-level: 0
+          if-no-files-found: error
 
       - name: Upload platform check inventory
-        if: always() && matrix.group == 'checks'
+        if: always() && matrix.group == 'checks' && matrix.check == ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: check-inventory-${{ matrix.system }}-${{ matrix.artifact || matrix.group }}-${{ github.run_id }}

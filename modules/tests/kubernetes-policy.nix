@@ -18,6 +18,7 @@
       original = self.nixidyEnvs.${system}.prod-home;
       python = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
       policySource = ./_kubernetes-policy;
+      canonicalManifests = rootPath + "/generated/manifests/prod-home";
       helper = "${policySource}/transport.py";
       # The lock's package is named kyverno, not kyverno-cli; its sole binary is the CLI.
       kyverno = pkgs.kyverno;
@@ -148,12 +149,12 @@
               cp "$expected" "$out/$name/expected.json"
               ${lib.getExe schemaRunner} "$out/$name/manifests" ${schemas} "$out/$name/schema-report.json"
               python ${helper} bind-crds --manifests "$out/$name/manifests" \
-                --reference ${rootPath}/generated/manifests/prod-home
+                --reference ${canonicalManifests}
               python ${helper} bundle --manifests "$out/$name/manifests" \
                 --bootstrap "$out/$name/bootstrap" --expected "$out/$name/expected.json" \
                 --variant "$name" --output "$out/$name"
             }
-            pack canonical ${rootPath}/generated/manifests/prod-home \
+            pack canonical ${canonicalManifests} \
               ${original.config.build.bootstrapPackage} ${expectedFor original cluster}
             ${lib.concatMapStringsSep "\n" (variant: ''
               pack ${variant.name} ${variant.manifests} ${variant.bootstrap} \
@@ -163,8 +164,13 @@
             # Fixtures derive from the genuine variant renders above; expectations derive from the
             # explicit complete-population positives in each family declaration.
             python ${helper} generate --inputs "$out" --yq ${lib.getExe pkgs.yq-go}
+            # Cache a content binding only after all consumed inputs exist. The
+            # marker excludes itself; mutable copies must recompute the digest.
+            python ${helper} prepare --inputs "$out" \
+              --schema-runner ${lib.getExe schemaRunner} --schemas ${schemas} \
+              --schema-manifests ${canonicalManifests}
           '';
-      schemaArgs = "--schema-runner ${lib.getExe schemaRunner} --schemas ${schemas} --schema-manifests ${rootPath}/generated/manifests/prod-home";
+      schemaArgs = "--schema-runner ${lib.getExe schemaRunner} --schemas ${schemas} --schema-manifests ${canonicalManifests} --prepared-inputs ${inputsPackage}";
       runner = pkgs.writeShellApplication {
         name = "check-prod-home-manifests-policy";
         runtimeInputs = [
@@ -182,14 +188,14 @@
           reports="''${2:-policy-report}"
           python ${helper} run --inputs "$source" --output "$reports" \
             --kyverno ${lib.getExe kyverno} --yq ${lib.getExe pkgs.yq-go} ${schemaArgs}
+          python ${policySource}/test_transport.py "$reports"
           bash ${policySource}/schema-counterfactuals.sh "$source" ${schemas} \
             ${lib.getExe schemaRunner} "$reports/schema-counterfactuals"
         '';
       };
-      # Each part runs one
-      # family's native Tests (workloads in two round-robin halves) so Nix can
-      # build them in parallel; the aggregate check below requires every
-      # declared scenario to pass in exactly one part.
+      # Each part batches compatible native Tests by family/variant. Workloads
+      # retain the existing two round-robin halves; the aggregate requires every
+      # declared scenario exactly once and consumes the bound schema evidence.
       parts = [
         {
           family = "transport";
@@ -234,6 +240,7 @@
             python ${helper} run --inputs ${inputsPackage} --output "$out" \
               --kyverno ${lib.getExe kyverno} --yq ${lib.getExe pkgs.yq-go} ${schemaArgs} \
               --family ${part.family} --shard ${toString part.shard} --shards ${toString part.shards}
+            python ${policySource}/test_transport.py "$out"
           '';
       partChecks = lib.listToAttrs (map (part: lib.nameValuePair (partName part) (partCheck part)) parts);
     in
@@ -251,6 +258,10 @@
             ''
               python ${helper} aggregate --inputs ${inputsPackage} --output "$out" ${schemaArgs} \
                 ${lib.concatStringsSep " " (lib.attrValues partChecks)}
+              python ${policySource}/test_transport.py \
+                ${lib.concatStringsSep " " (lib.attrValues partChecks)} \
+                --inputs ${inputsPackage} ${schemaArgs} \
+                --kyverno ${lib.getExe kyverno} --yq ${lib.getExe pkgs.yq-go}
               bash ${policySource}/schema-counterfactuals.sh ${inputsPackage} ${schemas} \
                 ${lib.getExe schemaRunner} "$out/schema-counterfactuals"
               ${lib.concatStringsSep "\n" (
