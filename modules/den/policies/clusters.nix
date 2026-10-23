@@ -143,7 +143,16 @@ in
                   (lib.mkAliasOptionModule [ "warnings" ] [ "nixidy" "warnings" ])
                   (lib.mkAliasOptionModule [ "assertions" ] [ "nixidy" "assertions" ])
                 ];
-                charts = inputs.nixhelm.chartsDerivations.${system} or { };
+                charts = lib.recursiveUpdate (inputs.nixhelm.chartsDerivations.${system} or { }) {
+                  bjw-s-labs.app-template =
+                    (inputs.nixhelm.inputs.nix-kube-generators.lib { inherit pkgs; }).downloadHelmChart
+                      (
+                        inputs.nixhelm.chartsMetadata.bjw-s-labs.app-template
+                        // {
+                          repo = "oci://ghcr.io/bjw-s-labs/helm";
+                        }
+                      );
+                };
                 extraSpecialArgs = {
                   inherit
                     inputs

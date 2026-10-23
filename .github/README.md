@@ -588,6 +588,13 @@ build on a separate publication runner. The `cachix-publish` environment remains
 restricted to `main`, and only the publication step receives its per-cache write
 token. Pull requests and manual dispatches remain read-only.
 
+The generated-manifest package retains each declared application's Helm chart
+as an evaluation input, so ordinary `main` publication includes those realized
+fixed-output charts even though IFD rendering embeds only their resulting YAML.
+The app-template chart uses upstream's OCI distribution with the locked version
+and unpacked-content hash; a different chart tree still fails the pinned hash.
+This changes neither rendered desired state nor cache trust.
+
 A successful warm `main` job does not prove that a cold PR runner can substitute
 its dependencies. For a repeated compiled dependency, compare the exact
 derivation and every required output with the `main` log, then query each output
