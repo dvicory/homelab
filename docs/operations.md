@@ -57,27 +57,92 @@ point DNS at the edge.
 
 ## Retained state
 
-| Retained key | Host path | Guest path | Guest UID:GID | Mode | Access |
-| --- | --- | --- | --- | --- | --- |
-| `identity-kanidm` | `/var/lib/homelab/compute-1/state/identity-kanidm` | `/srv/state/identity-kanidm` | `1000:1000` | `0700` | writable |
-| `jellyfin-config` | `/var/lib/homelab/compute-1/state/jellyfin-config` | `/srv/state/jellyfin-config` | `751:751` | `0750` | writable |
-| `kubernetes-volumes` | `/var/lib/homelab/compute-1/state/kubernetes-volumes` | `/srv/state/kubernetes-volumes` | `0:0` | `0700` | writable |
-| `media-seerr-configuration` | `/var/lib/homelab/compute-1/state/media-seerr-configuration` | `/srv/state/media-seerr-configuration` | `1000:1000` | `0700` | writable |
-| `prowlarr` | `/var/lib/homelab/compute-1/state/prowlarr` | `/srv/state/prowlarr` | `755:755` | `0700` | writable |
-| `radarr` | `/var/lib/homelab/compute-1/state/radarr` | `/srv/state/radarr` | `752:752` | `0700` | writable |
-| `sabnzbd` | `/var/lib/homelab/compute-1/state/sabnzbd` | `/srv/state/sabnzbd` | `757:757` | `0700` | writable |
-| `seerr` | `/var/lib/homelab/compute-1/state/seerr` | `/srv/state/seerr` | `1000:1000` | `0700` | writable |
-| `sonarr` | `/var/lib/homelab/compute-1/state/sonarr` | `/srv/state/sonarr` | `753:753` | `0700` | writable |
+| Retained key | Stable identity | Host path | Guest path | Guest UID:GID | Mode | Access |
+| --- | --- | --- | --- | --- | --- | --- |
+| `identity-kanidm` | `prod-home/identity-kanidm` | `/var/lib/homelab/compute-1/state/identity-kanidm` | `/srv/retained/state/identity-kanidm` | `1000:1000` | `0700` | writable |
+| `jellyfin-config` | `prod-home/jellyfin-config` | `/var/lib/homelab/compute-1/state/jellyfin-config` | `/srv/retained/state/jellyfin-config` | `751:751` | `0750` | writable |
+| `media-seerr-configuration` | `prod-home/media-seerr-configuration` | `/var/lib/homelab/compute-1/state/media-seerr-configuration` | `/srv/retained/state/media-seerr-configuration` | `1000:1000` | `0700` | writable |
+| `prowlarr` | `prod-home/prowlarr` | `/var/lib/homelab/compute-1/state/prowlarr` | `/srv/retained/state/prowlarr` | `755:755` | `0700` | writable |
+| `radarr` | `prod-home/radarr` | `/var/lib/homelab/compute-1/state/radarr` | `/srv/retained/state/radarr` | `752:752` | `0700` | writable |
+| `sabnzbd` | `prod-home/sabnzbd` | `/var/lib/homelab/compute-1/state/sabnzbd` | `/srv/retained/state/sabnzbd` | `757:757` | `0700` | writable |
+| `seerr` | `prod-home/seerr` | `/var/lib/homelab/compute-1/state/seerr` | `/srv/retained/state/seerr` | `1000:1000` | `0700` | writable |
+| `sonarr` | `prod-home/sonarr` | `/var/lib/homelab/compute-1/state/sonarr` | `/srv/retained/state/sonarr` | `753:753` | `0700` | writable |
 
-A retained path is not a backup. Incus propagates host mounts one way;
-after restoring a source, recreate affected pods to refresh child
-mounts.
+The default native runtime validates actual retained local-PV publications
+before every init/app start, including cached restarts. The compared
+`retained-directories` ConfigMap declares application identities; Argo does
+not create or bless data. Missing/wrong state blocks affected writers, not
+the node or unrelated applications. Source-mount loss retires dependent
+native scopes. This is not continuous application-content verification or
+a backup.
 
-Wait for `retained-storage` to become Healthy before syncing stateful
-applications. Its `retained-directories` hook creates the declared
-directories and refuses, rather than creating substitute data, when the
-persistent state root is missing. The hook survives pruning and
-Application deletion.
+### Explicit provisioning and adoption
+
+Root identity is `hvn-hyp1/compute-1/retained-v1`. Inspect the declared backing
+in `/etc/homelab/retained-root.json` on the host before any mutation.
+Ordinary validation is read-only:
+
+```sh
+retained-directories validate --spec /etc/homelab/retained-root.json --root
+```
+
+Only an explicitly authorized fresh root may use `provision --root`;
+existing verified data uses `adopt --root`. Both require
+`--confirm 'hvn-hyp1/compute-1/retained-v1'`. Neither repairs ownership,
+overwrites data, or establishes that application contents are healthy.
+A missing ledger is not permission to initialize replacement empty state.
+
+Inside the guest, use the trusted node backing and compared inventory to
+prepare an ephemeral CLI spec (requires `jq`):
+
+```sh
+umask 077
+k3s kubectl -n local-path-storage get configmap retained-directories -o json |
+  jq --slurpfile node /etc/homelab/retained-node.json \
+    '{version:1,root:$node[0].root,entries:(.data["directories.json"]|fromjson)}' \
+    > /run/retained-spec.json
+retained-directories validate --spec /run/retained-spec.json --entry "$ENTRY"
+```
+
+Set `ENTRY` and `REVIEWED_ID` from the inspected inventory. For one
+authorized new entry, run `retained-directories provision --spec
+/run/retained-spec.json --entry "$ENTRY" --confirm "$REVIEWED_ID"`.
+For one verified restored entry, use `adopt` instead. Provisioning cannot
+recreate an established missing leaf; adoption requires an existing
+directory and changes only its trusted identity ledger. New dynamic claims
+use entry key `namespace.claimName`; declare and explicitly provision that
+entry before expecting `retained-local` publication to succeed. No node OS
+deployment, RuntimeClass, annotation or image opt-in is required.
+
+### Restore an unavailable source
+
+Keep the source absent while deleting affected Pods and waiting for their
+old kubelet volume publications to disappear. Do not reattach underneath
+stale publications. Restore the original backing and ledger, validate on
+the host, then start `compute-retained-export.service`. Recreate affected
+Pods and validate each required entry. Unrelated services need no restart.
+If restored physical objects have new filesystem identities, explicitly adopt the
+verified root/entries rather than clearing receipts or reprovisioning.
+Generation-bearing filesystem export handles are required; unsupported
+filesystems fail closed rather than trusting recycled inode numbers.
+
+For an initial guard installation or guest-path migration, arrange the
+approved affected-application/Argo hold before publishing to the tracked
+ref; account for parent Applications restoring sync. Merging manifests
+can reconcile running storage resources; it does not activate the OS or
+automatically migrate data. Quiesce affected writers, retire their
+Pods/publications and the old automatic creating-hook behavior first.
+A removed desired hook may still have a retained live object.
+Install the trusted host/guest boundary and explicitly adopt the verified
+existing root. StorageClass parameters and `PV.spec.local.path` are
+immutable: separately authorize recreation of `retained-local` with the
+new parameters while preserving existing PVs/data, then recreate affected
+PV/PVC declarations at current guest paths rather than force-patching
+bound volumes. Reconcile the compared inventory, explicitly adopt
+verified existing entries, validate, then resume affected applications.
+Never provision substitute empty state to clear a rollout refusal.
+Changes to `compute-retained-parent` require a planned guest restart;
+normal OS activation must not replace its live propagation parent.
 
 ## Runtime-secret references
 

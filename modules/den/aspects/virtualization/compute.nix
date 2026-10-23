@@ -104,18 +104,28 @@ in
       };
       stateGuestPath = mkOption {
         type = types.str;
-        default = "/srv/state";
-        description = "Where the guest sees the state root.";
+        default = "/srv/retained/state";
+        description = "Data child within the guest's dedicated retained export parent.";
       };
       stateMarker = mkOption {
         type = types.str;
-        default = ".homelab-state-root";
-        description = "File that exists only on the persistent side of the state root.";
+        default = ".homelab-retained-root.json";
+        description = "Trusted root ledger created only by explicit provisioning or adoption.";
+      };
+      stateIdentity = mkOption {
+        type = types.str;
+        description = "Stable provisioned retained-root identity; never inferred from a missing receipt.";
+      };
+      stateExportRoot = mkOption {
+        type = types.str;
+        default = "/run/homelab-retained";
+        description = "Dedicated read-only parent whose data child propagates into the guest.";
       };
       retainedPaths = mkOption {
         type = types.attrsOf (
           types.submodule {
             options = {
+              id = mkOption { type = types.str; };
               path = mkOption { type = types.str; };
               guestPath = mkOption { type = types.str; };
               uid = mkOption { type = types.ints.unsigned; };
@@ -178,6 +188,7 @@ in
         config,
         lib,
         pkgs,
+        utils,
         ...
       }:
       let
@@ -207,6 +218,42 @@ in
         inherit (cfg) stateGuestPath;
         hasImpermanence = host.hasAspect den.aspects.disk.impermanence;
         persistentStateRoot = lib.optionalString hasImpermanence "/persist" + cfg.stateRoot;
+        stateBackingMount = lib.foldl' (
+          selected: mount:
+          if
+            (mount == "/" || mount == persistentStateRoot || lib.hasPrefix "${mount}/" persistentStateRoot)
+            && builtins.stringLength mount > builtins.stringLength selected
+          then
+            mount
+          else
+            selected
+        ) "/" (builtins.attrNames config.fileSystems);
+        stateBacking = config.fileSystems.${stateBackingMount};
+        retainedRootSpec = {
+          version = 1;
+          root = {
+            id = cfg.stateIdentity;
+            path = persistentStateRoot;
+            marker = cfg.stateMarker;
+            uid = idmapPlan.hostUid 0;
+            gid = idmapPlan.hostGid 0;
+            mode = "0755";
+            source = {
+              fsType = stateBacking.fsType;
+              name = stateBacking.device;
+              root =
+                if stateBackingMount == persistentStateRoot then
+                  "/"
+                else if stateBackingMount == "/" then
+                  persistentStateRoot
+                else
+                  lib.removePrefix stateBackingMount persistentStateRoot;
+            };
+          };
+          entries = { };
+        };
+        stateBackingUnit = "${utils.escapeSystemdPath stateBackingMount}.mount";
+        stateExportPath = "${cfg.stateExportRoot}/state";
         misplacedRetained = lib.filter (
           name:
           cfg.retainedPaths.${name}.path != "${cfg.stateRoot}/${name}"
@@ -350,9 +397,10 @@ in
           // {
             state = {
               type = "disk";
-              source = cfg.stateRoot;
-              path = stateGuestPath;
-              propagation = "rprivate";
+              source = cfg.stateExportRoot;
+              path = builtins.dirOf stateGuestPath;
+              propagation = "rslave";
+              recursive = "true";
               readonly = "false";
               required = "true";
             };
@@ -381,7 +429,7 @@ in
           "restricted.devices.disk.paths" = lib.concatStringsSep "," (
             lib.unique (
               [
-                cfg.stateRoot
+                cfg.stateExportRoot
                 cfg.identityPath
               ]
               ++ deviceDiskPaths
@@ -468,11 +516,11 @@ in
 
         requiredPaths = [
           {
-            path = cfg.stateRoot;
-            uid = idmapPlan.hostUid 0;
-            gid = idmapPlan.hostGid 0;
-            mode = "0755";
-            readOnly = false;
+            path = cfg.stateExportRoot;
+            uid = 0;
+            gid = 0;
+            mode = "0555";
+            readOnly = true;
           }
           {
             path = cfg.identityPath;
@@ -528,30 +576,63 @@ in
         # lifecycle lock; a conflict therefore aborts before preseed mutation.
         systemd.services.incus-preseed.serviceConfig.ExecStart = lib.mkForce lockedPreseed;
 
-        systemd.tmpfiles.rules = [
-          "d ${persistentStateRoot} 0755 ${toString (idmapPlan.hostUid 0)} ${toString (idmapPlan.hostGid 0)} -"
-        ];
-        # A tmpfiles rule would also write the marker onto the root filesystem
-        # whenever /persist is not mounted.
-        systemd.services.compute-state-marker = {
-          description = "Mark the persistent compute state root";
+        # Only the non-authorizing export parent is a node prerequisite. The
+        # application-data child is published separately after read-only checks.
+        systemd.services.compute-retained-parent = {
+          description = "Provide the isolated retained-storage export parent";
           wantedBy = [ "multi-user.target" ];
-          after = [ "systemd-tmpfiles-setup.service" ];
-          unitConfig.ConditionPathIsMountPoint = lib.mkIf hasImpermanence "/persist";
+          before = [ "incus.service" ];
           serviceConfig = {
             Type = "oneshot";
             RemainAfterExit = true;
           };
+          path = [
+            pkgs.coreutils
+            pkgs.util-linux
+          ];
           script = ''
             set -eu
-            marker=${persistentStateRoot}/${cfg.stateMarker}
-            if [ ! -e "$marker" ]; then
-              printf '%s\n' ${cfg.instance} > "$marker.new"
-              chmod 0444 "$marker.new"
-              mv -T "$marker.new" "$marker"
-            fi
+            install -d -m 0555 ${lib.escapeShellArg cfg.stateExportRoot}
+            mount -t tmpfs -o mode=0555,size=1M homelab-retained ${lib.escapeShellArg cfg.stateExportRoot}
+            mkdir -m 000 ${lib.escapeShellArg stateExportPath}
+            mount --make-rshared ${lib.escapeShellArg cfg.stateExportRoot}
+            mount -o remount,ro ${lib.escapeShellArg cfg.stateExportRoot}
+          '';
+          preStop = ''
+            ${pkgs.util-linux}/bin/umount -l ${lib.escapeShellArg cfg.stateExportRoot}
           '';
         };
+        systemd.services.incus = {
+          requires = [ "compute-retained-parent.service" ];
+          after = [ "compute-retained-parent.service" ];
+        };
+        systemd.services.compute-retained-export = {
+          description = "Publish only the provisioned retained source";
+          wantedBy = [ "multi-user.target" ];
+          after = [
+            "compute-retained-parent.service"
+            stateBackingUnit
+          ];
+          bindsTo = [
+            "compute-retained-parent.service"
+            stateBackingUnit
+          ];
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            TimeoutStopSec = "10s";
+          };
+          script = ''
+            set -eu
+            ${computeRuntime}/bin/retained-directories validate --spec /etc/homelab/retained-root.json --root
+            ${pkgs.util-linux}/bin/mount --bind ${lib.escapeShellArg persistentStateRoot} ${lib.escapeShellArg stateExportPath}
+            ${pkgs.util-linux}/bin/mount --make-private ${lib.escapeShellArg stateExportPath}
+          '';
+          preStop = ''
+            ${pkgs.util-linux}/bin/umount -l ${lib.escapeShellArg stateExportPath}
+          '';
+        };
+        environment.etc."homelab/retained-root.json".text = builtins.toJSON retainedRootSpec + "\n";
 
         environment.etc."homelab/compute.json" = {
           mode = "0444";

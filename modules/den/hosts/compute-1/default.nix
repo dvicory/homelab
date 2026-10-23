@@ -19,6 +19,7 @@ in
       den.aspects.core.base
       den.aspects.core.security.openssh
       den.aspects.services.kubernetes
+      den.aspects.services.retained-runtime
     ];
 
     nixos =

@@ -13,7 +13,7 @@ spec:
     name: media-radarr
     namespace: media
   local:
-    path: /srv/state/radarr
+    path: /srv/retained/state/radarr
   nodeAffinity:
     required:
       nodeSelectorTerms:

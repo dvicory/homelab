@@ -40,7 +40,6 @@ positive:
     batch/v1/Job/argocd/argocd-redis-secret-init: [pod-secret-readable, pod-pvc-no-fsgroup]
     batch/v1/Job/gateway/envoy-gateway-gateway-helm-certgen: [pod-secret-readable, pod-pvc-no-fsgroup]
     batch/v1/Job/jellyfin/jellyfin-configuration: [pod-secret-readable, pod-pvc-no-fsgroup, jellyfin-configuration-job]
-    batch/v1/Job/local-path-storage/retained-directories: [pod-secret-readable, pod-pvc-no-fsgroup]
     batch/v1/Job/media/media-config-seerr: [pod-secret-readable, pod-pvc-no-fsgroup, media-configuration-state]
     batch/v1/Job/media/media-configarr: [pod-secret-readable, pod-pvc-no-fsgroup, media-configuration-state]
     gateway.networking.k8s.io/v1/HTTPRoute/gateway/jellyfin: [jellyfin-service-route]

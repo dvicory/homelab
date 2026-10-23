@@ -680,23 +680,11 @@ class GitOrigin:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
 
-    def select_retained_helper(self, image: str) -> str:
-        check(self.work is not None and self.bare is not None, "Git origin exists before helper selection")
-        job_path = self.work / "retained-storage" / "Job-retained-directories.yaml"
-        config_path = self.work / "retained-storage" / "ConfigMap-retained-directories.yaml"
-        job = json.loads(run("yq", "-o=json", str(job_path)))
-        config_map = json.loads(run("yq", "-o=json", str(config_path)))
-        job["spec"]["template"]["spec"]["containers"][0]["image"] = image
-        annotations = config_map["metadata"].get("annotations", {})
-        # Only propagate the production projection when it exists. Adding it
-        # here would repair the old source and make the regression vacuous.
-        if "homelab.danielvicory/helper-image" in annotations:
-            annotations["homelab.danielvicory/helper-image"] = image
-        job_path.write_text(json.dumps(job, indent=2) + "\n")
-        config_path.write_text(json.dumps(config_map, indent=2) + "\n")
+    def commit_retained_probe(self) -> str:
+        check(self.work is not None and self.bare is not None, "Git origin exists before retained probe")
         git = ["git", "-C", str(self.work)]
         run(*git, "-c", "user.email=recovery@test", "-c", "user.name=recovery", "add", "-A")
-        run(*git, "-c", "user.email=recovery@test", "-c", "user.name=recovery", "commit", "-m", "select retained helper")
+        run(*git, "-c", "user.email=recovery@test", "-c", "user.name=recovery", "commit", "-m", "add retained application")
         run(*git, "push", str(self.bare), "main:main")
         return run(*git, "rev-parse", "HEAD")
 
@@ -1038,6 +1026,39 @@ def stage_identity(descriptor: dict, identity: Path) -> str:
     os.chmod(identity / "ssh_host_ed25519_key.pub", 0o444)
     descriptor["publicKey"] = public
     return public
+
+
+def provision_retained(runtime: Runtime, fixture: dict) -> None:
+    """Explicitly authorize only this disposable fixture's declared state."""
+    spec = copy.deepcopy(fixture["retainedRootSpec"])
+    root = Path(spec["root"]["path"])
+    root.parent.mkdir(parents=True, exist_ok=True)
+    helper = runtime.helper.parent / "retained-directories"
+    run(str(helper), "provision", "--spec", "-", "--root", "--confirm", spec["root"]["id"],
+        input=json.dumps(spec))
+    host_root = Path(next(iter(runtime.descriptor["retainedPaths"].values()))["path"]).parent
+    export = Path(runtime.descriptor["devices"]["state"]["source"]) / "state"
+    for target in (host_root, export):
+        run("mount", "--bind", str(root), str(target))
+        run("mount", "--make-private", str(target))
+        runtime.retained_mounts.append(target)
+    spec["root"].update(path=str(Path(runtime.descriptor["devices"]["state"]["path"]) / "state"), uid=0, gid=0)
+    spec["entries"] = {
+        name: {key: entry[key] for key in ("id", "uid", "gid", "mode")}
+        for name, entry in runtime.descriptor["retainedPaths"].items()
+    }
+    for name, entry in spec["entries"].items():
+        run("incus", "--force-local", "--project", runtime.project, "exec", runtime.instance,
+            "--mode=non-interactive", "--", "/run/current-system/sw/bin/retained-directories",
+            "provision", "--spec", "-", "--entry", name, "--confirm", entry["id"],
+            input=json.dumps(spec))
+
+
+def prepare_retained_parent(path: Path) -> None:
+    run("mount", "-t", "tmpfs", "-o", "mode=0555,size=1m", "homelab-retained", str(path))
+    (path / "state").mkdir(mode=0)
+    run("mount", "--make-rshared", str(path))
+    run("mount", "-o", "remount,ro", str(path))
 
 
 def verify_private_endpoints(runtime: Runtime) -> None:
@@ -1593,21 +1614,18 @@ def verify_accelerator(runtime: Runtime, kubeconfig: Path, workspace: Path, smok
               "Jellyfin opens the returned render node no later than its next start")
 
 
-def verify_helper_selection(runtime: Runtime, kubeconfig: Path, origin: GitOrigin,
-                            args: argparse.Namespace, workspace: Path, marker: Path) -> None:
-    """Already-Synced Argo must run a real helper-only upgrade and rollback."""
-    check(args.helper_image_b is not None and args.helper_b is not None and args.helper_tls is not None,
-          "replacement has the compiled B and disposable TLS registry inputs")
-    check(run(str(args.helper_b), "--version") == "fixture-v2", "B has the genuinely compiled CLI capability")
-    wait_argo_synced(kubeconfig, ("retained-storage",))
-    job_path = origin.work / "retained-storage" / "Job-retained-directories.yaml"
-    config_path = origin.work / "retained-storage" / "ConfigMap-retained-directories.yaml"
-    original_job = json.loads(run("yq", "-o=json", str(job_path)))
-    original_config = json.loads(run("yq", "-o=json", str(config_path)))
-    image_a = original_job["spec"]["template"]["spec"]["containers"][0]["image"]
-    probe_entry = runtime.descriptor["retainedPaths"]["identity-kanidm"]
-    probe = Path(probe_entry["path"])
-    payload = (marker.read_bytes(), marker.stat())
+def verify_new_retained_application(runtime: Runtime, kubeconfig: Path, origin: GitOrigin,
+                                    workspace: Path, marker: Path) -> None:
+    """Argo-only identity plus explicit provisioning protects cached restarts."""
+    name = "retained-added"
+    namespace = "local-path-storage"
+    entry = {"id": "fixture/retained-added", "uid": 751, "gid": 751, "mode": "0700"}
+    node = json.loads(runtime.guest("cat", "/etc/homelab/retained-node.json"))
+    guest_path = node["root"]["path"] + "/" + name
+    host_root = Path(next(iter(runtime.descriptor["retainedPaths"].values()))["path"]).parent
+    path = host_root / name
+    held = host_root / (name + ".held")
+    payload = marker.read_bytes()
 
     def identity():
         return {
@@ -1620,102 +1638,83 @@ def verify_helper_selection(runtime: Runtime, kubeconfig: Path, origin: GitOrigi
         }
 
     before = identity()
-    registry_root = workspace / "helper-selection-registry"
-    registry_root.mkdir(mode=0o700)
-    policy = registry_root / "policy.json"
-    # This exact Nix archive is unsigned; all other source transports stay refused.
-    policy.write_text(json.dumps({
-        "default": [{"type": "reject"}],
-        "transports": {"docker-archive": {"": [{"type": "insecureAcceptAnything"}]}},
-    }))
-    registry_config = registry_root / "registry.json"
-    address = f"{origin.address}:5000"
-    registry_config.write_text(json.dumps({
-        "version": 0.1,
-        "storage": {"filesystem": {"rootdirectory": str(registry_root / "data")}},
-        "http": {"addr": address, "tls": {
-            "certificate": str(args.helper_tls / "server.crt"),
-            "key": str(args.helper_tls / "server.key"),
-        }},
-    }))
-    registry_log = workspace / "helper-selection-registry.log"
-    with registry_log.open("w") as log:
-        registry = subprocess.Popen(["registry", "serve", str(registry_config)], stdout=log, stderr=subprocess.STDOUT)
-        try:
-            wait_for("disposable verified-TLS registry", lambda: completed(
-                "curl", "--fail", "--silent", "--cacert", str(args.helper_tls / "client/ca.crt"),
-                f"https://{address}/v2/").returncode == 0, timeout=60)
-            digest_file = registry_root / "digest"
-            repository = f"{address}/helper-selection/retained-directories"
-            run("skopeo", "--policy", str(policy), "copy", "--dest-no-creds", "--dest-tls-verify=true",
-                "--dest-cert-dir", str(args.helper_tls / "client"), "--format", "v2s2",
-                "--digestfile", str(digest_file), f"docker-archive:{args.helper_image_b}",
-                f"docker://{repository}:fixture-b", timeout=600)
-            image_b = f"{repository}@{digest_file.read_text().strip()}"
-            check(image_b.rsplit("@", 1)[1] != image_a.rsplit("@", 1)[1], "compiled B has a different manifest from A")
-            for label, image in (("upgrade-b", image_b), ("rollback-a", image_a)):
-                # This directory is unused by the Jellyfin-only fixture.
-                # rmdir refuses to remove retained contents if that changes.
-                probe.rmdir()
-                check(not probe.exists(), f"{label}: the canonical empty retained directory is absent")
-                revision = origin.select_retained_helper(image)
-                desired_job = json.loads(run("yq", "-o=json", str(job_path)))
-                desired_config = json.loads(run("yq", "-o=json", str(config_path)))
-                original_spec = copy.deepcopy(original_job["spec"])
-                desired_spec = copy.deepcopy(desired_job["spec"])
-                original_spec["template"]["spec"]["containers"][0].pop("image")
-                desired_spec["template"]["spec"]["containers"][0].pop("image")
-                check(desired_spec == original_spec and desired_config["data"] == original_config["data"],
-                      f"{label}: helper arguments and desired payload remain unchanged")
-                runtime.kubectl("annotate", "application/retained-storage",
-                                "argocd.argoproj.io/refresh=hard", "--overwrite", namespace="argocd")
+    directory = origin.work / "retained-storage"
+    config_path = directory / "ConfigMap-retained-directories.yaml"
+    inventory = json.loads(run("yq", "-o=json", str(config_path)))
+    entries = json.loads(inventory["data"]["directories.json"])
+    entries[name] = entry
+    inventory["data"]["directories.json"] = json.dumps(entries)
+    config_path.write_text(json.dumps(inventory) + "\n")
+    image = runtime.kubectl_json("get", "deployment", "jellyfin", "-o", "json", namespace="jellyfin")[
+        "spec"]["template"]["spec"]["containers"][0]["image"]
+    objects = [
+        {"apiVersion": "v1", "kind": "PersistentVolume", "metadata": {"name": name}, "spec": {
+            "capacity": {"storage": "1Mi"}, "volumeMode": "Filesystem", "accessModes": ["ReadWriteOnce"],
+            "persistentVolumeReclaimPolicy": "Retain", "storageClassName": "", "local": {"path": guest_path},
+            "claimRef": {"namespace": namespace, "name": name},
+            "nodeAffinity": {"required": {"nodeSelectorTerms": [{"matchExpressions": [{
+                "key": "kubernetes.io/hostname", "operator": "In", "values": [runtime.instance]}]}]}}}},
+        {"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": {"name": name, "namespace": namespace},
+         "spec": {"volumeName": name, "storageClassName": "", "accessModes": ["ReadWriteOnce"],
+                  "resources": {"requests": {"storage": "1Mi"}}}},
+        {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": name, "namespace": namespace},
+         "spec": {"automountServiceAccountToken": False, "terminationGracePeriodSeconds": 1,
+                  "securityContext": {"runAsUser": 751, "runAsGroup": 751, "runAsNonRoot": True},
+                  "containers": [{"name": "writer", "image": image, "imagePullPolicy": "IfNotPresent",
+                                  "command": ["/bin/sh", "-ec", "echo x >> /state/starts; exec sleep 3600"],
+                                  "securityContext": {"allowPrivilegeEscalation": False,
+                                                      "capabilities": {"drop": ["ALL"]}},
+                                  "resources": {"limits": {"memory": "32Mi"}},
+                                  "volumeMounts": [{"name": "state", "mountPath": "/state"}]}],
+                  "volumes": [{"name": "state", "persistentVolumeClaim": {"claimName": name}}]}}
+    ]
+    for obj in objects:
+        (directory / f'{obj["kind"]}-{name}.yaml').write_text(json.dumps(obj) + "\n")
+    revision = origin.commit_retained_probe()
+    runtime.kubectl("annotate", "application/retained-storage", "argocd.argoproj.io/refresh=hard",
+                    "--overwrite", namespace="argocd")
 
-                def applied():
-                    app = runtime.kubectl_json("get", "application", "retained-storage", "-o", "json", namespace="argocd")
-                    job = runtime.kubectl_json("get", "job/retained-directories", "-o", "json", namespace="local-path-storage")
-                    status = app.get("status", {})
-                    if (not probe.is_dir() or status.get("sync", {}).get("revision") != revision
-                            or status.get("sync", {}).get("status") != "Synced"
-                            or job["spec"]["template"]["spec"]["containers"][0]["image"] != image
-                            or job.get("status", {}).get("succeeded") != 1):
-                        raise AssertionError(json.dumps({
-                            "probeExists": probe.is_dir(), "sync": status.get("sync"),
-                            "operation": status.get("operationState", {}).get("phase"),
-                            "jobImage": job["spec"]["template"]["spec"]["containers"][0]["image"],
-                            "jobStatus": job.get("status", {}),
-                        }, sort_keys=True))
-                    return job
+    def missing_refused():
+        pod = runtime.kubectl_json("get", "pod", name, "-o", "json", namespace=namespace)
+        check(not path.exists(), "ordinary Argo reconciliation creates no retained leaf")
+        events = runtime.kubectl_json("get", "events", "--field-selector", "reason=FailedMount",
+                                     "-o", "json", namespace=namespace)["items"]
+        return any(e.get("involvedObject", {}).get("uid") == pod["metadata"]["uid"] for e in events)
 
-                job = wait_for(f"automatic helper-only {label} creates the retained directory", applied, timeout=300)
-                wait_argo_synced(kubeconfig, ("retained-storage",))
-                info = probe.stat()
-                check(info.st_uid == runtime.descriptor["idmapBase"] + probe_entry["uid"]
-                      and info.st_gid == runtime.descriptor["idmapBase"] + probe_entry["gid"]
-                      and stat.S_IMODE(info.st_mode) == int(probe_entry["mode"], 8),
-                      f"{label}: the helper recreates the canonical mapped ownership and mode")
-                current = marker.stat()
-                check(marker.read_bytes() == payload[0]
-                      and (current.st_dev, current.st_ino, current.st_uid, current.st_gid, current.st_mode)
-                      == (payload[1].st_dev, payload[1].st_ino, payload[1].st_uid, payload[1].st_gid, payload[1].st_mode),
-                      f"{label}: retained application payload, inode, ownership and mode survive")
-                check(identity() == before, f"{label}: guest generation and control-plane identities remain unchanged")
-                print("HELPER_SELECTION " + json.dumps({
-                    "transition": label, "revision": revision, "image": image,
-                    "jobUid": job["metadata"]["uid"], "probe": {"uid": info.st_uid, "gid": info.st_gid,
-                    "mode": oct(stat.S_IMODE(info.st_mode))}, "identity": before,
-                    "retainedPayloadSha256": hashlib.sha256(payload[0]).hexdigest(),
-                    "retainedPayloadInode": current.st_ino,
-                }, sort_keys=True), flush=True)
-        finally:
-            registry.terminate()
-            try:
-                registry.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                registry.kill()
-                registry.wait(timeout=30)
-            shutil.rmtree(registry_root)
-            check(not registry_root.exists() and registry.poll() is not None,
-                  "disposable helper registry process and writable state are removed")
+    wait_for("new Argo application refuses unprovisioned state", missing_refused)
+    spec = {"version": 1, "root": node["root"], "entries": {name: entry}}
+    run("incus", "--force-local", "--project", runtime.project, "exec", runtime.instance,
+        "--mode=non-interactive", "--", "/run/current-system/sw/bin/retained-directories",
+        "provision", "--spec", "-", "--entry", name, "--confirm", entry["id"], input=json.dumps(spec))
+    runtime.kubectl("wait", "--for=condition=Ready", "pod/" + name, "--timeout=180s", namespace=namespace)
+    pod = runtime.kubectl_json("get", "pod", name, "-o", "json", namespace=namespace)
+    cid = pod["status"]["containerStatuses"][0]["containerID"].split("://")[-1]
+    check(path.joinpath("starts").read_text().splitlines() == ["x"], "new app writes only after explicit provisioning")
+    ledger = host_root.joinpath(node["root"]["marker"]).read_bytes()
+    path.rename(held)
+    try:
+        runtime.guest("k3s", "crictl", "stop", "--timeout", "1", cid)
+
+        def cached_refused():
+            current = runtime.kubectl_json("get", "pod", name, "-o", "json", namespace=namespace)
+            check(current["metadata"]["uid"] == pod["metadata"]["uid"], "cached refusal keeps the admitted Pod")
+            check(not path.exists() and held.joinpath("starts").read_text().splitlines() == ["x"],
+                  "missing established state is neither recreated nor initialized")
+            return any("hook" in s.get("state", {}).get("waiting", {}).get("message", "").lower()
+                       for s in current.get("status", {}).get("containerStatuses", []))
+
+        wait_for("same-Pod cached restart hits mandatory source validation", cached_refused)
+    finally:
+        held.rename(path)
+    runtime.kubectl("wait", "--for=condition=Ready", "pod/" + name, "--timeout=180s", namespace=namespace)
+    wait_for("original state accepts recovery without identity reset",
+             lambda: path.joinpath("starts").read_text().splitlines() == ["x", "x"])
+    check(host_root.joinpath(node["root"]["marker"]).read_bytes() == ledger and marker.read_bytes() == payload,
+          "restoration preserves trusted application bindings and the unrelated Jellyfin payload")
+    check(identity() == before, "Argo onboarding and cached refusal preserve the frozen node and runtime")
+    wait_argo_synced(kubeconfig, ("retained-storage",))
+    print("RETAINED_APPLICATION " + json.dumps({"revision": revision, "identity": before,
+          "podUID": pod["metadata"]["uid"], "rootId": node["root"]["id"], "entryId": entry["id"]}), flush=True)
 
 
 def run_scenario(args: argparse.Namespace) -> None:
@@ -1781,6 +1780,7 @@ def run_scenario(args: argparse.Namespace) -> None:
         host_paths = {Path(entry["path"]) for entry in descriptor["requiredPaths"]}
         host_paths.update(Path(device["source"]) for device in descriptor["devices"].values()
                           if device.get("type") == "disk" and "source" in device)
+        host_paths.add(Path(next(iter(descriptor["retainedPaths"].values()))["path"]).parent)
         for path in sorted(host_paths):
             prepare_directory(path, safe_dirs)
         spec_path = workspace / "compute.json"
@@ -1834,14 +1834,16 @@ def run_scenario(args: argparse.Namespace) -> None:
             check(published_stage.returncode == 0, "complete disposable credentials publish before guest creation")
             assert_secret_absent(secret_values, published_stage.stdout, published_stage.stderr, context="staging output")
             secret_payload = secret_manifest.read_bytes()
-            prepare_directory(persist, safe_dirs)
-            durable = workspace / "durable"
-            durable.mkdir()
-            run("mount", "--bind", str(durable), str(persist))
-            runtime.retained_mounts.append(persist)
+            check(run("findmnt", "-n", "-o", "SOURCE", "-M", str(persist)).strip()
+                  == fixture["retainedRootSpec"]["root"]["source"]["name"],
+                  "retained fixture uses its explicitly declared independent ZFS dataset")
             for entry in descriptor["requiredPaths"]:
                 target = Path(entry["path"])
                 if target == runtime.media_path:
+                    continue
+                if target == Path(descriptor["devices"]["state"]["source"]):
+                    prepare_retained_parent(target)
+                    runtime.retained_mounts.append(target)
                     continue
                 backing = persist / str(target).lstrip("/")
                 backing.mkdir(parents=True)
@@ -1851,8 +1853,8 @@ def run_scenario(args: argparse.Namespace) -> None:
                 os.chmod(target, int(entry["mode"], 8))
                 if entry["readOnly"]:
                     run("mount", "-o", "remount,bind,ro", str(target))
-            # Only the production marker writer authorizes the directory Job;
-            # leave it absent until the first Argo sync proves the failure gate.
+            # Ordinary boot has only a protected unavailable view. Provisioning
+            # is a separately authorized fixture operation after refusal proof.
             check(all(not Path(entry["path"]).exists() for entry in descriptor["retainedPaths"].values()),
                   "retained application directories are absent before Argo reconciliation")
             public_key = stage_identity(descriptor, Path(descriptor["identityPath"]))
@@ -1914,19 +1916,23 @@ def run_scenario(args: argparse.Namespace) -> None:
                 try:
                     os.chown(state_path, state_attributes.st_uid, state_attributes.st_gid)
                     os.chmod(state_path, state_attributes.st_mode & 0o7777)
-                    runtime.helper_expect_failure("create", "unmounted retained state root", "findmnt failed")
+                    runtime.helper_expect_failure("create", "unmounted export parent", "findmnt failed")
                     check(instance_query(project, instance_name) is None and not any(state_path.iterdir()),
-                          "missing state-root mount creates neither a guest nor substitute storage")
+                          "an unsafe export parent cannot create a guest")
                 finally:
-                    run("mount", "--bind", str(persist / str(state_path).lstrip("/")), str(state_path))
+                    prepare_retained_parent(state_path)
                 state_mode = state_path.stat().st_mode & 0o7777
+                run("mount", "-o", "remount,rw", str(state_path))
                 os.chmod(state_path, state_mode ^ 0o001)
+                run("mount", "-o", "remount,ro", str(state_path))
                 try:
-                    runtime.helper_expect_failure("create", "state-root mode drift", "unexpected required path mode")
+                    runtime.helper_expect_failure("create", "export-parent mode drift", "unexpected required path mode")
                     check(instance_query(project, instance_name) is None,
-                          "state-root mode drift cannot create a guest")
+                          "export-parent mode drift cannot create a guest")
                 finally:
+                    run("mount", "-o", "remount,rw", str(state_path))
                     os.chmod(state_path, state_mode)
+                    run("mount", "-o", "remount,ro", str(state_path))
             if args.scenario == "replacement":
                 # Hotplug/loss belongs to consumer resilience; replacement
                 # starts with the real granted device and must regain it.
@@ -1998,33 +2004,11 @@ def run_scenario(args: argparse.Namespace) -> None:
                 origin.serve()
                 wait_for("fixture Git origin serves restored input", origin.reachable)
                 runtime.kubectl("annotate", f"application/{ROOT_APP}", "argocd.argoproj.io/refresh=hard", "--overwrite", namespace="argocd")
-                with phase("retained-root-marker-gate"):
-                    def directory_job_failed() -> bool:
-                        raw = runtime.kubectl("get", "job/retained-directories", "--ignore-not-found",
-                                              "-o", "json", namespace="local-path-storage")
-                        if not raw.strip():
-                            return False
-                        job = json.loads(raw)
-                        if not any(condition.get("type") == "Failed" and condition.get("status") == "True"
-                                   for condition in job.get("status", {}).get("conditions", [])):
-                            return False
-                        # Hook retries may retire a failed Job while its logs are read.
-                        # Wait for the native guard evidence from this exact Job UID.
-                        failed_pods = runtime.kubectl_json(
-                            "get", "pods", "-l", f"controller-uid={job['metadata']['uid']}", "-o", "json",
-                            namespace="local-path-storage")["items"]
-                        return any(
-                            container.get("state", {}).get("terminated", {}).get("exitCode") == 1
-                            and "/srv/state/.homelab-state-root" in runtime.kubectl(
-                                "logs", pod["metadata"]["name"], "-c", container["name"],
-                                namespace="local-path-storage")
-                            for pod in failed_pods
-                            for container in pod.get("status", {}).get("containerStatuses", [])
-                            if container["name"] == "retained-directories")
-                    wait_for("the delivered retained helper refuses the missing persistent marker",
-                             directory_job_failed, timeout=600)
+                with phase("retained-source-unavailable-node-remains-usable"):
+                    wait_argo_synced(kubeconfig, ("retained-storage",))
+                    check(runtime.node_ready(), "management and Kubernetes survive absent application state")
                     check(all(not Path(entry["path"]).exists() for entry in descriptor["retainedPaths"].values()),
-                          "missing persistent marker creates no retained application directories")
+                          "ordinary reconciliation creates no retained application directories")
                     def jellyfin_storage_blocked() -> bool:
                         pods = runtime.kubectl_json(
                             "get", "pods", "-l", "app.kubernetes.io/name=jellyfin", "-o", "json",
@@ -2050,15 +2034,12 @@ def run_scenario(args: argparse.Namespace) -> None:
                     wait_for("Jellyfin refuses its unavailable required volume", jellyfin_storage_blocked)
                     check(all(not Path(entry["path"]).exists() for entry in descriptor["retainedPaths"].values()),
                           "blocked Jellyfin creates no replacement retained application data")
-                    run("/bin/sh", "-c", fixture["stateMarkerScript"])
+                    provision_retained(runtime, fixture)
                     sync = json.dumps({"operation": {"sync": {"prune": False}}})
-                    runtime.kubectl("patch", "application/retained-storage", "--type=merge",
-                                    "-p", sync, namespace="argocd")
-                    wait_argo_synced(kubeconfig, ("retained-storage",))
                     runtime.kubectl("patch", f"application/{ROOT_APP}", "--type=merge",
                                     "-p", sync, namespace="argocd")
             else:
-                run("/bin/sh", "-c", fixture["stateMarkerScript"])
+                provision_retained(runtime, fixture)
                 origin.serve()
                 wait_for("fixture Git origin serves canonical input", origin.reachable)
                 with phase("consumer-bootstrap-and-root-handoff"):
@@ -2076,7 +2057,7 @@ def run_scenario(args: argparse.Namespace) -> None:
                     check(permissions.st_mode & 0o7777 == int(entry["mode"], 8)
                           and permissions.st_uid == descriptor["idmapBase"] + entry["uid"]
                           and permissions.st_gid == descriptor["idmapBase"] + entry["gid"],
-                          f"directory Job creates {name} with its declared mapped identity and permissions")
+                          f"explicit provisioning establishes {name} with its declared mapped identity and permissions")
                     probe = entry["guestPath"] + "/.retained-permission-probe"
                     result = completed(
                         "incus", "--force-local", "--project", project, "exec", instance_name,
@@ -2134,8 +2115,8 @@ def run_scenario(args: argparse.Namespace) -> None:
             check(marker.read_text() == "retained-state\n" and marker_stat.st_uid == descriptor["idmapBase"] + 751,
                   "Jellyfin writes retained application data as its declared mapped identity")
             if args.scenario == "replacement":
-                with phase("already-synced-helper-selection-and-rollback"):
-                    verify_helper_selection(runtime, kubeconfig, origin, args, workspace, marker)
+                with phase("argo-only-retained-onboarding-and-cached-restart"):
+                    verify_new_retained_application(runtime, kubeconfig, origin, workspace, marker)
                     smoke.verify_state(base, username, password, "Movies", item_id)
             if args.scenario == "consumer-resilience":
                 with phase("post-preflight-provision-failure"):
@@ -2440,9 +2421,6 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--acceleration-check", required=True, type=Path, help="docs/operations/jellyfin-acceleration-check.sh")
     result.add_argument("--bootstrap-host", required=True, type=Path, help="shipped household-bootstrap-host executable")
     result.add_argument("--helper", type=Path, default=Path("/run/current-system/sw/bin/compute-guest"), help="generic compute lifecycle executable")
-    result.add_argument("--helper-image-b", type=Path, help="test-only compiled B archive, published only to the disposable registry")
-    result.add_argument("--helper-b", type=Path, help="native compiled B CLI capability control")
-    result.add_argument("--helper-tls", type=Path, help="initial-fixture TLS identity and trusted CA")
     return result
 
 

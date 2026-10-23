@@ -60,17 +60,25 @@ in
                   options.retainedPaths = lib.mkOption {
                     default = { };
                     type = lib.types.attrsOf (
-                      lib.types.submodule {
-                        options = {
-                          uid = lib.mkOption { type = lib.types.ints.unsigned; };
-                          gid = lib.mkOption { type = lib.types.ints.unsigned; };
-                          mode = lib.mkOption { type = lib.types.str; };
-                          readOnly = lib.mkOption {
-                            type = lib.types.bool;
-                            default = false;
+                      lib.types.submodule (
+                        { name, ... }:
+                        {
+                          options = {
+                            id = lib.mkOption {
+                              type = lib.types.str;
+                              default = "${cluster.name}/${name}";
+                              description = "Stable retained identity, independent of Kubernetes object UIDs.";
+                            };
+                            uid = lib.mkOption { type = lib.types.ints.unsigned; };
+                            gid = lib.mkOption { type = lib.types.ints.unsigned; };
+                            mode = lib.mkOption { type = lib.types.str; };
+                            readOnly = lib.mkOption {
+                              type = lib.types.bool;
+                              default = false;
+                            };
                           };
-                        };
-                      }
+                        }
+                      )
                     );
                   };
                   options.mediaPaths = lib.mkOption {

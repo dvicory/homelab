@@ -307,6 +307,10 @@ def main():
         "timingsSeconds": {},
     }
     report["secretScript"] = {key: settings["secret"][key] for key in ("provenance", "scriptSha256", "system", "deployedSystem", "nativePlatformOverride") if key in settings["secret"]}
+    report["argoRetainedBoundary"] = {
+        "scenario": "explicit-fixture-provisioning-and-controller-gating",
+        "runtimeHookProof": False,
+    }
     temp = tempfile.TemporaryDirectory(prefix="homelab-api-")
     work = Path(temp.name)
     work.chmod(0o700)
@@ -776,9 +780,9 @@ def main():
             except Exception as witness_error:
                 report["argoCrdWitness"] = {"status": "unavailable", "type": type(witness_error).__name__}
             checkpoint(force=True)
-        if "argo-02-retained-hook-sequencing" in report.get("currentSuite", {}).get("scenarios", []):
+        if "argo-02-retained-provisioning-gating" in report.get("currentSuite", {}).get("scenarios", []):
             try:
-                report["argoRetainedWitness"] = json.loads((work / "argo" / "hook-witness.json").read_text())
+                report["argoRetainedWitness"] = json.loads((work / "argo" / "retained-witness.json").read_text())
             except Exception as witness_error:
                 report["argoRetainedWitness"] = {"status": "unavailable", "type": type(witness_error).__name__,
                                                  "capturePhase": "native-catch-before-cleanup"}
