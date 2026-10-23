@@ -14,7 +14,13 @@
       ...
     }:
     let
-      environment = self.nixidyEnvs.${system}.prod-home.config.build.environmentPackage;
+      rendered = self.nixidyEnvs.${system}.prod-home.config;
+      environment = rendered.build.environmentPackage.overrideAttrs {
+        # Helm IFD outputs otherwise disappear from the realized build graph.
+        evaluationInputs = lib.concatMap (
+          application: map (release: release.chart) (lib.attrValues (application.helm.releases or { }))
+        ) (lib.attrValues rendered.applications);
+      };
       manifestSource = rootPath + "/generated/manifests/prod-home";
       generatedManifests =
         if builtins.pathExists manifestSource then
