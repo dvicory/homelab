@@ -98,7 +98,7 @@ class ScenarioError(RuntimeError):
 
 
 class RegistryPullError(ScenarioError):
-    """A classified refusal whose native registry diagnostics must stay private."""
+    """An online bootstrap refusal classified from native registry diagnostics."""
 
 
 def completed(*command: str, timeout: int = COMMAND_TIMEOUT, input: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -175,20 +175,6 @@ def fixture_secret_value(entry: dict) -> bytes:
     if target == ("argocd", "argocd-secret", "server.secretkey"):
         return secrets.token_urlsafe(32).encode()
     return secrets.token_urlsafe(32).encode()
-
-def contains_secret(values: dict[str, bytes], payload: bytes | str) -> bool:
-    forbidden = tuple(values.values()) + tuple(base64.b64encode(value) for value in values.values())
-    haystack = payload.encode() if isinstance(payload, str) else payload
-    return any(value in haystack for value in forbidden)
-
-
-def print_sanitized(values: dict[str, bytes], label: str, payload: str) -> None:
-    """Print diagnostic output only when it holds no runtime credential."""
-    if contains_secret(values, payload):
-        print(f"DIAGNOSTIC: {label}: withheld because it contains a runtime credential", file=sys.stderr)
-    else:
-        print(f"DIAGNOSTIC: {label}:\n{payload}", file=sys.stderr)
-
 
 def assert_secret_absent(values: dict[str, bytes], *payloads: bytes | str, context: str) -> None:
     forbidden = tuple(values.values()) + tuple(base64.b64encode(value) for value in values.values())
@@ -345,28 +331,37 @@ class Runtime:
         verify_private_endpoints(self)
         result = completed("incus", "--force-local", "--project", self.project, "exec", self.instance,
                            "--user", "751", "--group", "751", "--mode=non-interactive", "--",
-                           "sh", "-ec", "touch /srv/media/data/library/forbidden")
-        check(result.returncode != 0, "guest identity without the media capability cannot write the library")
+                           "sh", "-ec", "if ( : >> /srv/media/data/library/forbidden ); then exit 1; fi")
+        check(result.returncode == 0, "guest identity without the media capability cannot write the library")
         # Prove the real workload boundary, not merely a guest UID restriction.
         pod_write = completed("incus", "--force-local", "--project", self.project, "exec", self.instance,
                               "--mode=non-interactive", "--", "k3s", "kubectl", "-n", "jellyfin",
-                              "exec", "deployment/jellyfin", "--", "sh", "-ec", "touch /media/.compute-recovery-probe")
-        check(pod_write.returncode != 0, "Jellyfin pod cannot write its /media library mount")
+                              "exec", "deployment/jellyfin", "--", "sh", "-ec",
+                              "if ( : >> /media/.compute-recovery-probe ); then exit 1; fi")
+        check(pod_write.returncode == 0, "Jellyfin pod cannot write its /media library mount")
         pod_mounts = self.kubectl("exec", "deployment/jellyfin", "--", "cat", "/proc/mounts", namespace="jellyfin")
         media_entries = [fields for line in pod_mounts.splitlines() if len(fields := line.split()) >= 4 and fields[1] == "/media"]
         check(bool(media_entries) and all("ro" in fields[3].split(",") for fields in media_entries),
               "Jellyfin pod mounts /media read-only")
 
     def stage_secrets(self, fixture: dict) -> subprocess.CompletedProcess[str]:
-        # Capture all output: neither a failed producer nor its manifest may
-        # print disposable credential bytes into the test log.
+        # Keep native output visible even when disposable credential staging fails.
         root = Path(self.descriptor["devices"]["secrets"]["source"])
         try:
-            return subprocess.run(
+            result = subprocess.run(
                 ["/bin/sh", "-c", fixture["secretStageScript"]],
                 env={**os.environ, "PATH": fixture["secretStagePath"]},
                 capture_output=True, text=True, timeout=COMMAND_TIMEOUT, check=False,
             )
+            print(result.stdout, end="", flush=True)
+            print(result.stderr, end="", file=sys.stderr, flush=True)
+            return result
+        except subprocess.TimeoutExpired as error:
+            for payload, stream in ((error.stdout, sys.stdout), (error.stderr, sys.stderr)):
+                if payload:
+                    text = payload.decode(errors="backslashreplace") if isinstance(payload, bytes) else payload
+                    print(text, end="", file=stream, flush=True)
+            raise
         finally:
             if root not in self.retained_mounts and completed("findmnt", "--mountpoint", str(root)).returncode == 0:
                 self.retained_mounts.append(root)
@@ -396,8 +391,9 @@ class Runtime:
                          user=751) == "",
               "unprivileged guest identity cannot read staged credentials")
         result = completed("incus", "--force-local", "--project", self.project, "exec", self.instance,
-                           "--", "touch", device["path"] + "/forbidden")
-        check(result.returncode != 0, "guest root cannot write through the credential attachment")
+                           "--", "sh", "-ec", "if ( : >> " + shlex.quote(device["path"] + "/forbidden")
+                           + " ); then exit 1; fi")
+        check(result.returncode == 0, "guest root cannot write through the credential attachment")
 
     def verify_secret_consumers(self, values: dict[str, bytes]) -> None:
         def delivered() -> bool:
@@ -517,12 +513,15 @@ class Runtime:
         ]
         check(len(ready) == 1, "one Ready delivered Jellyfin Pod holds the provisioner log")
         logs = self.kubectl("logs", f"pod/{ready[0]['metadata']['name']}", "-c", "provision", namespace="jellyfin")
-        if expected not in logs or PREFLIGHT_REFUSAL in logs:
+        try:
+            assert_secret_absent(secret_values, logs, context="delivered provisioner logs")
+            check(expected in logs and PREFLIGHT_REFUSAL not in logs,
+                  f"the delivered provisioner preflight reports: {expected}")
+        except AssertionError:
             print(f"DIAGNOSTIC: provisioner status: {json.dumps(ready[0]['status'].get('initContainerStatuses', []))}",
                   file=sys.stderr)
-            print_sanitized(secret_values, "delivered provisioner log", logs)
-        check(expected in logs and PREFLIGHT_REFUSAL not in logs,
-              f"the delivered provisioner preflight reports: {expected}")
+            print(f"DIAGNOSTIC: delivered provisioner log:\n{logs}", file=sys.stderr)
+            raise
 
     def jellarr_ready(self) -> bool:
         job = self.kubectl_json("get", "job/jellyfin-configuration", "-o", "json", namespace="jellyfin")
@@ -825,8 +824,8 @@ def run_bootstrap_host(bootstrap_host: Path, runtime: Runtime, kubeconfig: Path,
     """Invoke the shipped household-bootstrap-host against the fresh guest."""
     env = {**os.environ, "KUBECONFIG": str(kubeconfig), "HOUSEHOLD_BOOTSTRAP_MANIFESTS": str(seed)}
     with phase("household-bootstrap-host (timeout: 3600s)"):
-        # Defer native output until the outcome is known: an earlier diagnostic
-        # interval or bootstrap subprocess can contain the same registry message.
+        # Capture native output while supervising the owned bootstrap group,
+        # then print it on every outcome, including classified registry refusals.
         with tempfile.TemporaryFile(mode="w+") as output:
             # GNU timeout keeps the shipped 3600s deadline and 30s kill grace.
             process = subprocess.Popen(
@@ -836,7 +835,6 @@ def run_bootstrap_host(bootstrap_host: Path, runtime: Runtime, kubeconfig: Path,
                 start_new_session=True,
             )
             pidfd = None
-            classified = False
             try:
                 pidfd = os.pidfd_open(process.pid)
                 # Readability observes exit without reaping the group leader.
@@ -870,9 +868,6 @@ def run_bootstrap_host(bootstrap_host: Path, runtime: Runtime, kubeconfig: Path,
                         except subprocess.TimeoutExpired:
                             print("DIAGNOSTIC: command exceeded 15s; bootstrap deadline unchanged",
                                   file=output, flush=True)
-            except RegistryPullError:
-                classified = True
-                raise
             finally:
                 try:
                     # The leader's unreaped PID reserves its group identity until
@@ -881,10 +876,9 @@ def run_bootstrap_host(bootstrap_host: Path, runtime: Runtime, kubeconfig: Path,
                 finally:
                     if pidfd is not None:
                         os.close(pidfd)
-                    if not classified:
-                        output.seek(0)
-                        shutil.copyfileobj(output, sys.stdout)
-                        sys.stdout.flush()
+                    output.seek(0)
+                    shutil.copyfileobj(output, sys.stdout)
+                    sys.stdout.flush()
             status = process.returncode
     if status != 0:
         raise ScenarioError(f"household-bootstrap-host failed ({status}); see bootstrap output above")
@@ -1215,8 +1209,7 @@ def verify_post_preflight_provision_failure(runtime: Runtime, kubeconfig: Path, 
         observe()
         return bool(failures)
 
-    # Provisioner output by run, kept for diagnostics. Only output without a
-    # runtime credential is ever printed.
+    # Keep the disposable provisioner's complete output for failure diagnosis.
     evidence: dict[str, str] = {}
     follower: subprocess.Popen | None = None
 
@@ -1280,7 +1273,7 @@ def verify_post_preflight_provision_failure(runtime: Runtime, kubeconfig: Path, 
                                                   "-c", "provision", *extra))
                 evidence[f"kubectl logs {name} {' '.join(extra)}".strip()] = result.stdout + result.stderr
         for label, text in evidence.items():
-            print_sanitized(secret_values, f"provisioner output ({label})", text)
+            print(f"DIAGNOSTIC: provisioner output ({label}):\n{text}", file=sys.stderr)
         print(runtime.guest("k3s", "kubectl", "-n", "jellyfin", "describe", "pods", "-l", label_selector,
                             check_result=False), file=sys.stderr)
 
@@ -1416,11 +1409,18 @@ def guest_opens_render_node(runtime: Runtime, user: int, group: int) -> bool:
     result = completed("incus", "--force-local", "--project", runtime.project, "exec", runtime.instance,
                        "--user", str(user), "--group", str(group), "--mode=non-interactive", "--",
                        "sh", "-c", f"exec 3<>{RENDER_NODE}")
+    if result.returncode:
+        check(RENDER_NODE in result.stderr and "ermission denied" in result.stderr,
+              f"guest render-node refusal reaches the filesystem permission check: {result.stderr.strip()}")
     return result.returncode == 0
 
 
 def host_opens_render_node(user: str) -> bool:
-    return completed("runuser", "-u", user, "--", "sh", "-c", f"exec 3<>{RENDER_NODE}").returncode == 0
+    result = completed("runuser", "-u", user, "--", "sh", "-c", f"exec 3<>{RENDER_NODE}")
+    if result.returncode:
+        check(RENDER_NODE in result.stderr and "ermission denied" in result.stderr,
+              f"host render-node refusal reaches the filesystem permission check: {result.stderr.strip()}")
+    return result.returncode == 0
 
 
 def jellyfin_encoding(smoke, base: str, token: str) -> dict:
@@ -1549,7 +1549,7 @@ def verify_accelerator(runtime: Runtime, kubeconfig: Path, workspace: Path, smok
         try:
             check(completed("incus", "--force-local", "--project", runtime.project, "exec", runtime.instance,
                             "--mode=non-interactive", "--", "k3s", "kubectl", "-n", "jellyfin", "exec", ungranted,
-                            "--", "test", "-e", RENDER_NODE).returncode != 0,
+                            "--", "sh", "-ec", f"test ! -e {RENDER_NODE}").returncode == 0,
                   "an ungranted Pod has no render node")
             denied = completed("incus", "--force-local", "--project", runtime.project, "exec", runtime.instance,
                                "--mode=non-interactive", "--", "k3s", "kubectl", "-n", "jellyfin", "exec", nonholder,
@@ -2222,12 +2222,13 @@ def run_scenario(args: argparse.Namespace) -> None:
                 written = os.lstat(runtime.media_path / "downloads" / ".writer-before-loss")
                 check(written.st_gid == 505 and written.st_mode & 0o067 == 0o060,
                       f"workload-created media is group 505 and group read/write only: {oct(written.st_mode)} gid {written.st_gid}")
-                for uid, gid, expected in (("6200", "505", 0), ("6300", "6300", 1)):
+                for uid, gid, may_write in (("6200", "505", True), ("6300", "6300", False)):
+                    append = "printf x >> /srv/media/data/downloads/.writer-before-loss"
                     result = completed("incus", "--force-local", "--project", project, "exec", instance_name,
                                        "--user", uid, "--group", gid, "--mode=non-interactive", "--",
-                                       "sh", "-ec", "printf x >> /srv/media/data/downloads/.writer-before-loss")
-                    check((result.returncode == 0) == (expected == 0),
-                          f"guest UID {uid} with group {gid} {'can' if expected == 0 else 'cannot'} modify shared media")
+                                       "sh", "-ec", append if may_write else f"if {append}; then exit 1; fi")
+                    check(result.returncode == 0,
+                          f"guest UID {uid} with group {gid} {'can' if may_write else 'cannot'} modify shared media")
                 probes = [(jellyfin_pod["metadata"]["name"], "/media/.returned"),
                           ("media-writer-probe", "/data/library/.returned")]
                 before_containers = {
@@ -2239,12 +2240,16 @@ def run_scenario(args: argparse.Namespace) -> None:
                     runtime.stop_media()
                     check(runtime.node_ready(), "K3s node remains healthy during application source loss")
                     check(runtime.unrelated_ready(), "unrelated workload remains available during application source loss")
-                    result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "505", "--group", "505", "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/data/library/movies/recovery.mkv")
-                    check(result.returncode != 0, "source loss never exposes a substitute media directory")
+                    result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "505", "--group", "505", "--mode=non-interactive", "--", "sh", "-ec", "test ! -e /srv/media/data/library/movies/recovery.mkv")
+                    check(result.returncode == 0, "source loss never exposes a substitute media directory")
                     denied = completed("kubectl", "--kubeconfig", str(kubeconfig), "-n", "jellyfin",
-                                       "exec", "media-writer-probe", "--", "touch", "/data/downloads/.writer-during-loss")
-                    check(denied.returncode != 0, "writer cannot redirect writes during media loss")
+                                       "exec", "media-writer-probe", "--", "sh", "-ec",
+                                       "if ( : >> /data/downloads/.writer-during-loss ); then exit 1; fi")
+                    check(denied.returncode == 0, "writer cannot redirect writes during media loss")
                     runtime.start_media(media_pool, fixture["mediaRootScript"], workspace)
+                    check((runtime.media_path / "downloads" / ".writer-before-loss").read_bytes() == b"x"
+                          and not (runtime.media_path / "downloads" / ".writer-during-loss").exists(),
+                          "media return preserves the permitted write and contains no redirected outage write")
                     (runtime.media_path / "library" / ".returned").write_text("new mount\n")
                     for name, path in probes:
                         visible = completed("kubectl", "--kubeconfig", str(kubeconfig), "-n", "jellyfin",
@@ -2287,8 +2292,8 @@ def run_scenario(args: argparse.Namespace) -> None:
                         raise ScenarioError("Jellyfin became ready without its media source")
                     time.sleep(2)
                 print("PASS: Jellyfin remained blocked throughout the media-absence observation", flush=True)
-                result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "505", "--group", "505", "--mode=non-interactive", "--", "sh", "-ec", "test -e /srv/media/data/library/movies/recovery.mkv")
-                check(result.returncode != 0, "node boot without media does not expose a substitute directory")
+                result = completed("incus", "--force-local", "--project", project, "exec", instance_name, "--user", "505", "--group", "505", "--mode=non-interactive", "--", "sh", "-ec", "test ! -e /srv/media/data/library/movies/recovery.mkv")
+                check(result.returncode == 0, "node boot without media does not expose a substitute directory")
                 runtime.start_media(media_pool, fixture["mediaRootScript"], workspace)
                 wait_for("Jellyfin after media restoration", runtime.app_ready)
                 runtime.verify_stock_runtime()
@@ -2348,7 +2353,7 @@ def run_scenario(args: argparse.Namespace) -> None:
                       "Incus storage pool remains on the same ZFS dataset through guest replacement")
                 runtime.forward_stop()
         finally:
-            if sys.exc_info()[0] is not None and not isinstance(sys.exc_info()[1], RegistryPullError) and runtime.created_instance:
+            if sys.exc_info()[0] is not None and runtime.created_instance:
                 diagnostics = completed("journalctl", "-k", "-n", "80", "--no-pager")
                 print(diagnostics.stdout or diagnostics.stderr, file=sys.stderr)
                 diagnostics = completed("incus", "--force-local", "--project", project, "exec", instance_name,
