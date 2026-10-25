@@ -118,7 +118,11 @@ deployment, RuntimeClass, annotation or image opt-in is required.
 
 ### Restore an unavailable source
 
-Keep the source absent while deleting affected Pods and waiting for their
+Hold Argo reconciliation for the root and affected Applications so a
+parent cannot restore child automation. Record and hold affected workload
+controllers too: scale Deployments/StatefulSets to zero and suspend
+scheduled Jobs. Deleting Pods alone lets their controllers replace them.
+Keep the source absent while retiring affected Pods and waiting for their
 old kubelet volume publications to disappear. Do not reattach underneath
 stale publications. Restore the original backing and ledger. If the
 restored root has a new filesystem identity, explicitly adopt the
@@ -128,7 +132,8 @@ before read-only root validation. After host validation succeeds, start
 `compute-retained-export.service` and require successful publication.
 Only then, inside the guest, explicitly adopt any verified restored
 entries with changed identities and validate each required entry before
-recreating affected Pods. Do not clear receipts or reprovision.
+restoring the recorded workload-controller settings. Release affected
+Argo holds only after validation; release the root hold last.
 Unrelated services need no restart. Generation-bearing filesystem
 export handles are required; unsupported filesystems fail closed rather
 than trusting recycled inode numbers.
