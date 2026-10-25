@@ -147,7 +147,8 @@ in
         A missing ledger is not permission to initialize replacement empty state.
 
         Inside the guest, use the trusted node backing and compared inventory to
-        prepare an ephemeral CLI spec (requires `jq`):
+        prepare an ephemeral CLI spec (requires `jq`). Select `ENTRY` and
+        `REVIEWED_ID` from that inspected inventory before validating an entry:
 
         ```sh
         umask 077
@@ -158,8 +159,7 @@ in
         retained-directories validate --spec /run/retained-spec.json --entry "$ENTRY"
         ```
 
-        Set `ENTRY` and `REVIEWED_ID` from the inspected inventory. For one
-        authorized new entry, run `retained-directories provision --spec
+        For one authorized new entry, run `retained-directories provision --spec
         /run/retained-spec.json --entry "$ENTRY" --confirm "$REVIEWED_ID"`.
         For one verified restored entry, use `adopt` instead. Provisioning cannot
         recreate an established missing leaf; adoption requires an existing
@@ -172,13 +172,18 @@ in
 
         Keep the source absent while deleting affected Pods and waiting for their
         old kubelet volume publications to disappear. Do not reattach underneath
-        stale publications. Restore the original backing and ledger, validate on
-        the host, then start `compute-retained-export.service`. Recreate affected
-        Pods and validate each required entry. Unrelated services need no restart.
-        If restored physical objects have new filesystem identities, explicitly adopt the
-        verified root/entries rather than clearing receipts or reprovisioning.
-        Generation-bearing filesystem export handles are required; unsupported
-        filesystems fail closed rather than trusting recycled inode numbers.
+        stale publications. Restore the original backing and ledger. If the
+        restored root has a new filesystem identity, explicitly adopt the
+        verified root on the host with `retained-directories adopt --spec
+        /etc/homelab/retained-root.json --root --confirm '${compute.stateIdentity}'`
+        before read-only root validation. After host validation succeeds, start
+        `compute-retained-export.service` and require successful publication.
+        Only then, inside the guest, explicitly adopt any verified restored
+        entries with changed identities and validate each required entry before
+        recreating affected Pods. Do not clear receipts or reprovision.
+        Unrelated services need no restart. Generation-bearing filesystem
+        export handles are required; unsupported filesystems fail closed rather
+        than trusting recycled inode numbers.
 
         For an initial guard installation or guest-path migration, arrange the
         approved affected-application/Argo hold before publishing to the tracked
@@ -188,15 +193,28 @@ in
         Pods/publications and the old automatic creating-hook behavior first.
         A removed desired hook may still have a retained live object.
         Install the trusted host/guest boundary and explicitly adopt the verified
-        existing root. StorageClass parameters and `PV.spec.local.path` are
+        existing root. Validate it and start `compute-retained-export.service` on
+        the host; do not continue until publication succeeds.
+        StorageClass parameters and `PV.spec.local.path` are
         immutable: separately authorize recreation of `retained-local` with the
         new parameters while preserving existing PVs/data, then recreate affected
         PV/PVC declarations at current guest paths rather than force-patching
         bound volumes. Reconcile the compared inventory, explicitly adopt
         verified existing entries, validate, then resume affected applications.
         Never provision substitute empty state to clear a rollout refusal.
-        Changes to `compute-retained-parent` require a planned guest restart;
-        normal OS activation must not replace its live propagation parent.
+        Routine host activation leaves the live retained parent and child export
+        mounted, even when their unit scripts or runtime package change. It does
+        not apply export/root changes to a running publication. For those changes,
+        arrange the same affected-writer/Argo hold, quiesce writers and retire
+        Pods/publications, then explicitly stop the export before activating
+        changed root/export configuration so its backing dependency cannot be
+        retargeted beneath an old publication. Validate the intended root with
+        the newly installed helper before explicitly starting the export and
+        resuming entry validation/workloads. Parent changes also
+        require a planned guest restart; do not replace a running guest's live
+        propagation parent. Actual backing/parent loss still stops the export
+        and retires affected writers; activation lifetime settings do not disable
+        that fail-closed boundary.
 
         ## Runtime-secret references
 

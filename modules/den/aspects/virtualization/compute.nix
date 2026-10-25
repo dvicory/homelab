@@ -582,6 +582,10 @@ in
           description = "Provide the isolated retained-storage export parent";
           wantedBy = [ "multi-user.target" ];
           before = [ "incus.service" ];
+          # Replacing this mount detaches running guests from future propagation.
+          # Apply parent changes only during a separately planned guest restart.
+          restartIfChanged = false;
+          stopIfChanged = false;
           serviceConfig = {
             Type = "oneshot";
             RemainAfterExit = true;
@@ -609,6 +613,10 @@ in
         systemd.services.compute-retained-export = {
           description = "Publish only the provisioned retained source";
           wantedBy = [ "multi-user.target" ];
+          # Unpublishing propagates into running guests and retires retained
+          # writers. Apply export/root changes only during explicit maintenance.
+          restartIfChanged = false;
+          stopIfChanged = false;
           after = [
             "compute-retained-parent.service"
             stateBackingUnit
