@@ -26,7 +26,7 @@ let
       test -s /desired/members.json
       test -s /desired/clients.json
       test -s /desired/policies.json
-      trap 'rm -f auth.json headers response request.json provision.log client.json client-spec.json client-secret.json groups undeclared secret-publish.log policy.json' EXIT
+      trap 'rm -f auth.json headers response request.json provision.log client.json client-spec.json client-secret.json groups existing-clients undeclared secret-publish.log policy.json' EXIT
 
       # Authenticate using runtime body files. The upstream provisioner calls
       # this password a TOKEN, but it is the idm_admin recovery password.
@@ -74,6 +74,29 @@ let
         api PUT "/v1/group/$KANIDM_ADMIN_GROUP/_attr/member" --data-binary @request.json
       fi
 
+      # Eligibility memberships and person credentials are operator-owned.
+      # Revoke every owned client's existing grants before entity reconciliation
+      # or Secret publication can fail, including clients no longer declared.
+      # v1.3.0 merges maps even when state.json declares none.
+      # This needs a reachable API and is sequential, not a cross-client
+      # transaction or instantaneous revocation during an outage.
+      api GET /v1/oauth2
+      jq -r '.[].attrs.name[0]' response > existing-clients
+      while IFS= read -r client; do
+        [[ "$client" =~ ^[a-z][a-z0-9_.-]{0,63}$ ]]
+        api GET "/v1/oauth2/$client"
+        cp response client.json
+        for mapping in 'oauth2_rs_scope_map:_scopemap' 'oauth2_rs_sup_scope_map:_sup_scopemap'; do
+          attribute="''${mapping%%:*}"
+          endpoint="''${mapping#*:}"
+          jq -r --arg attr "$attribute" '.attrs[$attr][]? | split(": ")[0] | split("@")[0]' client.json > groups
+          while IFS= read -r group; do
+            [[ "$group" =~ ^[a-zA-Z0-9_.-]+$ ]]
+            api DELETE "/v1/oauth2/$client/$endpoint/$group"
+          done < groups
+        done
+      done < existing-clients
+
       # Bootstrap only the declared people/group/clients. Removing someone from
       # Nix revokes membership, not their account, credentials or app history.
       export KANIDM_PROVISION_IDM_ADMIN_TOKEN
@@ -106,31 +129,18 @@ let
         fi
       done
 
-      # clients.json lists each OAuth2 client, the scopes the administrator
-      # group receives, and the declared Secrets that receive its credential.
+      # clients.json declares the sole eligible group for each client's scopes
+      # and the name-scoped Secrets that receive its generated credential.
       client_count=$(jq -er 'length' /desired/clients.json)
       for ((index = 0; index < client_count; index++)); do
         jq -e --argjson index "$index" '.[$index]' /desired/clients.json > client-spec.json
         client=$(jq -er '.name | select(test("^[a-z0-9_-]+$"))' client-spec.json)
+        eligible_group=$(jq -er '.eligibleGroup | select(test("^[a-z][a-z0-9_-]*$"))' client-spec.json)
         printf '%s' '{"attrs":{"oauth2_strict_redirect_uri":["true"]}}' > request.json
         api PATCH "/v1/oauth2/$client" --data-binary @request.json
 
-        # v1.3.0 only merges scope maps. Remove every existing normal and
-        # supplemental map before granting the one authorized group. These are
-        # Kanidm v1.10's native OAuth endpoints, not a private provisioning API.
-        api GET "/v1/oauth2/$client"
-        cp response client.json
-        for mapping in 'oauth2_rs_scope_map:_scopemap' 'oauth2_rs_sup_scope_map:_sup_scopemap'; do
-          attribute="''${mapping%%:*}"
-          endpoint="''${mapping#*:}"
-          jq -r --arg attr "$attribute" '.attrs[$attr][]? | split(": ")[0] | split("@")[0]' client.json > groups
-          while IFS= read -r group; do
-            [[ "$group" =~ ^[a-zA-Z0-9_.-]+$ ]]
-            api DELETE "/v1/oauth2/$client/$endpoint/$group"
-          done < groups
-        done
         jq -ce '.scopes | select(type == "array" and length > 0)' client-spec.json > request.json
-        api POST "/v1/oauth2/$client/_scopemap/$KANIDM_ADMIN_GROUP" --data-binary @request.json
+        api POST "/v1/oauth2/$client/_scopemap/$eligible_group" --data-binary @request.json
 
         # Unpatched Kanidm generates this secret; the Job is its only Kubernetes
         # publisher. Never put a configured basicSecretFile into the state.

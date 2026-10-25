@@ -114,6 +114,7 @@
           inherit (route) displayName;
           landing = "${builtins.head (routeUrls route)}/";
           redirects = map (url: "${url}/oauth2/callback") (routeUrls route);
+          eligibleGroup = adminGroup;
           scopes = gatewayScopes;
           secrets = [ (gatewaySecret name) ];
         }
@@ -153,12 +154,12 @@
             ];
           };
         };
-      # The provisioning Job grants each client's scopes to adminGroup only,
+      # The provisioning Job grants each client's scopes to its eligibleGroup,
       # publishes each Kanidm-generated client secret to every listed Secret,
       # and deletes Kanidm clients that this list does not name.
       oauth2Clients = lib.mapAttrsToList (name: client: {
         inherit name;
-        inherit (client) scopes secrets;
+        inherit (client) eligibleGroup scopes secrets;
       }) clients;
       # This Application declares each client Secret without data, so the
       # Job never needs `create`, which Kubernetes cannot limit by name.
