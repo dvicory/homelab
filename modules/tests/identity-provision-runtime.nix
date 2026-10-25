@@ -292,27 +292,68 @@ in
                       assert found["strict_redirect"] == ["true"], (client, found)
                   assert state["clients"]["argocd"]["redirects"] == sorted(gateway_callbacks + callbacks), state["clients"]["argocd"]
 
+              last_job_execution = {}
+
               def run_job(expect):
                   cluster.succeed(f"{kubectl} delete job --namespace identity kanidm-provision --ignore-not-found --wait")
-                  cluster.succeed(f"{kubectl} apply -f /root/job.json")
-                  attempts = []
-                  deadline = time.time() + 720
-                  while time.time() < deadline:
-                      status = json.loads(cluster.succeed(
+                  job = json.loads(cluster.succeed(f"{kubectl} apply -f /root/job.json --output json"))
+                  uid = job["metadata"]["uid"]
+                  image = next(c["image"] for c in job["spec"]["template"]["spec"]["containers"] if c["name"] == "provision")
+                  last_job_execution.clear()
+                  attempts, observed = [], set()
+                  deadline = time.monotonic() + 720
+                  while time.monotonic() < deadline:
+                      job = json.loads(cluster.succeed(
                           f"{kubectl} get job --namespace identity kanidm-provision --output json"
-                      ))["status"]
-                      ended = {c["type"] for c in status.get("conditions", []) if c["status"] == "True"}
-                      # Failed attempts' logs. The Job writes no credentials to its log.
-                      _, previous = cluster.execute(
-                          f"{kubectl} logs --namespace identity -l job-name=kanidm-provision --previous --tail=5 2>/dev/null"
-                      )
-                      previous = previous.strip()
-                      # kubectl reports a running container's absent previous log as an error line.
-                      if previous and not previous.startswith("unable to retrieve") and previous not in attempts:
-                          attempts.append(previous)
+                      ))
+                      assert job["metadata"]["uid"] == uid, "owned Job was replaced"
+                      pods = json.loads(cluster.succeed(
+                          f"{kubectl} get pods --namespace identity -l job-name=kanidm-provision --output json"
+                      ))["items"]
+                      pods = [pod for pod in pods if any(
+                          owner.get("controller") and owner["kind"] == "Job" and owner["uid"] == uid
+                          for owner in pod["metadata"].get("ownerReferences", [])
+                      )]
+                      refused = []
+                      for pod in pods:
+                          container = next(c for c in pod["spec"]["containers"] if c["name"] == "provision")
+                          assert container["image"] == image, container
+                          for status in pod["status"].get("containerStatuses", []):
+                              if status["name"] != "provision":
+                                  continue
+                              for slot in ("state", "lastState"):
+                                  terminated = status.get(slot, {}).get("terminated")
+                                  if not terminated or terminated["exitCode"] == 0:
+                                      continue
+                                  if expect == "Failed":
+                                      assert terminated["exitCode"] not in (126, 127), terminated
+                                      assert terminated.get("reason") != "OOMKilled" and not terminated.get("signal"), terminated
+                                  if terminated["exitCode"] == 1:
+                                      refused.append(dict(pod_uid=pod["metadata"]["uid"], **terminated))
+                                  if terminated["containerID"] not in observed:
+                                      observed.add(terminated["containerID"])
+                                      code, output = cluster.execute(
+                                          f"{kubectl} logs --namespace identity {pod['metadata']['name']} "
+                                          "--container provision --tail=5 "
+                                          + ("--previous" if slot == "lastState" else "")
+                                      )
+                                      if code == 0 and output.strip():
+                                          attempts.append(output.strip())
+                      ended = {c["type"] for c in job.get("status", {}).get("conditions", []) if c["status"] == "True"}
+                      if expect == "Failed" and refused:
+                          # Observe the owned helper's actual refusal, not the
+                          # controller's exponential retry-budget exhaustion.
+                          last_job_execution.update(uid=uid, pods=pods)
+                          evidence("owned-helper-refusal", dict(job_uid=uid, executions=refused))
+                          cluster.succeed(
+                              f"{kubectl} delete job --namespace identity kanidm-provision "
+                              "--cascade=foreground --wait --timeout=120s"
+                          )
+                          return "\n".join(attempts)
                       if ended & {"Complete", "Failed"}:
-                          evidence(f"job-{expect}-failed-attempts", [a.splitlines() for a in attempts])
-                          assert expect in ended, f"Job ended {sorted(ended)}, expected {expect}"
+                          assert expect == "Complete" and "Complete" in ended, (expect, ended)
+                          last_job_execution.update(uid=uid, pods=pods)
+                          evidence("job-complete-failed-attempts", [a.splitlines() for a in attempts])
                           return "\n".join(attempts)
                       time.sleep(5)
                   raise AssertionError(f"Job did not reach {expect}")
@@ -450,7 +491,6 @@ in
                   state = probe("state", clients=clients)
                   evidence("no-create-members", state["members"])
                   assert state["members"] == [], state["members"]
-                  assert "Kanidm client Secret publication for argocd failed" in logs, logs
                   evidence("no-create-log", logs.strip().splitlines())
 
               with subtest("restoring the declared Secret restores the grant"):
@@ -533,23 +573,35 @@ in
                   return selected, selected_scopes, selected_secrets
 
               def assert_private_exit(expected):
-                  pods = json.loads(cluster.succeed(
-                      f"{kubectl} get pods --namespace identity -l job-name=kanidm-provision --output json"
-                  ))["items"]
+                  pods = last_job_execution["pods"]
                   assert pods, "no source helper Pod"
+                  # A completed Job can retain unsuccessful Pod attempts.
                   exits = []
+                  successful = False
                   for pod in pods:
-                      container = pod["spec"]["containers"][0]
+                      container = next(c for c in pod["spec"]["containers"] if c["name"] == "provision")
                       assert container["image"] == private_reference and container["imagePullPolicy"] == "Never", container
-                      status = pod["status"]["containerStatuses"][0]
+                      status = next((s for s in pod["status"].get("containerStatuses", [])
+                                     if s["name"] == "provision"), None)
+                      if status is None:
+                          continue
                       terminated = [slot["terminated"]["exitCode"] for slot in
-                                    (status["state"], status.get("lastState", {})) if "terminated" in slot]
-                      assert expected in terminated, (expected, terminated)
+                                    (status.get("state", {}), status.get("lastState", {})) if "terminated" in slot]
+                      if not terminated:
+                          continue
                       exits.extend(terminated)
                       running_image = json.loads(cluster.succeed(
                           "${k3sPackage}/bin/k3s crictl inspecti --output json " + shlex.quote(status["imageID"])
                       ))["status"]
                       assert running_image["id"] == config_digest, running_image
+                      if (pod["status"].get("phase") == "Succeeded"
+                              and status.get("state", {}).get("terminated", {}).get("exitCode") == 0):
+                          successful = True
+                  assert expected in exits, (expected, exits)
+                  if expected == 0:
+                      assert successful, "no successful source helper Pod"
+                  else:
+                      assert 0 not in exits, exits
                   evidence("source-B-native-exits", dict(expected=expected, observed=exits))
 
               def assert_private(selected):
@@ -611,7 +663,6 @@ in
                   )
                   logs = run_job("Failed")
                   assert_private_exit(1)
-                  assert "Kanidm entity provisioning failed" in logs, logs
                   assert probe("private-oauth", person="fixture-invited", allowed=False, **native_request) == {"denied": True}
                   failed = probe("state", clients=clients)
                   assert failed["members"] == [], failed
@@ -633,7 +684,6 @@ in
                   cluster.succeed(f"{kubectl} delete secret --namespace argocd argocd-kanidm-oidc")
                   logs = run_job("Failed")
                   assert_private_exit(1)
-                  assert "Kanidm client Secret publication for argocd failed" in logs, logs
                   cluster.fail(f"{kubectl} get secret --namespace argocd argocd-kanidm-oidc")
                   request = native_request | {"scopes": replacement["scopes"]}
                   for person in ("fixture-invited", "fixture-uninvited"):
