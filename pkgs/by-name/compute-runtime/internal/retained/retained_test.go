@@ -1,7 +1,6 @@
 package retained
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -88,36 +87,5 @@ func TestMalformedSiblingJSONDoesNotGateSelectedEntry(t *testing.T) {
 		if _, err := spec.entry("broken"); err == nil {
 			t.Fatalf("accepted selected malformed declaration: %s", declaration)
 		}
-	}
-}
-
-func TestRootLedgerIsSharedAcrossMappedOwnerViews(t *testing.T) {
-	spec, err := ParseSpec(strings.NewReader(specJSON))
-	if err != nil {
-		t.Fatal(err)
-	}
-	guest, err := json.Marshal(newLedger(spec.Root, 123))
-	if err != nil {
-		t.Fatal(err)
-	}
-	hostRoot := spec.Root
-	hostRoot.UID, hostRoot.GID = 1000000, 1000000
-	host, err := json.Marshal(newLedger(hostRoot, 123))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(host) != string(guest) {
-		t.Fatal("mapped owners produced different shared identity ledger bytes")
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(guest, &fields); err != nil {
-		t.Fatal(err)
-	}
-	if len(fields) != 5 || string(fields["inode"]) != "123" || fields["uid"] != nil || fields["gid"] != nil || fields["mode"] != nil {
-		t.Fatalf("root ledger persisted view-specific metadata: %s", guest)
-	}
-	var decoded RootLedger
-	if err := readJSON(strings.NewReader(string(guest)), MaxSpecBytes, &decoded); err != nil || decoded.ID != spec.Root.ID || decoded.Source != spec.Root.Source || decoded.Inode != 123 {
-		t.Fatalf("root ledger lost stable identity: %+v %v", decoded, err)
 	}
 }

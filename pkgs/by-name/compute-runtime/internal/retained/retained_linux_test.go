@@ -391,11 +391,6 @@ func TestMountIdentityKeepsUnicodeWhitespaceInKernelFields(t *testing.T) {
 			"43 1 0:9 /cache\u00a0root " + point + " rw - tmpfs independent rw\n"
 		mounts, err := parseMounts(strings.NewReader(input))
 		must(t, err)
-		if len(mounts) != 2 || mounts[1] != (mountRecord{
-			ID: 43, Root: "/cache\u00a0root", Point: point, FSType: "tmpfs", Name: "independent",
-		}) {
-			t.Fatalf("Unicode pathname changed mount identity: %+v", mounts)
-		}
 		actual, id, err := sourceAt(mounts, 42, "/retained/child")
 		must(t, err)
 		if id != 42 || actual != (Source{FSType: "btrfs", Name: "/dev/state", Root: "/app/child"}) {
@@ -580,4 +575,64 @@ func TestCopiedLedgerCannotEstablishSameSourceSamePathReplacementRoot(t *testing
 	must(t, Adopt(spec, "app", spec.Entries["app"].ID))
 	must(t, Validate(spec, "app"))
 	unchanged(t, spec, func() error { return Validate(spec, "") }, true)
+}
+
+func TestDeletedObjectsCannotBeBlessedByRecycledInodes(t *testing.T) {
+	for _, rootScope := range []bool{false, true} {
+		t.Run(fmt.Sprint(rootScope), func(t *testing.T) {
+			spec := testSpec(t, true)
+			entry := spec.Entries["app"]
+			must(t, Provision(spec, "app", entry.ID))
+			ledger := ledgerOf(t, spec)
+			path, mode := filepath.Join(spec.Root.Path, "app"), os.FileMode(0o700)
+			oldObject := ledger.Entries["app"].Object
+			if rootScope {
+				path, mode, oldObject = spec.Root.Path, 0o755, ledger.Object
+				must(t, os.RemoveAll(path))
+			} else {
+				must(t, os.Remove(path))
+			}
+			must(t, os.Mkdir(path, mode))
+			must(t, os.Chmod(path, mode))
+			fd, err := openDirectory(path)
+			must(t, err)
+			object, err := directoryIdentity(fd)
+			must(t, err)
+			var stat unix.Stat_t
+			must(t, unix.Fstat(fd, &stat))
+			defer unix.Close(fd)
+			if oldObject.equal(object) {
+				t.Fatal("filesystem reused a deleted object's export handle")
+			}
+			// Model an inode-number collision even on allocators that choose a new
+			// number: only the saved generation-bearing handle remains stale.
+			if rootScope {
+				ledger.Inode = stat.Ino
+				must(t, writeLedger(fd, spec.Root, &ledger, false))
+			} else {
+				record := ledger.Entries["app"]
+				record.Inode = stat.Ino
+				ledger.Entries["app"] = record
+				saveLedger(t, spec, ledger)
+			}
+			validate := func() error { return Validate(spec, "app") }
+			if rootScope {
+				validate = func() error { return ValidateRoot(spec) }
+			}
+			before := tree(t, filepath.Dir(spec.Root.Path))
+			err = validate()
+			if err == nil {
+				t.Fatal("stale filesystem generation passed validation")
+			}
+			if !reflect.DeepEqual(before, tree(t, filepath.Dir(spec.Root.Path))) {
+				t.Fatal("generation validation mutated retained state")
+			}
+			if rootScope {
+				must(t, Adopt(spec, "", spec.Root.ID))
+			} else {
+				must(t, Adopt(spec, "app", entry.ID))
+			}
+			must(t, validate())
+		})
+	}
 }

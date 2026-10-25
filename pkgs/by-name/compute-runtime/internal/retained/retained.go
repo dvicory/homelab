@@ -292,6 +292,7 @@ func names(entries map[string]Entry) []string {
 // The ledger binds the root and established leaves to their filesystem inodes;
 // copied receipt bytes alone cannot establish a replacement directory. Device
 // numbers are deliberately not persisted because they can change across boots.
+// Generation-bearing export handles distinguish recycled inode numbers.
 // UID/GID and directory mode are checked live against the local Spec rather than
 // persisted here: a host and its user namespace share this one ledger while
 // observing different owner numbers for the same physical directory and files.
@@ -299,14 +300,29 @@ type RootLedger struct {
 	Version int                         `json:"version"`
 	ID      string                      `json:"id"`
 	Inode   uint64                      `json:"inode"`
+	Object  ObjectIdentity              `json:"object"`
 	Source  Source                      `json:"source"`
 	Entries map[string]EstablishedEntry `json:"entries"`
 }
 
 type EstablishedEntry struct {
-	ID    string `json:"id"`
-	Inode uint64 `json:"inode"`
-	State string `json:"state"`
+	ID     string         `json:"id"`
+	Inode  uint64         `json:"inode"`
+	Object ObjectIdentity `json:"object"`
+	State  string         `json:"state"`
+}
+
+type ObjectIdentity struct {
+	Type   int32  `json:"type"`
+	Handle []byte `json:"handle"`
+}
+
+func (object ObjectIdentity) valid() bool {
+	return object.Type > 0 && object.Type < 255 && len(object.Handle) > 0 && len(object.Handle) <= 128
+}
+
+func (object ObjectIdentity) equal(other ObjectIdentity) bool {
+	return object.Type == other.Type && bytes.Equal(object.Handle, other.Handle)
 }
 
 func newLedger(root Root, inode uint64) RootLedger {
