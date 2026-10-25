@@ -6,6 +6,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import re
 import secrets
 import ssl
@@ -164,31 +165,48 @@ def oidc_groups(person, client, requests):
     # Use a fresh TOTP step for sign-in rather than the enrolment code.
     time.sleep(otp["step"] - time.time() % otp["step"] + 1)
     user = login(person, password, otp)
+    credentials = saved_credentials()
+    credentials[person] = {"password": password, "otp": otp}
+    save_credentials(credentials)
     return [authorise(user, client, **request) for request in requests]
 
 
-def authorise(user, client, redirect, scopes):
+def authorise(user, client, redirect, scopes, allowed=True, published=None):
     verifier = secrets.token_urlsafe(48)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=")
     request = {
         "response_type": "code",
         "client_id": client,
-        "state": "probe-state",
+        "state": secrets.token_urlsafe(24),
         "code_challenge": challenge.decode(),
         "code_challenge_method": "S256",
         "redirect_uri": redirect,
         "scope": " ".join(scopes),
-        "nonce": "probe-nonce",
+        "nonce": secrets.token_urlsafe(24),
     }
-    reply, payload = call("POST", "/oauth2/authorise", request, user)
+    reply, payload = call("POST", "/oauth2/authorise", request, user,
+                          expect=(200, 302) if allowed else (403,))
+    if not allowed:
+        return {"denied": True}
     answer = json.loads(payload)
     if isinstance(answer, dict) and "ConsentRequested" in answer:
         token = answer["ConsentRequested"]["consent_token"]
-        reply, _ = call("POST", "/oauth2/authorise/permit", token, user)
+        reply, _ = call("POST", "/oauth2/authorise/permit", token, user, expect=(200, 302))
     location = reply["Location"]
     assert location.startswith(redirect + "?"), "authorisation redirected elsewhere"
-    code = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)["code"][0]
-    basic = base64.b64encode(f"{client}:{basic_secret(client)}".encode()).decode()
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)
+    assert query["state"] == [request["state"]], "OAuth state mismatch"
+    code = query["code"][0]
+    if published is None:
+        client_secret = basic_secret(client)
+    else:
+        secret = json.loads(subprocess.run(
+            KUBECTL + ["get", "secret", "--namespace", published["namespace"],
+                       published["name"], "--output", "json"],
+            check=True, capture_output=True,
+        ).stdout)
+        client_secret = base64.b64decode(secret["data"][published["key"]]).decode()
+    basic = base64.b64encode(f"{client}:{client_secret}".encode()).decode()
     _, payload = call(
         "POST",
         "/oauth2/token",
@@ -203,7 +221,100 @@ def authorise(user, client, redirect, scopes):
     )
     body = json.loads(payload)["id_token"].split(".")[1]
     claims = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
-    return {key: claims.get(key) for key in ("iss", "aud", "groups")}
+    assert claims["nonce"] == request["nonce"], "ID token nonce mismatch"
+    assert claims["iss"] == BASE + "/oauth2/openid/" + client, "ID token issuer mismatch"
+    assert claims["aud"] in (client, [client]), "ID token audience mismatch"
+    return {key: claims.get(key) for key in ("iss", "aud", "groups", "sub")}
+
+
+CREDENTIALS = "/root/private-identity-credentials.json"
+PEOPLE = ("fixture-invited", "fixture-uninvited", "fixture-replacement")
+GROUPS = ("fixture-native-users", "fixture-native-replacement", "fixture-native-outsiders")
+
+
+def saved_credentials():
+    try:
+        with open(CREDENTIALS) as handle:
+            return json.load(handle)
+    except FileNotFoundError:
+        return {}
+
+
+def save_credentials(credentials):
+    fd = os.open(CREDENTIALS, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        json.dump(credentials, handle)
+
+
+def prepare_private(group):
+    # Synthetic identities only; never reset existing operator credentials.
+    call("POST", "/v1/group", {"attrs": {
+        "name": ["fixture-native-outsiders"], "description": ["Disposable identity fixture"],
+    }}, ADMIN)
+    credentials = saved_credentials()
+    for name in PEOPLE:
+        call("POST", "/v1/person", {"attrs": {
+            "name": [name], "displayname": [name], "mail": [name + "@example.test"],
+        }}, ADMIN)
+        intent = get(f"/v1/person/{name}/_credential/_update_intent")["token"]
+        session, _ = json.loads(call("POST", "/v1/credential/_exchange_intent", intent, ADMIN)[1])
+        password = secrets.token_urlsafe(32)
+        result = json.loads(call("POST", "/v1/credential/_update", [{"password": password}, session], ADMIN)[1])
+        assert result["can_commit"], "synthetic password enrollment cannot commit"
+        call("POST", "/v1/credential/_commit", session, ADMIN)
+        credentials[name] = {"password": password, "otp": None}
+    save_credentials(credentials)
+    call("POST", f"/v1/group/{group}/_attr/member", ["fixture-invited"], ADMIN)
+    call("POST", "/v1/group/fixture-native-outsiders/_attr/member", ["fixture-uninvited"], ADMIN)
+    return True
+
+
+def stale_maps(client, groups):
+    for group in groups:
+        for endpoint in ("_scopemap", "_sup_scopemap"):
+            call("POST", f"/v1/oauth2/{client}/{endpoint}/{group}",
+                 ["openid", "profile", "email", "groups_name", "homelab_admin"], ADMIN)
+    return True
+
+
+def private_oauth(person, **request):
+    credentials = saved_credentials()[person]
+    # Fresh native login, not an old bearer token's cached group projection.
+    if credentials["otp"] is not None:
+        step = credentials["otp"]["step"]
+        time.sleep(step - time.time() % step + 1)
+    claims = authorise(login(person, **credentials), **request)
+    if request.get("allowed", True):
+        assert claims["sub"] == get(f"/v1/person/{person}")["attrs"]["uuid"][0], claims
+    return claims
+
+
+def invite_replacement(group):
+    call("POST", f"/v1/group/{group}/_attr/member", ["fixture-replacement"], ADMIN)
+    return True
+
+
+def private_preserved(replacement_invited=True):
+    expected = {
+        "fixture-native-users": ["fixture-invited"],
+        "fixture-native-replacement": ["fixture-replacement"] if replacement_invited else [],
+        "fixture-native-outsiders": ["fixture-uninvited"],
+    }
+    for group, members in expected.items():
+        found = get(f"/v1/group/{group}")["attrs"]
+        assert sorted(short(member) for member in found.get("member", [])) == members, group
+    for person in PEOPLE:
+        assert get(f"/v1/person/{person}")["attrs"]["displayname"] == [person], person
+        login(person, **saved_credentials()[person])
+    return True
+
+
+def cleanup_private():
+    for person in PEOPLE:
+        call("DELETE", f"/v1/person/{person}", headers=ADMIN)
+    for group in GROUPS:
+        call("DELETE", f"/v1/group/{group}", headers=ADMIN)
+    return True
 
 
 command, arguments = sys.argv[3], json.loads(sys.argv[4])
@@ -217,5 +328,17 @@ elif command == "create-client":
     print(json.dumps(create_client(**arguments)))
 elif command == "oidc-groups":
     print(json.dumps(oidc_groups(**arguments)))
+elif command == "prepare-private":
+    print(json.dumps(prepare_private(**arguments)))
+elif command == "stale-maps":
+    print(json.dumps(stale_maps(**arguments)))
+elif command == "private-oauth":
+    print(json.dumps(private_oauth(**arguments)))
+elif command == "invite-replacement":
+    print(json.dumps(invite_replacement(**arguments)))
+elif command == "private-preserved":
+    print(json.dumps(private_preserved(**arguments)))
+elif command == "cleanup-private":
+    print(json.dumps(cleanup_private()))
 else:
     raise SystemExit(f"unknown command {command}")
