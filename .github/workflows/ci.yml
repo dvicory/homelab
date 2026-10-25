@@ -51,7 +51,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Nix
-        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
         with:
           extra_nix_config: |
             extra-substituters = https://cache.numtide.com
@@ -160,7 +160,7 @@ jobs:
           sudo chattr +C /nix/build
 
       - name: Install Nix
-        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
         with:
           extra_nix_config: |
             build-dir = /nix/build
@@ -205,7 +205,7 @@ jobs:
             '{role: "bootstrap", system: "aarch64-linux", group: "darwinLinuxBuilder", check: "", build: $build[0], checks: []}' \
             > "$RUNNER_TEMP/ci-receipt.json"
       - name: Upload successful bootstrap receipt
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-receipt-bootstrap-${{ github.run_id }}
           path: |
@@ -267,7 +267,7 @@ jobs:
 
       - name: Install Nix on Linux
         if: runner.os == 'Linux'
-        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
         with:
           extra_nix_config: |
             build-dir = /nix/build
@@ -295,7 +295,7 @@ jobs:
 
       - name: Install Nix on macOS
         if: runner.os == 'macOS'
-        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
         with:
           extra_nix_config: |
             extra-substituters = https://cache.numtide.com
@@ -400,7 +400,7 @@ jobs:
             > "$RUNNER_TEMP/ci-receipt.json"
 
       - name: Upload successful build receipt
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-receipt-${{ matrix.system }}-${{ matrix.group }}-${{ matrix.artifact || 'group' }}-${{ github.run_id }}
           path: |
@@ -541,7 +541,7 @@ jobs:
           sudo mount --bind /nix/build/native-acceptance/containerd /var/lib/containerd
           sudo systemctl start containerd.service docker.service
       - name: Install Nix
-        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
         with:
           extra_nix_config: |
             extra-substituters = https://cache.numtide.com
@@ -727,7 +727,7 @@ jobs:
               build: $build[0], checks: [], application: $application, program: $program, reportSha256: $digest}' \
             > "$RUNNER_TEMP/ci-receipt.json"
       - name: Upload successful native receipt
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-receipt-native-${{ matrix.system }}-${{ matrix.name }}-${{ github.run_id }}
           path: |
@@ -756,22 +756,22 @@ jobs:
         with:
           persist-credentials: false
       - name: Download required plan
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: required-check-inventory-${{ github.run_id }}
           path: ${{ runner.temp }}/required-plan
       - name: Download evaluated platform inventories
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: check-inventory-*-checks-${{ github.run_id }}
           path: ${{ runner.temp }}/required-inventories
       - name: Download successful execution receipts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: ci-receipt-*-${{ github.run_id }}
           path: ${{ runner.temp }}/required-receipts
       - name: Download native evidence and approved reports
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: native-*-${{ github.run_id }}
           path: ${{ runner.temp }}/required-native
