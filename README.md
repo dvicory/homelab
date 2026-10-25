@@ -86,6 +86,10 @@ verified name. Deterministic identity keeps a cached guest's embedded CA valid
 when the registry TLS derivation is independently rebuilt. Never use this key
 or certificate outside disposable tests.
 
+The selected `prod-home-registry-failures` process check uses a three-second
+unit cleanup grace with real signals, pidfds and child processes. Bootstrap
+cleanup in the runtime scenarios retains its 30-second production grace.
+
 ```sh
 nix build --no-link \
   .#checks.x86_64-linux.runtime-secret-k3s \

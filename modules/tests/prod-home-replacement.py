@@ -795,6 +795,9 @@ def _bootstrap_group_has_executable_members(pgid: int, deadline: float) -> bool:
     return False
 
 
+_BOOTSTRAP_STOP_GRACE = 30
+
+
 def stop_owned_bootstrap(process: subprocess.Popen) -> None:
     """Stop only the session/group created for this bootstrap and its children."""
     if process.returncode is not None:
@@ -807,7 +810,7 @@ def stop_owned_bootstrap(process: subprocess.Popen) -> None:
         process.wait()
         return
     # Keep the leader waitable: its PID pins the group through its children's grace.
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + _BOOTSTRAP_STOP_GRACE
     while _bootstrap_group_has_executable_members(process.pid, deadline):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
