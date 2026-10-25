@@ -113,13 +113,17 @@
             {
               compute-runtime = helperRuntimeB;
             };
+        # Public test-only key and fixed validity keep independently cached guest
+        # trust and registry identity identical when this derivation is rebuilt.
         helperTls = pkgs.runCommand "argo-helper-selection-tls" { nativeBuildInputs = [ pkgs.openssl ]; } ''
           mkdir -p "$out/client"
-          openssl req -x509 -newkey rsa:2048 -nodes -days 36500 \
+          cp ${./prod-home-replacement-test-key.pem} "$out/server.key"
+          openssl req -x509 -new -key "$out/server.key" -sha256 -set_serial 1 \
+            -not_before 20250101000000Z -not_after 21250101000000Z \
             -subj /CN=argo-helper-selection \
             -addext subjectAltName=IP:${bridgeAddress} \
             -addext basicConstraints=critical,CA:TRUE \
-            -keyout "$out/server.key" -out "$out/server.crt"
+            -out "$out/server.crt"
           cp "$out/server.crt" "$out/client/ca.crt"
           chmod 0444 "$out/server.key"
         '';

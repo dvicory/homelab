@@ -80,6 +80,12 @@ firewall/device behavior, source loss/return and application state through
 guest replacement. Detailed Argo retirement moved to required native
 scenarios; it no longer runs twice in the broad host scenario.
 
+The replacement fixture's registry uses an explicitly public test-only key
+and fixed certificate validity (2025–2125), with the declared bridge IP as its
+verified name. Deterministic identity keeps a cached guest's embedded CA valid
+when the registry TLS derivation is independently rebuilt. Never use this key
+or certificate outside disposable tests.
+
 ```sh
 nix build --no-link \
   .#checks.x86_64-linux.runtime-secret-k3s \
