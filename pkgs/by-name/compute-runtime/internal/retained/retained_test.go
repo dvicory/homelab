@@ -107,7 +107,7 @@ func TestRootLedgerIsSharedAcrossMappedOwnerViews(t *testing.T) {
 	if err := json.Unmarshal(guest, &fields); err != nil {
 		t.Fatal(err)
 	}
-	if len(fields) != 5 || string(fields["inode"]) != "123" || fields["uid"] != nil || fields["gid"] != nil || fields["mode"] != nil {
+	if len(fields) != 6 || fields["object"] == nil || string(fields["inode"]) != "123" || fields["uid"] != nil || fields["gid"] != nil || fields["mode"] != nil {
 		t.Fatalf("root ledger persisted view-specific metadata: %s", guest)
 	}
 	var decoded RootLedger

@@ -12,6 +12,8 @@ The guard revokes source mount loss, not per-entry changes on a still-live mount
 """
 
 import contextlib
+import base64
+import ctypes
 import errno
 import json
 import os
@@ -34,6 +36,18 @@ DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | NOFOLLOW
 NAME = re.compile(r"[a-z0-9](?:[-a-z0-9.]{0,251}[a-z0-9])?\Z")
 UID = re.compile(r"[a-zA-Z0-9][-a-zA-Z0-9_.]{0,127}\Z")
 CONTAINER = re.compile(r"[a-f0-9]{64}\Z")
+
+
+class FileHandle(ctypes.Structure):
+    _fields_ = [("size", ctypes.c_uint32), ("type", ctypes.c_int),
+                ("handle", ctypes.c_ubyte * 128)]
+
+
+NAME_TO_HANDLE = getattr(ctypes.CDLL(None, use_errno=True), "name_to_handle_at", None)
+if NAME_TO_HANDLE is not None:
+    NAME_TO_HANDLE.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.POINTER(FileHandle),
+                              ctypes.POINTER(ctypes.c_int), ctypes.c_int]
+    NAME_TO_HANDLE.restype = ctypes.c_int
 
 
 class Denied(Exception):
@@ -598,12 +612,25 @@ def metadata(fd, wanted):
             (wanted["uid"], wanted["gid"], int(wanted["mode"], 8)), "actual mounted retained metadata differs")
 
 
+
+def object_identity(fd):
+    require(NAME_TO_HANDLE is not None, "generation-bearing filesystem identity unavailable")
+    handle = FileHandle()
+    handle.size = 128
+    mount_id = ctypes.c_int()
+    result = NAME_TO_HANDLE(fd, b"", ctypes.byref(handle), ctypes.byref(mount_id), 0x1000)
+    require(result == 0, "generation-bearing filesystem identity unavailable: " + os.strerror(ctypes.get_errno()))
+    require(0 < handle.type < 255 and 0 < handle.size <= 128, "unsupported filesystem object handle")
+    return {"type": handle.type,
+            "handle": base64.b64encode(bytes(handle.handle[:handle.size])).decode("ascii")}
+
 def root_receipt(rootfd, node):
     root = node["root"]
     ledger = decode(file_at(rootfd, root["marker"], (root["uid"], root["gid"])), "root identity ledger")
     require(ledger.get("version") == 1 and ledger.get("id") == root["id"]
             and ledger.get("source") == root["source"]
-            and type(ledger.get("inode")) is int and ledger["inode"] == os.fstat(rootfd).st_ino,
+            and type(ledger.get("inode")) is int and ledger["inode"] == os.fstat(rootfd).st_ino
+            and ledger.get("object") == object_identity(rootfd),
             "actual root ledger identity differs")
     metadata(rootfd, root)
     return ledger
@@ -613,7 +640,8 @@ def application_identity(rootfd, appfd, node, name, entry):
     root = node["root"]
     ledger = root_receipt(rootfd, node)
     require(ledger.get("entries", {}).get(name) ==
-            {"id": entry["id"], "state": "established", "inode": os.fstat(appfd).st_ino},
+            {"id": entry["id"], "state": "established", "inode": os.fstat(appfd).st_ino,
+             "object": object_identity(appfd)},
             "actual root ledger has no established selected identity")
     for fd, wanted in ((rootfd, root), (appfd, entry)):
         metadata(fd, wanted)

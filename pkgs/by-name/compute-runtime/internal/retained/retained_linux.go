@@ -18,6 +18,19 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// Export handles include the filesystem's object generation, unlike st_ino.
+func directoryIdentity(fd int) (ObjectIdentity, error) {
+	handle, _, err := unix.NameToHandleAt(fd, "", unix.AT_EMPTY_PATH)
+	if err != nil {
+		return ObjectIdentity{}, fmt.Errorf("generation-bearing filesystem object identity unavailable: %w", err)
+	}
+	object := ObjectIdentity{Type: handle.Type(), Handle: handle.Bytes()}
+	if !object.valid() {
+		return ObjectIdentity{}, errors.New("filesystem returned an unsupported object handle")
+	}
+	return object, nil
+}
+
 // Validate checks the root and either one selected entry or every declaration.
 // It takes no lock and opens no file for writing.
 func Validate(spec Spec, entry string) error {
@@ -177,6 +190,10 @@ func operateRoot(parent int, base string, root Root, adopt bool) error {
 	if err := matchSource(fd, root.Source, 0); err != nil {
 		return fmt.Errorf("root source: %w", err)
 	}
+	object, err := directoryIdentity(fd)
+	if err != nil {
+		return err
+	}
 	var existing RootLedger
 	err = readLedger(fd, root, &existing)
 	if err == nil {
@@ -186,16 +203,18 @@ func operateRoot(parent int, base string, root Root, adopt bool) error {
 		if err := checkLedger(existing, root); err != nil {
 			return err
 		}
-		if existing.Inode == inode {
+		if existing.Inode == inode && existing.Object.equal(object) {
 			return nil
 		}
 		existing.Inode = inode
+		existing.Object = object
 		return writeLedger(fd, root, &existing, true)
 	}
 	if !errors.Is(err, unix.ENOENT) {
 		return fmt.Errorf("existing root ledger cannot be adopted or overwritten: %w", err)
 	}
 	ledger := newLedger(root, inode)
+	ledger.Object = object
 	return writeLedger(fd, root, &ledger, false)
 }
 
@@ -213,6 +232,7 @@ func operateEntry(rootFD int, root Root, ledger *RootLedger, name string, entry 
 		return errors.New("entry identity is already reserved or established; refusing replay after possible state loss")
 	}
 	var inode uint64
+	var object ObjectIdentity
 	fd, err := openChild(rootFD, name)
 	if !adopt {
 		if err == nil {
@@ -231,7 +251,11 @@ func operateEntry(rootFD int, root Root, ledger *RootLedger, name string, entry 
 		if err != nil {
 			return err
 		}
-		if reserved && known.State == "established" && known.Inode == inode {
+		object, err = directoryIdentity(fd)
+		if err != nil {
+			return err
+		}
+		if reserved && known.State == "established" && known.Inode == inode && known.Object.equal(object) {
 			return nil
 		}
 	}
@@ -240,7 +264,7 @@ func operateEntry(rootFD int, root Root, ledger *RootLedger, name string, entry 
 	}
 	// Reserve durably before mkdir or adopting a physical inode. A crash, even before
 	// mkdir, cannot authorize fresh empty state on the next provision attempt.
-	ledger.Entries[name] = EstablishedEntry{ID: entry.ID, Inode: inode, State: "pending"}
+	ledger.Entries[name] = EstablishedEntry{ID: entry.ID, Inode: inode, Object: object, State: "pending"}
 	if err := writeLedger(rootFD, root, ledger, true); err != nil {
 		return fmt.Errorf("reserving entry identity: %w", err)
 	}
@@ -264,12 +288,16 @@ func operateEntry(rootFD int, root Root, ledger *RootLedger, name string, entry 
 	if err != nil {
 		return err
 	}
+	object, err = directoryIdentity(fd)
+	if err != nil {
+		return err
+	}
 	if adopt {
 		if err := unix.Fsync(fd); err != nil {
 			return fmt.Errorf("entry is pending; directory sync failed: %w", err)
 		}
 	}
-	ledger.Entries[name] = EstablishedEntry{ID: entry.ID, Inode: inode, State: "established"}
+	ledger.Entries[name] = EstablishedEntry{ID: entry.ID, Inode: inode, Object: object, State: "established"}
 	if err := writeLedger(rootFD, root, ledger, true); err != nil {
 		return fmt.Errorf("entry establishment sync failed; explicit adopt may be required: %w", err)
 	}
@@ -294,16 +322,23 @@ func validateRoot(fd int, root Root) (RootLedger, error) {
 	if ledger.Inode != inode {
 		return ledger, errors.New("root inode differs from its ledger; copied markers cannot establish replacement state")
 	}
+	object, err := directoryIdentity(fd)
+	if err != nil {
+		return ledger, err
+	}
+	if !ledger.Object.equal(object) {
+		return ledger, errors.New("root filesystem object differs from its ledger; refusing recycled inode or copied state")
+	}
 	return ledger, nil
 }
 
 func checkLedger(ledger RootLedger, root Root) error {
-	if ledger.Version != Version || ledger.ID != root.ID || ledger.Inode == 0 || ledger.Source != root.Source || ledger.Entries == nil || len(ledger.Entries) > maxEntries {
+	if ledger.Version != Version || ledger.ID != root.ID || ledger.Inode == 0 || !ledger.Object.valid() || ledger.Source != root.Source || ledger.Entries == nil || len(ledger.Entries) > maxEntries {
 		return errors.New("root ledger conflicts with the declared root identity or source")
 	}
 	ids := make(map[string]bool, len(ledger.Entries))
 	for name, entry := range ledger.Entries {
-		if !basename(name) || name == root.Marker || !identity(entry.ID) || entry.ID == root.ID || ids[entry.ID] || (entry.State != "pending" && entry.State != "established") || (entry.State == "established" && entry.Inode == 0) {
+		if !basename(name) || name == root.Marker || !identity(entry.ID) || entry.ID == root.ID || ids[entry.ID] || (entry.State != "pending" && entry.State != "established") || (entry.State == "established" && (entry.Inode == 0 || !entry.Object.valid())) {
 			return errors.New("root ledger contains an invalid or conflicting established identity")
 		}
 		ids[entry.ID] = true
@@ -327,6 +362,13 @@ func validateEntry(rootFD int, root Root, ledger RootLedger, name string, entry 
 	}
 	if record.Inode != inode {
 		return errors.New("entry inode differs from its established ledger; refusing replacement state")
+	}
+	object, err := directoryIdentity(fd)
+	if err != nil {
+		return err
+	}
+	if !record.Object.equal(object) {
+		return errors.New("entry filesystem object differs from its established ledger; refusing recycled inode")
 	}
 	return nil
 }
