@@ -14,6 +14,10 @@ recovery = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = recovery
 spec.loader.exec_module(recovery)
 
+# Exercise real signal delivery and elapsed grace without spending the production
+# 30-second bound on each TERM-resistant child. Keep the graceful child real too.
+recovery._BOOTSTRAP_STOP_GRACE = 3
+
 
 def pods(reason, message, namespace="argocd", deleting=False):
     return {"items": [{"metadata": {"namespace": namespace, "deletionTimestamp": "retiring" if deleting else None},
@@ -85,9 +89,10 @@ try:
             recovery.stop_owned_bootstrap(owned)
             elapsed = time.monotonic() - started
             if child_script == child:
-                assert 30 <= elapsed < 45, "live TERM-resistant child did not receive the full bounded grace"
+                assert recovery._BOOTSTRAP_STOP_GRACE <= elapsed < recovery._BOOTSTRAP_STOP_GRACE + 15, (
+                    "live TERM-resistant child did not receive the full bounded grace")
             else:
-                assert elapsed < 15, "empty owned group consumed the remaining cleanup grace"
+                assert elapsed < recovery._BOOTSTRAP_STOP_GRACE, "empty owned group consumed the remaining cleanup grace"
                 if expect_cleanup:
                     assert elapsed >= 1, "graceful child cleanup was cut short"
             assert owned.returncode is not None
