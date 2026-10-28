@@ -40,6 +40,16 @@ let
     alertname = name;
     exp_alerts = alerts;
   };
+  # Inspect the engine's own remote-written state, without pinning annotation
+  # wording or supplying synthetic ALERTS inputs. Keep every object/static label.
+  expectFiring = evalTime: name: identities: {
+    eval_time = evalTime;
+    expr = ''label_del(ALERTS{alertgroup="host-storage",alertname="${name}",alertstate="firing"}, "__name__", "alertgroup", "alertname", "alertstate")'';
+    exp_samples = map (labels: {
+      labels = "{${labelString labels}}";
+      value = 1;
+    }) identities;
+  };
   # Fresh textfile modification times: each sample equals its own time.
   freshMtime =
     file:
@@ -478,68 +488,497 @@ let
             severity = "critical";
           } "Required mount /srv/media/data on ${hostName} is not mounted.")
         ])
-        (expect "29m" "host-storage" "HostFilesystemLowSpace" [ ])
-        (expect "31m" "host-storage" "HostFilesystemLowSpace" [
-          (alert (
+      ];
+      metricsql_expr_test = [
+        (expectFiring "29m" "HostFilesystemLowSpace" [ ])
+        (expectFiring "31m" "HostFilesystemLowSpace" [
+          (
             nodeLabels
             // {
               mountpoint = "/mnt/storage-clear/media4";
               fstype = "xfs";
               severity = "warning";
             }
-          ) "/mnt/storage-clear/media4 on ${hostName} has 8% free.")
-          (alert (
+          )
+          (
             nodeLabels
             // {
               mountpoint = "/persist";
               fstype = "zfs";
               severity = "warning";
             }
-          ) "/persist on ${hostName} has 4% free.")
-          (alert (
+          )
+          (
             nodeLabels
             // {
               mountpoint = "/persist";
               fstype = "zfs";
               severity = "critical";
             }
-          ) "/persist on ${hostName} has 4% free.")
+          )
         ])
       ];
     }
-    {
-      name = "a missing host source fires, and a firing pool alert holds while it is gone";
-      interval = "30s";
-      input_series = upFor allJobs ++ [
-        (series "up" nodeLabels "1x10 0x200")
-        (series "homelab_zpool_healthy" (nodeLabels // { pool = "rpool"; }) "0x10")
-      ];
-      alert_rule_test = [
-        (expect "4m" "host-storage" "HostZpoolUnhealthy" [
-          (alert (
-            nodeLabels
+    (
+      let
+        pool = name: nodeLabels // { pool = name; };
+        firing = names: map (name: pool name // { severity = "critical"; }) names;
+      in
+      {
+        name = "a missing host source fires; pool faults survive 180 minutes and only matching recovery clears them";
+        interval = "1m";
+        input_series = upFor allJobs ++ [
+          (series "up" nodeLabels "1x5 0x395")
+          # Fault at 0m, no host data after 5m, rpool alone recovers at 201m.
+          (series "homelab_zpool_healthy" (pool "rpool") "0x5 stale _x194 1x2 stale")
+          (series "homelab_zpool_healthy" (pool "backup") "0x5 stale")
+          (series "homelab_zpool_healthy" (pool "healthy-only") "1x5 stale")
+        ];
+        alert_rule_test = [
+          (expect "11m" "missing-telemetry" "TelemetrySourceDown" [
+            (alert (
+              nodeLabels // { severity = "critical"; }
+            ) "Host telemetry host-node on ${hostName} is not reporting.")
+          ])
+        ];
+        metricsql_expr_test = [
+          (expectFiring "4m" "HostZpoolUnhealthy" (firing [
+            "rpool"
+            "backup"
+          ]))
+          (expectFiring "130m" "HostZpoolUnhealthy" (firing [
+            "rpool"
+            "backup"
+          ]))
+          (expectFiring "180m" "HostZpoolUnhealthy" (firing [
+            "rpool"
+            "backup"
+          ]))
+          (expectFiring "201m30s" "HostZpoolUnhealthy" (firing [ "backup" ]))
+          # Recovered rpool must not resurrect after its healthy input also expires.
+          (expectFiring "400m" "HostZpoolUnhealthy" (firing [ "backup" ]))
+        ];
+      }
+    )
+    (
+      let
+        devices =
+          lib.concatMap
+            (
+              vdev:
+              map
+                (
+                  type:
+                  nodeLabels
+                  // {
+                    pool = "rpool";
+                    inherit vdev type;
+                  }
+                )
+                [
+                  "read"
+                  "write"
+                  "checksum"
+                ]
+            )
+            [
+              "rpool-a"
+              "rpool-b"
+            ];
+        first = labels: labels.vdev == "rpool-a" && labels.type == "read";
+        firing = labels: labels // { severity = "critical"; };
+      in
+      {
+        name = "vdev errors retain each pool/device/error-type identity until its own zero";
+        interval = "1m";
+        input_series = map (
+          labels:
+          series "homelab_zpool_vdev_errors" labels (
+            if first labels then "3x5 stale _x194 0x2 stale" else "3x5 stale _x214 0x2 stale"
+          )
+        ) devices;
+        metricsql_expr_test = [
+          (expectFiring "4m" "HostZpoolDeviceErrors" (map firing devices))
+          (expectFiring "130m" "HostZpoolDeviceErrors" (map firing devices))
+          (expectFiring "180m" "HostZpoolDeviceErrors" (map firing devices))
+          (expectFiring "201m30s" "HostZpoolDeviceErrors" (
+            map firing (builtins.filter (labels: !(first labels)) devices)
+          ))
+          (expectFiring "221m30s" "HostZpoolDeviceErrors" [ ])
+          (expectFiring "400m" "HostZpoolDeviceErrors" [ ])
+        ];
+      }
+    )
+    (
+      let
+        pool = nodeLabels // {
+          pool = "rpool";
+        };
+        firing = [ (pool // { severity = "critical"; }) ];
+      in
+      {
+        name = "scrub errors survive missing data, scanning and idle/cancelled scrubs; only FINISHED zero recovers";
+        interval = "1m";
+        input_series = [
+          # The producer emits errors/end_time only for FINISHED scrubs.
+          (series "homelab_zpool_scrub_errors" pool "3x5 stale _x214 0x2 stale")
+          (series "homelab_zpool_scrub_end_time_seconds" pool
+            "${toString start}x5 stale _x214 ${toString (start + 221 * 60)}x2 stale"
+          )
+          # SCANNING at 201m, idle/cancelled at 211m: neither supplies errors=0.
+          (series "homelab_zpool_scrub_active" pool "0x5 stale _x194 1x2 stale _x6 0x2 stale _x6 0x2 stale")
+        ];
+        metricsql_expr_test = [
+          (expectFiring "4m" "HostZpoolScrubErrors" firing)
+          (expectFiring "130m" "HostZpoolScrubErrors" firing)
+          (expectFiring "180m" "HostZpoolScrubErrors" firing)
+          (expectFiring "202m" "HostZpoolScrubErrors" firing)
+          (expectFiring "212m" "HostZpoolScrubErrors" firing)
+          (expectFiring "221m30s" "HostZpoolScrubErrors" [ ])
+          (expectFiring "400m" "HostZpoolScrubErrors" [ ])
+        ];
+      }
+    )
+    (
+      let
+        pool = nodeLabels // {
+          pool = "rpool";
+        };
+        firing = [ (pool // { severity = "warning"; }) ];
+      in
+      {
+        name = "overdue scrub survives the three-day source window, then completion and another three-day absence do not resurrect it";
+        interval = "1m";
+        input_series = [
+          # Recovery at 74h, after the last old sample has been absent >3 days.
+          (series "homelab_zpool_scrub_end_time_seconds" pool
+            "${toString (start - 36 * 86400)}x5 stale _x4433 ${toString (start + 74 * 3600)}x2 stale"
+          )
+        ];
+        metricsql_expr_test = [
+          (expectFiring "59m" "HostZpoolScrubOverdue" [ ])
+          (expectFiring "61m" "HostZpoolScrubOverdue" firing)
+          (expectFiring "130m" "HostZpoolScrubOverdue" firing)
+          (expectFiring "180m" "HostZpoolScrubOverdue" firing)
+          (expectFiring "73h" "HostZpoolScrubOverdue" firing)
+          (expectFiring "74h30s" "HostZpoolScrubOverdue" [ ])
+          (expectFiring "148h" "HostZpoolScrubOverdue" [ ])
+        ];
+      }
+    )
+    (
+      let
+        disk = nodeLabels // {
+          disk = "media4";
+          id = baseNameOf hvn.disks.media4;
+        };
+        warnings = [
+          {
+            metric = "homelab_smart_scsi_grown_defects";
+            signal = "scsi-grown-defects";
+          }
+          {
+            metric = "homelab_smart_ata_pending_sectors";
+            signal = "ata-pending-sectors";
+          }
+          {
+            metric = "homelab_smart_ata_reallocated_sectors";
+            signal = "ata-reallocated-sectors";
+          }
+          {
+            metric = "homelab_smart_nvme_media_errors";
+            signal = "nvme-media-errors";
+          }
+        ];
+        critical =
+          signal:
+          disk
+          // {
+            inherit signal;
+            severity = "critical";
+          };
+        warning =
+          input:
+          disk
+          // {
+            inherit (input) signal;
+            severity = "warning";
+          };
+        warningAlerts = map warning warnings;
+        nvme = critical "nvme-critical-warning";
+      in
+      {
+        name = "SMART health, NVMe critical warning and all four growth signals retain independent sparse-input state";
+        interval = "1m";
+        input_series = [
+          (series "up" nodeLabels "1x400")
+          (series "homelab_smart_healthy" disk "0x5 stale _x194 1x2 stale _x6 1x2 stale _x6 1x2 stale")
+          (series "homelab_smart_device_up" disk "1x5 stale _x194 1x2 stale _x6 1x2 stale _x6 1x2 stale")
+          (series "node_textfile_mtime_seconds" (nodeLabels // { file = "/run/host-telemetry/smart.prom"; })
+            "${toString start}x2 ${toString (start + 3 * 60)}x2 stale _x194 ${toString (start + 201 * 60)}x2 stale _x6 ${toString (start + 211 * 60)}x2 stale _x6 ${toString (start + 221 * 60)}x2 stale"
+          )
+          (series "homelab_smart_nvme_critical_warning" disk "4x5 stale _x214 0x2 stale")
+        ]
+        ++ map (
+          input:
+          # Three scrapes at 201–203m still represent only one physical run.
+          # Only SCSI is present in the 211m run; the other sparse counters
+          # must not borrow that file update as a successful collection.
+          series input.metric disk (
+            "0x2 1x2 stale _x194 1x2 stale "
+            + (if input.signal == "scsi-grown-defects" then "_x6" else "_x16")
+            + " 1x2 stale"
+          )
+        ) warnings;
+        metricsql_expr_test = [
+          (expectFiring "4m" "HostDiskSmartFailing" (
+            [
+              (critical "health")
+              nvme
+            ]
+            ++ warningAlerts
+          ))
+          (expectFiring "130m" "HostDiskSmartFailing" (
+            [
+              (critical "health")
+              nvme
+            ]
+            ++ warningAlerts
+          ))
+          (expectFiring "180m" "HostDiskSmartFailing" (
+            [
+              (critical "health")
+              nvme
+            ]
+            ++ warningAlerts
+          ))
+          (expectFiring "201m30s" "HostDiskSmartFailing" ([ nvme ] ++ warningAlerts))
+          (expectFiring "203m30s" "HostDiskSmartFailing" ([ nvme ] ++ warningAlerts))
+          (expectFiring "211m30s" "HostDiskSmartFailing" (
+            [ nvme ] ++ map warning (builtins.filter (input: input.signal != "scsi-grown-defects") warnings)
+          ))
+          (expectFiring "221m30s" "HostDiskSmartFailing" [ ])
+          (expectFiring "400m" "HostDiskSmartFailing" [ ])
+        ];
+      }
+    )
+    (
+      let
+        disk = nodeLabels // {
+          disk = "media4";
+          id = baseNameOf hvn.disks.media4;
+        };
+        sibling = nodeLabels // {
+          disk = "spare-c";
+          id = "synthetic-spare";
+        };
+        firing = [
+          (
+            disk
             // {
-              pool = "rpool";
-              severity = "critical";
+              severity = "warning";
+              signal = "scsi-grown-defects";
             }
-          ) "ZFS pool rpool on ${hostName} is not ONLINE.")
-        ])
-        (expect "11m" "missing-telemetry" "TelemetrySourceDown" [
-          (alert (
-            nodeLabels // { severity = "critical"; }
-          ) "Host telemetry host-node on ${hostName} is not reporting.")
-        ])
-        (expect "60m" "host-storage" "HostZpoolUnhealthy" [
-          (alert (
-            nodeLabels
+          )
+        ];
+      in
+      {
+        name = "a stopped SMART producer cannot recover through repeated scrapes, another disk's publication or one physical collection";
+        interval = "1m";
+        input_series = [
+          (series "up" nodeLabels "1x400")
+          # The exporter keeps scraping old counter=1 until 149m, but its
+          # physical producer has not published again since 3m.
+          (series "homelab_smart_scsi_grown_defects" disk "0x2 1x146 stale _x9 1x240")
+          (series "homelab_smart_healthy" disk "1x149 stale _x9 1x240")
+          # At 150m a new global file has a healthy sibling but this disk is
+          # unread. Its first actual success is 160m; the second is 175m.
+          (series "homelab_smart_device_up" disk "1x149 0x9 1x240")
+          (series "homelab_smart_scsi_grown_defects" sibling "0x400")
+          (series "homelab_smart_healthy" sibling "1x400")
+          (series "homelab_smart_device_up" sibling "1x400")
+          (series "node_textfile_mtime_seconds" (nodeLabels // { file = "/run/host-telemetry/smart.prom"; })
+            "${toString start}x2 ${toString (start + 3 * 60)}x146 ${toString (start + 150 * 60)}x9 ${toString (start + 160 * 60)}x14 ${toString (start + 175 * 60)}x225"
+          )
+        ];
+        metricsql_expr_test = [
+          (expectFiring "4m" "HostDiskSmartFailing" firing)
+          (expectFiring "130m" "HostDiskSmartFailing" firing)
+          (expectFiring "149m" "HostDiskSmartFailing" firing)
+          (expectFiring "150m30s" "HostDiskSmartFailing" firing)
+          # Old run=3m remains in the query's historical samples, but it is
+          # not a recent physical baseline for the first post-gap run=160m.
+          (expectFiring "160m30s" "HostDiskSmartFailing" firing)
+          (expectFiring "174m" "HostDiskSmartFailing" firing)
+          (expectFiring "175m30s" "HostDiskSmartFailing" [ ])
+          (expectFiring "180m" "HostDiskSmartFailing" [ ])
+          (expectFiring "400m" "HostDiskSmartFailing" [ ])
+        ];
+      }
+    )
+    (
+      let
+        disk = nodeLabels // {
+          disk = "media4";
+          id = baseNameOf hvn.disks.media4;
+        };
+        firing = [
+          (
+            disk
             // {
-              pool = "rpool";
-              severity = "critical";
+              severity = "warning";
+              signal = "scsi-grown-defects";
             }
-          ) "ZFS pool rpool on ${hostName} is not ONLINE.")
-        ])
-      ];
-    }
+          )
+        ];
+      in
+      {
+        name = "negative counters from distinct successful SMART publications cannot recover a held growth fault";
+        interval = "1m";
+        input_series = [
+          (series "up" nodeLabels "1x400")
+          (series "homelab_smart_device_up" disk "1x400")
+          # Growth fires at 3m, then its raw evidence expires. Successful
+          # physical runs at 160m and 175m decline into negative sentinels.
+          (series "homelab_smart_scsi_grown_defects" disk
+            "0x2 1x2 stale _x153 -1x2 stale _x11 -2x2 stale _x131 0x2 stale _x11 0x2 stale"
+          )
+          (series "node_textfile_mtime_seconds" (nodeLabels // { file = "/run/host-telemetry/smart.prom"; })
+            "${toString start}x2 ${toString (start + 3 * 60)}x2 stale _x153 ${toString (start + 160 * 60)}x2 stale _x11 ${toString (start + 175 * 60)}x2 stale _x131 ${toString (start + 310 * 60)}x2 stale _x11 ${toString (start + 325 * 60)}x2 stale"
+          )
+        ];
+        metricsql_expr_test = [
+          (expectFiring "4m" "HostDiskSmartFailing" firing)
+          (expectFiring "130m" "HostDiskSmartFailing" firing)
+          (expectFiring "160m30s" "HostDiskSmartFailing" firing)
+          (expectFiring "175m30s" "HostDiskSmartFailing" firing)
+          (expectFiring "180m" "HostDiskSmartFailing" firing)
+          # Negative publications cannot serve as a healthy baseline either.
+          # Two later nonnegative runs establish the real no-growth recovery.
+          (expectFiring "310m30s" "HostDiskSmartFailing" firing)
+          (expectFiring "324m" "HostDiskSmartFailing" firing)
+          (expectFiring "325m30s" "HostDiskSmartFailing" [ ])
+          (expectFiring "400m" "HostDiskSmartFailing" [ ])
+        ];
+      }
+    )
+    (
+      let
+        fs = nodeLabels // {
+          mountpoint = "/persist";
+          fstype = "zfs";
+          device = "rpool/persist";
+        };
+        warning = fs // {
+          severity = "warning";
+        };
+        critical = fs // {
+          severity = "critical";
+        };
+      in
+      {
+        name = "filesystem recovery requires coherent positive-size samples; 8 percent clears only critical";
+        interval = "1m";
+        input_series = [
+          # Fault lasts long enough to satisfy both 30-minute holds, then all
+          # source data disappears. Availability alone returns at 201m.
+          (series "node_filesystem_avail_bytes" fs
+            "4x35 stale _x164 20x2 stale _x6 20x2 stale _x16 8x2 stale _x6 20x2 stale"
+          )
+          # Zero size at 211m cannot recover. Size alone at 221m must not combine
+          # with availability from 213m. Coherent 8% at 231m, then 20% at 241m.
+          (series "node_filesystem_size_bytes" fs
+            "100x35 stale _x174 0x2 stale _x6 100x2 stale _x6 100x2 stale _x6 100x2 stale"
+          )
+        ];
+        metricsql_expr_test = [
+          (expectFiring "29m" "HostFilesystemLowSpace" [ ])
+          (expectFiring "31m" "HostFilesystemLowSpace" [
+            warning
+            critical
+          ])
+          (expectFiring "130m" "HostFilesystemLowSpace" [
+            warning
+            critical
+          ])
+          (expectFiring "180m" "HostFilesystemLowSpace" [
+            warning
+            critical
+          ])
+          (expectFiring "202m" "HostFilesystemLowSpace" [
+            warning
+            critical
+          ])
+          (expectFiring "212m" "HostFilesystemLowSpace" [
+            warning
+            critical
+          ])
+          (expectFiring "222m" "HostFilesystemLowSpace" [
+            warning
+            critical
+          ])
+          (expectFiring "231m30s" "HostFilesystemLowSpace" [ warning ])
+          (expectFiring "241m30s" "HostFilesystemLowSpace" [ ])
+          (expectFiring "400m" "HostFilesystemLowSpace" [ ])
+        ];
+      }
+    )
+    (
+      let
+        pool = nodeLabels // {
+          pool = "healthy-only";
+        };
+        disk = nodeLabels // {
+          disk = "healthy-only";
+          id = "healthy-only";
+        };
+        fs = nodeLabels // {
+          mountpoint = "/healthy-only";
+          fstype = "xfs";
+          device = "/dev/healthy-only";
+        };
+        families = [
+          "HostZpoolUnhealthy"
+          "HostZpoolDeviceErrors"
+          "HostZpoolScrubErrors"
+          "HostZpoolScrubOverdue"
+          "HostDiskSmartFailing"
+          "HostFilesystemLowSpace"
+        ];
+      in
+      {
+        name = "empty startup and healthy-only storage followed by missing data never invent faults";
+        interval = "1m";
+        input_series = [
+          (series "homelab_zpool_healthy" pool "_x10 1x5 stale")
+          (series "homelab_zpool_vdev_errors" (
+            pool
+            // {
+              vdev = "healthy-only";
+              type = "read";
+            }
+          ) "_x10 0x5 stale")
+          (series "homelab_zpool_scrub_errors" pool "_x10 0x5 stale")
+          (series "homelab_zpool_scrub_end_time_seconds" pool "_x10 ${toString start}x5 stale")
+          (series "homelab_smart_healthy" disk "_x10 1x5 stale")
+          (series "homelab_smart_nvme_critical_warning" disk "_x10 0x5 stale")
+          (series "node_filesystem_avail_bytes" fs "_x10 20x5 stale")
+          (series "node_filesystem_size_bytes" fs "_x10 100x5 stale")
+        ]
+        ++ map (metric: series metric disk "_x10 0x5 stale") [
+          "homelab_smart_scsi_grown_defects"
+          "homelab_smart_ata_pending_sectors"
+          "homelab_smart_ata_reallocated_sectors"
+          "homelab_smart_nvme_media_errors"
+        ];
+        metricsql_expr_test = lib.concatMap (time: map (name: expectFiring time name [ ]) families) [
+          "4m"
+          "14m"
+          "180m"
+          "400m"
+        ];
+      }
+    )
     {
       name = "a scrape job that vanishes from discovery fires through absent(up)";
       interval = "30s";
