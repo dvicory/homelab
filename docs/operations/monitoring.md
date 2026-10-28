@@ -56,9 +56,13 @@ issue or chat.
 4. **Secrets.** Supply the five delivery values through the
    [runtime-secret flow](../operations.md#runtime-secret-references), then
    rekey and commit the encrypted files.
-5. **Deploy** `hvn-hyp1` through the
-   [host deployment procedure](../operations.md#deploy-configuration),
-   then let Argo CD sync.
+5. **Stage the host before Argo rollout.** With separate deployment approval,
+   activate the host declarations, runtime-secret staging and retained metrics
+   path before releasing the main-tracking Applications. The generated
+   [deployment guidance](../operations.md#deploy-configuration) covers source
+   generation and Argo reconciliation; it is not a host switch command.
+   If staging is incomplete, hold the root and affected identity,
+   identity-gateway and monitoring Applications, not monitoring alone.
 
 ## Runtime Secrets
 

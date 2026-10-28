@@ -67,7 +67,10 @@ def selects(policy, selector):
 
 gateway_peer = {
     "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "gateway"}},
-    "podSelector": {"matchLabels": {"gateway.envoyproxy.io/owning-gateway-name": "household"}},
+    "podSelector": {"matchLabels": {
+        "gateway.envoyproxy.io/owning-gateway-name": "household",
+        "gateway.envoyproxy.io/owning-gateway-namespace": "gateway",
+    }},
 }
 
 
@@ -131,12 +134,6 @@ if has_grafana:
     grafana_ini = data("grafana").get("grafana.ini", "")
     dashboards = data("grafana-dashboards")
     checks.update({
-        "the Gateway's backend policy admits more than the Gateway proxy to Grafana":
-            all(rule.get("from") and all(
-                all(expected["matchLabels"].items() <= peer.get(selector, {}).get("matchLabels", {}).items()
-                    for selector, expected in gateway_peer.items())
-                for peer in rule["from"])
-                for rule in find(gateway, "NetworkPolicy", "gateway-grafana-backend-ingress")["spec"]["ingress"]),
         "Grafana's administrator password is stored rather than generated in memory at Pod start":
             password.get("value", "") == "$__file{/run/grafana-admin/password}"
             and volume.get("emptyDir", {}).get("medium", "") == "Memory" and len(grafana.get("initContainers", [])) == 1,

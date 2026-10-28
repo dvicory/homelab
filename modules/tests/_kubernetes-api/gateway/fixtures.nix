@@ -16,7 +16,7 @@ let
     (import ../../../den/aspects/kubernetes/services/identity.nix { inherit config inputs lib; })
     .den.aspects.kubernetes.services.identity;
   fixtureCluster = cluster // {
-    routes = lib.getAttrs [ "argocd" "idm" ] cluster.routes // {
+    routes = lib.getAttrs [ "argocd" "grafana" "idm" ] cluster.routes // {
       # Keep the synthetic browser origin out of the real Argo controller's
       # Service/endpoints in the shared fixture.
       argocd = cluster.routes.argocd // {
@@ -336,7 +336,9 @@ in
     nodePort = cluster.ingress.nodePort;
     idmHost = builtins.head cluster.routes.idm.hostnames;
     adminHost = builtins.head cluster.routes.argocd.hostnames;
-    hostnames = cluster.routes.idm.hostnames ++ cluster.routes.argocd.hostnames;
+    grafanaHost = builtins.head cluster.routes.grafana.hostnames;
+    hostnames =
+      cluster.routes.idm.hostnames ++ cluster.routes.argocd.hostnames ++ cluster.routes.grafana.hostnames;
     toolsImage = "${toolsImage.imageName}:${toolsImage.imageTag}";
     registryImages = [
       (renderGateway fixtureCluster)
@@ -399,12 +401,22 @@ in
           kind = "Namespace";
           metadata.name = fixtureCluster.routes.argocd.namespace;
         }
+        {
+          apiVersion = "v1";
+          kind = "Namespace";
+          metadata.name = fixtureCluster.routes.grafana.namespace;
+        }
         (originDeployment "origin" { app = "origin"; })
         (originService "origin" "origin" 8080 { app = "origin"; })
         (originDeployment fixtureCluster.routes.argocd.namespace fixtureCluster.routes.argocd.backendPodSelector)
         (originService fixtureCluster.routes.argocd.namespace fixtureCluster.routes.argocd.service
           fixtureCluster.routes.argocd.port
           fixtureCluster.routes.argocd.backendPodSelector
+        )
+        (originDeployment fixtureCluster.routes.grafana.namespace fixtureCluster.routes.grafana.backendPodSelector)
+        (originService fixtureCluster.routes.grafana.namespace fixtureCluster.routes.grafana.service
+          fixtureCluster.routes.grafana.port
+          fixtureCluster.routes.grafana.backendPodSelector
         )
       ]
     );

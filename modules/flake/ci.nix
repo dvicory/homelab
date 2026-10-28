@@ -82,6 +82,10 @@ let
     "prod-home-manifests-schema"
     "prod-home-manifests-policy"
     "argocd-application-health"
+    "monitoring-contracts"
+    "monitoring-rules"
+    "monitoring-alertmanager"
+    "monitoring-secret-scan"
     "verification-reports"
   ];
   requiredKubernetesApplications = [
@@ -103,6 +107,12 @@ let
     "root-esp-mirror"
     "prod-home-replacement"
     "prod-home-consumer-resilience"
+    "host-telemetry-runtime"
+    "monitoring-k3s-runtime"
+    "monitoring-grafana-runtime"
+    "monitoring-heartbeat-ingestion-stop"
+    "monitoring-heartbeat-storage-read-only"
+    "monitoring-heartbeat-single-source-down"
   ];
   requiredNativeApplications = [
     "verify-kubernetes-api"
@@ -133,6 +143,7 @@ let
         ++ lib.optionals (lib.hasSuffix "-linux" system) [
           "prepare-luks-storage"
           "incus-mount-isolation-decisions"
+          "host-telemetry-converters"
         ]
         ++ lib.optional (system == "x86_64-linux") "prod-home-registry-failures";
       runtimeRequired =

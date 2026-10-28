@@ -45,12 +45,16 @@ positive:
       batch/v1/Job/identity/kanidm-provision: [provisioning-rbac-postsync, provisioner-system-pki]
       rbac.authorization.k8s.io/v1/Role/argocd/kanidm-client-secret-argocd-kanidm-oidc: [provisioning-secret-role]
       rbac.authorization.k8s.io/v1/Role/gateway/kanidm-client-secret-oidc-argocd: [provisioning-secret-role]
+      rbac.authorization.k8s.io/v1/Role/gateway/kanidm-client-secret-oidc-grafana: [provisioning-secret-role]
+      rbac.authorization.k8s.io/v1/Role/monitoring/kanidm-client-secret-grafana-oidc: [provisioning-secret-role]
       rbac.authorization.k8s.io/v1/Role/gateway/kanidm-client-secret-oidc-prowlarr: [provisioning-secret-role]
       rbac.authorization.k8s.io/v1/Role/gateway/kanidm-client-secret-oidc-radarr: [provisioning-secret-role]
       rbac.authorization.k8s.io/v1/Role/gateway/kanidm-client-secret-oidc-sabnzbd: [provisioning-secret-role]
       rbac.authorization.k8s.io/v1/Role/gateway/kanidm-client-secret-oidc-sonarr: [provisioning-secret-role]
       rbac.authorization.k8s.io/v1/RoleBinding/argocd/kanidm-client-secret-argocd-kanidm-oidc: [provisioning-secret-binding]
       rbac.authorization.k8s.io/v1/RoleBinding/gateway/kanidm-client-secret-oidc-argocd: [provisioning-secret-binding]
+      rbac.authorization.k8s.io/v1/RoleBinding/gateway/kanidm-client-secret-oidc-grafana: [provisioning-secret-binding]
+      rbac.authorization.k8s.io/v1/RoleBinding/monitoring/kanidm-client-secret-grafana-oidc: [provisioning-secret-binding]
       rbac.authorization.k8s.io/v1/RoleBinding/gateway/kanidm-client-secret-oidc-prowlarr: [provisioning-secret-binding]
       rbac.authorization.k8s.io/v1/RoleBinding/gateway/kanidm-client-secret-oidc-radarr: [provisioning-secret-binding]
       rbac.authorization.k8s.io/v1/RoleBinding/gateway/kanidm-client-secret-oidc-sabnzbd: [provisioning-secret-binding]
@@ -62,6 +66,8 @@ positive:
       gateway.envoyproxy.io/v1alpha1/Backend/identity/kanidm-oidc: [oidc-backend]
       gateway.networking.k8s.io/v1/BackendTLSPolicy/identity/kanidm-oidc-tls: [oidc-system-pki]
       gateway.networking.k8s.io/v1/HTTPRoute/gateway/argocd: [route-inventory, route-domain-placement, request-header-sanitizer,
+        route-timeouts]
+      gateway.networking.k8s.io/v1/HTTPRoute/gateway/grafana: [route-inventory, route-domain-placement, request-header-sanitizer,
         route-timeouts]
       gateway.networking.k8s.io/v1/HTTPRoute/gateway/prowlarr: [route-inventory, route-domain-placement, request-header-sanitizer,
         route-timeouts]
@@ -77,6 +83,7 @@ positive:
       networking.k8s.io/v1/NetworkPolicy/media/gateway-radarr-backend-ingress: [backend-isolation-shape]
       networking.k8s.io/v1/NetworkPolicy/media/gateway-sabnzbd-backend-ingress: [backend-isolation-shape]
       networking.k8s.io/v1/NetworkPolicy/media/gateway-sonarr-backend-ingress: [backend-isolation-shape]
+      networking.k8s.io/v1/NetworkPolicy/monitoring/gateway-grafana-backend-ingress: [backend-isolation-shape]
   - if: {mode: [trustedEdges]}
     applies:
       networking.k8s.io/v1/NetworkPolicy/gateway/private-origin: [private-origin-isolation]
@@ -86,6 +93,44 @@ positive:
         route-timeouts]
       networking.k8s.io/v1/NetworkPolicy/media/gateway-requests-backend-ingress: [backend-isolation-shape]
 scenarios:
+- name: grafana-hostname-wrong
+  base: gateway.networking.k8s.io/v1/HTTPRoute/gateway/grafana
+  mutate: .spec.hostnames = ["wrong.plus2.danielvicory.dev"]
+  fail: [route-inventory]
+- name: grafana-backend-wrong
+  base: gateway.networking.k8s.io/v1/HTTPRoute/gateway/grafana
+  mutate: .spec.rules[0].backendRefs[0].name = "alertmanager"
+  fail: [route-inventory]
+- name: grafana-backend-port-wrong
+  base: gateway.networking.k8s.io/v1/HTTPRoute/gateway/grafana
+  mutate: .spec.rules[0].backendRefs[0].port = 9093
+  fail: [route-inventory]
+- name: grafana-path-wrong
+  base: gateway.networking.k8s.io/v1/HTTPRoute/gateway/grafana
+  mutate: .spec.rules[0].matches[0].path.value = "/metrics"
+  fail: [route-inventory]
+- name: grafana-timeout-wrong
+  base: gateway.networking.k8s.io/v1/HTTPRoute/gateway/grafana
+  mutate: .spec.rules[0].timeouts.backendRequest = "1s"
+  fail: [route-timeouts]
+- name: grafana-backend-empty-ingress
+  base: networking.k8s.io/v1/NetworkPolicy/monitoring/gateway-grafana-backend-ingress
+  mutate: .spec.ingress = []
+  fail: [backend-isolation-shape]
+- name: grafana-route-published-during-provisioning
+  mutate: >-
+    .bundle.expected.cluster.settings.kubernetes.services.identity.phase = "provisioning" |
+    .bundle.resources |= map(select((.file | test("^identity-gateway/") | not)
+    or .object.metadata.name == "grafana" or .object.metadata.name == "grafana-admin"))
+  rules: [administrator-publication-atomic]
+  fail: [administrator-publication-atomic]
+- name: grafana-route-published-during-initial
+  mutate: >-
+    .bundle.expected.cluster.settings.kubernetes.services.identity.phase = "initial" |
+    .bundle.resources |= map(select((.file | test("^identity-gateway/") | not)
+    or .object.metadata.name == "grafana" or .object.metadata.name == "grafana-admin"))
+  rules: [administrator-publication-atomic]
+  fail: [administrator-publication-atomic]
 - name: provisioning-population-role-deleted
   variant: provisioning-initial-trustedEdges
   mutate: del(.bundle.resources[] | select(.object.kind == "Role" and .object.metadata.name == "kanidm-client-secret-oidc-argocd"))

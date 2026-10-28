@@ -86,30 +86,6 @@ Manage operator secrets with `agenix edit` and rekey under
 Never put plaintext credentials or recovery output in Git, Nix
 outputs, images, documentation, or logs.
 
-For a single-line credential that must not end in a newline, run this
-in Bash at the repository root, replacing `<source>` with its table
-entry. Input is hidden and kept out of command arguments; the temporary
-editor contains only commands, never the credential:
-
-```sh
-(
-  set +x
-  umask 077
-  editor=$(mktemp)
-  trap 'rm -f "$editor"' EXIT
-  cat >"$editor" <<'BASH'
-read -rsp 'Secret: ' value || exit 1
-printf '\n'
-printf '%s' "$value" > "$1"
-BASH
-  EDITOR="bash $editor" agenix edit ".secrets/hosts/compute-1/<source>.age"
-)
-```
-
-Run `agenix rekey`, track new encrypted sources with `jj file track`,
-and commit them before following the deployment procedure. Do not
-commit plaintext or invent replacement values for unavailable secrets.
-
 | Kubernetes Secret | Source -> key | Type |
 | --- | --- | --- |
 | `argocd/argocd-secret` | `argocd--argocd-secret--admin.password` → `admin.password`, `argocd--argocd-secret--admin.passwordMtime` → `admin.passwordMtime`, `argocd--argocd-secret--server.secretkey` → `server.secretkey` | `Opaque` |
@@ -268,5 +244,4 @@ over the replacement.
 - [`jellyfin`](operations/jellyfin.md)
 - [`luks-storage-migration`](operations/luks-storage-migration.md)
 - [`media`](operations/media.md)
-- [`monitoring`](operations/monitoring.md)
 

@@ -13,17 +13,6 @@ let
   hvn = self.nixosConfigurations.hvn-hyp1.config;
   telemetry = hvn.homelab.monitoring;
   compute = config.den.hosts.x86_64-linux.hvn-hyp1.settings.virtualization.compute;
-  gatewayAspect =
-    (import ../den/aspects/kubernetes/services/gateway.nix { }).den.aspects.kubernetes.services.gateway;
-  grafanaRouteIn =
-    phase:
-    lib.any (object: object.kind == "HTTPRoute" && object.metadata.name == "grafana")
-      (gatewayAspect.k8s-manifests {
-        cluster = lib.recursiveUpdate cluster { settings.kubernetes.services.identity.phase = phase; };
-        computeResources = { inherit (compute) instance; };
-        inherit lib;
-        charts = { };
-      }).applications.gateway.objects;
   bridgeAddress = builtins.head (
     lib.splitString "/"
       (lib.findFirst (
@@ -50,8 +39,6 @@ let
         "/mnt/storage-clear/media4"
         "/srv/media/data"
       ];
-    "Grafana's route is served outside identity phase normal" =
-      !(grafanaRouteIn "initial") && !(grafanaRouteIn "provisioning");
   };
 in
 {

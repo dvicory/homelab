@@ -10,6 +10,7 @@ apply() { k apply -f "$(setting "$1")"; }
 node_port=$(setting nodePort)
 idm=$(setting idmHost)
 admin=$(setting adminHost)
+grafana=$(setting grafanaHost)
 controller=gateway.envoyproxy.io/gatewayclass-controller
 # kubectl owns the bounded watch. The final assertion also binds conditions to
 # the actual controller/ancestor and current generation, never a stale True.
@@ -164,7 +165,7 @@ setup() {
   chmod 0644 "$g/idm.key"
   openssl req -new -newkey rsa:2048 -nodes -subj /CN=origin.test -keyout "$g/tls.key" -out "$g/tls.csr" >/dev/null 2>&1
   # The application certificate must not mask a missing identity certificate.
-  printf 'subjectAltName=DNS:origin.test,DNS:%s\nextendedKeyUsage=serverAuth\n' "$admin" > "$g/gateway.ext"
+  printf 'subjectAltName=DNS:origin.test,DNS:%s,DNS:%s\nextendedKeyUsage=serverAuth\n' "$admin" "$grafana" > "$g/gateway.ext"
   openssl x509 -req -in "$g/tls.csr" -CA "$g/ca.crt" -CAkey "$g/ca.key" -CAcreateserial -days 2 \
     -extfile "$g/gateway.ext" -out "$g/tls.crt" >/dev/null 2>&1
   k create configmap fixture-ca -n gateway --from-file="ca-certificates.crt=$g/ca.crt"
@@ -187,6 +188,7 @@ setup() {
   proxy_ready
   k rollout status deployment/origin -n origin --timeout=180s
   k rollout status deployment/origin -n gateway-admin-origin --timeout=180s
+  k rollout status deployment/origin -n monitoring --timeout=180s
   for peer in "$FIXTURE_TRUSTED" "$FIXTURE_STRANGER"; do
     d exec "$peer" /bin/sh -c 'mkdir -p /fixture /root/.pki/nssdb /root/.local/share/pki/nssdb'
     d cp "$g/ca.crt" "$peer:/fixture/ca.crt"
@@ -215,6 +217,9 @@ setup() {
   route_ready argocd
   condition backendtlspolicy kanidm-oidc-tls identity Accepted True '' argocd-admin SecurityPolicy
   condition securitypolicy argocd-admin gateway Accepted True
+  route_ready grafana
+  condition securitypolicy grafana-admin gateway Accepted True
+  condition backendtlspolicy kanidm-oidc-tls identity Accepted True '' grafana-admin SecurityPolicy
   d cp "$(setting authorization)" "$FIXTURE_TRUSTED:/fixture/authorization.py"
   d cp "$g/recovery.json" "$FIXTURE_TRUSTED:/fixture/recovery.json"
   rm -f "$g/recovery.json" "$g/recovery.log" "$g/idm-admin-password"
@@ -250,6 +255,11 @@ case "${1:?required gateway safety case}" in
     condition backendtlspolicy idm identity Accepted True
     condition securitypolicy argocd-admin gateway Accepted True
     condition backendtlspolicy kanidm-oidc-tls identity Accepted True '' argocd-admin SecurityPolicy
+    route_ready grafana
+    condition securitypolicy grafana-admin gateway Accepted True
+    condition backendtlspolicy kanidm-oidc-tls identity Accepted True '' grafana-admin SecurityPolicy
+    test "$(positive "$FIXTURE_TRUSTED" "$grafana" grafana-entrance \
+      -o /fixture/grafana-response -w '%{http_code}')" = 302
     ;;
   direct)
     apply direct
