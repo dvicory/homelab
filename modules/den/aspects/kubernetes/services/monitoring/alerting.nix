@@ -76,10 +76,89 @@ let
           annotations.summary = summary;
         }
         // lib.optionalAttrs (forDuration != "0s") { "for" = forDuration; };
-      # Host storage inputs hold their last value for 2 hours, so a source
-      # that stops reporting cannot resolve a firing alert. Fresh data is the
-      # newest sample and wins at once, so a real recovery resolves at once.
+      # A short raw-input bridge is not durable fault state. Renew an existing
+      # firing identity through vmalert's own remote-written ALERTS until that
+      # same identity has explicit healthy evidence. default_rollup respects
+      # resolution staleness markers, so later absence cannot resurrect it.
       held = selector: "last_over_time(${selector}[2h])";
+      storageAlert =
+        name: severity: forDuration: fault: recovered: summary: extraLabels:
+        let
+          matchers = lib.concatStringsSep "," (
+            lib.mapAttrsToList (key: value: "${key}=${quote value}") (
+              extraLabels
+              // {
+                alertgroup = "host-storage";
+                alertname = name;
+                alertstate = "firing";
+                inherit severity;
+              }
+            )
+          );
+          engineLabels = [
+            "__name__"
+            "alertgroup"
+            "alertname"
+            "alertstate"
+            "severity"
+          ]
+          ++ builtins.attrNames extraLabels;
+          previous = ''
+            label_del(default_rollup(ALERTS{${matchers}}[2m]),
+              ${lib.concatMapStringsSep ", " quote engineLabels})
+          '';
+        in
+        alert name severity forDuration ''
+          (${fault})
+          or (${previous} unless (${recovered}))
+        '' summary extraLabels;
+      smartFreshness = 2700;
+      smartMtimeSelector = ''node_textfile_mtime_seconds{${node}, file=~"(.*/)?smart\\.prom"}'';
+      smartMtime = "max by (job, host, instance) (${smartMtimeSelector})";
+      # A new file alone cannot bless an unread disk or an omitted counter.
+      # These vectors carry the successful physical run's publication epoch,
+      # not the timestamp/count of node_exporter's repeated scrapes.
+      smartCollected = selector: ''
+        (
+          (0 * (default_rollup(${selector}[5m]) >= 0))
+          + on (job, host, instance) group_left() (${smartMtime})
+        )
+        and on (job, host, instance) (up{${node}} == 1)
+        and on (job, host, instance) (time() - (${smartMtime}) <= ${toString smartFreshness})
+        and on (job, host, instance, disk, id)
+          (default_rollup(homelab_smart_device_up{${node}}[5m]) == 1)
+        and (
+          tlast_over_time(${selector}[5m])
+          >= on (job, host, instance) group_left() (${smartMtime})
+        )
+        and on (job, host, instance, disk, id) (
+          tlast_over_time(homelab_smart_device_up{${node}}[5m])
+          >= on (job, host, instance) group_left() (${smartMtime})
+        )
+      '';
+      smartGrowth =
+        metric:
+        let
+          selector = "homelab_smart_${metric}{${node}}";
+          collected = smartCollected selector;
+          # Freeze only the current publication epoch while inspecting history.
+          # The previous value must belong to a distinct successful run of this
+          # same input; another disk's update and stale textfile replays do not count.
+          previous = ''
+            max_over_time((
+              (${collected})
+              < on (job, host, instance) group_left()
+                (max by (job, host, instance) (${smartMtimeSelector} @ end()))
+            )[2h:30s])
+          '';
+        in
+        storageAlert "HostDiskSmartFailing" "warning" "0s" "delta_prometheus(${selector}[2h]) > 0"
+          ''
+            (delta_prometheus(${selector}[2h]) <= 0)
+            and ((${collected}) - (${previous}) <= ${toString smartFreshness})
+          ''
+          "Disk {{ $labels.disk }} ({{ $labels.id }}) on {{ $labels.host }} has an uncleared SMART counter-growth observation ({{ $labels.signal }})."
+          { signal = lib.replaceStrings [ "_" ] [ "-" ] metric; };
       hostLabels.host = host.name;
       bySeverity = f: [
         (f "warning")
@@ -192,40 +271,46 @@ let
       ];
 
       hostStorage = [
-        (alert "HostZpoolUnhealthy" "critical" "1m" "${held "homelab_zpool_healthy{${node}}"} == 0"
-          "ZFS pool {{ $labels.pool }} on {{ $labels.host }} is not ONLINE."
+        (storageAlert "HostZpoolUnhealthy" "critical" "1m" "${held "homelab_zpool_healthy{${node}}"} == 0"
+          "${held "homelab_zpool_healthy{${node}}"} == 1"
+          "ZFS pool {{ $labels.pool }} on {{ $labels.host }} has an uncleared non-ONLINE observation."
           { }
         )
-        (alert "HostZpoolDeviceErrors" "critical" "1m" "${held "homelab_zpool_vdev_errors{${node}}"} > 0"
-          "ZFS pool {{ $labels.pool }} device {{ $labels.vdev }} on {{ $labels.host }} reports {{ $value }} {{ $labels.type }} errors."
+        (storageAlert "HostZpoolDeviceErrors" "critical" "1m"
+          "${held "homelab_zpool_vdev_errors{${node}}"} > 0"
+          "${held "homelab_zpool_vdev_errors{${node}}"} == 0"
+          "ZFS pool {{ $labels.pool }} device {{ $labels.vdev }} on {{ $labels.host }} has an uncleared {{ $labels.type }} error observation."
           { }
         )
-        (alert "HostZpoolScrubErrors" "critical" "0s" "${held "homelab_zpool_scrub_errors{${node}}"} > 0"
-          "The last scrub of {{ $labels.pool }} on {{ $labels.host }} found {{ $value }} errors."
+        (storageAlert "HostZpoolScrubErrors" "critical" "0s"
+          "${held "homelab_zpool_scrub_errors{${node}}"} > 0"
+          "${held "homelab_zpool_scrub_errors{${node}}"} == 0"
+          "The latest observed completed scrub of {{ $labels.pool }} on {{ $labels.host }} reported errors; a clean completed scrub is required to clear this fault."
           { }
         )
-        (alert "HostZpoolScrubOverdue" "warning" "1h" ''
-          time() - max_over_time(homelab_zpool_scrub_end_time_seconds{${node}}[3d]) > ${days 35}
-        '' "ZFS pool {{ $labels.pool }} on {{ $labels.host }} has not completed a scrub in 35 days." { })
-        (alert "HostDiskSmartFailing" "critical" "0s"
-          ''
-            ${held "homelab_smart_healthy{${node}}"} == 0
-            or
-            ${held "homelab_smart_nvme_critical_warning{${node}}"} > 0
-          ''
-          "Disk {{ $labels.disk }} ({{ $labels.id }}) on {{ $labels.host }} reports failing SMART health."
+        (storageAlert "HostZpoolScrubOverdue" "warning" "1h"
+          "time() - max_over_time(homelab_zpool_scrub_end_time_seconds{${node}}[3d]) > ${days 35}"
+          "time() - max_over_time(homelab_zpool_scrub_end_time_seconds{${node}}[3d]) <= ${days 35}"
+          "No completed scrub within 35 days is on record for ZFS pool {{ $labels.pool }} on {{ $labels.host }}."
           { }
         )
-        (alert "HostDiskSmartFailing" "warning" "0s"
-          ''
-            delta(homelab_smart_scsi_grown_defects{${node}}[2h]) > 0
-            or delta(homelab_smart_ata_pending_sectors{${node}}[2h]) > 0
-            or delta(homelab_smart_ata_reallocated_sectors{${node}}[2h]) > 0
-            or delta(homelab_smart_nvme_media_errors{${node}}[2h]) > 0
-          ''
-          "Disk {{ $labels.disk }} ({{ $labels.id }}) on {{ $labels.host }} reports more defective sectors."
-          { }
+        (storageAlert "HostDiskSmartFailing" "critical" "0s" "${held "homelab_smart_healthy{${node}}"} == 0"
+          "(${held "homelab_smart_healthy{${node}}"} == 1) and (${smartCollected "homelab_smart_healthy{${node}}"})"
+          "Disk {{ $labels.disk }} ({{ $labels.id }}) on {{ $labels.host }} has an uncleared failing SMART health observation."
+          { signal = "health"; }
         )
+        (storageAlert "HostDiskSmartFailing" "critical" "0s"
+          "${held "homelab_smart_nvme_critical_warning{${node}}"} > 0"
+          "(${held "homelab_smart_nvme_critical_warning{${node}}"} == 0) and (${smartCollected "homelab_smart_nvme_critical_warning{${node}}"})"
+          "Disk {{ $labels.disk }} ({{ $labels.id }}) on {{ $labels.host }} has an uncleared NVMe critical-warning observation."
+          { signal = "nvme-critical-warning"; }
+        )
+      ]
+      ++ map smartGrowth [
+        "scsi_grown_defects"
+        "ata_pending_sectors"
+        "ata_reallocated_sectors"
+        "nvme_media_errors"
       ]
       ++ map (
         mountpoint:
@@ -240,12 +325,22 @@ let
         severity:
         let
           filesystems = ''${node}, fstype!~"tmpfs|ramfs|squashfs|overlay"'';
+          available = held "node_filesystem_avail_bytes{${filesystems}}";
+          size = held "node_filesystem_size_bytes{${filesystems}}";
+          threshold = if severity == "warning" then "0.10" else "0.05";
+          percent = if severity == "warning" then "10" else "5";
         in
-        alert "HostFilesystemLowSpace" severity "30m" ''
-          ${held "node_filesystem_avail_bytes{${filesystems}}"}
-          / ${held "node_filesystem_size_bytes{${filesystems}}"}
-          < ${if severity == "warning" then "0.10" else "0.05"}
-        '' "{{ $labels.mountpoint }} on {{ $labels.host }} has {{ $value | humanizePercentage }} free." { }
+        storageAlert "HostFilesystemLowSpace" severity "30m" "(${available} / ${size}) < ${threshold}"
+          ''
+            ((${available} / ${size}) >= ${threshold})
+            and (${size} > 0)
+            and (
+              tlast_over_time(node_filesystem_avail_bytes{${filesystems}}[2h])
+              == tlast_over_time(node_filesystem_size_bytes{${filesystems}}[2h])
+            )
+          ''
+          "Filesystem {{ $labels.mountpoint }} on {{ $labels.host }} has an uncleared below-${percent}% free-space observation."
+          { }
       );
 
       hostServices = [
@@ -323,7 +418,7 @@ let
         '' "zpool.prom on ${host.name} has not been refreshed for 10 minutes." hostLabels)
         # Three missed 15-minute runs.
         (alert "HostSmartStatusStale" "critical" "0s" ''
-          ${stale "smart" 2700}
+          ${stale "smart" smartFreshness}
           or ${absentFile "smart"}
         '' "smart.prom on ${host.name} has not been refreshed for 45 minutes." hostLabels)
       ]
