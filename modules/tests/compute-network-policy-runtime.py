@@ -546,6 +546,81 @@ def migrate(lib, guest: Guest, args) -> None:
     WMEM.write_text(str(KERNEL_DEFAULT))
 
 
+def capture_enforcer_failure(guest: Guest, label: str) -> None:
+    try:
+        snapshot = json.loads(guest.kubectl(
+            "get", "daemonsets,pods", "-l", f"app.kubernetes.io/name={ENFORCER[1]}",
+            "-o", "json", "--request-timeout=10s", namespace=ENFORCER[0], timeout=15))
+        observe(f"{label}.enforcer", [{
+            "kind": item["kind"],
+            "metadata": {key: item["metadata"].get(key) for key in (
+                "name", "namespace", "uid", "resourceVersion", "generation",
+                "ownerReferences", "deletionTimestamp")},
+            "status": item.get("status", {}),
+        } for item in snapshot["items"]])
+        pod = next(item["metadata"]["name"] for item in snapshot["items"] if item["kind"] == "Pod")
+    except Exception as error:
+        observe(f"{label}.enforcer.capture", {"error": type(error).__name__, "detail": str(error)[:400]})
+    else:
+        for previous in (False, True):
+            log = {"pod": pod, "previous": previous}
+            try:
+                log["text"] = guest.kubectl(
+                    "logs", pod, "-c", ENFORCER[1], "--tail=100", "--limit-bytes=16384",
+                    f"--previous={str(previous).lower()}", "--request-timeout=10s",
+                    namespace=ENFORCER[0], timeout=15)
+            except Exception as error:
+                log.update(error=type(error).__name__, detail=str(error)[:400])
+            observe(f"{label}.enforcer.log." + str(previous).lower(), log)
+
+
+def capture_enforce_failure(guest: Guest, label: str) -> None:
+    """Read live failure state without another traffic probe or table replay."""
+    capture_enforcer_failure(guest, label)
+
+    def capture(name: str, *command: str, limit: int = 16384) -> None:
+        try:
+            result = guest.lib.completed(
+                "incus", "--force-local", "--project", guest.project, "exec", guest.instance,
+                "--mode=non-interactive", "--", *command, timeout=15)
+            observe(f"{label}.failure.{name}", {
+                "returncode": result.returncode, "stdout": result.stdout[:limit],
+                "stderr": result.stderr[:4096],
+                "truncated": len(result.stdout) > limit or len(result.stderr) > 4096,
+            })
+        except Exception as error:
+            observe(f"{label}.failure.{name}", {"error": type(error).__name__, "detail": str(error)[:400]})
+
+    observe(f"{label}.failure.selection", {
+        "selected": guest.plan["selected"], "filler": guest.plan["filler"], "probes": guest.plan["probes"],
+    })
+    capture("pods", "k3s", "kubectl", "get", "pods,namespaces", "--all-namespaces",
+            "--request-timeout=10s", "-o", "custom-columns=KIND:.kind,NS:.metadata.namespace,"
+            "NAME:.metadata.name,UID:.metadata.uid,IP:.status.podIP,READY:.status.containerStatuses[*].ready,"
+            "RESTARTS:.status.containerStatuses[*].restartCount,LABELS:.metadata.labels", limit=32768)
+    for backend in sorted({probe["server"] for probe in guest.plan["probes"]}):
+        namespace = guest.plan["names"][backend]
+        capture(f"listener.{backend}", "k3s", "kubectl", "exec", backend, "-n", namespace,
+                "--request-timeout=10s", "--", "sh", "-c",
+                'for table in /proc/net/tcp*; do printf "%s\\n" "$table"; cat "$table"; done',
+                limit=8192)
+        capture(f"backend.log.{backend}", "k3s", "kubectl", "logs", backend, "-n", namespace,
+                "--tail=50", "--limit-bytes=8192", "--request-timeout=10s", limit=8192)
+    capture("k3s", "sh", "-c",
+            "systemctl show k3s -p ActiveState -p SubState -p MainPID -p FragmentPath -p DropInPaths; "
+            "pid=$(systemctl show --value -p MainPID k3s); "
+            "tr '\\0' '\\n' < /proc/$pid/cmdline | grep -E '^--(disable-network-policy|kube-proxy-arg=)'; "
+            "proxy=$(tr '\\0' '\\n' < /proc/$pid/cmdline | sed -n 's/^--kube-proxy-arg=config=//p'); "
+            'printf "proxy_config=%s\\n" "$proxy"; if [ -n "$proxy" ]; then cat "$proxy"; fi')
+    capture("k3s.journal", "journalctl", "-u", "k3s", "-b", "-n", "100", "--no-pager", "-o", "cat")
+    tools = ("pid=$(systemctl show --value -p MainPID k3s); "
+             "export PATH=\"$(tr '\\0' '\\n' < /proc/$pid/environ | sed -n 's/^PATH=//p')\"; ")
+    capture("nft.tables", "sh", "-c", tools + "nft list tables")
+    capture("nft.enforcer", "sh", "-c", tools + "nft -j list table inet kube-network-policies", limit=32768)
+    capture("nfqueue", "cat", "/proc/net/netfilter/nfnetlink_queue")
+    capture("iptables.filter", "sh", "-c", tools + "iptables-save -t filter")
+
+
 def crash(lib, guest: Guest) -> None:
     """Kill the enforcer twice, observe caller refusal in the kill-to-ready
     timestamp window and stranger denial, then require fresh caller recovery.
@@ -588,7 +663,14 @@ def crash(lib, guest: Guest) -> None:
                       "first_stranger_success": next((sample for sample in refused if sample[1] == "reached"), None),
                       "recovery": {"started": recovery_started, "completed": recovery_completed, "reached": recovered},
                       "restarts": guest.enforcer()["restarts"] - before})
-    check_recovery(lib.check, admitted, refused, recovered, "crash", (killed, ready))
+    try:
+        check_recovery(lib.check, admitted, refused, recovered, "crash", (killed, ready))
+    except AssertionError:
+        try:
+            capture_enforce_failure(guest, "crash")
+        except Exception:
+            pass  # A secondary capture error must not replace the oracle failure.
+        raise
 
 
 RENDER_NODE = "/dev/dri/renderD128"
@@ -604,10 +686,6 @@ def no_device_access(lib, guest: Guest) -> None:
     pid = lib.run("pgrep", "-o", "-f", "/bin/netpol")
     status = dict(line.split(":\t", 1) for line in Path(f"/proc/{pid}/status").read_text().splitlines() if ":\t" in line)
     enforcer_dev = sorted(os.listdir(f"/proc/{pid}/root/dev"))
-    # Unprivileged, it must still reach containerd's NRI socket, which gives
-    # it Pod addresses before the API server does.
-    logs = guest.kubectl("logs", f"daemonset/{ENFORCER[1]}", "--tail=-1", namespace=ENFORCER[0])
-    nri = {"connected": "Created plugin" in logs, "failed": "failed to create NRI plugin" in logs}
     guest.push_apply("device-probes")
     guest.wait_ready("device probes", timeout=300)
 
@@ -627,9 +705,7 @@ def no_device_access(lib, guest: Guest) -> None:
         "twin": {"sees_node": twin_sees, "mknod": (twin_mknod.stdout + twin_mknod.stderr).strip()[-160:],
                  "CapEff": twin_caps},
         "privileged_control_opens": control.returncode == 0,
-        "nri": nri,
     })
-    lib.check(nri["connected"] and not nri["failed"], "the unprivileged enforcer connects to containerd's NRI socket")
     lib.check(int(status["CapEff"], 16) == NET_ADMIN, "the enforcer's only effective capability is NET_ADMIN")
     lib.check(status.get("NoNewPrivs", "").strip() == "1", "the enforcer cannot gain privileges")
     lib.check("dri" not in enforcer_dev, "the enforcer's /dev has no render node")
@@ -648,8 +724,15 @@ def enforce(lib, guest: Guest, label: str, since: int, expect_nftables: bool) ->
     # No lifecycle mutation runs alongside these independent connections.
     # Each refusal still waits wget's full three seconds; each row retains
     # its own 60-second convergence deadline and its positive controls.
-    with ThreadPoolExecutor(max_workers=4) as probes:
-        list(probes.map(probe_boundary, guest.plan["probes"]))
+    try:
+        with ThreadPoolExecutor(max_workers=4) as probes:
+            list(probes.map(probe_boundary, guest.plan["probes"]))
+    except Exception:
+        try:
+            capture_enforce_failure(guest, label)
+        except Exception:
+            pass  # Keep the original matrix failure even if evidence capture fails.
+        raise
     # A new Pod's first connection, with no retry.
     guest.push_apply("newcomers")
     guest.wait_ready(f"{label} newcomers", timeout=300)

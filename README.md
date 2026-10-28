@@ -107,6 +107,13 @@ fixtures against production Docker, Incus, mounts or credentials.
 Use `python3 modules/tests/compute-network-policy-runtime.py --self-test` for
 portable observer regression checks. The real VM check still exercises traffic,
 migration and recovery; API/exec errors fail rather than count as policy denial.
+On a crash-recovery assertion or enforcement-matrix failure, the disposable
+fixture records enforcer DaemonSet/Pod identities and statuses plus bounded current
+and previous container logs. Both failure paths also capture current Pod addresses,
+backend listeners/logs, nftables sets, NFQUEUE state and effective K3s/proxy state.
+Each query has a deadline and bounded recorded output; these read-only diagnostics
+do not replay tables, retry traffic, extend readiness or observation windows, or
+change acceptance. The original failure is re-raised even if capture fails.
 
 ## Media verification
 
