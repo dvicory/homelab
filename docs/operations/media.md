@@ -42,20 +42,87 @@ Declare instances under `settings.kubernetes.services.media.radarr` and
 follow those declarations; do not maintain separate generated URLs or rules.
 Each instance's `routeKey` names its declared browser route; use `null` for
 an instance without one.
-Its `role` selects a Seerr backend (`standard` or `4k`); `null` excludes it
-from Seerr, but Configarr and Prowlarr still configure it.
+Its generic `role` selects a Seerr backend; `null` excludes it from Seerr,
+but Configarr and Prowlarr still configure it. The current managed profiles
+are HD-only, so the shared configuration boundary rejects `role = "4k"`
+rather than routing a UHD request to an HD-only profile. A future 4K policy
+and deployment require their own operator-approved change.
 Each instance exposes read-only `integration` settings for other Den aspects;
 change its declarations rather than maintaining separate integration facts.
 
+### Managed 1080p profiles and fallbacks
+
+Each instance's `qualityProfiles` selects the managed menu;
+`defaultQualityProfile` must name one selected key and sets Seerr's default
+for new requests. Both existing instances select all three profiles below
+and default to the explicit local `hd-preferred` entry:
+
+| Key | Profile in Arr | Allowed sources |
+| --- | --- | --- |
+| `hd-preferred` | `HD Preferred` in both apps | Blu-ray, WEB and HDTV at 1080p/720p; DVD, SD WEB and SDTV fallbacks |
+| `web-1080p` | `WEB 1080p` (Radarr); `WEB-1080p` (Sonarr) | WEB 1080p only |
+| `remux-web-1080p` | `Remux + WEB 1080p` | WEB 1080p and 1080p remux; upgrade to remux, only when explicitly chosen |
+
+The `hd-preferred` key identifies Homelab's local policy, not an upstream
+profile ID. The other two entries use the pinned upstream profiles directly.
+
+HD Preferred ranks every 1080p source above every 720p source, then SD WEB
+and DVD, with SDTV strictly last. It upgrades toward Blu-ray 1080p; the
+other two profiles remain separate WEB-only and opt-in HD remux choices.
+DVD means encoded DVD, not DVD-R/full-disc images. CAM, screeners, unknown,
+raw/full-disc and low-resolution Blu-ray qualities remain excluded.
+
+Every managed profile excludes 2160p. No 4K instance, root or connection is
+deployed; eventual separate HD/4K copies require operator approval.
+Reconciliation does not prune stock profiles, change existing movie/series
+profile assignments or start a search/download.
+
+Policy inputs are pinned to TRaSH revision
+[`04e692c`](https://github.com/TRaSH-Guides/Guides/tree/04e692c8926f6b9736943afcd9b505bad29f5e54).
+`assets/media-policy/source.json` records upstream paths and hashes, plus
+separately identified local files. The small explicit `hd-preferred.json`
+overrides reuse untouched Radarr HD Bluray + WEB and Sonarr
+WEB-1080p (Alternative) inputs: the Sonarr base already allows the six HD
+source groups. Local changes name the default, set its cutoff/order and
+enable the declared fallback qualities. They add no invented source-group,
+audio or language scores. Radarr retains the upstream `Original` language.
+
+When updating upstream inputs, preserve raw HTTP/Git-blob bytes, not reader
+text or reserialized JSON. Verify their pinned Git blobs and run the
+existing byte-provenance contract before committing; formatting is part
+of upstream identity, even when parsed JSON is unchanged.
+
+The profile source/repack formats are combined with the pinned guide's
+required unwanted and streaming-service formats, using upstream default
+scores or the guide's explicit zero for each selected profile, including
+shared formats. Explicit zeros also repair drift without resetting
+unrelated records. This is **not codec-neutral**: the guide's `x265 (HD)`
+format also matches SD x265, so x265 outside 2160p and AV1 retain `-10000`
+penalties, as do low-quality groups, disc images and extras. Clean SD WEB
+can meet the unchanged minimum score of zero; allowing a quality does not
+override unwanted-format penalties. Radarr also
+excludes 3D, generated dynamic HDR and sing-along versions. These are
+upstream acquisition-quality choices, not claims about GPU playback or
+transcoding support; review them before production adoption. No optional
+audio-channel, surround-format or language preference is added.
+
 ## Records the household may change
 
-Managed records end in `(Homelab)`: the `SABnzbd (Homelab)` download client
-in Radarr and Sonarr, and the `Radarr (Homelab)` and `Sonarr (Homelab)`
-servers in Seerr. Each run rewrites these records. Do not edit or rename
-them by hand.
+The profiles listed above are managed by their exact names. Configarr
+creates their declared quality policy and reconciles their custom-format
+scores. **Pinned Configarr 1.32 does not repair allowed-checkbox-only
+drift** when quality names, grouping and order still match. Do not assume
+a periodic run will undo such a UI edit or apply a declaration that changes
+only those flags. Inspect the actual allowed qualities when adopting or
+changing policy; any flag-only correction remains operator-controlled.
 
-Records with other names are left alone, so the household may add its own
-download clients and Seerr servers. A managed Seerr server is the default
+Managed download-client and Seerr-server records end in `(Homelab)`:
+`SABnzbd (Homelab)` in Radarr and Sonarr, and `Radarr (Homelab)` and
+`Sonarr (Homelab)` in Seerr. Each run reconciles these connection records.
+Do not edit or rename them by hand.
+
+Other download clients and Seerr servers are left alone, so the household
+may add its own. A managed Seerr server is the default
 for its tier, so Seerr clears the default flag on any other server in that
 tier.
 

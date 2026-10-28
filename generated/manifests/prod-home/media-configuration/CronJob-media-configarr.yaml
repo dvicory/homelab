@@ -170,19 +170,78 @@ spec:
                   cp /seed/sonarr-anime.json "$trash/sonarr/quality-size/anime.json"
                   cp /seed/conflicts.json "$trash/radarr/conflicts.json"
                   cp /seed/conflicts.json "$trash/sonarr/conflicts.json"
+                  cp /seed/radarr-cf-3d.json /app/repos/trash-guides/docs/json/radarr/cf/3d.json
+                  cp /seed/radarr-cf-amzn.json /app/repos/trash-guides/docs/json/radarr/cf/amzn.json
+                  cp /seed/radarr-cf-atv.json /app/repos/trash-guides/docs/json/radarr/cf/atv.json
+                  cp /seed/radarr-cf-atvp.json /app/repos/trash-guides/docs/json/radarr/cf/atvp.json
+                  cp /seed/radarr-cf-av1.json /app/repos/trash-guides/docs/json/radarr/cf/av1.json
+                  cp /seed/radarr-cf-bcore.json /app/repos/trash-guides/docs/json/radarr/cf/bcore.json
+                  cp /seed/radarr-cf-br-disk.json /app/repos/trash-guides/docs/json/radarr/cf/br-disk.json
+                  cp /seed/radarr-cf-crit.json /app/repos/trash-guides/docs/json/radarr/cf/crit.json
+                  cp /seed/radarr-cf-dsnp.json /app/repos/trash-guides/docs/json/radarr/cf/dsnp.json
+                  cp /seed/radarr-cf-extras.json /app/repos/trash-guides/docs/json/radarr/cf/extras.json
+                  cp /seed/radarr-cf-generated-dynamic-hdr.json /app/repos/trash-guides/docs/json/radarr/cf/generated-dynamic-hdr.json
+                  cp /seed/radarr-cf-hbo.json /app/repos/trash-guides/docs/json/radarr/cf/hbo.json
+                  cp /seed/radarr-cf-hd-bluray-tier-01.json /app/repos/trash-guides/docs/json/radarr/cf/hd-bluray-tier-01.json
+                  cp /seed/radarr-cf-hd-bluray-tier-02.json /app/repos/trash-guides/docs/json/radarr/cf/hd-bluray-tier-02.json
+                  cp /seed/radarr-cf-hd-bluray-tier-03.json /app/repos/trash-guides/docs/json/radarr/cf/hd-bluray-tier-03.json
+                  cp /seed/radarr-cf-hmax.json /app/repos/trash-guides/docs/json/radarr/cf/hmax.json
+                  cp /seed/radarr-cf-hulu.json /app/repos/trash-guides/docs/json/radarr/cf/hulu.json
+                  cp /seed/radarr-cf-it.json /app/repos/trash-guides/docs/json/radarr/cf/it.json
+                  cp /seed/radarr-cf-lq-release-title.json /app/repos/trash-guides/docs/json/radarr/cf/lq-release-title.json
+                  cp /seed/radarr-cf-lq.json /app/repos/trash-guides/docs/json/radarr/cf/lq.json
+                  cp /seed/radarr-cf-ma.json /app/repos/trash-guides/docs/json/radarr/cf/ma.json
+                  cp /seed/radarr-cf-max.json /app/repos/trash-guides/docs/json/radarr/cf/max.json
+                  cp /seed/radarr-cf-nf.json /app/repos/trash-guides/docs/json/radarr/cf/nf.json
+                  cp /seed/radarr-cf-pcok.json /app/repos/trash-guides/docs/json/radarr/cf/pcok.json
+                  cp /seed/radarr-cf-play.json /app/repos/trash-guides/docs/json/radarr/cf/play.json
+                  cp /seed/radarr-cf-pmtp.json /app/repos/trash-guides/docs/json/radarr/cf/pmtp.json
+                  cp /seed/radarr-cf-remux-tier-01.json /app/repos/trash-guides/docs/json/radarr/cf/remux-tier-01.json
+                  cp /seed/radarr-cf-remux-tier-02.json /app/repos/trash-guides/docs/json/radarr/cf/remux-tier-02.json
+                  cp /seed/radarr-cf-remux-tier-03.json /app/repos/trash-guides/docs/json/radarr/cf/remux-tier-03.json
                   cp /seed/radarr-cf-repack-proper.json /app/repos/trash-guides/docs/json/radarr/cf/repack-proper.json
                   cp /seed/radarr-cf-repack2.json /app/repos/trash-guides/docs/json/radarr/cf/repack2.json
                   cp /seed/radarr-cf-repack3.json /app/repos/trash-guides/docs/json/radarr/cf/repack3.json
+                  cp /seed/radarr-cf-roku.json /app/repos/trash-guides/docs/json/radarr/cf/roku.json
+                  cp /seed/radarr-cf-sing-along-versions.json /app/repos/trash-guides/docs/json/radarr/cf/sing-along-versions.json
+                  cp /seed/radarr-cf-stan.json /app/repos/trash-guides/docs/json/radarr/cf/stan.json
                   cp /seed/radarr-cf-web-tier-01.json /app/repos/trash-guides/docs/json/radarr/cf/web-tier-01.json
                   cp /seed/radarr-cf-web-tier-02.json /app/repos/trash-guides/docs/json/radarr/cf/web-tier-02.json
                   cp /seed/radarr-cf-web-tier-03.json /app/repos/trash-guides/docs/json/radarr/cf/web-tier-03.json
+                  cp /seed/radarr-cf-x265-hd.json /app/repos/trash-guides/docs/json/radarr/cf/x265-hd.json
+                  cp /seed/sonarr-cf-amzn.json /app/repos/trash-guides/docs/json/sonarr/cf/amzn.json
+                  cp /seed/sonarr-cf-atvp.json /app/repos/trash-guides/docs/json/sonarr/cf/atvp.json
+                  cp /seed/sonarr-cf-av1.json /app/repos/trash-guides/docs/json/sonarr/cf/av1.json
+                  cp /seed/sonarr-cf-br-disk.json /app/repos/trash-guides/docs/json/sonarr/cf/br-disk.json
+                  cp /seed/sonarr-cf-cc.json /app/repos/trash-guides/docs/json/sonarr/cf/cc.json
+                  cp /seed/sonarr-cf-dcu.json /app/repos/trash-guides/docs/json/sonarr/cf/dcu.json
+                  cp /seed/sonarr-cf-dsnp.json /app/repos/trash-guides/docs/json/sonarr/cf/dsnp.json
+                  cp /seed/sonarr-cf-extras.json /app/repos/trash-guides/docs/json/sonarr/cf/extras.json
+                  cp /seed/sonarr-cf-hbo.json /app/repos/trash-guides/docs/json/sonarr/cf/hbo.json
+                  cp /seed/sonarr-cf-hd-streaming-boost.json /app/repos/trash-guides/docs/json/sonarr/cf/hd-streaming-boost.json
+                  cp /seed/sonarr-cf-hmax.json /app/repos/trash-guides/docs/json/sonarr/cf/hmax.json
+                  cp /seed/sonarr-cf-hulu.json /app/repos/trash-guides/docs/json/sonarr/cf/hulu.json
+                  cp /seed/sonarr-cf-it.json /app/repos/trash-guides/docs/json/sonarr/cf/it.json
+                  cp /seed/sonarr-cf-lq-release-title.json /app/repos/trash-guides/docs/json/sonarr/cf/lq-release-title.json
+                  cp /seed/sonarr-cf-lq.json /app/repos/trash-guides/docs/json/sonarr/cf/lq.json
+                  cp /seed/sonarr-cf-max.json /app/repos/trash-guides/docs/json/sonarr/cf/max.json
+                  cp /seed/sonarr-cf-nf.json /app/repos/trash-guides/docs/json/sonarr/cf/nf.json
+                  cp /seed/sonarr-cf-pcok.json /app/repos/trash-guides/docs/json/sonarr/cf/pcok.json
+                  cp /seed/sonarr-cf-play.json /app/repos/trash-guides/docs/json/sonarr/cf/play.json
+                  cp /seed/sonarr-cf-pmtp.json /app/repos/trash-guides/docs/json/sonarr/cf/pmtp.json
+                  cp /seed/sonarr-cf-remux-tier-01.json /app/repos/trash-guides/docs/json/sonarr/cf/remux-tier-01.json
+                  cp /seed/sonarr-cf-remux-tier-02.json /app/repos/trash-guides/docs/json/sonarr/cf/remux-tier-02.json
                   cp /seed/sonarr-cf-repack-proper.json /app/repos/trash-guides/docs/json/sonarr/cf/repack-proper.json
                   cp /seed/sonarr-cf-repack2.json /app/repos/trash-guides/docs/json/sonarr/cf/repack2.json
                   cp /seed/sonarr-cf-repack3.json /app/repos/trash-guides/docs/json/sonarr/cf/repack3.json
+                  cp /seed/sonarr-cf-sho.json /app/repos/trash-guides/docs/json/sonarr/cf/sho.json
+                  cp /seed/sonarr-cf-stan.json /app/repos/trash-guides/docs/json/sonarr/cf/stan.json
+                  cp /seed/sonarr-cf-syfy.json /app/repos/trash-guides/docs/json/sonarr/cf/syfy.json
                   cp /seed/sonarr-cf-web-scene.json /app/repos/trash-guides/docs/json/sonarr/cf/web-scene.json
                   cp /seed/sonarr-cf-web-tier-01.json /app/repos/trash-guides/docs/json/sonarr/cf/web-tier-01.json
                   cp /seed/sonarr-cf-web-tier-02.json /app/repos/trash-guides/docs/json/sonarr/cf/web-tier-02.json
                   cp /seed/sonarr-cf-web-tier-03.json /app/repos/trash-guides/docs/json/sonarr/cf/web-tier-03.json
+                  cp /seed/sonarr-cf-x265-hd.json /app/repos/trash-guides/docs/json/sonarr/cf/x265-hd.json
                   printf '%s\n' '04e692c8926f6b9736943afcd9b505bad29f5e54' > /app/repos/trash-guides/TRASH-GUIDES-REVISION
                   for repo in trash-guides recyclarr-config; do
                     git -C "/app/repos/$repo" init -q

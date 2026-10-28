@@ -69,7 +69,7 @@ let
             role = lib.mkOption {
               type = lib.types.nullOr (lib.types.enum [ "standard" "4k" ]);
               default = if name == kind then "standard" else null;
-              description = "Optional Seerr role, independent of the policy bundle. Exactly one standard and at most one 4k instance per kind.";
+              description = "Optional Seerr role. Exactly one standard and at most one 4k instance per kind; the current managed HD policy rejects the 4k role.";
             };
             root = lib.mkOption {
               type = lib.types.addCheck dataPathType (path: path != "/data");
@@ -81,13 +81,23 @@ let
               default = if kind == "radarr" then "movies" else "tv";
               description = "Distinct managed download category: an alphanumeric name with dots, underscores or hyphens, never SABnzbd's reserved wildcard.";
             };
-            bundle = lib.mkOption {
-              type = lib.types.enum [
+            qualityProfiles = lib.mkOption {
+              type = lib.types.addCheck (lib.types.listOf (lib.types.enum [
+                "hd-preferred"
                 "web-1080p"
-                "web-2160p"
+                "remux-web-1080p"
+              ])) (profiles: profiles != [ ] && lib.unique profiles == profiles);
+              default = [
+                "hd-preferred"
+                "web-1080p"
+                "remux-web-1080p"
               ];
-              default = "web-1080p";
-              description = "Semantic pinned media policy bundle applied to this instance.";
+              description = "Distinct managed 1080p-targeted quality profiles, including the HD Preferred fallback policy.";
+            };
+            defaultQualityProfile = lib.mkOption {
+              type = lib.types.addCheck lib.types.str (profile: lib.elem profile config.qualityProfiles);
+              default = "hd-preferred";
+              description = "Selected managed quality profile used by Seerr for new requests.";
             };
             sharedWritablePaths = lib.mkOption {
               type = lib.types.listOf dataPathType;
