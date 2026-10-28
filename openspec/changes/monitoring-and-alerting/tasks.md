@@ -14,6 +14,18 @@ confirmation, separately authorized staging and merge, and all live acceptance
 remain open. Disposable runtime/browser proof is not provider delivery,
 production access control or persistence after a live guest replacement.
 
+Current engineering evidence at `972cee0b` includes canonical/schema/freshness
+and meaningful native Grafana positive/refusal witnesses. Normal full CI
+[40749858587](https://github.com/dvicory/homelab/actions/runs/40749858587)
+passed all six monitoring VMs, identity provisioning and the complete native
+28-scenario API suite, but failed the mandatory fast-policy aggregate and other
+executor roles. It is not full acceptance. The existing native GitOps/workload
+consumers now enumerate the monitoring Applications, Deployments and PV.
+Source-inventory validation projects repeated source paths and manifest filenames
+once to stay within native CEL's unchanged cost bound, while retaining every
+original file, ownership, extension and empty-file condition. No scenario,
+failure category or required join is removed.
+
 ## 1. Contract checks and scaffolding
 
 - [x] 1.1 Add `modules/tests/monitoring-contracts.nix` with native rendered-contract checks. It must fail when:

@@ -31,6 +31,11 @@ positive:
     apps/v1/Deployment/media/radarr: [pod-secret-readable, pod-pvc-no-fsgroup, media-acquisition-mounts]
     apps/v1/Deployment/media/sabnzbd: [pod-secret-readable, pod-pvc-no-fsgroup, media-acquisition-mounts, media-acquisition-identity]
     apps/v1/Deployment/media/sonarr: [pod-secret-readable, pod-pvc-no-fsgroup, media-acquisition-mounts]
+    apps/v1/Deployment/monitoring/alertmanager: [pod-secret-readable, pod-pvc-no-fsgroup]
+    apps/v1/Deployment/monitoring/blackbox: [pod-secret-readable, pod-pvc-no-fsgroup]
+    apps/v1/Deployment/monitoring/kube-state-metrics: [pod-secret-readable, pod-pvc-no-fsgroup]
+    apps/v1/Deployment/monitoring/victoriametrics: [pod-secret-readable, pod-pvc-no-fsgroup]
+    apps/v1/Deployment/monitoring/vmalert: [pod-secret-readable, pod-pvc-no-fsgroup]
     apps/v1/StatefulSet/argocd/argocd-application-controller: [pod-secret-readable, pod-pvc-no-fsgroup]
     apps/v1/StatefulSet/media/seerr: [pod-secret-readable, pod-pvc-no-fsgroup]
     batch/v1/CronJob/media/media-config-seerr: [pod-secret-readable, pod-pvc-no-fsgroup, media-configuration-state,
@@ -56,12 +61,16 @@ positive:
     v1/PersistentVolume//media-seerr: [media-private-storage]
     v1/PersistentVolume//media-seerr-configuration: [media-private-storage]
     v1/PersistentVolume//media-sonarr: [media-private-storage]
+    v1/PersistentVolume//monitoring-metrics: [media-private-storage]
     v1/PersistentVolumeClaim/jellyfin/jellyfin-config: [jellyfin-retained-storage]
     v1/Service/jellyfin/jellyfin: [jellyfin-service-route]
   when:
   - if: {identity: [normal, provisioning]}
     applies:
       batch/v1/Job/identity/kanidm-provision: [pod-secret-readable, pod-pvc-no-fsgroup]
+  - if: {identity: [normal]}
+    applies:
+      apps/v1/Deployment/monitoring/grafana: [pod-secret-readable, pod-pvc-no-fsgroup]
 objects:
   credential-reader-pod:
     applies: [pod-secret-readable, pod-pvc-no-fsgroup]
