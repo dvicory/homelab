@@ -127,14 +127,14 @@ def zpool_metrics(document, disks):
         lines.append(sample("homelab_zpool_data_errors", labels, as_int(pool.get("error_count", "0"))))
 
         scan = pool.get("scan_stats") or {}
-        if scan.get("function") == "SCRUB":
-            lines.append(sample("homelab_zpool_scrub_active", labels, 1 if scan.get("state") == "SCANNING" else 0))
-            if scan.get("state") == "FINISHED":
-                lines.append(sample("homelab_zpool_scrub_end_time_seconds", labels, as_int(scan.get("end_time"))))
-                lines.append(sample("homelab_zpool_scrub_errors", labels, as_int(scan.get("errors", "0"))))
-        elif not scan:
-            # Never scrubbed: report the epoch so the overdue rule fires.
-            lines.append(sample("homelab_zpool_scrub_active", labels, 0))
+        is_scrub = scan.get("function") == "SCRUB"
+        scrubbing = is_scrub and scan.get("state") == "SCANNING"
+        lines.append(sample("homelab_zpool_scrub_active", labels, 1 if scrubbing else 0))
+        if is_scrub and scan.get("state") == "FINISHED":
+            lines.append(sample("homelab_zpool_scrub_end_time_seconds", labels, as_int(scan.get("end_time"))))
+            lines.append(sample("homelab_zpool_scrub_errors", labels, as_int(scan.get("errors", "0"))))
+        elif not scrubbing:
+            # No completed scrub in this record: report the epoch, not scan time.
             lines.append(sample("homelab_zpool_scrub_end_time_seconds", labels, 0))
 
         roots = pool.get("vdevs") or {}

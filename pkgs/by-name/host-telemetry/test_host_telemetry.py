@@ -1,7 +1,7 @@
 """Unit tests for host_telemetry against recorded `zpool status -j -p` and
-`smartctl --json` documents (fixtures/). Fake zpool and smartctl commands
-replay the fixtures, so the real command handling, exit-status handling and
-atomic replacement are exercised."""
+`smartctl --json` documents (fixtures/), plus synthetic scan-state variants.
+Fake zpool and smartctl commands replay the fixtures, so the real command
+handling, exit-status handling and atomic replacement are exercised."""
 
 import json
 import os
@@ -121,6 +121,7 @@ class ZpoolTest(unittest.TestCase):
         self.assertEqual(samples['homelab_zpool_present{pool="rpool"}'], 1)
         self.assertEqual(samples['homelab_zpool_healthy{pool="rpool"}'], 1)
         self.assertEqual(samples['homelab_zpool_state{pool="rpool",state="ONLINE"}'], 1)
+        self.assertEqual(samples['homelab_zpool_scrub_active{pool="rpool"}'], 0)
         self.assertEqual(samples['homelab_zpool_scrub_end_time_seconds{pool="rpool"}'], 1790851949)
         self.assertEqual(samples['homelab_zpool_scrub_errors{pool="rpool"}'], 0)
         for vdev in ("rpool-a", "rpool-b"):
@@ -146,7 +147,51 @@ class ZpoolTest(unittest.TestCase):
 
     def test_scrub_with_errors(self):
         self.assertEqual(self.run_fixture("zpool-scrub-errors.json"), 0)
-        self.assertEqual(parse(self.output)['homelab_zpool_scrub_errors{pool="rpool"}'], 3)
+        samples = parse(self.output)
+        self.assertEqual(samples['homelab_zpool_scrub_active{pool="rpool"}'], 0)
+        self.assertEqual(samples['homelab_zpool_scrub_end_time_seconds{pool="rpool"}'], 1790851949)
+        self.assertEqual(samples['homelab_zpool_scrub_errors{pool="rpool"}'], 3)
+
+    def test_canceled_scrub_and_finished_resilver_report_epoch(self):
+        # Synthetic variants retain nonzero scan timestamps and errors; neither
+        # is a completed scrub. Publication must also remove previous errors.
+        for fixture in ("zpool-scrub-canceled.json", "zpool-resilver-finished.json"):
+            with self.subTest(fixture=fixture):
+                self.assertEqual(self.run_fixture("zpool-scrub-errors.json"), 0)
+                expected = parse(self.output)
+                del expected['homelab_zpool_scrub_errors{pool="rpool"}']
+                expected['homelab_zpool_scrub_active{pool="rpool"}'] = 0
+                expected['homelab_zpool_scrub_end_time_seconds{pool="rpool"}'] = 0
+                self.assertEqual(self.run_fixture(fixture), 0)
+                # Includes pool health, declared vdev labels and all counters.
+                self.assertEqual(parse(self.output), expected)
+
+    def test_running_and_missing_scan_publication(self):
+        for function, state in (("SCRUB", "SCANNING"), ("RESILVER", "SCANNING"),
+                                (None, None), ("", "")):
+            with self.subTest(function=function, state=state):
+                self.assertEqual(self.run_fixture("zpool-scrub-errors.json"), 0)
+                expected = parse(self.output)
+                del expected['homelab_zpool_scrub_errors{pool="rpool"}']
+                scrubbing = function == "SCRUB"
+                expected['homelab_zpool_scrub_active{pool="rpool"}'] = int(scrubbing)
+                if scrubbing:
+                    del expected['homelab_zpool_scrub_end_time_seconds{pool="rpool"}']
+                else:
+                    expected['homelab_zpool_scrub_end_time_seconds{pool="rpool"}'] = 0
+                document = json.loads(read(os.path.join(FIXTURES, "zpool-scrub-errors.json")))
+                pool = document["pools"]["rpool"]
+                if function is None:
+                    del pool["scan_stats"]
+                elif not function:
+                    pool["scan_stats"] = {}
+                else:
+                    pool["scan_stats"].update(function=function, state=state)
+                fixture = os.path.join(self.env.dir, "scan-variant.json")
+                with open(fixture, "w") as handle:
+                    json.dump(document, handle)
+                self.assertEqual(self.run_fixture(fixture), 0)
+                self.assertEqual(parse(self.output), expected)
 
     def test_undeclared_device_uses_guid(self):
         os.environ["FAKE_ZPOOL_FIXTURE"] = os.path.join(FIXTURES, "zpool-online.json")
