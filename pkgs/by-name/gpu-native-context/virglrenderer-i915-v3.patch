@@ -1,0 +1,1210 @@
+--- a/src/drm/i915/i915_proto.h
++++ b/src/drm/i915/i915_proto.h
+@@ -5,6 +5,8 @@
+ 
+ #ifndef I915_VIRTIO_PROTO_H_
+ #define I915_VIRTIO_PROTO_H_
++
++#include <stddef.h>
+ 
+ #ifdef __GNUC__
+ # pragma GCC diagnostic push
+@@ -30,6 +32,7 @@
+    I915_CCMD_GEM_SET_MMAP_MODE,
+    I915_CCMD_GEM_BUSY,
+    I915_CCMD_GEM_EXECBUFFER2_V2,
++   I915_CCMD_GEM_EXECBUFFER2_V3,
+ };
+ 
+ #define I915_CCMD(_cmd, _len) (struct vdrm_ccmd_req){    \
+@@ -177,6 +180,39 @@
+ };
+ I915_DEFINE_CAST(vdrm_ccmd_req, i915_ccmd_gem_execbuffer2_req)
+ 
++/* V3 separates completion-ring identity from the real kernel context ID.
++ * Ring zero remains CPU-only; the existing ban mask covers context IDs 1..63.
++ */
++#define I915_V3_RING_COUNT 64
++#define I915_V3_MAX_CONTEXT_ID 63
++struct i915_ccmd_gem_execbuffer2_v3_req {
++   struct vdrm_ccmd_req hdr;
++   uint64_t flags;
++   uint64_t context_id;
++   uint32_t buffer_count;
++   uint32_t batch_start_offset;
++   uint32_t batch_len;
++   uint32_t relocs_count;
++   uint32_t ring_idx;
++   uint32_t pad;
++   uint8_t payload[];
++};
++I915_DEFINE_CAST(vdrm_ccmd_req, i915_ccmd_gem_execbuffer2_v3_req)
++static_assert(sizeof(struct i915_ccmd_gem_execbuffer2_req) == 48,
++              "legacy exec wire size");
++static_assert(sizeof(struct i915_ccmd_gem_execbuffer2_v3_req) == 56,
++              "V3 exec wire size");
++static_assert(offsetof(struct i915_ccmd_gem_execbuffer2_v3_req, ring_idx) == 48,
++              "V3 completion-ring offset");
++static_assert(offsetof(struct i915_ccmd_gem_execbuffer2_v3_req, payload) == 56,
++              "V3 payload offset");
++
++/* Common initial sequence: parse shared fields without incompatible casts. */
++union i915_ccmd_exec_req {
++   struct i915_ccmd_gem_execbuffer2_req v2;
++   struct i915_ccmd_gem_execbuffer2_v3_req v3;
++};
++
+ struct i915_ccmd_gem_execbuffer2_rsp {
+    struct vdrm_ccmd_rsp hdr;
+    int32_t ret;
+--- a/src/drm/i915/i915_ccmd.c
++++ b/src/drm/i915/i915_ccmd.c
+@@ -80,11 +80,11 @@
+    case DRM_IOCTL_I915_GEM_CONTEXT_CREATE:
+       break;
+    case DRM_IOCTL_I915_GEM_CONTEXT_DESTROY: {
++      struct i915_context *ictx = to_i915_context(dctx);
+       uint32_t ctx_id = *(uint32_t *)req->payload;
+-
+-      if (ctx_id < 64)
+-         p_atomic_set(&shmem->banned_ctx_mask,
+-                      shmem->banned_ctx_mask & ~(1ULL << ctx_id));
++      rsp->ret = i915_context_check_destroy(ictx, ctx_id);
++      if (rsp->ret)
++         return 0;
+       break;
+    }
+    case DRM_IOCTL_I915_GEM_CONTEXT_GETPARAM:
+@@ -131,6 +131,13 @@
+    }
+ 
+    rsp->ret = intel_ioctl(dctx->fd, req->cmd, req->payload);
++   if (!rsp->ret && req->cmd == DRM_IOCTL_I915_GEM_CONTEXT_DESTROY) {
++      uint32_t ctx_id = *(uint32_t *)req->payload;
++      i915_context_finish_destroy(to_i915_context(dctx), ctx_id);
++      if (ctx_id < 64)
++         p_atomic_set(&shmem->banned_ctx_mask,
++                      shmem->banned_ctx_mask & ~(1ULL << ctx_id));
++   }
+ 
+    if (req->cmd & IOC_OUT)
+       memcpy(rsp->payload, req->payload, payload_len);
+@@ -493,139 +500,207 @@
+ {
+    struct i915_context *ictx = to_i915_context(dctx);
+    struct i915_shmem *shmem = to_i915_shmem(dctx->shmem);
+-   const struct i915_ccmd_gem_execbuffer2_req *req = to_i915_ccmd_gem_execbuffer2_req(hdr);
+-
+-   if (hdr->len < sizeof(*req)) {
+-      drm_err("%u < %zu", hdr->len, sizeof(*req));
+-      return -EINVAL;
+-   }
++   const union i915_ccmd_exec_req *wire = (const void *)hdr;
++   const struct i915_ccmd_gem_execbuffer2_req *req = &wire->v2;
++   bool v3 = hdr->cmd == I915_CCMD_GEM_EXECBUFFER2_V3;
++   size_t prefix = v3 ? sizeof(wire->v3) : sizeof(wire->v2);
++
++   if (hdr->len < prefix)
++      return -EINVAL;
+ 
+    size_t buffers_size = size_mul(sizeof(struct drm_i915_gem_exec_object2),
+                                   req->buffer_count);
+-
+    size_t relocs_size = size_mul(sizeof(struct drm_i915_gem_relocation_entry),
+                                  req->relocs_count);
+-
+-   size_t req_len = size_add(sizeof(*req), buffers_size);
+-          req_len = size_add(req_len, relocs_size);
+-
+-   if (hdr->len != req_len) {
+-      drm_err("%u != %zu", hdr->len, req_len);
+-      return -EINVAL;
+-   }
+-
+-   size_t payload_len = buffers_size + relocs_size;
+-   void *payload = malloc(payload_len);
+-   if (!payload) {
+-      drm_err("invalid payload_len %zu", payload_len);
+-      return -EINVAL;
+-   }
+-
+-   memcpy(payload, req->payload, payload_len);
+-
+-   struct drm_i915_gem_relocation_entry *payload_reloc = (void*)((char*)payload + buffers_size);
+-   struct drm_i915_gem_exec_object2 *buffers = payload;
+-   struct i915_ccmd_gem_execbuffer2_rsp *rsp;
+-
+-   rsp = drm_context_rsp(dctx, hdr, sizeof(*rsp));
+-   if (!rsp) {
+-      free(payload);
++   if (hdr->len != size_add(prefix, size_add(buffers_size, relocs_size)))
++      return -EINVAL;
++
++   struct i915_ccmd_gem_execbuffer2_rsp *rsp =
++      drm_context_rsp(dctx, hdr, sizeof(*rsp));
++   if (!rsp)
+       return -ENOMEM;
+-   }
+-
+-   unsigned relocs_count = 0;
+-
++
++   uint32_t ring_idx;
++   uint64_t selector = req->flags & (I915_EXEC_RING_MASK | I915_EXEC_BSD_MASK);
++   if (v3) {
++      /* Even semantic failures must identify their attempted outer queue. */
++      ictx->pending_ring = wire->v3.ring_idx;
++      ictx->pending_fence = I915_FENCE_NO_WORK;
++      if (ictx->exec_mode == I915_EXEC_MODE_LEGACY) {
++         ictx->association_failed = true;
++         rsp->ret = EINVAL;
++         return 0;
++      }
++      ictx->exec_mode = I915_EXEC_MODE_V3;
++      ring_idx = wire->v3.ring_idx;
++      if (!ring_idx || ring_idx >= ARRAY_SIZE(ictx->rings)) {
++         rsp->ret = EINVAL;
++         return 0;
++      }
++      struct i915_ring_binding *ring = &ictx->rings[ring_idx];
++      if (ring->context_id || ring->uncertain || ring->physical_fd >= 0)
++         ictx->pending_fence = I915_FENCE_PHYSICAL;
++
++      const uint64_t allowed_flags =
++         I915_EXEC_RING_MASK | I915_EXEC_BSD_MASK | I915_EXEC_CONSTANTS_MASK |
++         I915_EXEC_GEN7_SOL_RESET | I915_EXEC_IS_PINNED | I915_EXEC_NO_RELOC |
++         I915_EXEC_HANDLE_LUT | I915_EXEC_RESOURCE_STREAMER | I915_EXEC_BATCH_FIRST;
++      unsigned engine = req->flags & I915_EXEC_RING_MASK;
++      unsigned bsd = req->flags & I915_EXEC_BSD_MASK;
++      if (wire->v3.pad || !req->context_id ||
++          req->context_id > I915_V3_MAX_CONTEXT_ID || !req->buffer_count ||
++          (req->flags & ~allowed_flags) || engine > I915_EXEC_VEBOX ||
++          (bsd && engine != I915_EXEC_BSD) || bsd > I915_EXEC_BSD_RING2 ||
++          (req->flags & I915_EXEC_CONSTANTS_MASK) == I915_EXEC_CONSTANTS_MASK) {
++         rsp->ret = EINVAL;
++         return 0;
++      }
++      if (ring->context_id &&
++          (ring->context_id != req->context_id || ring->selector != selector)) {
++         rsp->ret = EBUSY;
++         return 0;
++      }
++      if (ring->uncertain) {
++         rsp->ret = EIO;
++         return 0;
++      }
++      for (unsigned i = 1; i < ARRAY_SIZE(ictx->rings); i++) {
++         if (i != ring_idx && ictx->rings[i].context_id == req->context_id &&
++             ictx->rings[i].selector == selector) {
++            rsp->ret = EBUSY;
++            return 0;
++         }
++      }
++   } else {
++      if (ictx->exec_mode == I915_EXEC_MODE_V3)
++         return -EINVAL;
++      ictx->exec_mode = I915_EXEC_MODE_LEGACY;
++      if (!req->context_id || req->context_id > 8)
++         return -EINVAL;
++      ring_idx = 1 + (req->flags & I915_EXEC_RING_MASK);
++      if (hdr->cmd == I915_CCMD_GEM_EXECBUFFER2_V2)
++         ring_idx += (req->context_id - 1) * 8;
++      if (ring_idx >= ARRAY_SIZE(ictx->timelines))
++         return -EINVAL;
++   }
++
++   /* The dispatcher already owns a private, writable, aligned packet copy. */
++   struct drm_i915_gem_exec_object2 *buffers = (void *)((char *)hdr + prefix);
++   struct drm_i915_gem_relocation_entry *relocs =
++      (void *)((char *)buffers + buffers_size);
++   size_t relocs_count = 0;
+    for (unsigned i = 0; i < req->buffer_count; i++) {
+       struct drm_object *dobj = drm_context_get_object_from_res_id(dctx, buffers[i].handle);
+       if (!dobj) {
+-         drm_err("invalid res_id %u", buffers[i].handle);
+          rsp->ret = EINVAL;
+-         free(payload);
+-         return 0;
+-      }
+-
++         return 0;
++      }
+       buffers[i].handle = dobj->handle;
+-
+-      if (buffers[i].relocation_count) {
+-         if (size_add(relocs_count, buffers[i].relocation_count) > req->relocs_count) {
+-            drm_err("invalid relocation_count");
++      if (v3) {
++         const uint64_t allowed_object_flags =
++            EXEC_OBJECT_NEEDS_FENCE | EXEC_OBJECT_NEEDS_GTT | EXEC_OBJECT_WRITE |
++            EXEC_OBJECT_SUPPORTS_48B_ADDRESS | EXEC_OBJECT_PINNED |
++            EXEC_OBJECT_PAD_TO_SIZE | EXEC_OBJECT_ASYNC | EXEC_OBJECT_CAPTURE;
++         if ((buffers[i].flags & ~allowed_object_flags) || buffers[i].rsvd2 ||
++             (!(buffers[i].flags & EXEC_OBJECT_PAD_TO_SIZE) && buffers[i].rsvd1)) {
+             rsp->ret = EINVAL;
+-            free(payload);
+             return 0;
+          }
+-         buffers[i].relocs_ptr = (uintptr_t)payload_reloc;
+-         payload_reloc += buffers[i].relocation_count;
+-         relocs_count += buffers[i].relocation_count;
+-      }
+-   }
+-
+-   struct drm_i915_gem_execbuffer2 exec = {0};
+-
+-   exec.rsvd1 = req->context_id;
+-   exec.buffers_ptr = (uintptr_t)buffers;
+-   exec.buffer_count = req->buffer_count;
+-   exec.batch_start_offset = req->batch_start_offset;
+-   exec.batch_len = req->batch_len;
+-   exec.flags = req->flags;
+-
+-   if (!req->context_id || req->context_id > 8) {
+-      drm_err("invalid context_id");
+-      free(payload);
+-      return -EINVAL;
+-   }
+-
+-   int ring_idx = 1 + (exec.flags & I915_EXEC_RING_MASK);
+-
+-   /*
+-    * Android build of ANV driver uses 2 sub-contexts on same render ring
+-    * for graphics and compute queues. In all other cases i915 driver has one
+-    * sub-context per DRM context. First protocol version reserved 64 rings
+-    * (fence contexts) per DRM context, i915 driver doesn't need that many rings.
+-    * Split reserved 64 rings by 8 HW engines per sub-context, this makes each
+-    * sub-context have own fence contexts needed for correct multi-queue syncing.
+-    */
+-   if (hdr->cmd == I915_CCMD_GEM_EXECBUFFER2_V2)
+-      ring_idx += (req->context_id - 1) * 8;
+-
+-   if (ring_idx >= (int)ARRAY_SIZE(ictx->timelines)) {
+-      free(payload);
+-      return -EINVAL;
++      }
++      size_t end = size_add(relocs_count, buffers[i].relocation_count);
++      if (end > req->relocs_count ||
++          (buffers[i].relocation_count && !(req->flags & I915_EXEC_HANDLE_LUT))) {
++         /* Per-file GEM handles are never guest resource IDs or LUT indices. */
++         rsp->ret = EINVAL;
++         return 0;
++      }
++      buffers[i].relocs_ptr =
++         buffers[i].relocation_count ? (uintptr_t)&relocs[relocs_count] : 0;
++      for (size_t r = relocs_count; r < end; r++) {
++         const uint32_t allowed_domains =
++            I915_GEM_DOMAIN_RENDER | I915_GEM_DOMAIN_SAMPLER |
++            I915_GEM_DOMAIN_COMMAND | I915_GEM_DOMAIN_INSTRUCTION |
++            I915_GEM_DOMAIN_VERTEX;
++         if (v3 && ((relocs[r].read_domains | relocs[r].write_domain) &
++                    ~allowed_domains)) {
++            rsp->ret = EINVAL;
++            return 0;
++         }
++         if (relocs[r].target_handle >= req->buffer_count ||
++             (v3 && (relocs[r].offset > dobj->size ||
++                     dobj->size - relocs[r].offset < sizeof(uint64_t)))) {
++            rsp->ret = EINVAL;
++            return 0;
++         }
++      }
++      relocs_count = end;
++   }
++   if (relocs_count != req->relocs_count) {
++      rsp->ret = EINVAL;
++      return 0;
+    }
+ 
+    if (!ictx->timelines[ring_idx]) {
+-      ictx->timelines[ring_idx] = calloc(1, sizeof(*ictx->timelines[ring_idx]));
+-      if (!ictx->timelines[ring_idx]) {
+-         free(payload);
+-         return -ENOMEM;
+-      }
+-
+-      drm_timeline_init(ictx->timelines[ring_idx], &dctx->base, "intel-sync",
++      struct drm_timeline *timeline = calloc(1, sizeof(*timeline));
++      if (!timeline) {
++         rsp->ret = ENOMEM;
++         return 0;
++      }
++      drm_timeline_init(timeline, &dctx->base, "intel-sync",
+                         ring_idx, drm_context_fence_retire);
+-   }
+-
++      if (!timeline->sync_thread) {
++         cnd_destroy(&timeline->fence_cond);
++         mtx_destroy(&timeline->fence_mutex);
++         free(timeline);
++         rsp->ret = ENOMEM;
++         return 0;
++      }
++      ictx->timelines[ring_idx] = timeline;
++   }
++
++   struct drm_i915_gem_execbuffer2 exec = {
++      .rsvd1 = req->context_id,
++      .buffers_ptr = (uintptr_t)buffers,
++      .buffer_count = req->buffer_count,
++      .batch_start_offset = req->batch_start_offset,
++      .batch_len = req->batch_len,
++      .flags = req->flags | I915_EXEC_FENCE_OUT,
++      .rsvd2 = UINT64_C(0xffffffff00000000),
++   };
+    int in_fence_fd = virgl_context_take_in_fence_fd(&dctx->base);
+-
+-   if (in_fence_fd > -1) {
+-      exec.rsvd2 |= in_fence_fd;
++   if (in_fence_fd >= 0) {
++      exec.rsvd2 |= (uint32_t)in_fence_fd;
+       exec.flags |= I915_EXEC_FENCE_IN;
+    }
+-
+-   exec.flags |= I915_EXEC_FENCE_OUT;
+ 
+    int err = intel_ioctl(dctx->fd, DRM_IOCTL_I915_GEM_EXECBUFFER2_WR, &exec);
+    rsp->ret = err;
+-
+-   if (!err)
+-      drm_timeline_set_last_fence_fd(ictx->timelines[ring_idx], exec.rsvd2 >> 32);
++   if (!err) {
++      int fd = (int32_t)(exec.rsvd2 >> 32);
++      if (v3) {
++         struct i915_ring_binding *ring = &ictx->rings[ring_idx];
++         /* Kernel acceptance commits ownership even if tracking is uncertain. */
++         if (ring->physical_fd >= 0)
++            close(ring->physical_fd);
++         *ring = (struct i915_ring_binding) {
++            .context_id = req->context_id,
++            .selector = selector,
++            .physical_fd = fd,
++            .uncertain = fd < 0,
++         };
++         ictx->pending_fence = I915_FENCE_PHYSICAL;
++         if (fd < 0)
++            rsp->ret = EIO;
++      } else {
++         drm_timeline_set_last_fence_fd(ictx->timelines[ring_idx], fd);
++      }
++   }
+ 
+    if (err == EIO && req->context_id < 64)
+       p_atomic_set(&shmem->banned_ctx_mask,
+                    shmem->banned_ctx_mask | (1ULL << req->context_id));
+-
+-   close(in_fence_fd);
+-
+-   free(payload);
+-
++   if (in_fence_fd >= 0)
++      close(in_fence_fd);
+    return 0;
+ }
+ 
+@@ -729,6 +804,10 @@
+    HANDLER(GEM_SET_MMAP_MODE, gem_set_mmap_mode),
+    HANDLER(GEM_BUSY, gem_busy),
+    HANDLER(GEM_EXECBUFFER2_V2, gem_execbuffer2),
++   [I915_CCMD_GEM_EXECBUFFER2_V3] = {
++      "GEM_EXECBUFFER2_V3", i915_ccmd_gem_execbuffer2,
++      sizeof(struct i915_ccmd_gem_execbuffer2_v3_req),
++   },
+ };
+ 
+ const unsigned int i915_ccmd_dispatch_size = ARRAY_SIZE(i915_ccmd_dispatch);
+--- a/src/drm/i915/i915_renderer.c
++++ b/src/drm/i915/i915_renderer.c
+@@ -3,6 +3,10 @@
+  * SPDX-License-Identifier: MIT
+  */
+ 
++
++#include <poll.h>
++
++#include "util/os_file.h"
+ #include "virglrenderer.h"
+ 
+ #include "i915_ccmd.h"
+@@ -30,7 +34,7 @@
+    capset->u.intel.pci_device_id = drmdev->deviceinfo.pci->device_id;
+    capset->u.intel.pci_revision_id = drmdev->deviceinfo.pci->revision_id;
+ 
+-   capset->wire_format_version = 2;
++   capset->wire_format_version = 3;
+ 
+    drm_dbg("wire_format_version: %u", capset->wire_format_version);
+    drm_dbg("version_major:       %u", capset->version_major);
+@@ -59,11 +63,101 @@
+          drm_timeline_fini(ictx->timelines[i]);
+          free(ictx->timelines[i]);
+       }
++      if (i < ARRAY_SIZE(ictx->rings) && ictx->rings[i].physical_fd >= 0)
++         close(ictx->rings[i].physical_fd);
+    }
+ 
+    drm_context_deinit(dctx);
+ 
+    free(ictx);
++}
++
++/* Validate the entire stream before dispatch can reach an execution ioctl. */
++static int
++i915_renderer_submit_cmd(struct virgl_context *vctx, const void *buffer, size_t size)
++{
++   struct i915_context *ictx = to_i915_context(to_drm_context(vctx));
++   const uint8_t *next = buffer;
++   size_t remaining = size;
++
++   if (size > UINT32_MAX)
++      goto malformed;
++
++   while (remaining >= sizeof(struct vdrm_ccmd_req)) {
++      struct vdrm_ccmd_req hdr;
++      memcpy(&hdr, next, sizeof(hdr));
++      if (hdr.len < sizeof(hdr) || hdr.len > remaining ||
++          (hdr.len & 3) || (hdr.rsp_off & 3))
++         goto malformed;
++      if (hdr.cmd == I915_CCMD_GEM_EXECBUFFER2_V3 &&
++          (remaining != size || hdr.len != size ||
++           size < sizeof(struct i915_ccmd_gem_execbuffer2_v3_req)))
++         goto malformed;
++      if ((hdr.cmd == I915_CCMD_GEM_EXECBUFFER2 ||
++           hdr.cmd == I915_CCMD_GEM_EXECBUFFER2_V2 ||
++           hdr.cmd == I915_CCMD_GEM_EXECBUFFER2_V3) &&
++          (ictx->pending_fence != I915_FENCE_NONE || ictx->association_failed))
++         return -EBUSY;
++      next += hdr.len;
++      remaining -= hdr.len;
++   }
++   if (remaining)
++      goto malformed;
++
++   int ret = ictx->submit_cmd(vctx, buffer, size);
++   if (ret)
++      ictx->association_failed = true;
++   return ret;
++
++malformed:
++   ictx->association_failed = true;
++   return -EINVAL;
++}
++
++int
++i915_context_check_destroy(struct i915_context *ictx, uint32_t context_id)
++{
++   if (ictx->exec_mode != I915_EXEC_MODE_V3)
++      return 0;
++   if (ictx->pending_fence != I915_FENCE_NONE || ictx->association_failed)
++      return EBUSY;
++   bool callbacks_pending = false;
++
++   for (unsigned i = 1; i < ARRAY_SIZE(ictx->rings); i++) {
++      struct i915_ring_binding *ring = &ictx->rings[i];
++      if (ring->context_id != context_id)
++         continue;
++      if (ring->uncertain || ring->physical_fd < 0)
++         return EBUSY;
++      struct pollfd pfd = { .fd = ring->physical_fd, .events = POLLIN };
++      if (poll(&pfd, 1, 0) != 1 || pfd.revents != POLLIN)
++         return EBUSY;
++
++      /* An old callback must not retire a newer binding's transport fence. */
++      struct drm_timeline *timeline = ictx->timelines[i];
++      mtx_lock(&timeline->fence_mutex);
++      bool empty = list_is_empty(&timeline->pending_fences);
++      mtx_unlock(&timeline->fence_mutex);
++      callbacks_pending |= !empty;
++   }
++   /* Physical work is complete; upstream drmIoctl retries this bookkeeping race. */
++   return callbacks_pending ? EAGAIN : 0;
++}
++
++void
++i915_context_finish_destroy(struct i915_context *ictx, uint32_t context_id)
++{
++   if (ictx->exec_mode != I915_EXEC_MODE_V3)
++      return;
++   for (unsigned i = 1; i < ARRAY_SIZE(ictx->rings); i++) {
++      struct i915_ring_binding *ring = &ictx->rings[i];
++      if (ring->context_id != context_id)
++         continue;
++      if (ring->physical_fd >= 0)
++         close(ring->physical_fd);
++      *ring = (struct i915_ring_binding) { .physical_fd = -1 };
++      drm_timeline_set_last_fence_fd(ictx->timelines[i], -1);
++   }
+ }
+ 
+ static int
+@@ -73,6 +167,46 @@
+    struct drm_context *dctx = to_drm_context(vctx);
+    struct i915_context *ictx = to_i915_context(dctx);
+ 
++   if (ictx->association_failed)
++      return -EIO;
++
++   if (queue_id == 0) {
++      if (ictx->pending_fence != I915_FENCE_NONE)
++         return -EBUSY;
++      vctx->fence_retire(vctx, 0, fence_id);
++      return 0;
++   }
++
++   if (ictx->exec_mode == I915_EXEC_MODE_V3 || ictx->pending_fence != I915_FENCE_NONE) {
++      if (ictx->pending_fence == I915_FENCE_NONE ||
++          queue_id != ictx->pending_ring ||
++          queue_id >= ARRAY_SIZE(ictx->rings))
++         return -EINVAL;
++
++      struct i915_ring_binding *ring = &ictx->rings[queue_id];
++      if (ring->uncertain)
++         return -EIO;
++      if (ictx->pending_fence == I915_FENCE_NO_WORK) {
++         /* No accepted work has ever occupied this (released) slot. */
++         if (ring->context_id || ring->physical_fd >= 0)
++            return -EINVAL;
++         ictx->pending_fence = I915_FENCE_NONE;
++         vctx->fence_retire(vctx, queue_id, fence_id);
++         return 0;
++      }
++      if (!ring->context_id || ring->physical_fd < 0 || !ictx->timelines[queue_id])
++         return -EIO;
++
++      int fd = os_dupfd_cloexec(ring->physical_fd);
++      if (fd < 0)
++         return -errno;
++      drm_timeline_set_last_fence_fd(ictx->timelines[queue_id], fd);
++      int ret = drm_timeline_submit_fence(ictx->timelines[queue_id], flags, fence_id);
++      if (!ret)
++         ictx->pending_fence = I915_FENCE_NONE;
++      return ret;
++   }
++
+    if (queue_id >= ARRAY_SIZE(ictx->timelines)) {
+       drm_err("invalid queue_id: %u", queue_id);
+       return -EINVAL;
+@@ -95,7 +229,14 @@
+    if (!ictx)
+       return NULL;
+ 
+-   drm_context_init(&ictx->base, fd, i915_ccmd_dispatch, i915_ccmd_dispatch_size);
++   if (!drm_context_init(&ictx->base, fd, i915_ccmd_dispatch, i915_ccmd_dispatch_size)) {
++      free(ictx);
++      return NULL;
++   }
++   for (unsigned i = 0; i < ARRAY_SIZE(ictx->rings); i++)
++      ictx->rings[i].physical_fd = -1;
++   ictx->submit_cmd = ictx->base.base.submit_cmd;
++   ictx->base.base.submit_cmd = i915_renderer_submit_cmd;
+ 
+    ictx->base.base.destroy = i915_renderer_destroy;
+    ictx->base.base.attach_resource = i915_renderer_attach_resource;
+--- a/src/drm/i915/i915_renderer.h
++++ b/src/drm/i915/i915_renderer.h
+@@ -42,9 +42,35 @@
+ 
+ #pragma GCC diagnostic pop
+ 
++enum i915_exec_mode {
++   I915_EXEC_MODE_NONE,
++   I915_EXEC_MODE_LEGACY,
++   I915_EXEC_MODE_V3,
++};
++
++enum i915_fence_disposition {
++   I915_FENCE_NONE,
++   I915_FENCE_PHYSICAL,
++   I915_FENCE_NO_WORK,
++};
++
++struct i915_ring_binding {
++   uint32_t context_id;
++   uint64_t selector;
++   /* Independently owned: timeline.last_fence_fd is consumed by association. */
++   int physical_fd;
++   bool uncertain;
++};
++
+ struct i915_context {
+    struct drm_context base;
+    struct drm_timeline *timelines[65];
++   struct i915_ring_binding rings[I915_V3_RING_COUNT];
++   enum i915_exec_mode exec_mode;
++   enum i915_fence_disposition pending_fence;
++   uint32_t pending_ring;
++   bool association_failed;
++   int (*submit_cmd)(struct virgl_context *, const void *, size_t);
+ };
+ DEFINE_CAST(drm_context, i915_context)
+ 
+@@ -54,6 +80,9 @@
+ void *i915_context_rsp(struct i915_context *ictx, const struct vdrm_ccmd_req *hdr,
+                        size_t len);
+ 
++int i915_context_check_destroy(struct i915_context *ictx, uint32_t context_id);
++void i915_context_finish_destroy(struct i915_context *ictx, uint32_t context_id);
++
+ int i915_renderer_probe(int fd, struct virgl_renderer_capset_drm *capset);
+ 
+ struct virgl_context *i915_renderer_create(int fd, size_t debug_len, const char *debug_name);
+--- a/src/drm/drm_fence.c
++++ b/src/drm/drm_fence.c
+@@ -151,7 +151,12 @@
+ 
+    drm_dbg("fence: %p (%" PRIu64 ")", (void*)fence, fence->fence_id);
+ 
+-   virgl_fence_set_fd(fence_id, fence->fd);
++   int ret = virgl_fence_set_fd(fence_id, fence->fd);
++   if (ret) {
++      close(fence->fd);
++      free(fence);
++      return ret;
++   }
+ 
+    mtx_lock(&timeline->fence_mutex);
+    list_addtail(&fence->node, &timeline->pending_fences);
+--- /dev/null
++++ b/src/drm/i915/i915_v3_protocol_test.c
+@@ -0,0 +1,517 @@
++/* SPDX-License-Identifier: MIT
++ * CPU-only production dispatch/state checks. Pipes simulate the ioctl boundary;
++ * they are NOT sync-files and this test makes no physical GPU completion claim.
++ */
++#include <poll.h>
++#include <stdio.h>
++#include <stdatomic.h>
++
++#include "virglrenderer.h"
++#include "virgl_fence.h"
++#include "i915_object.h"
++#include "i915_renderer.h"
++
++#define CHECK(c) do { if (!(c)) { \
++   fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #c); abort(); \
++} } while (0)
++
++static int kernel_error, destroy_error, output_read = -1;
++static bool omit_output, fail_calloc;
++static int fail_dup_after = -1;
++static unsigned exec_calls, destroy_calls;
++static uint64_t expected_context;
++static uint32_t expected_relocs;
++static atomic_uint retired;
++static uint64_t retired_ids[256];
++static mtx_t retire_mutex;
++static cnd_t retire_cond;
++static bool pause_next_poll, poll_paused, release_poll;
++
++void *__real_calloc(size_t count, size_t size);
++int __real_os_dupfd_cloexec(int fd);
++int __real_poll(struct pollfd *fds, nfds_t count, int timeout);
++
++void *__wrap_calloc(size_t count, size_t size);
++int __wrap_os_dupfd_cloexec(int fd);
++int __wrap_poll(struct pollfd *fds, nfds_t count, int timeout);
++int __wrap_drmIoctl(int fd, unsigned long cmd, void *arg);
++
++int __wrap_poll(struct pollfd *fds, nfds_t count, int timeout)
++{
++   if (timeout == -1) {
++      mtx_lock(&retire_mutex);
++      if (pause_next_poll) {
++         pause_next_poll = false;
++         poll_paused = true;
++         cnd_signal(&retire_cond);
++         while (!release_poll)
++            CHECK(cnd_wait(&retire_cond, &retire_mutex) == thrd_success);
++      }
++      mtx_unlock(&retire_mutex);
++   }
++   return __real_poll(fds, count, timeout);
++}
++
++void *__wrap_calloc(size_t count, size_t size)
++{
++   if (fail_calloc) {
++      fail_calloc = false;
++      errno = ENOMEM;
++      return NULL;
++   }
++   return __real_calloc(count, size);
++}
++
++int __wrap_os_dupfd_cloexec(int fd)
++{
++   if (fail_dup_after == 0) {
++      fail_dup_after = -1;
++      errno = EMFILE;
++      return -1;
++   }
++   if (fail_dup_after > 0)
++      fail_dup_after--;
++   return __real_os_dupfd_cloexec(fd);
++}
++
++int __wrap_drmIoctl(int fd, unsigned long cmd, void *arg)
++{
++   (void)fd;
++   if (cmd == DRM_IOCTL_I915_GEM_EXECBUFFER2_WR) {
++      struct drm_i915_gem_execbuffer2 *exec = arg;
++      struct drm_i915_gem_exec_object2 *obj = (void *)(uintptr_t)exec->buffers_ptr;
++      exec_calls++;
++      CHECK(exec->rsvd1 == expected_context);
++      CHECK(exec->buffer_count == 1 && obj->handle == 1001);
++      CHECK(obj->relocation_count == expected_relocs);
++      CHECK(exec->flags & I915_EXEC_FENCE_OUT);
++      CHECK(!(exec->flags & (I915_EXEC_USE_EXTENSIONS | I915_EXEC_FENCE_ARRAY)));
++      if (expected_relocs) {
++         struct drm_i915_gem_relocation_entry *reloc = (void *)(uintptr_t)obj->relocs_ptr;
++         CHECK(reloc == (void *)(obj + 1));
++         CHECK(reloc->target_handle == 0);
++      } else {
++         CHECK(obj->relocs_ptr == 0);
++      }
++      if (kernel_error) {
++         errno = kernel_error;
++         return -1;
++      }
++      if (!omit_output) {
++         int out = dup(output_read);
++         CHECK(out >= 0);
++         exec->rsvd2 = (exec->rsvd2 & UINT32_MAX) | ((uint64_t)(uint32_t)out << 32);
++      }
++      return 0;
++   }
++   if (cmd == DRM_IOCTL_I915_GEM_CONTEXT_DESTROY) {
++      destroy_calls++;
++      if (destroy_error) {
++         errno = destroy_error;
++         return -1;
++      }
++      return 0;
++   }
++   CHECK(cmd == DRM_IOCTL_GEM_CLOSE);
++   return 0;
++}
++
++static void retire(struct virgl_context *vctx, uint32_t ring, uint64_t id)
++{
++   (void)vctx;
++   CHECK(ring < 65);
++   mtx_lock(&retire_mutex);
++   unsigned n = atomic_load(&retired);
++   CHECK(n < ARRAY_SIZE(retired_ids));
++   retired_ids[n] = id;
++   atomic_store(&retired, n + 1);
++   cnd_signal(&retire_cond);
++   mtx_unlock(&retire_mutex);
++}
++
++static void wait_retired(unsigned count)
++{
++   struct timespec deadline;
++   timespec_get(&deadline, TIME_UTC);
++   deadline.tv_sec += 5;
++   mtx_lock(&retire_mutex);
++   while (atomic_load(&retired) < count)
++      CHECK(cnd_timedwait(&retire_cond, &retire_mutex, &deadline) == thrd_success);
++   mtx_unlock(&retire_mutex);
++}
++
++static struct i915_context *make_context(void)
++{
++   struct virgl_context *vctx = i915_renderer_create(-1, 0, NULL);
++   CHECK(vctx);
++   vctx->in_fence_fd = -1;
++   vctx->fence_retire = retire;
++   struct i915_context *ictx = to_i915_context(to_drm_context(vctx));
++   struct virgl_context_blob blob;
++   CHECK(drm_context_get_shmem_blob(&ictx->base, "i915-v3-test", sizeof(struct i915_shmem),
++                                   4096, VIRGL_RENDERER_BLOB_FLAG_USE_MAPPABLE, &blob) == 0);
++   close(blob.u.fd);
++   struct i915_object *obj = i915_object_create(1001, 4096);
++   CHECK(obj);
++   drm_context_object_set_res_id(&ictx->base, &obj->base, 77);
++   return ictx;
++}
++
++struct packet {
++   uint64_t words[(sizeof(struct i915_ccmd_gem_execbuffer2_v3_req) +
++                   sizeof(struct drm_i915_gem_exec_object2) +
++                   sizeof(struct drm_i915_gem_relocation_entry)) / 8];
++};
++
++static struct i915_ccmd_gem_execbuffer2_v3_req *packet(struct packet *p, uint32_t ring,
++                                                     uint64_t ctx, uint64_t flags)
++{
++   memset(p, 0, sizeof(*p));
++   struct i915_ccmd_gem_execbuffer2_v3_req *req = (void *)p;
++   req->hdr = I915_CCMD(GEM_EXECBUFFER2_V3,
++                        sizeof(*req) + sizeof(struct drm_i915_gem_exec_object2));
++   req->context_id = ctx;
++   req->ring_idx = ring;
++   req->flags = flags;
++   req->buffer_count = 1;
++   struct drm_i915_gem_exec_object2 *obj = (void *)req->payload;
++   obj->handle = 77;
++   /* Guest pointers must be replaced even when there are no relocations. */
++   obj->relocs_ptr = UINT64_MAX;
++   return req;
++}
++
++static int send_packet(struct i915_context *ictx, void *packet)
++{
++   struct vdrm_ccmd_req *hdr = packet;
++   struct i915_ccmd_gem_execbuffer2_rsp *rsp = (void *)ictx->base.rsp_mem;
++   rsp->hdr.len = sizeof(*rsp);
++   rsp->ret = -999;
++   hdr->seqno = ictx->base.shmem->seqno + 1;
++   CHECK(ictx->base.base.submit_cmd(&ictx->base.base, packet, hdr->len) == 0);
++   CHECK(ictx->base.shmem->seqno == hdr->seqno);
++   CHECK(rsp->hdr.len == sizeof(*rsp));
++   return rsp->ret;
++}
++
++static int destroy_context(struct i915_context *ictx, uint32_t ctx)
++{
++   uint64_t storage[(sizeof(struct i915_ccmd_ioctl_simple_req) +
++                     sizeof(struct drm_i915_gem_context_destroy)) / 8] = {0};
++   struct i915_ccmd_ioctl_simple_req *req = (void *)storage;
++   req->hdr = I915_CCMD(IOCTL_SIMPLE, sizeof(storage));
++   req->hdr.seqno = ictx->base.shmem->seqno + 1;
++   req->cmd = DRM_IOCTL_I915_GEM_CONTEXT_DESTROY;
++   ((struct drm_i915_gem_context_destroy *)(void *)req->payload)->ctx_id = ctx;
++   struct i915_ccmd_ioctl_simple_rsp *rsp = (void *)ictx->base.rsp_mem;
++   rsp->hdr.len = sizeof(*rsp);
++   CHECK(ictx->base.base.submit_cmd(&ictx->base.base, req, sizeof(storage)) == 0);
++   CHECK(ictx->base.shmem->seqno == req->hdr.seqno);
++   return rsp->ret;
++}
++
++static void check_rejections(void)
++{
++   struct i915_context *ictx = make_context();
++   struct packet p;
++   struct i915_ccmd_gem_execbuffer2_v3_req *req = packet(&p, 1, 9, I915_EXEC_BSD);
++   unsigned calls = exec_calls;
++   req->pad = 1;
++   CHECK(send_packet(ictx, req) == EINVAL);
++   CHECK(!ictx->rings[1].context_id && exec_calls == calls);
++   unsigned before = atomic_load(&retired);
++   CHECK(ictx->base.base.submit_fence(&ictx->base.base, 0, 2, 1) < 0);
++   CHECK(ictx->base.base.submit_fence(&ictx->base.base, 0, 0, 1) < 0);
++   CHECK(atomic_load(&retired) == before);
++   CHECK(ictx->base.base.submit_fence(&ictx->base.base, 0, 1, 1) == 0);
++   CHECK(atomic_load(&retired) == before + 1);
++   CHECK(!ictx->rings[1].context_id && ictx->rings[1].physical_fd == -1);
++
++   uint64_t bad_ctx[] = {0, 64, UINT64_C(0x100000001)};
++   for (unsigned i = 0; i < ARRAY_SIZE(bad_ctx); i++) {
++      req = packet(&p, 1, bad_ctx[i], I915_EXEC_BSD);
++      CHECK(send_packet(ictx, req) == EINVAL);
++      CHECK(ictx->base.base.submit_fence(&ictx->base.base, 0, 1, 2 + i) == 0);
++   }
++   uint64_t bad_flags[] = {5, I915_EXEC_RENDER | I915_EXEC_BSD_RING1,
++                          I915_EXEC_BSD | I915_EXEC_BSD_MASK,
++                          I915_EXEC_BSD | I915_EXEC_FENCE_IN,
++                          I915_EXEC_BSD | I915_EXEC_USE_EXTENSIONS};
++   for (unsigned i = 0; i < ARRAY_SIZE(bad_flags); i++) {
++      req = packet(&p, 1, 9, bad_flags[i]);
++      CHECK(send_packet(ictx, req) == EINVAL);
++      CHECK(ictx->base.base.submit_fence(&ictx->base.base, 0, 1, 10 + i) == 0);
++   }
++   req = packet(&p, 1, 9, I915_EXEC_BSD);
++   req->relocs_count = 1;
++   req->hdr.len = sizeof(p);
++   struct drm_i915_gem_exec_object2 *obj = (void *)req->payload;
++   obj->relocation_count = 1;
++   CHECK(send_packet(ictx, req) == EINVAL); /* Non-LUT relocation. */
++   CHECK(ictx->base.base.submit_fence(&ictx->base.base, 0, 1, 20) == 0);
++   obj->relocation_count = 0;
++   req->flags |= I915_EXEC_HANDLE_LUT;
++   CHECK(send_packet(ictx, req) == EINVAL); /* Unclaimed trailing relocation. */
++   CHECK(ictx->base.base.submit_fence(&ictx->base.base, 0, 1, 21) == 0);
++   CHECK(exec_calls == calls);
++   ictx->base.base.destroy(&ictx->base.base);
++
++   /* A second packet/trailer must never execute the otherwise-valid first. */
++   ictx = make_context();
++   uint64_t stream[2 * sizeof(struct packet) / 8] = {0};
++   req = packet((void *)stream, 1, 9, I915_EXEC_BSD);
++   struct vdrm_ccmd_req *tail = (void *)((char *)stream + req->hdr.len);
++   *tail = (struct vdrm_ccmd_req) { .cmd = I915_CCMD_GETPARAM, .len = sizeof(*tail) };
++   CHECK(ictx->base.base.submit_cmd(&ictx->base.base, stream,
++                                   req->hdr.len + sizeof(*tail)) < 0);
++   CHECK(exec_calls == calls);
++   CHECK(ictx->base.base.submit_fence(&ictx->base.base, 0, 1, 22) < 0);
++   ictx->base.base.destroy(&ictx->base.base);
++}
++
++static void check_physical_ownership(void)
++{
++   struct i915_context *ictx = make_context();
++   struct packet p;
++   int pipefd[2];
++   CHECK(pipe(pipefd) == 0);
++   output_read = pipefd[0];
++   expected_context = 9;
++   struct i915_ccmd_gem_execbuffer2_v3_req *req =
++      packet(&p, 1, 9, I915_EXEC_BSD | I915_EXEC_BSD_RING2 | I915_EXEC_HANDLE_LUT);
++   req->hdr.len = sizeof(p);
++   req->relocs_count = 1;
++   struct drm_i915_gem_exec_object2 *obj = (void *)req->payload;
++   obj->relocation_count = 1;
++   struct drm_i915_gem_relocation_entry *reloc = (void *)(obj + 1);
++   reloc->offset = 8;
++   reloc->read_domains = I915_GEM_DOMAIN_RENDER;
++   expected_relocs = 1;
++   CHECK(send_packet(ictx, req) == 0);
++   CHECK(ictx->rings[1].context_id == 9);
++   int physical = ictx->rings[1].physical_fd;
++   CHECK(physical >= 0 && ictx->pending_fence == I915_FENCE_PHYSICAL);
++   unsigned calls = exec_calls, before = atomic_load(&retired);
++   CHECK(ictx->base.base.submit_cmd(&ictx->base.base, req, req->hdr.len) == -EBUSY);
++   CHECK(exec_calls == calls && ictx->rings[1].physical_fd == physical);
++   CHECK(destroy_context(ictx, 9) == EBUSY);
++   CHECK(ictx->base.base.submit_fence(&ictx->base.base, 0, 2, 30) < 0);
++   CHECK(ictx->base.base.submit_fence(&ictx->base.base, 0, 0, 30) < 0);
++
++   /* Fail staging dup, FIFO dup, registry dup, then FIFO allocation. */
++   for (int i = 0; i < 3; i++) {
++      fail_dup_after = i;
++      CHECK(ictx->base.base.submit_fence(&ictx->base.base, 0, 1, 30) < 0);
++      CHECK(fcntl(physical, F_GETFD) >= 0);
++      CHECK(ictx->rings[1].physical_fd == physical);
++      CHECK(ictx->pending_fence == I915_FENCE_PHYSICAL);
++      CHECK(atomic_load(&retired) == before);
++   }
++   fail_calloc = true;
++   CHECK(ictx->base.base.submit_fence(&ictx->base.base, 0, 1, 30) < 0);
++   CHECK(ictx->pending_fence == I915_FENCE_PHYSICAL);
++   CHECK(ictx->base.base.submit_fence(&ictx->base.base, 0, 1, 30) == 0);
++   CHECK(ictx->rings[1].physical_fd == physical);
++   struct packet duplicate;
++   CHECK(send_packet(ictx, packet(&duplicate, 2, 9,
++                                  I915_EXEC_BSD | I915_EXEC_BSD_RING2)) == EBUSY);
++   CHECK(!ictx->rings[2].context_id && exec_calls == calls);
++   CHECK(ictx->base.base.submit_fence(&ictx->base.base, 0, 2, 29) == 0);
++   CHECK(atomic_load(&retired) == before + 1);
++   before++;
++
++   /* Rejected B must be behind the real pending A, never immediate retirement. */
++   kernel_error = EIO;
++   CHECK(send_packet(ictx, req) == EIO);
++   CHECK(((struct i915_shmem *)ictx->base.shmem)->banned_ctx_mask & (1ULL << 9));
++   CHECK(ictx->rings[1].physical_fd == physical);
++   CHECK(ictx->base.base.submit_fence(&ictx->base.base, 0, 1, 31) == 0);
++   CHECK(atomic_load(&retired) == before);
++   CHECK(destroy_context(ictx, 9) == EBUSY);
++   CHECK(ictx->rings[1].physical_fd == physical);
++   CHECK(write(pipefd[1], "x", 1) == 1);
++   wait_retired(before + 2);
++   CHECK(retired_ids[before] == 30 && retired_ids[before + 1] == 31);
++   /* Synchronize with callback removal (which follows callback invocation). */
++   mtx_lock(&ictx->timelines[1]->fence_mutex);
++   mtx_unlock(&ictx->timelines[1]->fence_mutex);
++   destroy_error = EIO;
++   CHECK(destroy_context(ictx, 9) == EIO);
++   CHECK(ictx->rings[1].physical_fd == physical);
++   CHECK(((struct i915_shmem *)ictx->base.shmem)->banned_ctx_mask & (1ULL << 9));
++   destroy_error = 0;
++   CHECK(destroy_context(ictx, 9) == 0);
++   CHECK(!ictx->rings[1].context_id && ictx->rings[1].physical_fd == -1);
++   CHECK(!(((struct i915_shmem *)ictx->base.shmem)->banned_ctx_mask & (1ULL << 9)));
++   CHECK(fcntl(physical, F_GETFD) == -1 && errno == EBADF);
++   kernel_error = 0;
++   req = packet(&p, 1, 10, I915_EXEC_RENDER);
++   expected_context = 10;
++   expected_relocs = 0;
++   CHECK(send_packet(ictx, req) == 0);
++   CHECK(ictx->base.base.submit_fence(&ictx->base.base, 0, 1, 32) == 0);
++   wait_retired(before + 3);
++   ictx->base.base.destroy(&ictx->base.base);
++   close(pipefd[0]);
++   close(pipefd[1]);
++}
++
++static void check_slots_and_uncertainty(void)
++{
++   struct i915_context *ictx = make_context();
++   struct packet p;
++   int pipefd[2];
++   CHECK(pipe(pipefd) == 0);
++   CHECK(write(pipefd[1], "x", 1) == 1);
++   output_read = pipefd[0];
++   unsigned before = atomic_load(&retired);
++   for (uint32_t i = 1; i < I915_V3_RING_COUNT; i++) {
++      expected_context = i;
++      struct i915_ccmd_gem_execbuffer2_v3_req *req = packet(&p, i, i, I915_EXEC_RENDER);
++      CHECK(send_packet(ictx, req) == 0);
++      CHECK(ictx->base.base.submit_fence(&ictx->base.base, 0, i, 40 + i) == 0);
++   }
++   wait_retired(before + 63);
++   unsigned calls = exec_calls;
++   struct i915_ccmd_gem_execbuffer2_v3_req *req = packet(&p, 1, 9, I915_EXEC_BSD);
++   CHECK(send_packet(ictx, req) == EBUSY); /* No occupied slot can be stolen. */
++   CHECK(ictx->rings[1].context_id == 1 && exec_calls == calls);
++   CHECK(ictx->base.base.submit_fence(&ictx->base.base, 0, 1, 104) == 0);
++   wait_retired(before + 64);
++   req = packet(&p, 2, 1, I915_EXEC_RENDER);
++   CHECK(send_packet(ictx, req) == EBUSY); /* Tuple already owned by slot 1. */
++   CHECK(ictx->base.base.submit_fence(&ictx->base.base, 0, 2, 105) == 0);
++   wait_retired(before + 65);
++   req = packet(&p, 64, 9, I915_EXEC_BSD);
++   CHECK(send_packet(ictx, req) == EINVAL);
++   CHECK(ictx->base.base.submit_fence(&ictx->base.base, 0, 1, 106) < 0);
++   CHECK(exec_calls == calls);
++   ictx->base.base.destroy(&ictx->base.base);
++   close(pipefd[0]);
++   close(pipefd[1]);
++
++   ictx = make_context();
++   req = packet(&p, 1, 9, I915_EXEC_BSD);
++   expected_context = 9;
++   omit_output = true;
++   CHECK(send_packet(ictx, req) == EIO);
++   CHECK(ictx->rings[1].context_id == 9 && ictx->rings[1].uncertain);
++   CHECK(ictx->pending_fence == I915_FENCE_PHYSICAL);
++   CHECK(ictx->base.base.submit_fence(&ictx->base.base, 0, 1, 107) < 0);
++   CHECK(destroy_context(ictx, 9) == EBUSY);
++   ictx->base.base.destroy(&ictx->base.base);
++   omit_output = false;
++}
++
++static void check_legacy_and_mode_isolation(void)
++{
++   struct i915_context *legacy = make_context();
++   struct i915_context *modern = make_context();
++   struct packet p, old;
++   int pipefd[2];
++   CHECK(pipe(pipefd) == 0);
++   CHECK(write(pipefd[1], "x", 1) == 1);
++   output_read = pipefd[0];
++   unsigned before = atomic_load(&retired);
++   for (unsigned version = 1; version <= 2; version++) {
++      memset(&old, 0, sizeof(old));
++      struct i915_ccmd_gem_execbuffer2_req *req = (void *)&old;
++      req->hdr = I915_CCMD(GEM_EXECBUFFER2, sizeof(*req) +
++                           sizeof(struct drm_i915_gem_exec_object2));
++      if (version == 2)
++         req->hdr.cmd = I915_CCMD_GEM_EXECBUFFER2_V2;
++      req->context_id = 2;
++      req->flags = I915_EXEC_RENDER;
++      req->buffer_count = 1;
++      ((struct drm_i915_gem_exec_object2 *)(void *)req->payload)->handle = 77;
++      expected_context = 2;
++      CHECK(send_packet(legacy, req) == 0);
++      uint32_t ring = version == 1 ? 2 : 10;
++      CHECK(legacy->base.base.submit_fence(&legacy->base.base, 0, ring, 110 + version) == 0);
++   }
++   wait_retired(before + 2);
++   struct i915_ccmd_gem_execbuffer2_v3_req *req =
++      packet(&p, 1, 9, I915_EXEC_BSD);
++   expected_context = 9;
++   CHECK(send_packet(modern, req) == 0); /* Different DRM descriptions coexist. */
++   CHECK(modern->base.base.submit_fence(&modern->base.base, 0, 1, 113) == 0);
++   wait_retired(before + 3);
++   unsigned calls = exec_calls;
++   CHECK(send_packet(legacy, req) == EINVAL);
++   CHECK(legacy->base.base.submit_fence(&legacy->base.base, 0, 1, 114) < 0);
++   CHECK(modern->base.base.submit_cmd(&modern->base.base, &old,
++                                     ((struct vdrm_ccmd_req *)(void *)&old)->len) < 0);
++   CHECK(exec_calls == calls);
++   legacy->base.base.destroy(&legacy->base.base);
++   modern->base.base.destroy(&modern->base.base);
++   close(pipefd[0]);
++   close(pipefd[1]);
++}
++
++static void check_completed_fence_pending_callback(void)
++{
++   struct i915_context *ictx = make_context();
++   struct packet p;
++   int pipefd[2];
++   CHECK(pipe(pipefd) == 0);
++   output_read = pipefd[0];
++   expected_context = 9;
++   CHECK(send_packet(ictx, packet(&p, 1, 9, I915_EXEC_BSD)) == 0);
++   int physical = ictx->rings[1].physical_fd;
++   unsigned before = atomic_load(&retired);
++   unsigned destroys = destroy_calls;
++
++   mtx_lock(&retire_mutex);
++   pause_next_poll = true;
++   poll_paused = false;
++   release_poll = false;
++   mtx_unlock(&retire_mutex);
++   CHECK(ictx->base.base.submit_fence(&ictx->base.base, 0, 1, 120) == 0);
++   struct timespec deadline;
++   timespec_get(&deadline, TIME_UTC);
++   deadline.tv_sec += 5;
++   mtx_lock(&retire_mutex);
++   while (!poll_paused)
++      CHECK(cnd_timedwait(&retire_cond, &retire_mutex, &deadline) == thrd_success);
++   mtx_unlock(&retire_mutex);
++
++   /* The actual worker is outside fence_mutex, immediately before blocking poll.
++    * Make the real pipe readable without allowing its FIFO callback to run.
++    */
++   CHECK(write(pipefd[1], "x", 1) == 1);
++   CHECK(destroy_context(ictx, 9) == EAGAIN);
++   CHECK(destroy_calls == destroys && atomic_load(&retired) == before);
++   CHECK(ictx->rings[1].context_id == 9 && ictx->rings[1].physical_fd == physical);
++   CHECK(fcntl(physical, F_GETFD) >= 0);
++
++   mtx_lock(&retire_mutex);
++   release_poll = true;
++   cnd_broadcast(&retire_cond);
++   mtx_unlock(&retire_mutex);
++   wait_retired(before + 1);
++   mtx_lock(&ictx->timelines[1]->fence_mutex);
++   mtx_unlock(&ictx->timelines[1]->fence_mutex);
++   CHECK(destroy_context(ictx, 9) == 0);
++   CHECK(destroy_calls == destroys + 1);
++   CHECK(!ictx->rings[1].context_id && ictx->rings[1].physical_fd == -1);
++   ictx->base.base.destroy(&ictx->base.base);
++   close(pipefd[0]);
++   close(pipefd[1]);
++}
++
++int main(void)
++{
++   CHECK(mtx_init(&retire_mutex, mtx_plain) == thrd_success);
++   CHECK(cnd_init(&retire_cond) == thrd_success);
++   CHECK(virgl_fence_table_init() == 0);
++   check_rejections();
++   check_physical_ownership();
++   check_slots_and_uncertainty();
++   check_legacy_and_mode_isolation();
++   check_completed_fence_pending_callback();
++   virgl_fence_table_cleanup();
++   cnd_destroy(&retire_cond);
++   mtx_destroy(&retire_mutex);
++   puts("i915 V3 production packet/response/ownership checks passed (CPU only)");
++   return 0;
++}
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -316,6 +316,21 @@
+    dependencies : [libvirgl_dep, mesa_dep] + (with_vrend ? [gallium_dep] : [])
+ )
+ 
++if with_drm_i915
++   i915_v3_protocol_test = executable(
++      'i915-v3-protocol',
++      'drm/i915/i915_v3_protocol_test.c',
++      dependencies: [libvirglrenderer_dep, virgl_depends, drm_uapi_dep],
++      link_args: [
++         '-Wl,--wrap=drmIoctl',
++         '-Wl,--wrap=os_dupfd_cloexec',
++         '-Wl,--wrap=calloc',
++         '-Wl,--wrap=poll',
++      ],
++   )
++   test('i915-v3-protocol', i915_v3_protocol_test)
++endif
++
+ # Version header
+ version_conf = configuration_data()
+ version_conf.set('VIRGL_MAJOR_VERSION', virgl_major_version)

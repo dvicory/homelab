@@ -1,0 +1,697 @@
+--- a/src/intel/dev/meson.build
++++ b/src/intel/dev/meson.build
+@@ -76,6 +76,17 @@
+   sources : [intel_dev_info_gen_src, intel_dev_wa_src[0]],
+ )
+ 
++if with_intel_virtio
++  shared_library(
++    'intel_media_virtio',
++    'virtio/intel_media_virtio.c',
++    include_directories : [inc_include, inc_src, inc_intel, inc_intel_dev_virtio],
++    dependencies : [idep_intel_dev, idep_mesautil, dep_libdrm],
++    gnu_symbol_visibility : 'hidden',
++    install : true,
++  )
++endif
++
+ if with_tests
+   test('intel_device_info_test',
+        executable(
+--- a/src/intel/dev/virtio/i915_virtio_ccmd.c
++++ b/src/intel/dev/virtio/i915_virtio_ccmd.c
+@@ -38,6 +38,38 @@
+       return rsp->ret;
+    }
+ 
++   return 0;
++}
++
++static int
++i915_virtio_gem_context_destroy(struct intel_virtio_device *dev,
++                               unsigned cmd,
++                               struct drm_i915_gem_context_destroy *destroy)
++{
++   /* media_lock serializes these slots with the private V3 submit path.
++    * Unlike vdrm's void wait_fence hook, retirement must check wait errors.
++    * Keep even successfully waited fds until the real destroy succeeds.
++    */
++   for (unsigned i = 1; i < ARRAY_SIZE(dev->media_exec_slots); i++) {
++      if (dev->media_exec_slots[i].context_id == destroy->ctx_id &&
++          dev->media_exec_slots[i].last_fence_fd >= 0 &&
++          sync_wait(dev->media_exec_slots[i].last_fence_fd, -1))
++         return errno;
++   }
++
++   int ret = i915_virtio_simple_ioctl(dev, cmd, destroy);
++   if (ret)
++      return ret;
++
++   for (unsigned i = 1; i < ARRAY_SIZE(dev->media_exec_slots); i++) {
++      if (dev->media_exec_slots[i].context_id != destroy->ctx_id)
++         continue;
++      if (dev->media_exec_slots[i].last_fence_fd >= 0)
++         close(dev->media_exec_slots[i].last_fence_fd);
++      dev->media_exec_slots[i].last_fence_fd = -1;
++      dev->media_exec_slots[i].context_id = 0;
++      dev->media_exec_slots[i].selector = 0;
++   }
+    return 0;
+ }
+ 
+@@ -487,12 +519,6 @@
+                             unsigned long cmd,
+                             struct drm_i915_reset_stats *stats)
+ {
+-   struct i915_shmem *shmem = to_i915_shmem(dev->vdrm->shmem);
+-
+-   if (stats->ctx_id >= 64 ||
+-       !(p_atomic_read(&shmem->banned_ctx_mask) & (1ULL << stats->ctx_id)))
+-      return 0;
+-
+    errno = i915_virtio_simple_ioctl(dev, cmd, stats);
+ 
+    return errno;
+@@ -797,7 +823,8 @@
+       break;
+ 
+    case IOC_MASKED(DRM_IOCTL_I915_GEM_EXECBUFFER2):
+-      errno = i915_virtio_gem_execbuffer2(dev, req);
++   case IOC_MASKED(DRM_IOCTL_I915_GEM_EXECBUFFER2_WR):
++      errno = i915_virtio_gem_execbuffer2(dev, req, false);
+       break;
+ 
+    case IOC_MASKED(DRM_IOCTL_I915_GEM_MADVISE):
+@@ -807,8 +834,11 @@
+       errno = i915_virtio_get_reset_stats(dev, cmd, req);
+       break;
+ 
++   case IOC_MASKED(DRM_IOCTL_I915_GEM_CONTEXT_DESTROY):
++      errno = i915_virtio_gem_context_destroy(dev, cmd, req);
++      break;
++
+    case IOC_MASKED(DRM_IOCTL_I915_REG_READ):
+-   case IOC_MASKED(DRM_IOCTL_I915_GEM_CONTEXT_DESTROY):
+    case IOC_MASKED(DRM_IOCTL_I915_GEM_GET_APERTURE):
+       errno = i915_virtio_simple_ioctl(dev, cmd, req);
+       break;
+--- /dev/null
++++ b/src/intel/dev/virtio/intel_media_virtio.c
+@@ -0,0 +1,206 @@
++/* SPDX-License-Identifier: MIT */
++#include "intel_virtio_priv.h"
++#include "intel/dev/intel_device_info.h"
++#include "drm-uapi/virtgpu_drm.h"
++#include <pthread.h>
++
++/* ponytail: serialize media requests; use per-device locks if contention matters. */
++static pthread_mutex_t media_lock = PTHREAD_MUTEX_INITIALIZER;
++extern int intel_virtio_ioctl(int fd, unsigned long cmd, void *req);
++#define PUBLIC __attribute__((visibility("default")))
++PUBLIC int mos_i915_virtio_probe(int fd, uint32_t *pci_id);
++PUBLIC int mos_i915_virtio_acquire(int fd, bool *has_set_pat);
++PUBLIC void mos_i915_virtio_release(int fd);
++PUBLIC int mos_i915_virtio_ioctl(int fd, unsigned long cmd, void *arg);
++PUBLIC void *mos_i915_virtio_map(int fd, uint32_t handle, size_t size);
++
++/* Discovery owns no transport or fd: VA may open temporary displays before
++ * creating a buffer manager. GEM namespaces live in Mesa's existing fd cache.
++ */
++static int
++media_get_caps(int fd, struct virgl_renderer_capset_drm *caps)
++{
++   drmVersionPtr version = drmGetVersion(fd);
++   if (!version)
++      return -1;
++   bool virtio = !strcmp(version->name, "virtio_gpu");
++   drmFreeVersion(version);
++   if (!virtio)
++      return 0;
++   memset(caps, 0, sizeof(*caps));
++   struct drm_virtgpu_get_caps args = {
++      .cap_set_id = VIRTGPU_DRM_CAPSET_DRM,
++      .cap_set_ver = 0,
++      .addr = (uintptr_t)caps,
++      .size = sizeof(*caps),
++   };
++   if (ioctl(fd, DRM_IOCTL_VIRTGPU_GET_CAPS, &args))
++      return -1;
++   if (caps->context_type != VIRTGPU_DRM_CONTEXT_I915 ||
++       (caps->wire_format_version != 2 && caps->wire_format_version != 3) ||
++       !caps->u.intel.pci_device_id) {
++      errno = EOPNOTSUPP;
++      return -1;
++   }
++   return 1;
++}
++
++PUBLIC int
++mos_i915_virtio_probe(int fd, uint32_t *pci_id)
++{
++   struct virgl_renderer_capset_drm caps;
++   if (media_get_caps(fd, &caps) != 1)
++      return 0;
++   if (pci_id)
++      *pci_id = caps.u.intel.pci_device_id;
++   return 1;
++}
++
++PUBLIC int
++mos_i915_virtio_acquire(int fd, bool *has_set_pat)
++{
++   struct virgl_renderer_capset_drm caps;
++   int ret = media_get_caps(fd, &caps);
++   if (ret != 1)
++      return ret;
++   pthread_mutex_lock(&media_lock);
++   if (fd_to_intel_virtio_device(fd)) {
++      intel_virtio_ref_fd(fd);
++   } else {
++      ret = intel_virtio_init_fd(fd);
++      if (ret != 1) {
++         errno = ret < 0 ? -ret : ENODEV;
++         ret = -1;
++         goto out;
++      }
++   }
++   struct intel_virtio_device *dev = fd_to_intel_virtio_device(fd);
++   struct intel_device_info info;
++   if (!dev || dev->vpipe || !intel_get_device_info_from_fd(dev->fd, &info, 0, 0)) {
++      intel_virtio_unref_fd(fd);
++      errno = ENODEV;
++      ret = -1;
++      goto out;
++   }
++   *has_set_pat = info.has_set_pat_uapi;
++   fprintf(stderr, "iHD native i915 context=%u wire=%u PCI=%04x revision=%u set_pat=%d\n",
++           caps.context_type, caps.wire_format_version, caps.u.intel.pci_device_id,
++           caps.u.intel.pci_revision_id, info.has_set_pat_uapi);
++out:
++   pthread_mutex_unlock(&media_lock);
++   return ret;
++}
++
++PUBLIC void
++mos_i915_virtio_release(int fd)
++{
++   pthread_mutex_lock(&media_lock);
++   intel_virtio_unref_fd(fd);
++   pthread_mutex_unlock(&media_lock);
++}
++
++static int
++media_create_ext_validate(const struct drm_i915_gem_create_ext *create)
++{
++   const struct i915_user_extension *ext = (void *)(uintptr_t)create->extensions;
++   unsigned count = 0;
++   while (ext) {
++      if (++count > 16)
++         return E2BIG;
++      if (ext->name == I915_GEM_CREATE_EXT_SET_PAT) {
++         const struct drm_i915_gem_create_ext_set_pat *pat = (const void *)ext;
++         /* The pinned renderer maps only PAT 0 (WB) and 1 (WC) faithfully. */
++         if (pat->pat_index > 1) {
++            fprintf(stderr, "iHD native unsupported mapping PAT=%u\n", pat->pat_index);
++            return EOPNOTSUPP;
++         }
++      }
++      ext = (void *)(uintptr_t)ext->next_extension;
++   }
++   return 0;
++}
++
++PUBLIC int
++mos_i915_virtio_ioctl(int fd, unsigned long cmd, void *arg)
++{
++   int ret;
++   pthread_mutex_lock(&media_lock);
++   struct intel_virtio_device *dev = fd_to_intel_virtio_device(fd);
++   if (!dev) {
++      drmVersionPtr version = drmGetVersion(fd);
++      bool native = version && (!strcmp(version->name, "i915") ||
++                                !strcmp(version->name, "xe"));
++      drmFreeVersion(version);
++      if (native)
++         ret = ioctl(fd, cmd, arg);
++      else {
++         errno = EXDEV;
++         ret = -1;
++      }
++      goto out;
++   }
++   if (cmd == DRM_IOCTL_I915_GEM_CREATE_EXT) {
++      errno = media_create_ext_validate(arg);
++      if (errno) {
++         ret = -1;
++         goto out;
++      }
++   }
++   /* FIXED preserves the allocation's WB/WC type. The pinned renderer's
++    * setter instead chooses WC; the actual BO map still validates the handle.
++    */
++   if (cmd == DRM_IOCTL_I915_GEM_MMAP_OFFSET &&
++       ((const struct drm_i915_gem_mmap_offset *)arg)->flags == I915_MMAP_OFFSET_FIXED) {
++      ret = 0;
++      goto out;
++   }
++   if (dev->vdrm->caps.wire_format_version == 3 &&
++       (cmd == DRM_IOCTL_I915_GEM_EXECBUFFER2 ||
++        cmd == DRM_IOCTL_I915_GEM_EXECBUFFER2_WR)) {
++      int saved_errno = errno;
++      int error = i915_virtio_gem_execbuffer2(dev, arg, true);
++      ret = error ? -1 : 0;
++      errno = error ? error : saved_errno;
++   } else {
++      ret = intel_virtio_ioctl(dev->fd, cmd, arg);
++   }
++   if (ret) {
++      int error = errno;
++      fprintf(stderr, "iHD native ioctl=0x%lx nr=0x%lx errno=%d\n", cmd,
++              (unsigned long)_IOC_NR(cmd), error);
++      if (cmd == DRM_IOCTL_I915_GEM_CONTEXT_GETPARAM ||
++          cmd == DRM_IOCTL_I915_GEM_CONTEXT_SETPARAM) {
++         const struct drm_i915_gem_context_param *param = arg;
++         fprintf(stderr, "iHD native context id=%u param=0x%llx size=%u value=0x%llx\n",
++                 param->ctx_id, (unsigned long long)param->param, param->size,
++                 (unsigned long long)param->value);
++      }
++      if (cmd == DRM_IOCTL_I915_GEM_EXECBUFFER2 ||
++          cmd == DRM_IOCTL_I915_GEM_EXECBUFFER2_WR) {
++         const struct drm_i915_gem_execbuffer2 *exec = arg;
++         fprintf(stderr, "iHD native exec flags=0x%llx context=%llu rsvd2=0x%llx\n",
++                 (unsigned long long)exec->flags, (unsigned long long)exec->rsvd1,
++                 (unsigned long long)exec->rsvd2);
++      }
++      errno = error;
++   }
++out:
++   pthread_mutex_unlock(&media_lock);
++   return ret;
++}
++
++PUBLIC void *
++mos_i915_virtio_map(int fd, uint32_t handle, size_t size)
++{
++   void *ptr;
++   pthread_mutex_lock(&media_lock);
++   struct intel_virtio_device *dev = fd_to_intel_virtio_device(fd);
++   if (!dev || !size) {
++      errno = EINVAL;
++      ptr = MAP_FAILED;
++   } else {
++      ptr = intel_virtio_bo_mmap(dev->fd, handle, size, NULL);
++   }
++   pthread_mutex_unlock(&media_lock);
++   return ptr;
++}
+--- a/src/intel/dev/virtio/i915_virtio_ccmd_execbuf.c
++++ b/src/intel/dev/virtio/i915_virtio_ccmd_execbuf.c
+@@ -9,6 +9,8 @@
+ struct virtio_gem_execbuffer_params {
+    struct intel_virtio_device *dev;
+    struct drm_i915_gem_execbuffer2 *exec;
++   bool use_v3;
++   unsigned ring_idx;
+ 
+    struct drm_virtgpu_execbuffer_syncobj *in_syncobjs;
+    unsigned num_in_syncobjs;
+@@ -19,6 +21,38 @@
+    uint32_t *bo_handles;
+    unsigned num_bo_handles;
+ };
++
++static int
++i915_virtio_media_reserve_ring(struct intel_virtio_device *dev,
++                             const struct drm_i915_gem_execbuffer2 *exec,
++                             unsigned *ring_idx)
++{
++   uint32_t selector = exec->flags & (I915_EXEC_RING_MASK | I915_EXEC_BSD_MASK);
++   unsigned engine = selector & I915_EXEC_RING_MASK;
++   unsigned bsd = selector & I915_EXEC_BSD_MASK;
++   if (!exec->rsvd1 || exec->rsvd1 > I915_V3_MAX_CONTEXT_ID ||
++       engine > I915_EXEC_VEBOX ||
++       (bsd && engine != I915_EXEC_BSD) || bsd == I915_EXEC_BSD_MASK)
++      return EINVAL;
++
++   unsigned free_ring = 0;
++   for (unsigned i = 1; i < ARRAY_SIZE(dev->media_exec_slots); i++) {
++      if (dev->media_exec_slots[i].context_id == exec->rsvd1 &&
++          dev->media_exec_slots[i].selector == selector) {
++         *ring_idx = i;
++         return 0;
++      }
++      if (!dev->media_exec_slots[i].context_id && !free_ring)
++         free_ring = i;
++   }
++   if (!free_ring)
++      return ENOSPC;
++
++   dev->media_exec_slots[free_ring].context_id = exec->rsvd1;
++   dev->media_exec_slots[free_ring].selector = selector;
++   *ring_idx = free_ring;
++   return 0;
++}
+ 
+ static int
+ i915_virtio_gem_execbuffer2_submit(struct virtio_gem_execbuffer_params *params)
+@@ -35,26 +69,36 @@
+        (p_atomic_read(&shmem->banned_ctx_mask) & (1ULL << exec->rsvd1)))
+       return EIO;
+ 
+-   unsigned relocs_count = 0;
+-
+-   for (int i = 0; i < exec->buffer_count; i++)
+-       relocs_count += buffers[i].relocation_count;
+-
++   uint64_t relocs_count = 0;
++
++   for (unsigned i = 0; i < exec->buffer_count; i++)
++      relocs_count += buffers[i].relocation_count;
++
++   /* Legacy relocation targets are guest GEM handles, not host GEM handles. */
++   if (relocs_count && !(flags & I915_EXEC_HANDLE_LUT))
++      return EOPNOTSUPP;
++
++   unsigned prefix_len = params->use_v3 ?
++      sizeof(struct i915_ccmd_gem_execbuffer2_v3_req) :
++      sizeof(struct i915_ccmd_gem_execbuffer2_req);
++   if (exec->buffer_count > (UINT32_MAX - prefix_len) / sizeof(*buffers))
++      return E2BIG;
+    size_t buffers_size = sizeof(*buffers) * exec->buffer_count;
+-   size_t relocations_size = sizeof(struct drm_i915_gem_relocation_entry) * relocs_count;
+-
+-   unsigned req_len = sizeof(struct i915_ccmd_gem_execbuffer2_req);
+-   req_len += buffers_size + relocations_size;
+-
+-   uint8_t buf[req_len];
+-   struct i915_ccmd_gem_execbuffer2_req *req = (void *)buf;
+-   memcpy(req->payload, buffers, buffers_size);
++   if (relocs_count > (UINT32_MAX - prefix_len - buffers_size) / sizeof(*relocs))
++      return E2BIG;
++   size_t relocations_size = sizeof(*relocs) * relocs_count;
++   unsigned req_len = prefix_len + buffers_size + relocations_size;
++
++   alignas(8) uint8_t buf[MAX2(req_len, sizeof(union i915_ccmd_exec_req))];
++   union i915_ccmd_exec_req *req = (void *)buf;
++   uint8_t *payload = buf + prefix_len;
++   memcpy(payload, buffers, buffers_size);
+ 
+    uint32_t bo_handles[exec->buffer_count + 1];
+-   buffers = (void *)req->payload;
+-   relocs = (void *)(req->payload + buffers_size);
+-
+-   for (int i = 0; i < exec->buffer_count; i++) {
++   buffers = (void *)payload;
++   relocs = (void *)(payload + buffers_size);
++
++   for (unsigned i = 0; i < exec->buffer_count; i++) {
+       memcpy(relocs, (void *)(uintptr_t)buffers[i].relocs_ptr,
+              sizeof(*relocs) * buffers[i].relocation_count);
+ 
+@@ -72,7 +116,7 @@
+    allowed_flags |= I915_EXEC_GEN7_SOL_RESET;
+    allowed_flags |= I915_EXEC_NO_RELOC;
+    allowed_flags |= I915_EXEC_HANDLE_LUT;
+-   allowed_flags |= I915_EXEC_BSD_MASK << I915_EXEC_BSD_SHIFT;
++   allowed_flags |= I915_EXEC_BSD_MASK;
+    allowed_flags |= I915_EXEC_BATCH_FIRST;
+ 
+    /* XXX: sanity-check flags, might be removed in a release version */
+@@ -81,19 +125,22 @@
+       return EINVAL;
+    }
+ 
+-   if (dev->vdrm->caps.wire_format_version == 1)
+-      req->hdr = I915_CCMD(GEM_EXECBUFFER2, req_len);
+-   else
+-      req->hdr = I915_CCMD(GEM_EXECBUFFER2_V2, req_len);
+-
+-   req->relocs_count = relocs_count;
+-   req->buffer_count = exec->buffer_count;
+-   req->batch_start_offset = exec->batch_start_offset;
+-   req->batch_len = exec->batch_len;
+-   req->context_id = exec->rsvd1;
+-   req->flags = flags & allowed_flags;
+-
+-   rsp = vdrm_alloc_rsp(dev->vdrm, &req->hdr, sizeof(*rsp));
++   if (params->use_v3) {
++      req->v3.hdr = I915_CCMD(GEM_EXECBUFFER2_V3, req_len);
++      req->v3.ring_idx = params->ring_idx;
++      req->v3.pad = 0;
++   } else if (dev->vdrm->caps.wire_format_version == 1) {
++      req->v2.hdr = I915_CCMD(GEM_EXECBUFFER2, req_len);
++   } else {
++      req->v2.hdr = I915_CCMD(GEM_EXECBUFFER2_V2, req_len);
++   }
++
++   req->v2.relocs_count = relocs_count;
++   req->v2.buffer_count = exec->buffer_count;
++   req->v2.batch_start_offset = exec->batch_start_offset;
++   req->v2.batch_len = exec->batch_len;
++   req->v2.context_id = exec->rsvd1;
++   req->v2.flags = flags & allowed_flags;
+ 
+    /* 0 reserved for cpu sync */
+    unsigned ring_idx = 1 + (flags & I915_EXEC_RING_MASK);
+@@ -106,8 +153,10 @@
+     * Split reserved 64 rings by 8 HW engines per sub-context, this makes each
+     * sub-context have own fence contexts needed for correct multi-queue syncing.
+     */
+-   if (dev->vdrm->caps.wire_format_version > 1) {
+-      ring_idx += (req->context_id - 1) * 8;
++   if (params->use_v3) {
++      ring_idx = params->ring_idx;
++   } else if (dev->vdrm->caps.wire_format_version > 1) {
++      ring_idx += (req->v2.context_id - 1) * 8;
+ 
+       if (ring_idx >= 64) {
+          mesa_loge("too many contexts");
+@@ -115,8 +164,10 @@
+       }
+    }
+ 
++   rsp = vdrm_alloc_rsp(dev->vdrm, &req->v2.hdr, sizeof(*rsp));
++
+    struct vdrm_execbuf_params p = {
+-      .req = &req->hdr,
++      .req = &req->v2.hdr,
+       .ring_idx = ring_idx,
+       .in_syncobjs = params->in_syncobjs,
+       .num_in_syncobjs = params->num_in_syncobjs,
+@@ -124,14 +175,43 @@
+       .num_out_syncobjs = params->num_out_syncobjs,
+       .handles = params->bo_handles,
+       .num_handles = params->num_bo_handles,
++      .needs_out_fence_fd = params->use_v3,
++      .fence_fd = -1,
+    };
+ 
+-   return vdrm_execbuf(dev->vdrm, &p);
++   int ret = vdrm_execbuf(dev->vdrm, &p);
++   if (ret) {
++      int error = params->use_v3 && ret < 0 ? errno : ret;
++      if (params->use_v3 && p.fence_fd >= 0)
++         close(p.fence_fd);
++      return error;
++   }
++
++   /* Wait for host acceptance, not GPU completion. Rejected B must not
++    * replace accepted A's last completion, even if B returned a transport fd.
++    */
++   vdrm_host_sync(dev->vdrm, &req->v2.hdr);
++   ret = rsp->ret;
++   if (params->use_v3) {
++      if (ret) {
++         if (p.fence_fd >= 0)
++            close(p.fence_fd);
++      } else if (p.fence_fd < 0) {
++         return EIO;
++      } else {
++         int old_fd = dev->media_exec_slots[ring_idx].last_fence_fd;
++         dev->media_exec_slots[ring_idx].last_fence_fd = p.fence_fd;
++         if (old_fd >= 0)
++            close(old_fd);
++      }
++   }
++   return ret;
+ }
+ 
+ int
+ i915_virtio_gem_execbuffer2(struct intel_virtio_device *dev,
+-                            struct drm_i915_gem_execbuffer2 *exec)
++                            struct drm_i915_gem_execbuffer2 *exec,
++                            bool use_v3)
+ {
+    unsigned num_waits = 0, num_signals = 0, num_fences = 0, i, w, s;
+    struct drm_i915_gem_execbuffer_ext_timeline_fences *ext;
+@@ -141,6 +221,16 @@
+    int ret;
+ 
+    memset(&params, 0, sizeof(params));
++   params.use_v3 = use_v3;
++   if (use_v3) {
++      if (dev->vdrm->caps.wire_format_version != 3 || dev->vpipe) {
++         ret = EOPNOTSUPP;
++         goto out;
++      }
++      ret = i915_virtio_media_reserve_ring(dev, exec, &params.ring_idx);
++      if (ret)
++         goto out;
++   }
+ 
+    if (exec->flags & I915_EXEC_USE_EXTENSIONS) {
+       ext = (void *)(uintptr_t)exec->cliprects_ptr;
+--- a/src/intel/dev/virtio/intel_virtio_device.c
++++ b/src/intel/dev/virtio/intel_virtio_device.c
+@@ -99,14 +99,28 @@
+    if (!dev)
+       return -ENOMEM;
+ 
++   for (unsigned i = 0; i < ARRAY_SIZE(dev->media_exec_slots); i++)
++      dev->media_exec_slots[i].last_fence_fd = -1;
++
++   /* The transport and sync provider must not borrow a caller fd that can
++    * close while another duplicate still owns this file description.
++    */
++   dev->fd = os_dupfd_cloexec(fd);
++   if (dev->fd < 0) {
++      int error = errno;
++      free(dev);
++      return -error;
++   }
++
+    if (debug_get_bool_option("INTEL_VIRTIO_FORCE_VTEST", false)) {
+       dev->vdrm = vdrm_device_connect(-1, VIRTGPU_DRM_CONTEXT_I915);
+       dev->vpipe = true;
+    } else {
+-      dev->vdrm = vdrm_device_connect(fd, VIRTGPU_DRM_CONTEXT_I915);
++      dev->vdrm = vdrm_device_connect(dev->fd, VIRTGPU_DRM_CONTEXT_I915);
+    }
+ 
+    if (!dev->vdrm) {
++      close(dev->fd);
+       free(dev);
+       return -EINVAL;
+    }
+@@ -114,15 +128,14 @@
+    if (dev->vpipe)
+       dev->sync = vdrm_vpipe_get_sync(dev->vdrm);
+    else
+-      dev->sync = util_sync_provider_drm(fd);
++      dev->sync = util_sync_provider_drm(dev->fd);
+ 
+    if (!dev->sync) {
+       vdrm_device_close(dev->vdrm);
++      close(dev->fd);
+       free(dev);
+       return -EINVAL;
+    }
+-
+-   dev->fd = os_dupfd_cloexec(fd);
+ 
+    p_atomic_set(&dev->refcnt, 1);
+ 
+@@ -150,6 +163,11 @@
+       list_del(&dev->list_item);
+       simple_mtx_unlock(&dev_list_lock);
+ 
++      for (unsigned i = 1; i < ARRAY_SIZE(dev->media_exec_slots); i++) {
++         if (dev->media_exec_slots[i].last_fence_fd >= 0)
++            close(dev->media_exec_slots[i].last_fence_fd);
++      }
++
+       dev->sync->finalize(dev->sync);
+       vdrm_device_close(dev->vdrm);
+       close(dev->fd);
+--- a/src/intel/dev/virtio/i915_proto.h
++++ b/src/intel/dev/virtio/i915_proto.h
+@@ -5,6 +5,8 @@
+ 
+ #ifndef I915_VIRTIO_PROTO_H_
+ #define I915_VIRTIO_PROTO_H_
++
++#include <stddef.h>
+ 
+ #ifdef __GNUC__
+ # pragma GCC diagnostic push
+@@ -30,6 +32,7 @@
+    I915_CCMD_GEM_SET_MMAP_MODE,
+    I915_CCMD_GEM_BUSY,
+    I915_CCMD_GEM_EXECBUFFER2_V2,
++   I915_CCMD_GEM_EXECBUFFER2_V3,
+ };
+ 
+ #define I915_CCMD(_cmd, _len) (struct vdrm_ccmd_req){    \
+@@ -177,6 +180,39 @@
+ };
+ I915_DEFINE_CAST(vdrm_ccmd_req, i915_ccmd_gem_execbuffer2_req)
+ 
++/* V3 separates completion-ring identity from the real kernel context ID.
++ * Ring zero remains CPU-only; the existing ban mask covers context IDs 1..63.
++ */
++#define I915_V3_RING_COUNT 64
++#define I915_V3_MAX_CONTEXT_ID 63
++struct i915_ccmd_gem_execbuffer2_v3_req {
++   struct vdrm_ccmd_req hdr;
++   uint64_t flags;
++   uint64_t context_id;
++   uint32_t buffer_count;
++   uint32_t batch_start_offset;
++   uint32_t batch_len;
++   uint32_t relocs_count;
++   uint32_t ring_idx;
++   uint32_t pad;
++   uint8_t payload[];
++};
++I915_DEFINE_CAST(vdrm_ccmd_req, i915_ccmd_gem_execbuffer2_v3_req)
++static_assert(sizeof(struct i915_ccmd_gem_execbuffer2_req) == 48,
++              "legacy exec wire size");
++static_assert(sizeof(struct i915_ccmd_gem_execbuffer2_v3_req) == 56,
++              "V3 exec wire size");
++static_assert(offsetof(struct i915_ccmd_gem_execbuffer2_v3_req, ring_idx) == 48,
++              "V3 completion-ring offset");
++static_assert(offsetof(struct i915_ccmd_gem_execbuffer2_v3_req, payload) == 56,
++              "V3 payload offset");
++
++/* Common initial sequence: parse shared fields without incompatible casts. */
++union i915_ccmd_exec_req {
++   struct i915_ccmd_gem_execbuffer2_req v2;
++   struct i915_ccmd_gem_execbuffer2_v3_req v3;
++};
++
+ struct i915_ccmd_gem_execbuffer2_rsp {
+    struct vdrm_ccmd_rsp hdr;
+    int32_t ret;
+--- a/src/intel/dev/virtio/intel_virtio_priv.h
++++ b/src/intel/dev/virtio/intel_virtio_priv.h
+@@ -40,6 +40,7 @@
+ #include "intel_virtio.h"
+ 
+ #include "vdrm.h"
++#include "i915_proto.h"
+ 
+ #define virtio_ioctl(fd, name, args) ({                           \
+    MESA_TRACE_SCOPE(#name);                                       \
+@@ -57,11 +58,21 @@
+    uint32_t refcnt;
+ 
+    bool vpipe;
++
++   /* Private media submissions are serialized by media_lock. Context zero
++    * marks an unused slot; a failed attempt never relinquishes ownership.
++    */
++   struct {
++      uint32_t context_id;
++      uint32_t selector;
++      int last_fence_fd;
++   } media_exec_slots[I915_V3_RING_COUNT];
+ };
+ 
+ struct intel_virtio_device *fd_to_intel_virtio_device(int fd);
+ 
+ int i915_virtio_gem_execbuffer2(struct intel_virtio_device *dev,
+-                                struct drm_i915_gem_execbuffer2 *exec);
++                                struct drm_i915_gem_execbuffer2 *exec,
++                                bool use_v3);
+ 
+ #endif /* INTEL_VIRTIO_PRIV_H_ */

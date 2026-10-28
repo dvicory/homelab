@@ -153,3 +153,8 @@ when its Nix app dependencies are cached.
 This exercises media application APIs and producer behavior. It does not prove
 Kubernetes RBAC, NetworkPolicy or Gateway behavior, or the
 Incus/MergerFS/ZFS/GPU storage and acceleration boundaries.
+
+Accept acceleration changes using real hardware workloads with validated output.
+Device lists and session creation establish discovery only; CPU fault-injection
+tests cover error and ownership logic, not hardware codec, filter or inference
+execution.

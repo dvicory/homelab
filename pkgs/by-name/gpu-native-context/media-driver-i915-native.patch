@@ -1,0 +1,952 @@
+--- a/media_softlet/linux/common/os/i915/include/mos_bufmgr_api.h
++++ b/media_softlet/linux/common/os/i915/include/mos_bufmgr_api.h
+@@ -417,16 +417,21 @@
+ #if defined(__cplusplus)
+ extern "C" {
+ #endif
+-extern drm_export int drmIoctl(int fd, unsigned long request, void *arg);
++extern __attribute__((visibility("hidden"))) int drmIoctl(int fd, unsigned long request, void *arg);
++extern int mos_i915_virtio_probe(int fd, uint32_t *pci_id);
++extern int mos_i915_virtio_acquire(int fd, bool *has_set_pat);
++extern void mos_i915_virtio_release(int fd);
++extern int mos_i915_virtio_ioctl(int fd, unsigned long request, void *arg);
++extern void *mos_i915_virtio_map(int fd, uint32_t handle, size_t size);
+ 
+ static inline int mos_query_device_type(int fd)
+ {
+     int device_type = DEVICE_TYPE_COUNT;
+     drm_version_t version;
+-    char name[5] = "";
++    char name[16] = "";
+ 
+     memset(&version, 0, sizeof(version));
+-    version.name_len = 4;
++    version.name_len = sizeof(name) - 1;
+     version.name = name;
+ 
+     if (drmIoctl(fd, DRM_IOCTL_VERSION, &version))
+@@ -442,6 +447,10 @@
+     else if(strcmp("xe", name) == 0)
+     {
+         device_type = DEVICE_TYPE_XE;
++    }
++    else if (strcmp("virtio_gpu", name) == 0 && mos_i915_virtio_probe(fd, NULL))
++    {
++        device_type = DEVICE_TYPE_I915;
+     }
+     else
+     {
+--- a/media_softlet/linux/common/os/i915/include/xf86drm.h
++++ b/media_softlet/linux/common/os/i915/include/xf86drm.h
+@@ -119,7 +119,7 @@
+ } drmHashEntry;
+ 
+ extern drm_export int mosdrmIoctl(int fd, unsigned long request, void *arg);
+-extern drm_export int drmIoctl(int fd, unsigned long request, void *arg);
++extern __attribute__((visibility("hidden"))) int drmIoctl(int fd, unsigned long request, void *arg);
+ extern void *drmGetHashTable(void);
+ extern drmHashEntry *drmGetEntry(int fd);
+ 
+--- a/media_softlet/linux/common/os/i915/xf86drm.c
++++ b/media_softlet/linux/common/os/i915/xf86drm.c
+@@ -162,17 +162,19 @@
+ #if defined(__cplusplus)
+ extern "C" {
+ #endif
++extern int mos_i915_virtio_ioctl(int fd, unsigned long request, void *arg);
+ drm_export int
+ mosdrmIoctl(int fd, unsigned long request, void *arg)
+ {
+     int    ret;
+ 
+     do {
+-    ret = ioctl(fd, request, arg);
++    ret = request == DRM_IOCTL_VERSION ? ioctl(fd, request, arg)
++                                     : mos_i915_virtio_ioctl(fd, request, arg);
+     } while (ret == -1 && (errno == EINTR || errno == EAGAIN));
+     return ret;
+ }
+-drm_export int
++__attribute__((visibility("hidden"))) int
+ drmIoctl(int fd, unsigned long request, void *arg)
+ {
+     return mosdrmIoctl(fd,request,arg);
+--- a/media_softlet/linux/common/os/i915/mos_bufmgr.c
++++ b/media_softlet/linux/common/os/i915/mos_bufmgr.c
+@@ -163,6 +163,8 @@
+     unsigned int has_fence_reg : 1;
+     unsigned int has_lmem : 1;
+     unsigned int has_mmap_offset : 1;
++    unsigned int native : 1;
++    unsigned int native_has_pat : 1;
+     bool fenced_relocs;
+ 
+     struct {
+@@ -859,8 +861,16 @@
+     memclear(madv);
+     madv.handle = bo_gem->gem_handle;
+     madv.madv = state;
+-    madv.retained = 1;
+-    drmIoctl(bufmgr_gem->fd, DRM_IOCTL_I915_GEM_MADVISE, &madv);
++    /* Like Iris, private native BOs remain backed while their handles live:
++     * discard advice is not forwarded. Imported/exported BOs are not reusable.
++     * This reports backing retention, never GPU completion.
++     */
++    madv.retained = bo_gem->reusable && bufmgr_gem->native;
++    if (drmIoctl(bufmgr_gem->fd, DRM_IOCTL_I915_GEM_MADVISE, &madv) != 0) {
++        fprintf(stderr, "iHD madvise handle=%u advice=%d failed errno=%d\n",
++                madv.handle, state, errno);
++        return 0; /* Retention was not established; never reuse on error. */
++    }
+ 
+     return madv.retained;
+ }
+@@ -1026,6 +1036,13 @@
+     bool alloc_from_cache;
+     unsigned long bo_size;
+     bool for_render = false;
++    const bool native = bufmgr_gem->native;
++    const bool use_pat = native ? bufmgr_gem->native_has_pat : support_pat_index;
++    if (native && alloc->ext.pat_index != PAT_INDEX_INVALID &&
++        alloc->ext.pat_index > 1) {
++        errno = EOPNOTSUPP;
++        return nullptr;
++    }
+ 
+     if (alloc->ext.flags & BO_ALLOC_FOR_RENDER)
+         for_render = true;
+@@ -1043,11 +1060,9 @@
+     } else {
+         bo_size = bucket->size;
+     }
+-    if (!support_pat_index)
+-    {
+-        /* For old kernel without pat index support,
+-         * We need to reset pat_index for bo reuse policy
+-         */
++    if (!use_pat)
++    {
++        /* Kernel-managed PAT must not enter the explicit-PAT reuse key. */
+         alloc->ext.pat_index = PAT_INDEX_INVALID;
+     }
+     pthread_mutex_lock(&bufmgr_gem->lock);
+@@ -1137,6 +1152,14 @@
+             memclear(create);
+             create.size = bo_size;
+             create.extensions = (uintptr_t)(&regions);
++            struct drm_i915_gem_create_ext_set_pat set_pat_ext;
++            if (native && use_pat && alloc->ext.pat_index != PAT_INDEX_INVALID) {
++                memclear(set_pat_ext);
++                set_pat_ext.base.name = I915_GEM_CREATE_EXT_SET_PAT;
++                set_pat_ext.pat_index = alloc->ext.pat_index;
++                regions.base.next_extension = (uintptr_t)&set_pat_ext;
++                bo_gem->pat_index = alloc->ext.pat_index;
++            }
+ 
+             ret = drmIoctl(bufmgr_gem->fd,
+                     DRM_IOCTL_I915_GEM_CREATE_EXT,
+@@ -1148,7 +1171,7 @@
+         else
+         {
+             ret = -EINVAL;
+-            if (support_pat_index && alloc->ext.pat_index != PAT_INDEX_INVALID)
++            if (use_pat && alloc->ext.pat_index != PAT_INDEX_INVALID)
+             {
+                 struct drm_i915_gem_create_ext_set_pat set_pat_ext;
+                 memclear(set_pat_ext);
+@@ -1167,6 +1190,12 @@
+                 bo_gem->pat_index = alloc->ext.pat_index;
+                 if (ret != 0)
+                 {
++                    if (native) {
++                        const int error = errno;
++                        free(bo_gem);
++                        errno = error;
++                        return nullptr;
++                    }
+                     /* For old kernel without pat_index support,
+                      * DRM_IOCTL_I915_GEM_CREATE_EXT with unknown
+                      * set_pat_ext extension will return -EINVAL
+@@ -1228,7 +1257,7 @@
+     bo_gem->reusable = true;
+     bo_gem->use_48b_address_range = bufmgr_gem->bufmgr.bo_use_48b_address_range ? true : false;
+ 
+-    if (bo_gem->pat_index != PAT_INDEX_INVALID)
++    if (native || bo_gem->pat_index != PAT_INDEX_INVALID)
+     {
+         bo_gem->cpu_cacheable = alloc->ext.cpu_cacheable;
+     }
+@@ -1825,9 +1854,10 @@
+         }
+ 
+         /* and mmap it */
+-        bo_gem->mem_wc_virtual = drm_mmap(0, bo->size, PROT_READ | PROT_WRITE,
+-                           MAP_SHARED, bufmgr_gem->fd,
+-                           mmap_arg.offset);
++        bo_gem->mem_wc_virtual = bufmgr_gem->native ?
++            mos_i915_virtio_map(bufmgr_gem->fd, bo_gem->gem_handle, bo->size) :
++            drm_mmap(0, bo->size, PROT_READ | PROT_WRITE,
++                     MAP_SHARED, bufmgr_gem->fd, mmap_arg.offset);
+         if (bo_gem->mem_wc_virtual == MAP_FAILED) {
+             bo_gem->mem_wc_virtual = nullptr;
+             ret = -errno;
+@@ -1835,6 +1865,7 @@
+                 __FILE__, __LINE__,
+                 bo_gem->gem_handle, bo_gem->name,
+                 strerror(errno));
++            return ret;
+         }
+     }
+     else if (bo_gem->mem_wc_virtual == nullptr) {
+@@ -1861,11 +1892,6 @@
+         VG(VALGRIND_MALLOCLIKE_BLOCK(mmap_arg.addr_ptr, mmap_arg.size, 0, 1));
+         bo_gem->mem_wc_virtual = (void *)(uintptr_t) mmap_arg.addr_ptr;
+     }
+-#ifdef __cplusplus
+-    bo->virt = bo_gem->mem_wc_virtual;
+-#else
+-    bo->virtual = bo_gem->mem_wc_virtual;
+-#endif
+ 
+     MOS_DBG("bo_map_wc: %d (%s) -> %p\n", bo_gem->gem_handle, bo_gem->name,
+         bo_gem->mem_wc_virtual);
+@@ -1883,6 +1909,7 @@
+     int ret;
+ 
+     pthread_mutex_lock(&bufmgr_gem->lock);
++    bo->virt = nullptr;
+ 
+     ret = map_wc(bo);
+     if (ret) {
+@@ -1896,9 +1923,12 @@
+         wait.bo_handle = bo_gem->gem_handle;
+         wait.timeout_ns = -1; // infinite wait
+         ret = drmIoctl(bufmgr_gem->fd, DRM_IOCTL_I915_GEM_WAIT, &wait);
+-        if (ret == -1) {
++        if (ret != 0) {
++            ret = -errno;
+             MOS_DBG("%s:%d: DRM_IOCTL_I915_GEM_WAIT failed (%d)\n",
+                 __FILE__, __LINE__, errno);
++            pthread_mutex_unlock(&bufmgr_gem->lock);
++            return ret;
+         }
+     } else {
+         /* Now move it to the GTT domain so that the GPU and CPU
+@@ -1917,11 +1947,19 @@
+                DRM_IOCTL_I915_GEM_SET_DOMAIN,
+                &set_domain);
+         if (ret != 0) {
++            ret = -errno;
+             MOS_DBG("%s:%d: Error setting domain %d: %s\n",
+                 __FILE__, __LINE__, bo_gem->gem_handle,
+                 strerror(errno));
+-        }
+-    }
++            pthread_mutex_unlock(&bufmgr_gem->lock);
++            return ret;
++        }
++    }
++#ifdef __cplusplus
++    bo->virt = bo_gem->mem_wc_virtual;
++#else
++    bo->virtual = bo_gem->mem_wc_virtual;
++#endif
+ 
+     mos_gem_bo_mark_mmaps_incoherent(bo);
+     VG(VALGRIND_MAKE_MEM_DEFINED(bo_gem->mem_wc_virtual, bo->size));
+@@ -1952,6 +1990,7 @@
+     }
+ 
+     pthread_mutex_lock(&bufmgr_gem->lock);
++    bo->virt = nullptr;
+ 
+     if (bufmgr_gem->has_mmap_offset) {
+         struct drm_i915_gem_wait wait;
+@@ -1985,9 +2024,10 @@
+             }
+ 
+             /* and mmap it */
+-            bo_gem->mem_virtual = drm_mmap(0, bo->size, PROT_READ | PROT_WRITE,
+-                MAP_SHARED, bufmgr_gem->fd,
+-                mmap_arg.offset);
++            bo_gem->mem_virtual = bufmgr_gem->native ?
++                mos_i915_virtio_map(bufmgr_gem->fd, bo_gem->gem_handle, bo->size) :
++                drm_mmap(0, bo->size, PROT_READ | PROT_WRITE,
++                         MAP_SHARED, bufmgr_gem->fd, mmap_arg.offset);
+             if (bo_gem->mem_virtual == MAP_FAILED) {
+                 bo_gem->mem_virtual = nullptr;
+                 ret = -errno;
+@@ -1995,6 +2035,8 @@
+                     __FILE__, __LINE__,
+                     bo_gem->gem_handle, bo_gem->name,
+                     strerror(errno));
++                pthread_mutex_unlock(&bufmgr_gem->lock);
++                return ret;
+             }
+         }
+ 
+@@ -2003,9 +2045,12 @@
+         wait.bo_handle = bo_gem->gem_handle;
+         wait.timeout_ns = -1; // infinite wait
+         ret = drmIoctl(bufmgr_gem->fd, DRM_IOCTL_I915_GEM_WAIT, &wait);
+-        if (ret == -1) {
++        if (ret != 0) {
++            ret = -errno;
+             MOS_DBG("%s:%d: DRM_IOCTL_I915_GEM_WAIT failed (%d)\n",
+                 __FILE__, __LINE__, errno);
++            pthread_mutex_unlock(&bufmgr_gem->lock);
++            return ret;
+         }
+     } else { /*!has_mmap_offset*/
+         struct drm_i915_gem_set_domain set_domain;
+@@ -2045,9 +2090,12 @@
+             DRM_IOCTL_I915_GEM_SET_DOMAIN,
+             &set_domain);
+         if (ret != 0) {
++            ret = -errno;
+             MOS_DBG("%s:%d: Error setting to CPU domain %d: %s\n",
+             __FILE__, __LINE__, bo_gem->gem_handle,
+             strerror(errno));
++            pthread_mutex_unlock(&bufmgr_gem->lock);
++            return ret;
+         }
+     }
+     MOS_DBG("bo_map: %d (%s) -> %p\n", bo_gem->gem_handle, bo_gem->name,
+@@ -2123,9 +2171,10 @@
+         }
+ 
+         /* and mmap it */
+-        bo_gem->gtt_virtual = drm_mmap(0, bo->size, PROT_READ | PROT_WRITE,
+-                           MAP_SHARED, bufmgr_gem->fd,
+-                           offset);
++        bo_gem->gtt_virtual = bufmgr_gem->native ?
++            mos_i915_virtio_map(bufmgr_gem->fd, bo_gem->gem_handle, bo->size) :
++            drm_mmap(0, bo->size, PROT_READ | PROT_WRITE,
++                     MAP_SHARED, bufmgr_gem->fd, offset);
+         if (bo_gem->gtt_virtual == MAP_FAILED) {
+             bo_gem->gtt_virtual = nullptr;
+             ret = -errno;
+@@ -2136,11 +2185,6 @@
+             return ret;
+         }
+     }
+-#ifdef __cplusplus
+-    bo->virt = bo_gem->gtt_virtual;
+-#else
+-    bo->virtual = bo_gem->gtt_virtual;
+-#endif
+ 
+     MOS_DBG("bo_map_gtt: %d (%s) -> %p\n", bo_gem->gem_handle, bo_gem->name,
+         bo_gem->gtt_virtual);
+@@ -2158,6 +2202,7 @@
+     int ret;
+ 
+     pthread_mutex_lock(&bufmgr_gem->lock);
++    bo->virt = nullptr;
+ 
+     ret = map_gtt(bo);
+     if (ret) {
+@@ -2171,9 +2216,12 @@
+         wait.bo_handle = bo_gem->gem_handle;
+         wait.timeout_ns = -1; // infinite wait
+         ret = drmIoctl(bufmgr_gem->fd, DRM_IOCTL_I915_GEM_WAIT, &wait);
+-        if (ret == -1) {
++        if (ret != 0) {
++            ret = -errno;
+             MOS_DBG("%s:%d: DRM_IOCTL_I915_GEM_WAIT failed (%d)\n",
+                 __FILE__, __LINE__, errno);
++            pthread_mutex_unlock(&bufmgr_gem->lock);
++            return ret;
+         }
+     } else {
+         /* Now move it to the GTT domain so that the GPU and CPU
+@@ -2193,11 +2241,19 @@
+                DRM_IOCTL_I915_GEM_SET_DOMAIN,
+                &set_domain);
+         if (ret != 0) {
++            ret = -errno;
+             MOS_DBG("%s:%d: Error setting domain %d: %s\n",
+                 __FILE__, __LINE__, bo_gem->gem_handle,
+                 strerror(errno));
+-        }
+-    }
++            pthread_mutex_unlock(&bufmgr_gem->lock);
++            return ret;
++        }
++    }
++#ifdef __cplusplus
++    bo->virt = bo_gem->gtt_virtual;
++#else
++    bo->virtual = bo_gem->gtt_virtual;
++#endif
+     mos_gem_bo_mark_mmaps_incoherent(bo);
+     VG(VALGRIND_MAKE_MEM_DEFINED(bo_gem->gtt_virtual, bo->size));
+     pthread_mutex_unlock(&bufmgr_gem->lock);
+@@ -2223,9 +2279,7 @@
+ mos_gem_bo_map_unsynchronized(struct mos_linux_bo *bo)
+ {
+     struct mos_bufmgr_gem *bufmgr_gem = (struct mos_bufmgr_gem *) bo->bufmgr;
+-#ifdef HAVE_VALGRIND
+     struct mos_bo_gem *bo_gem = (struct mos_bo_gem *) bo;
+-#endif
+     int ret;
+ 
+     /* If the CPU cache isn't coherent with the GTT, then use a
+@@ -2242,6 +2296,11 @@
+ 
+     ret = map_gtt(bo);
+     if (ret == 0) {
++#ifdef __cplusplus
++    bo->virt = bo_gem->gtt_virtual;
++#else
++    bo->virtual = bo_gem->gtt_virtual;
++#endif
+         mos_gem_bo_mark_mmaps_incoherent(bo);
+         VG(VALGRIND_MAKE_MEM_DEFINED(bo_gem->gtt_virtual, bo->size));
+     }
+@@ -2485,6 +2544,9 @@
+         close(bufmgr_gem->mem_profiler_fd);
+     }
+ 
++    if (bufmgr_gem->native)
++        mos_i915_virtio_release(bufmgr_gem->fd);
++
+     free(bufmgr);
+ }
+ 
+@@ -5236,6 +5298,8 @@
+     int ret, tmp;
+     uint8_t alloc_mode;
+     bool exec2 = false;
++    bool native_has_pat = false;
++    int native;
+ 
+     pthread_mutex_lock(&bufmgr_list_mutex);
+ 
+@@ -5255,6 +5319,16 @@
+         bufmgr_gem = nullptr;
+         goto exit;
+     }
++
++    native = mos_i915_virtio_acquire(fd, &native_has_pat);
++    if (native < 0) {
++        pthread_mutex_destroy(&bufmgr_gem->lock);
++        free(bufmgr_gem);
++        bufmgr_gem = nullptr;
++        goto exit;
++    }
++    bufmgr_gem->native = native;
++    bufmgr_gem->native_has_pat = native_has_pat;
+ 
+     bufmgr_gem->bufmgr.bo_alloc = mos_gem_bo_alloc;
+     bufmgr_gem->bufmgr.bo_alloc_tiled = mos_gem_bo_alloc_tiled;
+@@ -5382,6 +5456,8 @@
+         {
+             close(bufmgr_gem->mem_profiler_fd);
+         }
++        if (bufmgr_gem->native)
++            mos_i915_virtio_release(bufmgr_gem->fd);
+         free(bufmgr_gem);
+         bufmgr_gem = nullptr;
+         goto exit;
+@@ -5645,6 +5721,10 @@
+ 
+ int mos_get_device_id(int fd, uint32_t *deviceId)
+ {
++    if (deviceId == nullptr)
++        return -EINVAL;
++    if (mos_i915_virtio_probe(fd, deviceId))
++        return 0;
+     int device_type = mos_query_device_type(fd);
+ 
+     if (DEVICE_TYPE_I915 == device_type)
+--- a/media_driver/media_top_cmake.cmake
++++ b/media_driver/media_top_cmake.cmake
+@@ -643,6 +643,8 @@
+ set_target_properties(${LIB_NAME_STATIC} PROPERTIES PREFIX "")
+ 
+ target_link_libraries(${LIB_NAME} ${MEDIA_GMM_INTERFACE_LIBS})
++find_library(INTEL_MEDIA_VIRTIO intel_media_virtio REQUIRED)
++target_link_libraries(${LIB_NAME} ${INTEL_MEDIA_VIRTIO})
+ target_link_libraries(${LIB_NAME_STATIC} ${MEDIA_GMM_INTERFACE_LIBS})
+ 
+ set(MEDIA_LINK_EXTERNAL_LIBS "${PKG_PCIACCESS_LIBRARIES} m pthread dl")
+@@ -679,6 +681,32 @@
+ 
+ endif(NOT DEFINED INCLUDED_LIBS OR "${INCLUDED_LIBS}" STREQUAL "")
+ 
++if(ENABLE_PRODUCTION_KMD)
++    message(FATAL_ERROR "The native i915 integration requires the normal buffer manager")
++endif()
++
++option(MEDIA_NATIVE_ERROR_CHECK "Build the CPU-only native MOS error-path check" OFF)
++if(MEDIA_NATIVE_ERROR_CHECK)
++    add_executable(media-native-error-check
++        "${CMAKE_CURRENT_LIST_DIR}/linux/ult/media_native_error_check.cpp"
++        "${CMAKE_CURRENT_LIST_DIR}/../media_softlet/linux/common/os/i915/mos_bufmgr_api.c")
++    MediaAddCommonTargetDefines(media-native-error-check)
++    get_target_property(NATIVE_ERROR_INCLUDES ${LIB_NAME}_mos INCLUDE_DIRECTORIES)
++    target_include_directories(media-native-error-check PRIVATE ${NATIVE_ERROR_INCLUDES})
++    target_compile_definitions(media-native-error-check PRIVATE
++        MOS_NATIVE_SOURCE="${CMAKE_CURRENT_LIST_DIR}/../media_softlet/linux/common/os/i915/mos_bufmgr.c")
++    target_compile_options(media-native-error-check PRIVATE
++        ${LIBGMM_CFLAGS_OTHER} -ffunction-sections -fdata-sections)
++    set_property(TARGET media-native-error-check PROPERTY LINK_FLAGS
++        "-Wl,--gc-sections")
++    target_link_libraries(media-native-error-check
++        ${LIBGMM_LIBRARIES} ${INTEL_MEDIA_VIRTIO} ${PKG_PCIACCESS_LIBRARIES} drm m pthread dl)
++    if(Backtrace_FOUND)
++        target_link_libraries(media-native-error-check ${Backtrace_LIBRARY})
++    endif()
++    install(TARGETS media-native-error-check RUNTIME DESTINATION bin)
++endif()
++
+ ############## Media Driver Static and Shared Lib ##################
+ 
+ # post target attributes
+--- a/media_softlet/linux/common/os/xe/include/mos_bufmgr_xe.h
++++ b/media_softlet/linux/common/os/xe/include/mos_bufmgr_xe.h
+@@ -47,7 +47,7 @@
+ #if defined(__cplusplus)
+ extern "C" {
+ #endif
+-extern drm_export int drmIoctl(int fd, unsigned long request, void *arg);
++extern __attribute__((visibility("hidden"))) int drmIoctl(int fd, unsigned long request, void *arg);
+ 
+ #if (_DEBUG || _RELEASE_INTERNAL)
+ /**
+--- a/media_softlet/agnostic/common/os/mos_os.cpp
++++ b/media_softlet/agnostic/common/os/mos_os.cpp
+@@ -775,6 +775,27 @@
+ 
+     MOS_OS_CHK_NULL_RETURN(osInterface);
+ 
++#if defined(LINUX) || defined(ANDROID)
++    if (osInterface->pOsContext &&
++        mos_i915_virtio_probe(osInterface->pOsContext->fd, nullptr))
++    {
++        // Native i915 has real legacy engine selectors, not the ENGINES
++        // load-balance/bond extension transport required by virtual engines.
++        // Keep hardware SKU/engine data intact; select the existing MOS policy.
++        osInterface->veDefaultEnable      = false;
++        osInterface->bSupportVirtualEngine = false;
++        osInterface->ctxBasedScheduling    = false;
++        osInterface->multiNodeScaling      = false;
++        if (osInterface->apoMosEnabled)
++        {
++            MOS_OS_CHK_NULL_RETURN(osInterface->osStreamState);
++            osInterface->osStreamState->ctxBasedScheduling = false;
++            osInterface->osStreamState->multiNodeScaling   = false;
++        }
++        return MOS_STATUS_SUCCESS;
++    }
++#endif
++
+     userSettingPtr = osInterface->pfnGetUserSettingInstance(osInterface);
+     if (isNotEncode)
+     {
+--- a/media_softlet/linux/common/os/mos_graphicsresource_specific_next.cpp
++++ b/media_softlet/linux/common/os/mos_graphicsresource_specific_next.cpp
+@@ -521,9 +521,10 @@
+ 
+         if(false == m_mapped)
+         {
++            m_pData = nullptr;
+             if (pOsContextSpecific->IsAtomSoc())
+             {
+-                mos_bo_map_gtt(boPtr);
++                MOS_OS_CHECK_CONDITION(mos_bo_map_gtt(boPtr) != 0, "Failed to map GTT resource", nullptr);
+             }
+             else
+             {
+@@ -531,7 +532,8 @@
+                 {
+                     if (pOsContextSpecific->UseSwSwizzling())
+                     {
+-                        mos_bo_map(boPtr, ( OSKM_LOCKFLAG_WRITEONLY & params.m_writeRequest ));
++                        MOS_OS_CHECK_CONDITION(mos_bo_map(boPtr, (OSKM_LOCKFLAG_WRITEONLY & params.m_writeRequest)) != 0,
++                            "Failed to map resource", nullptr);
+                         m_mmapOperation = MOS_MMAP_OPERATION_MMAP;
+                         if (m_systemShadow == nullptr)
+                         {
+@@ -551,18 +553,19 @@
+                     }
+                     else
+                     {
+-                        mos_bo_map_gtt(boPtr);
++                        MOS_OS_CHECK_CONDITION(mos_bo_map_gtt(boPtr) != 0, "Failed to map GTT resource", nullptr);
+                         m_mmapOperation = MOS_MMAP_OPERATION_MMAP_GTT;
+                     }
+                 }
+                 else if (params.m_uncached)
+                 {
+-                    mos_bo_map_wc(boPtr);
++                    MOS_OS_CHECK_CONDITION(mos_bo_map_wc(boPtr) != 0, "Failed to map WC resource", nullptr);
+                     m_mmapOperation = MOS_MMAP_OPERATION_MMAP_WC;
+                 }
+                 else
+                 {
+-                    mos_bo_map(boPtr, ( OSKM_LOCKFLAG_WRITEONLY & params.m_writeRequest ));
++                    MOS_OS_CHECK_CONDITION(mos_bo_map(boPtr, (OSKM_LOCKFLAG_WRITEONLY & params.m_writeRequest)) != 0,
++                        "Failed to map resource", nullptr);
+                     m_mmapOperation = MOS_MMAP_OPERATION_MMAP;
+                 }
+             }
+@@ -986,9 +989,10 @@
+ 
+         if (false == resource->bMapped)
+         {
++            resource->pData = nullptr;
+             if (perStreamParameters->bIsAtomSOC)
+             {
+-                mos_bo_map_gtt(bo);
++                MOS_OS_CHECK_CONDITION(mos_bo_map_gtt(bo) != 0, "Failed to map GTT resource", nullptr);
+             }
+             else
+             {
+@@ -996,7 +1000,8 @@
+                 {
+                     if (perStreamParameters->bUseSwSwizzling)
+                     {
+-                        mos_bo_map(bo, (OSKM_LOCKFLAG_WRITEONLY & flags->WriteOnly));
++                        MOS_OS_CHECK_CONDITION(mos_bo_map(bo, (OSKM_LOCKFLAG_WRITEONLY & flags->WriteOnly)) != 0,
++                            "Failed to map resource", nullptr);
+                         resource->MmapOperation = MOS_MMAP_OPERATION_MMAP;
+                         if (resource->pSystemShadow == nullptr)
+                         {
+@@ -1013,18 +1018,19 @@
+                     }
+                     else
+                     {
+-                        mos_bo_map_gtt(bo);
++                        MOS_OS_CHECK_CONDITION(mos_bo_map_gtt(bo) != 0, "Failed to map GTT resource", nullptr);
+                         resource->MmapOperation = MOS_MMAP_OPERATION_MMAP_GTT;
+                     }
+                 }
+                 else if (flags->Uncached)
+                 {
+-                    mos_bo_map_wc(bo);
++                    MOS_OS_CHECK_CONDITION(mos_bo_map_wc(bo) != 0, "Failed to map WC resource", nullptr);
+                     resource->MmapOperation = MOS_MMAP_OPERATION_MMAP_WC;
+                 }
+                 else
+                 {
+-                    mos_bo_map(bo, (OSKM_LOCKFLAG_WRITEONLY & flags->WriteOnly));
++                    MOS_OS_CHECK_CONDITION(mos_bo_map(bo, (OSKM_LOCKFLAG_WRITEONLY & flags->WriteOnly)) != 0,
++                        "Failed to map resource", nullptr);
+                     resource->MmapOperation = MOS_MMAP_OPERATION_MMAP;
+                 }
+             }
+--- a/media_softlet/linux/common/os/mos_gpucontext_specific_next.cpp
++++ b/media_softlet/linux/common/os/mos_gpucontext_specific_next.cpp
+@@ -1303,7 +1303,14 @@
+                 {
+                     GraphicsResourceNext::LockParams param;
+                     param.m_writeRequest = true;
+-                    tempRes->pGfxResourceNext->Lock(m_osContext, param);
++                    if (!tempRes->pGfxResourceNext->Lock(m_osContext, param))
++                    {
++                        for (auto mapped : mappedResList)
++                        {
++                            mapped->pGfxResourceNext->Unlock(m_osContext);
++                        }
++                        return MOS_STATUS_UNKNOWN;
++                    }
+                     mappedResList.push_back(tempRes);
+                     break;
+                 }
+--- a/media_softlet/linux/common/os/xe/mos_gpucontext_specific_next_xe.cpp
++++ b/media_softlet/linux/common/os/xe/mos_gpucontext_specific_next_xe.cpp
+@@ -295,7 +295,14 @@
+                 {
+                     GraphicsResourceNext::LockParams param;
+                     param.m_writeRequest = true;
+-                    tempRes->pGfxResourceNext->Lock(m_osContext, param);
++                    if (!tempRes->pGfxResourceNext->Lock(m_osContext, param))
++                    {
++                        for (auto mapped : mappedResList)
++                        {
++                            mapped->pGfxResourceNext->Unlock(m_osContext);
++                        }
++                        return MOS_STATUS_UNKNOWN;
++                    }
+                     mappedResList.push_back(tempRes);
+                     break;
+                 }
+--- a/media_driver/linux/common/os/mos_graphicsresource_specific.cpp
++++ b/media_driver/linux/common/os/mos_graphicsresource_specific.cpp
+@@ -468,9 +468,10 @@
+ 
+         if(false == m_mapped)
+         {
++            m_pData = nullptr;
+             if (pOsContextSpecific->IsAtomSoc())
+             {
+-                mos_bo_map_gtt(boPtr);
++                MOS_OS_CHECK_CONDITION(mos_bo_map_gtt(boPtr) != 0, "Failed to map GTT resource", nullptr);
+             }
+             else
+             {
+@@ -478,7 +479,8 @@
+                 {
+                     if (pOsContextSpecific->UseSwSwizzling())
+                     {
+-                        mos_bo_map(boPtr, ( OSKM_LOCKFLAG_WRITEONLY & params.m_writeRequest ));
++                        MOS_OS_CHECK_CONDITION(mos_bo_map(boPtr, (OSKM_LOCKFLAG_WRITEONLY & params.m_writeRequest)) != 0,
++                            "Failed to map resource", nullptr);
+                         m_mmapOperation = MOS_MMAP_OPERATION_MMAP;
+                         if (m_systemShadow == nullptr)
+                         {
+@@ -498,18 +500,19 @@
+                     }
+                     else
+                     {
+-                        mos_bo_map_gtt(boPtr);
++                        MOS_OS_CHECK_CONDITION(mos_bo_map_gtt(boPtr) != 0, "Failed to map GTT resource", nullptr);
+                         m_mmapOperation = MOS_MMAP_OPERATION_MMAP_GTT;
+                     }
+                 }
+                 else if (params.m_uncached)
+                 {
+-                    mos_bo_map_wc(boPtr);
++                    MOS_OS_CHECK_CONDITION(mos_bo_map_wc(boPtr) != 0, "Failed to map WC resource", nullptr);
+                     m_mmapOperation = MOS_MMAP_OPERATION_MMAP_WC;
+                 }
+                 else
+                 {
+-                    mos_bo_map(boPtr, ( OSKM_LOCKFLAG_WRITEONLY & params.m_writeRequest ));
++                    MOS_OS_CHECK_CONDITION(mos_bo_map(boPtr, (OSKM_LOCKFLAG_WRITEONLY & params.m_writeRequest)) != 0,
++                        "Failed to map resource", nullptr);
+                     m_mmapOperation = MOS_MMAP_OPERATION_MMAP;
+                 }
+             }
+--- a/media_driver/linux/common/os/mos_os_specific.c
++++ b/media_driver/linux/common/os/mos_os_specific.c
+@@ -3096,9 +3096,10 @@
+ 
+         if(false == pOsResource->bMapped)
+         {
++            pOsResource->pData = nullptr;
+             if (pContext->bIsAtomSOC)
+             {
+-                mos_bo_map_gtt(bo);
++                MOS_OS_CHECK_CONDITION(mos_bo_map_gtt(bo) != 0, "Failed to map GTT resource", nullptr);
+             }
+             else
+             {
+@@ -3106,7 +3107,8 @@
+                 {
+                     if (pContext->bUseSwSwizzling)
+                     {
+-                        mos_bo_map(bo, (OSKM_LOCKFLAG_WRITEONLY&pLockFlags->WriteOnly));
++                        MOS_OS_CHECK_CONDITION(mos_bo_map(bo, (OSKM_LOCKFLAG_WRITEONLY & pLockFlags->WriteOnly)) != 0,
++                            "Failed to map resource", nullptr);
+                         pOsResource->MmapOperation = MOS_MMAP_OPERATION_MMAP;
+                         if (pOsResource->pSystemShadow == nullptr)
+                         {
+@@ -3124,18 +3126,19 @@
+                     }
+                     else
+                     {
+-                        mos_bo_map_gtt(bo);
++                        MOS_OS_CHECK_CONDITION(mos_bo_map_gtt(bo) != 0, "Failed to map GTT resource", nullptr);
+                         pOsResource->MmapOperation = MOS_MMAP_OPERATION_MMAP_GTT;
+                     }
+                 }
+                 else if (pLockFlags->Uncached)
+                 {
+-                    mos_bo_map_wc(bo);
++                    MOS_OS_CHECK_CONDITION(mos_bo_map_wc(bo) != 0, "Failed to map WC resource", nullptr);
+                     pOsResource->MmapOperation = MOS_MMAP_OPERATION_MMAP_WC;
+                 }
+                 else
+                 {
+-                    mos_bo_map(bo, (OSKM_LOCKFLAG_WRITEONLY&pLockFlags->WriteOnly));
++                    MOS_OS_CHECK_CONDITION(mos_bo_map(bo, (OSKM_LOCKFLAG_WRITEONLY & pLockFlags->WriteOnly)) != 0,
++                        "Failed to map resource", nullptr);
+                     pOsResource->MmapOperation = MOS_MMAP_OPERATION_MMAP;
+                 }
+             }
+--- /dev/null
++++ b/media_driver/linux/ult/media_native_error_check.cpp
+@@ -0,0 +1,180 @@
++/* SPDX-License-Identifier: MIT
++ * CPU-only negative-path check. Compile the exact selected MOS implementation;
++ * Boundary aliases inject errors, never successful GPU work or completion.
++ */
++#include <cstdio>
++#include <cstdlib>
++#define drmIoctl media_check_ioctl
++#include MOS_NATIVE_SOURCE
++#undef drmIoctl
++
++#define CHECK(expr) do { if (!(expr)) { \
++    std::fprintf(stderr, "negative check failed: %s at %d\n", #expr, __LINE__); \
++    std::abort(); \
++} } while (0)
++
++static struct mos_bufmgr_gem *active_manager;
++static int injected_error = EIO;
++static unsigned creates, creates_ext, waits, domains;
++
++
++
++extern "C" int media_check_ioctl(int fd, unsigned long command, void *arg)
++{
++    CHECK(fd == -1);
++    switch (command) {
++    case DRM_IOCTL_I915_GEM_CREATE: ++creates; break;
++    case DRM_IOCTL_I915_GEM_CREATE_EXT:
++        ++creates_ext;
++        if (!active_manager->native_has_pat) {
++            const auto *create = static_cast<const drm_i915_gem_create_ext *>(arg);
++            auto *ext = reinterpret_cast<const i915_user_extension *>(create->extensions);
++            while (ext) {
++                if (ext->name == I915_GEM_CREATE_EXT_SET_PAT) {
++                    errno = ENODEV; // The actual DG2 kernel rejects this extension.
++                    return -1;
++                }
++                ext = reinterpret_cast<const i915_user_extension *>(ext->next_extension);
++            }
++        }
++        break;
++    case DRM_IOCTL_I915_GEM_WAIT: ++waits; break;
++    case DRM_IOCTL_I915_GEM_SET_DOMAIN: ++domains; break;
++    case DRM_IOCTL_I915_GEM_MADVISE:
++        if (active_manager->native)
++            return 0; // Mesa leaves the caller's retained field untouched.
++        break;
++    default: CHECK(false);
++    }
++    errno = injected_error;
++    return -1;
++}
++
++static void reset_calls()
++{
++    creates = creates_ext = waits = domains = 0;
++}
++
++static void check_pat(struct mos_bufmgr_gem &manager)
++{
++    mos_drm_bo_alloc request;
++    request.size = 4096;
++    request.ext.pat_index = 2;
++    for (bool local : { false, true }) {
++        manager.has_lmem = local;
++        request.ext.mem_type = local ? MOS_MEMPOOL_VIDEOMEMORY : 0;
++        reset_calls();
++        CHECK(mos_gem_bo_alloc_internal(&manager.bufmgr, &request) == nullptr);
++        CHECK(errno == EOPNOTSUPP && request.ext.pat_index == 2);
++        CHECK(creates == 0 && creates_ext == 0);
++    }
++    manager.has_lmem = false;
++    request.ext.mem_type = 0;
++
++    // A physical-driver failure may disable its static PAT support heuristic.
++    manager.native = false;
++    request.ext.pat_index = 0;
++    reset_calls();
++    CHECK(mos_gem_bo_alloc_internal(&manager.bufmgr, &request) == nullptr);
++    CHECK(creates_ext == 1 && creates == 1);
++
++    // Native explicit PAT must still be tried and its failure never retried
++    // without PAT, including after the physical-driver heuristic changed.
++    manager.native = true;
++    for (unsigned pat : { 0u, 1u }) {
++        request.ext.pat_index = pat;
++        reset_calls();
++        CHECK(mos_gem_bo_alloc_internal(&manager.bufmgr, &request) == nullptr);
++        CHECK(errno == injected_error && request.ext.pat_index == pat);
++        CHECK(creates_ext == 1 && creates == 0);
++    }
++    // DG2 still uses region extensions, but never its unsupported PAT UAPI.
++    manager.native_has_pat = false;
++    for (bool local : { false, true }) {
++        manager.has_lmem = local;
++        request.ext.mem_type = local ? MOS_MEMPOOL_VIDEOMEMORY : 0;
++        request.ext.pat_index = 0;
++        reset_calls();
++        CHECK(mos_gem_bo_alloc_internal(&manager.bufmgr, &request) == nullptr);
++        CHECK(errno == injected_error);
++        CHECK(creates_ext == unsigned(local) && creates == unsigned(!local));
++    }
++    manager.has_lmem = false;
++    manager.native_has_pat = true;
++}
++
++static void check_mapping(struct mos_bufmgr_gem &manager)
++{
++    unsigned char storage[4096] = {};
++    mos_bo_gem object = {};
++    object.bo.bufmgr = &manager.bufmgr;
++    object.bo.size = sizeof(storage);
++    object.gem_handle = 1;
++    object.mem_virtual = storage;
++    object.mem_wc_virtual = storage;
++    object.gtt_virtual = storage;
++    object.cpu_cacheable = true;
++    manager.has_ext_mmap = true;
++    manager.has_wait_timeout = true;
++    auto cached_map = +[](mos_linux_bo *bo) { return mos_gem_bo_map(bo, 1); };
++    int (*maps[])(mos_linux_bo *) = { cached_map, mos_gem_bo_map_wc, mos_gem_bo_map_gtt };
++    for (int error : { EIO, EACCES, EINTR }) {
++        injected_error = error;
++        for (bool wait_path : { false, true }) {
++            manager.has_lmem = wait_path;
++            manager.has_mmap_offset = wait_path;
++            for (auto map : maps) {
++                reset_calls();
++                object.bo.virt = storage; // stale public pointer must not survive
++                CHECK(map(&object.bo) == -error);
++                CHECK(object.bo.virt == nullptr);
++                CHECK(!object.mapped_cpu_write && object.map_count == 0);
++                CHECK(waits == unsigned(wait_path));
++                CHECK(domains == unsigned(!wait_path));
++                CHECK(pthread_mutex_trylock(&manager.lock) == 0);
++                pthread_mutex_unlock(&manager.lock);
++            }
++        }
++    }
++    // The LLC unsynchronized API must still publish its cached map without
++    // issuing a wait/domain ioctl. This is CPU storage, not simulated GPU work.
++    manager.has_llc = true;
++    reset_calls();
++    CHECK(mos_gem_bo_map_unsynchronized(&object.bo) == 0);
++    CHECK(object.bo.virt == storage && waits == 0 && domains == 0);
++    CHECK(pthread_mutex_trylock(&manager.lock) == 0);
++    pthread_mutex_unlock(&manager.lock);
++}
++
++static void check_advice(struct mos_bufmgr_gem &manager)
++{
++    struct mos_bo_gem object = {};
++    object.gem_handle = 1;
++    object.reusable = true;
++    manager.native = true;
++    const int states[] = { I915_MADV_DONTNEED, I915_MADV_WILLNEED };
++    for (int state : states)
++        CHECK(mos_gem_bo_madvise_internal(&manager, &object, state) == 1);
++    object.reusable = false;
++    CHECK(mos_gem_bo_madvise_internal(&manager, &object, I915_MADV_WILLNEED) == 0);
++    object.reusable = true;
++    manager.native = false;
++    injected_error = EIO;
++    CHECK(mos_gem_bo_madvise_internal(&manager, &object, I915_MADV_WILLNEED) == 0);
++    CHECK(errno == EIO);
++    manager.native = true;
++}
++
++int main()
++{
++    struct mos_bufmgr_gem manager = {};
++    manager.fd = -1;
++    active_manager = &manager;
++    manager.native = manager.native_has_pat = true;
++    CHECK(pthread_mutex_init(&manager.lock, nullptr) == 0);
++    check_pat(manager);
++    check_advice(manager);
++    check_mapping(manager);
++    CHECK(pthread_mutex_destroy(&manager.lock) == 0);
++    std::puts("MOS exact-source PAT, backing-retention and synchronized-map checks passed (CPU only)");
++}

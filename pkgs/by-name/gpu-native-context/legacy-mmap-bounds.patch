@@ -1,0 +1,20 @@
+--- a/src/intel/dev/virtio/i915_virtio_ccmd.c
++++ b/src/intel/dev/virtio/i915_virtio_ccmd.c
+@@ -722,6 +722,17 @@
+       errno = i915_virtio_simple_ioctl(dev, cmd, req);
+       goto out;
+ 
++   case DRM_IOCTL_I915_GEM_MMAP_GTT: {
++      const struct drm_i915_gem_mmap_gtt *gtt = req;
++      /* The legacy argument ends before mmap_offset's flags member. */
++      struct drm_i915_gem_mmap_offset offset = {
++         .handle = gtt->handle,
++         .flags = I915_MMAP_OFFSET_GTT,
++      };
++      errno = i915_virtio_gem_mmap_offset(dev, DRM_IOCTL_I915_GEM_MMAP_OFFSET, &offset);
++      goto out;
++   }
++
+    default:
+       break;
+    }

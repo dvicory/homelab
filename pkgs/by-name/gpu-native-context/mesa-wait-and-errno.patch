@@ -1,0 +1,269 @@
+--- a/src/intel/dev/virtio/i915_virtio_ccmd.c
++++ b/src/intel/dev/virtio/i915_virtio_ccmd.c
+@@ -126,7 +126,7 @@
+    int ret = vdrm_bo_create(dev->vdrm, size, blob_flags,
+                             req.blob_id, blob_hints, &req.hdr);
+    if (!ret)
+-      return EINVAL;
++      return dev->vpipe ? EINVAL : errno;
+ 
+    create->handle = ret;
+    create->size = size;
+@@ -249,7 +249,7 @@
+    int ret = vdrm_bo_create(dev->vdrm, size, blob_flags,
+                             req->blob_id, blob_hints, &req->hdr);
+    if (!ret)
+-      return EINVAL;
++      return dev->vpipe ? EINVAL : errno;
+ 
+    create->handle = ret;
+    create->size = size;
+@@ -393,21 +393,63 @@
+    return errno;
+ }
+ 
+-static int
+-i915_virtio_gem_wait(struct intel_virtio_device *dev,
+-                     struct drm_i915_gem_wait *wait)
++static int64_t time_ns(void)
+ {
+-   struct drm_virtgpu_3d_wait virt_wait = { .handle = wait->bo_handle };
++   struct timespec ts;
+ 
+-   if (!wait->timeout_ns)
+-      virt_wait.flags = VIRTGPU_WAIT_NOWAIT;
++   clock_gettime(CLOCK_MONOTONIC, &ts);
+ 
+-   intel_virtio_ioctl_errno(dev->fd, DRM_IOCTL_VIRTGPU_WAIT, &virt_wait);
++   return ts.tv_sec * 1000000000LL + ts.tv_nsec;
++}
+ 
+-   if (errno == EBUSY)
+-      errno = ETIME;
++static int
++i915_virtio_gem_wait(struct intel_virtio_device *dev,
++                     struct drm_i915_gem_wait *wait)
++{
++   if (wait->flags)
++      return EINVAL;
++
++   if (!wait->timeout_ns) {
++      struct drm_virtgpu_3d_wait virt_wait = {
++         .handle = wait->bo_handle,
++         .flags = VIRTGPU_WAIT_NOWAIT,
++      };
++      int err = intel_virtio_ioctl_errno(dev->fd, DRM_IOCTL_VIRTGPU_WAIT,
++                                         &virt_wait);
++      return err == EBUSY ? ETIME : err;
++   }
+ 
+-   return errno;
++   const int64_t start = time_ns();
++   const int64_t timeout = wait->timeout_ns;
++   struct drm_prime_handle prime = {
++      .handle = wait->bo_handle,
++      .flags = DRM_CLOEXEC | DRM_RDWR,
++   };
++   int err = intel_virtio_ioctl_errno(dev->fd, DRM_IOCTL_PRIME_HANDLE_TO_FD,
++                                      &prime);
++   if (err)
++      return err;
++
++   /* virtgpu WAIT and DMA-BUF POLLOUT both wait for DMA_RESV_USAGE_READ.
++    * Unlike WAIT's fixed kernel timeout, ppoll supports our caller's deadline.
++    */
++   struct pollfd pfd = { .fd = prime.fd, .events = POLLOUT };
++   struct timespec remaining;
++   if (timeout > 0) {
++      const int64_t left = MAX2(timeout - (time_ns() - start), 0);
++      remaining.tv_sec = left / 1000000000LL;
++      remaining.tv_nsec = left % 1000000000LL;
++   }
++   int ret = ppoll(&pfd, 1, timeout > 0 ? &remaining : NULL, NULL);
++   err = ret < 0 ? errno : ret == 0 ? ETIME :
++         (pfd.revents & POLLNVAL) ? EBADF :
++         (pfd.revents & (POLLERR | POLLHUP)) ? EIO :
++         (pfd.revents & POLLOUT) ? 0 : EIO;
++   if (timeout > 0)
++      wait->timeout_ns = err == ETIME ? 0 :
++                         MAX2(timeout - (time_ns() - start), 0);
++   close(prime.fd);
++   return err;
+ }
+ 
+ static int
+@@ -432,19 +474,14 @@
+    return rsp->ret;
+ }
+ 
+-static int64_t time_ns(void)
+-{
+-   struct timespec ts;
+-
+-   clock_gettime(CLOCK_MONOTONIC, &ts);
+-
+-   return ts.tv_sec * 1000000000LL + ts.tv_nsec;
+-}
+-
+ static int
+ i915_virtio_gem_wait_vpipe(struct intel_virtio_device *dev,
+                            struct drm_i915_gem_wait *wait)
+ {
++   if (wait->flags)
++      return EINVAL;
++   const bool infinite = wait->timeout_ns < 0;
++
+    do {
+       struct drm_i915_gem_busy busy = { .handle = wait->bo_handle };
+       int64_t start_time = time_ns();
+@@ -453,9 +490,8 @@
+       if (err)
+          return err;
+ 
+-      wait->timeout_ns -= time_ns() - start_time;
+-      if (wait->timeout_ns < 0)
+-         wait->timeout_ns = 0;
++      if (!infinite)
++         wait->timeout_ns = MAX2(wait->timeout_ns - (time_ns() - start_time), 0);
+ 
+       if (!busy.busy)
+          return 0;
+@@ -716,10 +752,8 @@
+                                 struct drm_prime_handle *args)
+ {
+    args->handle = vdrm_dmabuf_to_handle(dev->vdrm, args->fd);
+-   if (!args->handle) {
+-      errno = EINVAL;
+-      return errno;
+-   }
++   if (!args->handle)
++      return dev->vpipe ? EINVAL : errno;
+ 
+    return 0;
+ }
+@@ -729,10 +763,8 @@
+                                 struct drm_prime_handle *args)
+ {
+    args->fd = vdrm_bo_export_dmabuf(dev->vdrm, args->handle);
+-   if (args->fd < 0) {
+-      errno = EINVAL;
+-      return errno;
+-   }
++   if (args->fd < 0)
++      return dev->vpipe ? EINVAL : errno;
+ 
+    return 0;
+ }
+@@ -920,7 +952,9 @@
+ 
+ out:
+    if (errno) {
+-      mesa_logd("ioctl 0x%lx failed errno=%d\n", _IOC_NR(cmd), errno);
++      int err = errno;
++      mesa_logd("ioctl 0x%lx failed errno=%d\n", _IOC_NR(cmd), err);
++      errno = err;
+       return -1;
+    }
+ 
+--- a/src/virtio/vdrm/vdrm.c
++++ b/src/virtio/vdrm/vdrm.c
+@@ -3,6 +3,8 @@
+  * SPDX-License-Identifier: MIT
+  */
+ 
++#include <errno.h>
++
+ #include "util/u_math.h"
+ #include "util/perf/cpu_trace.h"
+ 
+@@ -43,21 +45,26 @@
+                uint64_t blob_id, uint32_t blob_hints,
+                struct vdrm_ccmd_req *req)
+ {
+-   uint32_t handle;
++   uint32_t handle = 0;
++   int error;
+ 
+    simple_mtx_lock(&vdev->eb_lock);
+ 
+    /* flush any buffered cmds so they are seen by the host *prior* to
+     * the cmds associated with bo creation.
+     */
+-   vdev->funcs->flush_locked(vdev, NULL);
++   if (vdev->funcs->flush_locked(vdev, NULL))
++      goto out_unlock;
+ 
+    req->seqno = ++vdev->next_seqno;
+ 
+    handle = vdev->funcs->bo_create(vdev, size, blob_flags, blob_id,
+                                    blob_hints, req);
+ 
++out_unlock:
++   error = errno;
+    simple_mtx_unlock(&vdev->eb_lock);
++   errno = error;
+ 
+    return handle;
+ }
+--- a/src/virtio/vdrm/vdrm_virtgpu.c
++++ b/src/virtio/vdrm/vdrm_virtgpu.c
+@@ -19,8 +19,13 @@
+ #define SHMEM_SZ 0x4000
+ 
+ #define virtgpu_ioctl(fd, name, args...) ({                          \
+-      MESA_TRACE_SCOPE(#name);                                       \
+-      int ret = drmIoctl((fd), DRM_IOCTL_ ## name, (args));          \
++      int ret, error;                                                \
++      {                                                              \
++         MESA_TRACE_SCOPE(#name);                                     \
++         ret = drmIoctl((fd), DRM_IOCTL_ ## name, (args));             \
++         error = errno;                                              \
++      }                                                              \
++      errno = error;                                                 \
+       ret;                                                           \
+    })
+ 
+@@ -61,7 +66,9 @@
+ 
+    int ret = virtgpu_ioctl(vgdev->fd, VIRTGPU_EXECBUFFER, &eb);
+    if (ret) {
+-      mesa_loge("EXECBUFFER failed: %s", strerror(errno));
++      int error = errno;
++      mesa_loge("EXECBUFFER failed: %s", strerror(error));
++      errno = error;
+       return ret;
+    }
+ 
+@@ -126,7 +133,9 @@
+ 
+    ret = drmPrimeFDToHandle(vgdev->fd, fd, &handle);
+    if (ret) {
+-      mesa_loge("dmabuf import failed: %s", strerror(errno));
++      int error = errno;
++      mesa_loge("dmabuf import failed: %s", strerror(error));
++      errno = error;
+       return 0;
+    }
+ 
+@@ -172,7 +181,9 @@
+ 
+    ret = virtgpu_ioctl(vgdev->fd, VIRTGPU_RESOURCE_CREATE_BLOB, &args);
+    if (ret) {
+-      mesa_loge("buffer allocation failed: %s", strerror(errno));
++      int error = errno;
++      mesa_loge("buffer allocation failed: %s", strerror(error));
++      errno = error;
+       return 0;
+    }
+ 
+@@ -243,7 +254,9 @@
+ 
+    ret = drmPrimeHandleToFD(vgdev->fd, handle, DRM_CLOEXEC | DRM_RDWR, &fd);
+    if (ret) {
+-      mesa_loge("dmabuf export failed: %s", strerror(errno));
++      int error = errno;
++      mesa_loge("dmabuf export failed: %s", strerror(error));
++      errno = error;
+       return ret;
+    }
+ 

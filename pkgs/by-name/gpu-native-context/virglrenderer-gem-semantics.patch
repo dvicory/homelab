@@ -1,0 +1,144 @@
+--- a/src/drm/i915/i915_ccmd.c
++++ b/src/drm/i915/i915_ccmd.c
+@@ -54,6 +54,8 @@
+ 
+    if (!rsp)
+       return -ENOMEM;
++
++   /* Semantic ioctl errors need a response so the sequence is acknowledged. */
+ 
+    /* Allow-list of supported ioctls: */
+    unsigned iocnr = _IOC_NR(req->cmd) - DRM_COMMAND_BASE;
+@@ -61,10 +63,17 @@
+    case DRM_IOCTL_I915_REG_READ:
+    case DRM_IOCTL_I915_GEM_GET_APERTURE:
+       break;
++   case DRM_IOCTL_I915_GEM_SW_FINISH:
++   case DRM_IOCTL_I915_GEM_MMAP_OFFSET:
+    case DRM_IOCTL_I915_GEM_SET_TILING:
+    case DRM_IOCTL_I915_GEM_GET_TILING:
+    case DRM_IOCTL_I915_GEM_SET_DOMAIN: {
+       uint32_t *handle = (uint32_t*)req->payload;
++      if (req->cmd == DRM_IOCTL_I915_GEM_MMAP_OFFSET &&
++          ((const struct drm_i915_gem_mmap_offset *)req->payload)->extensions) {
++         rsp->ret = EINVAL;
++         return 0;
++      }
+ 
+       struct drm_object *dobj = drm_context_get_object_from_res_id(dctx, *handle);
+       if (!dobj) {
+@@ -106,7 +115,8 @@
+ 
+       default:
+          drm_err("unsupported ioctl param: %08x (%u)", req->cmd, iocnr);
+-         return EINVAL;
++         rsp->ret = EINVAL;
++         return 0;
+       }
+       break;
+    }
+@@ -116,18 +126,21 @@
+          (const void *)req->payload;
+       if (vm_control->extensions != 0) {
+          drm_err("ioctl %08x (0x%x): extensions present", req->cmd, iocnr);
+-         return -EINVAL;
++         rsp->ret = EINVAL;
++         return 0;
+       }
+       if (vm_control->flags != 0) {
+          drm_err("ioctl %08x (0x%x): flags present", req->cmd, iocnr);
+-         return -EINVAL;
++         rsp->ret = EINVAL;
++         return 0;
+       }
+       /* XXX check that the VM ID is valid */
+       break;
+    }
+    default:
+       drm_err("invalid ioctl: %08x (0x%x)", req->cmd, iocnr);
+-      return -EINVAL;
++      rsp->ret = EINVAL;
++      return 0;
+    }
+ 
+    rsp->ret = intel_ioctl(dctx->fd, req->cmd, req->payload);
+@@ -712,7 +725,7 @@
+    struct drm_object *dobj = drm_context_get_object_from_res_id(dctx, req->res_id);
+    if (!dobj) {
+       drm_err("invalid res_id %u", req->res_id);
+-      return 0;
++      return -EINVAL;
+    }
+ 
+    struct virgl_resource *res = virgl_resource_lookup(req->res_id);
+@@ -722,19 +735,23 @@
+    }
+ 
+    struct i915_object *obj = to_i915_object(dobj);
+-
+-   if (!obj->mmap_configured && res->mapped) {
+-      drm_dbg("res_id %u already mapped", req->res_id);
+-      obj->mmap_configured = true;
++   struct drm_i915_gem_mmap_offset offset = {
++      .handle = dobj->handle,
++      .flags = req->flags,
++   };
++   int ret = intel_ioctl(dctx->fd, DRM_IOCTL_I915_GEM_MMAP_OFFSET, &offset);
++   if (ret)
++      return -ret;
++   /* FIXED retains the allocation's immutable WB/WC mapping attributes. */
++   if (req->flags == I915_MMAP_OFFSET_FIXED)
+       return 0;
+-   }
++
+ 
+    int map_info = VIRGL_RENDERER_MAP_CACHE_CACHED;
+ 
+    switch (req->flags) {
+    case I915_MMAP_OFFSET_GTT:
+    case I915_MMAP_OFFSET_WC:
+-   case I915_MMAP_OFFSET_FIXED:
+       map_info = VIRGL_RENDERER_MAP_CACHE_WC;
+       break;
+    case I915_MMAP_OFFSET_WB:
+@@ -747,10 +764,10 @@
+       return -EINVAL;
+    }
+ 
+-   if (obj->mmap_configured && obj->map_info != map_info) {
++   if ((obj->mmap_configured || res->mapped) && obj->map_info != map_info) {
+       drm_dbg("mmap_flags mismatch obj->map_info 0x%x map_info 0x%x",
+               obj->map_info, map_info);
+-      return 0;
++      return -EINVAL;
+    }
+ 
+    obj->mmap_configured = true;
+--- a/src/drm/i915/i915_v3_protocol_test.c
++++ b/src/drm/i915/i915_v3_protocol_test.c
+@@ -213,6 +213,25 @@
+ static void check_rejections(void)
+ {
+    struct i915_context *ictx = make_context();
++   /* SW_FINISH's canonical payload is 4 bytes. This 8-byte encoding has
++    * matching packet/ioctl lengths, but is not an allow-listed command.
++    * The ioctl wrapper rejects SW_FINISH if dispatch reaches the DRM boundary.
++    */
++   uint64_t storage[(sizeof(struct i915_ccmd_ioctl_simple_req) + sizeof(uint64_t)) / 8] = {0};
++   struct i915_ccmd_ioctl_simple_req *ioctl_req = (void *)storage;
++   ioctl_req->hdr = I915_CCMD(IOCTL_SIMPLE, sizeof(storage));
++   ioctl_req->hdr.seqno = ictx->base.shmem->seqno + 1;
++   ioctl_req->cmd = DRM_IOW(DRM_COMMAND_BASE + DRM_I915_GEM_SW_FINISH, uint64_t);
++   struct i915_ccmd_ioctl_simple_rsp *rsp = (void *)ictx->base.rsp_mem;
++   rsp->hdr.len = sizeof(*rsp);
++   rsp->ret = -999;
++   CHECK(ictx->base.base.submit_cmd(&ictx->base.base, ioctl_req, sizeof(storage)) == 0);
++   CHECK(rsp->ret == EINVAL);
++   CHECK(ictx->base.shmem->seqno == ioctl_req->hdr.seqno);
++
++   /* The next production rejection must still dispatch and acknowledge its
++    * next seqno (send_packet checks both), without a successful GPU operation.
++    */
+    struct packet p;
+    struct i915_ccmd_gem_execbuffer2_v3_req *req = packet(&p, 1, 9, I915_EXEC_BSD);
+    unsigned calls = exec_calls;

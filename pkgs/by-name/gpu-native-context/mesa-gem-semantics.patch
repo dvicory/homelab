@@ -1,0 +1,199 @@
+--- a/src/intel/dev/virtio/i915_virtio_ccmd.c
++++ b/src/intel/dev/virtio/i915_virtio_ccmd.c
+@@ -10,9 +10,12 @@
+ i915_virtio_simple_ioctl(struct intel_virtio_device *dev,
+                           unsigned cmd, void *_req)
+ {
++   /* SIMPLE packets are word-aligned and the renderer bounds payloads at 128. */
++   if (_IOC_SIZE(cmd) > 128 || _IOC_SIZE(cmd) % sizeof(uint32_t))
++      return EINVAL;
++   const bool sync = dev->vdrm->caps.wire_format_version >= 3 || (cmd & IOC_OUT);
+    unsigned req_len = sizeof(struct i915_ccmd_ioctl_simple_req);
+    unsigned rsp_len = sizeof(struct i915_ccmd_ioctl_simple_rsp);
+-   bool sync = !!(cmd & IOC_OUT);
+    int err;
+ 
+    req_len += _IOC_SIZE(cmd);
+@@ -33,12 +36,9 @@
+    if (err)
+       return errno;
+ 
+-   if (cmd & IOC_OUT) {
++   if (cmd & IOC_OUT)
+       memcpy(_req, rsp->payload, _IOC_SIZE(cmd));
+-      return rsp->ret;
+-   }
+-
+-   return 0;
++   return sync ? rsp->ret : 0;
+ }
+ 
+ static int
+@@ -100,6 +100,10 @@
+ i915_virtio_gem_create(struct intel_virtio_device *dev,
+                        struct drm_i915_gem_create *create)
+ {
++   if (!create->size || create->size > UINT64_MAX - 4095)
++      return EINVAL;
++   uint64_t size = align64(create->size, 4096);
++
+    uint32_t blob_flags = VIRTGPU_BLOB_FLAG_USE_MAPPABLE |
+                          VIRTGPU_BLOB_FLAG_USE_SHAREABLE;
+ 
+@@ -108,7 +112,7 @@
+ 
+    struct i915_ccmd_gem_create_req req = {
+       .hdr = I915_CCMD(GEM_CREATE, sizeof(req)),
+-      .size = create->size,
++      .size = size,
+    };
+ 
+    /* tunneled cmds are processed separately on host side,
+@@ -119,12 +123,13 @@
+ 
+    uint32_t blob_hints = DRM_VIRTGPU_BLOB_FLAG_HINT_DEFER_MAPPING;
+ 
+-   int ret = vdrm_bo_create(dev->vdrm, create->size, blob_flags,
++   int ret = vdrm_bo_create(dev->vdrm, size, blob_flags,
+                             req.blob_id, blob_hints, &req.hdr);
+    if (!ret)
+       return EINVAL;
+ 
+    create->handle = ret;
++   create->size = size;
+ 
+    return 0;
+ }
+@@ -135,6 +140,7 @@
+ {
+    struct i915_user_extension *extension = (void *)(uintptr_t)create->extensions;
+    unsigned ext_size = 0;
++   uint64_t alignment = 4096;
+    void *payload_ptr;
+ 
+    while (extension) {
+@@ -146,6 +152,13 @@
+          mem_regions = (void*)(uintptr_t)extension;
+          ext_size += sizeof(*mem_regions);
+          ext_size += sizeof(struct drm_i915_gem_memory_class_instance) * mem_regions->num_regions;
++         const struct drm_i915_gem_memory_class_instance *instances =
++            (const void *)(uintptr_t)mem_regions->regions;
++         for (unsigned i = 0; i < mem_regions->num_regions; i++) {
++            /* ponytail: DG2 LMEM granule; query granules before other devices. */
++            if (instances[i].memory_class == I915_MEMORY_CLASS_DEVICE)
++               alignment = 65536;
++         }
+          break;
+       }
+ 
+@@ -164,6 +177,10 @@
+ 
+       extension = (void *)(uintptr_t)extension->next_extension;
+    }
++
++   if (!create->size || create->size > UINT64_MAX - (alignment - 1))
++      return EINVAL;
++   uint64_t size = align64(create->size, alignment);
+ 
+    unsigned req_len = sizeof(struct i915_ccmd_gem_create_ext_req);
+    req_len += ext_size;
+@@ -213,7 +230,7 @@
+    req->hdr = I915_CCMD(GEM_CREATE_EXT, req_len);
+    req->gem_flags = create->flags;
+    req->ext_size = ext_size;
+-   req->size = create->size;
++   req->size = size;
+ 
+    uint32_t blob_flags = VIRTGPU_BLOB_FLAG_USE_MAPPABLE |
+                          VIRTGPU_BLOB_FLAG_USE_SHAREABLE;
+@@ -229,12 +246,13 @@
+ 
+    uint32_t blob_hints = DRM_VIRTGPU_BLOB_FLAG_HINT_DEFER_MAPPING;
+ 
+-   int ret = vdrm_bo_create(dev->vdrm, create->size, blob_flags,
++   int ret = vdrm_bo_create(dev->vdrm, size, blob_flags,
+                             req->blob_id, blob_hints, &req->hdr);
+    if (!ret)
+       return EINVAL;
+ 
+    create->handle = ret;
++   create->size = size;
+ 
+    return 0;
+ }
+@@ -454,6 +472,8 @@
+ i915_virtio_simple_ioctl_gem_patched(struct intel_virtio_device *dev,
+                                      unsigned long cmd, void *req)
+ {
++   if (_IOC_SIZE(cmd) < sizeof(uint32_t))
++      return EINVAL;
+    uint32_t *handle = req;
+    uint32_t tmp_handle = *handle;
+ 
+@@ -503,18 +523,38 @@
+                             unsigned long cmd,
+                             struct drm_i915_gem_mmap_offset *mmap_offset)
+ {
+-   struct i915_ccmd_gem_set_mmap_mode_req req;
+-   int err;
+-
+-   req.hdr = I915_CCMD(GEM_SET_MMAP_MODE, sizeof(req));
+-   req.res_id = vdrm_handle_to_res_id(dev->vdrm, mmap_offset->handle);
+-   req.flags = mmap_offset->flags;
+-
+-   err = vdrm_send_req(dev->vdrm, &req.hdr, false);
+-   if (err)
+-      return errno;
+-
+-   return 0;
++   if (_IOC_SIZE(cmd) != sizeof(*mmap_offset))
++      return EINVAL;
++   /* Preserve the upstream wire1/2 mapping operation. */
++   if (dev->vdrm->caps.wire_format_version < 3) {
++      struct i915_ccmd_gem_set_mmap_mode_req req = {
++         .hdr = I915_CCMD(GEM_SET_MMAP_MODE, sizeof(req)),
++         .res_id = vdrm_handle_to_res_id(dev->vdrm, mmap_offset->handle),
++         .flags = mmap_offset->flags,
++      };
++      if (vdrm_send_req(dev->vdrm, &req.hdr, false))
++         return errno;
++      return 0;
++   }
++   /* The declared DG2 profile permits only placement-derived FIXED maps. */
++   switch (mmap_offset->flags) {
++   case I915_MMAP_OFFSET_GTT:
++   case I915_MMAP_OFFSET_WC:
++   case I915_MMAP_OFFSET_WB:
++   case I915_MMAP_OFFSET_UC:
++      return ENODEV;
++   case I915_MMAP_OFFSET_FIXED:
++      break;
++   default:
++      return EINVAL;
++   }
++
++   int ret = i915_virtio_simple_ioctl_gem_patched(dev, cmd, mmap_offset);
++   if (!ret) {
++      /* vdrm_bo_map uses the BO handle, not a host-only mmap offset. */
++      mmap_offset->offset = 0;
++   }
++   return ret;
+ }
+ 
+ static int
+@@ -830,6 +870,15 @@
+       errno = i915_virtio_simple_ioctl_gem_patched(dev, cmd, req);
+       break;
+ 
++   case IOC_MASKED(DRM_IOCTL_I915_GEM_SW_FINISH):
++      if (dev->vdrm->caps.wire_format_version < 3)
++         errno = ENOTTY;
++      else if (_IOC_SIZE(cmd) != sizeof(struct drm_i915_gem_sw_finish))
++         errno = EINVAL;
++      else
++         errno = i915_virtio_simple_ioctl_gem_patched(dev, cmd, req);
++      break;
++
+    case IOC_MASKED(DRM_IOCTL_I915_GEM_BUSY):
+       /*
+        * vpipe doesn't support tracking busy GEMs, use GEM-busy CCMD that
