@@ -125,6 +125,7 @@ in
                       {
                         namespaceSelector.matchLabels."kubernetes.io/metadata.name" = "gateway";
                         podSelector.matchLabels."gateway.envoyproxy.io/owning-gateway-name" = "household";
+                        podSelector.matchLabels."gateway.envoyproxy.io/owning-gateway-namespace" = "gateway";
                       }
                     ];
                     ports = [
