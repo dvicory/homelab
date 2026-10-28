@@ -147,11 +147,20 @@ spec:
           expression: variables.bundle.resources
         - name: applications
           expression: variables.entries.filter(e, e.object.kind == 'Application').map(e, e.object)
+        # Project repeated path and filename lookups once. The complete original
+        # populations and ownership predicates remain unchanged.
+        - name: sources
+          expression: >-
+            variables.applications.map(a, {'path':dyn(a.spec.source.path.substring(variables.bundle.expected.prefix.size())),
+            'recurse':dyn(has(a.spec.source.directory) && has(a.spec.source.directory.recurse) && a.spec.source.directory.recurse)})
+        - name: manifestFiles
+          expression: variables.entries.map(e,e.file)
         expressions:
-        - expression: variables.applications.all(a,variables.bundle.files.filter(f,f.startsWith(a.spec.source.path.substring(variables.bundle.expected.prefix.size())
-            + '/') && ((has(a.spec.source.directory) && has(a.spec.source.directory.recurse) && a.spec.source.directory.recurse)
-            || !f.substring(a.spec.source.path.substring(variables.bundle.expected.prefix.size()).size()+1).contains('/'))).all(f,!f.matches('(^|.*/)(Chart.yaml|kustomization.yaml|kustomization.yml|Kustomization)$')
-            && f.lowerAscii().matches('.*[.](yaml|yml|json)$') && variables.entries.exists(e,e.file == f)))
+        - expression: >-
+            variables.sources.all(s,variables.bundle.files.filter(f,f.startsWith(s.path + '/')
+            && (s.recurse || !f.substring(s.path.size()+1).contains('/'))).all(f,
+            !f.matches('(^|.*/)(Chart.yaml|kustomization.yaml|kustomization.yml|Kustomization)$')
+            && f.lowerAscii().matches('.*[.](yaml|yml|json)$') && f in variables.manifestFiles))
           message: All original source files must be consumed manifest files; renderer markers and unsupported/empty
             files cannot be hidden.
   - name: application-source-coverage
