@@ -159,9 +159,11 @@ in
         )
         ```
 
-        Run `agenix rekey`, track new encrypted sources with `jj file track`,
-        and commit them before following the deployment procedure. Do not
-        commit plaintext or invent replacement values for unavailable secrets.
+        Track new encrypted sources with `jj file track` before running
+        `agenix rekey`, so the Git-backed flake includes their conditional
+        declarations. Track any new encrypted host rekeys too, then commit
+        the sources and rekeys before following the deployment procedure.
+        Do not commit plaintext or invent replacement values for unavailable secrets.
 
         | Kubernetes Secret | Source -> key | Type |
         | --- | --- | --- |
