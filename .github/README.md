@@ -569,7 +569,7 @@ than repeatedly advertising objects that fail during download. The manifest
 and backing packs are separate GitHub cache entries; a manifest hit alone
 does not prove that its objects remain available.
 
-All jobs read the public `dvicory-homelab` Cachix cache and the signed upstream
+CI jobs read the public `dvicory-homelab` Cachix cache and the signed upstream
 `https://cache.numtide.com` cache documented by the pinned `llm-agents` input.
 CI and shared Nix settings append its fixed public key
 `niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=`.
@@ -578,13 +578,21 @@ Numtide trust to supply executable store outputs, not just package metadata.
 The key is not restricted to Codex or one package: it can authenticate any
 requested store output. Its configured scope belongs to Nix desired state;
 signature checks do not make an untrusted publisher safe.
-CI appends the upstream cache and key to the user configuration after Cachix:
-Cachix's base settings override installer-level `extra-*` values. The later
-Hestia configuration preserves this user configuration. Existing substituters
-and keys remain configured. This permits exact upstream package substitution
-without changing package sources or versions. Signature verification remains
-required; CI does not automatically accept PR-provided flake configuration or
-grant upstream cache-write access. Successful `main` push
+`modules/nix/caches.nix` supplies the same public cache URLs and keys to the
+root flake, fleet and both CI workflows, preserving the default
+`cache.nixos.org` authority. CI renders its two lists directly into `NIX_CONFIG`
+for all later Nix commands, including direct derivation builds. Hestia adds its
+job-local cache without replacing these authorities. Public reads need no
+client or credentials and do not depend on `CACHIX_CACHE`.
+`CACHIX_CACHE` selects main-only publication: empty disables it,
+`dvicory-homelab` enables it, and any other name fails. Publication invokes the
+client from pinned nixpkgs through `nix shell` with the existing step-scoped
+token. Helper releases retain their separate GHCR publication authority.
+Signature verification remains required; CI does not automatically accept
+PR-provided flake configuration or grant upstream cache-write access.
+This permits exact upstream package substitution without changing package
+sources or versions; removing client setup is not a measured whole-CI speedup.
+Successful `main` push
 jobs publish their existing outputs, runtime closures, and realized build
 dependencies directly from the build runner; another job's failure does not
 prevent those uploads. Publication uses the derivation roots recorded by the
