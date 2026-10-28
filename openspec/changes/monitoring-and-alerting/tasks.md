@@ -26,6 +26,12 @@ once to stay within native CEL's unchanged cost bound, while retaining every
 original file, ownership, extension and empty-file condition. No scenario,
 failure category or required join is removed.
 
+After K3s restarts, the inherited NetworkPolicy fixture waits for the existing
+Gateway and stranger clients to execute `true` through the live kubelet/CRI path.
+Cached Node Ready alone does not establish that path. This test-readiness barrier
+does not send or retry network probes, restart watchers, change observation
+windows or weaken refusal assertions; it is not a policy-controller repair.
+
 ## 1. Contract checks and scaffolding
 
 - [x] 1.1 Add `modules/tests/monitoring-contracts.nix` with native rendered-contract checks. It must fail when:
