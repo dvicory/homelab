@@ -80,6 +80,12 @@ Kubernetes coverage. Detailed Argo resource retirement runs in the required
 native suite; the replacement VM retains real data, ownership, mount and
 accelerator observations through guest replacement.
 
+The replacement fixture's compiled-B CLI capability control uses the image's
+existing single-command `retained-directories` build, rather than separately
+building the other lifecycle commands. The selected immutable producer's full
+Go test phase remains enabled; image identity and recovery acceptance are unchanged.
+This removes duplicate prerequisite work, not a measured wall-time guarantee.
+
 After restarting K3s, the NetworkPolicy fixture waits for actual execution in
 its probe containers, not persisted Node Ready status. This readiness check
 sends no traffic: first network connections remain single-shot and existing
