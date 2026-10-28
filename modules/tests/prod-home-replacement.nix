@@ -98,8 +98,11 @@
           builtins.readFile (inputs.self + /assets/helper-release/verified.json)
         );
         selectedSource = builtins.getFlake "github:dvicory/homelab/${selected.sourceSha}";
-        # The same genuine compiled B capability used by helper-release-runtime.
+        # Reuse the image's single-command build for the genuine compiled B capability.
         helperRuntimeB = selectedSource.packages.${system}.compute-runtime.overrideAttrs (old: {
+          pname = "retained-directories";
+          subPackages = [ "cmd/retained-directories" ];
+          postInstall = "";
           postPatch = (old.postPatch or "") + ''
             substituteInPlace cmd/retained-directories/main.go --replace-fail 'func main() {' 'func main() {
               if len(os.Args) == 2 && os.Args[1] == "--version" {
