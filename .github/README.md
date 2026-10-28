@@ -556,6 +556,11 @@ Owned `TMPDIR` is selected only after Nix installation and cache setup:
 installation can change ownership under `/nix` and break its own temporary
 directory if pointed there early.
 
+The required join rejects file or ancestor links escaping its artifact root
+before reading plan, inventory, receipts or native report bytes.
+`required-ci.py --self-test` audits actual opens and accepts internal links;
+this regression runs in the existing `verification-reports` check. Metadata
+fencing does not isolate arbitrary native PR code on the runner.
 Linux runners enable available KVM acceleration. System builds and checks can
 reuse narinfo and objects uploaded by other jobs.
 Hestia's binary version is pinned alongside its action. Use core v3.1.0 or
