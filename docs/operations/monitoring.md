@@ -184,9 +184,27 @@ authentication stays off.
    unset pw
    ```
 
-4. Port-forward `svc/grafana 3000:80` from the host's cluster access, as
-   for the media apps, open `http://localhost:3000/login` and sign in as
-   `admin`.
+4. Keep the forward on the guest's loopback. In the host session above:
+
+   ```sh
+   k -n monitoring port-forward --address 127.0.0.1 svc/grafana 3000:80
+   ```
+
+   In another terminal on the browser's workstation, use the existing
+   authenticated host and guest SSH access:
+
+   ```sh
+   ssh -N -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=yes \
+     -J hvn-hyp1 \
+     -L 127.0.0.1:3000:127.0.0.1:3000 daniel@10.210.0.10
+   ```
+
+   Both SSH host keys, including the guest's independently staged identity,
+   must already be verified. Stop if that trust is unavailable or changes;
+   do not disable host-key checking. The host is only the SSH jump: the
+   tunnel terminates at the guest's loopback forward, not the host's.
+   Open `http://localhost:3000/login` on the workstation and sign in as
+   `admin`. Stop both foreground commands when finished.
 5. Restore automated sync on `apps`. Its sync restores `monitoring`, which
    reverts the Deployment; the new Pod has a new random password:
 
@@ -282,6 +300,19 @@ The host exporter listens on the compute bridge address (`10.210.0.1:9100`)
 and the firewall admits only the guest (`10.210.0.10`) on `incus-compute`.
 A failed status run keeps the previous file; the stale-file alerts then
 report it, rather than a failed unit.
+
+A completed scrub reports its real completion and errors. A canceled scrub
+or a scan replaced by a resilver has no completed scrub on record; the
+exporter reports an epoch end time, not a successful completion or an
+invented error count. An overdue/unknown-history warning calls for checking
+the pool's scrub history and completing a scrub.
+
+An already firing storage fault stays open when its telemetry disappears.
+Restore the source and verify the matching healthy observation before
+treating it as recovered. SMART notices distinguish the health, NVMe warning
+and individual counter signals; recovery of one does not clear a missing
+sibling. During an outage the notice describes an uncleared condition, not
+a newly measured error count or free-space percentage.
 
 Declared disks are `services.host-telemetry.expectedDisks` in
 `modules/den/hosts/hvn-hyp1/default.nix`. When a disk is added, replaced or
