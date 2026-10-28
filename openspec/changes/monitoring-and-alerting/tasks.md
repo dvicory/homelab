@@ -1,18 +1,18 @@
 ## Evidence scope
 
-The checked implementation tasks and receipts below record historical engineering
-proof, culminating in published head `143c7d842b6065717b7a2f686b4af844290a54d8`
-and CI run [38876132180](https://github.com/dvicory/homelab/actions/runs/38876132180).
-That proof does not certify the current-main integration based on
-`bc198ca9802c99eeb02cc11d3964a25539100371`; the successor needs its own generated
-output, native checks and exact-source CI receipt.
+The implementation receipts below are historical, including published head
+`8ae433e305ae69367053d4d487ecb5fb25846428` and normal CI
+[39240104596](https://github.com/dvicory/homelab/actions/runs/39240104596).
+The current integration targets accepted main
+`c2c93cb16136ff95c286b95339dd607939ba0656` and needs its own canonical
+generation, native consumer receipts and exact-source full CI.
 
-The owner completed the Grafana host-ciphertext rekey before that published head.
-No new rekey is required merely to integrate current main. The five delivery
-values, the existing disk and early-Namespace signoffs, separately authorized
-staging and merge, and every live acceptance task remain open. Disposable
-runtime or browser proof is not evidence of actual provider delivery, production
-access control or persistence after a live guest replacement.
+The operator completed the five encrypted delivery sources and matching host
+rekeys on 2026-10-28. Their distinct original change is `ccbc811bc9ba127c5c406c5b00a119f36639a38c`;
+no agent decrypted or tested the values. Provider account settings, disk/spare
+confirmation, separately authorized staging and merge, and all live acceptance
+remain open. Disposable runtime/browser proof is not provider delivery,
+production access control or persistence after a live guest replacement.
 
 ## 1. Contract checks and scaffolding
 
@@ -28,13 +28,13 @@ access control or persistence after a live guest replacement.
 
   Evidence: `monitoring-contracts` passes on hvn-hyp1 (2026-10-11). Each rule is named after the failure it detects and reads only rendered manifests and evaluated host configuration. The per-rule failing fixtures were dropped in review: they exercised the check, not the system.
 
-- [x] 1.2 Add the `kubernetes.services.monitoring` aspect group with two empty Applications: `monitoring-retained` (wave 5, `retained = true`) and `monitoring` (wave 6). Include it in `den.aspects.prod-home`. Verify that the `prod-home-gitops-source` check accepts the `monitoring` namespace in the AppProject destinations, and that 1.1 passes.
+- [x] 1.2 Add the `kubernetes.services.monitoring` aspect group with retained storage at wave 5 and workloads at wave 6. Include it in `den.aspects.prod-home`. The protected Namespace is contributed to `identity-retained` at wave -2. Current verification uses the native GitOps Kyverno policies, including AppProject destinations, plus `monitoring-contracts`.
 
   Evidence: `generated/manifests/prod-home/apps/Application-monitoring.yaml` (wave 6) and `Application-monitoring-retained.yaml` (wave 5); `monitoring` is in the AppProject destinations; `prod-home-gitops-source` and `monitoring-contracts` pass.
 
 ## 2. Host telemetry (hvn-hyp1)
 
-- [ ] 2.1 **Read-only disk-ID inspection (operator; no changes to the host).** On `hvn-hyp1`, list `/dev/disk/by-id/` and `lsblk -o NAME,TYPE,TRAN,MODEL,WWN`. For each of the 9 physical disks (2 rpool NVMe, 7 HGST including the unused `sdc`, `sdf` and `sdg`), record its by-id path: `wwn-0x…` for SAS and SATA, and `nvme-eui.…` for NVMe. Confirm that the IDSDM (USB) and iDRAC virtual devices are absent from the list. Record no serial numbers. Put the result into `hvn-hyp1`'s `expectedDisks`, keyed by readable names, and the commands used into the PR.
+- [ ] 2.1 **Disk inventory and spare-policy confirmation (operator).** Confirm the nine declared paths: seven SAS/SATA WWNs under `/dev/disk/by-id/` and two rpool NVMe PCI paths under `/dev/disk/by-path/`. Exclude USB IDSDM and iDRAC virtual devices. Record no serial numbers. Confirm that periodic unguarded SMART reads of unused spares are intended; they are not standby-preserving.
 
   Not checked: this is the operator's task. A read-only cross-check on 2026-10-11 (`ls -l /dev/disk/by-id /dev/disk/by-path`, `lsblk -d -o NAME,TYPE,TRAN,MODEL,WWN`) matched the nine declared paths and showed the IDSDM (USB) and iDRAC (virtual) devices left out. The NVMe drives are declared by path (design.md, Implementation note 2).
 
@@ -164,9 +164,9 @@ access control or persistence after a live guest replacement.
 
   Evidence: `monitoring-alertmanager` passes: `amtool check-config`, `amtool config routes test` for each route, and the delivery floor. The pinned Alertmanager reads `chat_id_file` (Implementation note 7).
 
-- [ ] 4.3 Declare the five delivery runtime secrets and the two Grafana generator secrets in `compute-resources.runtimeSecrets`. Mount the delivery Secret with `optional: true`. Verify by evaluation that the host's `runtimeSecrets` contains them. Verify with a container-level test that the pinned Alertmanager starts without the files and records a failed notification, rather than crashing or using a placeholder.
+- [ ] 4.3 Declare the five delivery runtime secrets and Grafana's generated secret key in `compute-resources.runtimeSecrets`. Generate Grafana's administrator password only in memory at Pod start. Mount the delivery Secret with `optional: true`. Verify by evaluation that the host's `runtimeSecrets` contains all declared inputs. Verify with a container-level test that the pinned Alertmanager starts without the files and records a failed notification, rather than crashing or using a placeholder.
 
-  Not checked. The delivery Secret is mounted `optional: true`, and `monitoring-alertmanager` shows Alertmanager running with no credential files and counting failed notifications for pushover, telegram and webhook. Grafana's secret key is generated, committed and declared, and the administrator password is no longer a secret (Implementation note 6). The five delivery secrets are declared only once their encrypted files exist, so the host's `runtimeSecrets` lists them only after task 9.4, and `hvn-hyp1` evaluates only after the owner rekeys.
+The delivery Secret is optional, and historical `monitoring-alertmanager` exercises real missing-file notification failures without stopping Alertmanager. Grafana has one generated secret key; its administrator password is generated in memory at Pod start, not stored. All five provider sources and host rekeys now exist. Integrated inventory evaluation and generated documentation must establish their conditional declarations before this task is checked; presence alone does not prove valid credentials or delivery.
 
 - [x] 4.4 Add a check that the generated manifests, `docs/operations.md` and the rendered Alertmanager and Grafana configs contain only secret paths and references. They must contain no credential field with an inline value and no `hc-ping.com/<uuid>` pattern. Verify the check fails on a planted inline value.
 
@@ -202,7 +202,7 @@ access control or persistence after a live guest replacement.
   - the HTTPRoute and the public-edge entries for Grafana exist only in identity phase `normal`;
   - the public edges publish no monitoring hostname other than Grafana's.
 
-  Evidence: `monitoring-contracts` (one `grafana` client with both callbacks, `monitoring/grafana-oidc` published, `grafana-admin` SecurityPolicy at wave -1 before the route at 0, route absent in phases `initial` and `provisioning`, no other monitoring route).
+Historical evidence: one Grafana client, both callbacks, Secret publication and ordered route/policy. Current normal-phase publication is owned by the native `administrator-publication-atomic` policy over the actual `identity-gateway` population; exact Grafana route/backend/path/timeout and nonempty intended backend ingress are covered by native Kyverno positives and semantic negatives, not duplicate monitoring predicates.
 
 - [x] 5.3 Pin and render Grafana from `grafana-community`:
   - generic OAuth with PKCE, using the route's `grafana` client;
@@ -236,7 +236,7 @@ access control or persistence after a live guest replacement.
 
   Evidence: `monitoring-contracts`: every container has CPU and memory limits; totals are 2.85 CPU and 3.25Gi.
 
-- [x] 7.2 Run the existing identity, gateway and `prod-home` replacement checks with the monitoring Applications present. Verify that they pass without waiting on monitoring health, and that the replacement test's retained-path checks include `monitoring-metrics`.
+- [x] 7.2 Run the existing identity and `prod-home` replacement checks with monitoring present. Current Gateway verification is the complete `verify-kubernetes-api` suite, not the retired `gateway-runtime`. Preserve all 28 native scenarios and the replacement check's retained metrics path identity/writability checks without waiting on monitoring health.
 
   Evidence: with the monitoring Applications rendered, `gateway-runtime`, `identity-provision-runtime` and `prod-home-replacement` PASS through their drivers on hvn-hyp1 (2026-10-11). None waits on monitoring health; the replacement test's retained-directory checks create `monitoring-metrics` with its mapped identity and mode and confirm it is writable.
 
@@ -269,7 +269,9 @@ These steps create external accounts and supply credential values. Nothing here 
 - [ ] 9.1 **Pushover.** Create a Pushover application for Homelab alerts. Store its API token as `monitoring--alertmanager-delivery--pushover-token` and the owner's user key as `monitoring--alertmanager-delivery--pushover-user-key`. Check that the owner's Pushover quiet hours are set as wanted, since warnings respect them and critical alerts bypass them.
 - [ ] 9.2 **Telegram.** Create a dedicated bot with BotFather, separate from Hermes's bot. Create the chat that receives alerts (a direct chat with the bot, or a private group), send it one message, and read its chat ID. Store the bot token as `monitoring--alertmanager-delivery--telegram-bot-token` and the chat ID as `monitoring--alertmanager-delivery--telegram-chat-id`.
 - [ ] 9.3 **healthchecks.io.** On the hosted free tier, create one check with a 5-minute period and a 10-minute grace. Add its Pushover and Telegram integrations, using the same Pushover user and Telegram chat. Store the check's ping URL as `monitoring--alertmanager-delivery--heartbeat-url`.
-- [ ] 9.4 Confirm the five encrypted files exist under `.secrets/hosts/compute-1/` and that host evaluation sees all five in `runtimeSecrets`, without printing any value. Record the account settings (not the values) in `docs/operations/monitoring.md` (task 8.1).
+- [x] 9.4 Confirm the five encrypted files exist under `.secrets/hosts/compute-1/` and that host evaluation sees all five in `runtimeSecrets`, without printing any value. Record the intended account settings (not the values) in `docs/operations/monitoring.md` (task 8.1).
+
+  Completed 2026-10-28: operator-authored sources and matching host rekeys are tracked as their own logical change. Integrated offline, no-build, no-IFD metadata evaluation lists exactly the five keys targeting `monitoring/alertmanager-delivery`; generated operations documentation includes them. The runbook records intended account settings. Provider-side settings and live delivery are not inferred from ciphertext presence, so 9.1–9.3 and live acceptance remain open.
 
 ## 10. Live acceptance (operator-gated; not authorized by this plan)
 

@@ -12,6 +12,7 @@ spec:
           podSelector:
             matchLabels:
               gateway.envoyproxy.io/owning-gateway-name: household
+              gateway.envoyproxy.io/owning-gateway-namespace: gateway
       ports:
         - port: 3000
           protocol: TCP

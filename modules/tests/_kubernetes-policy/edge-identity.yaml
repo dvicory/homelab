@@ -613,6 +613,7 @@ spec:
           - HTTPRoute
           names: &id003
           - argocd
+          - grafana
           - radarr
           - sonarr
           - prowlarr
@@ -1101,10 +1102,11 @@ spec:
             && f.podSelector.matchLabels['gateway.envoyproxy.io/owning-gateway-name'] == 'household' &&
             (n == 'idm' || ('gateway.envoyproxy.io/owning-gateway-namespace' in f.podSelector.matchLabels
             && f.podSelector.matchLabels['gateway.envoyproxy.io/owning-gateway-namespace'] == 'gateway'))
-            && !has(f.ipBlock)) || (n == 'idm' && variables.phase == 'normal' && 'argocd' in variables.inventory
-            && has(f.namespaceSelector) && f.namespaceSelector == {'matchLabels':{'kubernetes.io/metadata.name':variables.inventory['argocd'].namespace}}
+            && !has(f.ipBlock)) || (n == 'idm' && variables.phase == 'normal' &&
+            ['argocd', 'grafana'].exists(client, client in variables.inventory
+            && has(f.namespaceSelector) && f.namespaceSelector == {'matchLabels':{'kubernetes.io/metadata.name':variables.inventory[client].namespace}}
             && has(f.podSelector) && has(f.podSelector.matchLabels) && f.podSelector.matchLabels ==
-            variables.inventory['argocd'].backendPodSelector && !has(f.ipBlock)) || (n == 'jellyfin' && has(f.namespaceSelector) && f.namespaceSelector
+            variables.inventory[client].backendPodSelector) && !has(f.ipBlock)) || (n == 'jellyfin' && has(f.namespaceSelector) && f.namespaceSelector
             == {'matchLabels':{'kubernetes.io/metadata.name':'media'}} && has(f.podSelector.matchLabels)
             && 'app.kubernetes.io/name' in f.podSelector.matchLabels && f.podSelector.matchLabels['app.kubernetes.io/name']
             in ['seerr', 'media-config-seerr'] && !has(f.ipBlock) && has(i.ports) && i.ports.size() >
