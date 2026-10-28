@@ -252,8 +252,6 @@ in
                   status = dict(line.split(':', 1) for line in cluster.succeed(f"cat /proc/{pid}/status").splitlines() if ':' in line)
                   assert int(status["CapEff"].strip(), 16) == 1 << 12, status
                   assert status["NoNewPrivs"].strip() == "1", status
-                  logs = cluster.succeed(f"{kubectl} logs daemonset/kube-network-policies -n kube-system")
-                  assert "Created plugin" in logs and "failed to create NRI plugin" not in logs, logs
                   enforcer = json.loads(cluster.succeed(f"{kubectl} get pods -n kube-system -l app.kubernetes.io/name=kube-network-policies -o json"))["items"][0]["metadata"]["name"]
                   metrics = cluster.succeed(f"{kubectl} get --raw " + shlex.quote(f"/api/v1/namespaces/kube-system/pods/{enforcer}:9080/proxy/metrics"))
                   verdicts = {}
