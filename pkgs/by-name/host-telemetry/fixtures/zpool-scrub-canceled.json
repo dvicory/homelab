@@ -1,0 +1,96 @@
+{
+  "output_version": {
+    "command": "zpool status",
+    "vers_major": 0,
+    "vers_minor": 1
+  },
+  "pools": {
+    "rpool": {
+      "name": "rpool",
+      "state": "ONLINE",
+      "pool_guid": "1000",
+      "txg": "5817071",
+      "spa_version": "5000",
+      "zpl_version": "5",
+      "scan_stats": {
+        "function": "SCRUB",
+        "state": "CANCELED",
+        "start_time": "1790851840",
+        "end_time": "1790851949",
+        "to_examine": "70564548608",
+        "examined": "79390670848",
+        "skipped": "1937408",
+        "processed": "0",
+        "errors": "3",
+        "bytes_per_scan": "0",
+        "pass_start": "1791555592",
+        "scrub_pause": "0",
+        "scrub_spent_paused": "0",
+        "issued_bytes_per_scan": "0",
+        "issued": "79388733440"
+      },
+      "vdevs": {
+        "rpool": {
+          "name": "rpool",
+          "vdev_type": "root",
+          "guid": "1000",
+          "class": "normal",
+          "state": "ONLINE",
+          "alloc_space": "537094086656",
+          "total_space": "893890068480",
+          "def_space": "893890068480",
+          "read_errors": "0",
+          "write_errors": "0",
+          "checksum_errors": "0",
+          "vdevs": {
+            "mirror-0": {
+              "name": "mirror-0",
+              "vdev_type": "mirror",
+              "guid": "1100",
+              "class": "normal",
+              "state": "ONLINE",
+              "alloc_space": "537094086656",
+              "total_space": "893890068480",
+              "def_space": "893890068480",
+              "rep_dev_size": "893894787072",
+              "read_errors": "0",
+              "write_errors": "0",
+              "checksum_errors": "0",
+              "vdevs": {
+                "nvme-EXAMPLE_A-part2": {
+                  "name": "nvme-EXAMPLE_A-part2",
+                  "vdev_type": "disk",
+                  "guid": "1001",
+                  "path": "@DEV@/by-id/nvme-EXAMPLE_A-part2",
+                  "class": "normal",
+                  "state": "ONLINE",
+                  "rep_dev_size": "893894787072",
+                  "phys_space": "894424842240",
+                  "read_errors": "0",
+                  "write_errors": "0",
+                  "checksum_errors": "0",
+                  "slow_ios": "0"
+                },
+                "nvme-EXAMPLE_B-part2": {
+                  "name": "nvme-EXAMPLE_B-part2",
+                  "vdev_type": "disk",
+                  "guid": "1002",
+                  "path": "@DEV@/by-id/nvme-EXAMPLE_B-part2",
+                  "class": "normal",
+                  "state": "ONLINE",
+                  "rep_dev_size": "893894787072",
+                  "phys_space": "894424842240",
+                  "read_errors": "0",
+                  "write_errors": "0",
+                  "checksum_errors": "0",
+                  "slow_ios": "0"
+                }
+              }
+            }
+          }
+        }
+      },
+      "error_count": "0"
+    }
+  }
+}
