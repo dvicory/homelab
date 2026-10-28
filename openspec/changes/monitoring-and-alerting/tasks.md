@@ -4,8 +4,10 @@ The implementation receipts below are historical, including published head
 `8ae433e305ae69367053d4d487ecb5fb25846428` and normal CI
 [39240104596](https://github.com/dvicory/homelab/actions/runs/39240104596).
 The current integration targets accepted main
-`c2c93cb16136ff95c286b95339dd607939ba0656` and needs its own canonical
-generation, native consumer receipts and exact-source full CI.
+`26471e6edeeb384a6ffe47a26183497062b0294b`. Canonical generation and the native
+rule consumer now pass at `0cfa756d7f52d27dd802302f97e4a067d0f85ced`; exact-source
+full CI remains pending. Earlier proof below remains scoped to its historical
+accepted-main parent.
 
 The operator completed the five encrypted delivery sources and matching host
 rekeys on 2026-10-28. Their distinct original change is `ccbc811bc9ba127c5c406c5b00a119f36639a38c`;
@@ -14,17 +16,27 @@ confirmation, separately authorized staging and merge, and all live acceptance
 remain open. Disposable runtime/browser proof is not provider delivery,
 production access control or persistence after a live guest replacement.
 
-Current engineering evidence at `972cee0b` includes canonical/schema/freshness
-and meaningful native Grafana positive/refusal witnesses. Normal full CI
-[40749858587](https://github.com/dvicory/homelab/actions/runs/40749858587)
-passed all six monitoring VMs, identity provisioning and the complete native
-28-scenario API suite, but failed the mandatory fast-policy aggregate and other
-executor roles. It is not full acceptance. The existing native GitOps/workload
-consumers now enumerate the monitoring Applications, Deployments and PV.
-Source-inventory validation projects repeated source paths and manifest filenames
-once to stay within native CEL's unchanged cost bound, while retaining every
-original file, ownership, extension and empty-file condition. No scenario,
-failure category or required join is removed.
+Engineering source `573ba88300d9d8eba102bbd4a9051cb8b0eb9206` passed normal full
+CI [40760820350](https://github.com/dvicory/homelab/actions/runs/40760820350):
+53 successful jobs and only the expected main-helper publisher skip.
+Its actual checkout has the exact authored tree and accepted-main parent.
+The unchanged strict consumer accepted all three inventories, all 49 execution
+receipts and independent artifact declarations, and the approved native report
+bytes; the native API consumer accepted all 28 scenarios and owned cleanup.
+All twenty monitoring registrations and six VM capabilities remain mandatory.
+The earlier failed `972cee0b` run remains evidence, not an unchanged rerun or waiver.
+
+The four late review findings have source repairs: the trusted browser-to-guest
+break-glass tunnel, tracking conditional encrypted sources before rekey,
+canceled/resilver scrub completion evidence, and storage-fault retention through
+missing telemetry. The existing canonical owners regenerated docs and rules.
+The rule consumer passed all 30 primary cases and three staged pairs at
+`0cfa756d`. SMART growth now uses native `delta_prometheus` at both endpoints:
+it compares observed samples instead of inventing a zero baseline across gaps.
+Removing only the nonnegative guard makes the unchanged primary suite fail the
+intended sentinel firing assertions. Current-source full CI and live acceptance
+remain separate gates; successful historical CI at `573ba883` does not establish
+these later repairs.
 
 After K3s restarts, the inherited NetworkPolicy fixture waits for the existing
 Gateway and stranger clients to execute `true` through the live kubelet/CRI path.
@@ -150,7 +162,8 @@ windows or weaken refusal assertions; it is not a policy-controller repair.
     - an absent required mount fires;
     - free space below 10% fires a warning, and below 5% a critical.
   - **Missing telemetry:**
-    - a missing host source fires `TelemetrySourceDown`, and a firing `HostZpoolUnhealthy` does not resolve while the source is gone (the `last_over_time` hold);
+    - a missing host source fires `TelemetrySourceDown`, while the native engine's own firing storage `ALERTS` renew through more than two hours of missing input; only explicit matching recovery clears each object/severity/signal, and later absence cannot resurrect it;
+    - a stopped SMART producer behind a live exporter cannot clear a firing growth warning through repeated old counter scrapes, another disk's publication, or one post-gap physical collection; only two distinct successful nonnegative collections of that input establish recovery, and negative/sentinel physical publications cannot clear the fault or supply its recovery baseline;
     - a scrape job that vanishes from discovery fires `TelemetrySourceDown` through `absent(up)`;
     - `zpool.prom` older than 600 s fires `HostZpoolStatusStale` while node_exporter is up, and so does `node_textfile_scrape_error == 1`;
     - a declared pool missing from a fresh `zpool.prom` fires `HostZpoolMissing`;
@@ -168,7 +181,11 @@ windows or weaken refusal assertions; it is not a policy-controller repair.
 
   Verify the flake check passes.
 
-  Evidence: `monitoring-rules` passes (vmalert-tool 1.151.0) with every case listed. Metric names: `vm_rows_added_to_storage_total`, `vm_free_disk_space_bytes` and `vm_data_size_bytes` in all three heartbeat checks below; `node_time_seconds` and the filesystem and systemd series in `host-telemetry-runtime`; `kubelet_running_pods`, `machine_cpu_cores` and `container_oom_events_total` in `monitoring-k3s-runtime`. `kube_node_info` was not scraped from a running kube-state-metrics. In read-only mode the store refuses writes and the heartbeat stops (`monitoring-heartbeat-storage-read-only`). Added after review (Implementation note 15): sustained CPU throttling of a container with a CPU limit fires `KubeContainerCPUThrottled` at 15 minutes and resolves when throttling stops, while 10 % throttling and a container without a limit stay silent; a working set at 95 % of its limit fires `KubeContainerMemoryNearLimit` at 10 minutes and resolves when it drops, while 80 % stays silent.
+  Current rule evidence: `monitoring-rules` at `0cfa756d` passed all 30 primary cases and three staged production rule/test pairs with vmalert-tool 1.151.0. This includes extended full-outage, sparse-sibling, coherent-ratio, three-day scrub and no-resurrection behavior. The unchanged primary suite fails exactly four sentinel held-firing assertions when only the nonnegative filter is removed. Final planning-only edits leave implementation, tests and generated manifests identical to that independently accepted source; full final-source CI remains a separate integration gate.
+
+  Metric-name evidence: historical heartbeat checks confirm `vm_rows_added_to_storage_total`, `vm_free_disk_space_bytes` and `vm_data_size_bytes`; `host-telemetry-runtime` confirms `node_time_seconds` and filesystem/systemd series; `monitoring-k3s-runtime` confirms `kubelet_running_pods`, `machine_cpu_cores` and `container_oom_events_total`. These runtime results retain their historical source scope, not final-head CI acceptance. For the remaining name, the rendered kube-state-metrics Deployment pins chart 8.6.0 and image `v2.20.0@sha256:42cfe3723a5f058171c627537fb57a3ea0f26e4380fa18555a95cb1a1b4cfc5b`, enables `nodes`, and sets no metric allow/deny filter. Its upstream release commit `4ffeda2ef866b0fef372849825a803296483b336` registers `createNodeInfoFamilyGenerator` in the node family and defines `kube_node_info` as a stable gauge with value 1 ([registration](https://github.com/kubernetes/kube-state-metrics/blob/4ffeda2ef866b0fef372849825a803296483b336/internal/store/node.go#L45-L60), [definition](https://github.com/kubernetes/kube-state-metrics/blob/4ffeda2ef866b0fef372849825a803296483b336/internal/store/node.go#L133-L181), [metric documentation](https://github.com/kubernetes/kube-state-metrics/blob/4ffeda2ef866b0fef372849825a803296483b336/docs/metrics/cluster/node-metrics.md#L6)). This confirms the pinned metric name, not a new live scrape or deployment.
+
+  Read-only counter behavior: pinned VictoriaMetrics 1.151.0 [rejects `WriteRows` before `Storage.AddRows` when read-only](https://github.com/VictoriaMetrics/VictoriaMetrics/blob/v1.151.0/app/vmstorage/vmstorage.go#L125-L139); [the added-row counter increases only by rows actually added](https://github.com/VictoriaMetrics/VictoriaMetrics/blob/v1.151.0/lib/storage/storage.go#L1670-L1693). Rejected writes therefore do not advance `vm_rows_added_to_storage_total`; already admitted work may finish during the transition. Historical read-only-store proof observes write refusal, stopped heartbeat, responsive queries and recovery after restoring space; the full final-head runtime checks still run through ordinary CI.
 
 - [x] 4.2 Render vmalert and the Alertmanager config: severity routes, the Watchdog heartbeat route, cross-channel `AlertDeliveryFailing` routes, inhibition rules, grouping, `send_resolved`, and file-based credential fields. Verify with `amtool check-config` and `amtool config routes test` in a flake check.
   - The tests pin the current routing from design.md Decision 6. They also assert the spec floor: every critical alert reaches both channels, at a Pushover priority of at least 1 so quiet hours do not hold it; every warning reaches at least one channel; resolutions are sent. A later routing change in Nix updates the first set and must still pass the second.

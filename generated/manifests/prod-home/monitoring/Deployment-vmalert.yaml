@@ -17,7 +17,7 @@ spec:
   template:
     metadata:
       annotations:
-        homelab.danielvicory/config-sha256: 21b9b821c8e049e60c8d32c5cac6890b9cbd750730a67eb4c6419e5b0bf67281
+        homelab.danielvicory/config-sha256: 6b8378ec1654f7a8b49fe803d0eab647f367134cf1aeafc45bef87072555972f
       labels:
         app.kubernetes.io/name: vmalert
         app.kubernetes.io/part-of: monitoring

@@ -314,6 +314,13 @@ and individual counter signals; recovery of one does not clear a missing
 sibling. During an outage the notice describes an uncleared condition, not
 a newly measured error count or free-space percentage.
 
+A live exporter repeatedly serving an old `smart.prom` is not a new disk
+collection. Restore the SMART producer and confirm successful collections
+for the affected disk; another disk's file update cannot clear its fault,
+and one post-gap collection does not establish a no-growth interval. Negative
+counter values are not recovery evidence; confirm two successful nonnegative
+collections of the affected input.
+
 Declared disks are `services.host-telemetry.expectedDisks` in
 `modules/den/hosts/hvn-hyp1/default.nix`. When a disk is added, replaced or
 retired, edit that set in the same change:
