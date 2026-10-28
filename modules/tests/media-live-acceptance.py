@@ -176,6 +176,39 @@ def specifications(items):
                   for item in items)
 
 
+def profile_expectations(configuration, templates, formats, app, instance):
+    class ConfigarrLoader(yaml.SafeLoader):
+        pass
+
+    ConfigarrLoader.add_constructor("!env", lambda loader, node: loader.construct_scalar(node))
+    source = yaml.load(configuration, Loader=ConfigarrLoader)[app][instance]
+    profiles = {}
+    for include in source["include"]:
+        for item in yaml.safe_load(templates[include["template"] + ".yml"])["quality_profiles"]:
+            upgrade = item["upgrade"]
+            profiles[item["name"]] = {
+                "name": item["name"],
+                "upgradeAllowed": upgrade["allowed"],
+                "cutoff": upgrade["until_quality"],
+                "minFormatScore": item["min_format_score"],
+                "cutoffFormatScore": upgrade["until_score"],
+                "minUpgradeFormatScore": upgrade["min_format_score"],
+                "items": [
+                    {"name": quality["name"], "allowed": quality["enabled"], "items": quality.get("qualities", [])}
+                    for quality in item["qualities"]
+                ],
+                "formatScores": {},
+                **({"language": item["language"]} if "language" in item else {}),
+            }
+    for group in source["custom_formats"]:
+        for assignment in group["assign_scores_to"]:
+            for trash_id in group["trash_ids"]:
+                score = (formats[trash_id]["trash_scores"]["default"]
+                         if assignment.get("use_default_score") else assignment["score"])
+                profiles[assignment["name"]]["formatScores"][trash_id] = score
+    return profiles
+
+
 def verify_profile(api, desired, formats):
     profile = one(api("/qualityprofile"), "name", desired["name"])
     for key in ("upgradeAllowed", "minFormatScore", "cutoffFormatScore", "minUpgradeFormatScore"):
@@ -191,18 +224,151 @@ def verify_profile(api, desired, formats):
         name = item.get("name") or item.get("quality", {}).get("name")
         actual_qualities[name] = (item["allowed"], sorted(child["quality"]["name"] for child in item.get("items", [])))
     expected_qualities = {item["name"]: (item["allowed"], sorted(item.get("items", []))) for item in desired["items"]}
-    require(actual_qualities == expected_qualities, "native allowed qualities/group membership differ")
+    if actual_qualities != expected_qualities:
+        differences = {
+            name: {"actual": actual_qualities.get(name), "expected": expected_qualities.get(name)}
+            for name in sorted(actual_qualities.keys() | expected_qualities.keys())
+            if actual_qualities.get(name) != expected_qualities.get(name)
+        }
+        detail = {"profile": desired["name"], "qualities": differences}
+        prefix = "native allowed qualities/group membership differ: "
+        diagnostic = prefix + json.dumps(detail, ensure_ascii=True, sort_keys=True)
+        if len(diagnostic) > 4000:
+            first = next(iter(differences))
+            detail["qualities"] = {first: differences[first]}
+            detail["omittedQualityCount"] = len(differences) - 1
+            diagnostic = prefix + json.dumps(detail, ensure_ascii=True, sort_keys=True)
+        raise AssertionError(diagnostic)
     actual_formats = api("/customformat")
     scores = {item["format"]: item["score"] for item in profile["formatItems"]}
     identities = {}
-    for name, trash_id in desired["formatItems"].items():
-        expected = formats[trash_id]
+    for trash_id, expected in formats.items():
+        name = expected["name"]
+        # Formats shared by several profiles still have one native identity;
+        # formats owned only by another profile must retain score zero here.
+        if not any(item["name"] == name for item in actual_formats):
+            require(trash_id not in desired["formatScores"], "native custom format is missing: " + name)
+            continue
         actual = one(actual_formats, "name", name)
         require(actual["includeCustomFormatWhenRenaming"] == expected["includeCustomFormatWhenRenaming"], "native custom format rename behavior differs")
         require(specifications(actual["specifications"]) == specifications(expected["specifications"]), "native custom format identity/specifications differ: " + name)
-        require(scores.get(actual["id"]) == expected["trash_scores"]["default"], "native custom format score differs: " + name)
+        require(scores.get(actual["id"]) == desired["formatScores"].get(trash_id, 0), "native custom format score differs: " + desired["name"] + " / " + name)
         identities[trash_id] = actual["id"]
     return profile["id"], identities
+
+
+def verify_hd_menu(api, app):
+    profiles = api("/qualityprofile")
+    menu = {
+        "preferred": one(profiles, "name", "HD Preferred"),
+        "web": one(profiles, "name", "WEB 1080p" if app == "radarr" else "WEB-1080p"),
+        "remux": one(profiles, "name", "Remux + WEB 1080p"),
+    }
+    remux = "Remux-1080p" if app == "radarr" else "Bluray-1080p Remux"
+    cases = [
+        ("1080p.WEB-DL.DDP5.1.H.264", "WEBDL-1080p", {"preferred", "web", "remux"}),
+        ("1080p.WEBRip.DDP5.1.x264", "WEBRip-1080p", {"preferred", "web", "remux"}),
+        ("1080p.BluRay.DTS.x264", "Bluray-1080p", {"preferred"}),
+        ("1080p.HDTV.x264", "HDTV-1080p", {"preferred"}),
+        ("720p.BluRay.DTS.x264", "Bluray-720p", {"preferred"}),
+        ("720p.WEB-DL.AAC2.0.H.264", "WEBDL-720p", {"preferred"}),
+        ("720p.WEBRip.AAC2.0.x264", "WEBRip-720p", {"preferred"}),
+        ("720p.HDTV.x264", "HDTV-720p", {"preferred"}),
+        ("480p.DVDRip.x264", "DVD", {"preferred"}),
+        ("480p.WEB-DL.AAC2.0.H.264", "WEBDL-480p", {"preferred"}),
+        ("480p.WEBRip.AAC2.0.x264", "WEBRip-480p", {"preferred"}),
+        ("480p.SDTV.x264", "SDTV", {"preferred"}),
+        ("1080p.BluRay.REMUX.AVC.DTS-HD.MA.5.1", remux, {"remux"}),
+        ("2160p.WEB-DL.DDP5.1.H.265", "WEBDL-2160p", set()),
+        ("2160p.WEBRip.DDP5.1.x265", "WEBRip-2160p", set()),
+        ("2160p.BluRay.DTS.x265", "Bluray-2160p", set()),
+        ("2160p.BluRay.REMUX.HEVC.DTS-HD.MA.5.1",
+         "Remux-2160p" if app == "radarr" else "Bluray-2160p Remux", set()),
+        ("2160p.HDTV.H.265", "HDTV-2160p", set()),
+    ]
+    for role, profile in menu.items():
+        allowed = {leaf["quality"]["name"]
+                   for item in profile["items"] if item["allowed"]
+                   for leaf in (item.get("items") or [item])}
+        expected = {quality for _, quality, wanted in cases if role in wanted}
+        require(allowed == expected, app + " native allowed-quality set differs: " + role)
+    preferred = menu["preferred"]
+    positions = {leaf["quality"]["name"]: rank
+                 for rank, item in enumerate(preferred["items"])
+                 for leaf in (item.get("items") or [item])}
+    bands = (
+        {"SDTV"},
+        {"DVD", "WEBDL-480p", "WEBRip-480p"},
+        {"Bluray-720p", "WEBDL-720p", "WEBRip-720p", "HDTV-720p"},
+        {"Bluray-1080p", "WEBDL-1080p", "WEBRip-1080p", "HDTV-1080p"},
+    )
+    for lower, higher in zip(bands, bands[1:]):
+        require(max(positions[name] for name in lower) < min(positions[name] for name in higher),
+                app + " native preferred-quality priority bands differ")
+    cutoff = next(item for item in preferred["items"]
+                  if item.get("id", item.get("quality", {}).get("id")) == preferred["cutoff"])
+    cutoff_members = {leaf["quality"]["name"] for leaf in (cutoff.get("items") or [cutoff])}
+    require(preferred["upgradeAllowed"] and cutoff_members <= bands[-1] and cutoff["allowed"],
+            app + " native preferred upgrade target is not enabled 1080p")
+    for suffix, quality, wanted in cases:
+        title = ("Fixture.Movie.2024." if app == "radarr" else "Fixture.Series.S01E01.") + suffix + "-Fixture"
+        parsed = api("/parse?" + urlencode({"title": title}))
+        info = parsed["parsedMovieInfo" if app == "radarr" else "parsedEpisodeInfo"]
+        require(info["quality"]["quality"]["name"] == quality, app + " native parser classified release unexpectedly")
+        # This checks the persisted native quality gate, not a complete download
+        # decision: /parse cannot evaluate a profile without a catalogue item.
+        for role, profile in menu.items():
+            items = [item for item in profile["items"]
+                     if item.get("quality", {}).get("name") == quality or
+                     any(child["quality"]["name"] == quality for child in item.get("items", []))]
+            require(len(items) == 1, app + " native quality is missing or ambiguous: " + quality)
+            require(items[0]["allowed"] == (role in wanted), app + " native quality gate differs: " + role + " / " + quality)
+
+
+def verify_format_policy(api, app, profile_names):
+    formats = api("/customformat")
+    unwanted = {name: one(formats, "name", name)["id"] for name in ("x265 (HD)", "AV1")}
+    profiles = api("/qualityprofile")
+    for profile in profiles:
+        if profile["name"] in profile_names:
+            for name, format_id in unwanted.items():
+                require(one(profile["formatItems"], "format", format_id)["score"] == -10000,
+                        app + " native unwanted-codec penalty differs: " + profile["name"] + " / " + name)
+            # Independent anchors catch per-profile assignment mistakes even
+            # when the rendered configuration makes the same mistake.
+            scores = {
+                "WEB Tier 01": 1700,
+                "AMZN": 0 if app == "radarr" else 75,
+                "Remux Tier 01": (1950 if app == "radarr" else 1900) if profile["name"] == "Remux + WEB 1080p" else 0,
+                **({"HD Bluray Tier 01": 1800 if profile["name"] == "HD Preferred" else 0} if app == "radarr" else {}),
+            }
+            for name, score in scores.items():
+                format_id = one(formats, "name", name)["id"]
+                require(one(profile["formatItems"], "format", format_id)["score"] == score,
+                        app + " native per-profile tier assignment differs: " + profile["name"] + " / " + name)
+    for suffix, matches in (
+        ("1080p.BluRay.DTS.x264", set()),
+        ("1080p.BluRay.DTS.x265", {"x265 (HD)"}),
+        ("1080p.BluRay.DTS.AV1", {"AV1"}),
+        ("2160p.BluRay.DTS.x265", set()),
+        ("480p.WEB-DL.AAC2.0.H.264", set()),
+        ("480p.WEB-DL.AAC2.0.x265", {"x265 (HD)"}),
+        ("480p.WEB-DL.AAC2.0.AV1", {"AV1"}),
+    ):
+        title = ("Fixture.Movie.2024." if app == "radarr" else "Fixture.Series.S01E01.") + suffix + "-Fixture"
+        parsed = api("/parse?" + urlencode({"title": title}))
+        actual = {item["name"]: item["id"] for item in parsed["customFormats"] if item["name"] in unwanted}
+        require(actual == {name: unwanted[name] for name in matches},
+                app + " native custom-format matching failed a codec counterfactual")
+        if suffix.startswith("480p."):
+            preferred = one(profiles, "name", "HD Preferred")
+            scores = {item["format"]: item["score"] for item in preferred["formatItems"]}
+            # Compose native matched IDs with persisted profile scores, not
+            # /parse.customFormatScore: it is not a catalogue-backed decision.
+            effective = sum(scores.get(item["id"], 0) for item in parsed["customFormats"])
+            require(preferred["minFormatScore"] == 0, app + " native preferred minimum score changed")
+            require(effective < preferred["minFormatScore"] if matches else effective == 0,
+                    app + " native SD matched-format/profile-score gate differs")
 
 
 def daemon_identity(docker, container, marker, expected):
@@ -281,8 +447,11 @@ def main():
     for app in ("sonarr", "sabnzbd"):
         require(identities[app][2] == [media_gid], "shared media group declarations differ")
     require(identities["jellyfin"][2] == [media_gid, 506], "Jellyfin holds media and its gpu-render accelerator grant")
-    expected_profiles = {app: json.loads((ROOT / "assets/media-policy" / f"{app}-{policy['arr'][app]['standard']['bundle']}.json").read_text()) for app in ("radarr", "sonarr")}
     expected_formats = {app: {value["trash_id"]: value for name, text in inputs.items() if name.startswith(app + "-cf-") for value in [json.loads(text)]} for app in ("radarr", "sonarr")}
+    expected_profiles = {
+        app: profile_expectations(cm["config.yml"], templates, expected_formats[app], app, policy["arr"][app]["standard"]["name"])
+        for app in ("radarr", "sonarr")
+    }
     libraries = json.loads(manifest("jellyfin-configuration", "ConfigMap-jellarr-configuration.yaml")["data"]["config.yml"])["library"]["virtualFolders"]
     keys = {app: secrets.token_hex(32) for app in ("radarr", "sonarr", "prowlarr", "seerr")}
     sab_init = pods["sabnzbd"]["initContainers"][0]["command"][-1]
@@ -537,7 +706,10 @@ with open('/fixture/coordination/' + sys.argv[1] + '.lock', 'r') as lock:
                 desired = policy["arr"][app]["standard"]
                 call = lambda path: api(app, path)
                 require([item["path"] for item in call("/rootfolder")] == [desired["root"]], "native managed root folders differ")
-                verify_profile(call, expected_profiles[app], expected_formats[app])
+                for profile in expected_profiles[app].values():
+                    verify_profile(call, profile, expected_formats[app])
+                verify_hd_menu(call, app)
+                verify_format_policy(call, app, expected_profiles[app])
                 unmanaged = call("/qualityprofile/" + str(unmanaged_profiles[app]["id"]))
                 require({key: value for key, value in unmanaged.items() if key != "formatItems"} == {key: value for key, value in unmanaged_profiles[app].items() if key != "formatItems"}, "unmanaged quality profile changed")
                 old_scores = {item["format"]: item["score"] for item in unmanaged_profiles[app]["formatItems"]}
@@ -635,6 +807,18 @@ for index in range(int(sys.argv[2])):
             for app in ("radarr", "sonarr"):
                 verify_arr(app)
             verify_prowlarr()
+            # A UI-owned profile may score a managed/shared format differently.
+            # Reconciliation must preserve that deliberate user assignment.
+            for app in ("radarr", "sonarr"):
+                shared_ids = [one(api(app, "/customformat"), "name", name)["id"] for name in ("WEB Tier 01", "AMZN")]
+                profile = api(app, "/qualityprofile/" + str(unmanaged_profiles[app]["id"]))
+                for shared_id in shared_ids:
+                    one(profile["formatItems"], "format", shared_id)["score"] = 73
+                api(app, "/qualityprofile/" + str(profile["id"]), "PUT", profile)
+                unmanaged_profiles[app] = api(app, "/qualityprofile/" + str(profile["id"]))
+                require(all(one(unmanaged_profiles[app]["formatItems"], "format", shared_id)["score"] == 73
+                            for shared_id in shared_ids),
+                        "native UI-owned profile did not retain its independent shared-format scores")
             baseline = arr_snapshot()
             prowlarr_ids = {item["name"]: item["id"] for item in api("prowlarr", "/applications")}
             reconcile_configarr()
@@ -657,9 +841,10 @@ for index in range(int(sys.argv[2])):
                 docker("pause", holder)
                 for app in ("radarr", "sonarr", "prowlarr"):
                     docker("unpause", containers[app])
-                profile = one(api("radarr", "/qualityprofile"), "name", expected_profiles["radarr"]["name"])
+                desired_profile = expected_profiles["radarr"][policy["arr"]["radarr"]["standard"]["profile"]]
+                profile = one(api("radarr", "/qualityprofile"), "name", desired_profile["name"])
                 wrong = deepcopy(profile)
-                owned_id = verify_profile(lambda path: api("radarr", path), expected_profiles["radarr"], expected_formats["radarr"])[1][next(iter(expected_profiles["radarr"]["formatItems"].values()))]
+                owned_id = verify_profile(lambda path: api("radarr", path), desired_profile, expected_formats["radarr"])[1][next(iter(desired_profile["formatScores"]))]
                 one(wrong["formatItems"], "format", owned_id)["score"] += 1
                 api("radarr", "/qualityprofile/" + str(profile["id"]), "PUT", wrong)
                 waiter = reconcile_configarr(periodic=not failed_holder, detached=True)
@@ -697,16 +882,54 @@ console.log(queued);''', waiter_pid)
                 require(arr_snapshot() == baseline, "serialized Configarr repair changed native identities/unmanaged state")
             reconcile_configarr(failure=True, overrides={"SONARR_API_KEY": keys["radarr"]})
             require(arr_snapshot() == baseline, "wrong native credential changed Arr state")
+            # Drift each selected profile in turn, including formats shared by
+            # all profiles. Repair must not copy scores between profiles or
+            # replace any sibling/UI-owned record.
             for app in ("radarr", "sonarr"):
-                profile = one(api(app, "/qualityprofile"), "name", expected_profiles[app]["name"])
-                wrong = deepcopy(profile)
-                owned_id = verify_profile(lambda path: api(app, path), expected_profiles[app], expected_formats[app])[1][next(iter(expected_profiles[app]["formatItems"].values()))]
-                one(wrong["formatItems"], "format", owned_id)["score"] += 1
-                api(app, "/qualityprofile/" + str(profile["id"]), "PUT", wrong)
-                rejected(lambda: verify_arr(app), "wrong native custom format score")
-                reconcile_configarr()
+                owned_id = one(api(app, "/customformat"), "name", "WEB Tier 01")["id"]
+                for desired_profile in expected_profiles[app].values():
+                    profile = one(api(app, "/qualityprofile"), "name", desired_profile["name"])
+                    wrong = deepcopy(profile)
+                    one(wrong["formatItems"], "format", owned_id)["score"] += 1
+                    quality = ("Bluray-720p" if desired_profile["name"] == "HD Preferred" else
+                               "Bluray-2160p" if desired_profile["name"].startswith("Remux") else "Bluray-1080p")
+                    item = next(item for item in wrong["items"] if item.get("quality", {}).get("name") == quality)
+                    original_allowed = item["allowed"]
+                    quality_id = item["quality"]["id"]
+                    item["allowed"] = not original_allowed
+                    api(app, "/qualityprofile/" + str(profile["id"]), "PUT", wrong)
+                    rejected(lambda: verify_format_policy(lambda path: api(app, path), app, expected_profiles[app]),
+                             "wrong native custom format score")
+                    rejected(lambda: verify_hd_menu(lambda path: api(app, path), app), "wrong native quality gate")
+                    # Clean up only the quality probe; Configarr must still
+                    # repair the independent score drift below.
+                    current = api(app, "/qualityprofile/" + str(profile["id"]))
+                    next(item for item in current["items"] if item.get("quality", {}).get("id") == quality_id)["allowed"] = original_allowed
+                    api(app, "/qualityprofile/" + str(profile["id"]), "PUT", current)
+                    verify_hd_menu(lambda path: api(app, path), app)
+                    rejected(lambda: verify_format_policy(lambda path: api(app, path), app, expected_profiles[app]),
+                             "quality probe cleanup restored native score drift")
+                    for sibling in expected_profiles[app].values():
+                        if sibling["name"] != desired_profile["name"]:
+                            verify_profile(lambda path: api(app, path), sibling, expected_formats[app])
+                    reconcile_configarr()
+                    verify_arr(app)
+                    require(arr_snapshot() == baseline, "per-profile score repair replaced native identities or sibling/unmanaged state")
+            # Radarr's required AMZN marker has an explicit guide score zero,
+            # not an upstream default. Sonarr's same-named marker scores 75.
+            # Drift every native profile, then repair them in one ordinary run.
+            for app in ("radarr", "sonarr"):
+                format_id = one(api(app, "/customformat"), "name", "AMZN")["id"]
+                for name in expected_profiles[app]:
+                    profile = one(api(app, "/qualityprofile"), "name", name)
+                    one(profile["formatItems"], "format", format_id)["score"] = 49
+                    api(app, "/qualityprofile/" + str(profile["id"]), "PUT", profile)
+                    rejected(lambda: verify_format_policy(lambda path: api(app, path), app, [name]),
+                             "wrong native AMZN zero/default score")
+            reconcile_configarr()
+            for app in ("radarr", "sonarr"):
                 verify_arr(app)
-                require(arr_snapshot() == baseline, "score repair replaced native identities or unmanaged state")
+            require(arr_snapshot() == baseline, "AMZN score repair lost native identities or UI-owned scores")
             root_record = api("sonarr", "/rootfolder")[0]
             api("sonarr", "/rootfolder/" + str(root_record["id"]), "DELETE")
             rejected(lambda: verify_arr("sonarr"), "missing native root folder")
@@ -842,11 +1065,22 @@ server.serve_forever()
                     desired = policy["arr"][app]["standard"]
                     server = one(seerr_api("/settings/" + app), "name", ("Radarr" if app == "radarr" else "Sonarr") + " (Homelab)")
                     url = urlsplit(desired["url"])
-                    profile_id = one(api(app, "/qualityprofile"), "name", desired["profile"])["id"]
-                    expected = {"hostname": url.hostname, "port": url.port, "useSsl": url.scheme == "https", "baseUrl": url.path.rstrip("/"), "apiKey": keys[app], "activeProfileId": profile_id, "activeProfileName": desired["profile"], "activeDirectory": desired["root"], "isDefault": True, "is4k": False, "syncEnabled": True, "preventSearch": False}
+                    default_name = "HD Preferred"
+                    profile_id = one(api(app, "/qualityprofile"), "name", default_name)["id"]
+                    expected = {"hostname": url.hostname, "port": url.port, "useSsl": url.scheme == "https", "baseUrl": url.path.rstrip("/"), "apiKey": keys[app], "activeProfileId": profile_id, "activeProfileName": default_name, "activeDirectory": desired["root"], "isDefault": True, "is4k": False, "syncEnabled": True, "preventSearch": False}
                     require(all(server.get(key) == value for key, value in expected.items()), "Seerr native Arr/profile/root/key mapping differs")
                     # Exercise Seerr's own native connection validator against real Arr.
                     request(ports["seerr"], "/api/v1/settings/" + app + "/test", key=keys["seerr"], method="POST", body=server)
+                    # This is the request selector's real Arr-backed consumer,
+                    # not just a readback of the settings written by our helper.
+                    selector = seerr_api("/service/" + app + "/" + str(server["id"]))
+                    require(selector["server"]["activeProfileId"] == profile_id and
+                            selector["server"]["isDefault"] is True and selector["server"]["is4k"] is False,
+                            "Seerr request selector does not default to mixed HD")
+                    for name in expected_profiles[app]:
+                        native_id = one(api(app, "/qualityprofile"), "name", name)["id"]
+                        require(one(selector["profiles"], "name", name)["id"] == native_id,
+                                "Seerr request selector lost an actual Arr profile")
                     result[app] = server
                 require(verify_libraries() == library_ids, "native library identities changed")
                 return result

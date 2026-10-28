@@ -18,19 +18,58 @@
       "upstream": "docs/json/sonarr/quality-profiles/web-2160p.json",
       "sha256": "sha256-b0ad2fOqfjwSEEmMH3Dmmj6UVA0BMUKbHfgfk9EYsCA="
     },
-    "radarr-cf-repack-proper.json": {"upstream": "docs/json/radarr/cf/repack-proper.json", "sha256": "sha256-/YP7gMEYuYTQtj+ztLuqvicl+TWiBbZ0UfL+TuKhvaM="},
-    "radarr-cf-repack2.json": {"upstream": "docs/json/radarr/cf/repack2.json", "sha256": "sha256-uOzcN+uJkJwphyT8l7eYbXIaAbt6WYNosdoIN1pyTl4="},
-    "radarr-cf-repack3.json": {"upstream": "docs/json/radarr/cf/repack3.json", "sha256": "sha256-v0m2Mjz1os/3/qah99jTmggkBAhR5bUR71q/mw2/+WA="},
-    "radarr-cf-web-tier-01.json": {"upstream": "docs/json/radarr/cf/web-tier-01.json", "sha256": "sha256-8K2SLt3yPoBilSAltHkyhBnopVHZRnOtqocyjHlFs1g="},
-    "radarr-cf-web-tier-02.json": {"upstream": "docs/json/radarr/cf/web-tier-02.json", "sha256": "sha256-+l4Cb4PgP9aYOvJf1SdwCNcbB26+ixEjYqdbxczs6/E="},
-    "radarr-cf-web-tier-03.json": {"upstream": "docs/json/radarr/cf/web-tier-03.json", "sha256": "sha256-Uxo8ofEoL7OVwqmiiQx3Xvj+xyS2L3LtGvVOWsqGKzc="},
-    "sonarr-cf-repack-proper.json": {"upstream": "docs/json/sonarr/cf/repack-proper.json", "sha256": "sha256-jtAu2m0oz0F3F6ZK69016JYxI6Rx5Zi+pCQfaFIdcuc="},
-    "sonarr-cf-repack2.json": {"upstream": "docs/json/sonarr/cf/repack2.json", "sha256": "sha256-WWDTzAuxCUKiPOEN27tounoWoPOyhS/ycOZeM+33h5Q="},
-    "sonarr-cf-repack3.json": {"upstream": "docs/json/sonarr/cf/repack3.json", "sha256": "sha256-rj2CxHFylE9hp5Ob9tuHM1jXvc5wZi9PL1qWnSyBJZ8="},
-    "sonarr-cf-web-scene.json": {"upstream": "docs/json/sonarr/cf/web-scene.json", "sha256": "sha256-eDIHe6xlmc1LZNhmfp/UWmIfJCFNPMAvU6Ye4FZLZSc="},
-    "sonarr-cf-web-tier-01.json": {"upstream": "docs/json/sonarr/cf/web-tier-01.json", "sha256": "sha256-x8MMttZ2hpzCb/o0x4YtaugI8tO8X0U5hy7CoUMAOtk="},
-    "sonarr-cf-web-tier-02.json": {"upstream": "docs/json/sonarr/cf/web-tier-02.json", "sha256": "sha256-e7sI5ddSPNE4FiBuJOkjXPok3LaPQlim4G7o6l72Ifw="},
-    "sonarr-cf-web-tier-03.json": {"upstream": "docs/json/sonarr/cf/web-tier-03.json", "sha256": "sha256-/u0eAphpUKCWCWxFLl/ibWzmALtRMgSW1ewQH3Eypqc="},
+    "radarr-cf-repack-proper.json": {
+      "upstream": "docs/json/radarr/cf/repack-proper.json",
+      "sha256": "sha256-/YP7gMEYuYTQtj+ztLuqvicl+TWiBbZ0UfL+TuKhvaM="
+    },
+    "radarr-cf-repack2.json": {
+      "upstream": "docs/json/radarr/cf/repack2.json",
+      "sha256": "sha256-uOzcN+uJkJwphyT8l7eYbXIaAbt6WYNosdoIN1pyTl4="
+    },
+    "radarr-cf-repack3.json": {
+      "upstream": "docs/json/radarr/cf/repack3.json",
+      "sha256": "sha256-v0m2Mjz1os/3/qah99jTmggkBAhR5bUR71q/mw2/+WA="
+    },
+    "radarr-cf-web-tier-01.json": {
+      "upstream": "docs/json/radarr/cf/web-tier-01.json",
+      "sha256": "sha256-8K2SLt3yPoBilSAltHkyhBnopVHZRnOtqocyjHlFs1g="
+    },
+    "radarr-cf-web-tier-02.json": {
+      "upstream": "docs/json/radarr/cf/web-tier-02.json",
+      "sha256": "sha256-+l4Cb4PgP9aYOvJf1SdwCNcbB26+ixEjYqdbxczs6/E="
+    },
+    "radarr-cf-web-tier-03.json": {
+      "upstream": "docs/json/radarr/cf/web-tier-03.json",
+      "sha256": "sha256-Uxo8ofEoL7OVwqmiiQx3Xvj+xyS2L3LtGvVOWsqGKzc="
+    },
+    "sonarr-cf-repack-proper.json": {
+      "upstream": "docs/json/sonarr/cf/repack-proper.json",
+      "sha256": "sha256-jtAu2m0oz0F3F6ZK69016JYxI6Rx5Zi+pCQfaFIdcuc="
+    },
+    "sonarr-cf-repack2.json": {
+      "upstream": "docs/json/sonarr/cf/repack2.json",
+      "sha256": "sha256-WWDTzAuxCUKiPOEN27tounoWoPOyhS/ycOZeM+33h5Q="
+    },
+    "sonarr-cf-repack3.json": {
+      "upstream": "docs/json/sonarr/cf/repack3.json",
+      "sha256": "sha256-rj2CxHFylE9hp5Ob9tuHM1jXvc5wZi9PL1qWnSyBJZ8="
+    },
+    "sonarr-cf-web-scene.json": {
+      "upstream": "docs/json/sonarr/cf/web-scene.json",
+      "sha256": "sha256-eDIHe6xlmc1LZNhmfp/UWmIfJCFNPMAvU6Ye4FZLZSc="
+    },
+    "sonarr-cf-web-tier-01.json": {
+      "upstream": "docs/json/sonarr/cf/web-tier-01.json",
+      "sha256": "sha256-x8MMttZ2hpzCb/o0x4YtaugI8tO8X0U5hy7CoUMAOtk="
+    },
+    "sonarr-cf-web-tier-02.json": {
+      "upstream": "docs/json/sonarr/cf/web-tier-02.json",
+      "sha256": "sha256-e7sI5ddSPNE4FiBuJOkjXPok3LaPQlim4G7o6l72Ifw="
+    },
+    "sonarr-cf-web-tier-03.json": {
+      "upstream": "docs/json/sonarr/cf/web-tier-03.json",
+      "sha256": "sha256-/u0eAphpUKCWCWxFLl/ibWzmALtRMgSW1ewQH3Eypqc="
+    },
     "radarr-movie.json": {
       "upstream": "docs/json/radarr/quality-size/movie.json",
       "sha256": "sha256-vKB1Vmip9V+lEqfl0tDoAA7UM5rEzNmWu4vg76bb7zw="
@@ -42,11 +81,283 @@
     "sonarr-anime.json": {
       "upstream": "docs/json/sonarr/quality-size/anime.json",
       "sha256": "sha256-wel6cY5+VueLJ3Y49dtYrK1FpIxr4VoA4tN2FksMo5Y="
+    },
+    "radarr-hd-bluray-web.json": {
+      "upstream": "docs/json/radarr/quality-profiles/hd-bluray-web.json",
+      "sha256": "sha256-Ymbyo7IAJaVcGq2LaXw/sudDBXTKiIHuUXOLmpTSJjc="
+    },
+    "radarr-remux-web-1080p.json": {
+      "upstream": "docs/json/radarr/quality-profiles/remux-web-1080p.json",
+      "sha256": "sha256-Y1/xCc9DMDI81piHdhzPOxfeKC1BQYaRyE+83xULkvI="
+    },
+    "sonarr-remux-web-1080p.json": {
+      "upstream": "docs/json/sonarr/quality-profiles/remux-web-1080p.json",
+      "sha256": "sha256-yYD4vtPiykTtmBAR0X1/erDp7BoDDV8Mt/mNQ7/iFeE="
+    },
+    "sonarr-web-1080p-alternative.json": {
+      "upstream": "docs/json/sonarr/quality-profiles/web-1080p-alternative.json",
+      "sha256": "sha256-+h5tlCOTekXDq7wzU2o81yrxJskT2apA/X/cACFEFXU="
+    },
+    "radarr-cf-3d.json": {
+      "upstream": "docs/json/radarr/cf/3d.json",
+      "sha256": "sha256-LJmnarNbVq5GoILaMSobPRoi+69CAadAW/YXDt8xF64="
+    },
+    "radarr-cf-amzn.json": {
+      "upstream": "docs/json/radarr/cf/amzn.json",
+      "sha256": "sha256-7ZyiXxiHDRURIz2qmwSc3li01w8MgjZ8/BRlmx0Zuuw="
+    },
+    "radarr-cf-atv.json": {
+      "upstream": "docs/json/radarr/cf/atv.json",
+      "sha256": "sha256-6+MlTbgXdP4ZrbfDRP/Zak9aBxqSrQP+oswdA3rRf/A="
+    },
+    "radarr-cf-atvp.json": {
+      "upstream": "docs/json/radarr/cf/atvp.json",
+      "sha256": "sha256-7EYg0w856nNNOBqIigg6stSexhEwqtxNgrQn6JXLc38="
+    },
+    "radarr-cf-av1.json": {
+      "upstream": "docs/json/radarr/cf/av1.json",
+      "sha256": "sha256-jlMZCIIP4oKmAh0Oc7KZ5DiKn7Vf4QrtJnlRNHeTvNo="
+    },
+    "radarr-cf-bcore.json": {
+      "upstream": "docs/json/radarr/cf/bcore.json",
+      "sha256": "sha256-KMP8pQD8tEBnngin7F+YImR4XxPMyOLF96pe/KEUNlY="
+    },
+    "radarr-cf-br-disk.json": {
+      "upstream": "docs/json/radarr/cf/br-disk.json",
+      "sha256": "sha256-vZRiVnSaMWL1cNbkAfTLI0IR0RssYfLkhDuj3m/cFJQ="
+    },
+    "radarr-cf-crit.json": {
+      "upstream": "docs/json/radarr/cf/crit.json",
+      "sha256": "sha256-hSj8svCsHVMe0BQSiZDEF2MZN5Ukql2Iysz9fDYCHzw="
+    },
+    "radarr-cf-dsnp.json": {
+      "upstream": "docs/json/radarr/cf/dsnp.json",
+      "sha256": "sha256-gttqIP0Ujpe4Si3a1+HZJTVpdB6klVd6P3p3vgIVNHs="
+    },
+    "radarr-cf-extras.json": {
+      "upstream": "docs/json/radarr/cf/extras.json",
+      "sha256": "sha256-Pp8VBmBI+FkTjRbHzDNQlVjTs/9rshwSPcWjp4JPhSg="
+    },
+    "radarr-cf-generated-dynamic-hdr.json": {
+      "upstream": "docs/json/radarr/cf/generated-dynamic-hdr.json",
+      "sha256": "sha256-K4/1EUZWgRbxbvMe5fYUv7Df1S9rZjoSO3r5t2zyQX0="
+    },
+    "radarr-cf-hbo.json": {
+      "upstream": "docs/json/radarr/cf/hbo.json",
+      "sha256": "sha256-uEzkxJ1EghqzhAVCNr4mpRlNn5f3Lbt+g7F5Ai7HouY="
+    },
+    "radarr-cf-hd-bluray-tier-01.json": {
+      "upstream": "docs/json/radarr/cf/hd-bluray-tier-01.json",
+      "sha256": "sha256-Jt5Km6jnMPTrH1ljXWTibrZFNwJNA5vzQpUFGKMPCtM="
+    },
+    "radarr-cf-hd-bluray-tier-02.json": {
+      "upstream": "docs/json/radarr/cf/hd-bluray-tier-02.json",
+      "sha256": "sha256-4bcB8Ijj6qudRtPeJqTQpuVE4fLW6b84jTJqL9EN1I0="
+    },
+    "radarr-cf-hd-bluray-tier-03.json": {
+      "upstream": "docs/json/radarr/cf/hd-bluray-tier-03.json",
+      "sha256": "sha256-hHIvGBZgLVpSkMidHt1GPLcHcx5jTJ27gE+26SEA2KM="
+    },
+    "radarr-cf-hmax.json": {
+      "upstream": "docs/json/radarr/cf/hmax.json",
+      "sha256": "sha256-PY9oVRkrymT/IfwSMMxfeexOMd1D/kLn4dPau8SJxoA="
+    },
+    "radarr-cf-hulu.json": {
+      "upstream": "docs/json/radarr/cf/hulu.json",
+      "sha256": "sha256-HYtqoPJU5imdsmS3hQcWhmpXZH2c/QjjJInQ1e7RMR0="
+    },
+    "radarr-cf-it.json": {
+      "upstream": "docs/json/radarr/cf/it.json",
+      "sha256": "sha256-/6+EJkNz/pQZi+ngbr2cAK6JCQxp4h3ZreXuzyC4VgM="
+    },
+    "radarr-cf-lq.json": {
+      "upstream": "docs/json/radarr/cf/lq.json",
+      "sha256": "sha256-atKGgKoqd8yXw7aE6lUv54pC/G6pXv+7qYwVPDKYess="
+    },
+    "radarr-cf-lq-release-title.json": {
+      "upstream": "docs/json/radarr/cf/lq-release-title.json",
+      "sha256": "sha256-JUo2k/CSn8ivWbe63PqtwCvlF/4LFLh4xKm48WwBFCM="
+    },
+    "radarr-cf-ma.json": {
+      "upstream": "docs/json/radarr/cf/ma.json",
+      "sha256": "sha256-W8+NI/dcYUi6CNFWbWf5YmQXeyZs2yZb5PnGQb2fi54="
+    },
+    "radarr-cf-max.json": {
+      "upstream": "docs/json/radarr/cf/max.json",
+      "sha256": "sha256-Yw7gTlP3V57zNMMadswGRLloU9xPHbimrZx800LRdgo="
+    },
+    "radarr-cf-nf.json": {
+      "upstream": "docs/json/radarr/cf/nf.json",
+      "sha256": "sha256-2HhCTKxnGVxCy6HyP4yzjdQyw3gr+aL6LV8Hxt95L2s="
+    },
+    "radarr-cf-pcok.json": {
+      "upstream": "docs/json/radarr/cf/pcok.json",
+      "sha256": "sha256-zOK4psOmDKD4VkPA7z+Ex1d11tMI0z9q8/Gikh96Tho="
+    },
+    "radarr-cf-play.json": {
+      "upstream": "docs/json/radarr/cf/play.json",
+      "sha256": "sha256-sDttKwelLnnYYflJmW2PqK36OfK6B2IRCuyoumqssCQ="
+    },
+    "radarr-cf-pmtp.json": {
+      "upstream": "docs/json/radarr/cf/pmtp.json",
+      "sha256": "sha256-SEj8l5aDhGLIow4f+2wuFrpZ77fjy6/cVyqXwRQsE88="
+    },
+    "radarr-cf-remux-tier-01.json": {
+      "upstream": "docs/json/radarr/cf/remux-tier-01.json",
+      "sha256": "sha256-kBjYiMreKlBiOlTCIkyRgoAxASOzPGpU7b0uY9QJ74c="
+    },
+    "radarr-cf-remux-tier-02.json": {
+      "upstream": "docs/json/radarr/cf/remux-tier-02.json",
+      "sha256": "sha256-x1yD0lJzOLQVogI6eILAnR4TPUMuUgtahGii4w5DDkw="
+    },
+    "radarr-cf-remux-tier-03.json": {
+      "upstream": "docs/json/radarr/cf/remux-tier-03.json",
+      "sha256": "sha256-ug1PXdy50gpko21ewCyuxnMlc37nR7SZvO9pFnwjSr4="
+    },
+    "radarr-cf-roku.json": {
+      "upstream": "docs/json/radarr/cf/roku.json",
+      "sha256": "sha256-46/LiMgvfOs6G3YDF/DQkgaN+KWe5cD42mhry4tPW+4="
+    },
+    "radarr-cf-sing-along-versions.json": {
+      "upstream": "docs/json/radarr/cf/sing-along-versions.json",
+      "sha256": "sha256-H1HQ4ST/QsqZtpWbwieZIDDrUj0Igow8BqPXEWj+Yng="
+    },
+    "radarr-cf-stan.json": {
+      "upstream": "docs/json/radarr/cf/stan.json",
+      "sha256": "sha256-CRGZqkEwREuvhx715rebUaTXxpKJBGPDrQas8+6hkZk="
+    },
+    "radarr-cf-x265-hd.json": {
+      "upstream": "docs/json/radarr/cf/x265-hd.json",
+      "sha256": "sha256-fZwRckySmrq0tl5eCr90NNgOFd9LAH5KFWpfGZvk90g="
+    },
+    "sonarr-cf-amzn.json": {
+      "upstream": "docs/json/sonarr/cf/amzn.json",
+      "sha256": "sha256-cy8LgR3ZEqccCldP5XV1P+OpUL/f9z0PDx528gPkGEM="
+    },
+    "sonarr-cf-atvp.json": {
+      "upstream": "docs/json/sonarr/cf/atvp.json",
+      "sha256": "sha256-xCXjYPs/cabCVe6vTJnFEXobDGS8vewCtNK9Uc9PVo8="
+    },
+    "sonarr-cf-av1.json": {
+      "upstream": "docs/json/sonarr/cf/av1.json",
+      "sha256": "sha256-iICx229f59nGiZiTCaPa+owcKuyEg+c0D41NeUl4F7k="
+    },
+    "sonarr-cf-br-disk.json": {
+      "upstream": "docs/json/sonarr/cf/br-disk.json",
+      "sha256": "sha256-QZGnQnZI0sGslEq3Pw8vmuiSsd2kgvUHvHT8HNKT9oA="
+    },
+    "sonarr-cf-cc.json": {
+      "upstream": "docs/json/sonarr/cf/cc.json",
+      "sha256": "sha256-6uu+1d1vYyMDbyZo7YdCm2FKRUPoNf30AXX9Qo8TgUA="
+    },
+    "sonarr-cf-dcu.json": {
+      "upstream": "docs/json/sonarr/cf/dcu.json",
+      "sha256": "sha256-B437aEfdh1NEbsbrzzCSLr4SPLVcmSCfhTszbEKX6B4="
+    },
+    "sonarr-cf-dsnp.json": {
+      "upstream": "docs/json/sonarr/cf/dsnp.json",
+      "sha256": "sha256-A5b95tLJGXjLXSOmuS58uxTVu+V7K+FHhxRH5msnLII="
+    },
+    "sonarr-cf-extras.json": {
+      "upstream": "docs/json/sonarr/cf/extras.json",
+      "sha256": "sha256-1YKRxs/36wdP/azM1hVmPtvLX8qHwDNx1qZ6cHaFw6I="
+    },
+    "sonarr-cf-hbo.json": {
+      "upstream": "docs/json/sonarr/cf/hbo.json",
+      "sha256": "sha256-9gOkOxw3nRx/g6wWRrlR8MnAgOKtNo2zoq8nfIzIm40="
+    },
+    "sonarr-cf-hd-streaming-boost.json": {
+      "upstream": "docs/json/sonarr/cf/hd-streaming-boost.json",
+      "sha256": "sha256-TjFPbkRfAEb6M7ZoStvwSCPyaxOh6NFOyERWD8idua0="
+    },
+    "sonarr-cf-hmax.json": {
+      "upstream": "docs/json/sonarr/cf/hmax.json",
+      "sha256": "sha256-wbK+gXwK42dETACY5XZ7AbrG0utkAU6Awer7h3Zu95o="
+    },
+    "sonarr-cf-hulu.json": {
+      "upstream": "docs/json/sonarr/cf/hulu.json",
+      "sha256": "sha256-DwwzFDECa+2l+4aGF9gMXtD6dUQbIG0wr2CH2Zur5tQ="
+    },
+    "sonarr-cf-it.json": {
+      "upstream": "docs/json/sonarr/cf/it.json",
+      "sha256": "sha256-iGCw4+ej6nV7duKC0LsxtktYfKHHczEkW9vr4yyadVw="
+    },
+    "sonarr-cf-lq.json": {
+      "upstream": "docs/json/sonarr/cf/lq.json",
+      "sha256": "sha256-W63Wtu2ZYlITapnCYJ7+4zWsszcjSBnI2ifLJI58WlA="
+    },
+    "sonarr-cf-lq-release-title.json": {
+      "upstream": "docs/json/sonarr/cf/lq-release-title.json",
+      "sha256": "sha256-icYaY+w4yjWuMRTUEmnFLQMiZA14pQ9Oncy4kyvcVtw="
+    },
+    "sonarr-cf-max.json": {
+      "upstream": "docs/json/sonarr/cf/max.json",
+      "sha256": "sha256-Pe1lMUwuQwPo9xDNKSfHa3g4hd6yBVSO76uY84zWdP4="
+    },
+    "sonarr-cf-nf.json": {
+      "upstream": "docs/json/sonarr/cf/nf.json",
+      "sha256": "sha256-Eka1Wd42Tf1CLKuwFU2jE3DEJ3KPb9wvst5pDD3XwzA="
+    },
+    "sonarr-cf-pcok.json": {
+      "upstream": "docs/json/sonarr/cf/pcok.json",
+      "sha256": "sha256-DW7/xtAOzKUqZzmP388w5u9uigSG3c5pTrPO6xdeIXc="
+    },
+    "sonarr-cf-play.json": {
+      "upstream": "docs/json/sonarr/cf/play.json",
+      "sha256": "sha256-0YCU9HGe26E3G9HDlFd0oEzNEhYmtF8fEns/3GHdcL0="
+    },
+    "sonarr-cf-pmtp.json": {
+      "upstream": "docs/json/sonarr/cf/pmtp.json",
+      "sha256": "sha256-FNWG10NxKMhI91n/+ZYO947Z1N3r17/mU3xgC8l04RA="
+    },
+    "sonarr-cf-remux-tier-01.json": {
+      "upstream": "docs/json/sonarr/cf/remux-tier-01.json",
+      "sha256": "sha256-L8g5poDf9BTdQ/wcAMcQXe/I2C252I3z4KUqs3PiB68="
+    },
+    "sonarr-cf-remux-tier-02.json": {
+      "upstream": "docs/json/sonarr/cf/remux-tier-02.json",
+      "sha256": "sha256-V+jsBvwvY55CUZbAOYvUgoZlhpUkAZix1GmQING+Vs4="
+    },
+    "sonarr-cf-sho.json": {
+      "upstream": "docs/json/sonarr/cf/sho.json",
+      "sha256": "sha256-ngoK3Amu7+SkMhQN8EzMWV3MRpSCTjhA+SpPBmLel4E="
+    },
+    "sonarr-cf-stan.json": {
+      "upstream": "docs/json/sonarr/cf/stan.json",
+      "sha256": "sha256-pqQ/QnyQLrNdhL1YF8wKD5b7k75VILCi6/bXheLoRY8="
+    },
+    "sonarr-cf-syfy.json": {
+      "upstream": "docs/json/sonarr/cf/syfy.json",
+      "sha256": "sha256-veMjJJCylSrU24wearyfcKBv1DsUC9ltZqDJoiuSub0="
+    },
+    "sonarr-cf-x265-hd.json": {
+      "upstream": "docs/json/sonarr/cf/x265-hd.json",
+      "sha256": "sha256-SpNP+lPdhu8vpjLvwMGhwhqm4qjSbUPkhMjK3PTP4V8="
     }
   },
   "localFiles": {
     "conflicts.json": {
       "sha256": "sha256-TIbqxhLRSNmboWY+H65MT/7Iv/3ilIILFqArfyp1/bM="
+    },
+    "required-formats.json": {
+      "sha256": "sha256-SHjfBeRV6+X8izUeXhxtCHzMhPaZkaIHAPxJYaiYwjs=",
+      "sources": [
+        "includes/cf/radarr-unwanted.md",
+        "includes/cf/radarr-misc-required.md",
+        "includes/cf/radarr-streaming-services.md",
+        "includes/cf/sonarr-unwanted.md",
+        "includes/cf/sonarr-misc-required.md",
+        "includes/cf/sonarr-streaming-services.md"
+      ],
+      "description": "Required unwanted, repack and streaming-service formats from the pinned guide tables; combine with each profile formatItems. The default lists use upstream CF default scores. The zero lists use explicit score 0 from the guide where CF JSON omits a default, so reconciliation repairs drift."
+    },
+    "hd-preferred.json": {
+      "sha256": "sha256-Bw20/eSHq47NiF6XFx72rY+xNm2lYS7/HIc7sCLyAZI=",
+      "bases": [
+        "radarr-hd-bluray-web.json",
+        "sonarr-web-1080p-alternative.json"
+      ],
+      "description": "Small explicit local HD Preferred overrides: retain upstream profiles and format scores, target Blu-ray 1080p, rank every 1080p source above 720p, add DVD and SD WEB below HD with SDTV last. No remux, 2160p, full-disc, audio or language additions."
     }
   }
 }

@@ -43,7 +43,39 @@
         builtins.readFile (inputs.self + "/assets/media-policy/source.json")
       );
       pinnedInput = name: builtins.readFile (inputs.self + "/assets/media-policy/${name}");
-      profileData = kind: bundle: builtins.fromJSON (pinnedInput "${kind}-${bundle}.json");
+      requiredFormats = builtins.fromJSON (pinnedInput "required-formats.json");
+      profileData =
+        kind: key:
+        let
+          upstreamProfile =
+            file:
+            builtins.fromJSON (pinnedInput file)
+            // {
+              provenance = "${policySource.repository}/blob/${policySource.revision}/${policySource.files.${file}.upstream}";
+            };
+          adaptation = builtins.fromJSON (pinnedInput "hd-preferred.json");
+          overrides = adaptation.bases.${kind};
+          base = upstreamProfile overrides.file;
+          items = map (
+            item: item // { allowed = item.allowed || lib.elem item.name overrides.enable; }
+          ) base.items;
+          preferred = adaptation.preferredQualities;
+          profiles = {
+            hd-preferred = base // {
+              inherit (adaptation) name cutoff;
+              provenance = "Local hd-preferred.json adaptation of pinned ${kind} base recorded in source.json";
+              items =
+                map (name: lib.findFirst (item: item.name == name) null items) preferred
+                ++ lib.filter (item: !(lib.elem item.name preferred)) items;
+            };
+            web-1080p = upstreamProfile "${kind}-web-1080p.json";
+            remux-web-1080p = upstreamProfile "${kind}-remux-web-1080p.json";
+          };
+        in
+        profiles.${key};
+      profileFormats =
+        kind: key:
+        lib.unique (builtins.attrValues (profileData kind key).formatItems ++ requiredFormats.${kind}.default);
       routePrefix =
         route:
         if route == null || route.pathPrefix == "/" then "" else lib.removeSuffix "/" route.pathPrefix;
@@ -120,42 +152,46 @@
         let
           fact = services.${kind}.${instanceName};
         in
+        assert lib.assertMsg (cfg.role != "4k")
+          "Homelab-managed HD quality profiles cannot serve Seerr's 4k role (${kind}/${instanceName}).";
         {
           url = endpoint fact;
           externalUrl = fact.externalUrl;
           root = cfg.root;
           category = cfg.category;
-          profile = (profileData kind cfg.bundle).name;
-          bundle = cfg.bundle;
-          apiSecretKey = cfg.apiSecretKey;
+          profile = (profileData kind cfg.defaultQualityProfile).name;
+          inherit (cfg) qualityProfiles defaultQualityProfile;
+          apiSecretKey = fact.apiSecretKey;
         };
 
       profileTemplate =
-        kind: bundle:
+        kind: keys:
         let
-          profile = profileData kind bundle;
-          quality =
-            item:
-            "      - name: ${yaml item.name}\n"
-            + "        enabled: ${if item.allowed then "true" else "false"}\n"
-            + lib.optionalString (item ? items) "        qualities: ${yaml item.items}\n";
+          render =
+            key:
+            let
+              profile = profileData kind key;
+              quality =
+                item:
+                "      - name: ${yaml item.name}\n"
+                + "        enabled: ${if item.allowed then "true" else "false"}\n"
+                + lib.optionalString (item ? items) "        qualities: ${yaml item.items}\n";
+            in
+            ''
+                # ${profile.provenance}
+                - name: ${yaml profile.name}
+                  upgrade:
+                    allowed: ${if profile.upgradeAllowed then "true" else "false"}
+                    until_quality: ${yaml profile.cutoff}
+                    until_score: ${toString profile.cutoffFormatScore}
+                    min_format_score: ${toString profile.minUpgradeFormatScore}
+                  min_format_score: ${toString profile.minFormatScore}
+              ${lib.optionalString (profile ? language) "    language: ${yaml profile.language}\n"}
+                  qualities:
+              ${lib.concatMapStrings quality profile.items}
+            '';
         in
-        ''
-          # ${policySource.repository}/blob/${policySource.revision}/${
-            policySource.files."${kind}-${bundle}.json".upstream
-          }
-          quality_profiles:
-            - name: ${yaml profile.name}
-              upgrade:
-                allowed: ${if profile.upgradeAllowed then "true" else "false"}
-                until_quality: ${yaml profile.cutoff}
-                until_score: ${toString profile.cutoffFormatScore}
-                min_format_score: ${toString profile.minUpgradeFormatScore}
-              min_format_score: ${toString profile.minFormatScore}
-          ${lib.optionalString (profile ? language) "    language: ${yaml profile.language}\n"}
-              qualities:
-          ${lib.concatMapStrings quality profile.items}
-        '';
+        "quality_profiles:\n" + lib.concatMapStrings render keys;
 
       instanceYaml =
         {
@@ -175,6 +211,31 @@
                 ;
             };
             categoryField = if kind == "radarr" then "movie_category" else "tv_category";
+            customFormats = lib.concatMap (
+              key:
+              [
+                {
+                  trash_ids = profileFormats kind key;
+                  assign_scores_to = [
+                    {
+                      name = (profileData kind key).name;
+                      use_default_score = true;
+                    }
+                  ];
+                }
+              ]
+              ++ lib.optional (requiredFormats.${kind}.zero != [ ]) {
+                # The guide explicitly scores these at zero, but their CF JSON
+                # omits a default. An undefined score would preserve drift.
+                trash_ids = requiredFormats.${kind}.zero;
+                assign_scores_to = [
+                  {
+                    name = (profileData kind key).name;
+                    score = 0;
+                  }
+                ];
+              }
+            ) cfg.qualityProfiles;
           in
           ''
             ${yaml instanceName}:
@@ -184,11 +245,7 @@
                 type: ${if kind == "radarr" then "movie" else "series"}
               include:
                 - template: ${yaml "media-${kind}-${instanceName}"}
-              custom_formats:
-                - trash_ids: ${yaml (builtins.attrValues (profileData kind cfg.bundle).formatItems)}
-                  assign_scores_to:
-                    - name: ${yaml desired.profile}
-                      use_default_score: true
+              custom_formats: ${yaml customFormats}
               root_folders:
                 - ${yaml cfg.root}
               download_clients:
@@ -353,7 +410,7 @@
             lib.listToAttrs (
               lib.mapAttrsToList (name: cfg: {
                 name = "media-${kind}-${name}.yml";
-                value = profileTemplate kind cfg.bundle;
+                value = profileTemplate kind cfg.qualityProfiles;
               }) instances
             );
         in

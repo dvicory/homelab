@@ -41,7 +41,6 @@
         root = ../..;
         fileset = lib.fileset.unions [
           ./media-live-acceptance.py
-          ../../assets/media-policy
           ../../generated/manifests/prod-home
         ];
       };

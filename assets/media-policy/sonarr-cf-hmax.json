@@ -1,0 +1,47 @@
+{
+  "trash_id": "a880d6abc21e7c16884f3ae393f84179",
+  "trash_scores": {
+    "default": 75,
+    "german-anime": 0
+  },
+  "name": "HMAX",
+  "includeCustomFormatWhenRenaming": true,
+  "specifications": [
+    {
+      "name": "HBO Max",
+      "implementation": "ReleaseTitleSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": "\\b(hmax|hbom|hbo[ ._-]?max)\\b(?=[ ._-]web[ ._-]?(dl|rip)\\b)"
+      }
+    },
+    {
+      "name": "HMAX Rename",
+      "implementation": "ReleaseTitleSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": "\\[(HMAX)\\b|\\b(HMAX)\\]"
+      }
+    },
+    {
+      "name": "WEBDL",
+      "implementation": "SourceSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": 3
+      }
+    },
+    {
+      "name": "WEBRIP",
+      "implementation": "SourceSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": 4
+      }
+    }
+  ]
+}

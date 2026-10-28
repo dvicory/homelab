@@ -1,0 +1,46 @@
+{
+  "trash_id": "218e93e5702f44a68ad9e3c6ba87d2f0",
+  "trash_scores": {
+    "default": 75
+  },
+  "name": "HD Streaming Boost",
+  "includeCustomFormatWhenRenaming": false,
+  "specifications": [
+    {
+      "name": "Disney+",
+      "implementation": "ReleaseTitleSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": "\\b(dsnp|dsny|disney|Disney\\+)\\b"
+      }
+    },
+    {
+      "name": "WEBDL",
+      "implementation": "SourceSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": 3
+      }
+    },
+    {
+      "name": "WEBRIP",
+      "implementation": "SourceSpecification",
+      "negate": false,
+      "required": false,
+      "fields": {
+        "value": 4
+      }
+    },
+    {
+      "name": "1080p",
+      "implementation": "ResolutionSpecification",
+      "negate": false,
+      "required": true,
+      "fields": {
+        "value": 1080
+      }
+    }
+  ]
+}

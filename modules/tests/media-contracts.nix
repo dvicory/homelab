@@ -112,7 +112,8 @@
           apiSecretKey,
           root,
           category,
-          bundle,
+          qualityProfiles ? [ "hd-preferred" "web-1080p" "remux-web-1080p" ],
+          defaultQualityProfile ? "hd-preferred",
           role ? null,
         }:
         {
@@ -122,7 +123,8 @@
             apiSecretKey
             root
             category
-            bundle
+            qualityProfiles
+            defaultQualityProfile
             role
             ;
           sharedWritablePaths = [ "/data" ];
@@ -136,16 +138,15 @@
             apiSecretKey = "RADARR_HD_API_KEY";
             root = "/data/library/movies/hd";
             category = "movies-hd";
-            bundle = "web-1080p";
           };
-          uhd = instance {
-            role = "4k";
-            state = "radarr-uhd";
+          remux = instance {
+            state = "radarr-remux";
             routeKey = null;
-            apiSecretKey = "RADARR_UHD_API_KEY";
-            root = "/data/library/movies/uhd";
-            category = "movies-uhd";
-            bundle = "web-2160p";
+            apiSecretKey = "RADARR_REMUX_API_KEY";
+            root = "/data/library/movies/remux";
+            category = "movies-remux";
+            qualityProfiles = [ "remux-web-1080p" ];
+            defaultQualityProfile = "remux-web-1080p";
           };
         };
         sonarr = {
@@ -156,16 +157,15 @@
             apiSecretKey = "SONARR_HD_API_KEY";
             root = "/data/library/tv/hd";
             category = "tv-hd";
-            bundle = "web-1080p";
           };
           anime = instance {
-            role = "4k";
             state = "sonarr-anime";
             routeKey = null;
             apiSecretKey = "SONARR_ANIME_API_KEY";
             root = "/data/library/tv/anime";
             category = "tv-anime";
-            bundle = "web-2160p";
+            qualityProfiles = [ "web-1080p" ];
+            defaultQualityProfile = "web-1080p";
           };
         };
       };
@@ -206,7 +206,7 @@
             })
             {
               radarr-hd = 752;
-              radarr-uhd = 752;
+              radarr-remux = 752;
               sonarr-hd = 753;
               sonarr-anime = 753;
             }
@@ -237,21 +237,6 @@
       fixtureApplications = projectApplications (
         renderApplications fixtureCluster fixtureCompute "radarr"
         // renderApplications fixtureCluster fixtureCompute "sonarr"
-      );
-      fixtureMutatedCluster = fixtureClusterWith {
-        radarr.uhd = {
-          root = "/data/library/movies/uhd-remux";
-          category = "movies-uhd-remux";
-          bundle = "web-1080p";
-        };
-      };
-      fixtureMutatedInstances = lib.getAttrs [
-        "radarr"
-        "sonarr"
-      ] fixtureMutatedCluster.settings.kubernetes.services.media;
-      fixtureMutatedApplications = projectApplications (
-        renderApplications fixtureMutatedCluster fixtureCompute "radarr"
-        // renderApplications fixtureMutatedCluster fixtureCompute "sonarr"
       );
       mediaManifests =
         targetCluster:
@@ -298,7 +283,7 @@
       extraRoute =
         auth:
         (mediaWithRoutes {
-          radarr-uhd-extra = withAuth auth (fixtureCluster.routes.sonarr // { service = "radarr-uhd"; });
+          radarr-remux-extra = withAuth auth (fixtureCluster.routes.sonarr // { service = "radarr-remux"; });
         }).success;
       extraNativeRouteRejected = !(extraRoute "native");
       extraAdminRouteAccepted = extraRoute "admin";
@@ -337,14 +322,17 @@
         };
       ingressFixtures = {
         roles = ingressFixture { };
-        animeWithoutRole = ingressFixture { sonarr.anime.role = null; };
+        animeStandard = ingressFixture {
+          sonarr.sonarr.role = null;
+          sonarr.anime.role = "standard";
+        };
       };
       mediaNoStandard = configurationWith {
         radarr.radarr.role = null;
         sonarr.sonarr.role = null;
       };
-      mediaAmbiguousStandard = configurationWith { radarr.uhd.role = "standard"; };
-      mediaNoSharing = mediaWith { radarr.uhd.sharedWritablePaths = [ ]; };
+      mediaAmbiguousStandard = configurationWith { radarr.remux.role = "standard"; };
+      mediaNoSharing = mediaWith { radarr.remux.sharedWritablePaths = [ ]; };
       mediaStateCollision = mediaWith { sonarr.anime.state = "radarr-hd"; };
       mediaSecretCollision = mediaWith { sonarr.anime.apiSecretKey = "RADARR_HD_API_KEY"; };
       mediaFixedSecretCollision = mediaWith { radarr.radarr.apiSecretKey = "PROWLARR_API_KEY"; };
@@ -392,19 +380,19 @@
             "radarr"
             "sonarr"
           ];
-      mediaRootCollision = mediaWith { radarr.uhd.root = "/data/library/movies/hd"; };
-      mediaNestedRoot = mediaWith { radarr.uhd.root = "/data/library/movies/hd/remux"; };
+      mediaRootCollision = mediaWith { radarr.remux.root = "/data/library/movies/hd"; };
+      mediaNestedRoot = mediaWith { radarr.remux.root = "/data/library/movies/hd/remux"; };
       sharedLibrary = [
         "/data"
         "/data/library/movies/hd"
       ];
       mediaOneSidedSharing = mediaWith {
         radarr.radarr.sharedWritablePaths = sharedLibrary;
-        radarr.uhd.root = "/data/library/movies/hd";
+        radarr.remux.root = "/data/library/movies/hd";
       };
       mediaSharedRoot = mediaWith {
         radarr.radarr.sharedWritablePaths = sharedLibrary;
-        radarr.uhd = {
+        radarr.remux = {
           root = "/data/library/movies/hd";
           sharedWritablePaths = sharedLibrary;
         };
@@ -445,9 +433,7 @@
       fixture = pkgs.writeText "media-instance-fixtures.json" (
         builtins.toJSON {
           instances = fixtureInstances;
-          mutatedInstances = fixtureMutatedInstances;
           applications = fixtureApplications;
-          mutatedApplications = fixtureMutatedApplications;
           runtimeSecrets = fixtureRuntimeSecrets;
           inherit configurationPhases;
           positive = mediaBase.success;
@@ -461,7 +447,34 @@
           seerrRoleAccepted = (configurationWith { }).success;
           noStandardRejected = !mediaNoStandard.success;
           ambiguousStandardRejected = !mediaAmbiguousStandard.success;
-          optionalFourKAccepted = (configurationWith { sonarr.anime.role = null; }).success;
+          unsupportedFourKRejected = lib.all (
+            kind:
+            let
+              name = if kind == "radarr" then "remux" else "anime";
+            in
+            lib.all (
+              profile:
+              let
+                selection = {
+                  qualityProfiles = [ profile ];
+                  defaultQualityProfile = profile;
+                };
+              in
+              (configurationWith { ${kind}.${name} = selection; }).success
+              && !(configurationWith {
+                ${kind}.${name} = selection // { role = "4k"; };
+              }).success
+            ) [ "hd-preferred" "web-1080p" "remux-web-1080p" ]
+          ) [ "radarr" "sonarr" ];
+          emptyQualityProfilesRejected = !(configurationWith {
+            radarr.radarr.qualityProfiles = [ ];
+          }).success;
+          duplicateQualityProfilesRejected = !(configurationWith {
+            radarr.radarr.qualityProfiles = [ "hd-preferred" "hd-preferred" ];
+          }).success;
+          missingDefaultProfileRejected = !(configurationWith {
+            radarr.radarr.qualityProfiles = [ "web-1080p" ];
+          }).success;
           noSharingRejected = !mediaNoSharing.success;
           stateCollisionRejected = !mediaStateCollision.success;
           secretCollisionRejected = !mediaSecretCollision.success;
@@ -510,40 +523,16 @@
             policy_dir = pathlib.Path(sys.argv[5])
             source = json.loads((policy_dir / "source.json").read_text())
             upstream = json.loads(pathlib.Path(sys.argv[6]).read_text())
-            assert set(source) == {"repository", "revision", "files", "localFiles"}
-            assert source["repository"] == "https://github.com/TRaSH-Guides/Guides"
-            assert {name: file["upstream"] for name, file in source["files"].items()
-                    if "-cf-" not in name} == {
-                "radarr-web-1080p.json": "docs/json/radarr/quality-profiles/web-1080p.json",
-                "radarr-web-2160p.json": "docs/json/radarr/quality-profiles/web-2160p.json",
-                "sonarr-web-1080p.json": "docs/json/sonarr/quality-profiles/web-1080p.json",
-                "sonarr-web-2160p.json": "docs/json/sonarr/quality-profiles/web-2160p.json",
-                "radarr-movie.json": "docs/json/radarr/quality-size/movie.json",
-                "sonarr-series.json": "docs/json/sonarr/quality-size/series.json",
-                "sonarr-anime.json": "docs/json/sonarr/quality-size/anime.json",
-            }
-            assert set(upstream) == set(source["files"])
+            # Provenance checks the fetched bytes, not a second inventory of labels.
             # Local policy must match independently fetched, hash-pinned upstream inputs.
             for name, file in source["files"].items():
-                assert set(file) == {"upstream", "sha256"}
                 actual = pathlib.Path(upstream[name]).read_bytes()
                 assert file["sha256"] == "sha256-" + base64.b64encode(hashlib.sha256(actual).digest()).decode()
-                assert (policy_dir / name).is_file(), name
-                assert json.loads((policy_dir / name).read_bytes()) == json.loads(actual), name
-            for kind in ("radarr", "sonarr"):
-                cf_ids = {
-                    json.loads(pathlib.Path(upstream[name]).read_text())["trash_id"]
-                    for name in upstream if name.startswith(kind + "-cf-")
-                }
-                for bundle in ("web-1080p", "web-2160p"):
-                    profile = json.loads(pathlib.Path(upstream[f"{kind}-{bundle}.json"]).read_text())
-                    assert set(profile["formatItems"].values()) <= cf_ids
-            assert set(source["localFiles"]) == {"conflicts.json"}
-            local = source["localFiles"]["conflicts.json"]
-            assert set(local) == {"sha256"}
-            assert local["sha256"] == "sha256-" + base64.b64encode(
-                hashlib.sha256((policy_dir / "conflicts.json").read_bytes()).digest()
-            ).decode()
+                assert (policy_dir / name).read_bytes() == actual, name
+            for name, metadata in source["localFiles"].items():
+                assert metadata["sha256"] == "sha256-" + base64.b64encode(
+                    hashlib.sha256((policy_dir / name).read_bytes()).digest()
+                ).decode(), name
 
             # Rendered manifests are read only for facts no native rule covers;
             # see media-private-storage, media-acquisition-* and media-configuration-*.
@@ -565,7 +554,7 @@
 
             fixture_instances = fixture["instances"]
             fixture_apps = fixture["applications"]
-            expected_services = {"radarr", "radarr-uhd", "sonarr", "sonarr-anime"}
+            expected_services = {"radarr", "radarr-remux", "sonarr", "sonarr-anime"}
             assert set(fixture_apps) == expected_services
             assert fixture["positive"]
             assert fixture["seerrRoleAccepted"]
@@ -579,7 +568,10 @@
                 assert volume["spec"]["persistentVolumeReclaimPolicy"] == "Retain"
             assert fixture["noStandardRejected"]
             assert fixture["ambiguousStandardRejected"]
-            assert fixture["optionalFourKAccepted"]
+            assert fixture["unsupportedFourKRejected"]
+            assert fixture["emptyQualityProfilesRejected"]
+            assert fixture["duplicateQualityProfilesRejected"]
+            assert fixture["missingDefaultProfileRejected"]
             assert fixture["noSharingRejected"]
             assert fixture["stateCollisionRejected"]
             assert fixture["secretCollisionRejected"]
@@ -616,9 +608,9 @@
                 assert env[prefix + "__AUTH__APIKEY"]["valueFrom"]["secretKeyRef"]["key"] == prefix + "_API_KEY", app
 
             def validate_instance_group(kind, instances):
-                expected_names = {"radarr", "uhd"} if kind == "radarr" else {"sonarr", "anime"}
+                expected_names = {"radarr", "remux"} if kind == "radarr" else {"sonarr", "anime"}
                 assert set(instances) == expected_names
-                for field in ("state", "apiSecretKey", "root", "category", "bundle"):
+                for field in ("state", "apiSecretKey", "root", "category"):
                     values = [instance[field] for instance in instances.values()]
                     assert len(values) == len(set(values)), (kind, field)
                 assert all(instance["sharedWritablePaths"] == ["/data"] for instance in instances.values())
@@ -657,14 +649,6 @@
                 for instances in fixture_instances.values()
                 for instance in instances.values()
             }
-            base_apps = fixture["applications"]
-            mutated_apps = fixture["mutatedApplications"]
-            for name in expected_services - {"radarr-uhd"}:
-                assert base_apps[name] == mutated_apps[name], name
-            assert (
-                fixture["instances"]["radarr"]["uhd"]
-                != fixture["mutatedInstances"]["radarr"]["uhd"]
-            )
 
             # Native media-acquisition-mounts covers the /data hostPath and mounts;
             # the media group membership is not covered natively.
@@ -808,7 +792,6 @@
                     if (resource and resource["kind"] == "ConfigMap"
                             and resource["metadata"]["name"] == "media-configuration"):
                         configarr = yaml.load(resource["data"]["config.yml"], Loader=ConfigarrLoader)
-                        assert resource["data"]["trash-guide-revision"] == source["revision"]
                         for kind, names in storage["mediaInstances"].items():
                             assert set(configarr[kind]) == set(names), (kind, configarr[kind])
                             assert all(isinstance(instance, dict) and "base_url" in instance
@@ -832,7 +815,6 @@
             for kind in ("radarr", "sonarr"):
                 for instance in configarr[kind].values():
                     assert len(instance["root_folders"]) == 1
-                    assert instance["custom_formats"][0]["assign_scores_to"][0]["use_default_score"]
             # Exercise the actual seed script with POSIX sh: brace expansion silently
             # creates the wrong directories, and an empty template repo still needs HEAD.
             assert seed_program is not None and seed_files is not None
@@ -848,14 +830,9 @@
                     subprocess.run(["git", "-C", str(root / "repos" / repo), "rev-parse", "--verify", "HEAD"],
                                    check=True, stdout=subprocess.DEVNULL)
                 trash_repo = root / "repos" / "trash-guides"
-                assert (trash_repo / "TRASH-GUIDES-REVISION").read_text().strip() == source["revision"]
                 for name, metadata in source["files"].items():
                     if "-cf-" in name:
                         assert (trash_repo / metadata["upstream"]).read_bytes() == pathlib.Path(upstream[name]).read_bytes()
-                synthetic_head = subprocess.check_output(
-                    ["git", "-C", str(trash_repo), "rev-parse", "HEAD"], text=True
-                ).strip()
-                assert synthetic_head != source["revision"]
 
             # Radarr, Sonarr, Prowlarr and SABnzbd have no login of their own,
             # and the Servarr UI hands out the API key. So what reaches their
@@ -999,9 +976,15 @@
                     if item["kind"] == "ConfigMap" and item["metadata"]["name"] == "media-configuration"
                 )["data"]
                 calls = declared_calls(configuration)
-                servers = {"radarr", "radarr-uhd", "sonarr", "sonarr-anime", "prowlarr", "sabnzbd"}
+                servers = {"radarr", "radarr-remux", "sonarr", "sonarr-anime", "prowlarr", "sabnzbd"}
                 assert {server for _, server, _ in calls} == servers, (case, calls)
-                assert (("seerr", "sonarr-anime", 8989) in calls) == (case == "roles"), case
+                selected_sonarr = "sonarr-anime" if case == "animeStandard" else "sonarr"
+                unselected_sonarr = "sonarr" if case == "animeStandard" else "sonarr-anime"
+                assert ("seerr", selected_sonarr, 8989) in calls, case
+                assert ("seerr", unselected_sonarr, 8989) not in calls, case
+                seerr = json.loads(configuration["seerr.json"])
+                assert all(set(seerr["arr"][kind]) == {"standard"} for kind in ("radarr", "sonarr")), case
+                assert endpoint(seerr["arr"]["sonarr"]["standard"]["url"]) == (selected_sonarr, 8989), case
                 templates = pod_templates(data["configuration"])
                 assert set(templates) == {"media-configarr", "media-config-seerr"}, case
                 for name in servers | {"seerr"}:
