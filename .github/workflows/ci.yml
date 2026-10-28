@@ -53,25 +53,26 @@ jobs:
       - name: Install Nix
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
-          extra_nix_config: |
-            extra-substituters = https://cache.numtide.com
-            extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=
           github_access_token: ${{ github.token }}
-      - name: Configure durable cache (read only)
-        if: vars.CACHIX_CACHE != ''
-        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
-        with:
-          name: ${{ vars.CACHIX_CACHE }}
-          skipPush: true
-      - &signed-upstream-cache
-        name: Preserve signed upstream cache after Cachix
+      - &shared-public-caches
+        name: Configure shared public caches
+        env:
+          CACHIX_CACHE: ${{ vars.CACHIX_CACHE }}
         run: |
-          config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/nix"
-          mkdir -p "$config_dir"
-          printf '%s\n' \
-            'extra-substituters = https://cache.numtide.com' \
-            'extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=' \
-            >> "$config_dir/nix.conf"
+          case "${CACHIX_CACHE:-}" in
+            ""|dvicory-homelab) ;;
+            *) printf '%s\n' 'Unsupported CACHIX_CACHE; expected dvicory-homelab or empty.' >&2; exit 1 ;;
+          esac
+          {
+            printf 'NIX_CONFIG<<EOF\n%s\n' "${NIX_CONFIG:-}"
+            nix eval --raw --file modules/nix/caches.nix --apply '
+              module:
+              let settings = module.flake.modules.generic.nix-common.nix.settings;
+              in "extra-substituters = ${builtins.concatStringsSep " " settings.extra-substituters}\n"
+                + "extra-trusted-public-keys = ${builtins.concatStringsSep " " settings.extra-trusted-public-keys}\n"
+            '
+            printf 'EOF\n'
+          } >> "$GITHUB_ENV"
       - name: Partition actual check derivations
         id: inventory
         env:
@@ -168,17 +169,8 @@ jobs:
           extra_nix_config: |
             build-dir = /nix/build
             sandbox = relaxed
-            extra-substituters = https://cache.numtide.com
-            extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=
           github_access_token: ${{ github.token }}
-
-      - name: Configure durable cache (read only)
-        if: vars.CACHIX_CACHE != ''
-        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
-        with:
-          name: ${{ vars.CACHIX_CACHE }}
-          skipPush: true
-      - *signed-upstream-cache
+      - *shared-public-caches
 
       - name: Build Darwin Linux builder system
         run: |
@@ -275,8 +267,6 @@ jobs:
           extra_nix_config: |
             build-dir = /nix/build
             sandbox = relaxed
-            extra-substituters = https://cache.numtide.com
-            extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=
           github_access_token: ${{ github.token }}
 
       - name: Enable required container builder capabilities
@@ -300,18 +290,8 @@ jobs:
         if: runner.os == 'macOS'
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
-          extra_nix_config: |
-            extra-substituters = https://cache.numtide.com
-            extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=
           github_access_token: ${{ github.token }}
-
-      - name: Configure durable cache (read only)
-        if: vars.CACHIX_CACHE != ''
-        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
-        with:
-          name: ${{ vars.CACHIX_CACHE }}
-          skipPush: true
-      - *signed-upstream-cache
+      - *shared-public-caches
 
       # System builds and VM checks can fetch multi-GiB images. Hestia v3
       # buffers whole NARs in RAM; use durable/upstream caches for these groups.
@@ -429,7 +409,7 @@ jobs:
             {
               printf '%s\n' "${outputs[@]}"
               comm -13 "$RUNNER_TEMP/build-sources" "$RUNNER_TEMP/build-realized"
-            } | cachix push "$CACHIX_CACHE"
+            } | nix shell --inputs-from . nixpkgs#cachix --command cachix push "$CACHIX_CACHE"
           fi
 
   required-ci:
@@ -543,23 +523,14 @@ jobs:
       - name: Install Nix
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
-          extra_nix_config: |
-            extra-substituters = https://cache.numtide.com
-            extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=
           github_access_token: ${{ github.token }}
-      - name: Configure durable cache (read only)
-        if: vars.CACHIX_CACHE != ''
-        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
-        with:
-          name: ${{ vars.CACHIX_CACHE }}
-          skipPush: true
-      - *signed-upstream-cache
+      - *shared-public-caches
       - name: Select owned fixture scratch after Nix installation
         if: matrix.requirements.ownedStorage == true
         run: |
           # Installation and cache setup must not use scratch owned beneath /nix.
           printf 'TMPDIR=/nix/build/native-acceptance/tmp\n' >> "$GITHUB_ENV"
-          printf 'build-dir = /nix/build\n' >> "${XDG_CONFIG_HOME:-$HOME/.config}/nix/nix.conf"
+          printf 'NIX_CONFIG<<EOF\n%s\nbuild-dir = /nix/build\nEOF\n' "$NIX_CONFIG" >> "$GITHUB_ENV"
       - name: Configure declared canonical loopback host
         if: matrix.loopbackHost != ''
         run: |
@@ -629,7 +600,7 @@ jobs:
           fi
           runner=()
           if [ "$(jq -r .requirements.root <<< "$APPLICATION")" = true ]; then
-            runner=(sudo env "TMPDIR=$TMPDIR")
+            runner=(sudo env "TMPDIR=$TMPDIR" "NIX_CONFIG=$NIX_CONFIG")
           fi
           "${runner[@]}" /usr/bin/time -p timeout --signal=INT "${deadline}s" "$program" "${arguments[@]}" \
             2>&1 | tee "$RUNNER_TEMP/native-evidence/acceptance.log"

@@ -72,12 +72,19 @@ jobs:
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
           extra_nix_config: sandbox = true
-      - name: Configure durable cache (read only)
-        if: vars.CACHIX_CACHE != ''
-        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
-        with:
-          name: ${{ vars.CACHIX_CACHE }}
-          skipPush: true
+      - name: Configure shared public caches
+        working-directory: trusted
+        run: &shared-public-caches |
+          {
+            printf 'NIX_CONFIG<<EOF\n%s\n' "${NIX_CONFIG:-}"
+            nix eval --raw --file modules/nix/caches.nix --apply '
+              module:
+              let settings = module.flake.modules.generic.nix-common.nix.settings;
+              in "extra-substituters = ${builtins.concatStringsSep " " settings.extra-substituters}\n"
+                + "extra-trusted-public-keys = ${builtins.concatStringsSep " " settings.extra-trusted-public-keys}\n"
+            '
+            printf 'EOF\n'
+          } >> "$GITHUB_ENV"
       - name: Build and audit four native x86-64 helpers without publication authority
         id: build
         env:
@@ -127,12 +134,8 @@ jobs:
           merge-multiple: true
       - name: Install Nix for trusted tools only
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
-      - name: Configure durable cache (read only)
-        if: vars.CACHIX_CACHE != ''
-        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
-        with:
-          name: ${{ vars.CACHIX_CACHE }}
-          skipPush: true
+      - name: Configure shared public caches
+        run: *shared-public-caches
       - name: Publish fixed packages from verified data, never producer scripts
         env:
           GH_TOKEN: ${{ github.token }}
@@ -181,12 +184,8 @@ jobs:
           merge-multiple: true
       - name: Install Nix
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
-      - name: Configure durable cache (read only)
-        if: vars.CACHIX_CACHE != ''
-        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
-        with:
-          name: ${{ vars.CACHIX_CACHE }}
-          skipPush: true
+      - name: Configure shared public caches
+        run: *shared-public-caches
       - name: Verify public digest retrieval and exact native producer identity
         env:
           SOURCE_SHA: ${{ needs.authorize.outputs.sha }}
