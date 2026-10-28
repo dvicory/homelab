@@ -5,7 +5,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
+from tempfile import TemporaryDirectory
 
 SYSTEMS = {"x86_64-linux", "aarch64-linux", "aarch64-darwin"}
 
@@ -100,23 +102,115 @@ def account(plan, inventories, receipts, reports, artifacts):
 
 
 def load(root, run_id):
-    plan = json.loads((root / "required-plan/check-inventory.json").read_text())
+    root = root.resolve()
+
+    def metadata_path(path):
+        # Resolve file and ancestor links before inspecting or reading metadata.
+        resolved = path.resolve()
+        require(resolved.is_relative_to(root), "CI metadata path escapes artifact root")
+        return resolved
+
+    plan = json.loads(metadata_path(root / "required-plan/check-inventory.json").read_text())
     inventories = {}
-    for path in (root / "required-inventories").glob("*/check-inventory.json"):
+    for path in metadata_path(root / "required-inventories").glob("*/check-inventory.json"):
         system = path.parent.name.removeprefix("check-inventory-").removesuffix(f"-checks-{run_id}")
         require(system in SYSTEMS and system not in inventories, "unexpected/duplicate platform inventory")
-        inventories[system] = json.loads(path.read_text())
-    receipts = [json.loads(path.read_text()) for path in (root / "required-receipts").glob("*/ci-receipt.json")]
-    artifacts = [json.loads(path.read_text()) for path in (root / "required-receipts").glob("*/ci-artifact.json")]
+        inventories[system] = json.loads(metadata_path(path).read_text())
+    receipts_root = metadata_path(root / "required-receipts")
+    receipts = [json.loads(metadata_path(path).read_text()) for path in receipts_root.glob("*/ci-receipt.json")]
+    artifacts = [json.loads(metadata_path(path).read_text()) for path in receipts_root.glob("*/ci-artifact.json")]
     reports = {}
     for system, platform in plan.items():
         for application in platform["nativeApplications"]:
             filename = application.get("reportFile")
             if filename:
-                path = root / "required-native" / f"native-{system}-{application['name']}-{run_id}" / filename
+                path = metadata_path(root / "required-native" / f"native-{system}-{application['name']}-{run_id}" / filename)
                 if path.is_file():
                     reports[(system, application["name"], filename)] = path.read_bytes()
     return plan, inventories, receipts, reports, artifacts
+
+
+def metadata_path_self_test():
+    with TemporaryDirectory(prefix="required-ci-metadata-") as scratch:
+        base = Path(scratch).resolve()
+        run_id = "regression"
+        plan = {"x86_64-linux": {"nativeApplications": [{"name": "proof", "reportFile": "report.json"}]}}
+        inventory, receipt, artifact = {"inventory": []}, {"role": "build"}, {"artifact": {}}
+        report = b'{"ordinary-report":true}\n'
+        expected = (plan, {"x86_64-linux": inventory}, [receipt],
+                    {("x86_64-linux", "proof", "report.json"): report}, [artifact])
+        entries = (
+            ("required-plan/check-inventory.json", json.dumps(plan).encode()),
+            (f"required-inventories/check-inventory-x86_64-linux-checks-{run_id}/check-inventory.json",
+             json.dumps(inventory).encode()),
+            ("required-receipts/executor/ci-receipt.json", json.dumps(receipt).encode()),
+            ("required-receipts/executor/ci-artifact.json", json.dumps(artifact).encode()),
+            (f"required-native/native-x86_64-linux-proof-{run_id}/report.json", report),
+        )
+        outside = base / "metadata-outside"
+        outside.mkdir()
+        for filename in {Path(name).name for name, _ in entries}:
+            (outside / filename).write_bytes(b'{"synthetic-outside-sentinel":"never-read-outside"}\n')
+
+        # Audit actual opens: a later parse/validation failure cannot hide a read.
+        opened = []
+        watching = [False]
+
+        def audit(event, arguments):
+            if event == "open" and watching[0] and isinstance(arguments[0], (str, bytes, os.PathLike)):
+                path = Path(os.fsdecode(arguments[0])).resolve()
+                assert not path.is_relative_to(outside), f"metadata opened outside bytes: {path}"
+                opened.append(path)
+
+        sys.addaudithook(audit)
+
+        def read_metadata(root):
+            watching[0] = True
+            try:
+                return load(root, run_id)
+            finally:
+                watching[0] = False
+
+        def populate(root):
+            for name, content in entries:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+
+        with TemporaryDirectory(dir=base) as scratch:
+            root = Path(scratch)
+            populate(root)
+            assert read_metadata(root) == expected
+            assert root / entries[-1][0] in opened, "real native report bytes were not read"
+            internal = root / "internal"
+            internal.mkdir()
+            for index, (name, _) in enumerate(entries):
+                path = root / name
+                target = internal / str(index)
+                path.rename(target)
+                path.symlink_to(target)
+            (root / "required-plan").rename(root / "plan-data")
+            (root / "required-plan").symlink_to(root / "plan-data", target_is_directory=True)
+            assert read_metadata(root) == expected
+
+        for name, _ in entries:
+            for ancestor in (False, True):
+                with TemporaryDirectory(dir=base) as scratch:
+                    root = Path(scratch)
+                    populate(root)
+                    path = root / name
+                    if ancestor:
+                        shutil.rmtree(path.parent)
+                        path.parent.symlink_to(outside, target_is_directory=True)
+                    else:
+                        path.unlink()
+                        path.symlink_to(outside / path.name)
+                    try:
+                        read_metadata(root)
+                    except ValueError:
+                        pass
+                    else:
+                        raise AssertionError(f"outside metadata link accepted: {name}, ancestor={ancestor}")
 
 
 def self_test():
@@ -196,7 +290,9 @@ def self_test():
     refuses(r=replacement)
     refuses(b={})
     refuses(b={report_key: b"changed bytes"})
-    print("full CI accounting accepts the union and refuses omissions, replacements, scope and changed report bytes")
+    metadata_path_self_test()
+    print("full CI accounting refuses omissions, replacements, scope and changed report bytes; "
+          "metadata accepts internal links and rejects outside file/ancestor links before opening bytes")
 
 
 if __name__ == "__main__":
