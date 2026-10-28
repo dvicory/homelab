@@ -60,6 +60,10 @@ positive:
       application-source-confinement]
     argoproj.io/v1alpha1/Application/argocd/media-storage: [application-lifecycle, application-directory-source,
       application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/monitoring: [application-lifecycle, application-directory-source,
+      application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/monitoring-retained: [application-lifecycle, application-directory-source,
+      application-source-confinement]
     argoproj.io/v1alpha1/Application/argocd/network-policy: [application-lifecycle, application-directory-source,
       application-source-confinement]
     argoproj.io/v1alpha1/Application/argocd/prowlarr: [application-lifecycle, application-directory-source, application-source-confinement]
