@@ -720,6 +720,8 @@ The native disposable check is
 helper and a genuinely recompiled version, runs their Kubernetes Jobs through
 a real TLS registry without helper preloads/imports, and checks anonymous
 access, refusal, explicit old-digest rollback and retained-state identity.
+The publisher VM retains both images' build closures so cached reference flakes
+can still export and evaluate their genuine image derivations.
 `checks.<system>.helper-source` exercises exact main-caller and completed
 required-job receipt authorization, including refusal of PR/manual/fork sources.
 `checks.<system>.helper-release` runs the registered archive/admission audit,

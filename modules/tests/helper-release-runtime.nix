@@ -42,7 +42,15 @@
         requiredFeatures.kvm = true;
         nodes = {
           publisher = { lib, ... }: {
-            virtualisation = { cores = 1; memorySize = 1024; diskSize = 8192; };
+            virtualisation = {
+              cores = 1;
+              memorySize = 1024;
+              diskSize = 8192;
+              # Retain build outputs referenced by the source flakes' genuine image derivations.
+              additionalPaths = [
+                (pkgs.closureInfo { rootPaths = [ imageA.drvPath imageB.drvPath ]; })
+              ];
+            };
             networking.firewall.allowedTCPPorts = [ 5000 ];
             environment.systemPackages = [ tool pkgs.git pkgs.nix pkgs.skopeo pkgs.openssl pkgs.curl pkgs.python3 pkgs.apacheHttpd ];
             nix.settings.experimental-features = [ "nix-command" "flakes" ];
