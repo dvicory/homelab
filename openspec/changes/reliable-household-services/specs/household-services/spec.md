@@ -32,11 +32,19 @@ The shared media writer group provides coarse filesystem write capability over a
 
 ### Requirement: Managed policy is reconstructible and bounded
 
-The selected configuration tool and external policy inputs SHALL identify their pinned versions and content provenance. Rebuilding managed configuration SHALL NOT silently follow newer upstream policy or require live upstream policy content. Declared Arr root records, profiles, scored formats and download clients SHALL have one native configuration owner; managed Prowlarr registrations SHALL NOT erase UI-owned applications. Reconciliation MAY remove undeclared Arr root records, but SHALL NOT remove media files or unrelated application accounts and records. Malformed policy or a rejected API write SHALL fail visibly rather than report successful repair. Policy reconciliation alone SHALL NOT initiate media search, upgrades or deletion.
+The selected configuration tool and external policy repositories SHALL identify pinned releases and immutable Git revisions. Rebuilding managed configuration SHALL NOT silently follow newer upstream policy. Configarr SHALL acquire those revisions through its native repository mechanism and reuse its disposable repository cache across Jobs; a missing cache MAY require live upstream access to fetch the same pinned content. Application identity and retained media state SHALL NOT depend on that cache. Declared Arr root records, profiles, scored formats and download clients SHALL have one native configuration owner; managed Prowlarr registrations SHALL NOT erase UI-owned applications. Reconciliation MAY remove undeclared Arr root records, but SHALL NOT remove media files or unrelated application accounts and records. Malformed policy or a rejected API write SHALL fail visibly rather than report successful repair. Policy reconciliation alone SHALL NOT initiate media search, upgrades or deletion.
 
 #### Scenario: Upstream policy changes
 - **WHEN** media policy is rebuilt after the upstream guide changes
 - **THEN** the selected release and inputs produce the declared configuration without adopting the newer guide
+
+#### Scenario: The disposable policy cache is absent
+- **WHEN** a new reconciliation has no cached policy repositories
+- **THEN** Configarr may fetch the declared immutable revisions again without replacing application identity, catalogue data or media files
+
+#### Scenario: A declared repository pin changes
+- **WHEN** either immutable repository revision changes while an older cache exists
+- **THEN** the native repository mechanism acquires the new declared revision without requiring operator cache deletion or using older content as a fallback
 
 #### Scenario: Reconciliation follows a user edit
 - **WHEN** a declared Arr root record changes while an unrelated Prowlarr application and media files exist

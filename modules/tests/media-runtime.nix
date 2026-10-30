@@ -42,6 +42,7 @@
         fileset = lib.fileset.unions [
           ./media-live-acceptance.py
           ../../generated/manifests/prod-home
+          ../../assets/media-policy
         ];
       };
       runner = pkgs.writeShellApplication {
