@@ -42,40 +42,12 @@
       policySource = builtins.fromJSON (
         builtins.readFile (inputs.self + "/assets/media-policy/source.json")
       );
-      pinnedInput = name: builtins.readFile (inputs.self + "/assets/media-policy/${name}");
-      requiredFormats = builtins.fromJSON (pinnedInput "required-formats.json");
-      profileData =
-        kind: key:
-        let
-          upstreamProfile =
-            file:
-            builtins.fromJSON (pinnedInput file)
-            // {
-              provenance = "${policySource.repository}/blob/${policySource.revision}/${policySource.files.${file}.upstream}";
-            };
-          adaptation = builtins.fromJSON (pinnedInput "hd-preferred.json");
-          overrides = adaptation.bases.${kind};
-          base = upstreamProfile overrides.file;
-          items = map (
-            item: item // { allowed = item.allowed || lib.elem item.name overrides.enable; }
-          ) base.items;
-          preferred = adaptation.preferredQualities;
-          profiles = {
-            hd-preferred = base // {
-              inherit (adaptation) name cutoff;
-              provenance = "Local hd-preferred.json adaptation of pinned ${kind} base recorded in source.json";
-              items =
-                map (name: lib.findFirst (item: item.name == name) null items) preferred
-                ++ lib.filter (item: !(lib.elem item.name preferred)) items;
-            };
-            web-1080p = upstreamProfile "${kind}-web-1080p.json";
-            remux-web-1080p = upstreamProfile "${kind}-remux-web-1080p.json";
-          };
-        in
-        profiles.${key};
-      profileFormats =
-        kind: key:
-        lib.unique (builtins.attrValues (profileData kind key).formatItems ++ requiredFormats.${kind}.default);
+      localPolicy = name: builtins.fromJSON (
+        builtins.readFile (inputs.self + "/assets/media-policy/${name}.json")
+      );
+      requiredFormats = localPolicy "required-formats";
+      preferredProfile = localPolicy "hd-preferred";
+      profileData = kind: key: policySource.profiles.${kind}.${key};
       routePrefix =
         route:
         if route == null || route.pathPrefix == "/" then "" else lib.removeSuffix "/" route.pathPrefix;
@@ -164,35 +136,6 @@
           apiSecretKey = fact.apiSecretKey;
         };
 
-      profileTemplate =
-        kind: keys:
-        let
-          render =
-            key:
-            let
-              profile = profileData kind key;
-              quality =
-                item:
-                "      - name: ${yaml item.name}\n"
-                + "        enabled: ${if item.allowed then "true" else "false"}\n"
-                + lib.optionalString (item ? items) "        qualities: ${yaml item.items}\n";
-            in
-            ''
-                # ${profile.provenance}
-                - name: ${yaml profile.name}
-                  upgrade:
-                    allowed: ${if profile.upgradeAllowed then "true" else "false"}
-                    until_quality: ${yaml profile.cutoff}
-                    until_score: ${toString profile.cutoffFormatScore}
-                    min_format_score: ${toString profile.minUpgradeFormatScore}
-                  min_format_score: ${toString profile.minFormatScore}
-              ${lib.optionalString (profile ? language) "    language: ${yaml profile.language}\n"}
-                  qualities:
-              ${lib.concatMapStrings quality profile.items}
-            '';
-        in
-        "quality_profiles:\n" + lib.concatMapStrings render keys;
-
       instanceYaml =
         {
           cluster,
@@ -215,7 +158,7 @@
               key:
               [
                 {
-                  trash_ids = profileFormats kind key;
+                  trash_ids = requiredFormats.${kind}.default;
                   assign_scores_to = [
                     {
                       name = (profileData kind key).name;
@@ -236,6 +179,26 @@
                 ];
               }
             ) cfg.qualityProfiles;
+            includes = map (key: {
+              template = (profileData kind key).id;
+              source = "TRASH";
+              trash_cfgroup_include_optional = false;
+              # Native required groups otherwise add audio/UHD/extra services.
+              trash_cfgroup_exclude_cfs = map (id: { inherit id; }) requiredFormats.${kind}.excludeNativeGroups;
+            }) cfg.qualityProfiles;
+            profiles = map (key: {
+              name = (profileData kind key).name;
+              # Native include merging otherwise resets unrelated UI scores.
+              reset_unmatched_scores.enabled = false;
+              upgrade.min_format_score = 1;
+            } // lib.optionalAttrs (key == "hd-preferred") preferredProfile) cfg.qualityProfiles;
+            renames = lib.concatMap (key:
+              let profile = profileData kind key;
+              in lib.optional (profile.name != profile.upstreamName) {
+                from = profile.upstreamName;
+                to = profile.name;
+              }
+            ) cfg.qualityProfiles;
           in
           ''
             ${yaml instanceName}:
@@ -243,8 +206,9 @@
               api_key: !env ${cfg.apiSecretKey}
               quality_definition:
                 type: ${if kind == "radarr" then "movie" else "series"}
-              include:
-                - template: ${yaml "media-${kind}-${instanceName}"}
+              include: ${yaml includes}
+              renameQualityProfiles: ${yaml renames}
+              quality_profiles: ${yaml profiles}
               custom_formats: ${yaml customFormats}
               root_folders:
                 - ${yaml cfg.root}
@@ -339,12 +303,10 @@
           ) applications;
         in
         ''
-          # Configarr v1.32.0: Git URLs refer to locally seeded, detached policy inputs.
-          trashGuideUrl: "file:///app/repos/trash-guides"
-          trashRevision: HEAD
-          recyclarrConfigUrl: "file:///app/repos/recyclarr-config"
-          recyclarrRevision: HEAD
-          localConfigTemplatesPath: "/app/templates"
+          trashGuideUrl: ${yaml policySource.repository}
+          trashRevision: ${yaml trashRevision}
+          recyclarrConfigUrl: ${yaml policySource.templateRepository}
+          recyclarrRevision: ${yaml policySource.templateRevision}
           telemetry: false
           sonarr:
           ${nestedInstances "sonarr"}
@@ -398,67 +360,7 @@
               port = apps.sabnzbd.port;
             };
           };
-          inherit trashRevision;
         };
-
-      templates =
-        cluster:
-        let
-          settings = cluster.settings.kubernetes.services.media;
-          make =
-            kind: instances:
-            lib.listToAttrs (
-              lib.mapAttrsToList (name: cfg: {
-                name = "media-${kind}-${name}.yml";
-                value = profileTemplate kind cfg.qualityProfiles;
-              }) instances
-            );
-        in
-        (make "radarr" settings.radarr) // (make "sonarr" settings.sonarr);
-
-      cfFiles = lib.filterAttrs (name: _: lib.hasInfix "-cf-" name) policySource.files;
-      trashInputs = {
-        "radarr-movie.json" = builtins.readFile (inputs.self + "/assets/media-policy/radarr-movie.json");
-        "sonarr-series.json" = builtins.readFile (inputs.self + "/assets/media-policy/sonarr-series.json");
-        "sonarr-anime.json" = builtins.readFile (inputs.self + "/assets/media-policy/sonarr-anime.json");
-        "conflicts.json" = builtins.readFile (inputs.self + "/assets/media-policy/conflicts.json");
-      }
-      // lib.mapAttrs (name: _: pinnedInput name) cfFiles;
-
-      seedPolicy = ''
-        set -eu
-        for repo in trash-guides recyclarr-config; do
-          root="/app/repos/$repo"
-          rm -rf "$root"
-          mkdir -p "$root"
-        done
-        trash="/app/repos/trash-guides/docs/json"
-        for app in radarr sonarr; do
-          for directory in cf cf-groups naming quality-profiles quality-size; do
-            mkdir -p "$trash/$app/$directory"
-          done
-          for directory in custom-formats quality-definitions quality-profiles; do
-            mkdir -p "/app/repos/recyclarr-config/$app/includes/$directory"
-          done
-        done
-        cp /seed/radarr-movie.json "$trash/radarr/quality-size/movie.json"
-        cp /seed/sonarr-series.json "$trash/sonarr/quality-size/series.json"
-        cp /seed/sonarr-anime.json "$trash/sonarr/quality-size/anime.json"
-        cp /seed/conflicts.json "$trash/radarr/conflicts.json"
-        cp /seed/conflicts.json "$trash/sonarr/conflicts.json"
-        ${lib.concatMapStringsSep "\n" (
-          name: "cp /seed/${name} /app/repos/trash-guides/${cfFiles.${name}.upstream}"
-        ) (builtins.attrNames cfFiles)}
-        printf '%s\n' '${trashRevision}' > /app/repos/trash-guides/TRASH-GUIDES-REVISION
-        for repo in trash-guides recyclarr-config; do
-          git -C "/app/repos/$repo" init -q
-          git -C "/app/repos/$repo" config user.email "media-policy@localhost"
-          git -C "/app/repos/$repo" config user.name "media-policy"
-          git -C "/app/repos/$repo" add .
-          git -C "/app/repos/$repo" commit --allow-empty -qm "Pinned offline media policy inputs"
-          git -C "/app/repos/$repo" checkout --detach -q HEAD
-        done
-      '';
 
       secretEnv = secretName: key: {
         name = key;
@@ -587,9 +489,7 @@
       configurationData = {
         "config.yml" = configarrConfig cluster;
         "seerr.json" = generatedPolicy.seerr;
-        "trash-guide-revision" = generatedPolicy.trashRevision;
       };
-      templateFiles = templates cluster;
       seerrJob = bootstrap: baseJob {
         name = "media-config-seerr";
         image = images.node;
@@ -772,41 +672,6 @@
                   };
                 };
               }
-              {
-                name = "seed-policy";
-                image = images.configarr;
-                command = [
-                  "/bin/sh"
-                  "-ec"
-                  seedPolicy
-                ];
-                securityContext = {
-                  allowPrivilegeEscalation = false;
-                  readOnlyRootFilesystem = true;
-                  capabilities.drop = [ "ALL" ];
-                };
-                resources = {
-                  requests = {
-                    cpu = "10m";
-                    memory = "32Mi";
-                  };
-                  limits = {
-                    cpu = "250m";
-                    memory = "128Mi";
-                  };
-                };
-                volumeMounts = [
-                  {
-                    name = "policy-inputs";
-                    mountPath = "/seed";
-                    readOnly = true;
-                  }
-                  {
-                    name = "repos";
-                    mountPath = "/app/repos";
-                  }
-                ];
-              }
             ];
             containers = [
               {
@@ -840,7 +705,7 @@
                   }
                   {
                     name = "CUSTOM_REPO_ROOT";
-                    value = "/app/repos";
+                    value = "/coordination/configarr-repos/${trashRevision}-${policySource.templateRevision}";
                   }
                   {
                     name = "STOP_ON_ERROR";
@@ -888,15 +753,6 @@
                     readOnly = true;
                   }
                   {
-                    name = "templates";
-                    mountPath = "/app/templates";
-                    readOnly = true;
-                  }
-                  {
-                    name = "repos";
-                    mountPath = "/app/repos";
-                  }
-                  {
                     name = "coordination";
                     mountPath = "/coordination";
                   }
@@ -919,22 +775,6 @@
                     }
                   ];
                 };
-              }
-              {
-                name = "templates";
-                configMap = {
-                  name = "media-configarr-templates";
-                };
-              }
-              {
-                name = "policy-inputs";
-                configMap = {
-                  name = "media-configarr-inputs";
-                };
-              }
-              {
-                name = "repos";
-                emptyDir = { };
               }
             ];
           };
@@ -971,24 +811,6 @@
           data = configurationData // {
             "seerr.mjs" = seerrScript;
           };
-        }
-        {
-          apiVersion = "v1";
-          kind = "ConfigMap";
-          metadata = {
-            name = "media-configarr-templates";
-            namespace = "media";
-          };
-          data = templateFiles;
-        }
-        {
-          apiVersion = "v1";
-          kind = "ConfigMap";
-          metadata = {
-            name = "media-configarr-inputs";
-            namespace = "media";
-          };
-          data = trashInputs;
         }
       ];
       seerrScript = builtins.readFile ./seerr.mjs;

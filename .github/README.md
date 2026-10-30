@@ -129,6 +129,9 @@ that must pass for every rendered resource and the scenarios that must fail.
 The inputs derivation turns them into native Tests whose resources come from
 the genuine renders, changed only by a small `yq` mutation. Tests retain exact
 rule/resource outcomes; missing coverage, skips and evaluation errors fail.
+Target existing volumes and mounts by name, not their array positions, so a
+workload layout change cannot create malformed fixture entries. A malformed
+mutation is not a successful policy denial.
 Policy, fixture and generated Test loading rejects duplicate YAML mapping keys,
 including keys inside merge sources, before generating expected outcomes.
 Valid merge overrides and aliases remain supported.
@@ -218,12 +221,19 @@ delivery without changing prior state, and succeeds again after repair.
 Host checks retain mount/ID-map/filesystem/firewall/service-delivery evidence;
 no Kubernetes-only replacement justifies removing that coverage.
 
-`media-live-acceptance` executes the unchanged pinned native media suite on the
+`media-live-acceptance` executes the pinned native media suite on the
 hosted Docker daemon, using the packaged runner's exact source/manifests/policy
-inputs rather than the invoking checkout. It proves actual libraries,
-profiles/scores, wrong credentials/configuration and denied access, stable
-managed identities, preserved unmanaged video bytes, Seerr first-owner and
-steady-state boundaries, serialized producer entry points and owned cleanup.
+inputs rather than the invoking checkout. Only Configarr joins an additional
+owned egress network for native pinned repository acquisition; all application
+services remain on the internal network. The suite checks the native Git
+revisions, cache reuse across successive Jobs, a warm internal-only run and
+an actual template-pin change from a shallow A-only upstream cache with B
+demonstrably absent, into B's native namespace without deleting the older cache.
+It checks
+actual libraries, profiles/scores, wrong credentials/configuration and denied
+access, stable managed identities, preserved unmanaged video bytes, Seerr
+first-owner and steady-state boundaries, serialized producer entry points and
+independent owned cleanup of both networks.
 It does not prove Kubernetes RBAC or host mount propagation. Required
 `compute-guest-upgrade`, `prod-home-replacement` and
 `prod-home-consumer-resilience` separately retain existing guest activation,

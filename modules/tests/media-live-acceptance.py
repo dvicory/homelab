@@ -176,30 +176,41 @@ def specifications(items):
                   for item in items)
 
 
-def profile_expectations(configuration, templates, formats, app, instance):
+def profile_expectations(configuration, upstream, formats, definitions, app, instance):
     class ConfigarrLoader(yaml.SafeLoader):
         pass
 
     ConfigarrLoader.add_constructor("!env", lambda loader, node: loader.construct_scalar(node))
     source = yaml.load(configuration, Loader=ConfigarrLoader)[app][instance]
+    renames = {item["from"]: item["to"] for item in source.get("renameQualityProfiles", [])}
+    overrides = {item["name"]: item for item in source["quality_profiles"]}
     profiles = {}
     for include in source["include"]:
-        for item in yaml.safe_load(templates[include["template"] + ".yml"])["quality_profiles"]:
-            upgrade = item["upgrade"]
-            profiles[item["name"]] = {
-                "name": item["name"],
-                "upgradeAllowed": upgrade["allowed"],
-                "cutoff": upgrade["until_quality"],
-                "minFormatScore": item["min_format_score"],
-                "cutoffFormatScore": upgrade["until_score"],
-                "minUpgradeFormatScore": upgrade["min_format_score"],
-                "items": [
-                    {"name": quality["name"], "allowed": quality["enabled"], "items": quality.get("qualities", [])}
-                    for quality in item["qualities"]
-                ],
-                "formatScores": {},
-                **({"language": item["language"]} if "language" in item else {}),
-            }
+        item = upstream[include["template"]]
+        name = renames.get(item["name"], item["name"])
+        override = overrides[name]
+        qualities = override.get("qualities", [
+            {"name": quality["name"], "qualities": quality.get("items", [])}
+            for quality in item["items"] if quality["allowed"]
+        ])
+        configured = {leaf for quality in qualities for leaf in quality.get("qualities") or [quality["name"]]}
+        profiles[name] = {
+            "name": name,
+            "upgradeAllowed": item["upgradeAllowed"],
+            "cutoff": override["upgrade"].get("until_quality", item["cutoff"]),
+            "minFormatScore": item["minFormatScore"],
+            "cutoffFormatScore": item["cutoffFormatScore"],
+            "minUpgradeFormatScore": override["upgrade"]["min_format_score"],
+            "items": [
+                {"name": quality["name"], "allowed": quality.get("enabled", True), "items": quality.get("qualities", [])}
+                for quality in qualities
+            ] + [
+                {"name": quality["quality"]["name"], "allowed": False, "items": []}
+                for quality in definitions if quality["quality"]["name"] not in configured
+            ],
+            "formatScores": {trash_id: formats[trash_id]["trash_scores"]["default"] for trash_id in item["formatItems"].values()},
+            **({"language": item["language"]} if "language" in item else {}),
+        }
     for group in source["custom_formats"]:
         for assignment in group["assign_scores_to"]:
             for trash_id in group["trash_ids"]:
@@ -416,11 +427,8 @@ def main():
     require(tuple(map(int, server["ApiVersion"].split("."))) >= (1, 45), "Docker API 1.45+ is required for Linux volume subpaths")
     cm = manifest("media-configuration", "ConfigMap-media-configuration.yaml")["data"]
     policy = json.loads(cm["seerr.json"])
-    templates = manifest("media-configuration", "ConfigMap-media-configarr-templates.yaml")["data"]
-    inputs = manifest("media-configuration", "ConfigMap-media-configarr-inputs.yaml")["data"]
     configarr_pod = pod("media-configuration", "Job-media-configarr.yaml")
     configarr = one(configarr_pod["containers"], "name", "configarr")
-    seed = one(configarr_pod["initContainers"], "name", "seed-policy")
     periodic_configarr_pod = manifest("media-configuration", "CronJob-media-configarr.yaml")["spec"]["jobTemplate"]["spec"]["template"]["spec"]
     periodic_configarr = one(periodic_configarr_pod["containers"], "name", "configarr")
     seerr_phases = json.loads(args.seerr_phases.read_text())
@@ -447,11 +455,14 @@ def main():
     for app in ("sonarr", "sabnzbd"):
         require(identities[app][2] == [media_gid], "shared media group declarations differ")
     require(identities["jellyfin"][2] == [media_gid, 506], "Jellyfin holds media and its gpu-render accelerator grant")
-    expected_formats = {app: {value["trash_id"]: value for name, text in inputs.items() if name.startswith(app + "-cf-") for value in [json.loads(text)]} for app in ("radarr", "sonarr")}
-    expected_profiles = {
-        app: profile_expectations(cm["config.yml"], templates, expected_formats[app], app, policy["arr"][app]["standard"]["name"])
-        for app in ("radarr", "sonarr")
-    }
+    policy_source = json.loads((ROOT / "assets/media-policy/source.json").read_text())
+    required_formats = json.loads((ROOT / "assets/media-policy/required-formats.json").read_text())
+    cache_root = one(configarr["env"], "name", "CUSTOM_REPO_ROOT")["value"]
+    # Immutable parent of the compatible template pin; that commit changes only
+    # a CI action, so both revisions retain the native legacy includes layout.
+    # https://github.com/recyclarr/config-templates/commit/4ae377bb704fc7fd69a544ad04e91357e0b09f62
+    previous_template_revision = "86bed2fded1acbe364e165c1d7d60be0d5473e63"
+    previous_cache_root = cache_root.replace(policy_source["templateRevision"], previous_template_revision)
     libraries = json.loads(manifest("jellyfin-configuration", "ConfigMap-jellarr-configuration.yaml")["data"]["config.yml"])["library"]["virtualFolders"]
     keys = {app: secrets.token_hex(32) for app in ("radarr", "sonarr", "prowlarr", "seerr")}
     sab_init = pods["sabnzbd"]["initContainers"][0]["command"][-1]
@@ -470,13 +481,17 @@ def main():
         runtime.setdefault(name, "synthetic-provider-credential")
     network = "homelab-media-live-" + secrets.token_hex(6)
     volume = network + "-fixture"
+    source_network = network + "-sources"
     owned_containers = []
-    network_created = volume_created = False
+    network_created = source_network_created = volume_created = False
     with tempfile.TemporaryDirectory(prefix=network + "-", dir=Path.home()) as directory:
         root = Path(directory)
         try:
             network_created = True
             docker("network", "create", "--internal", network)
+            source_network_created = True
+            docker("network", "create", source_network)
+            require(json.loads(docker("network", "inspect", network))[0]["Internal"], "application network is not internal")
             volume_created = True
             docker("volume", "create", volume)
             def security_options(pod_spec, container):
@@ -546,7 +561,7 @@ for name in s['directories'] + ['library/movies-ui', 'downloads/usenet/incomplet
         if p == root: break
         os.chown(p, 0, s['media_gid']); p.chmod(0o2770)
 private = data / 'private'; private.mkdir(); os.chown(private, 0, 999); private.chmod(0o700)
-for name in ['config', 'templates', 'seed', 'repos', 'seerr-inputs', 'secrets', 'kube']:
+for name in ['config', 'seerr-inputs', 'secrets', 'kube']:
     p = root / name; p.mkdir(); os.chown(p, 1000, 1000); p.chmod(0o755)
 coordination = root / 'coordination'; coordination.mkdir(); os.chown(coordination, 1000, 1000); coordination.chmod(0o700)
 for name in ['seerr-drift-inputs', 'seerr-failure-secrets']:
@@ -561,11 +576,8 @@ for name in ['seerr-drift-inputs', 'seerr-failure-secrets']:
 
             copy_text("config/config.yml", cm["config.yml"])
             copy_text("config/invalid.yml", "radarr: [broken\n")
-            for name, text in templates.items():
-                copy_text("templates/" + name, text)
-            for name, text in inputs.items():
-                copy_text("seed/" + name, text)
-            run("seed", seed["image"], *security_options(configarr_pod, seed), *mount("seed", "/seed", True), *mount("repos", "/app/repos"), argv=tuple(seed["command"]))
+            copy_text("config/previous-pin.yml", cm["config.yml"].replace(
+                policy_source["templateRevision"], previous_template_revision))
             ports, containers = {}, {}
 
             def start(app, port, restart=False):
@@ -633,12 +645,14 @@ for name in ['seerr-drift-inputs', 'seerr-failure-secrets']:
                 daemon_identity(docker, containers[app], "Radarr" if app == "radarr" else "Sonarr", identities[app])
                 ui_profile = deepcopy(call("/qualityprofile")[0]); ui_profile.pop("id"); ui_profile["name"] = "UI-owned profile"
                 unmanaged_profiles[app] = call("/qualityprofile", "POST", ui_profile)
-                ui_format = deepcopy(next(iter(expected_formats[app].values())))
-                ui_format = {key: value for key, value in ui_format.items() if key in ("name", "includeCustomFormatWhenRenaming", "specifications")}
-                ui_format["name"] = "UI-owned custom format"
-                for item in ui_format["specifications"]:
-                    item["fields"] = [{"name": key, "value": value} for key, value in item["fields"].items()]
-                unmanaged_formats[app] = call("/customformat", "POST", ui_format)
+                unmanaged_formats[app] = call("/customformat", "POST", {
+                    "name": "UI-owned custom format", "includeCustomFormatWhenRenaming": False,
+                    "specifications": [{
+                        "name": "UI-owned match", "implementation": "ReleaseTitleSpecification",
+                        "negate": False, "required": False,
+                        "fields": [{"name": "value", "value": "NEVERMATCHUI"}],
+                    }],
+                })
             api("radarr", "/rootfolder", "POST", {"path": "/data/library/movies-ui"})
 
             def initialize_sab(name):
@@ -689,7 +703,7 @@ with open('/fixture/coordination/' + sys.argv[1] + '.lock', 'r') as lock:
                 argv=("node", "-e", "setInterval(() => {}, 1000)"), detached=True,
             )
             sequence = 0
-            def reconcile_configarr(failure=False, overrides=None, periodic=False, detached=False):
+            def reconcile_configarr(failure=False, overrides=None, periodic=False, detached=False, fetch=True):
                 nonlocal sequence
                 sequence += 1
                 source_pod = periodic_configarr_pod if periodic else configarr_pod
@@ -697,8 +711,8 @@ with open('/fixture/coordination/' + sys.argv[1] + '.lock', 'r') as lock:
                 environment = {item["name"]: item.get("value", runtime.get(item.get("valueFrom", {}).get("secretKeyRef", {}).get("key"))) for item in source["env"]}
                 environment.update(overrides or {})
                 return run("configarr-" + str(sequence), source["image"], *security_options(source_pod, source),
-                           *mount("config", "/app/config", True), *mount("templates", "/app/templates", True),
-                           *mount("repos", "/app/repos"), *mount("coordination", "/coordination"),
+                           *mount("config", "/app/config", True), *mount("coordination", "/coordination"),
+                           *(("--network", source_network) if fetch else ()),
                            "--entrypoint", source["command"][0], argv=tuple(source["command"][1:]),
                            environment=environment, failure=failure, detached=detached)
 
@@ -706,6 +720,9 @@ with open('/fixture/coordination/' + sys.argv[1] + '.lock', 'r') as lock:
                 desired = policy["arr"][app]["standard"]
                 call = lambda path: api(app, path)
                 require([item["path"] for item in call("/rootfolder")] == [desired["root"]], "native managed root folders differ")
+                require({item["name"] for item in call("/customformat")} ==
+                        {item["name"] for item in expected_formats[app].values()} | {"UI-owned custom format"},
+                        "native CF groups added or removed an unapproved format")
                 for profile in expected_profiles[app].values():
                     verify_profile(call, profile, expected_formats[app])
                 verify_hd_menu(call, app)
@@ -803,7 +820,80 @@ for index in range(int(sys.argv[2])):
                 require(hashlib.sha256(jellyfin(stream_path, key=owner_token, binary=True)).digest() == preserved_digest, "Jellyfin daemon cannot serve preserved unmanaged media")
 
             reconcile_configarr(failure=True, overrides={"CONFIG_LOCATION": "/app/config/invalid.yml"})
+            # Read native Git state and upstream inputs, not the policy Configarr
+            # happened to persist in Arr. Both repositories must be the pinned SHAs.
+            def cache_state(repository_root=cache_root):
+                return json.loads(docker("exec", keeper, "/lsiopy/bin/python", "-c", '''
+import json, sys
+from pathlib import Path
+root = Path('/fixture' + sys.argv[1])
+print(json.dumps({name: {'head': (root / name / '.git/HEAD').read_text().strip()}
+                  for name in ['trash-guides', 'recyclarr-config']}))
+''', repository_root))
+            # A genuine shallow A-only upstream cache must lack B, even though
+            # a full clone made today would already contain both commits.
+            run("previous-policy-cache", configarr["image"], *security_options(configarr_pod, configarr),
+                *mount("coordination", "/coordination"), "--network", source_network,
+                "--entrypoint", "/bin/sh", argv=("-ec", '''
+set -eu
+repo="$1/recyclarr-config"
+git init -q "$repo"
+git -C "$repo" remote add origin "$2"
+git -C "$repo" fetch --quiet --depth=1 origin "$3"
+git -C "$repo" checkout --quiet --detach FETCH_HEAD
+test "$(git -C "$repo" rev-parse HEAD)" = "$3"
+test "$(git -C "$repo" rev-parse --is-shallow-repository)" = true
+test "$(printf '%s\\n' "$4" | GIT_NO_LAZY_FETCH=1 git -C "$repo" cat-file --batch-check)" = "$4 missing"
+''', "previous-policy-cache", previous_cache_root, policy_source["templateRepository"],
+                previous_template_revision, policy_source["templateRevision"]))
+            # Populate a real older pin pair first. Switching to the production
+            # pair must succeed natively without deleting or rewriting that cache.
+            reconcile_configarr(overrides={
+                "CONFIG_LOCATION": "/app/config/previous-pin.yml",
+                "CUSTOM_REPO_ROOT": previous_cache_root,
+            })
+            previous_cache = cache_state(previous_cache_root)
+            require(previous_cache["trash-guides"]["head"] == policy_source["revision"], "previous native guide pin differs")
+            require(previous_cache["recyclarr-config"]["head"] == previous_template_revision, "previous native template pin differs")
+            run("previous-pin-missing", configarr["image"], *security_options(configarr_pod, configarr),
+                *mount("coordination", "/coordination", True), "--entrypoint", "/bin/sh",
+                argv=("-ec", '''
+set -eu
+repo="$1/recyclarr-config"
+test "$(git -C "$repo" rev-parse --is-shallow-repository)" = true
+test "$(printf '%s\\n' "$2" | GIT_NO_LAZY_FETCH=1 git -C "$repo" cat-file --batch-check)" = "$2 missing"
+''', "previous-pin-missing", previous_cache_root, policy_source["templateRevision"]))
+            previous_policy = arr_snapshot()
             reconcile_configarr()
+            require(cache_state(previous_cache_root) == previous_cache, "pin change altered the older native cache")
+            require(arr_snapshot() == previous_policy, "native pin change altered application identities or data")
+            cold_cache = cache_state()
+            require(cold_cache["trash-guides"]["head"] == policy_source["revision"], "native TRaSH checkout is not pinned")
+            require(cold_cache["recyclarr-config"]["head"] == policy_source["templateRevision"], "native template checkout is not pinned")
+            upstream = json.loads(docker("exec", keeper, "/lsiopy/bin/python", "-c", '''
+import json, sys
+from pathlib import Path
+source, required = json.loads(sys.argv[1]), json.loads(sys.argv[2])
+root = Path('/fixture' + sys.argv[3]) / 'trash-guides/docs/json'
+result = {}
+for app in ['radarr', 'sonarr']:
+    profiles = {value['trash_id']: value for path in (root / app / 'quality-profiles').glob('*.json')
+                for value in [json.loads(path.read_text())]
+                if value['trash_id'] in {item['id'] for item in source['profiles'][app].values()}}
+    ids = set(required[app]['default'] + required[app]['zero'])
+    ids.update(trash_id for profile in profiles.values() for trash_id in profile['formatItems'].values())
+    formats = {value['trash_id']: value for path in (root / app / 'cf').glob('*.json')
+               for value in [json.loads(path.read_text())] if value['trash_id'] in ids}
+    assert set(formats) == ids
+    result[app] = {'profiles': profiles, 'formats': formats}
+print(json.dumps(result))
+''', json.dumps(policy_source), json.dumps(required_formats), cache_root))
+            expected_formats = {app: values["formats"] for app, values in upstream.items()}
+            expected_profiles = {
+                app: profile_expectations(cm["config.yml"], upstream[app]["profiles"], expected_formats[app],
+                                          api(app, "/qualitydefinition"), app, policy["arr"][app]["standard"]["name"])
+                for app in ("radarr", "sonarr")
+            }
             for app in ("radarr", "sonarr"):
                 verify_arr(app)
             verify_prowlarr()
@@ -821,7 +911,10 @@ for index in range(int(sys.argv[2])):
                         "native UI-owned profile did not retain its independent shared-format scores")
             baseline = arr_snapshot()
             prowlarr_ids = {item["name"]: item["id"] for item in api("prowlarr", "/applications")}
-            reconcile_configarr()
+            # A different ordinary Job reuses the same cache with no source-network
+            # attachment: a warm detached pin must not need another repository clone.
+            reconcile_configarr(periodic=True, fetch=False)
+            require(cache_state() == cold_cache, "warm internal-only Job changed pinned repository revisions")
             require(arr_snapshot() == baseline, "second reconcile changed native Arr identities/state")
             verify_prowlarr()
             require({item["name"]: item["id"] for item in api("prowlarr", "/applications")} == prowlarr_ids, "second reconcile changed Prowlarr identities")
@@ -1184,7 +1277,8 @@ console.log(queued);''', waiter_pid)
             first_error = sys.exc_info()[1]
             errors = []
             resources = [("container", name, True) for name in reversed(owned_containers)]
-            resources += [("network", network, network_created), ("volume", volume, volume_created)]
+            resources += [("network", network, network_created), ("network", source_network, source_network_created),
+                          ("volume", volume, volume_created)]
             for kind, name, attempted in resources:
                 if not attempted:
                     continue
@@ -1200,7 +1294,7 @@ console.log(queued);''', waiter_pid)
             try:
                 remaining = docker("container", "ls", "--all", "--filter", "name=" + network + "-", "--format", "{{.Names}}")
                 require(not remaining, "owned containers remain after cleanup")
-                for kind, name in (("network", network), ("volume", volume)):
+                for kind, name in (("network", network), ("network", source_network), ("volume", volume)):
                     remaining = docker(kind, "ls", "--filter", "name=" + name, "--format", "{{.Name}}")
                     require(name not in remaining.splitlines(), "owned " + kind + " remains after cleanup")
             except (AssertionError, OSError, subprocess.TimeoutExpired) as error:

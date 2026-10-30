@@ -1,36 +1,14 @@
 {
-  "name": "HD Preferred",
-  "cutoff": "Bluray-1080p",
-  "preferredQualities": [
-    "Bluray-1080p",
-    "WEB 1080p",
-    "HDTV-1080p",
-    "Bluray-720p",
-    "WEB 720p",
-    "HDTV-720p",
-    "WEB 480p",
-    "DVD",
-    "SDTV"
-  ],
-  "bases": {
-    "radarr": {
-      "file": "radarr-hd-bluray-web.json",
-      "enable": [
-        "HDTV-1080p",
-        "WEB 720p",
-        "HDTV-720p",
-        "WEB 480p",
-        "DVD",
-        "SDTV"
-      ]
-    },
-    "sonarr": {
-      "file": "sonarr-web-1080p-alternative.json",
-      "enable": [
-        "WEB 480p",
-        "DVD",
-        "SDTV"
-      ]
-    }
-  }
+  "upgrade": { "until_quality": "Bluray-1080p", "min_format_score": 1 },
+  "qualities": [
+    { "name": "Bluray-1080p" },
+    { "name": "WEB 1080p", "qualities": ["WEBRip-1080p", "WEBDL-1080p"] },
+    { "name": "HDTV-1080p" },
+    { "name": "Bluray-720p" },
+    { "name": "WEB 720p", "qualities": ["WEBRip-720p", "WEBDL-720p"] },
+    { "name": "HDTV-720p" },
+    { "name": "WEB 480p", "qualities": ["WEBRip-480p", "WEBDL-480p"] },
+    { "name": "DVD" },
+    { "name": "SDTV" }
+  ]
 }

@@ -1226,11 +1226,11 @@ scenarios:
   fail: [media-configuration-state]
 - name: media-job-configarr-coordination-wrong-mount
   base: batch/v1/Job/media/media-configarr
-  mutate: .spec.template.spec.containers[0].volumeMounts[3].mountPath = "/private-state"
+  mutate: (.spec.template.spec.containers[0].volumeMounts[] | select(.name == "coordination") | .mountPath) = "/private-state"
   fail: [media-configuration-state]
 - name: media-job-configarr-coordination-read-only
   base: batch/v1/Job/media/media-configarr
-  mutate: .spec.template.spec.containers[0].volumeMounts[3].readOnly = true
+  mutate: (.spec.template.spec.containers[0].volumeMounts[] | select(.name == "coordination") | .readOnly) = true
   fail: [media-configuration-state]
 - name: media-job-configarr-coordination-init-container
   base: batch/v1/Job/media/media-configarr
@@ -1288,11 +1288,11 @@ scenarios:
   fail: [media-configuration-state]
 - name: media-cronjob-configarr-coordination-wrong-mount
   base: batch/v1/CronJob/media/media-configarr
-  mutate: .spec.jobTemplate.spec.template.spec.containers[0].volumeMounts[3].mountPath = "/private-state"
+  mutate: (.spec.jobTemplate.spec.template.spec.containers[0].volumeMounts[] | select(.name == "coordination") | .mountPath) = "/private-state"
   fail: [media-configuration-state]
 - name: media-cronjob-configarr-coordination-read-only
   base: batch/v1/CronJob/media/media-configarr
-  mutate: .spec.jobTemplate.spec.template.spec.containers[0].volumeMounts[3].readOnly = true
+  mutate: (.spec.jobTemplate.spec.template.spec.containers[0].volumeMounts[] | select(.name == "coordination") | .readOnly) = true
   fail: [media-configuration-state]
 - name: media-cronjob-configarr-coordination-init-container
   base: batch/v1/CronJob/media/media-configarr

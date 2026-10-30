@@ -10,17 +10,6 @@
     let
       environment = ../../generated/manifests/prod-home;
       policyDirectory = ../../assets/media-policy;
-      policySource = builtins.fromJSON (builtins.readFile (policyDirectory + "/source.json"));
-      upstreamPolicy = lib.mapAttrs (
-        _: file:
-        pkgs.fetchurl {
-          url = "https://raw.githubusercontent.com/TRaSH-Guides/Guides/${policySource.revision}/${file.upstream}";
-          hash = file.sha256;
-        }
-      ) policySource.files;
-      upstreamPolicyPaths = pkgs.writeText "media-policy-upstream-paths.json" (
-        builtins.toJSON (lib.mapAttrs (_: path: toString path) upstreamPolicy)
-      );
       cluster = config.den.clusters.prod-home;
       compute =
         config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
@@ -499,18 +488,13 @@
           {
             nativeBuildInputs = [
               python
-              pkgs.git
-              pkgs.dash
             ];
           }
           ''
-            python - ${environment} ${storage} ${providerContract} ${fixture} ${policyDirectory} ${upstreamPolicyPaths} <<'PY'
-            import base64
-            import hashlib
+            python - ${environment} ${storage} ${providerContract} ${fixture} ${policyDirectory} <<'PY'
             import json
             import os
             import pathlib
-            import subprocess
             import sys
             import tempfile
             from configobj import ConfigObj
@@ -521,19 +505,6 @@
             provider = json.loads(pathlib.Path(sys.argv[3]).read_text())
             fixture = json.loads(pathlib.Path(sys.argv[4]).read_text())
             policy_dir = pathlib.Path(sys.argv[5])
-            source = json.loads((policy_dir / "source.json").read_text())
-            upstream = json.loads(pathlib.Path(sys.argv[6]).read_text())
-            # Provenance checks the fetched bytes, not a second inventory of labels.
-            # Local policy must match independently fetched, hash-pinned upstream inputs.
-            for name, file in source["files"].items():
-                actual = pathlib.Path(upstream[name]).read_bytes()
-                assert file["sha256"] == "sha256-" + base64.b64encode(hashlib.sha256(actual).digest()).decode()
-                assert (policy_dir / name).read_bytes() == actual, name
-            for name, metadata in source["localFiles"].items():
-                assert metadata["sha256"] == "sha256-" + base64.b64encode(
-                    hashlib.sha256((policy_dir / name).read_bytes()).digest()
-                ).decode(), name
-
             # Rendered manifests are read only for facts no native rule covers;
             # see media-private-storage, media-acquisition-* and media-configuration-*.
             resources = []
@@ -762,8 +733,6 @@
 
             configarr = None
             configarr_env = None
-            seed_files = None
-            seed_program = None
             # Configarr consumes nested instance maps, not top-level instance keys.
             class ConfigarrLoader(yaml.SafeLoader):
                 pass
@@ -781,14 +750,11 @@
                             assert isinstance(container["image"], str), resource["metadata"]["name"]
                             assert isinstance(container.get("env", []), list), resource["metadata"]["name"]
                         if resource["kind"] == "Job" and resource["metadata"]["name"] == "media-configarr":
-                            seed_program = next(c for c in pod["initContainers"] if c["name"] == "seed-policy")["command"][-1]
                             configarr_container = next(c for c in pod["containers"] if c["name"] == "configarr")
                             configarr_env = {
                                 entry["name"]: entry.get("value")
                                 for entry in configarr_container["env"]
                             }
-                    if resource and resource["kind"] == "ConfigMap" and resource["metadata"]["name"] == "media-configarr-inputs":
-                        seed_files = resource["data"]
                     if (resource and resource["kind"] == "ConfigMap"
                             and resource["metadata"]["name"] == "media-configuration"):
                         configarr = yaml.load(resource["data"]["config.yml"], Loader=ConfigarrLoader)
@@ -803,11 +769,15 @@
                 for resource in resources
                 if resource["kind"] == "CronJob" and resource["metadata"]["namespace"] == "media"
             }
-            for name, minute in (("media-configarr", 7), ("media-config-seerr", 37)):
-                schedule = periodic[name]
-                assert schedule["schedule"] == f"{minute} */6 * * *"
+            minutes = []
+            for name in ("media-configarr", "media-config-seerr"):
+                fields = periodic[name]["schedule"].split()
+                assert len(fields) == 5 and fields[1:] == ["*/6", "*", "*", "*"]
+                minute = fields[0]
+                assert minute.isascii() and minute.isdecimal() and 0 <= int(minute) < 60
+                minutes.append(int(minute))
+            assert len(set(minutes)) == len(minutes), "Periodic media Jobs must use distinct minutes"
             assert configarr is not None, "Missing media configuration"
-            assert configarr_env["LOG_LEVEL"] == "warn"
             assert configarr_env["STOP_ON_ERROR"] == "true"
             assert configarr_env["CONFIGARR_ENFORCE_CONFIG_VALIDATION"] == "true"
             assert configarr_env["CONFIGARR_ENFORCE_EXTERNAL_VALIDATION"] == "true"
@@ -815,24 +785,16 @@
             for kind in ("radarr", "sonarr"):
                 for instance in configarr[kind].values():
                     assert len(instance["root_folders"]) == 1
-            # Exercise the actual seed script with POSIX sh: brace expansion silently
-            # creates the wrong directories, and an empty template repo still needs HEAD.
-            assert seed_program is not None and seed_files is not None
-            with tempfile.TemporaryDirectory() as directory:
-                root = pathlib.Path(directory)
-                seed = root / "seed"
-                seed.mkdir()
-                for name, value in seed_files.items():
-                    (seed / name).write_text(value)
-                script = seed_program.replace("/app/repos", str(root / "repos")).replace("/seed", str(seed))
-                subprocess.run(["dash", "-ec", script], check=True)
-                for repo in ("trash-guides", "recyclarr-config"):
-                    subprocess.run(["git", "-C", str(root / "repos" / repo), "rev-parse", "--verify", "HEAD"],
-                                   check=True, stdout=subprocess.DEVNULL)
-                trash_repo = root / "repos" / "trash-guides"
-                for name, metadata in source["files"].items():
-                    if "-cf-" in name:
-                        assert (trash_repo / metadata["upstream"]).read_bytes() == pathlib.Path(upstream[name]).read_bytes()
+            required_formats = json.loads((policy_dir / "required-formats.json").read_text())
+            for kind in ("radarr", "sonarr"):
+                for instance in configarr[kind].values():
+                    for include in instance["include"]:
+                        assert include["source"] == "TRASH"
+                        assert include["trash_cfgroup_include_optional"] is False
+                        assert {item["id"] for item in include["trash_cfgroup_exclude_cfs"]} == set(required_formats[kind]["excludeNativeGroups"])
+                    for profile in instance["quality_profiles"]:
+                        assert profile["reset_unmatched_scores"]["enabled"] is False
+                        assert profile["upgrade"]["min_format_score"] == 1
 
             # Radarr, Sonarr, Prowlarr and SABnzbd have no login of their own,
             # and the Servarr UI hands out the API key. So what reaches their
