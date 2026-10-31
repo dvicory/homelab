@@ -213,7 +213,8 @@ in
                 )
               )
             },
-            'inet_exposure': '4', 'permissions': '770',
+            # Preserve shared media-group inheritance on download directories.
+            'inet_exposure': '4', 'permissions': '2770',
             'download_dir': '/data/downloads/usenet/incomplete',
             'complete_dir': '/data/downloads/usenet/complete',
         })
