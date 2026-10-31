@@ -1,0 +1,128 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    app.kubernetes.io/controller: main
+    app.kubernetes.io/instance: homarr
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: homarr
+    helm.sh/chart: app-template-5.1.0
+  name: homarr
+  namespace: portal
+spec:
+  podManagementPolicy: OrderedReady
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/controller: main
+      app.kubernetes.io/instance: homarr
+      app.kubernetes.io/name: homarr
+  serviceName: homarr
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/controller: main
+        app.kubernetes.io/instance: homarr
+        app.kubernetes.io/name: homarr
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - env:
+            - name: AUTH_OIDC_CLIENT_ID
+              value: homarr
+            - name: AUTH_OIDC_CLIENT_NAME
+              value: Homelab
+            - name: AUTH_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  key: clientSecret
+                  name: homarr-oidc
+            - name: AUTH_OIDC_ENABLE_DANGEROUS_ACCOUNT_LINKING
+              value: "false"
+            - name: AUTH_OIDC_ENABLE_DANGEROUS_CREDENTIALS_LINKING
+              value: "false"
+            - name: AUTH_OIDC_GROUPS_ATTRIBUTE
+              value: groups
+            - name: AUTH_OIDC_GROUPS_LOCAL_MANAGEMENT
+              value: "false"
+            - name: AUTH_OIDC_ISSUER
+              value: https://id.bzfx.net/oauth2/openid/homarr
+            - name: AUTH_OIDC_SCOPE_OVERWRITE
+              value: openid profile email groups_name
+            - name: AUTH_OIDC_TOKEN_ENDPOINT_AUTH_METHOD
+              value: client_secret_basic
+            - name: AUTH_PROVIDERS
+              value: oidc
+            - name: AUTH_SESSION_EXPIRY_TIME
+              value: 1h
+            - name: PGID
+              value: "1000"
+            - name: PUID
+              value: "1000"
+            - name: SECRET_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: SECRET_ENCRYPTION_KEY
+                  name: homarr
+            - name: TZ
+              value: UTC
+          image: ghcr.io/homarr-labs/homarr:v2.10.1@sha256:2844201f11ce28b98183728dea2261de2b4fd8ed5480a4eef0b7977cc1a08dc0
+          livenessProbe:
+            httpGet:
+              path: /api/health/live
+              port: 7575
+            periodSeconds: 30
+            timeoutSeconds: 5
+          name: main
+          readinessProbe:
+            httpGet:
+              path: /api/health/live
+              port: 7575
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            limits:
+              cpu: "2"
+              memory: 1Gi
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              add:
+                - CHOWN
+                - DAC_OVERRIDE
+                - SETUID
+                - SETGID
+              drop:
+                - ALL
+            runAsGroup: 0
+            runAsUser: 0
+            seccompProfile:
+              type: RuntimeDefault
+          startupProbe:
+            failureThreshold: 60
+            httpGet:
+              path: /api/health/live
+              port: 7575
+            periodSeconds: 10
+            timeoutSeconds: 5
+          volumeMounts:
+            - mountPath: /appdata
+              name: appdata
+      dnsPolicy: ClusterFirst
+      enableServiceLinks: false
+      hostIPC: false
+      hostNetwork: false
+      hostPID: false
+      nodeSelector:
+        kubernetes.io/hostname: compute-1
+      serviceAccountName: homarr
+      volumes:
+        - name: appdata
+          persistentVolumeClaim:
+            claimName: homarr
+  updateStrategy:
+    type: RollingUpdate

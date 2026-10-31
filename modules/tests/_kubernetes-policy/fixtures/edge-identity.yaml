@@ -49,12 +49,14 @@ positive:
       rbac.authorization.k8s.io/v1/Role/gateway/kanidm-client-secret-oidc-radarr: [provisioning-secret-role]
       rbac.authorization.k8s.io/v1/Role/gateway/kanidm-client-secret-oidc-sabnzbd: [provisioning-secret-role]
       rbac.authorization.k8s.io/v1/Role/gateway/kanidm-client-secret-oidc-sonarr: [provisioning-secret-role]
+      rbac.authorization.k8s.io/v1/Role/portal/kanidm-client-secret-homarr-oidc: [provisioning-secret-role]
       rbac.authorization.k8s.io/v1/RoleBinding/argocd/kanidm-client-secret-argocd-kanidm-oidc: [provisioning-secret-binding]
       rbac.authorization.k8s.io/v1/RoleBinding/gateway/kanidm-client-secret-oidc-argocd: [provisioning-secret-binding]
       rbac.authorization.k8s.io/v1/RoleBinding/gateway/kanidm-client-secret-oidc-prowlarr: [provisioning-secret-binding]
       rbac.authorization.k8s.io/v1/RoleBinding/gateway/kanidm-client-secret-oidc-radarr: [provisioning-secret-binding]
       rbac.authorization.k8s.io/v1/RoleBinding/gateway/kanidm-client-secret-oidc-sabnzbd: [provisioning-secret-binding]
       rbac.authorization.k8s.io/v1/RoleBinding/gateway/kanidm-client-secret-oidc-sonarr: [provisioning-secret-binding]
+      rbac.authorization.k8s.io/v1/RoleBinding/portal/kanidm-client-secret-homarr-oidc: [provisioning-secret-binding]
       v1/ConfigMap/identity/kanidm-provision: [administrator-membership]
       v1/ServiceAccount/identity/kanidm-provision: [provisioning-serviceaccount]
   - if: {identity: [normal]}
@@ -85,6 +87,10 @@ positive:
       gateway.networking.k8s.io/v1/HTTPRoute/gateway/requests: [route-inventory, route-domain-placement, request-header-sanitizer,
         route-timeouts]
       networking.k8s.io/v1/NetworkPolicy/media/gateway-requests-backend-ingress: [backend-isolation-shape]
+  - if: {identity: [normal], homarr: [ready]}
+    applies:
+      gateway.networking.k8s.io/v1/HTTPRoute/gateway/home: [route-inventory, route-domain-placement, request-header-sanitizer,
+        route-timeouts]
 scenarios:
 - name: provisioning-population-role-deleted
   variant: provisioning-initial-trustedEdges

@@ -287,7 +287,7 @@ in
                   assert state["registered"] == clients, state["registered"]
                   for client in clients:
                       found = state["clients"][client]
-                      assert found["scope_maps"] == {"homelab-admin": scopes[client]}, (client, found)
+                      assert found["scope_maps"] == {eligibility[client]: scopes[client]}, (client, found)
                       assert found["sup_scope_maps"] == [], (client, found)
                       assert found["strict_redirect"] == ["true"], (client, found)
                   assert state["clients"]["argocd"]["redirects"] == sorted(gateway_callbacks + callbacks), state["clients"]["argocd"]
@@ -365,6 +365,7 @@ in
               cluster.succeed(f"{kubectl} apply -f ${manifests}/identity-retained")
               cluster.succeed(f"{kubectl} create namespace gateway")
               cluster.succeed(f"{kubectl} create namespace argocd")
+              cluster.succeed(f"{kubectl} apply -f ${manifests}/homarr-retained/Namespace-portal.yaml")
               cluster.succeed(
                   "umask 077 && mkdir -p /root/pki && cd /root/pki && "
                   "openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 "
@@ -427,6 +428,7 @@ in
                   f"{kubectl} get configmap --namespace identity kanidm-provision --output json"
               ))["data"]["clients.json"])
               scopes = {client["name"]: sorted(client["scopes"]) for client in declared}
+              eligibility = {client["name"]: client["eligibleGroup"] for client in declared}
               clients = sorted(scopes)
               secrets = [
                   (client["name"], {key: target[key] for key in ("namespace", "name", "key")})

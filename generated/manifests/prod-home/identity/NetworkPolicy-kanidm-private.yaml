@@ -45,6 +45,18 @@ spec:
       ports:
         - port: 8443
           protocol: TCP
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: portal
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/controller: main
+              app.kubernetes.io/instance: homarr
+              app.kubernetes.io/name: homarr
+      ports:
+        - port: 8443
+          protocol: TCP
   podSelector:
     matchLabels:
       app.kubernetes.io/name: kanidm

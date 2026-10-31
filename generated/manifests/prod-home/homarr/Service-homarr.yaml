@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/instance: homarr
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: homarr
+    app.kubernetes.io/service: homarr
+    helm.sh/chart: app-template-5.1.0
+  name: homarr
+  namespace: portal
+spec:
+  ports:
+    - name: http
+      port: 7575
+      protocol: TCP
+      targetPort: 7575
+  selector:
+    app.kubernetes.io/controller: main
+    app.kubernetes.io/instance: homarr
+    app.kubernetes.io/name: homarr
+  type: ClusterIP

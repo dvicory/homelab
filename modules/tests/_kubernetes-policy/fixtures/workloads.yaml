@@ -33,6 +33,7 @@ positive:
     apps/v1/Deployment/media/sonarr: [pod-secret-readable, pod-pvc-no-fsgroup, media-acquisition-mounts]
     apps/v1/StatefulSet/argocd/argocd-application-controller: [pod-secret-readable, pod-pvc-no-fsgroup]
     apps/v1/StatefulSet/media/seerr: [pod-secret-readable, pod-pvc-no-fsgroup]
+    apps/v1/StatefulSet/portal/homarr: [pod-secret-readable, pod-pvc-no-fsgroup]
     batch/v1/CronJob/media/media-config-seerr: [pod-secret-readable, pod-pvc-no-fsgroup, media-configuration-state,
       media-periodic-safety]
     batch/v1/CronJob/media/media-configarr: [pod-secret-readable, pod-pvc-no-fsgroup, media-configuration-state,
@@ -48,6 +49,7 @@ positive:
     v1/ConfigMap/jellyfin/jellarr-configuration: [jellyfin-runtime-credentials, jellyfin-configuration-no-startup]
     v1/ConfigMap/verification/verification-bundle: [jellyfin-configuration-ingress, media-private-storage-bindings,
       media-configuration-inventory, media-periodic-inventory, media-storage-lifecycle, workload-population, accelerator-grant]
+    v1/PersistentVolume//homarr: [media-private-storage]
     v1/PersistentVolume//identity-kanidm: [media-private-storage]
     v1/PersistentVolume//jellyfin-config: [jellyfin-retained-storage, media-private-storage]
     v1/PersistentVolume//media-prowlarr: [media-private-storage]

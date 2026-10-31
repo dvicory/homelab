@@ -92,8 +92,9 @@ let
     phase:
     identity.k8s-manifests {
       cluster = lib.recursiveUpdate fixtureCluster {
-        # Keep the directory peer selector without publishing another Gateway route.
+        # Keep backend peer selectors without publishing more Gateway routes.
         routes.jellyfin = cluster.routes.jellyfin;
+        routes.home = cluster.routes.home;
         settings.kubernetes.services.identity.phase = phase;
       };
       computeResources = config.flake.clusterResources.prod-home // {
@@ -398,6 +399,11 @@ in
           apiVersion = "v1";
           kind = "Namespace";
           metadata.name = fixtureCluster.routes.argocd.namespace;
+        }
+        {
+          apiVersion = "v1";
+          kind = "Namespace";
+          metadata.name = cluster.routes.home.namespace;
         }
         (originDeployment "origin" { app = "origin"; })
         (originService "origin" "origin" 8080 { app = "origin"; })

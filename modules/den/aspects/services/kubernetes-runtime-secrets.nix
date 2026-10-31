@@ -23,9 +23,9 @@ let
           default = "Opaque";
         };
         generator = mkOption {
-          type = types.nullOr types.str;
+          type = types.nullOr (types.either types.str (types.functionTo types.str));
           default = null;
-          description = "Name of an age.generators entry that `agenix generate` uses to bootstrap this value; null means the operator supplies it with `agenix edit`.";
+          description = "A named age.generators entry or inline agenix-rekey generator; null means the operator supplies the value with agenix edit.";
         };
       };
     }

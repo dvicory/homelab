@@ -43,8 +43,12 @@ deletes clients it does not declare, including any created by hand.
 Declare a new client in Nix instead.
 
 The selected helper accepts an explicit `eligibleGroup` per client and owns
-both normal and supplemental scope maps, not eligibility-group membership
-or person credentials. Existing clients explicitly select `homelab-admin`.
+both normal and supplemental scope maps. Administrator applications select
+`homelab-admin`; Homarr selects `homarr-users`, whose nested members are
+`homelab-admin` and `jellyfin-users`. Provisioning owns that aggregate, not
+household membership or person credentials. Homarr grants board permissions
+separately; portal eligibility does not confer administration.
+
 Before entity reconciliation or Secret publication, the helper revokes all
 existing client scope maps, including undeclared clients. Administrator
 membership is restored only after successful reconciliation. A failed run
@@ -58,6 +62,9 @@ The `identity-provision-runtime` check exercises that selected image,
 then imports the actual current-source producer archive into its disposable
 K3s VM and proves synthetic per-client eligibility with native sign-ins.
 It does not publish an image or change production selection.
+
+See [Homarr operations](homarr.md) for private onboarding, board ACLs,
+group-sync limitations, and portal recovery.
 
 ## Bootstrap
 

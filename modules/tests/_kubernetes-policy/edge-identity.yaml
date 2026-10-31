@@ -36,7 +36,8 @@ spec:
           expression: >-
             variables.inventory.filter(n, (variables.inventory[n].auth != 'admin' || variables.phase ==
             'normal') && (n != 'requests' || variables.cluster.settings.kubernetes.services.seerr.phase
-            == 'ready'))
+            == 'ready') && (n != 'home' || (variables.phase == 'normal' &&
+            variables.cluster.settings.kubernetes.services.homarr.phase == 'ready')))
         - name: managed
           expression: variables.active.filter(n, variables.inventory[n].manageBackendIngress)
         - name: admins
@@ -620,6 +621,7 @@ spec:
           - requests
           - jellyfin
           - idm
+          - home
           namespaces:
           - gateway
     context:
@@ -1058,7 +1060,8 @@ spec:
           expression: >-
             variables.inventory.filter(n, (variables.inventory[n].auth != 'admin' || variables.phase ==
             'normal') && (n != 'requests' || variables.cluster.settings.kubernetes.services.seerr.phase
-            == 'ready'))
+            == 'ready') && (n != 'home' || (variables.phase == 'normal' &&
+            variables.cluster.settings.kubernetes.services.homarr.phase == 'ready')))
         - name: peers
           expression: variables.cluster.ingress.trustedProxyCIDRs
         - name: policyEntries
@@ -1104,7 +1107,10 @@ spec:
             && !has(f.ipBlock)) || (n == 'idm' && variables.phase == 'normal' && 'argocd' in variables.inventory
             && has(f.namespaceSelector) && f.namespaceSelector == {'matchLabels':{'kubernetes.io/metadata.name':variables.inventory['argocd'].namespace}}
             && has(f.podSelector) && has(f.podSelector.matchLabels) && f.podSelector.matchLabels ==
-            variables.inventory['argocd'].backendPodSelector && !has(f.ipBlock)) || (n == 'jellyfin' && has(f.namespaceSelector) && f.namespaceSelector
+            variables.inventory['argocd'].backendPodSelector && !has(f.ipBlock)) || (n == 'idm' && variables.phase == 'normal'
+            && has(f.namespaceSelector) && f.namespaceSelector == {'matchLabels':{'kubernetes.io/metadata.name':variables.inventory['home'].namespace}}
+            && has(f.podSelector.matchLabels) && f.podSelector.matchLabels == variables.inventory['home'].backendPodSelector
+            && !has(f.ipBlock)) || (n == 'jellyfin' && has(f.namespaceSelector) && f.namespaceSelector
             == {'matchLabels':{'kubernetes.io/metadata.name':'media'}} && has(f.podSelector.matchLabels)
             && 'app.kubernetes.io/name' in f.podSelector.matchLabels && f.podSelector.matchLabels['app.kubernetes.io/name']
             in ['seerr', 'media-config-seerr'] && !has(f.ipBlock) && has(i.ports) && i.ports.size() >

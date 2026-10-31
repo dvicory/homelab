@@ -14,6 +14,7 @@ let
     };
     settings.kubernetes.services.identity.phase = "normal";
     settings.kubernetes.services.seerr.phase = "ready";
+    settings.kubernetes.services.homarr.phase = "ready";
   };
   sourceFor =
     inventory:
@@ -143,6 +144,25 @@ let
       ]
     && builtins.hasAttr (builtins.head routes.requests.hostnames) remoteModule.services.nginx.virtualHosts
     && builtins.hasAttr (builtins.elemAt routes.requests.hostnames 1) homeModule.services.nginx.virtualHosts;
+  homarrInitialEdge = sourceFor (
+    lib.recursiveUpdate testCluster {
+      settings.kubernetes.services.homarr.phase = "initial";
+    }
+  );
+  homarrPhaseContract =
+    lib.all
+      (
+        module:
+        lib.all (
+          hostname: !(builtins.hasAttr hostname module.services.nginx.virtualHosts)
+        ) routes.home.hostnames
+      )
+      [
+        (roleModule homarrInitialEdge.den.aspects.services.remote-edge (
+          mkHost "remote-edge" remoteSettings
+        ))
+        (roleModule homarrInitialEdge.den.aspects.services.home-edge (mkHost "home-edge" homeSettings))
+      ];
   gatewayRenderSucceeds =
     inventory:
     (builtins.tryEval (
@@ -503,6 +523,7 @@ let
       privatePhaseEdge initialIdmHomeModule && privatePhaseEdge provisioningIdmRemoteModule;
     invalid-bare-route-inventory-key-rejected = !allAssertions invalidBareRouteModule;
     seerr-native-auth-phase-boundary = seerrPhaseContract;
+    homarr-onboarding-unpublished = homarrPhaseContract;
     public-origin-rejected = !allAssertions badOriginModule;
     undeclared-peer-rejected = !allAssertions badPeerModule;
     incomplete-tls-rejected = !allAssertions badTLSModule;

@@ -434,7 +434,8 @@ spec:
           expression: '[["argocd-retained", "argocd"], ["argocd-retained", "retained-storage"], ["retained-storage",
             "local-path-provisioner"], ["argocd", "cluster-dns"], ["gateway-retained", "gateway-crds"], ["gateway-crds",
             "gateway-controller"], ["cert-manager", "cert-manager-issuance"], ["gateway-controller", "gateway"],
-            ["identity-retained", "identity"], ["jellyfin-retained", "jellyfin"], ["jellyfin", "jellyfin-configuration"]]'
+            ["identity-retained", "identity"], ["homarr-retained", "identity"], ["identity", "homarr"],
+            ["jellyfin-retained", "jellyfin"], ["jellyfin", "jellyfin-configuration"]]'
         expressions:
         - expression: >-
             variables.edges.all(e,variables.waves.filter(a,a.name == e[0] + variables.suffix).size() == 1 &&

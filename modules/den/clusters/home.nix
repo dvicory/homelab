@@ -46,7 +46,24 @@ in
     };
     settings.kubernetes.services.identity.phase = "normal";
     settings.kubernetes.services.seerr.phase = "ready";
+    settings.kubernetes.services.homarr.phase = "initial";
     routes = {
+      home =
+        (route "home" "portal" "homarr" 7575 "native" "public" {
+          "app.kubernetes.io/controller" = "main";
+          "app.kubernetes.io/instance" = "homarr";
+          "app.kubernetes.io/name" = "homarr";
+        })
+        // {
+          displayName = "Home";
+          sameNamespaceIngress = false;
+          # Homarr owns admission even while first-run onboarding is private.
+          manageBackendIngress = false;
+          timeouts = {
+            request = "0s";
+            backendRequest = "0s";
+          };
+        };
       argocd =
         (route "argocd" "argocd" "argocd-server" 80 "admin" "public" {
           "app.kubernetes.io/instance" = "argocd";
@@ -143,6 +160,7 @@ in
       retained-storage
       media
       jellyfin
+      homarr
       gateway
       identity
     ];
