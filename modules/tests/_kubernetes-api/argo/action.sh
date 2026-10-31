@@ -12,6 +12,7 @@ settings=$(jq -c .argo "$FIXTURE_SETTINGS")
 bootstrap=$(jq -r .bootstrap <<< "$settings")
 manifests=$(jq -r .manifests <<< "$settings")
 probe=$(jq -r .probeImage <<< "$settings")
+retained_spec=$(jq -r .retainedSpec <<< "$settings")
 work="$FIXTURE_WORK/argo"
 repo="$work/runtime.git"
 url="git://$FIXTURE_ARGO_GIT_IP/runtime.git"
@@ -21,6 +22,19 @@ k() { "$KUBECTL" "$@"; }
 d() { "$FIXTURE_DOCKER" --host "$FIXTURE_DOCKER_HOST" --config "$FIXTURE_DOCKER_CONFIG" "$@"; }
 node() { d exec "$FIXTURE_NODE" sh -ec "$1"; }
 canonical() { yq -o=json '.' "$manifests/$1"; }
+retained() {
+  d exec -i "$FIXTURE_NODE" /bin/retained-directories "$@" --spec - < "$retained_spec"
+}
+invalid_retained() {
+  local code=0
+  retained validate --entry identity-kanidm >&2 || code=$?
+  test "$code" -eq 1
+}
+retained_snapshot() {
+  node 'stat -c "%i:%u:%g:%a" /srv/retained/state /srv/retained/state/identity-kanidm;
+    find /srv/retained/state -mindepth 1 -maxdepth 2 -print | sort;
+    sha256sum /srv/retained/state/.homelab-retained-root.json /srv/retained/state/identity-kanidm/fixture-sentinel /srv/retained/state/identity-kanidm/startup'
+}
 publish() {
   d cp "$repo/." "$FIXTURE_ARGO_GIT:/srv/git/runtime.git/" >&2
   # docker cp keeps the caller's UID. git daemon runs as root and refuses a
@@ -48,6 +62,21 @@ job() {
       containers:[{name:"probe",image:$image,imagePullPolicy:"Never",command:["/bin/sh","-ec",$command],volumeMounts:[{name:"proof",mountPath:"/proof"}]}],
       volumes:[{name:"proof",hostPath:{path:"/srv/proof",type:"Directory"}}]}}}}'
 }
+directory_consumer() {
+  jq -n --arg image "$probe" '{apiVersion:"apps/v1",kind:"Deployment",metadata:{name:"directory-consumer",namespace:"runtime"},
+    spec:{replicas:1,selector:{matchLabels:{app:"directory-consumer"}},template:{metadata:{labels:{app:"directory-consumer"}},spec:{automountServiceAccountToken:false,
+      containers:[{name:"consumer",image:$image,imagePullPolicy:"Never",
+        command:["/bin/sh","-ec","test \"$(cat /data/fixture-sentinel)\" = explicitly-provisioned-fixture-state; echo started > /data/startup; sleep 3600"],
+        readinessProbe:{exec:{command:["/bin/sh","-ec","test \"$(cat /data/fixture-sentinel)\" = explicitly-provisioned-fixture-state"]}},
+        volumeMounts:[{name:"data",mountPath:"/data"}]}],
+      volumes:[{name:"data",persistentVolumeClaim:{claimName:"native-argo-consumer"}}]}}}}'
+}
+unrelated() {
+  job "$1" "echo ready > /proof/$1" | k apply -f - >&2
+  k -n runtime wait --for=condition=Complete "job/$1" --timeout=120s >&2
+  k get nodes -o json | jq -e '.items | length == 1 and all(.[]; any(.status.conditions[]; .type=="Ready" and .status=="True"))' >&2
+  node "test \"\$(cat /srv/proof/$1)\" = ready"
+}
 reader() {
   jq -n --arg image "$probe" '{apiVersion:"apps/v1",kind:"Deployment",metadata:{name:"data-reader",namespace:"identity"},
     spec:{replicas:1,selector:{matchLabels:{app:"data-reader"}},template:{metadata:{labels:{app:"data-reader"}},spec:{automountServiceAccountToken:false,
@@ -69,7 +98,7 @@ preserve() {
 usable() {
   k -n identity rollout status deployment/data-reader --timeout=180s >&2
   test "$(k -n identity exec deployment/data-reader -- /bin/cat /data/sentinel)" = retained-fixture-data
-  node 'test "$(cat /srv/state/identity-kanidm/consumed)" = consumed'
+  node 'test "$(cat /srv/retained/state/identity-kanidm/consumed)" = consumed'
 }
 stop_reader() {
   k -n argocd patch application reader --type=merge -p '{"spec":{"syncPolicy":{"automated":null}}}' >&2
@@ -82,7 +111,10 @@ setup)
   git -C "$repo" init -b main >&2
   git -C "$repo" config user.email fixture@example.invalid
   git -C "$repo" config user.name fixture
-  node 'mkdir -p /srv/state /srv/proof'
+  # Declared disposable tmpfs coordinates, never inferred from mountinfo.
+  # The retained root stays absent while the node and controllers start.
+  node 'mkdir -p /srv/retained /srv/proof; mount -t tmpfs -o size=16m,mode=0755 homelab-api-retained /srv/retained; test ! -e /srv/retained/state'
+  d cp "$(jq -r .retainedCommand <<< "$settings")" "$FIXTURE_NODE:/bin/retained-directories"
   d exec "$FIXTURE_ARGO_GIT" mkdir -p /srv/git/runtime.git
   k apply --server-side --field-manager=homelab-bootstrap -f "$bootstrap/namespaces.yaml" >&2
   k apply --server-side --field-manager=homelab-bootstrap -f "$bootstrap/crds.yaml" >&2
@@ -123,27 +155,38 @@ LUA
   jq -n --arg url "$url" '{apiVersion:"argoproj.io/v1alpha1",kind:"AppProject",metadata:{name:"native-argo",namespace:"argocd"},spec:{sourceRepos:[$url],destinations:[{server:"https://kubernetes.default.svc",namespace:"*"}],clusterResourceWhitelist:[{group:"",kind:"Namespace"},{group:"",kind:"PersistentVolume"}]}}' | k apply -f - >&2
   hostname=$(k get nodes -o jsonpath='{.items[0].metadata.labels.kubernetes\.io/hostname}')
   printf %s "$hostname" > "$work/hostname"
-  mkdir -p "$repo/failed" "$repo/failed-child-root" "$repo/missing-child-root" "$repo/hook"
+  mkdir -p "$repo/failed" "$repo/failed-child-root" "$repo/missing-child-root" "$repo/retained-gate" "$repo/retained-consumer"
   job failed-child-job 'exit 1' > "$repo/failed/job.json"
-  commit 'failing workload' payload
+  canonical identity-retained/PersistentVolume-identity-kanidm.yaml |
+    jq --arg hostname "$hostname" '.metadata.name="native-argo-consumer" |
+      .spec.local.path="/srv/retained/state/identity-kanidm" |
+      .spec.claimRef.name="native-argo-consumer" | .spec.claimRef.namespace="runtime" |
+      .spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values=[$hostname]' > "$repo/retained-consumer/pv.json"
+  canonical identity-retained/PersistentVolumeClaim-identity-kanidm.yaml |
+    jq '.metadata.name="native-argo-consumer" | .metadata.namespace="runtime" |
+      .spec.volumeName="native-argo-consumer"' > "$repo/retained-consumer/pvc.json"
+  directory_consumer > "$repo/retained-consumer/deployment.json"
+  commit 'failing workload and unprovisioned local-PV consumer' payload
   git -C "$repo" branch child-payload "$(cat "$work/payload")"
   for name in failed-child missing-child; do
     path=failed; [ "$name" != missing-child ] || path=does-not-exist
     app "$name" "$path" child-payload runtime > "$repo/$name-root/child.json"
     job "$name-late" "echo advanced > /proof/$name-late" 1 > "$repo/$name-root/late.json"
   done
-  # The Job reads its directory list from this compared ConfigMap, which
-  # Argo applies in an earlier wave of the same sync.
-  canonical retained-storage/ConfigMap-retained-directories.yaml > "$repo/hook/directories.json"
-  canonical retained-storage/Job-retained-directories.yaml | jq --arg hostname "$hostname" '.spec.template.spec.nodeSelector["kubernetes.io/hostname"]=$hostname' > "$repo/hook/hook.json"
-  job after-retained-hook 'echo completed > /proof/hook-completed' 2 local-path-storage > "$repo/hook/after.json"
-  commit 'dependency roots and exact retained hook' initial
+  # Compared desired inventory is reconciled, but does not authorize creation.
+  canonical retained-storage/ConfigMap-retained-directories.yaml |
+    jq '.metadata.annotations["argocd.argoproj.io/sync-wave"]="-1"' > "$repo/retained-gate/directories.json"
+  app retained-consumer retained-consumer "$(cat "$work/payload")" runtime > "$repo/retained-gate/child.json"
+  job after-retained-consumer 'echo completed > /proof/retained-consumer-completed' 1 > "$repo/retained-gate/after.json"
+  commit 'dependency roots and explicit retained consumer gate' initial
   app failed-root failed-child-root "$(cat "$work/initial")" argocd | k apply -f - >&2
   app missing-root missing-child-root "$(cat "$work/initial")" argocd | k apply -f - >&2
   ;;
 revision) printf %s "$(cat "$work/$2")" ;;
-start-hook)
-  app hook hook "$(cat "$work/initial")" local-path-storage true | k apply -f - >&2
+start-retained)
+  invalid_retained
+  unrelated unrelated-with-missing-state
+  app retained-gate retained-gate "$(cat "$work/initial")" argocd true | k apply -f - >&2
   printf %s "$(cat "$work/initial")"
   ;;
 blocked-children)
@@ -164,26 +207,53 @@ recover-children)
   done
   ;;
 children-proof) node 'test "$(cat /srv/proof/failed-child-late)" = advanced; test "$(cat /srv/proof/missing-child-late)" = advanced' ;;
-hook-blocked)
-  node 'test ! -e /srv/state/identity-kanidm; test ! -e /srv/state/kubernetes-volumes; test ! -e /srv/proof/hook-completed'
-  k -n local-path-storage get jobs -o json | jq -e 'all(.items[]; .metadata.name != "after-retained-hook")' >&2
-  k -n local-path-storage get job retained-directories -o json | jq -r .metadata.uid > "$work/hook.uid"
-  jq -n --arg image "$probe" '{apiVersion:"v1",kind:"Pod",metadata:{name:"directory-consumer",namespace:"runtime"},spec:{restartPolicy:"Never",automountServiceAccountToken:false,containers:[{name:"consumer",image:$image,imagePullPolicy:"Never",command:["/bin/sh","-ec","echo started > /data/startup; sleep 3600"],volumeMounts:[{name:"data",mountPath:"/data"}]}],volumes:[{name:"data",hostPath:{path:"/srv/state/kubernetes-volumes",type:"Directory"}}]}}' | k apply -f - >&2
+retained-blocked)
+  # Observe a real pending PV consumer, not a missing-resource success.
+  k -n runtime get pods -l app=directory-consumer -o json |
+    jq -e '.items | length == 1 and all(.[]; .status.phase=="Pending" and all(.status.containerStatuses[]?; .state.running==null and .state.terminated==null))' >&2
+  k -n local-path-storage get configmap retained-directories -o json |
+    jq -e --slurpfile spec "$retained_spec" '(.data["directories.json"] | fromjson)["identity-kanidm"] == $spec[0].entries["identity-kanidm"]' >&2
+  sleep 15
+  node 'test ! -e /srv/retained/state; test ! -e /srv/proof/retained-consumer-completed'
+  k -n runtime get jobs -o json | jq -e 'all(.items[]; .metadata.name != "after-retained-consumer")' >&2
   ;;
-consumer-uid) k -n runtime get pod directory-consumer -o jsonpath='{.metadata.uid}' ;;
-recover-hook)
-  k -n runtime get pod directory-consumer -o json | jq -e 'all(.status.containerStatuses[]?; .state.running==null and .state.terminated==null)' >&2
-  node 'test ! -e /srv/state/kubernetes-volumes'
-  marker=$(jq -r '.spec.template.spec.containers[0].args[1]' "$repo/hook/hook.json")
-  d exec "$FIXTURE_NODE" touch "/srv/state/$marker"
-  # A fresh native sync retries even if bootstrap/setup consumed the retry budget.
-  jq -n --arg revision "$(cat "$work/initial")" '{operation:{sync:{revision:$revision}}}' > "$work/retry.json"
-  k -n argocd patch application hook --type=merge --patch-file "$work/retry.json" >&2
+consumer-uid)
+  k -n runtime get pods -l app=directory-consumer -o json |
+    jq -ejr 'if (.items | length)==1 then .items[0].metadata.uid else error("expected one retained consumer") end'
   ;;
-hook-proof)
-  k -n local-path-storage get job retained-directories -o json | jq -e --arg uid "$(cat "$work/hook.uid")" '.metadata.uid!=$uid' >&2
-  k -n runtime wait --for=condition=Ready pod/directory-consumer --timeout=120s >&2
-  node 'test -d /srv/state/identity-kanidm; test -d /srv/state/kubernetes-volumes; test "$(cat /srv/proof/hook-completed)" = completed; test "$(cat /srv/state/kubernetes-volumes/startup)" = started'
+provision-retained)
+  invalid_retained
+  node 'test ! -e /srv/retained/state'
+  retained provision --root --confirm "$(jq -r .root.id "$retained_spec")" >&2
+  retained provision --entry identity-kanidm --confirm "$(jq -r '.entries["identity-kanidm"].id' "$retained_spec")" >&2
+  node 'test -z "$(find /srv/retained/state/identity-kanidm -mindepth 1 -print)";
+    printf %s explicitly-provisioned-fixture-state > /srv/retained/state/identity-kanidm/fixture-sentinel'
+  retained validate --entry identity-kanidm >&2
+  ;;
+retained-proof)
+  k -n runtime rollout status deployment/directory-consumer --timeout=120s >&2
+  test "$(k -n runtime exec deployment/directory-consumer -- /bin/cat /data/fixture-sentinel)" = explicitly-provisioned-fixture-state
+  node 'test "$(cat /srv/proof/retained-consumer-completed)" = completed; test "$(cat /srv/retained/state/identity-kanidm/startup)" = started'
+  ;;
+reconcile-invalid-retained)
+  # Scratch-only damage: Argo must not repair it. This fixture does not claim
+  # runtime refusal for existing directories; the exact native guard proof does.
+  node 'chmod 0000 /srv/retained/state/identity-kanidm'
+  invalid_retained
+  retained_snapshot > "$work/retained.before"
+  unrelated unrelated-with-invalid-state
+  for name in retained-consumer retained-gate; do
+    revision=payload; [ "$name" != retained-gate ] || revision=initial
+    jq -n --arg revision "$(cat "$work/$revision")" '{operation:{sync:{revision:$revision}}}' > "$work/resync.json"
+    k -n argocd patch application "$name" --type=merge --patch-file "$work/resync.json" >&2
+  done
+  ;;
+nonmutating-proof)
+  retained_snapshot > "$work/retained.after"
+  cmp "$work/retained.before" "$work/retained.after"
+  invalid_retained
+  d exec "$FIXTURE_NODE" chmod "$(jq -r '.entries["identity-kanidm"].mode' "$retained_spec")" /srv/retained/state/identity-kanidm
+  retained validate --entry identity-kanidm >&2
   ;;
 prepare-storage)
   mkdir -p "$repo/retained" "$repo/reader"
@@ -193,7 +263,7 @@ prepare-storage)
       if $mutation=="cascade-retained" then del(.metadata.annotations) else . end' > "$repo/retained/$file.json"
   done
   reader > "$repo/reader/deployment.json"
-  node 'printf %s retained-fixture-data > /srv/state/identity-kanidm/sentinel'
+  node 'printf %s retained-fixture-data > /srv/retained/state/identity-kanidm/sentinel'
   commit 'canonical retained volumes and data consumer' storage
   app retained retained "$(cat "$work/storage")" identity true | jq --arg mutation "$mutation" 'if $mutation=="cascade-retained" then .metadata.finalizers=["resources-finalizer.argocd.argoproj.io"] else . end' | k apply -f - >&2
   app reader reader "$(cat "$work/storage")" identity | k apply -f - >&2

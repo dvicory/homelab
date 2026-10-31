@@ -62,7 +62,7 @@ def refused(label, arguments, expected):
 
 
 def job(name, image, args):
-    manifest = {"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": name, "namespace": namespace}, "spec": {"backoffLimit": 0, "activeDeadlineSeconds": 180, "template": {"spec": {"restartPolicy": "Never", "automountServiceAccountToken": False, "containers": [{"name": "helper", "image": image, "imagePullPolicy": "Always", "args": args, "volumeMounts": [{"name": "state", "mountPath": "/state"}]}], "volumes": [{"name": "state", "hostPath": {"path": root, "type": "Directory"}}]}}}}
+    manifest = {"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": name, "namespace": namespace}, "spec": {"backoffLimit": 0, "activeDeadlineSeconds": 180, "template": {"spec": {"restartPolicy": "Never", "automountServiceAccountToken": False, "containers": [{"name": "helper", "image": image, "imagePullPolicy": "Always", "args": args, "volumeMounts": [{"name": "state", "mountPath": "/state"}, {"name": "spec", "mountPath": "/spec", "readOnly": True}]}], "volumes": [{"name": "state", "hostPath": {"path": root, "type": "Directory"}}, {"name": "spec", "configMap": {"name": "retained-spec"}}]}}}}
     write_json(cluster, "/run/helper-job.json", manifest)
     api("apply -f /run/helper-job.json")
 
@@ -103,7 +103,8 @@ def pull_refused(name, pattern):
 
 
 def args_for(directory, marker=".retained-root"):
-    return ["/state", marker, json.dumps({directory: {"uid": 1234, "gid": 2345, "mode": "0750"}})]
+    return ["provision", "--spec", f"/spec/{marker}.json", "--entry", directory,
+            "--confirm", f"fixture/{directory}"]
 
 
 try:
@@ -116,7 +117,7 @@ try:
     command(publisher, "systemctl start docker-registry")
     publisher.wait_until_succeeds(f"curl --fail --silent --user fixture:synthetic-fixture-password --cacert /run/helper-tls/server.crt https://{registry}/v2/", timeout=60)
     ca = command(publisher, "cat /run/helper-tls/server.crt")
-    command(cluster, f"install -d /run/helper-ca /etc/rancher/k3s {root}; printf '%s\n' {shlex.quote(ca)} > /run/helper-ca/ca.crt; touch {root}/.retained-root")
+    command(cluster, f"install -d /run/helper-ca /etc/rancher/k3s {root}; printf '%s\n' {shlex.quote(ca)} > /run/helper-ca/ca.crt; mount -t tmpfs -o mode=0755,size=1m retained-helper {root}")
     write_json(cluster, "/etc/rancher/k3s/registries.yaml", {"mirrors": {registry: {"endpoint": [f"https://{registry}"]}}, "configs": {registry: {"tls": {"ca_file": "/run/helper-ca/ca.crt"}}}})
     command(cluster, "systemctl start k3s")
     cluster.wait_until_succeeds(f"{kubectl} get --raw=/readyz", timeout=300)
@@ -141,9 +142,20 @@ try:
     selected_a = json.loads(command(publisher, "cat /run/verified.json"))["artifacts"]["retained-directories-image"]
     image_a = f"{selected_a['repository']}@{selected_a['digest']}"
     api(f"create namespace {namespace}")
+    spec = {"version": 1, "root": {"id": "fixture/root", "path": "/state", "marker": ".retained-root",
+            "source": {"fsType": "tmpfs", "name": "retained-helper", "root": "/"},
+            "uid": 0, "gid": 0, "mode": "0755"},
+            "entries": {name: {"id": f"fixture/{name}", "uid": 1234, "gid": 2345, "mode": "0750"}
+                        for name in ("a", "b", "rollback", "forbidden")}}
+    wrong_spec = {**spec, "root": {**spec["root"], "marker": "missing-marker"}}
+    write_json(cluster, "/run/helper-spec.json", spec)
+    write_json(cluster, "/run/helper-wrong-spec.json", wrong_spec)
+    api(f"create configmap retained-spec -n {namespace} --from-file=.retained-root.json=/run/helper-spec.json --from-file=missing-marker.json=/run/helper-wrong-spec.json")
+    job("adopt-root", image_a, ["adopt", "--spec", "/spec/.retained-root.json", "--root", "--confirm", "fixture/root"])
+    terminal("adopt-root", 0)
     job("a", image_a, args_for("a"))
     receipt["jobA"] = terminal("a", 0)
-    assert receipt["jobA"]["logs"] == "created a"
+    assert json.loads(receipt["jobA"]["logs"])["id"] == "fixture/a"
     command(cluster, f"test $(stat -c '%u:%g:%a' {root}/a) = 1234:2345:750; printf usable-retained-state > {root}/a/payload")
     retained = command(cluster, f"stat -c '%d:%i:%u:%g:%a' {root}/a/payload")
     job("a-no-version", image_a, ["--version"])
@@ -158,14 +170,14 @@ try:
     assert receipt["jobBVersion"]["logs"] == "fixture-v2"
     job("b", image_b, args_for("b"))
     receipt["jobB"] = terminal("b", 0)
-    assert receipt["jobB"]["logs"] == "created b"
+    assert json.loads(receipt["jobB"]["logs"])["id"] == "fixture/b"
     command(cluster, f"test $(stat -c '%u:%g:%a' {root}/b) = 1234:2345:750; test $(cat {root}/a/payload) = usable-retained-state")
     assert command(cluster, f"stat -c '%d:%i:%u:%g:%a' {root}/a/payload") == retained
     receipt["retainedPayloadPreserved"] = True
     # Explicit rollback consumes the still-retained old registry identity.
     job("rollback-a", image_a, args_for("rollback"))
     receipt["rollbackA"] = terminal("rollback-a", 0)
-    assert receipt["rollbackA"]["logs"] == "created rollback"
+    assert json.loads(receipt["rollbackA"]["logs"])["id"] == "fixture/rollback"
     job("wrong-marker", image_b, args_for("forbidden", "missing-marker"))
     terminal("wrong-marker", 1)
     command(cluster, f"test ! -e {root}/forbidden")
@@ -216,8 +228,8 @@ try:
 finally:
     if "before" in receipt:
         deleted, _ = cluster.execute(f"{kubectl} delete namespace {namespace} --ignore-not-found --wait=true --timeout=90s", timeout=120)
-        cluster.execute(f"rm -rf {root} /run/helper-ca /run/helper-job.json")
-        receipt["cleanup"]["clusterStateRemoved"] = cluster.execute(f"test ! -e {root}")[0] == 0
+        removed, _ = cluster.execute(f"umount {root} && rm -rf {root} /run/helper-ca /run/helper-job.json")
+        receipt["cleanup"]["clusterStateRemoved"] = removed == 0 and cluster.execute(f"test ! -e {root}")[0] == 0
         absent, diagnostic = cluster.execute(f"{kubectl} get namespace {namespace} 2>&1")
         ready, _ = cluster.execute(f"{kubectl} get --raw=/readyz")
         receipt["cleanup"]["jobsRemoved"] = deleted == 0 and absent != 0 and "NotFound" in diagnostic and ready == 0

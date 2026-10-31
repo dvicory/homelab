@@ -12,10 +12,10 @@ let
     edge configuration while Seerr remains in the `initial` phase.
 
   '';
-  computeInstance =
-    config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute.instance;
-  retainedPaths =
-    config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute.retainedPaths;
+  compute =
+    config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
+  computeInstance = compute.instance;
+  retainedPaths = compute.retainedPaths;
   runtimeSecrets = config.flake.clusterResources.prod-home.runtimeSecrets;
   routeRows = lib.mapAttrsToList (
     name: route:
@@ -38,7 +38,7 @@ let
     let
       access = if entry.readOnly then "read-only" else "writable";
     in
-    "| `${name}` | `${entry.path}` | `${entry.guestPath}` | `${toString entry.uid}:${toString entry.gid}` | `${entry.mode}` | ${access} |"
+    "| `${name}` | `${entry.id}` | `${entry.path}` | `${entry.guestPath}` | `${toString entry.uid}:${toString entry.gid}` | `${entry.mode}` | ${access} |"
   ) retainedPaths;
   secretGroups = lib.groupBy (
     source:
@@ -118,19 +118,103 @@ in
 
         ## Retained state
 
-        | Retained key | Host path | Guest path | Guest UID:GID | Mode | Access |
-        | --- | --- | --- | --- | --- | --- |
+        | Retained key | Stable identity | Host path | Guest path | Guest UID:GID | Mode | Access |
+        | --- | --- | --- | --- | --- | --- | --- |
         ${lib.concatStringsSep "\n" stateRows}
 
-        A retained path is not a backup. Incus propagates host mounts one way;
-        after restoring a source, recreate affected pods to refresh child
-        mounts.
+        The default native runtime validates actual retained local-PV publications
+        before every init/app start, including cached restarts. The compared
+        `retained-directories` ConfigMap declares application identities; Argo does
+        not create or bless data. Missing/wrong state blocks affected writers, not
+        the node or unrelated applications. Source-mount loss retires dependent
+        native scopes. This is not continuous application-content verification or
+        a backup.
 
-        Wait for `retained-storage` to become Healthy before syncing stateful
-        applications. Its `retained-directories` hook creates the declared
-        directories and refuses, rather than creating substitute data, when the
-        persistent state root is missing. The hook survives pruning and
-        Application deletion.
+        ### Explicit provisioning and adoption
+
+        Root identity is `${compute.stateIdentity}`. Inspect the declared backing
+        in `/etc/homelab/retained-root.json` on the host before any mutation.
+        Ordinary validation is read-only:
+
+        ```sh
+        retained-directories validate --spec /etc/homelab/retained-root.json --root
+        ```
+
+        Only an explicitly authorized fresh root may use `provision --root`;
+        existing verified data uses `adopt --root`. Both require
+        `--confirm '${compute.stateIdentity}'`. Neither repairs ownership,
+        overwrites data, or establishes that application contents are healthy.
+        A missing ledger is not permission to initialize replacement empty state.
+
+        Inside the guest, use the trusted node backing and compared inventory to
+        prepare an ephemeral CLI spec (requires `jq`). Select `ENTRY` and
+        `REVIEWED_ID` from that inspected inventory before validating an entry:
+
+        ```sh
+        umask 077
+        k3s kubectl -n local-path-storage get configmap retained-directories -o json |
+          jq --slurpfile node /etc/homelab/retained-node.json \
+            '{version:1,root:$node[0].root,entries:(.data["directories.json"]|fromjson)}' \
+            > /run/retained-spec.json
+        retained-directories validate --spec /run/retained-spec.json --entry "$ENTRY"
+        ```
+
+        For one authorized new entry, run `retained-directories provision --spec
+        /run/retained-spec.json --entry "$ENTRY" --confirm "$REVIEWED_ID"`.
+        For one verified restored entry, use `adopt` instead. Provisioning cannot
+        recreate an established missing leaf; adoption requires an existing
+        directory and changes only its trusted identity ledger. New dynamic claims
+        use entry key `namespace.claimName`; declare and explicitly provision that
+        entry before expecting `retained-local` publication to succeed. No node OS
+        deployment, RuntimeClass, annotation or image opt-in is required.
+
+        ### Restore an unavailable source
+
+        Keep the source absent while deleting affected Pods and waiting for their
+        old kubelet volume publications to disappear. Do not reattach underneath
+        stale publications. Restore the original backing and ledger. If the
+        restored root has a new filesystem identity, explicitly adopt the
+        verified root on the host with `retained-directories adopt --spec
+        /etc/homelab/retained-root.json --root --confirm '${compute.stateIdentity}'`
+        before read-only root validation. After host validation succeeds, start
+        `compute-retained-export.service` and require successful publication.
+        Only then, inside the guest, explicitly adopt any verified restored
+        entries with changed identities and validate each required entry before
+        recreating affected Pods. Do not clear receipts or reprovision.
+        Unrelated services need no restart. Generation-bearing filesystem
+        export handles are required; unsupported filesystems fail closed rather
+        than trusting recycled inode numbers.
+
+        For an initial guard installation or guest-path migration, arrange the
+        approved affected-application/Argo hold before publishing to the tracked
+        ref; account for parent Applications restoring sync. Merging manifests
+        can reconcile running storage resources; it does not activate the OS or
+        automatically migrate data. Quiesce affected writers, retire their
+        Pods/publications and the old automatic creating-hook behavior first.
+        A removed desired hook may still have a retained live object.
+        Install the trusted host/guest boundary and explicitly adopt the verified
+        existing root. Validate it and start `compute-retained-export.service` on
+        the host; do not continue until publication succeeds.
+        StorageClass parameters and `PV.spec.local.path` are
+        immutable: separately authorize recreation of `retained-local` with the
+        new parameters while preserving existing PVs/data, then recreate affected
+        PV/PVC declarations at current guest paths rather than force-patching
+        bound volumes. Reconcile the compared inventory, explicitly adopt
+        verified existing entries, validate, then resume affected applications.
+        Never provision substitute empty state to clear a rollout refusal.
+        Routine host activation leaves the live retained parent and child export
+        mounted, even when their unit scripts or runtime package change. It does
+        not apply export/root changes to a running publication. For those changes,
+        arrange the same affected-writer/Argo hold, quiesce writers and retire
+        Pods/publications, then explicitly stop the export before activating
+        changed root/export configuration so its backing dependency cannot be
+        retargeted beneath an old publication. Validate the intended root with
+        the newly installed helper before explicitly starting the export and
+        resuming entry validation/workloads. Parent changes also
+        require a planned guest restart; do not replace a running guest's live
+        propagation parent. Actual backing/parent loss still stops the export
+        and retires affected writers; activation lifetime settings do not disable
+        that fail-closed boundary.
 
         ## Runtime-secret references
 

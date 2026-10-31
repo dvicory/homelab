@@ -13,7 +13,7 @@ spec:
     name: media-sabnzbd
     namespace: media
   local:
-    path: /srv/state/sabnzbd
+    path: /srv/retained/state/sabnzbd
   nodeAffinity:
     required:
       nodeSelectorTerms:

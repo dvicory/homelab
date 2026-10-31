@@ -15,6 +15,7 @@ let
   rendererFixture = {
     instance = "compute-1";
     retainedPaths.kubernetes-volumes = {
+      id = "fixture/kubernetes-volumes";
       path = "/host-only/state/kubernetes-volumes";
       guestPath = "/srv/state/kubernetes-volumes";
       uid = 0;
@@ -31,36 +32,28 @@ let
   };
   rendererBoundaryAssertions =
     let
-      render =
-        retained:
-        retainedStorageRenderer {
-          computeResources = rendererFixture // {
-            retainedPaths.kubernetes-volumes = retained;
-            unrelatedProjectedCapability = "ignored";
-          };
-          inherit lib;
-        };
-      nodePaths =
-        retained:
-        (render retained)
-        .applications.local-path-provisioner.helm.releases.local-path-provisioner.values.nodePathMap;
-      retained = rendererFixture.retainedPaths.kubernetes-volumes;
+      rendered = retainedStorageRenderer {
+        computeResources = rendererFixture;
+        inherit lib;
+      };
+      app = rendered.applications.local-path-provisioner;
+      helper = builtins.fromJSON app.resources.configMaps.local-path-config.data."helperPod.yaml".content;
     in
-    nodePaths retained == [
+    app.helm.releases.local-path-provisioner.values.nodePathMap == [
       {
         node = rendererFixture.instance;
-        paths = [ retained.guestPath ];
+        paths = [ rendererFixture.stateRoot.guestPath ];
       }
     ]
+    && helper.spec.automountServiceAccountToken == false
     &&
-      lib.all
-        (unsafe: !(builtins.tryEval (builtins.deepSeq (nodePaths (retained // unsafe)) true)).success)
-        [
-          { uid = 1000; }
-          { gid = 1000; }
-          { mode = "0755"; }
-          { readOnly = true; }
-        ];
+      (builtins.head helper.spec.containers).volumeMounts == [
+        {
+          name = "data";
+          mountPath = "/retained";
+          readOnly = true;
+        }
+      ];
   retainedObjects =
     paths:
     (retainedStorageRenderer {
@@ -69,30 +62,38 @@ let
       };
       inherit lib;
     }).applications.retained-storage.objects;
-  isHook = object: (object.metadata.annotations or { }) ? "argocd.argoproj.io/hook";
-  directoriesJob = lib.findFirst (
-    object: object.kind == "Job" && object.metadata.name == "retained-directories"
-  ) null;
-  # Argo CD does not compare hook resources with Git. A retained path added
-  # only to the hook Job would never make the Application OutOfSync, so the
-  # Job would never run again to create the directory.
   retainedDirectoriesAssertions =
     let
+      inventory =
+        objects:
+        builtins.fromJSON (
+          (lib.findFirst (object: object.kind == "ConfigMap") null objects).data."directories.json"
+        );
       base = retainedObjects { };
-      extended = retainedObjects {
+      added = {
+        id = "fixture/added";
+        path = "/host-only/state/added";
+        guestPath = "/srv/state/added";
+        uid = 751;
+        gid = 751;
+        mode = "0750";
+        readOnly = false;
+      };
+      extended = retainedObjects { inherit added; };
+    in
+    lib.all (object: object.kind != "Job") base
+    &&
+      inventory extended == inventory base
+      // {
         added = {
-          path = "/host-only/state/added";
-          guestPath = "/srv/state/added";
-          uid = 751;
-          gid = 751;
-          mode = "0750";
-          readOnly = false;
+          inherit (added)
+            id
+            uid
+            gid
+            mode
+            ;
         };
       };
-    in
-    isHook (directoriesJob base)
-    && lib.filter (object: !isHook object) base != lib.filter (object: !isHook object) extended
-    && (directoriesJob base).spec == (directoriesJob extended).spec;
   policiesFor =
     declared:
     (import ../den/policies/clusters.nix {
@@ -136,9 +137,9 @@ in
     {
       checks.placement-contracts =
         assert lib.assertMsg rendererBoundaryAssertions
-          "Retained storage must project only its guest path and refuse unsafe parent ownership or access";
+          "Retained publication must use the guest root and a read-only helper mount";
         assert lib.assertMsg retainedDirectoriesAssertions
-          "A retained path must change a compared resource, not only the retained-directories hook Job";
+          "New retained identities must change compared inventory without a mutating hook";
         assert lib.assertMsg policyAssertions
           "Cluster policies must reject undeclared environments, hosts and application aspects";
         pkgs.writeText "placement-contracts" "ok\n";

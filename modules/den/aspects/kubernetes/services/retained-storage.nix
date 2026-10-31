@@ -3,61 +3,20 @@ let
   namespace = "local-path-storage";
   storageClassName = "retained-local";
   provisionerName = "rancher.io/local-path";
-  chartVersion = "0.0.34";
-  chartHash = "sha256-vkjwkF+QvTZ/PRaOanyXrXfYCSe/wBcRatga0SgDel0=";
   protect = {
     "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
   };
 in
 {
-  den.aspects.kubernetes.services.retained-storage.compute-resources = _: {
-    retainedPaths.kubernetes-volumes = {
-      uid = 0;
-      gid = 0;
-      mode = "0700";
-    };
-  };
   den.aspects.kubernetes.services.retained-storage.k8s-manifests =
     { computeResources, lib, ... }:
     let
-      retained = computeResources.retainedPaths."kubernetes-volumes";
-      linuxSystem =
-        inputs.self.nixosConfigurations.${computeResources.instance}.pkgs.stdenv.hostPlatform.system;
-      selected = builtins.fromJSON (
-        builtins.readFile (inputs.self + "/assets/helper-release/verified.json")
-      );
-      directories = selected.artifacts.retained-directories-image;
-      helperImage = "${directories.repository}@${directories.digest}";
       chart = lib.helm.downloadHelmChart {
         repo = "oci://ghcr.io/rancher/local-path-provisioner/charts";
         chart = "local-path-provisioner";
-        version = chartVersion;
-        inherit chartHash;
+        version = "0.0.34";
+        chartHash = "sha256-vkjwkF+QvTZ/PRaOanyXrXfYCSe/wBcRatga0SgDel0=";
       };
-      nodeTopology = [
-        {
-          matchLabelExpressions = [
-            {
-              key = "kubernetes.io/hostname";
-              values = [ computeResources.instance ];
-            }
-          ];
-        }
-      ];
-      controllerResources = {
-        requests = {
-          cpu = "10m";
-          memory = "32Mi";
-        };
-        limits = {
-          cpu = "100m";
-          memory = "128Mi";
-        };
-      };
-      # Hooks do not make Argo OutOfSync. Keep both the directory list and
-      # selected helper in the compared ConfigMap so either change reruns it.
-      directoriesConfig = "retained-directories";
-      directoriesKey = "directories.json";
       helperResources = {
         requests = {
           cpu = "10m";
@@ -68,13 +27,8 @@ in
           memory = "64Mi";
         };
       };
+      helperImage = "busybox:1.37.0@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0";
     in
-    assert lib.assertMsg (
-      selected.system == linuxSystem
-    ) "Selected helper release must target the retained-storage compute guest's system";
-    assert lib.assertMsg
-      (retained.uid == 0 && retained.gid == 0 && retained.mode == "0700" && !retained.readOnly)
-      "computeResources.retainedPaths.kubernetes-volumes must be a writable root-owned parent with mode 0700";
     {
       applications.retained-storage = {
         inherit namespace;
@@ -94,85 +48,22 @@ in
             apiVersion = "v1";
             kind = "ConfigMap";
             metadata = {
-              name = directoriesConfig;
-              inherit namespace;
-              annotations = protect // {
-                "homelab.danielvicory/helper-image" = helperImage;
-              };
-            };
-            data.${directoriesKey} = builtins.toJSON (
-              lib.mapAttrs (_: entry: {
-                inherit (entry) uid gid mode;
-              }) computeResources.retainedPaths
-            );
-          }
-          {
-            apiVersion = "batch/v1";
-            kind = "Job";
-            metadata = {
               name = "retained-directories";
               inherit namespace;
-              annotations = protect // {
-                "argocd.argoproj.io/hook" = "Sync";
-                "argocd.argoproj.io/hook-delete-policy" = "BeforeHookCreation";
-                "argocd.argoproj.io/sync-wave" = "1";
-              };
+              annotations = protect;
             };
-            spec = {
-              backoffLimit = 0;
-              template.spec = {
-                restartPolicy = "Never";
-                automountServiceAccountToken = false;
-                nodeSelector."kubernetes.io/hostname" = computeResources.instance;
-                containers = [
-                  {
-                    name = "retained-directories";
-                    image = helperImage;
-                    imagePullPolicy = "IfNotPresent";
-                    env = [
-                      {
-                        name = "RETAINED_DIRECTORIES";
-                        valueFrom.configMapKeyRef = {
-                          name = directoriesConfig;
-                          key = directoriesKey;
-                        };
-                      }
-                    ];
-                    args = [
-                      "/srv/state"
-                      computeResources.stateRoot.marker
-                      "$(RETAINED_DIRECTORIES)"
-                    ];
-                    securityContext = {
-                      runAsUser = 0;
-                      runAsGroup = 0;
-                      allowPrivilegeEscalation = false;
-                      readOnlyRootFilesystem = true;
-                      capabilities = {
-                        drop = [ "ALL" ];
-                        add = [ "CHOWN" ];
-                      };
-                    };
-                    resources = helperResources;
-                    volumeMounts = [
-                      {
-                        name = "state";
-                        mountPath = "/srv/state";
-                      }
-                    ];
-                  }
-                ];
-                volumes = [
-                  {
-                    name = "state";
-                    hostPath = {
-                      path = computeResources.stateRoot.guestPath;
-                      type = "Directory";
-                    };
-                  }
-                ];
-              };
-            };
+            # Application identities travel with Argo, not the node OS. This is
+            # desired identity, not permission to create missing application data.
+            data."directories.json" = builtins.toJSON (
+              lib.mapAttrs (_: entry: {
+                inherit (entry)
+                  id
+                  uid
+                  gid
+                  mode
+                  ;
+              }) computeResources.retainedPaths
+            );
           }
           {
             apiVersion = "storage.k8s.io/v1";
@@ -184,14 +75,28 @@ in
               };
             };
             provisioner = provisionerName;
+            # Kubernetes validates both names before the provisioner sees them.
+            # Namespace has no dots, so the first dot unambiguously separates it.
+            parameters = {
+              pathPattern = "{{ .PVC.Namespace }}.{{ .PVC.Name }}";
+              allowUnsafePathPattern = "true";
+            };
             volumeBindingMode = "WaitForFirstConsumer";
             reclaimPolicy = "Retain";
             allowVolumeExpansion = false;
-            allowedTopologies = nodeTopology;
+            allowedTopologies = [
+              {
+                matchLabelExpressions = [
+                  {
+                    key = "kubernetes.io/hostname";
+                    values = [ computeResources.instance ];
+                  }
+                ];
+              }
+            ];
           }
         ];
       };
-
       applications.local-path-provisioner = {
         inherit namespace;
         annotations."argocd.argoproj.io/sync-wave" = "-1";
@@ -211,14 +116,12 @@ in
             storageClass = {
               create = false;
               name = storageClassName;
-              provisionerName = provisionerName;
+              inherit provisionerName;
             };
-            # No DEFAULT_PATH_FOR_NON_LISTED_NODES entry means unknown nodes
-            # fail closed instead of receiving a substitute backing path.
             nodePathMap = [
               {
                 node = computeResources.instance;
-                paths = [ retained.guestPath ];
+                paths = [ computeResources.stateRoot.guestPath ];
               }
             ];
             nodeSelector."kubernetes.io/hostname" = computeResources.instance;
@@ -233,24 +136,66 @@ in
               readOnlyRootFilesystem = true;
               capabilities.drop = [ "ALL" ];
             };
-            resources = controllerResources;
+            resources = {
+              requests = {
+                cpu = "10m";
+                memory = "32Mi";
+              };
+              limits = {
+                cpu = "100m";
+                memory = "128Mi";
+              };
+            };
             rbac.create = true;
             serviceAccount.create = true;
             helperPod.resources = helperResources;
             configmap = {
               name = "local-path-config";
+              # Publication waits for an explicitly provisioned leaf. The native
+              # runtime hook, not this existence test, authorizes each writer.
               setup = ''
                 set -eu
-                umask 077
-                mkdir -m 0700 -p "$VOL_DIR"
+                test -d "$VOL_DIR"
               '';
               teardown = ''
                 set -eu
-                rm -rf "$VOL_DIR"
+                printf 'Retaining %s; deletion requires an explicit operator action.\n' "$VOL_DIR"
               '';
             };
           };
         };
+        # The chart does not expose helper volumeMounts. Native local-path
+        # reuses this named mount and retains readOnly while setting its path.
+        resources.configMaps.local-path-config.data."helperPod.yaml" = lib.mkForce (
+          builtins.toJSON {
+            apiVersion = "v1";
+            kind = "Pod";
+            metadata.name = "helper-pod";
+            spec = {
+              automountServiceAccountToken = false;
+              containers = [
+                {
+                  name = "helper-pod";
+                  image = helperImage;
+                  imagePullPolicy = "IfNotPresent";
+                  resources = helperResources;
+                  securityContext = {
+                    allowPrivilegeEscalation = false;
+                    readOnlyRootFilesystem = true;
+                    capabilities.drop = [ "ALL" ];
+                  };
+                  volumeMounts = [
+                    {
+                      name = "data";
+                      mountPath = "/retained";
+                      readOnly = true;
+                    }
+                  ];
+                }
+              ];
+            };
+          }
+        );
       };
     };
 }

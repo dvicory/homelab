@@ -1,10 +1,9 @@
 apiVersion: v1
 data:
-  directories.json: '{"identity-kanidm":{"gid":1000,"mode":"0700","uid":1000},"jellyfin-config":{"gid":751,"mode":"0750","uid":751},"kubernetes-volumes":{"gid":0,"mode":"0700","uid":0},"media-seerr-configuration":{"gid":1000,"mode":"0700","uid":1000},"prowlarr":{"gid":755,"mode":"0700","uid":755},"radarr":{"gid":752,"mode":"0700","uid":752},"sabnzbd":{"gid":757,"mode":"0700","uid":757},"seerr":{"gid":1000,"mode":"0700","uid":1000},"sonarr":{"gid":753,"mode":"0700","uid":753}}'
+  directories.json: '{"identity-kanidm":{"gid":1000,"id":"prod-home/identity-kanidm","mode":"0700","uid":1000},"jellyfin-config":{"gid":751,"id":"prod-home/jellyfin-config","mode":"0750","uid":751},"media-seerr-configuration":{"gid":1000,"id":"prod-home/media-seerr-configuration","mode":"0700","uid":1000},"prowlarr":{"gid":755,"id":"prod-home/prowlarr","mode":"0700","uid":755},"radarr":{"gid":752,"id":"prod-home/radarr","mode":"0700","uid":752},"sabnzbd":{"gid":757,"id":"prod-home/sabnzbd","mode":"0700","uid":757},"seerr":{"gid":1000,"id":"prod-home/seerr","mode":"0700","uid":1000},"sonarr":{"gid":753,"id":"prod-home/sonarr","mode":"0700","uid":753}}'
 kind: ConfigMap
 metadata:
   annotations:
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
-    homelab.danielvicory/helper-image: ghcr.io/dvicory/homelab/retained-directories@sha256:be4d7a94fec6c14149484035bc20f6088b887946202885c8582690f0e495afc3
   name: retained-directories
   namespace: local-path-storage
