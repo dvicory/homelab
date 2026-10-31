@@ -40,6 +40,8 @@ positive:
       application-source-confinement]
     argoproj.io/v1alpha1/Application/argocd/gateway-retained: [application-lifecycle, application-directory-source,
       application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/homarr: [application-lifecycle, application-directory-source, application-source-confinement]
+    argoproj.io/v1alpha1/Application/argocd/homarr-retained: [application-lifecycle, application-directory-source, application-source-confinement]
     argoproj.io/v1alpha1/Application/argocd/identity: [application-lifecycle, application-directory-source, application-source-confinement]
     argoproj.io/v1alpha1/Application/argocd/identity-retained: [application-lifecycle, application-directory-source,
       application-source-confinement]
@@ -318,6 +320,14 @@ scenarios:
 - name: dependency-wave-reversed
   mutate: (.bundle.resources[] | select(.object.kind == "Application" and .object.metadata.name == "argocd-retained")
     | .object["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"]) = "100"
+  fail: [application-lifecycle-order]
+- name: homarr-before-identity-secret
+  mutate: (.bundle.resources[] | select(.object.kind == "Application" and .object.metadata.name == "homarr")
+    | .object["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"]) = "1"
+  fail: [application-lifecycle-order]
+- name: homarr-namespace-after-secret-producer
+  mutate: (.bundle.resources[] | select(.object.kind == "Application" and .object.metadata.name == "homarr-retained")
+    | .object["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"]) = "3"
   fail: [application-lifecycle-order]
 - name: dependency-population-missing
   mutate: .bundle.resources |= map(select((.object.kind == "Application" and .object.metadata.name == "gateway-controller")

@@ -48,6 +48,9 @@
                 den.clusters.prod-home = {
                   settings.kubernetes.services.identity.phase = lib.mkForce item.identity;
                   settings.kubernetes.services.seerr.phase = lib.mkForce item.seerr;
+                  # Reuse the two publication states without doubling this matrix.
+                  # homarr-contracts independently covers every Homarr/identity pair.
+                  settings.kubernetes.services.homarr.phase = lib.mkForce item.seerr;
                   ingress.mode = lib.mkForce item.mode;
                   ingress.trustedProxyCIDRs = lib.mkForce (
                     lib.optionals (item.mode == "trustedEdges") [
@@ -88,6 +91,7 @@
                 identity.phase = inventory.settings.kubernetes.services.identity.phase;
                 identity.directory.port = inventory.settings.kubernetes.services.identity.directory.port;
                 seerr.phase = inventory.settings.kubernetes.services.seerr.phase;
+                homarr.phase = inventory.settings.kubernetes.services.homarr.phase;
                 media = lib.genAttrs [ "radarr" "sonarr" ] (
                   family:
                   lib.mapAttrs (_: instance: {

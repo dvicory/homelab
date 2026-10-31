@@ -10,6 +10,7 @@
 - **Ingress:** `direct` on NodePort `30443`
 - **Identity phase:** `normal`
 - **Seerr publication phase:** `ready`
+- **Homarr publication phase:** `initial`
 
 ## Deploy configuration
 
@@ -36,6 +37,7 @@ independently syncing child Applications.
 | Service | Exposure | Canonical URL | Secondary URL | Backend |
 | --- | --- | --- | --- | --- |
 | `argocd` | `public` | `https://argocd.plus2.danielvicory.dev` | `https://argocd.backup.plus2.danielvicory.dev` | `argocd/argocd-server:80` |
+| `home` | `public` | `https://home.plus2.danielvicory.dev` | `https://home.backup.plus2.danielvicory.dev` | `portal/homarr:7575` |
 | `idm` | `public` | `https://id.bzfx.net` | `not declared` | `identity/kanidm:443` |
 | `jellyfin` | `private` | `https://jellyfin.plus2.danielvicory.dev` | `https://jellyfin.backup.plus2.danielvicory.dev` | `jellyfin/jellyfin:8096` |
 | `prowlarr` | `public` | `https://prowlarr.plus2.danielvicory.dev` | `https://prowlarr.backup.plus2.danielvicory.dev` | `media/prowlarr:9696` |
@@ -48,6 +50,11 @@ Public edges publish only `public` routes. The `idm` canonical hostname
 remains the identity issuer across direct and secondary-edge access;
 failover changes DNS, not the issuer or certificate identity.
 
+The `home` route is omitted from Gateway and edges until
+Homarr is `ready` and identity is `normal`. Complete private onboarding
+and audience checks in [the Homarr runbook](operations/homarr.md)
+before publishing it.
+
 For `direct` ingress, point each hostname at the host's LAN or Tailscale
 address. TCP 443 forwards to the guest's NodePort. For `trustedEdges`,
 point DNS at the edge.
@@ -56,6 +63,7 @@ point DNS at the edge.
 
 | Retained key | Host path | Guest path | Guest UID:GID | Mode | Access |
 | --- | --- | --- | --- | --- | --- |
+| `homarr` | `/var/lib/homelab/compute-1/state/homarr` | `/srv/state/homarr` | `1000:1000` | `0700` | writable |
 | `identity-kanidm` | `/var/lib/homelab/compute-1/state/identity-kanidm` | `/srv/state/identity-kanidm` | `1000:1000` | `0700` | writable |
 | `jellyfin-config` | `/var/lib/homelab/compute-1/state/jellyfin-config` | `/srv/state/jellyfin-config` | `751:751` | `0750` | writable |
 | `kubernetes-volumes` | `/var/lib/homelab/compute-1/state/kubernetes-volumes` | `/srv/state/kubernetes-volumes` | `0:0` | `0700` | writable |
@@ -90,6 +98,7 @@ outputs, images, documentation, or logs.
 | `identity/kanidm-provision` | `identity--kanidm-provision--idm-admin-password` → `idm-admin-password` | `Opaque` |
 | `jellyfin/jellyfin-admin` | `jellyfin--jellyfin-admin--password` → `password` | `Opaque` |
 | `media/media-runtime` | `media--media-runtime--PROWLARR_API_KEY` → `PROWLARR_API_KEY`, `media--media-runtime--RADARR_API_KEY` → `RADARR_API_KEY`, `media--media-runtime--SABNZBD_API_KEY` → `SABNZBD_API_KEY`, `media--media-runtime--SEERR_API_KEY` → `SEERR_API_KEY`, `media--media-runtime--SONARR_API_KEY` → `SONARR_API_KEY` | `Opaque` |
+| `portal/homarr` | `portal--homarr--SECRET_ENCRYPTION_KEY` → `SECRET_ENCRYPTION_KEY` | `Opaque` |
 
 ## Certificates
 
@@ -237,6 +246,7 @@ over the replacement.
 
 ## Service runbooks
 
+- [`homarr`](operations/homarr.md)
 - [`identity`](operations/identity.md)
 - [`jellyfin`](operations/jellyfin.md)
 - [`luks-storage-migration`](operations/luks-storage-migration.md)

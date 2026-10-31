@@ -7,6 +7,7 @@ let
   cluster = config.den.clusters.prod-home;
   identityPhase = cluster.settings.kubernetes.services.identity.phase;
   seerrPhase = cluster.settings.kubernetes.services.seerr.phase;
+  homarrPhase = cluster.settings.kubernetes.services.homarr.phase;
   requestsRouteNote = lib.optionalString (seerrPhase == "initial") ''
     The `requests` route is declared public but is omitted from Gateway and
     edge configuration while Seerr remains in the `initial` phase.
@@ -78,6 +79,7 @@ in
         - **Ingress:** `${cluster.ingress.mode}` on NodePort `${toString cluster.ingress.nodePort}`
         - **Identity phase:** `${identityPhase}`
         - **Seerr publication phase:** `${seerrPhase}`
+        - **Homarr publication phase:** `${homarrPhase}`
 
         ## Deploy configuration
 
@@ -109,7 +111,12 @@ in
         remains the identity issuer across direct and secondary-edge access;
         failover changes DNS, not the issuer or certificate identity.
 
-        ${requestsRouteNote}For `direct` ingress, point each hostname at the host's LAN or Tailscale
+        ${requestsRouteNote}The `home` route is omitted from Gateway and edges until
+        Homarr is `ready` and identity is `normal`. Complete private onboarding
+        and audience checks in [the Homarr runbook](operations/homarr.md)
+        before publishing it.
+
+        For `direct` ingress, point each hostname at the host's LAN or Tailscale
         address. TCP 443 forwards to the guest's NodePort. For `trustedEdges`,
         point DNS at the edge.
 
