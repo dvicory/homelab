@@ -24,6 +24,12 @@ cluster access it comes from and do not expose it to other users. Do not
 broaden NetworkPolicy or media-directory modes to fix access. Arr and
 SABnzbd receive media access through their declared group.
 
+SABnzbd's managed download permissions are `2770`: directories retain
+setgid and inherit the shared media group; completed files use `660`.
+Do not replace this with `770`, which breaks group inheritance for later
+downloads. This policy covers fresh downloads; it does not repair existing
+content with incorrect ownership or permissions.
+
 ## Choose profiles
 
 The current managed menus and defaults are:

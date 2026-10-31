@@ -670,6 +670,26 @@ for name in ['seerr-drift-inputs', 'seerr-failure-secrets']:
                 category = policy["arr"][app]["standard"]["category"]
                 actual_dir = one(sab_config["categories"], "name", category)["dir"]
                 require(actual_dir == category, f"SAB category {category!r}: native directory {actual_dir!r}, expected {category!r}")
+                # Exercise SAB's real directory/post-processing code as its daemon user.
+                downloaded = docker("exec", containers["sabnzbd"], "/command/s6-setuidgid", "abc", "/lsiopy/bin/python", "-c", '''
+import os, sys
+from pathlib import Path
+sys.path.insert(0, '/app/sabnzbd')
+import sabnzbd.cfg
+from sabnzbd.filesystem import create_all_dirs, set_permissions
+sabnzbd.cfg.permissions.set(sys.argv[1])
+release = Path(sys.argv[2]) / sys.argv[3] / 'shared-permission-fixture'
+assert create_all_dirs(str(release), apply_permissions=True)
+video = release / 'fixture.mkv'
+video.write_bytes(b'shared download payload')
+set_permissions(str(release))
+assert release.stat().st_gid == video.stat().st_gid == int(sys.argv[4]), 'download lost the shared media group'
+assert release.stat().st_mode & 0o2000, 'download directory lost setgid'
+assert video.stat().st_mode & 0o7117 == 0, 'download permits world access or execution'
+print(video)
+''', str(sab_config["misc"]["permissions"]), sab_config["misc"]["complete_dir"], category, str(media_gid))
+                require(docker("exec", containers[app], "/command/s6-setuidgid", "abc", "/bin/cat", downloaded) == "shared download payload",
+                        f"{app} cannot read SAB's completed download")
             denied(lambda: request(ports["sabnzbd"], "/api?" + urlencode({"mode": "get_config", "output": "json", "apikey": keys["radarr"]})), statuses=(403,))
             # SABnzbd's web login is off; the Gateway's Kanidm sign-in is the only one.
             require(sab_config["misc"]["username"] == "" and sab_config["misc"]["password"] == "", "SAB still has a web login")
