@@ -227,7 +227,7 @@ in
               private_identity = "${privateManifests}"
               replacement_identity = "${replacementManifests}"
               source_identity = "${sourceManifests}"
-              private_reference = "${imageB.imageReference}"
+              archive_reference = "${imageB.imageReference}"
 
               def evidence(label, value):
                   print(f"EVIDENCE {label} {json.dumps(value, sort_keys=True)}")
@@ -522,7 +522,7 @@ in
                       assert manifest_file is not None, "producer archive has no manifest"
                       inventory = json.load(manifest_file)
                       assert len(inventory) == 1, inventory
-                      assert private_reference in inventory[0]["RepoTags"], inventory
+                      assert archive_reference in inventory[0]["RepoTags"], inventory
                       config_file = archive.extractfile(inventory[0]["Config"])
                       assert config_file is not None, "producer archive has no referenced config"
                       config_bytes = config_file.read()
@@ -531,6 +531,21 @@ in
                   cluster.succeed(
                       "${k3sPackage}/bin/k3s ctr --address /run/k3s/containerd/containerd.sock "
                       "--namespace k8s.io images import ${imageB}"
+                  )
+                  # Kubelet keys cached pull authorization by config digest and
+                  # repository. A and B can share a config digest, so give B a
+                  # source-only tag in A's repository. Never forbids a registry fallback.
+                  registry_image = next(
+                      container["image"] for container in last_job_execution["pods"][0]["spec"]["containers"]
+                      if container["name"] == "provision"
+                  )
+                  private_reference = (
+                      registry_image.split("@", 1)[0] + ":source-" + archive_reference.rsplit(":", 1)[1]
+                  )
+                  cluster.succeed(
+                      "${k3sPackage}/bin/k3s ctr --address /run/k3s/containerd/containerd.sock "
+                      f"--namespace k8s.io images tag {shlex.quote('docker.io/' + archive_reference)} "
+                      f"{shlex.quote(private_reference)}"
                   )
                   imported = json.loads(cluster.succeed(
                       f"${k3sPackage}/bin/k3s crictl inspecti --output json {shlex.quote(private_reference)}"

@@ -23,7 +23,7 @@ spec:
               value: homelab-admin
             - name: HOME
               value: /work
-          image: ghcr.io/dvicory/homelab/kanidm-provision@sha256:1a96d652036147873cbae462f0f664a6aac730747b0b52385566945499ea628a
+          image: ghcr.io/dvicory/homelab/kanidm-provision@sha256:f02a5d250eebbaf171a81b8b21d4a4dac76889163deb24203e1716df76e27f3d
           imagePullPolicy: IfNotPresent
           name: provision
           resources:
