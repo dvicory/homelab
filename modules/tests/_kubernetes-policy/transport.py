@@ -264,7 +264,7 @@ def generate(args):
         cluster = json.loads((inputs / variant / "expected.json").read_text())["cluster"]
         services = cluster["settings"]["kubernetes"]["services"]
         return {"identity": services["identity"]["phase"], "seerr": services["seerr"]["phase"],
-                "mode": cluster["ingress"]["mode"]}
+                "homarr": services["homarr"]["phase"], "mode": cluster["ingress"]["mode"]}
 
     def base_object(variant, ident):
         for population in objects(variant):
