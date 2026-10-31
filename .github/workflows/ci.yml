@@ -38,7 +38,7 @@ jobs:
 
   plan:
     name: Inventory hosted checks
-    runs-on: ${{ inputs.check != '' && inputs.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || inputs.check != '' && inputs.system == 'aarch64-darwin' && 'macos-14' || 'ubuntu-24.04' }}
+    runs-on: ${{ inputs.check != '' && inputs.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || inputs.check != '' && inputs.system == 'aarch64-darwin' && 'macos-15' || 'ubuntu-24.04' }}
     outputs:
       matrix: ${{ steps.inventory.outputs.matrix }}
       darwin: ${{ steps.inventory.outputs.darwin }}
@@ -214,7 +214,7 @@ jobs:
     needs: plan
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.build == 'true' }}
     name: ${{ matrix.check || matrix.group }} (${{ matrix.system }})
-    runs-on: ${{ matrix.system == 'x86_64-linux' && 'ubuntu-24.04' || matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'macos-14' }}
+    runs-on: ${{ matrix.system == 'x86_64-linux' && 'ubuntu-24.04' || matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'macos-15' }}
     environment:
       name: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.CACHIX_CACHE != '' && 'cachix-publish' || '' }}
     strategy:
@@ -453,7 +453,7 @@ jobs:
     needs: [plan, bootstrap-darwin-builder]
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.bootstrap-darwin-builder.result == 'success' && needs.plan.outputs.darwin == 'true' }}
     name: darwinConfigurations (aarch64-darwin)
-    runs-on: macos-14
+    runs-on: macos-15
     environment:
       name: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.CACHIX_CACHE != '' && 'cachix-publish' || '' }}
     strategy:
@@ -473,7 +473,7 @@ jobs:
     name: ${{ matrix.name }} (${{ matrix.system }})
     needs: plan
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.native == 'true' }}
-    runs-on: ${{ matrix.system == 'x86_64-linux' && 'ubuntu-24.04' || matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'macos-14' }}
+    runs-on: ${{ matrix.system == 'x86_64-linux' && 'ubuntu-24.04' || matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'macos-15' }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.applications) }}
