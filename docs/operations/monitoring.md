@@ -324,19 +324,29 @@ and one post-gap collection does not establish a no-growth interval. Negative
 counter values are not recovery evidence; confirm two successful nonnegative
 collections of the affected input.
 
-Declared disks are `services.host-telemetry.expectedDisks` in
-`modules/den/hosts/hvn-hyp1/default.nix`. When a disk is added, replaced or
-retired, edit that set in the same change:
+SMART discovery automatically includes OS-exposed non-USB physical disks,
+including newly attached disks and spares. No new inventory entry enables them.
+USB storage, optical media and virtual/synthetic devices are excluded.
 
-- name SAS and SATA disks by `/dev/disk/by-id/wwn-…`;
-- name a disk whose by-id names embed its serial number (these NVMe drives
-  have no EUI) by `/dev/disk/by-path/…`;
-- never record a serial number; leave out USB and virtual devices.
+`services.host-telemetry.expectedDisks` in
+`modules/den/hosts/hvn-hyp1/default.nix` is the independent required-alias floor.
+Keep those names and serial-free WWN/by-path identities when replacing or
+retiring a required disk; do not replace the set with only currently present
+devices. A missing required alias still raises `HostDiskTelemetryMissing`.
+An unread automatically discovered disk uses the same alert family. A failed
+discovery or missing private identity leaves the prior file and mtime intact.
 
-List candidates with `lsblk -d -o NAME,TYPE,TRAN,MODEL,WWN` and
-`ls -l /dev/disk/by-id /dev/disk/by-path`. A disk that stays declared but is
-gone raises `HostDiskTelemetryMissing`. SMART reads every 15 minutes, so the
-unused spares cannot spin down.
+For non-probing OS metadata use
+`lsblk --json --nodeps --paths --properties-by udev --output NAME,TYPE,TRAN,SUBSYSTEMS`.
+Do not publish native NVMe WWN/by-id values: they can encode serial numbers.
+Labels prefer WWN symlinks and otherwise serial-free by-path aliases.
+Physical members hidden behind a controller are not claimed as covered by
+whole-disk OS discovery. There is no learned registry.
+
+The oneshot has read-only current/future block-device reach. Its 15-minute
+reads can wake non-USB disks, including spares and new attachments; Argo holds
+do not prevent this. The monitoring policy is not permission to invoke a probe,
+activate units or run a controller scan.
 
 Required mounts are a **build-time expected list**: each Den MergerFS pool,
 each provisioned `disk.luks-storage` mount, and

@@ -22,6 +22,8 @@ import tempfile
 
 COLLECTION_FAILED = 75
 COMMAND_TIMEOUT = 60
+SYSFS_BLOCK = "/sys/class/block"
+DISK_LINKS = ("/dev/disk/by-id", "/dev/disk/by-path")
 
 
 class CollectionError(Exception):
@@ -227,8 +229,80 @@ def smart_disk_metrics(name, path, document, exit_status):
     return lines
 
 
-def run_smart(arguments):
+def discover_disks(arguments):
     disks = parse_disks(arguments.disk)
+    by_device = {block_device(path): name for name, path in disks.items()}
+    try:
+        completed = subprocess.run(
+            [arguments.lsblk, "--json", "--nodeps", "--paths", "--properties-by", "udev",
+             "--output", "NAME,TYPE,TRAN,SUBSYSTEMS"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=COMMAND_TIMEOUT,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise CollectionError(f"lsblk discovery exited {completed.returncode}")
+        document = json.loads(completed.stdout)
+        if not isinstance(document, dict) or not isinstance(document.get("blockdevices"), list):
+            raise CollectionError("lsblk discovery printed no device inventory")
+        physical = []
+        for entry in document["blockdevices"]:
+            if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+                raise CollectionError("lsblk discovery printed an invalid device")
+            if not os.path.isabs(entry["name"]) or "\0" in entry["name"] or not isinstance(entry.get("type"), str):
+                raise CollectionError("lsblk discovery printed an invalid device identity")
+            if entry["type"] != "disk":
+                continue
+            if "tran" not in entry or not isinstance(entry.get("subsystems"), str):
+                raise CollectionError("lsblk discovery omitted disk topology")
+            if entry["tran"] is not None and not isinstance(entry["tran"], str):
+                raise CollectionError("lsblk discovery printed an invalid transport")
+            subsystems = set(entry["subsystems"].split(":"))
+            if entry["tran"] == "usb" or subsystems.intersection({"usb", "virtio", "xen", "vmbus"}):
+                continue
+            device = block_device(entry["name"])
+            if device in by_device:
+                continue
+            topology = os.path.join(SYSFS_BLOCK, os.path.basename(device))
+            if not os.path.exists(topology):
+                raise CollectionError("disk discovery lost its sysfs topology")
+            if "/devices/virtual/" in os.path.realpath(topology):
+                continue
+            if not os.path.exists(os.path.join(topology, "device")):
+                raise CollectionError("disk discovery has no physical device metadata")
+            physical.append(device)
+        aliases = {}
+        if physical:
+            for priority, directory in enumerate(DISK_LINKS):
+                try:
+                    with os.scandir(directory) as entries:
+                        for entry in entries:
+                            # NVMe by-id/WWN strings can encode serials; keep the
+                            # existing WWN-or-topology-path label policy.
+                            if priority == 0 and not entry.name.startswith("wwn-"):
+                                continue
+                            aliases.setdefault(os.path.realpath(entry.path), []).append((priority, entry.path))
+                except FileNotFoundError:
+                    continue
+        for device in physical:
+            if device in by_device:
+                continue
+            if device not in aliases:
+                raise CollectionError("physical disk has no stable serial-free identity")
+            path = min(aliases[device])[1]
+            name = os.path.basename(path)
+            if name in disks:
+                raise CollectionError("physical disk identity conflicts with a required alias")
+            disks[name] = path
+            by_device[device] = name
+        return disks
+    except (OSError, subprocess.TimeoutExpired, ValueError) as error:
+        raise CollectionError(f"disk discovery did not complete: {error}") from error
+
+
+def run_smart(arguments):
+    disks = discover_disks(arguments)
     lines = []
     for name in sorted(disks):
         path = disks[name]
@@ -268,6 +342,7 @@ def main(argv=None):
     zpool.add_argument("--disk", action="append", default=[], help="NAME=PATH of a declared disk")
     smart = commands.add_parser("smart", help="write smart.prom from `smartctl --json --all`")
     smart.add_argument("--smartctl", required=True)
+    smart.add_argument("--lsblk", required=True)
     smart.add_argument("--output", required=True)
     smart.add_argument("--disk", action="append", default=[], help="NAME=PATH of a declared disk")
     arguments = parser.parse_args(argv)

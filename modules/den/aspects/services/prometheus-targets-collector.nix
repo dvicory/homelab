@@ -55,7 +55,7 @@ in
           guestAddress = readOnly types.str "The only source address admitted to host telemetry.";
           scrapeTargets = readOnly (types.listOf types.attrs) "Resolved host scrape targets: job, address, path, interval, labels.";
           pools = readOnly (types.listOf types.str) "ZFS pools that must keep reporting.";
-          disks = readOnly (types.attrsOf types.str) "Physical disks, by readable name and stable path, whose SMART health must keep reporting.";
+          disks = readOnly (types.attrsOf types.str) "Required disk aliases, by readable name and stable path, whose absence must alert independently of physical-disk discovery.";
           requiredMounts = readOnly (types.listOf types.str) "Mountpoints that must be present.";
         };
 
