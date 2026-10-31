@@ -1,7 +1,7 @@
 # Identity operations
 
 Kanidm runs in the `identity` namespace. The Gateway protects administrator
-routes with OIDC from Kanidm. Argo CD also signs users in through Kanidm.
+routes with OIDC from Kanidm. Argo CD and Grafana also sign users in through Kanidm.
 
 ## Canonical name and certificate renewal
 
@@ -37,6 +37,11 @@ The Gateway's sign-in for a route uses that route's client and the Secret
 so Argo CD appears once; its entry starts Argo CD's Kanidm sign-in. The
 `kanidm-provision` Job also publishes that client's secret to
 `argocd/argocd-kanidm-oidc`.
+
+Grafana likewise shares its route's `grafana` client. Its entry starts Grafana's
+native sign-in, and provisioning publishes the same secret to
+`monitoring/grafana-oidc`. Both native callbacks coexist with the Gateway callback;
+neither application's entrance sign-in alone grants application access.
 
 The declaration owns every Kanidm OAuth2 client. On each run the Job
 deletes clients it does not declare, including any created by hand.
@@ -203,8 +208,10 @@ Kanidm's pod health and logs for the same time window.
 
 Inspect the OAuth success and failure counters on the private
 `/stats/prometheus` endpoint. Counters show OAuth outcomes, not the cause
-of a failure. The declared stack does not configure a scraper or alerts;
-inspect these counters manually.
+of a failure. Monitoring does not scrape them by design: Kanidm's
+application metrics are out of its scope, so inspect these counters
+manually. Monitoring probes Kanidm's `/status` through the Gateway and
+alerts when it stops answering ([`monitoring.md`](monitoring.md)).
 
 Keep the OAuth2 text logger at `critical`. Do not enable verbose OAuth2
 logging or add `%RESPONSE_CODE_DETAILS%` to access logs: both can expose

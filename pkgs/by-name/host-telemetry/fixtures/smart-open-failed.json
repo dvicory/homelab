@@ -1,0 +1,32 @@
+{
+  "json_format_version": [
+    1,
+    0
+  ],
+  "smartctl": {
+    "version": [
+      7,
+      5
+    ],
+    "pre_release": false,
+    "platform_info": "x86_64-linux-6.18.0",
+    "build_info": "(local build)",
+    "argv": [
+      "smartctl",
+      "--json=c",
+      "--all",
+      "@PATH@"
+    ],
+    "exit_status": 2,
+    "messages": [
+      {
+        "string": "Smartctl open device: @PATH@ failed: No such device",
+        "severity": "error"
+      }
+    ]
+  },
+  "local_time": {
+    "time_t": 1791600000,
+    "asctime": "Sat Oct 10 12:00:00 2026 UTC"
+  }
+}

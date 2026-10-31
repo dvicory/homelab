@@ -1,0 +1,37 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  name: grafana-admin
+  namespace: gateway
+spec:
+  oidc:
+    clientID: grafana
+    clientSecret:
+      name: oidc-grafana
+    forwardAccessToken: false
+    logoutPath: /logout
+    passThroughAuthHeader: false
+    provider:
+      authorizationEndpoint: https://id.bzfx.net/ui/oauth2
+      backendRefs:
+        - group: gateway.envoyproxy.io
+          kind: Backend
+          name: kanidm-oidc
+          namespace: identity
+          port: 443
+          weight: 1
+      issuer: https://id.bzfx.net/oauth2/openid/grafana
+      tokenEndpoint: https://id.bzfx.net/oauth2/token
+    redirectURL: https://%REQ(:authority)%/oauth2/callback
+    refreshToken: true
+    scopes:
+      - openid
+      - profile
+      - email
+      - homelab_admin
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: grafana

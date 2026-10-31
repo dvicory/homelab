@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/instance: blackbox
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: prometheus-blackbox-exporter
+    app.kubernetes.io/version: v0.28.0
+    helm.sh/chart: prometheus-blackbox-exporter-11.18.0
+  name: blackbox
+  namespace: monitoring
+spec:
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: blackbox
+      app.kubernetes.io/name: prometheus-blackbox-exporter
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+        checksum/config: 25b617ad0f8eeed28fa81145eeb564f944baa007693a643205cab4b410875415
+      labels:
+        app.kubernetes.io/instance: blackbox
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/name: prometheus-blackbox-exporter
+        app.kubernetes.io/version: v0.28.0
+        helm.sh/chart: prometheus-blackbox-exporter-11.18.0
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - args:
+            - --config.file=/config/blackbox.yaml
+          image: quay.io/prometheus/blackbox-exporter:v0.28.0@sha256:e753ff9f3fc458d02cca5eddab5a77e1c175eee484a8925ac7d524f04366c2fc
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /-/healthy
+              port: http
+          name: blackbox-exporter
+          ports:
+            - containerPort: 9115
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+          resources:
+            limits:
+              cpu: 100m
+              memory: 128Mi
+            requests:
+              cpu: 10m
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsGroup: 1000
+            runAsNonRoot: true
+            runAsUser: 1000
+          volumeMounts:
+            - mountPath: /config
+              name: config
+      hostNetwork: false
+      nodeSelector:
+        kubernetes.io/hostname: compute-1
+      restartPolicy: Always
+      serviceAccountName: blackbox
+      volumes:
+        - configMap:
+            name: blackbox
+          name: config
