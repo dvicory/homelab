@@ -64,13 +64,13 @@ windows or weaken refusal assertions; it is not a policy-controller repair.
 
 ## 2. Host telemetry (hvn-hyp1)
 
-- [ ] 2.1 **Disk inventory and spare-policy confirmation (operator).** Confirm the nine declared paths: seven SAS/SATA WWNs under `/dev/disk/by-id/` and two rpool NVMe PCI paths under `/dev/disk/by-path/`. Exclude USB IDSDM and iDRAC virtual devices. Record no serial numbers. Confirm that periodic unguarded SMART reads of unused spares are intended; they are not standby-preserving.
+- [x] 2.1 **Disk policy confirmed by the operator.** Automatically monitor OS-exposed non-USB physical disks, including newly attached disks and spares, without per-disk configuration. Keep the nine existing named aliases as independent required-presence expectations. Exclude USB, virtual and synthetic discovery, and expose no raw serial numbers.
 
-  Not checked: this is the operator's task. A read-only cross-check on 2026-10-11 (`ls -l /dev/disk/by-id /dev/disk/by-path`, `lsblk -d -o NAME,TYPE,TRAN,MODEL,WWN`) matched the nine declared paths and showed the IDSDM (USB) and iDRAC (virtual) devices left out. The NVMe drives are declared by path (design.md, Implementation note 2).
+  The owner selected non-USB physical coverage on 2026-10-31. Passive OS/sysfs metadata confirms the existing aliases and distinguishes USB IDSDM and optical/iDRAC media; no SMART read was used. This policy decision is not activation, device-probe or provider-delivery permission.
 
 - [x] 2.2 Add the host telemetry aspect:
   - node_exporter with the systemd, filesystem, zfs and textfile collectors, bound to the compute bridge's host address from host data, with `MemoryMax`, `CPUQuota` and restart-on-failure;
-  - the `expectedDisks` option, and the declared pool list derived from `zfs.rootPool.name`.
+  - automatic non-USB physical-disk discovery, the `expectedDisks` required-alias floor, and the declared pool list derived from `zfs.rootPool.name`.
 
   Verify by evaluation that `hvn-hyp1`'s listen address equals the bridge address, that no wildcard bind exists, and that no unit is wanted by a target that activation waits on.
 
@@ -80,11 +80,14 @@ windows or weaken refusal assertions; it is not a policy-controller repair.
 
   Evidence: `host-telemetry-converters` covers ONLINE, DEGRADED, device errors, scrub errors and a failing `zpool` (previous file and mtime kept; invalid JSON too). A read-only run against the live `rpool` produced the expected series (Implementation note 5).
 
-- [x] 2.4 Add the `smart-status` oneshot and its 15-minute timer. It runs `smartctl --json -a` on each declared by-id path and writes `smart.prom` atomically: health status, SCSI grown defects, ATA pending and reallocated sectors, and `homelab_smart_device_up{disk,id}`. The unit has only the device access it needs. Verify with converter unit tests against recorded `smartctl --json` output for:
+- [x] 2.4 Add the `smart-status` oneshot and its 15-minute timer. Native OS metadata discovers non-USB physical disks; the existing pinned smartctl reads the deduplicated required/discovered set and writes `smart.prom` atomically. Keep current/future block-device access read-only and preserve health/counter/device-up metrics. Existing converter fixtures exercise:
   - a healthy SAS drive, a healthy SATA drive and a healthy NVMe drive;
   - a drive reporting FAILED, and a SAS drive whose grown-defect count rose;
   - a declared disk that cannot be opened, which must produce `homelab_smart_device_up 0` while the other disks are still written;
-  - a run in which `smartctl` itself fails, which must leave the previous file untouched.
+  - a run in which `smartctl` itself fails, which must leave the previous file untouched;
+  - a new unconfigured disk, USB and synthetic exclusions, deduplication against a required alias, and private NVMe topology labels;
+  - a required disk missing from discovery, an unread extra disk without hiding siblings, and discovery/identity failure preserving the previous file and mtime;
+  - overall passed:true with SMART statuses 16, 32 and 48, distinguishing current prefailure from historical-only threshold crossings.
 
   Evidence: `host-telemetry-converters` covers healthy SAS, SATA and NVMe, a FAILED drive, rising grown defects, an unopenable disk (`homelab_smart_device_up 0`, others still written) and a failing `smartctl` (previous file kept). The fixtures are synthetic; recording real output needs root (Implementation note 5).
 
@@ -95,9 +98,9 @@ windows or weaken refusal assertions; it is not a policy-controller repair.
   The mount list is the mergerfs pool mountpoints, plus provisioned `disk.luks-storage` mountpoints, plus an `extraRequiredMounts` list that is empty today. Verify by evaluation that:
   - the targets and rule text are what `hvn-hyp1`'s data implies, and the rule names no other source or interface;
   - the mount list is exactly `/srv/media/data` and `/mnt/storage-clear/media4`, with no legacy gocryptfs mount (media1–3);
-  - the disk list matches task 2.1, and the pool list is `rpool`.
+  - the required-alias floor matches task 2.1 independently of discovery, and the pool list is `rpool`.
 
-  Evidence: `monitoring-contracts` (firewall rule names only the guest on `incus-compute`; required mounts are exactly `/mnt/storage-clear/media4` and `/srv/media/data`). The rendered rules hold one `HostZpoolMissing` (`rpool`) and nine `HostDiskTelemetryMissing`, one per declared disk (`ConfigMap-vmalert-rules.yaml`).
+  Evidence: existing native checks cover the guest-only firewall and required mounts. The nine required aliases retain independent absence rules; the same `HostDiskTelemetryMissing` family also covers unread discovered extras without duplicate required identities. The rule-engine fixture exercises the extra disk before/after the 20-minute bound and recovery.
 
 - [x] 2.6 Extend an existing host VM test, or add a small one, to show that:
   - activation succeeds while the bridge does not exist yet, and the exporter starts once it does;
@@ -146,7 +149,7 @@ windows or weaken refusal assertions; it is not a policy-controller repair.
 
 ## 4. Alert rules, routing and secrets
 
-- [x] 4.1 Write the rule files from design.md Decisions 5, 8 and 12 as Nix-rendered Prometheus YAML. Render one rule per declared pool, per declared disk and per required mount from the host's options. Add `vmalert-tool unittest` (or `promtool test rules`) cases:
+- [x] 4.1 Write the rule files from design.md Decisions 5, 8 and 12 as Nix-rendered Prometheus YAML. Keep independent rules for declared pools, required disk aliases and required mounts; generic SMART faults and unread discovered disks do not require another inventory entry. Add `vmalert-tool unittest` (or `promtool test rules`) cases:
   - **Workloads:**
     - a single OOM kill fires as critical within 5 minutes, even though Argo CD reports Healthy;
     - a crash loop fires at 15 minutes and not before.
@@ -286,7 +289,7 @@ Historical evidence: one Grafana client, both callbacks, Secret publication and 
   - silences, and why they are lost on guest replacement;
   - reading a heartbeat-down notice: the guest or host is down, ingestion stopped (including the read-only store at the 50 GiB floor), or the VictoriaMetrics pod is waiting on its retained path or marker;
   - metrics storage: bounded but not isolated, what each storage alert means, and what to do at each;
-  - updating `expectedDisks` when a disk is added, replaced or retired;
+  - automatic non-USB physical-disk discovery, and maintaining `expectedDisks` only when changing the independently required alias floor;
   - the gaps: no off-LAN probing (a follow-up change), no backups (a future change), no active channel checks (a follow-up).
 
   Add the operations entry it needs. Verify that `nix run path:$PWD#sync-prod-home-manifests` and the docs generator leave a clean tree, and that the freshness checks pass.

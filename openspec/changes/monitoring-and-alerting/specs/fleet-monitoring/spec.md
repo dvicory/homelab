@@ -44,6 +44,24 @@ The fleet SHALL alert within 20 minutes of onset when a GitOps Application has b
 - **WHEN** an Application is briefly out of sync during a routine sync that converges within 30 minutes
 - **THEN** no alert is delivered
 
+### Requirement: Disk coverage follows non-USB physical hardware automatically
+
+The fleet SHALL automatically monitor OS-exposed non-USB physical disks, including newly attached disks and unused spares, without requiring a per-disk configuration change. It SHALL exclude USB-attached, virtual and synthetic devices from discovery. Disk identities in telemetry and notifications SHALL be stable and SHALL NOT expose raw serial numbers or depend on kernel device ordering.
+
+Configured required-disk expectations SHALL remain independent of current discovery, so a required disk that disappears still produces a missing-telemetry alert. A discovery or identity failure SHALL NOT publish a partial inventory as a complete successful collection.
+
+#### Scenario: A physical disk is attached
+- **WHEN** a new non-USB physical disk becomes visible to the host OS
+- **THEN** collection includes that disk without an inventory edit, and its health and unread-device conditions use the existing alert paths
+
+#### Scenario: A USB or synthetic disk is present
+- **WHEN** the OS exposes USB-attached storage or a virtual or synthetic disk
+- **THEN** automatic physical-disk collection excludes it
+
+#### Scenario: Discovery cannot establish a complete private inventory
+- **WHEN** discovery fails or a physical disk has no usable stable private identity
+- **THEN** collection does not replace the previous publication with partial success, and the existing missing-telemetry bounds apply
+
 ### Requirement: Host storage faults produce alerts
 
 The fleet SHALL alert within 10 minutes when a host storage pool is not fully healthy, when a pool device reports read, write or checksum errors, or when a required media pool or encrypted media mount is absent. It SHALL alert within 1 hour after a pool scrub completes with errors, and within 1 hour when a monitored disk reports a failing or degraded health assessment. It SHALL alert within 1 hour when a monitored filesystem stays below its declared free-space threshold.
@@ -101,7 +119,7 @@ The fleet SHALL alert while at least 14 days of validity remain on any TLS certi
 The fleet SHALL alert when a declared telemetry source stops reporting. Missing data SHALL NOT be treated as healthy. A source counts as not reporting when any of these holds:
 
 - it stops answering collection, or disappears from collection altogether;
-- it answers but omits a declared item it is expected to report, such as a declared disk or storage pool;
+- it answers but omits a declared item it is expected to report, such as a required disk or storage pool, or cannot read an automatically discovered physical disk;
 - the data it serves is older than the source's declared freshness bound, for example because the producer behind it has stopped refreshing.
 
 The alert SHALL be delivered within 15 minutes for a source that is collected and refreshed at least every 5 minutes, and within 1 hour for a source that is refreshed less often. An alert about missing telemetry SHALL identify the source and, where one applies, the missing item, distinct from the condition the source would have reported.

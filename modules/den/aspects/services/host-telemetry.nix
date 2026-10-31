@@ -29,10 +29,10 @@ in
         type = types.attrsOf diskPath;
         default = { };
         description = ''
-          Physical disks whose SMART health must keep reporting, keyed by a
-          readable name, each with a stable `/dev/disk/by-id/` or
-          `/dev/disk/by-path/` path. Use a path that does not embed a serial
-          number. USB and virtual devices are not declared.
+          Required disk aliases whose SMART health must keep reporting, each
+          with a stable `/dev/disk/by-id/` or `/dev/disk/by-path/` path that
+          does not embed a serial number. These preserve absence detection;
+          all OS-exposed non-USB physical disks are discovered automatically.
         '';
         apply =
           disks:
@@ -215,16 +215,16 @@ in
             };
         systemd.timers.host-telemetry-zpool-status = statusTimer "1min" "2min";
 
-        # Raw SMART access is limited to the declared disks.
+        # Discover future physical disks too, without granting device writes.
         systemd.services.host-telemetry-smart-status =
           statusService "Write SMART disk status for host telemetry"
             {
-              ExecStart = "${tool} smart --smartctl ${pkgs.smartmontools}/bin/smartctl --output ${directory}/smart.prom ${diskArgs}";
+              ExecStart = "${tool} smart --smartctl ${pkgs.smartmontools}/bin/smartctl --lsblk ${lib.getExe' pkgs.util-linux "lsblk"} --output ${directory}/smart.prom ${diskArgs}";
               CapabilityBoundingSet = [
                 "CAP_SYS_RAWIO"
                 "CAP_SYS_ADMIN"
               ];
-              DeviceAllow = map (path: "${path} rw") (builtins.attrValues monitoring.disks);
+              DeviceAllow = [ "block-* r" ];
             };
         systemd.timers.host-telemetry-smart-status = statusTimer "2min" "15min";
       };

@@ -428,6 +428,15 @@ let
           absent(homelab_zpool_present{${node}, host=${quote host.name}, pool=${quote pool}} == 1)
         '' "ZFS pool ${pool} is missing from zpool.prom on ${host.name}." (hostLabels // { inherit pool; })
       ) host.pools
+      ++ [
+        (alert "HostDiskTelemetryMissing" "critical" "20m"
+          ''
+            homelab_smart_device_up{${node}, host=${quote host.name}, disk!~${quote (lib.concatStringsSep "|" (map lib.escapeRegex (builtins.attrNames host.disks)))}} == 0
+          ''
+          "Disk {{ $labels.disk }} ({{ $labels.id }}) on {{ $labels.host }} was not read in the last two SMART runs."
+          hostLabels
+        )
+      ]
       ++ lib.mapAttrsToList (
         disk: path:
         alert "HostDiskTelemetryMissing" "critical" "20m"

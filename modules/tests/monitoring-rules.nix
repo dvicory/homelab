@@ -1051,6 +1051,42 @@ let
         (expect "21m" "missing-telemetry" "HostSmartStatusStale" [ ])
       ];
     }
+    (
+      let
+        disk = "wwn-0x5000c50000abcdef";
+        labels = nodeLabels // {
+          inherit disk;
+          id = disk;
+        };
+      in
+      {
+        name = "an automatically discovered unread disk alerts without a required inventory entry";
+        interval = "30s";
+        input_series =
+          upEverywhere
+          ++ [ (freshMtime "smart.prom") ]
+          ++ lib.mapAttrsToList (
+            name: path:
+            series "homelab_smart_device_up" (
+              nodeLabels
+              // {
+                disk = name;
+                id = baseNameOf path;
+              }
+            ) "1x200"
+          ) hvn.disks
+          ++ [ (series "homelab_smart_device_up" labels "0x49 1x150") ];
+        alert_rule_test = [
+          (expect "19m" "missing-telemetry" "HostDiskTelemetryMissing" [ ])
+          (expect "21m" "missing-telemetry" "HostDiskTelemetryMissing" [
+            (alert (
+              labels // { severity = "critical"; }
+            ) "Disk ${disk} (${disk}) on ${hostName} was not read in the last two SMART runs.")
+          ])
+          (expect "26m" "missing-telemetry" "HostDiskTelemetryMissing" [ ])
+        ];
+      }
+    )
     {
       name = "a textfile scrape error, a pool missing from a fresh zpool.prom, and a stale smart.prom";
       interval = "30s";

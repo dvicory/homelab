@@ -129,10 +129,10 @@ in
         fsType = "xfs";
         provisioned = true;
       };
-      # Every physical disk, including unused ones, must keep reporting SMART
-      # health. SAS and SATA disks are named by WWN. These NVMe drives have no
-      # EUI, and their by-id names embed the serial number, so they are named
-      # by PCI path. USB (IDSDM) and virtual (iDRAC) devices are excluded.
+      # Required aliases retain their names and missing-disk alerts. SMART also
+      # discovers newly attached non-USB physical disks without new entries.
+      # WWNs name SAS/SATA disks; serial-free PCI paths name these NVMe drives.
+      # USB and virtual devices are excluded from automatic discovery.
       services.host-telemetry.expectedDisks = {
         rpool-a = "/dev/disk/by-path/pci-0000:88:00.0-nvme-1";
         rpool-b = "/dev/disk/by-path/pci-0000:87:00.0-nvme-1";
