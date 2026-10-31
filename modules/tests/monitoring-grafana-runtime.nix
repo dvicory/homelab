@@ -1,13 +1,11 @@
-# Check normal local-auth refusal and the documented break-glass transition
-# against rendered Grafana objects and the pinned image in a K3s VM. The
-# native CLI installs known-valid fixture credentials: normal login and HTTP
-# basic auth must refuse them, while the explicit runbook overrides permit
-# form sign-in without enabling basic auth.
+# Check managed-file password initialization, normal local-auth refusal and
+# deliberate private emergency sign-in against rendered Grafana objects and
+# the pinned image in a K3s VM. No CLI reset may bypass initial credentials.
 #
-# Objects are applied server-side, as Argo CD does; the dashboards
-# ConfigMap is too large for client-side apply. The two Secrets Grafana
-# mounts hold test values. The VM pulls the Grafana
-# image from its registry; the busybox image comes with K3s's airgap images.
+# Objects are applied server-side, as Argo CD does; the dashboards ConfigMap
+# is too large for client-side apply. The two Secrets hold FAKE fixture
+# material only. No HTTPRoute is installed: emergency access stays private.
+# The VM pulls the Grafana image from its registry.
 { lib, self, ... }:
 let
   compute = self.nixosConfigurations.compute-1.config;
@@ -20,6 +18,7 @@ in
       # Native rendering remains covered by prod-home-manifests-fresh.
       rendered = ../../generated/manifests/prod-home;
       python = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
+      fakeAdminPassword = "FakeManagedGrafanaAdminPasswordForRuntimeOnly123456";
       testObjects = builtins.toJSON {
         apiVersion = "v1";
         kind = "List";
@@ -33,7 +32,7 @@ in
         ++
           map
             (
-              { name, key }:
+              { name, data }:
               {
                 apiVersion = "v1";
                 kind = "Secret";
@@ -41,17 +40,20 @@ in
                   inherit name;
                   namespace = "monitoring";
                 };
-                stringData.${key} = "test-value-not-a-credential";
+                stringData = data;
               }
             )
             [
               {
                 name = "grafana-oidc";
-                key = "client-secret";
+                data.client-secret = "FAKE-OIDC-CLIENT-SECRET";
               }
               {
                 name = "grafana-admin";
-                key = "secret-key";
+                data = {
+                  secret-key = "FAKE-GRAFANA-SECRET-KEY";
+                  admin-password = fakeAdminPassword;
+                };
               }
             ];
       };
@@ -99,10 +101,10 @@ in
           };
           testScript = ''
             import json
-            import secrets
             from datetime import datetime, timedelta, timezone
 
             kubectl = "${k3s.package}/bin/k3s kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml -n monitoring"
+            password = ${builtins.toJSON fakeAdminPassword}
 
             def port_forward():
                 machine.execute("systemctl stop grafana-forward.service; systemctl reset-failed grafana-forward.service")
@@ -126,13 +128,6 @@ in
             def rollout():
                 machine.wait_until_succeeds(f"{kubectl} rollout status deployment/grafana --timeout=30s", timeout=900)
 
-            def reset_password(password):
-                machine.succeed(
-                    f"printf '%s' {password} | {kubectl} exec -i deployment/grafana -c grafana -- "
-                    "grafana cli --homepath /usr/share/grafana --config /etc/grafana/grafana.ini "
-                    "admin reset-admin-password --password-from-stdin 2>&1"
-                )
-
             start_all()
             machine.wait_for_unit("k3s.service")
             machine.wait_until_succeeds(f"{kubectl} get node -o name | grep -q node", timeout=300)
@@ -142,8 +137,6 @@ in
             with subtest("normal configuration refuses known-valid local administrator credentials"):
                 rollout()
                 port_forward()
-                password = secrets.token_hex(24)
-                reset_password(password)
                 status, cookie = login(password)
                 assert 400 <= status < 500 and not cookie, (status, bool(cookie))
                 basic = machine.succeed(f"curl -s -o /dev/null -w '%{{http_code}}' -u admin:{password} http://127.0.0.1:3000/api/user").strip()
@@ -153,18 +146,21 @@ in
             with subtest("the runbook's break-glass steps sign the administrator in"):
                 machine.succeed(
                     f"{kubectl} set env deployment/grafana GF_AUTH_DISABLE_LOGIN_FORM=false "
-                    "GF_AUTH_OAUTH_AUTO_LOGIN=false GF_SERVER_ROOT_URL=http://localhost:3000/"
+                    "GF_AUTH_GENERIC_OAUTH_AUTO_LOGIN=false GF_SERVER_ROOT_URL=http://localhost:3000/ "
+                    "GF_SECURITY_COOKIE_SECURE=false"
                 )
                 rollout()
-                reset_password(password)
                 port_forward()
+                for rejected in ("admin", "WrongFakeManagedPassword"):
+                    status, rejected_cookie = login(rejected)
+                    assert 400 <= status < 500 and not rejected_cookie, (status, bool(rejected_cookie))
                 status, cookie = login(password)
                 assert status == 200 and cookie, (status, cookie)
                 user = json.loads(machine.succeed(f"curl -sf -H 'Cookie: {cookie}' http://127.0.0.1:3000/api/user"))
                 assert user["login"] == "admin" and user["isGrafanaAdmin"], user
                 basic = machine.succeed(f"curl -s -o /dev/null -w '%{{http_code}}' -u admin:{password} http://127.0.0.1:3000/api/user").strip()
                 assert basic == "401", basic
-                print("EVIDENCE after the override and reset-admin-password, admin signs in through the login form; basic auth stays off")
+                print("EVIDENCE the managed file seeded native initial admin credentials without a CLI reset; private form sign-in works and basic auth stays off")
 
             with subtest("Grafana manages a real external Alertmanager silence"):
                 machine.wait_until_succeeds(f"{kubectl} rollout status deployment/alertmanager --timeout=30s", timeout=300)
@@ -187,6 +183,18 @@ in
                 expired = json.loads(machine.succeed(f"curl -sf -H 'Cookie: {cookie}' {endpoint}"))
                 assert any(item["id"] == silence_id and item["status"]["state"] == "expired" for item in expired), expired
                 print("EVIDENCE authenticated Grafana created, listed and expired a silence in the real external Alertmanager")
+
+            with subtest("normal authentication is restored before any entrance could be republished"):
+                machine.succeed(
+                    f"{kubectl} set env deployment/grafana GF_AUTH_DISABLE_LOGIN_FORM- "
+                    "GF_AUTH_GENERIC_OAUTH_AUTO_LOGIN- GF_SERVER_ROOT_URL- GF_SECURITY_COOKIE_SECURE-"
+                )
+                rollout()
+                port_forward()
+                status, cookie = login(password)
+                assert 400 <= status < 500 and not cookie, (status, bool(cookie))
+                basic = machine.succeed(f"curl -s -o /dev/null -w '%{{http_code}}' -u admin:{password} http://127.0.0.1:3000/api/user").strip()
+                assert basic == "401", basic
           '';
         }).overrideTestDerivation
           (_: {

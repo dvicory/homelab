@@ -20,7 +20,7 @@ spec:
   template:
     metadata:
       annotations:
-        checksum/config: 54fbb2a2437eeb404af435d8ab44771b0d9d374f138f0611365c1bbb706d8a5f
+        checksum/config: a68c03b6482a9b2770fecd5580b7eec0121a8e1304d6d6e80f491d965e69ed73
         checksum/sc-dashboard-provider-config: e70bf6a851099d385178a76de9757bb0bef8299da6d8443602590e44f05fdf24
         kubectl.kubernetes.io/default-container: grafana
       labels:
@@ -49,7 +49,7 @@ spec:
             - name: GOMEMLIMIT
               value: 921MiB
             - name: GF_SECURITY_ADMIN_PASSWORD
-              value: $__file{/run/grafana-admin/password}
+              value: $__file{/etc/secrets/grafana-admin/admin-password}
             - name: GF_SECURITY_ADMIN_USER
               value: admin
           image: docker.io/grafana/grafana:13.2.3-distroless@sha256:202e5d5b3f8499e70ccac7991eea6d7da72d2790eb2e0597e7987acf724e7180
@@ -119,36 +119,7 @@ spec:
             - mountPath: /etc/secrets/grafana-oidc
               name: grafana-oidc
               readOnly: true
-            - mountPath: /run/grafana-admin
-              name: admin-password
-              readOnly: true
       enableServiceLinks: true
-      initContainers:
-        - command:
-            - sh
-            - -c
-            - umask 077 && head -c 48 /dev/urandom | od -An -tx1 | tr -d ' \n' > /run/grafana-admin/password
-          image: docker.io/rancher/mirrored-library-busybox:1.37.0@sha256:101b4afd76732482eff9b95cae5f94bcf295e521fbec4e01b69c5421f3f3f3e5
-          imagePullPolicy: IfNotPresent
-          name: admin-password
-          resources:
-            limits:
-              cpu: 50m
-              memory: 16Mi
-            requests:
-              cpu: 10m
-              memory: 8Mi
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-                - ALL
-            readOnlyRootFilesystem: true
-            seccompProfile:
-              type: RuntimeDefault
-          volumeMounts:
-            - mountPath: /run/grafana-admin
-              name: admin-password
       nodeSelector:
         kubernetes.io/hostname: compute-1
       securityContext:
@@ -179,7 +150,3 @@ spec:
           secret:
             defaultMode: 288
             secretName: grafana-oidc
-        - emptyDir:
-            medium: Memory
-            sizeLimit: 1Mi
-          name: admin-password

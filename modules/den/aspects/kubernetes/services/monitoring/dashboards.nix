@@ -13,10 +13,6 @@ let
   # Each vendored dashboard records its upstream source, revision and
   # SHA-256; evaluation fails if a file no longer matches its record.
   dashboardSources = builtins.fromJSON (builtins.readFile (dashboardsDirectory + "/sources.json"));
-  # The only image with a shell that the guest already holds: K3s imports it
-  # with its airgap images. It writes the administrator password.
-  busybox = "docker.io/rancher/mirrored-library-busybox:1.37.0@sha256:101b4afd76732482eff9b95cae5f94bcf295e521fbec4e01b69c5421f3f3f3e5";
-  adminPasswordDirectory = "/run/grafana-admin";
 in
 {
   den.aspects.kubernetes.services.monitoring.settings.grafana.oidc = mkOption {
@@ -51,13 +47,19 @@ in
   };
 
   den.aspects.kubernetes.services.monitoring.dashboards = {
-    # Grafana's secret key comes from agenix-rekey's `alnum-no-newline`
-    # generator; nobody types it.
+    # Both administrator credentials use agenix-rekey's generated runtime flow;
+    # nobody types them.
     compute-resources = _: {
       runtimeSecrets.monitoring--grafana-admin--secret-key = {
         inherit namespace;
         name = "grafana-admin";
         key = "secret-key";
+        generator = "alnum-no-newline";
+      };
+      runtimeSecrets.monitoring--grafana-admin--admin-password = {
+        inherit namespace;
+        name = "grafana-admin";
+        key = "admin-password";
         generator = "alnum-no-newline";
       };
     };
@@ -108,36 +110,6 @@ in
               };
               data = dashboards;
             }
-            # Only the Gateway's proxies reach Grafana.
-            {
-              apiVersion = "networking.k8s.io/v1";
-              kind = "NetworkPolicy";
-              metadata = {
-                name = "grafana";
-                inherit namespace;
-              };
-              spec = {
-                podSelector.matchLabels = route.backendPodSelector;
-                policyTypes = [ "Ingress" ];
-                ingress = [
-                  {
-                    from = [
-                      {
-                        namespaceSelector.matchLabels."kubernetes.io/metadata.name" = "gateway";
-                        podSelector.matchLabels."gateway.envoyproxy.io/owning-gateway-name" = "household";
-                        podSelector.matchLabels."gateway.envoyproxy.io/owning-gateway-namespace" = "gateway";
-                      }
-                    ];
-                    ports = [
-                      {
-                        protocol = "TCP";
-                        port = 3000;
-                      }
-                    ];
-                  }
-                ];
-              };
-            }
           ];
 
           helm.releases.grafana = {
@@ -182,68 +154,16 @@ in
                   memory = "1Gi";
                 };
               };
-              # The local administrator exists only for break-glass (monitoring
-              # runbook): with the login form and basic auth off, it cannot
-              # sign in. Its password is random, written at each Pod start to
-              # memory and never stored. Grafana applies it only when it
-              # creates its database, which is an emptyDir, so every new Pod
-              # gets a new password; a container restart keeps both.
+              # This managed password seeds only a new disposable database.
+              # Normal local sign-in stays disabled; emergency access is private.
+              # Explicitly reuse the runtime Secret, never the chart's random one.
+              admin.existingSecret = "grafana-admin";
               env = {
                 GF_SECURITY_ADMIN_USER = "admin";
                 # Grafana expands $__file itself; the distroless image has no
                 # /run.sh to honour the __FILE form.
-                GF_SECURITY_ADMIN_PASSWORD = "$__file{${adminPasswordDirectory}/password}";
+                GF_SECURITY_ADMIN_PASSWORD = "$__file{/etc/secrets/grafana-admin/admin-password}";
               };
-              extraInitContainers = [
-                {
-                  name = "admin-password";
-                  image = busybox;
-                  imagePullPolicy = "IfNotPresent";
-                  command = [
-                    "sh"
-                    "-c"
-                    "umask 077 && head -c 48 /dev/urandom | od -An -tx1 | tr -d ' \\n' > ${adminPasswordDirectory}/password"
-                  ];
-                  securityContext = {
-                    allowPrivilegeEscalation = false;
-                    readOnlyRootFilesystem = true;
-                    capabilities.drop = [ "ALL" ];
-                    seccompProfile.type = "RuntimeDefault";
-                  };
-                  resources = {
-                    requests = {
-                      cpu = "10m";
-                      memory = "8Mi";
-                    };
-                    limits = {
-                      cpu = "50m";
-                      memory = "16Mi";
-                    };
-                  };
-                  volumeMounts = [
-                    {
-                      name = "admin-password";
-                      mountPath = adminPasswordDirectory;
-                    }
-                  ];
-                }
-              ];
-              extraVolumes = [
-                {
-                  name = "admin-password";
-                  emptyDir = {
-                    medium = "Memory";
-                    sizeLimit = "1Mi";
-                  };
-                }
-              ];
-              extraVolumeMounts = [
-                {
-                  name = "admin-password";
-                  mountPath = adminPasswordDirectory;
-                  readOnly = true;
-                }
-              ];
               extraSecretMounts = [
                 {
                   name = "grafana-admin";
@@ -279,12 +199,12 @@ in
                 users.allow_sign_up = false;
                 auth = {
                   disable_login_form = true;
-                  oauth_auto_login = true;
                 };
                 "auth.basic".enabled = false;
                 "auth.anonymous".enabled = false;
                 "auth.generic_oauth" = {
                   enabled = true;
+                  auto_login = true;
                   name = "Kanidm";
                   # Identity names each administrator route's client after
                   # the route, so Grafana and its entrance share one client.

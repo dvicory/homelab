@@ -24,7 +24,12 @@ let
     uid = 3100;
     gid = 3100;
   };
-  image = "docker.io/victoriametrics/victoria-metrics:v1.151.0@sha256:6d164540a04f49ba4e696cbdb70f9fee78be1e94b8f2a1292743a0b1ab8275bd";
+  image = {
+    repository = "docker.io/victoriametrics/victoria-metrics";
+    tag = "v1.151.0";
+    digest = "sha256:6d164540a04f49ba4e696cbdb70f9fee78be1e94b8f2a1292743a0b1ab8275bd";
+    pullPolicy = "IfNotPresent";
+  };
   # Native routes are probed on a health path; administrator routes at the
   # root, where the entrance must answer with its redirect to sign-in. A
   # native route missing here fails evaluation.
@@ -63,6 +68,7 @@ in
 
     k8s-manifests =
       {
+        config,
         cluster,
         computeResources,
         charts ? { },
@@ -81,9 +87,18 @@ in
         nodeAddress = host.guestAddress;
         nodeSelector."kubernetes.io/hostname" = computeResources.instance;
 
-        # One probe per declared route, sent to the gateway NodePort on the
-        # node address with the route's hostname as SNI and Host: the hop the
-        # host forwards household HTTPS to.
+        # Derive visibility from the Gateway's effective HTTPRoutes, including
+        # its identity and Seerr publication boundaries, rather than probing
+        # intentionally unpublished entrances.
+        publishedRoutes = lib.getAttrs (
+          map (route: route.metadata.name) (
+            lib.filter (object: object.kind == "HTTPRoute") (
+              config.applications.gateway.objects ++ (config.applications.identity-gateway.objects or [ ])
+            )
+          )
+        ) cluster.routes;
+        # Send each probe to the gateway NodePort with the route's SNI and Host:
+        # the hop the host forwards household HTTPS to.
         probes = lib.mapAttrs (
           name: route:
           let
@@ -127,7 +142,7 @@ in
               );
             };
           }
-        ) cluster.routes;
+        ) publishedRoutes;
 
         static = job: targets: {
           job_name = job;
@@ -215,16 +230,7 @@ in
         };
         scrapeConfig = builtins.toJSON scrape;
 
-        victoriametrics = [
-          {
-            apiVersion = "v1";
-            kind = "ConfigMap";
-            metadata = {
-              name = "victoriametrics-scrape";
-              inherit namespace;
-            };
-            data."scrape.json" = scrapeConfig;
-          }
+        victoriametricsAccess = [
           {
             apiVersion = "v1";
             kind = "ServiceAccount";
@@ -272,131 +278,6 @@ in
                 inherit namespace;
               }
             ];
-          }
-          {
-            apiVersion = "apps/v1";
-            kind = "Deployment";
-            metadata = {
-              name = "victoriametrics";
-              inherit namespace;
-              labels = labelsFor "victoriametrics";
-            };
-            spec = {
-              replicas = 1;
-              strategy.type = "Recreate";
-              selector.matchLabels = labelsFor "victoriametrics";
-              template = {
-                metadata = {
-                  labels = labelsFor "victoriametrics";
-                  annotations."homelab.danielvicory/config-sha256" = builtins.hashString "sha256" scrapeConfig;
-                };
-                spec = {
-                  serviceAccountName = "victoriametrics";
-                  automountServiceAccountToken = true;
-                  enableServiceLinks = false;
-                  inherit nodeSelector;
-                  securityContext = {
-                    runAsNonRoot = true;
-                    runAsUser = metricsIdentity.uid;
-                    runAsGroup = metricsIdentity.gid;
-                    seccompProfile.type = "RuntimeDefault";
-                  };
-                  containers = [
-                    {
-                      name = "victoriametrics";
-                      inherit image;
-                      imagePullPolicy = "IfNotPresent";
-                      args = [
-                        "-storageDataPath=/storage"
-                        "-retentionPeriod=90d"
-                        # Refuse new writes before the shared pool's last 50 GiB.
-                        "-storage.minFreeDiskSpaceBytes=50GiB"
-                        "-promscrape.config=/etc/victoriametrics/scrape.json"
-                        "-promscrape.config.strictParse=true"
-                        "-httpListenAddr=:8428"
-                      ];
-                      ports = [
-                        {
-                          name = "http";
-                          containerPort = 8428;
-                        }
-                      ];
-                      readinessProbe = {
-                        httpGet = {
-                          path = "/health";
-                          port = 8428;
-                        };
-                        periodSeconds = 10;
-                      };
-                      resources = resources "100m" "384Mi" "1" "1536Mi";
-                      securityContext = {
-                        allowPrivilegeEscalation = false;
-                        readOnlyRootFilesystem = true;
-                        capabilities.drop = [ "ALL" ];
-                      };
-                      volumeMounts = [
-                        {
-                          name = "storage";
-                          mountPath = "/storage";
-                        }
-                        {
-                          name = "scrape";
-                          mountPath = "/etc/victoriametrics";
-                          readOnly = true;
-                        }
-                        {
-                          name = "state-marker";
-                          mountPath = "/run/homelab-state-root";
-                          readOnly = true;
-                        }
-                      ];
-                    }
-                  ];
-                  volumes = [
-                    # The static local volume on the retained path. Kubelet
-                    # does not mount it if the path is missing.
-                    {
-                      name = "storage";
-                      persistentVolumeClaim.claimName = "monitoring-metrics";
-                    }
-                    {
-                      name = "scrape";
-                      configMap.name = "victoriametrics-scrape";
-                    }
-                    # Without the persistent state root's marker the pod does
-                    # not start, so metrics never land on substitute storage.
-                    {
-                      name = "state-marker";
-                      hostPath = {
-                        path = stateMarker;
-                        type = "File";
-                      };
-                    }
-                  ];
-                };
-              };
-            };
-          }
-          {
-            apiVersion = "v1";
-            kind = "Service";
-            metadata = {
-              name = "victoriametrics";
-              inherit namespace;
-              labels = labelsFor "victoriametrics";
-            };
-            spec = {
-              type = "ClusterIP";
-              selector = labelsFor "victoriametrics";
-              ports = [
-                {
-                  name = "http";
-                  port = 8428;
-                  targetPort = 8428;
-                  protocol = "TCP";
-                }
-              ];
-            };
           }
         ];
 
@@ -525,8 +406,119 @@ in
           annotations."argocd.argoproj.io/sync-wave" = "6";
           createNamespace = false;
           finalizer = "foreground";
-          objects = victoriametrics ++ networkPolicies;
+          objects = victoriametricsAccess ++ networkPolicies;
           helm.releases = {
+            victoriametrics = {
+              chart = charts.bjw-s-labs.app-template;
+              values = {
+                fullnameOverride = "victoriametrics";
+                global.createDefaultServiceAccount = false;
+                defaultPodOptions = {
+                  inherit nodeSelector;
+                  labels = labelsFor "victoriametrics";
+                  automountServiceAccountToken = true;
+                  enableServiceLinks = false;
+                  securityContext = {
+                    runAsNonRoot = true;
+                    runAsUser = metricsIdentity.uid;
+                    runAsGroup = metricsIdentity.gid;
+                    seccompProfile.type = "RuntimeDefault";
+                  };
+                };
+                controllers.main = {
+                  type = "deployment";
+                  strategy = "Recreate";
+                  replicas = 1;
+                  serviceAccount.name = "victoriametrics";
+                  containers.victoriametrics = {
+                    inherit image;
+                    args = [
+                      "-storageDataPath=/storage"
+                      "-retentionPeriod=90d"
+                      # Refuse new writes before the shared pool's last 50 GiB.
+                      "-storage.minFreeDiskSpaceBytes=50GiB"
+                      "-promscrape.config=/etc/victoriametrics/scrape.json"
+                      "-promscrape.config.strictParse=true"
+                      "-httpListenAddr=:8428"
+                    ];
+                    ports = [
+                      {
+                        name = "http";
+                        containerPort = 8428;
+                      }
+                    ];
+                    probes = {
+                      liveness.enabled = false;
+                      startup.enabled = false;
+                      readiness = {
+                        enabled = true;
+                        custom = true;
+                        spec = {
+                          httpGet = {
+                            path = "/health";
+                            port = 8428;
+                          };
+                          periodSeconds = 10;
+                        };
+                      };
+                    };
+                    resources = resources "100m" "384Mi" "1" "1536Mi";
+                    securityContext = {
+                      allowPrivilegeEscalation = false;
+                      readOnlyRootFilesystem = true;
+                      capabilities.drop = [ "ALL" ];
+                    };
+                  };
+                };
+                service.main = {
+                  controller = "main";
+                  type = "ClusterIP";
+                  extraSelectorLabels = labelsFor "victoriametrics";
+                  ports.http = {
+                    port = 8428;
+                    targetPort = 8428;
+                    protocol = "TCP";
+                  };
+                };
+                configMaps.scrape = {
+                  forceRename = "victoriametrics-scrape";
+                  # The chart includes this content in the Pod rollout checksum.
+                  includeInChecksum = true;
+                  data."scrape.json" = scrapeConfig;
+                };
+                persistence = {
+                  # Only consume the retained claim; the chart creates no storage.
+                  storage = {
+                    type = "persistentVolumeClaim";
+                    existingClaim = "monitoring-metrics";
+                    globalMounts = [ { path = "/storage"; } ];
+                  };
+                  scrape = {
+                    type = "configMap";
+                    identifier = "scrape";
+                    defaultMode = 420; # 0644, the existing ConfigMap projection mode.
+                    globalMounts = [
+                      {
+                        path = "/etc/victoriametrics";
+                        readOnly = true;
+                      }
+                    ];
+                  };
+                  # A missing marker must fail startup, never create substitute storage.
+                  state-marker = {
+                    type = "hostPath";
+                    hostPath = stateMarker;
+                    hostPathType = "File";
+                    globalMounts = [
+                      {
+                        path = "/run/homelab-state-root";
+                        readOnly = true;
+                      }
+                    ];
+                  };
+                };
+              };
+            };
             kube-state-metrics = {
               chart = lib.helm.downloadHelmChart {
                 repo = "https://prometheus-community.github.io/helm-charts";

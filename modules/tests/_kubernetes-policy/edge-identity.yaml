@@ -1083,6 +1083,10 @@ spec:
         - expression: variables.effectivePolicies.all(p, p.namespace != '')
           message: Omitted NetworkPolicy namespaces must resolve through their sole Application owner's destination.
         - expression: >-
+            !('grafana' in variables.active) || (variables.inventory.grafana.manageBackendIngress
+            && !variables.inventory.grafana.sameNamespaceIngress)
+          message: Grafana must retain Gateway-managed, Gateway-only backend ingress.
+        - expression: >-
             variables.active.all(n, variables.effectivePolicies.filter(p,
             p.namespace == variables.inventory[n].namespace && (!has(p.spec.policyTypes)
             || p.spec.policyTypes.size() == 0 || 'Ingress' in p.spec.policyTypes) && ((!has(p.spec.podSelector.matchLabels)
@@ -1095,9 +1099,9 @@ spec:
             has(i.from) && i.from.size() > 0 && i.from.all(f,
             ((n != 'idm' || (has(i.ports) && i.ports.size() > 0 && i.ports.all(port,
             port.port == 8443 && (!has(port.protocol) || port.protocol == 'TCP') && !has(port.endPort)))) &&
-            ((!has(f.namespaceSelector) && has(f.podSelector) && !has(f.ipBlock)) ||
+            ((n != 'grafana' && ((!has(f.namespaceSelector) && has(f.podSelector) && !has(f.ipBlock)) ||
             (has(f.namespaceSelector) && f.namespaceSelector == {'matchLabels':{'kubernetes.io/metadata.name':variables.inventory[n].namespace}}
-            && !has(f.ipBlock)) || (has(f.namespaceSelector) && f.namespaceSelector == {'matchLabels':{'kubernetes.io/metadata.name':'gateway'}}
+            && !has(f.ipBlock)))) || (has(f.namespaceSelector) && f.namespaceSelector == {'matchLabels':{'kubernetes.io/metadata.name':'gateway'}}
             && has(f.podSelector.matchLabels) && 'gateway.envoyproxy.io/owning-gateway-name' in f.podSelector.matchLabels
             && f.podSelector.matchLabels['gateway.envoyproxy.io/owning-gateway-name'] == 'household' &&
             (n == 'idm' || ('gateway.envoyproxy.io/owning-gateway-namespace' in f.podSelector.matchLabels

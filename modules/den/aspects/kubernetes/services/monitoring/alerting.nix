@@ -14,8 +14,14 @@
 let
   namespace = "monitoring";
   images = {
-    vmalert = "docker.io/victoriametrics/vmalert:v1.151.0@sha256:e519f14c31f4d68015702e684a0fc3f1b4e559aa985d8f4462768f07f55b05c9";
-    alertmanager = "quay.io/prometheus/alertmanager:v0.33.1@sha256:9e082985f56f4c8c9f724e18f2288c6708f472e56a5286b8863d080434ea065d";
+    vmalert = {
+      repository = "docker.io/victoriametrics/vmalert";
+      tag = "v1.151.0@sha256:e519f14c31f4d68015702e684a0fc3f1b4e559aa985d8f4462768f07f55b05c9";
+    };
+    alertmanager = {
+      repository = "quay.io/prometheus/alertmanager";
+      tag = "v0.33.1@sha256:9e082985f56f4c8c9f724e18f2288c6708f472e56a5286b8863d080434ea065d";
+    };
   };
   # Scrape jobs that default.nix defines besides the host's own. A missing
   # job raises TelemetrySourceDown; the core ones are critical and feed the
@@ -140,24 +146,15 @@ let
         metric:
         let
           selector = "homelab_smart_${metric}{${node}}";
-          collected = smartCollected selector;
-          # Freeze only the current publication epoch while inspecting history.
-          # The previous value must belong to a distinct successful run of this
-          # same input; another disk's update and stale textfile replays do not count.
-          previous = ''
-            max_over_time((
-              (${collected})
-              < on (job, host, instance) group_left()
-                (max by (job, host, instance) (${smartMtimeSelector} @ end()))
-            )[2h:30s])
-          '';
         in
-        storageAlert "HostDiskSmartFailing" "warning" "0s" "delta_prometheus(${selector}[2h]) > 0"
+        # Growth is an event, not a physical fault with a recovery state.
+        # Exclude invalid readings before comparing; never invent a baseline.
+        alert "HostDiskSmartErrorsIncreasing" "warning" "0s"
           ''
-            (delta_prometheus(${selector}[2h]) <= 0)
-            and ((${collected}) - (${previous}) <= ${toString smartFreshness})
+            (ascent_over_time((${selector} >= 0)[2h:30s]) > 0)
+            and (${smartCollected selector})
           ''
-          "Disk {{ $labels.disk }} ({{ $labels.id }}) on {{ $labels.host }} has an uncleared SMART counter-growth observation ({{ $labels.signal }})."
+          "Disk {{ $labels.disk }} ({{ $labels.id }}) on {{ $labels.host }} reported new SMART errors ({{ $labels.signal }})."
           { signal = lib.replaceStrings [ "_" ] [ "-" ] metric; };
       hostLabels.host = host.name;
       bySeverity = f: [
@@ -536,11 +533,9 @@ let
       };
     };
 
-  # The routing is configuration, not contract: the fleet-monitoring spec
-  # only requires that every critical alert reaches both channels without
-  # being held by quiet hours, that every warning reaches at least one, that
-  # resolutions are sent, and that a failing channel is reported through the
-  # other. Credentials are read from files, so the config holds only paths.
+  # Native condition alerts send resolutions; new-error events do not imply
+  # physical recovery when their observation window ends. Credentials remain
+  # file paths, and all critical delivery bypasses Pushover quiet hours.
   alertmanagerFor =
     grafanaUrl:
     let
@@ -619,6 +614,13 @@ let
               repeat_interval = "4h";
             }
             {
+              matchers = [
+                (matcher "alertname" "HostDiskSmartErrorsIncreasing")
+                (matcher "severity" "warning")
+              ];
+              receiver = "warning-events";
+            }
+            {
               matchers = [ (matcher "severity" "critical") ];
               receiver = "critical";
               repeat_interval = "4h";
@@ -650,6 +652,11 @@ let
             name = "warning";
             pushover_configs = [ (pushover 0) ];
             telegram_configs = [ telegram ];
+          }
+          {
+            name = "warning-events";
+            pushover_configs = [ ((pushover 0) // { send_resolved = false; }) ];
+            telegram_configs = [ (telegram // { send_resolved = false; }) ];
           }
           {
             name = "telegram-only";
@@ -730,82 +737,6 @@ let
       '';
     };
 
-  workload =
-    {
-      name,
-      uid,
-      configText,
-      container,
-      volumes,
-      nodeSelector,
-    }:
-    [
-      {
-        apiVersion = "apps/v1";
-        kind = "Deployment";
-        metadata = {
-          inherit name namespace;
-          labels = labelsFor name;
-        };
-        spec = {
-          replicas = 1;
-          strategy.type = "Recreate";
-          selector.matchLabels = labelsFor name;
-          template = {
-            metadata = {
-              labels = labelsFor name;
-              # Restart on a configuration change.
-              annotations."homelab.danielvicory/config-sha256" = builtins.hashString "sha256" configText;
-            };
-            spec = {
-              automountServiceAccountToken = false;
-              enableServiceLinks = false;
-              inherit nodeSelector volumes;
-              securityContext = {
-                runAsNonRoot = true;
-                runAsUser = uid;
-                runAsGroup = uid;
-                seccompProfile.type = "RuntimeDefault";
-              };
-              containers = [
-                (
-                  {
-                    inherit name;
-                    imagePullPolicy = "IfNotPresent";
-                    securityContext = {
-                      allowPrivilegeEscalation = false;
-                      readOnlyRootFilesystem = true;
-                      capabilities.drop = [ "ALL" ];
-                    };
-                  }
-                  // container
-                )
-              ];
-            };
-          };
-        };
-      }
-      {
-        apiVersion = "v1";
-        kind = "Service";
-        metadata = {
-          inherit name namespace;
-          labels = labelsFor name;
-        };
-        spec = {
-          type = "ClusterIP";
-          selector = labelsFor name;
-          ports = [
-            {
-              name = "http";
-              port = (builtins.head container.ports).containerPort;
-              targetPort = (builtins.head container.ports).containerPort;
-              protocol = "TCP";
-            }
-          ];
-        };
-      }
-    ];
   ingressFrom = name: port: peers: {
     apiVersion = "networking.k8s.io/v1";
     kind = "NetworkPolicy";
@@ -851,7 +782,12 @@ in
       };
 
     k8s-manifests =
-      { cluster, computeResources, ... }:
+      {
+        cluster,
+        computeResources,
+        charts,
+        ...
+      }:
       let
         host = inputs.self.nixosConfigurations.${cluster.hostName}.config.homelab.monitoring // {
           name = cluster.hostName;
@@ -892,164 +828,6 @@ in
             // alertmanager.templates;
           }
         ]
-        ++ workload {
-          name = "vmalert";
-          uid = 65534;
-          configText = rulesConfig;
-          inherit nodeSelector;
-          container = {
-            image = images.vmalert;
-            args = [
-              "-datasource.url=${victoriametrics}"
-              # Alert state goes back to the store, so a vmalert restart
-              # keeps each alert's `for` progress.
-              "-remoteWrite.url=${victoriametrics}"
-              "-remoteRead.url=${victoriametrics}"
-              "-notifier.url=http://alertmanager.${namespace}.svc:9093"
-              "-rule=/etc/vmalert/rules.json"
-              "-evaluationInterval=30s"
-              "-httpListenAddr=:8880"
-            ]
-            ++ lib.optional (grafanaUrl != null) "-external.url=${grafanaUrl}";
-            ports = [
-              {
-                name = "http";
-                containerPort = 8880;
-              }
-            ];
-            readinessProbe = {
-              httpGet = {
-                path = "/health";
-                port = 8880;
-              };
-              periodSeconds = 10;
-            };
-            resources = {
-              requests = {
-                cpu = "25m";
-                memory = "64Mi";
-              };
-              limits = {
-                cpu = "250m";
-                memory = "256Mi";
-              };
-            };
-            volumeMounts = [
-              {
-                name = "rules";
-                mountPath = "/etc/vmalert";
-                readOnly = true;
-              }
-            ];
-          };
-          volumes = [
-            {
-              name = "rules";
-              configMap.name = "vmalert-rules";
-            }
-          ];
-        }
-        ++ workload {
-          name = "alertmanager";
-          uid = 65534;
-          configText = alertmanagerConfig + alertmanager.templates."homelab.tmpl";
-          inherit nodeSelector;
-          container = {
-            image = images.alertmanager;
-            args = [
-              "--config.file=/etc/alertmanager/config/alertmanager.yaml"
-              "--storage.path=/alertmanager"
-              "--web.listen-address=:9093"
-              # One replica: no gossip listener.
-              "--cluster.listen-address="
-            ];
-            ports = [
-              {
-                name = "http";
-                containerPort = 9093;
-              }
-            ];
-            readinessProbe = {
-              httpGet = {
-                path = "/-/ready";
-                port = 9093;
-              };
-              periodSeconds = 10;
-            };
-            resources = {
-              requests = {
-                cpu = "25m";
-                memory = "48Mi";
-              };
-              limits = {
-                cpu = "250m";
-                memory = "128Mi";
-              };
-            };
-            volumeMounts = [
-              {
-                name = "config";
-                mountPath = "/etc/alertmanager/config";
-                readOnly = true;
-              }
-              {
-                name = "templates";
-                mountPath = "/etc/alertmanager/templates";
-                readOnly = true;
-              }
-              {
-                name = "delivery";
-                mountPath = credentialDirectory;
-                readOnly = true;
-              }
-              {
-                name = "storage";
-                mountPath = "/alertmanager";
-              }
-            ];
-          };
-          volumes = [
-            {
-              name = "config";
-              configMap = {
-                name = "alertmanager-config";
-                items = [
-                  {
-                    key = "alertmanager.yaml";
-                    path = "alertmanager.yaml";
-                  }
-                ];
-              };
-            }
-            {
-              name = "templates";
-              configMap = {
-                name = "alertmanager-config";
-                items = [
-                  {
-                    key = "homelab.tmpl";
-                    path = "homelab.tmpl";
-                  }
-                ];
-              };
-            }
-            # Optional: a missing credential makes only its channel fail at
-            # send time, which AlertDeliveryFailing and the heartbeat report.
-            {
-              name = "delivery";
-              secret = {
-                secretName = "alertmanager-delivery";
-                optional = true;
-                defaultMode = 292;
-              };
-            }
-            # Silences and the notification log are disposable.
-            {
-              name = "storage";
-              emptyDir.sizeLimit = "64Mi";
-            }
-          ];
-        }
         ++ [
           (ingressFrom "vmalert" 8880 [ (labelsFor "victoriametrics") ])
           (ingressFrom "alertmanager" 9093 (
@@ -1060,6 +838,221 @@ in
             ++ grafanaPods
           ))
         ];
+        applications.monitoring.helm.releases = {
+          vmalert = {
+            chart = charts.bjw-s-labs.app-template;
+            values = {
+              fullnameOverride = "vmalert";
+              global.createDefaultServiceAccount = false;
+              global.labels = labelsFor "vmalert";
+              defaultPodOptions = {
+                inherit nodeSelector;
+                labels = labelsFor "vmalert";
+                annotations."homelab.danielvicory/config-sha256" = builtins.hashString "sha256" rulesConfig;
+                automountServiceAccountToken = false;
+                enableServiceLinks = false;
+                securityContext = {
+                  runAsNonRoot = true;
+                  runAsUser = 65534;
+                  runAsGroup = 65534;
+                  seccompProfile.type = "RuntimeDefault";
+                };
+              };
+              controllers.main = {
+                type = "deployment";
+                strategy = "Recreate";
+                replicas = 1;
+                containers.vmalert = {
+                  image = images.vmalert // {
+                    pullPolicy = "IfNotPresent";
+                  };
+                  args = [
+                    "-datasource.url=${victoriametrics}"
+                    # Remote state preserves each alert's `for` progress.
+                    "-remoteWrite.url=${victoriametrics}"
+                    "-remoteRead.url=${victoriametrics}"
+                    "-notifier.url=http://alertmanager.${namespace}.svc:9093"
+                    "-rule=/etc/vmalert/rules.json"
+                    "-evaluationInterval=30s"
+                    "-httpListenAddr=:8880"
+                  ]
+                  ++ lib.optional (grafanaUrl != null) "-external.url=${grafanaUrl}";
+                  securityContext = {
+                    allowPrivilegeEscalation = false;
+                    readOnlyRootFilesystem = true;
+                    capabilities.drop = [ "ALL" ];
+                  };
+                  probes.readiness = {
+                    enabled = true;
+                    custom = true;
+                    spec = {
+                      httpGet = {
+                        path = "/health";
+                        port = 8880;
+                      };
+                      periodSeconds = 10;
+                    };
+                  };
+                  resources = {
+                    requests = {
+                      cpu = "25m";
+                      memory = "64Mi";
+                    };
+                    limits = {
+                      cpu = "250m";
+                      memory = "256Mi";
+                    };
+                  };
+                };
+              };
+              service.main = {
+                controller = "main";
+                extraSelectorLabels = labelsFor "vmalert";
+                ports.http.port = 8880;
+              };
+              persistence.rules = {
+                type = "configMap";
+                name = "vmalert-rules";
+                defaultMode = 420;
+                globalMounts = [
+                  {
+                    path = "/etc/vmalert";
+                    readOnly = true;
+                  }
+                ];
+              };
+            };
+          };
+          alertmanager = {
+            chart = charts.bjw-s-labs.app-template;
+            values = {
+              fullnameOverride = "alertmanager";
+              global.createDefaultServiceAccount = false;
+              global.labels = labelsFor "alertmanager";
+              defaultPodOptions = {
+                inherit nodeSelector;
+                labels = labelsFor "alertmanager";
+                annotations."homelab.danielvicory/config-sha256" = builtins.hashString "sha256" (
+                  alertmanagerConfig + alertmanager.templates."homelab.tmpl"
+                );
+                automountServiceAccountToken = false;
+                enableServiceLinks = false;
+                securityContext = {
+                  runAsNonRoot = true;
+                  runAsUser = 65534;
+                  runAsGroup = 65534;
+                  seccompProfile.type = "RuntimeDefault";
+                };
+              };
+              controllers.main = {
+                type = "deployment";
+                strategy = "Recreate";
+                replicas = 1;
+                containers.alertmanager = {
+                  image = images.alertmanager // {
+                    pullPolicy = "IfNotPresent";
+                  };
+                  args = [
+                    "--config.file=/etc/alertmanager/config/alertmanager.yaml"
+                    "--storage.path=/alertmanager"
+                    "--web.listen-address=:9093"
+                    # One replica: no gossip listener.
+                    "--cluster.listen-address="
+                  ];
+                  securityContext = {
+                    allowPrivilegeEscalation = false;
+                    readOnlyRootFilesystem = true;
+                    capabilities.drop = [ "ALL" ];
+                  };
+                  probes.readiness = {
+                    enabled = true;
+                    custom = true;
+                    spec = {
+                      httpGet = {
+                        path = "/-/ready";
+                        port = 9093;
+                      };
+                      periodSeconds = 10;
+                    };
+                  };
+                  resources = {
+                    requests = {
+                      cpu = "25m";
+                      memory = "48Mi";
+                    };
+                    limits = {
+                      cpu = "250m";
+                      memory = "128Mi";
+                    };
+                  };
+                };
+              };
+              service.main = {
+                controller = "main";
+                extraSelectorLabels = labelsFor "alertmanager";
+                ports.http.port = 9093;
+              };
+              persistence = {
+                config = {
+                  type = "configMap";
+                  name = "alertmanager-config";
+                  defaultMode = 420;
+                  items = [
+                    {
+                      key = "alertmanager.yaml";
+                      path = "alertmanager.yaml";
+                    }
+                  ];
+                  globalMounts = [
+                    {
+                      path = "/etc/alertmanager/config";
+                      readOnly = true;
+                    }
+                  ];
+                };
+                templates = {
+                  type = "configMap";
+                  name = "alertmanager-config";
+                  defaultMode = 420;
+                  items = [
+                    {
+                      key = "homelab.tmpl";
+                      path = "homelab.tmpl";
+                    }
+                  ];
+                  globalMounts = [
+                    {
+                      path = "/etc/alertmanager/templates";
+                      readOnly = true;
+                    }
+                  ];
+                };
+                delivery = {
+                  # Native secret persistence omits `optional`; a missing
+                  # credential must fail only its channel, not Pod startup.
+                  type = "custom";
+                  volumeSpec.secret = {
+                    secretName = "alertmanager-delivery";
+                    optional = true;
+                    defaultMode = 292;
+                  };
+                  globalMounts = [
+                    {
+                      path = credentialDirectory;
+                      readOnly = true;
+                    }
+                  ];
+                };
+                storage = {
+                  # Silences and the notification log are disposable.
+                  type = "emptyDir";
+                  sizeLimit = "64Mi";
+                  globalMounts = [ { path = "/alertmanager"; } ];
+                };
+              };
+            };
+          };
+        };
       };
   };
 }

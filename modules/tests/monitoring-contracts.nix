@@ -3,7 +3,6 @@
 # application.objects here would force foreign-platform Helm during inventory.
 {
   config,
-  inputs,
   lib,
   self,
   ...
@@ -34,38 +33,12 @@ let
           "host-telemetry-zpool-status"
           "host-telemetry-smart-status"
         ];
-    "the required mounts are not exactly media4 and the MergerFS pool" =
-      telemetry.requiredMounts == [
-        "/mnt/storage-clear/media4"
-        "/srv/media/data"
-      ];
   };
 in
 {
   perSystem =
-    { pkgs, system, ... }:
+    { pkgs, ... }:
     let
-      # Read chart pins from the production aspects, without entering nixidy's
-      # Helm object merge. All rendered object assertions read canonical output.
-      renderArgs = {
-        inherit cluster;
-        charts = inputs.nixhelm.chartsDerivations.${system};
-        lib = import (inputs.nixidy + "/lib") {
-          inherit pkgs;
-          kubelib = inputs.nixidy.inputs.nix-kube-generators;
-        };
-        computeResources = {
-          inherit (compute) instance retainedPaths;
-          stateRoot = {
-            guestPath = compute.stateGuestPath;
-            marker = compute.stateMarker;
-          };
-        };
-      };
-      monitoring = config.den.aspects.kubernetes.services.monitoring;
-      chartReleases =
-        (monitoring.k8s-manifests renderArgs).applications.monitoring.helm.releases
-        // ((monitoring.dashboards.k8s-manifests renderArgs).applications.monitoring.helm.releases or { });
       rendered = ../../generated/manifests/prod-home;
       python = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
       contractInputs = pkgs.writeText "monitoring-contract-inputs.json" (
@@ -74,11 +47,10 @@ in
           routes = cluster.routes;
           adminGroup = cluster.settings.kubernetes.services.identity.adminGroup;
           metricsPath = compute.retainedPaths.monitoring-metrics.guestPath;
+          metricsOwner = {
+            inherit (compute.retainedPaths.monitoring-metrics) uid gid;
+          };
           markerPath = "${compute.stateGuestPath}/${compute.stateMarker}";
-          charts = map (release: {
-            name = release.chart.name;
-            hash = release.chart.outputHash or null;
-          }) (builtins.attrValues chartReleases);
         }
       );
     in

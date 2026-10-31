@@ -2,23 +2,30 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   labels:
+    app.kubernetes.io/controller: main
+    app.kubernetes.io/instance: victoriametrics
+    app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/name: victoriametrics
-    app.kubernetes.io/part-of: monitoring
+    helm.sh/chart: app-template-5.1.0
   name: victoriametrics
   namespace: monitoring
 spec:
   replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
+      app.kubernetes.io/controller: main
+      app.kubernetes.io/instance: victoriametrics
       app.kubernetes.io/name: victoriametrics
-      app.kubernetes.io/part-of: monitoring
   strategy:
     type: Recreate
   template:
     metadata:
       annotations:
-        homelab.danielvicory/config-sha256: 15af7731cf1c7aec473b78645b5a44cd6f6128a46e37a1157601cd00d743cfe7
+        checksum/configMaps: 12c80689fa61b4579cb65d0156ce7cb366638b5491d75f92521a3ad20ce21e2a
       labels:
+        app.kubernetes.io/controller: main
+        app.kubernetes.io/instance: victoriametrics
         app.kubernetes.io/name: victoriametrics
         app.kubernetes.io/part-of: monitoring
     spec:
@@ -56,15 +63,19 @@ spec:
                 - ALL
             readOnlyRootFilesystem: true
           volumeMounts:
-            - mountPath: /storage
-              name: storage
             - mountPath: /etc/victoriametrics
               name: scrape
               readOnly: true
             - mountPath: /run/homelab-state-root
               name: state-marker
               readOnly: true
+            - mountPath: /storage
+              name: storage
+      dnsPolicy: ClusterFirst
       enableServiceLinks: false
+      hostIPC: false
+      hostNetwork: false
+      hostPID: false
       nodeSelector:
         kubernetes.io/hostname: compute-1
       securityContext:
@@ -75,13 +86,14 @@ spec:
           type: RuntimeDefault
       serviceAccountName: victoriametrics
       volumes:
-        - name: storage
-          persistentVolumeClaim:
-            claimName: monitoring-metrics
         - configMap:
+            defaultMode: 420
             name: victoriametrics-scrape
           name: scrape
         - hostPath:
             path: /srv/state/.homelab-state-root
             type: File
           name: state-marker
+        - name: storage
+          persistentVolumeClaim:
+            claimName: monitoring-metrics

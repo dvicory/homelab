@@ -30,26 +30,19 @@ let
   ksm = {
     job = "kube-state-metrics";
   };
-  alert = labels: summary: {
-    exp_labels = labels;
-    exp_annotations = { inherit summary; };
-  };
-  expect = evalTime: group: name: alerts: {
-    eval_time = evalTime;
-    groupname = group;
-    alertname = name;
-    exp_alerts = alerts;
-  };
   # Inspect the engine's own remote-written state, without pinning annotation
   # wording or supplying synthetic ALERTS inputs. Keep every object/static label.
-  expectFiring = evalTime: name: identities: {
+  expect = evalTime: group: name: identities: {
     eval_time = evalTime;
-    expr = ''label_del(ALERTS{alertgroup="host-storage",alertname="${name}",alertstate="firing"}, "__name__", "alertgroup", "alertname", "alertstate")'';
+    expr = ''label_del(ALERTS{alertgroup="${group}",alertname="${name}",alertstate="firing"}, "__name__", "alertgroup", "alertname", "alertstate")'';
     exp_samples = map (labels: {
       labels = "{${labelString labels}}";
       value = 1;
     }) identities;
   };
+  expectFiring =
+    evalTime: name: identities:
+    expect evalTime "host-storage" name identities;
   # Fresh textfile modification times: each sample equals its own time.
   freshMtime =
     file:
@@ -128,12 +121,10 @@ let
           sync_status = "Synced";
         } "1x30")
       ];
-      alert_rule_test = [
+      metricsql_expr_test = [
         (expect "5m" "workloads" "KubeContainerOOMKilled" [ ])
         (expect "6m" "workloads" "KubeContainerOOMKilled" [
-          (alert (
-            ksm // container "jellyfin-0" // { severity = "critical"; }
-          ) "jellyfin/jellyfin-0 container jellyfin was OOMKilled and restarted.")
+          ((ksm // container "jellyfin-0" // { severity = "critical"; }))
         ])
         (expect "6m" "workloads" "KubeContainerRestarted" [ ])
         (expect "6m" "gitops" "ArgoApplicationDegraded" [ ])
@@ -148,11 +139,9 @@ let
           ksm // container "jellyfin-0" // { reason = "Error"; }
         ) "_x10 1x20")
       ];
-      alert_rule_test = [
+      metricsql_expr_test = [
         (expect "6m" "workloads" "KubeContainerRestarted" [
-          (alert (
-            ksm // container "jellyfin-0" // { severity = "warning"; }
-          ) "jellyfin/jellyfin-0 container jellyfin restarted.")
+          ((ksm // container "jellyfin-0" // { severity = "warning"; }))
         ])
         (expect "6m" "workloads" "KubeContainerOOMKilled" [ ])
       ];
@@ -165,12 +154,10 @@ let
           ksm // container "jellyfin-0" // { reason = "CrashLoopBackOff"; }
         ) "1x60")
       ];
-      alert_rule_test = [
+      metricsql_expr_test = [
         (expect "14m30s" "workloads" "KubePodCrashLooping" [ ])
         (expect "15m30s" "workloads" "KubePodCrashLooping" [
-          (alert (
-            container "jellyfin-0" // { severity = "critical"; }
-          ) "jellyfin/jellyfin-0 container jellyfin is crash-looping.")
+          ((container "jellyfin-0" // { severity = "critical"; }))
         ])
       ];
     }
@@ -193,16 +180,18 @@ let
         (series "kube_pod_status_phase" (ksm // pod "done" // { phase = "Succeeded"; }) "1x300")
         (series "kube_pod_status_ready" (ksm // pod "done" // { condition = "true"; }) "0x300")
       ];
-      alert_rule_test = [
+      metricsql_expr_test = [
         (expect "12m" "workloads" "KubePodEvicted" [
-          (alert (
-            ksm
-            // pod "jellyfin-old"
-            // {
-              reason = "Evicted";
-              severity = "warning";
-            }
-          ) "jellyfin/jellyfin-old was evicted.")
+          (
+            (
+              ksm
+              // pod "jellyfin-old"
+              // {
+                reason = "Evicted";
+                severity = "warning";
+              }
+            )
+          )
         ])
         (expect "45m" "workloads" "KubePodEvicted" [ ])
         (expect "4h" "workloads" "KubePodEvicted" [ ])
@@ -217,12 +206,10 @@ let
         (series "kube_pod_status_phase" (ksm // pod "stuck" // { phase = "Pending"; }) "1x60")
         (series "kube_pod_status_ready" (ksm // pod "stuck" // { condition = "true"; }) "0x60")
       ];
-      alert_rule_test = [
+      metricsql_expr_test = [
         (expect "14m30s" "workloads" "KubePodNotReady" [ ])
         (expect "15m30s" "workloads" "KubePodNotReady" [
-          (alert (
-            pod "stuck" // { severity = "critical"; }
-          ) "jellyfin/stuck has not been ready for 15 minutes.")
+          ((pod "stuck" // { severity = "critical"; }))
         ])
       ];
     }
@@ -263,18 +250,20 @@ let
           }
         ) "0x6 1x20")
       ];
-      alert_rule_test = [
+      metricsql_expr_test = [
         (expect "2m" "workloads" "KubeJobFailed" [ ])
         (expect "4m" "workloads" "KubeJobFailed" [
-          (alert (
-            ksm
-            // {
-              namespace = "media";
-              job_name = "failing";
-              condition = "true";
-              severity = "warning";
-            }
-          ) "Job media/failing failed.")
+          (
+            (
+              ksm
+              // {
+                namespace = "media";
+                job_name = "failing";
+                condition = "true";
+                severity = "warning";
+              }
+            )
+          )
         ])
       ];
     }
@@ -333,12 +322,10 @@ let
               limit = null;
             }
           ];
-      alert_rule_test = [
+      metricsql_expr_test = [
         (expect "14m" "workloads" "KubeContainerCPUThrottled" [ ])
         (expect "17m" "workloads" "KubeContainerCPUThrottled" [
-          (alert (
-            container "jellyfin-0" // { severity = "warning"; }
-          ) "jellyfin/jellyfin-0 container jellyfin was CPU-throttled in 40% of its periods for 15 minutes.")
+          ((container "jellyfin-0" // { severity = "warning"; }))
         ])
         (expect "30m" "workloads" "KubeContainerCPUThrottled" [ ])
       ];
@@ -382,12 +369,10 @@ let
           }
         ) "4294967296x80")
       ];
-      alert_rule_test = [
+      metricsql_expr_test = [
         (expect "9m" "workloads" "KubeContainerMemoryNearLimit" [ ])
         (expect "11m" "workloads" "KubeContainerMemoryNearLimit" [
-          (alert (
-            container "jellyfin-0" // { severity = "warning"; }
-          ) "jellyfin/jellyfin-0 container jellyfin has used 95% of its memory limit for 10 minutes.")
+          ((container "jellyfin-0" // { severity = "warning"; }))
         ])
         (expect "25m" "workloads" "KubeContainerMemoryNearLimit" [ ])
       ];
@@ -425,23 +410,23 @@ let
           sync_status = "Synced";
         } "1x100")
       ];
-      alert_rule_test = [
+      metricsql_expr_test = [
         (expect "25m" "gitops" "ArgoApplicationOutOfSync" [ ])
         (expect "31m" "gitops" "ArgoApplicationOutOfSync" [
-          (alert {
+          ({
             namespace = "argocd";
             name = "stuck";
             severity = "warning";
-          } "Argo CD Application stuck has been out of sync for 30 minutes.")
+          })
         ])
         (expect "14m30s" "gitops" "ArgoApplicationDegraded" [ ])
         # The root Application only mirrors its children.
         (expect "16m" "gitops" "ArgoApplicationDegraded" [
-          (alert {
+          ({
             namespace = "argocd";
             name = "broken";
             severity = "critical";
-          } "Argo CD Application broken is degraded or cannot compare its source.")
+          })
         ])
       ];
     }
@@ -478,18 +463,16 @@ let
           }
         ) "4x80")
       ];
-      alert_rule_test = [
+      metricsql_expr_test = [
         (expect "1m30s" "host-storage" "HostRequiredMountMissing" [ ])
         (expect "3m" "host-storage" "HostRequiredMountMissing" [
-          (alert {
+          ({
             job = "host-node";
             host = hostName;
             mountpoint = "/srv/media/data";
             severity = "critical";
-          } "Required mount /srv/media/data on ${hostName} is not mounted.")
+          })
         ])
-      ];
-      metricsql_expr_test = [
         (expectFiring "29m" "HostFilesystemLowSpace" [ ])
         (expectFiring "31m" "HostFilesystemLowSpace" [
           (
@@ -534,14 +517,10 @@ let
           (series "homelab_zpool_healthy" (pool "backup") "0x5 stale")
           (series "homelab_zpool_healthy" (pool "healthy-only") "1x5 stale")
         ];
-        alert_rule_test = [
-          (expect "11m" "missing-telemetry" "TelemetrySourceDown" [
-            (alert (
-              nodeLabels // { severity = "critical"; }
-            ) "Host telemetry host-node on ${hostName} is not reporting.")
-          ])
-        ];
         metricsql_expr_test = [
+          (expect "11m" "missing-telemetry" "TelemetrySourceDown" [
+            ((nodeLabels // { severity = "critical"; }))
+          ])
           (expectFiring "4m" "HostZpoolUnhealthy" (firing [
             "rpool"
             "backup"
@@ -708,7 +687,7 @@ let
         nvme = critical "nvme-critical-warning";
       in
       {
-        name = "SMART health, NVMe critical warning and all four growth signals retain independent sparse-input state";
+        name = "SMART health and NVMe conditions survive sparse input independently of new-error events";
         interval = "1m";
         input_series = [
           (series "up" nodeLabels "1x400")
@@ -721,9 +700,8 @@ let
         ]
         ++ map (
           input:
-          # Three scrapes at 201–203m still represent only one physical run.
-          # Only SCSI is present in the 211m run; the other sparse counters
-          # must not borrow that file update as a successful collection.
+          # A later same-valued observation is not new growth. Sparse
+          # counters must not borrow another signal's publication.
           series input.metric disk (
             "0x2 1x2 stale _x194 1x2 stale "
             + (if input.signal == "scsi-grown-defects" then "_x6" else "_x16")
@@ -731,32 +709,24 @@ let
           )
         ) warnings;
         metricsql_expr_test = [
-          (expectFiring "4m" "HostDiskSmartFailing" (
-            [
-              (critical "health")
-              nvme
-            ]
-            ++ warningAlerts
-          ))
-          (expectFiring "130m" "HostDiskSmartFailing" (
-            [
-              (critical "health")
-              nvme
-            ]
-            ++ warningAlerts
-          ))
-          (expectFiring "180m" "HostDiskSmartFailing" (
-            [
-              (critical "health")
-              nvme
-            ]
-            ++ warningAlerts
-          ))
-          (expectFiring "201m30s" "HostDiskSmartFailing" ([ nvme ] ++ warningAlerts))
-          (expectFiring "203m30s" "HostDiskSmartFailing" ([ nvme ] ++ warningAlerts))
-          (expectFiring "211m30s" "HostDiskSmartFailing" (
-            [ nvme ] ++ map warning (builtins.filter (input: input.signal != "scsi-grown-defects") warnings)
-          ))
+          (expectFiring "4m" "HostDiskSmartFailing" [
+            (critical "health")
+            nvme
+          ])
+          (expectFiring "4m" "HostDiskSmartErrorsIncreasing" warningAlerts)
+          (expectFiring "130m" "HostDiskSmartFailing" [
+            (critical "health")
+            nvme
+          ])
+          (expectFiring "130m" "HostDiskSmartErrorsIncreasing" [ ])
+          (expectFiring "180m" "HostDiskSmartFailing" [
+            (critical "health")
+            nvme
+          ])
+          (expectFiring "201m30s" "HostDiskSmartFailing" [ nvme ])
+          (expectFiring "203m30s" "HostDiskSmartFailing" [ nvme ])
+          (expectFiring "211m30s" "HostDiskSmartFailing" [ nvme ])
+          (expectFiring "221m30s" "HostDiskSmartErrorsIncreasing" [ ])
           (expectFiring "221m30s" "HostDiskSmartFailing" [ ])
           (expectFiring "400m" "HostDiskSmartFailing" [ ])
         ];
@@ -772,7 +742,16 @@ let
           disk = "spare-c";
           id = "synthetic-spare";
         };
-        firing = [
+        failing = [
+          (
+            disk
+            // {
+              severity = "critical";
+              signal = "health";
+            }
+          )
+        ];
+        growth = [
           (
             disk
             // {
@@ -783,16 +762,15 @@ let
         ];
       in
       {
-        name = "a stopped SMART producer cannot recover through repeated scrapes, another disk's publication or one physical collection";
+        name = "event expiry is not physical recovery; stale scrapes and sibling reads cannot clear bad health";
         interval = "1m";
         input_series = [
           (series "up" nodeLabels "1x400")
           # The exporter keeps scraping old counter=1 until 149m, but its
           # physical producer has not published again since 3m.
           (series "homelab_smart_scsi_grown_defects" disk "0x2 1x146 stale _x9 1x240")
-          (series "homelab_smart_healthy" disk "1x149 stale _x9 1x240")
-          # At 150m a new global file has a healthy sibling but this disk is
-          # unread. Its first actual success is 160m; the second is 175m.
+          (series "homelab_smart_healthy" disk "0x149 stale _x9 1x240")
+          # A fresh file with an unread disk is not healthy evidence for it.
           (series "homelab_smart_device_up" disk "1x149 0x9 1x240")
           (series "homelab_smart_scsi_grown_defects" sibling "0x400")
           (series "homelab_smart_healthy" sibling "1x400")
@@ -802,63 +780,73 @@ let
           )
         ];
         metricsql_expr_test = [
-          (expectFiring "4m" "HostDiskSmartFailing" firing)
-          (expectFiring "130m" "HostDiskSmartFailing" firing)
-          (expectFiring "149m" "HostDiskSmartFailing" firing)
-          (expectFiring "150m30s" "HostDiskSmartFailing" firing)
-          # Old run=3m remains in the query's historical samples, but it is
-          # not a recent physical baseline for the first post-gap run=160m.
-          (expectFiring "160m30s" "HostDiskSmartFailing" firing)
-          (expectFiring "174m" "HostDiskSmartFailing" firing)
-          (expectFiring "175m30s" "HostDiskSmartFailing" [ ])
-          (expectFiring "180m" "HostDiskSmartFailing" [ ])
+          (expectFiring "4m" "HostDiskSmartErrorsIncreasing" growth)
+          (expectFiring "46m" "HostDiskSmartErrorsIncreasing" growth)
+          (expectFiring "49m" "HostDiskSmartErrorsIncreasing" [ ])
+          (expectFiring "130m" "HostDiskSmartErrorsIncreasing" [ ])
+          (expectFiring "4m" "HostDiskSmartFailing" failing)
+          (expectFiring "130m" "HostDiskSmartFailing" failing)
+          (expectFiring "150m30s" "HostDiskSmartFailing" failing)
+          (expectFiring "160m30s" "HostDiskSmartFailing" [ ])
           (expectFiring "400m" "HostDiskSmartFailing" [ ])
         ];
       }
     )
     (
       let
-        disk = nodeLabels // {
-          disk = "media4";
-          id = baseNameOf hvn.disks.media4;
-        };
-        firing = [
-          (
-            disk
-            // {
-              severity = "warning";
-              signal = "scsi-grown-defects";
-            }
-          )
+        disk =
+          name:
+          nodeLabels
+          // {
+            disk = name;
+            id = "synthetic-${name}";
+          };
+        devices = [
+          "missing"
+          "negative"
+          "unread"
+          "growing"
+          "reset"
         ];
       in
       {
-        name = "negative counters from distinct successful SMART publications cannot recover a held growth fault";
+        name = "new errors require two valid nonnegative values and a fresh readable disk";
         interval = "1m";
         input_series = [
-          (series "up" nodeLabels "1x400")
-          (series "homelab_smart_device_up" disk "1x400")
-          # Growth fires at 3m, then its raw evidence expires. Successful
-          # physical runs at 160m and 175m decline into negative sentinels.
-          (series "homelab_smart_scsi_grown_defects" disk
-            "0x2 1x2 stale _x153 -1x2 stale _x11 -2x2 stale _x131 0x2 stale _x11 0x2 stale"
-          )
-          (series "node_textfile_mtime_seconds" (nodeLabels // { file = "/run/host-telemetry/smart.prom"; })
-            "${toString start}x2 ${toString (start + 3 * 60)}x2 stale _x153 ${toString (start + 160 * 60)}x2 stale _x11 ${toString (start + 175 * 60)}x2 stale _x131 ${toString (start + 310 * 60)}x2 stale _x11 ${toString (start + 325 * 60)}x2 stale"
-          )
-        ];
+          (series "up" nodeLabels "1x150")
+          (series "node_textfile_mtime_seconds" (
+            nodeLabels // { file = "/run/host-telemetry/smart.prom"; }
+          ) "${toString start}+60x150")
+          # First appearance is not growth from an invented zero.
+          (series "homelab_smart_scsi_grown_defects" (disk "missing") "_x9 5x140")
+          # Negative sentinels cannot be the baseline for a later valid zero.
+          (series "homelab_smart_scsi_grown_defects" (disk "negative") "-2x4 -1x4 0x140")
+          (series "homelab_smart_scsi_grown_defects" (disk "unread") "0x9 1x140")
+          (series "homelab_smart_scsi_grown_defects" (disk "growing") "0x9 1x140")
+          # A decrease is not an event; later growth still needs a warning.
+          (series "homelab_smart_scsi_grown_defects" (disk "reset") "10x4 5x4 6x140")
+        ]
+        ++ map (
+          name: series "homelab_smart_device_up" (disk name) (if name == "unread" then "0x150" else "1x150")
+        ) devices;
         metricsql_expr_test = [
-          (expectFiring "4m" "HostDiskSmartFailing" firing)
-          (expectFiring "130m" "HostDiskSmartFailing" firing)
-          (expectFiring "160m30s" "HostDiskSmartFailing" firing)
-          (expectFiring "175m30s" "HostDiskSmartFailing" firing)
-          (expectFiring "180m" "HostDiskSmartFailing" firing)
-          # Negative publications cannot serve as a healthy baseline either.
-          # Two later nonnegative runs establish the real no-growth recovery.
-          (expectFiring "310m30s" "HostDiskSmartFailing" firing)
-          (expectFiring "324m" "HostDiskSmartFailing" firing)
-          (expectFiring "325m30s" "HostDiskSmartFailing" [ ])
-          (expectFiring "400m" "HostDiskSmartFailing" [ ])
+          (expectFiring "4m" "HostDiskSmartErrorsIncreasing" [ ])
+          (expectFiring "6m" "HostDiskSmartErrorsIncreasing" [ ])
+          (expectFiring "11m" "HostDiskSmartErrorsIncreasing" (
+            map (
+              name:
+              disk name
+              // {
+                severity = "warning";
+                signal = "scsi-grown-defects";
+              }
+            ) [
+              "growing"
+              "reset"
+            ]
+          ))
+          (expectFiring "140m" "HostDiskSmartErrorsIncreasing" [ ])
+          (expectFiring "140m" "HostDiskSmartFailing" [ ])
         ];
       }
     )
@@ -943,6 +931,7 @@ let
           "HostZpoolScrubErrors"
           "HostZpoolScrubOverdue"
           "HostDiskSmartFailing"
+          "HostDiskSmartErrorsIncreasing"
           "HostFilesystemLowSpace"
         ];
       in
@@ -950,6 +939,11 @@ let
         name = "empty startup and healthy-only storage followed by missing data never invent faults";
         interval = "1m";
         input_series = [
+          (series "up" nodeLabels "1x400")
+          (series "node_textfile_mtime_seconds" (
+            nodeLabels // { file = "/run/host-telemetry/smart.prom"; }
+          ) "${toString start}+60x400")
+          (series "homelab_smart_device_up" disk "_x10 1x5 stale")
           (series "homelab_zpool_healthy" pool "_x10 1x5 stale")
           (series "homelab_zpool_vdev_errors" (
             pool
@@ -983,12 +977,12 @@ let
       name = "a scrape job that vanishes from discovery fires through absent(up)";
       interval = "30s";
       input_series = upFor (lib.remove "cadvisor" allJobs) ++ [ (series "up" nodeLabels "1x200") ];
-      alert_rule_test = [
+      metricsql_expr_test = [
         (expect "6m" "missing-telemetry" "TelemetrySourceDown" [
-          (alert {
+          ({
             job = "cadvisor";
             severity = "critical";
-          } "Telemetry source cadvisor is not reporting.")
+          })
         ])
       ];
     }
@@ -1016,37 +1010,33 @@ let
             }
           ) (if disk == "media4" then "0x200" else "1x200")
         ) (removeAttrs hvn.disks [ "spare-c" ]);
-      alert_rule_test = [
+      metricsql_expr_test = [
         (expect "9m30s" "missing-telemetry" "HostZpoolStatusStale" [ ])
         (expect "10m30s" "missing-telemetry" "HostZpoolStatusStale" [
-          (alert (
-            nodeLabels
-            // {
-              file = "/run/host-telemetry/zpool.prom";
-              severity = "critical";
-            }
-          ) "zpool.prom on ${hostName} has not been refreshed for 10 minutes.")
+          (
+            (
+              nodeLabels
+              // {
+                file = "/run/host-telemetry/zpool.prom";
+                severity = "critical";
+              }
+            )
+          )
         ])
         (expect "19m" "missing-telemetry" "HostDiskTelemetryMissing" [ ])
         (expect "21m" "missing-telemetry" "HostDiskTelemetryMissing" [
-          (alert
-            {
-              host = hostName;
-              disk = "media4";
-              id = baseNameOf hvn.disks.media4;
-              severity = "critical";
-            }
-            "Disk media4 (${baseNameOf hvn.disks.media4}) on ${hostName} was not read in the last two SMART runs."
-          )
-          (alert
-            {
-              host = hostName;
-              disk = "spare-c";
-              id = baseNameOf hvn.disks.spare-c;
-              severity = "critical";
-            }
-            "Disk spare-c (${baseNameOf hvn.disks.spare-c}) on ${hostName} was not read in the last two SMART runs."
-          )
+          ({
+            host = hostName;
+            disk = "media4";
+            id = baseNameOf hvn.disks.media4;
+            severity = "critical";
+          })
+          ({
+            host = hostName;
+            disk = "spare-c";
+            id = baseNameOf hvn.disks.spare-c;
+            severity = "critical";
+          })
         ])
         (expect "21m" "missing-telemetry" "HostSmartStatusStale" [ ])
       ];
@@ -1076,12 +1066,10 @@ let
             ) "1x200"
           ) hvn.disks
           ++ [ (series "homelab_smart_device_up" labels "0x49 1x150") ];
-        alert_rule_test = [
+        metricsql_expr_test = [
           (expect "19m" "missing-telemetry" "HostDiskTelemetryMissing" [ ])
           (expect "21m" "missing-telemetry" "HostDiskTelemetryMissing" [
-            (alert (
-              labels // { severity = "critical"; }
-            ) "Disk ${disk} (${disk}) on ${hostName} was not read in the last two SMART runs.")
+            ((labels // { severity = "critical"; }))
           ])
           (expect "26m" "missing-telemetry" "HostDiskTelemetryMissing" [ ])
         ];
@@ -1097,28 +1085,28 @@ let
         ) "${toString start}x200")
         (series "node_textfile_scrape_error" nodeLabels "0x4 1x200")
       ];
-      alert_rule_test = [
+      metricsql_expr_test = [
         (expect "3m" "missing-telemetry" "HostZpoolMissing" [
-          (alert {
+          ({
             host = hostName;
             pool = "rpool";
             severity = "critical";
-          } "ZFS pool rpool is missing from zpool.prom on ${hostName}.")
+          })
         ])
         (expect "3m" "missing-telemetry" "HostZpoolStatusStale" [
-          (alert (
-            nodeLabels // { severity = "critical"; }
-          ) "zpool.prom on ${hostName} has not been refreshed for 10 minutes.")
+          ((nodeLabels // { severity = "critical"; }))
         ])
         (expect "44m" "missing-telemetry" "HostSmartStatusStale" [ ])
         (expect "46m" "missing-telemetry" "HostSmartStatusStale" [
-          (alert (
-            nodeLabels
-            // {
-              file = "/run/host-telemetry/smart.prom";
-              severity = "critical";
-            }
-          ) "smart.prom on ${hostName} has not been refreshed for 45 minutes.")
+          (
+            (
+              nodeLabels
+              // {
+                file = "/run/host-telemetry/smart.prom";
+                severity = "critical";
+              }
+            )
+          )
         ])
       ];
     }
@@ -1139,28 +1127,28 @@ let
           type = "storage/big";
         } "${toString (gib 16)}x80")
       ];
-      alert_rule_test = [
+      metricsql_expr_test = [
         (expect "6m" "monitoring-storage" "MonitoringStorageLow" [
-          (alert {
+          ({
             job = "victoriametrics";
             path = "/storage";
             severity = "warning";
-          } "Metrics storage has 90GiB free; ingestion stops at 50 GiB.")
+          })
         ])
         (expect "17m" "monitoring-storage" "MonitoringStorageLow" [
-          (alert {
+          ({
             job = "victoriametrics";
             path = "/storage";
             severity = "warning";
-          } "Metrics storage has 60GiB free; ingestion stops at 50 GiB.")
-          (alert {
+          })
+          ({
             job = "victoriametrics";
             path = "/storage";
             severity = "critical";
-          } "Metrics storage has 60GiB free; ingestion stops at 50 GiB.")
+          })
         ])
         (expect "31m" "monitoring-storage" "MonitoringStorageGrowth" [
-          (alert { severity = "warning"; } "Metrics history is 21GiB, expected under 9 GiB.")
+          ({ severity = "warning"; })
         ])
       ];
     }
@@ -1171,9 +1159,9 @@ let
         (series "vm_rows_added_to_storage_total" { job = "victoriametrics"; } "0+100x40")
         (series "kubelet_running_pods" { job = "kubelet"; } "5x40")
       ];
-      alert_rule_test = [
+      metricsql_expr_test = [
         (expect "5m" "watchdog" "Watchdog" [
-          (alert { severity = "none"; } "Homelab monitoring heartbeat.")
+          ({ severity = "none"; })
         ])
       ];
     }
@@ -1187,9 +1175,9 @@ let
         (series "kube_node_info" { job = "kube-state-metrics"; } "1x40")
         (series "node_time_seconds" { job = "host-node"; } "1x40")
       ];
-      alert_rule_test = [
+      metricsql_expr_test = [
         (expect "4m" "watchdog" "Watchdog" [
-          (alert { severity = "none"; } "Homelab monitoring heartbeat.")
+          ({ severity = "none"; })
         ])
         (expect "8m30s" "watchdog" "Watchdog" [ ])
       ];
@@ -1217,9 +1205,9 @@ let
           case = "all";
         } "1x10")
       ];
-      alert_rule_test = [
+      metricsql_expr_test = [
         (expect "4m" "watchdog" "Watchdog" [
-          (alert { severity = "none"; } "Homelab monitoring heartbeat.")
+          ({ severity = "none"; })
         ])
         (expect "12m" "watchdog" "Watchdog" [ ])
       ];
@@ -1234,9 +1222,9 @@ let
         (series "kube_node_info" { job = "kube-state-metrics"; } "1x60")
         (series "node_time_seconds" { job = "host-node"; } "1x60")
       ];
-      alert_rule_test = [
+      metricsql_expr_test = [
         (expect "12m" "watchdog" "Watchdog" [
-          (alert { severity = "none"; } "Homelab monitoring heartbeat.")
+          ({ severity = "none"; })
         ])
       ];
     }
@@ -1253,12 +1241,12 @@ let
           integration = "telegram";
         } "0x25")
       ];
-      alert_rule_test = [
+      metricsql_expr_test = [
         (expect "4m" "delivery" "AlertDeliveryFailing" [
-          (alert {
+          ({
             integration = "pushover";
             severity = "critical";
-          } "pushover notifications are failing.")
+          })
         ])
       ];
     }
@@ -1272,15 +1260,15 @@ let
           instance = "jellyfin.example.test";
         } "0x30")
       ];
-      alert_rule_test = [
+      metricsql_expr_test = [
         (expect "4m30s" "endpoints" "EndpointDown" [ ])
         (expect "5m30s" "endpoints" "EndpointDown" [
-          (alert {
+          ({
             job = "blackbox";
             route = "jellyfin";
             instance = "jellyfin.example.test";
             severity = "critical";
-          } "jellyfin.example.test has not answered for 5 minutes.")
+          })
         ])
       ];
     }
@@ -1328,6 +1316,8 @@ in
                     routes = { };
                   };
                   computeResources.instance = "compute-1";
+                  # Only extract rules here; manifest checks render real charts.
+                  charts = throw "mount-stage rules do not require Helm rendering";
                 }).applications.monitoring.objects;
               stagedRules = pkgs.writeText "staged-rules.json" (data stagedObjects "vmalert-rules")."rules.json";
               stagedTests = pkgs.writeText "staged-tests.json" (
@@ -1345,18 +1335,15 @@ in
                         ++ lib.optional stage.recovers (
                           series "node_filesystem_size_bytes" (nodeLabels // { mountpoint = addedMount; }) "_x8 100x32"
                         );
-                      alert_rule_test = [
+                      metricsql_expr_test = [
                         (expect "1m30s" "host-storage" "HostRequiredMountMissing" [ ])
                         (expect "3m" "host-storage" "HostRequiredMountMissing" (
-                          map (
-                            mountpoint:
-                            alert {
-                              job = "host-node";
-                              host = hostName;
-                              inherit mountpoint;
-                              severity = "critical";
-                            } "Required mount ${mountpoint} on ${hostName} is not mounted."
-                          ) stage.missing
+                          map (mountpoint: {
+                            job = "host-node";
+                            host = hostName;
+                            inherit mountpoint;
+                            severity = "critical";
+                          }) stage.missing
                         ))
                         (expect "6m" "host-storage" "HostRequiredMountMissing" [ ])
                       ];

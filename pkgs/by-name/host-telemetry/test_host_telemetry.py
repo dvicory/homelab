@@ -383,6 +383,26 @@ class SmartTest(unittest.TestCase):
         self.assertEqual(samples[f"homelab_smart_nvme_critical_warning{{{self.labels('rpool-a')}}}"], 0)
         self.assertEqual(samples[f"homelab_smart_temperature_celsius{{{self.labels('media1')}}}"], 34)
 
+    def test_missing_nvme_fields_are_not_zero(self):
+        document = json.loads(read(os.path.join(FIXTURES, "smart-nvme-healthy.json")))
+        fixture = os.path.join(self.env.dir, "partial-nvme.json")
+        plan = self.healthy_plan()
+        plan["rpool-a"] = (fixture, 0)
+        for fields in ({}, {"critical_warning": 0}, {"media_errors": 0},
+                       {"critical_warning": 0, "media_errors": 0}):
+            with self.subTest(fields=fields):
+                document["nvme_smart_health_information_log"] = fields
+                with open(fixture, "w") as handle:
+                    json.dump(document, handle)
+                self.assertEqual(self.run_plan(plan), 0)
+                samples = parse(self.output)
+                for field in ("critical_warning", "media_errors"):
+                    key = f"homelab_smart_nvme_{field}{{{self.labels('rpool-a')}}}"
+                    if field in fields:
+                        self.assertEqual(samples[key], 0)
+                    else:
+                        self.assertNotIn(key, samples)
+
     def test_failed_drive(self):
         plan = self.healthy_plan()
         plan["spare-c"] = ("smart-sata-failed.json", 8)
