@@ -42,18 +42,19 @@ The declaration owns every Kanidm OAuth2 client. On each run the Job
 deletes clients it does not declare, including any created by hand.
 Declare a new client in Nix instead.
 
-The helper source accepts an explicit `eligibleGroup` per client and owns
+The selected helper accepts an explicit `eligibleGroup` per client and owns
 both normal and supplemental scope maps, not eligibility-group membership
 or person credentials. Existing clients explicitly select `homelab-admin`.
-Before entity reconciliation or Secret publication, the new helper revokes
-all existing client scope maps, including undeclared clients. Administrator
+Before entity reconciliation or Secret publication, the helper revokes all
+existing client scope maps, including undeclared clients. Administrator
 membership is restored only after successful reconciliation. A failed run
 can leave access revoked until it succeeds; revocation requires a reachable
 Kanidm API and is sequential, not an atomic cross-client transaction.
 
-The reviewed registry image remains selected until the normal green-main
-publication and review of its actual digest. The
-`identity-provision-runtime` check first exercises that selected image,
+Select registry upgrades through the
+[verified helper release workflow](jellyfin.md#deliver-helper-images), using
+the unmodified receipt at `assets/helper-release/verified.json`.
+The `identity-provision-runtime` check exercises that selected image,
 then imports the actual current-source producer archive into its disposable
 K3s VM and proves synthetic per-client eligibility with native sign-ins.
 It does not publish an image or change production selection.
