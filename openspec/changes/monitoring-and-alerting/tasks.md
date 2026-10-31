@@ -1,42 +1,34 @@
 ## Evidence scope
 
-The implementation receipts below are historical, including published head
-`8ae433e305ae69367053d4d487ecb5fb25846428` and normal CI
-[39240104596](https://github.com/dvicory/homelab/actions/runs/39240104596).
-The current integration targets accepted main
-`26471e6edeeb384a6ffe47a26183497062b0294b`. Canonical generation and the native
-rule consumer now pass at `0cfa756d7f52d27dd802302f97e4a067d0f85ced`; exact-source
-full CI remains pending. Earlier proof below remains scoped to its historical
-accepted-main parent.
+Receipts below are historical and remain scoped to their named source and parent.
+They do not establish readiness of the approved SMART event/password simplification.
+Unaffected checked source items retain that historical status; affected items are
+reopened until exact-source proof exists. All live acceptance remains separate.
 
-The operator completed the five encrypted delivery sources and matching host
-rekeys on 2026-10-28. Their distinct original change is `ccbc811bc9ba127c5c406c5b00a119f36639a38c`;
-no agent decrypted or tested the values. Provider account settings, disk/spare
-confirmation, separately authorized staging and merge, and all live acceptance
-remain open. Disposable runtime/browser proof is not provider delivery,
-production access control or persistence after a live guest replacement.
+- Published source `8ae433e305ae69367053d4d487ecb5fb25846428` had normal CI
+  [39240104596](https://github.com/dvicory/homelab/actions/runs/39240104596).
+- Engineering source `573ba88300d9d8eba102bbd4a9051cb8b0eb9206` passed normal full
+  CI [40760820350](https://github.com/dvicory/homelab/actions/runs/40760820350):
+  53 successful jobs and the expected main-helper publisher skip. Its strict
+  consumer accepted three inventories, 49 execution receipts and independent
+  artifact declarations; the native API consumer accepted all 28 scenarios.
+  The earlier failed `972cee0b` run remains evidence, not a waiver.
+- Native rules at `0cfa756d7f52d27dd802302f97e4a067d0f85ced` passed 30 primary
+  cases and three staged pairs, including the then-selected retained-growth
+  policy. That result does not prove the replacement new-error semantics.
+- The operator supplied the five encrypted delivery sources and matching host
+  rekeys on 2026-10-28 (original change `ccbc811bc9ba127c5c406c5b00a119f36639a38c`).
+  No agent decrypted or tested their values. Ciphertext presence does not prove
+  provider settings, actual delivery, or readiness of the new Grafana password.
 
-Engineering source `573ba88300d9d8eba102bbd4a9051cb8b0eb9206` passed normal full
-CI [40760820350](https://github.com/dvicory/homelab/actions/runs/40760820350):
-53 successful jobs and only the expected main-helper publisher skip.
-Its actual checkout has the exact authored tree and accepted-main parent.
-The unchanged strict consumer accepted all three inventories, all 49 execution
-receipts and independent artifact declarations, and the approved native report
-bytes; the native API consumer accepted all 28 scenarios and owned cleanup.
-All twenty monitoring registrations and six VM capabilities remain mandatory.
-The earlier failed `972cee0b` run remains evidence, not an unchanged rerun or waiver.
-
-The four late review findings have source repairs: the trusted browser-to-guest
-break-glass tunnel, tracking conditional encrypted sources before rekey,
-canceled/resilver scrub completion evidence, and storage-fault retention through
-missing telemetry. The existing canonical owners regenerated docs and rules.
-The rule consumer passed all 30 primary cases and three staged pairs at
-`0cfa756d`. SMART growth now uses native `delta_prometheus` at both endpoints:
-it compares observed samples instead of inventing a zero baseline across gaps.
-Removing only the nonnegative guard makes the unchanged primary suite fail the
-intended sentinel firing assertions. Current-source full CI and live acceptance
-remain separate gates; successful historical CI at `573ba883` does not establish
-these later repairs.
+Current integration uses accepted main `46279610a1b1522461cf245966f35e22b3a3fc8f`.
+The operator has confirmed automatic non-USB physical-disk coverage, SMART
+new-error warnings without resolved notices, and a generated agenix-managed
+Grafana password. Fresh generation/rekey inventory, canonical output, native
+consumers, full exact-source CI and candidate qualification remain integration
+gates. Production staging/activation, merge, real device/controller access,
+provider delivery and every live drill are separately gated. Disposable
+runtime/browser proof is not production access or persistence proof.
 
 After K3s restarts, the inherited NetworkPolicy fixture waits for the existing
 Gateway and stranger clients to execute `true` through the live kubelet/CRI path.
@@ -44,19 +36,11 @@ Cached Node Ready alone does not establish that path. This test-readiness barrie
 does not send or retry network probes, restart watchers, change observation
 windows or weaken refusal assertions; it is not a policy-controller repair.
 
-## 1. Contract checks and scaffolding
+## 1. Contract checks and integration
 
-- [x] 1.1 Add `modules/tests/monitoring-contracts.nix` with native rendered-contract checks. It must fail when:
-  - a non-monitoring Application declares sync wave ≥ 5;
-  - any monitoring Application is below wave 5;
-  - a route targets a monitoring Service other than Grafana, or the Grafana route is not `auth = "admin"`;
-  - a declared route has no endpoint probe;
-  - an image is not `tag@digest` or a chart has no version and hash;
-  - the VictoriaMetrics volume is anything other than the static `local` PV on the `monitoring-metrics` retained path, or any monitoring volume uses `DirectoryOrCreate`.
+- [ ] 1.1 Retain meaningful native rendered-contract checks in `modules/tests/monitoring-contracts.nix`: fail-closed retained storage, required telemetry coverage, bounded resources, dashboard parsing and declared sign-in restrictions. Reuse native GitOps policies for route/wave publication instead of duplicate monitoring predicates. Remove derivation-name/hash-shape, exact current mount/dashboard inventories and editorial wording pins; keep actual source/hash enforcement and manifest freshness.
 
-  Verify with `nix build path:$PWD#checks.x86_64-linux.monitoring-contracts`, plus one deliberately failing fixture per rule.
-
-  Evidence: `monitoring-contracts` passes on hvn-hyp1 (2026-10-11). Each rule is named after the failure it detects and reads only rendered manifests and evaluated host configuration. The per-rule failing fixtures were dropped in review: they exercised the check, not the system.
+  Verify the integrated `monitoring-contracts` check and its native policy owners once source is stable. Historical `monitoring-contracts` proof covered the former representation; it does not establish the simplified check's coverage.
 
 - [x] 1.2 Add the `kubernetes.services.monitoring` aspect group with retained storage at wave 5 and workloads at wave 6. Include it in `den.aspects.prod-home`. The protected Namespace is contributed to `identity-retained` at wave -2. Current verification uses the native GitOps Kyverno policies, including AppProject destinations, plus `monitoring-contracts`.
 
@@ -80,16 +64,19 @@ windows or weaken refusal assertions; it is not a policy-controller repair.
 
   Evidence: `host-telemetry-converters` covers ONLINE, DEGRADED, device errors, scrub errors and a failing `zpool` (previous file and mtime kept; invalid JSON too). A read-only run against the live `rpool` produced the expected series (Implementation note 5).
 
-- [x] 2.4 Add the `smart-status` oneshot and its 15-minute timer. Native OS metadata discovers non-USB physical disks; the existing pinned smartctl reads the deduplicated required/discovered set and writes `smart.prom` atomically. Keep current/future block-device access read-only and preserve health/counter/device-up metrics. Existing converter fixtures exercise:
+- [ ] 2.4 Add the `smart-status` oneshot and its 15-minute timer. Native OS metadata discovers non-USB physical disks; the existing pinned smartctl reads the deduplicated required/discovered set and writes `smart.prom` atomically. Keep current/future block-device access read-only and preserve health/counter/device-up metrics. Converter fixtures must exercise:
   - a healthy SAS drive, a healthy SATA drive and a healthy NVMe drive;
   - a drive reporting FAILED, and a SAS drive whose grown-defect count rose;
   - a declared disk that cannot be opened, which must produce `homelab_smart_device_up 0` while the other disks are still written;
   - a run in which `smartctl` itself fails, which must leave the previous file untouched;
   - a new unconfigured disk, USB and synthetic exclusions, deduplication against a required alias, and private NVMe topology labels;
   - a required disk missing from discovery, an unread extra disk without hiding siblings, and discovery/identity failure preserving the previous file and mtime;
-  - overall passed:true with SMART statuses 16, 32 and 48, distinguishing current prefailure from historical-only threshold crossings.
+  - overall passed:true with SMART statuses 16, 32 and 48, distinguishing current prefailure from historical-only threshold crossings;
+  - otherwise accepted NVMe JSON with omitted warning/media-error fields versus explicit zero fields: omission emits no healthy zero sample, while actual zero remains available.
 
   Evidence: `host-telemetry-converters` covers healthy SAS, SATA and NVMe, a FAILED drive, rising grown defects, an unopenable disk (`homelab_smart_device_up 0`, others still written) and a failing `smartctl` (previous file kept). The fixtures are synthetic; recording real output needs root (Implementation note 5).
+
+  Reopened for the omitted-NVMe-field regression. The owner must exercise that regression and the integrated converter check; the historical synthetic fixtures are not proof of the corrected behavior.
 
 - [x] 2.5 Make the aspect emit `prometheus-targets` entries. Add the host consumer aspect, which:
   - renders one nftables input rule admitting only the guest address on the compute interface to the exporter port;
@@ -97,7 +84,7 @@ windows or weaken refusal assertions; it is not a policy-controller repair.
 
   The mount list is the mergerfs pool mountpoints, plus provisioned `disk.luks-storage` mountpoints, plus an `extraRequiredMounts` list that is empty today. Verify by evaluation that:
   - the targets and rule text are what `hvn-hyp1`'s data implies, and the rule names no other source or interface;
-  - the mount list is exactly `/srv/media/data` and `/mnt/storage-clear/media4`, with no legacy gocryptfs mount (media1–3);
+  - required mounts follow the declared mergerfs and provisioned encrypted-disk mountpoints, excluding undeclared legacy gocryptfs mounts rather than pinning today's exact path inventory;
   - the required-alias floor matches task 2.1 independently of discovery, and the pool list is `rpool`.
 
   Evidence: existing native checks cover the guest-only firewall and required mounts. The nine required aliases retain independent absence rules; the same `HostDiskTelemetryMissing` family also covers unread discovered extras without duplicate required identities. The rule-engine fixture exercises the extra disk before/after the 20-minute bound and recovery.
@@ -111,16 +98,19 @@ windows or weaken refusal assertions; it is not a policy-controller repair.
 
 ## 3. Cluster collection core
 
-- [x] 3.1 Pin and render VictoriaMetrics single-node:
+- [ ] 3.1 Pin and render VictoriaMetrics single-node through the already-used app-template 5.1.0, replacing the local workload renderer while preserving:
   - retained path `monitoring-metrics`, with the VictoriaMetrics UID and GID and mode `0700`;
   - a static `local` PV and PVC pinned to the compute instance, in `monitoring-retained`;
   - a read-only hostPath mount of the state-root marker with `type: File`;
   - `-retentionPeriod=90d` and `-storage.minFreeDiskSpaceBytes=50GiB`;
-  - the resource limits from design.md.
+  - the resource limits from design.md;
+  - names and policy peer labels, Recreate strategy, UID/GID, probes, service-account token/RBAC restrictions and rollout on configuration changes.
 
   Verify the generated manifests show the retained `guestPath`, the marker mount, the flags, the limits, and no chart test or hook objects.
 
   Evidence: `Deployment-victoriametrics.yaml` (flags, limits, marker hostPath `type: File`), `PersistentVolume-monitoring-metrics.yaml` (`local.path: /srv/state/monitoring-metrics`), no Helm hook or test objects under `generated/manifests/prod-home/monitoring/`; `monitoring-contracts` checks the storage rules.
+
+  Reopened for app-template cutover. Historical plain-object manifests are not proof of the replacement workload's behavior; require canonical output and the existing storage/runtime-boundary checks at the integrated source.
 
 - [x] 3.2 Render the scrape config from:
   - (a) the host's `scrapeTargets` option, read from `nixosConfigurations.${cluster.hostName}`;
@@ -149,7 +139,7 @@ windows or weaken refusal assertions; it is not a policy-controller repair.
 
 ## 4. Alert rules, routing and secrets
 
-- [x] 4.1 Write the rule files from design.md Decisions 5, 8 and 12 as Nix-rendered Prometheus YAML. Keep independent rules for declared pools, required disk aliases and required mounts; generic SMART faults and unread discovered disks do not require another inventory entry. Add `vmalert-tool unittest` (or `promtool test rules`) cases:
+- [ ] 4.1 Write the rule files from design.md Decisions 5, 8 and 12 as Nix-rendered Prometheus YAML. Keep independent rules for declared pools, required disk aliases and required mounts; generic SMART faults and unread discovered disks do not require another inventory entry. Add `vmalert-tool unittest` (or `promtool test rules`) cases:
   - **Workloads:**
     - a single OOM kill fires as critical within 5 minutes, even though Argo CD reports Healthy;
     - a crash loop fires at 15 minutes and not before.
@@ -163,10 +153,12 @@ windows or weaken refusal assertions; it is not a policy-controller repair.
   - **GitOps:** out-of-sync for 25 minutes does not fire.
   - **Host storage:**
     - an absent required mount fires;
-    - free space below 10% fires a warning, and below 5% a critical.
+    - free space below 10% fires a warning, and below 5% a critical;
+    - each supported SMART counter-growth signal fires `HostDiskSmartErrorsIncreasing` at warning severity after an observed increase, then ends as an event when growth leaves the window, without a retained growth incident or two-physical-run recovery requirement;
+    - negative/sentinel, missing and invalid observations do not manufacture a new-error baseline or healthy condition recovery.
   - **Missing telemetry:**
     - a missing host source fires `TelemetrySourceDown`, while the native engine's own firing storage `ALERTS` renew through more than two hours of missing input; only explicit matching recovery clears each object/severity/signal, and later absence cannot resurrect it;
-    - a stopped SMART producer behind a live exporter cannot clear a firing growth warning through repeated old counter scrapes, another disk's publication, or one post-gap physical collection; only two distinct successful nonnegative collections of that input establish recovery, and negative/sentinel physical publications cannot clear the fault or supply its recovery baseline;
+    - ongoing `HostDiskSmartFailing` health/NVMe-critical-warning conditions retain matching signal-specific recovery: stale replay, a fresh sibling disk, an unread device, an absent NVMe field and negative/sentinel values cannot clear them; only fresh successful matching healthy evidence can;
     - a scrape job that vanishes from discovery fires `TelemetrySourceDown` through `absent(up)`;
     - `zpool.prom` older than 600 s fires `HostZpoolStatusStale` while node_exporter is up, and so does `node_textfile_scrape_error == 1`;
     - a declared pool missing from a fresh `zpool.prom` fires `HostZpoolMissing`;
@@ -184,27 +176,28 @@ windows or weaken refusal assertions; it is not a policy-controller repair.
 
   Verify the flake check passes.
 
-  Current rule evidence: `monitoring-rules` at `0cfa756d` passed all 30 primary cases and three staged production rule/test pairs with vmalert-tool 1.151.0. This includes extended full-outage, sparse-sibling, coherent-ratio, three-day scrub and no-resurrection behavior. The unchanged primary suite fails exactly four sentinel held-firing assertions when only the nonnegative filter is removed. Final planning-only edits leave implementation, tests and generated manifests identical to that independently accepted source; full final-source CI remains a separate integration gate.
+  Historical rule evidence: `monitoring-rules` at `0cfa756d` passed 30 primary cases and three staged production rule/test pairs with vmalert-tool 1.151.0, including extended outage, sparse-sibling, coherent-ratio, three-day scrub and no-resurrection cases. Its retained counter-growth/sentinel assertions belong to the superseded incident policy. Reopened acceptance requires the new event cases and preserved actual-condition recovery cases, judged by engine state rather than exact summary text. Exact-source full CI remains separate.
 
   Metric-name evidence: historical heartbeat checks confirm `vm_rows_added_to_storage_total`, `vm_free_disk_space_bytes` and `vm_data_size_bytes`; `host-telemetry-runtime` confirms `node_time_seconds` and filesystem/systemd series; `monitoring-k3s-runtime` confirms `kubelet_running_pods`, `machine_cpu_cores` and `container_oom_events_total`. These runtime results retain their historical source scope, not final-head CI acceptance. For the remaining name, the rendered kube-state-metrics Deployment pins chart 8.6.0 and image `v2.20.0@sha256:42cfe3723a5f058171c627537fb57a3ea0f26e4380fa18555a95cb1a1b4cfc5b`, enables `nodes`, and sets no metric allow/deny filter. Its upstream release commit `4ffeda2ef866b0fef372849825a803296483b336` registers `createNodeInfoFamilyGenerator` in the node family and defines `kube_node_info` as a stable gauge with value 1 ([registration](https://github.com/kubernetes/kube-state-metrics/blob/4ffeda2ef866b0fef372849825a803296483b336/internal/store/node.go#L45-L60), [definition](https://github.com/kubernetes/kube-state-metrics/blob/4ffeda2ef866b0fef372849825a803296483b336/internal/store/node.go#L133-L181), [metric documentation](https://github.com/kubernetes/kube-state-metrics/blob/4ffeda2ef866b0fef372849825a803296483b336/docs/metrics/cluster/node-metrics.md#L6)). This confirms the pinned metric name, not a new live scrape or deployment.
 
   Read-only counter behavior: pinned VictoriaMetrics 1.151.0 [rejects `WriteRows` before `Storage.AddRows` when read-only](https://github.com/VictoriaMetrics/VictoriaMetrics/blob/v1.151.0/app/vmstorage/vmstorage.go#L125-L139); [the added-row counter increases only by rows actually added](https://github.com/VictoriaMetrics/VictoriaMetrics/blob/v1.151.0/lib/storage/storage.go#L1670-L1693). Rejected writes therefore do not advance `vm_rows_added_to_storage_total`; already admitted work may finish during the transition. Historical read-only-store proof observes write refusal, stopped heartbeat, responsive queries and recovery after restoring space; the full final-head runtime checks still run through ordinary CI.
 
-- [x] 4.2 Render vmalert and the Alertmanager config: severity routes, the Watchdog heartbeat route, cross-channel `AlertDeliveryFailing` routes, inhibition rules, grouping, `send_resolved`, and file-based credential fields. Verify with `amtool check-config` and `amtool config routes test` in a flake check.
-  - The tests pin the current routing from design.md Decision 6, including the dedicated heartbeat and channel-failure routes below. Ordinary critical alerts reach both channels, at a Pushover priority of at least 1 so quiet hours do not hold them; ordinary warnings reach at least one channel, and their resolutions are sent. A later routing change in Nix updates the routing expectations and must still pass the delivery floor.
+- [ ] 4.2 Render vmalert and Alertmanager through the existing app-template, preserving names, labels, Recreate strategy, identities, resources, probes, token restrictions and configuration rollouts. Render severity routes, the SMART event route, Watchdog heartbeat route, cross-channel failure routes, inhibitions, grouping, resolved flags and native file credentials. Verify with `amtool check-config` and `amtool config routes test`.
+  - Ordinary critical alerts reach both channels at Pushover priority 1; ordinary warnings reach at least one channel. Condition receivers send resolutions. `HostDiskSmartErrorsIncreasing` uses `warning-events` with ordinary warning channels/priority but `send_resolved: false` on both integrations. No other condition inherits that event exception.
   - They cover:
     - critical → Pushover at priority 1 and Telegram;
     - warning → Pushover at priority 0 and Telegram;
+    - `HostDiskSmartErrorsIncreasing` → `warning-events`, Pushover priority 0 and Telegram, without resolved/recovered delivery;
     - Watchdog → heartbeat only, with `send_resolved: false` on the heartbeat receiver;
     - Pushover failure → Telegram only, and Telegram failure → Pushover only (priority 1);
     - the inhibitions in Decision 6, including a down host node_exporter suppressing the stale-file and missing-item alerts.
-  - Also settle whether the pinned Alertmanager reads Telegram `chat_id` from a file, or needs the init-container fallback in design.md Decision 6.
+  - Use pinned Alertmanager's native Telegram `chat_id_file`; no chat-ID init-container fallback remains.
 
-  Evidence: `monitoring-alertmanager` passes: `amtool check-config`, `amtool config routes test` for each route, and the delivery floor. The pinned Alertmanager reads `chat_id_file` (Implementation note 7).
+  Historical `monitoring-alertmanager` proof passed native config/routes and the then-current delivery floor, including `chat_id_file`. Reopened acceptance must exercise the event route and resolved-flag distinction while retaining ordinary condition, heartbeat and failed-channel behavior.
 
-- [ ] 4.3 Declare the five delivery runtime secrets and Grafana's generated secret key in `compute-resources.runtimeSecrets`. Generate Grafana's administrator password only in memory at Pod start. Mount the delivery Secret with `optional: true`. Verify by evaluation that the host's `runtimeSecrets` contains all declared inputs. Verify with a container-level test that the pinned Alertmanager starts without the files and records a failed notification, rather than crashing or using a placeholder.
+- [ ] 4.3 Declare the five delivery runtime secrets plus Grafana's generated secret key and administrator password in `compute-resources.runtimeSecrets`. Generate `monitoring--grafana-admin--admin-password` with the existing `alnum-no-newline` flow; target `monitoring/grafana-admin`, key `admin-password`. Establish the generated encrypted source, matching host rekey readiness and evaluated runtime inventory without exposing any value. Remove Pod-memory-only password generation. Keep delivery Secret mounts optional and native file credentials.
 
-The delivery Secret is optional, and historical `monitoring-alertmanager` exercises real missing-file notification failures without stopping Alertmanager. Grafana has one generated secret key; its administrator password is generated in memory at Pod start, not stored. All five provider sources and host rekeys now exist. Integrated inventory evaluation and generated documentation must establish their conditional declarations before this task is checked; presence alone does not prove valid credentials or delivery.
+  Verify integrated runtime inventory and generated documentation; prove Grafana initializes from the managed Secret/file path with normal authentication refusals and deliberate private emergency access (5.3). Preserve the container-level missing-delivery-file check: Alertmanager runs and records notification failure, never a placeholder. Five provider sources/rekeys historically exist, but that does not establish the new password's readiness, running Grafana initialization, provider settings or delivery.
 
 - [x] 4.4 Add a check that the generated manifests, `docs/operations.md` and the rendered Alertmanager and Grafana configs contain only secret paths and references. They must contain no credential field with an inline value and no `hc-ping.com/<uuid>` pattern. Verify the check fails on a planted inline value.
 
@@ -242,31 +235,32 @@ The delivery Secret is optional, and historical `monitoring-alertmanager` exerci
 
 Historical evidence: one Grafana client, both callbacks, Secret publication and ordered route/policy. Current normal-phase publication is owned by the native `administrator-publication-atomic` policy over the actual `identity-gateway` population; exact Grafana route/backend/path/timeout and nonempty intended backend ingress are covered by native Kyverno positives and semantic negatives, not duplicate monitoring predicates.
 
-- [x] 5.3 Pin and render Grafana from `grafana-community`:
+- [ ] 5.3 Pin and render Grafana from `grafana-community`:
   - generic OAuth with PKCE, using the route's `grafana` client;
+  - provider-local `auth.generic_oauth.auto_login`, including the matching override for private emergency use, with deprecated global auto-login removed;
   - strict role mapping to the admin group;
   - no service accounts or API keys provisioned;
   - login form, basic auth and anonymous access disabled;
-  - `admin.existingSecret` and the secret key from runtime Secrets;
+  - `admin.existingSecret` and native file reads for the generated managed administrator password and secret key from `monitoring/grafana-admin`, without a password-generation init container;
   - an emptyDir database.
 
-  Verify the generated manifests contain no `admin-password` value and that every setting above appears in `grafana.ini`.
+  Verify generated manifests contain references, never an `admin-password` value, and that the sign-in settings appear in `grafana.ini`. Exercise the pinned Grafana image with a synthetic managed Secret: password-backed database initialization, normal login-form/basic/anonymous refusal, strict OAuth role configuration and the private emergency procedure must all remain meaningful checks.
 
-  Evidence: `monitoring-contracts` (sign-in settings in `grafana.ini`; administrator password generated in memory at Pod start); `monitoring-secret-scan` (no inline administrator password or client secret); `monitoring-grafana-runtime` PASS on hvn-hyp1 (2026-10-11): with the rendered objects and the pinned image, only the secret-key and OIDC Secrets exist, the login form and basic authentication refuse sign-in, and the runbook's break-glass steps sign `admin` in. By owner decision the administrator password replaces `admin.existingSecret` (Implementation note 6).
+  Historical `monitoring-grafana-runtime` passed normal refusal and break-glass with the former Pod-generated password on 2026-10-11. That result is not acceptance of managed-password initialization or provider-local auto-login; the task is reopened until the updated runtime check and integrated contracts/secret scan are exercised. Actual OIDC/UI and outside-household access stay in live acceptance.
 
-- [x] 5.4 Provision the minimal dashboard set from ConfigMaps, with UI updates disabled:
+- [ ] 5.4 Provision the minimal dashboard set from ConfigMaps, with UI updates disabled:
   - Node Exporter Full and a kubernetes-mixin workloads view, vendored under `assets/monitoring/dashboards/` with upstream source, revision and SHA-256;
   - "Homelab overview", written in this repository.
 
-  Verify with a check that every vendored file's hash matches its record, that each dashboard parses as JSON, and that no other dashboard is provisioned.
+  Verify source hashes for vendored assets, parse every provisioned dashboard as JSON and retain actual file provisioning/read-only behavior. Do not pin the exact current dashboard inventory or chart representation.
 
-  Evidence: Evaluation fails if a vendored file no longer matches its SHA-256 in `assets/monitoring/dashboards/sources.json`; `monitoring-contracts` checks that each provisioned dashboard parses and that the set is exactly Node Exporter Full, the two kubernetes-mixin workload views and Homelab overview.
+  Historical evaluation enforced vendored hashes through `assets/monitoring/dashboards/sources.json`. Reopened acceptance preserves that source enforcement and provisioning checks while removing the exact-set representation pin.
 
 ## 6. Network policy and exposure
 
-- [x] 6.1 Add default-deny ingress for the `monitoring` namespace and the narrow allows from design.md Decision 10. Add a Kanidm allow for Grafana's backend pods through 5.1. Verify by evaluation that every monitoring Service is selected by a policy and that only the Gateway may reach Grafana.
+- [ ] 6.1 Keep monitoring default-deny ingress and the intended allows from design.md Decision 10. Keep the Kanidm allow from 5.1. Remove only Grafana's duplicate handwritten ingress policy; canonical Gateway backend policy remains. Verify the effective union of every policy selecting Grafana permits the intended Gateway peer and refuses unrelated namespace/pod peers; do not equate one policy's ports with the union.
 
-  Evidence: `monitoring-contracts` (default-deny, every Service selected, only the Gateway proxy reaches Grafana through both monitoring's policy and the Gateway's backend policy); `identity/NetworkPolicy-kanidm-private.yaml` admits Grafana's pods.
+  Historical checks observed both redundant allows and the Kanidm rule. They do not establish the simplified policy union. Require the updated native policy positives/semantic negatives and existing real ingress-refusal coverage; no blanket removal of the separate K3s egress VM check without exercised equivalent proof.
 
 ## 7. Failure domain and resource bounds
 
@@ -280,21 +274,22 @@ Historical evidence: one Grafana client, both callbacks, Secret publication and 
 
 ## 8. Documentation and generated output
 
-- [x] 8.1 Write `docs/operations/monitoring.md`. It covers:
+- [ ] 8.1 Maintain `docs/operations/monitoring.md` as ongoing operator guidance, deriving concrete configuration facts through the existing generated-doc pattern rather than parsing Nix or committed YAML. It covers:
   - the one-time external account setup in section 9, with exact settings (the Pushover app; the dedicated Telegram bot and chat; the healthchecks.io check period, grace and integrations);
   - what lives in Nix and what doesn't, as in design.md;
-  - `agenix edit` for each secret, and credential rotation;
-  - severity routing: which channel gets which severity at which priority, that this is Nix configuration the owner can change, that Pushover quiet hours are set in the Pushover app, and why the Telegram alert chat should not be muted;
+  - external credential editing and rotation, generated Grafana password/key generation and rekey, and the distinction between ciphertext, running database initialization and private emergency access;
+  - severity routing and the narrow SMART new-error/no-resolved exception, ordinary condition recovery, quiet hours and why the Telegram chat should not be muted;
   - reaching Grafana from outside the household network, and the two sign-in layers;
   - silences, and why they are lost on guest replacement;
   - reading a heartbeat-down notice: the guest or host is down, ingestion stopped (including the read-only store at the 50 GiB floor), or the VictoriaMetrics pod is waiting on its retained path or marker;
   - metrics storage: bounded but not isolated, what each storage alert means, and what to do at each;
   - automatic non-USB physical-disk discovery, and maintaining `expectedDisks` only when changing the independently required alias floor;
-  - the gaps: no off-LAN probing (a follow-up change), no backups (a future change), no active channel checks (a follow-up).
+  - the gaps: no off-LAN probing (a follow-up change), no backups (a future change), no active channel checks (a follow-up);
+  - private emergency access and cleanup with normal central-admin authentication restored, plus meaningful host-first/monitor-first mount rollout ordering.
 
   Add the operations entry it needs. Verify that `nix run path:$PWD#sync-prod-home-manifests` and the docs generator leave a clean tree, and that the freshness checks pass.
 
-  Evidence: `docs/operations/monitoring.md`; regenerating manifests and docs on hvn-hyp1 leaves no drift; `prod-home-manifests-fresh` and `files/docs/operations.md` pass.
+  Historical generated manifests/docs passed freshness checks. Reopened acceptance requires the simplified runbook and final generation through the canonical owners once integrated source is stable; remove CI commands, active-branch status and agent authorization narration from ongoing operator guidance.
 
 - [x] 8.2 Update `docs/operations/identity.md:122-124` to say that the OAuth counters remain unscraped by design. Kanidm application metrics are out of scope.
 
@@ -315,7 +310,7 @@ These steps create external accounts and supply credential values. Nothing here 
 
 - [ ] 10.1 After the host deploy, scrape the host exporter from the guest. From the LAN and the tailnet, confirm the port is unreachable. Confirm `smart.prom` lists every disk from task 2.1, and `zpool.prom` lists `rpool`. Record the commands and results.
 - [ ] 10.2 Reproduce the motivating incident in a scratch namespace: run a pod with a 64Mi limit that allocates past it once. Confirm a critical `KubeContainerOOMKilled` reaches Pushover at priority 1 and Telegram within 5 minutes while its Argo Application shows Healthy, and that the resolution notice follows.
-- [ ] 10.3 Fire a test warning during the owner's Pushover quiet hours. Confirm it reaches Telegram, and reaches Pushover at normal priority without overriding quiet hours.
+- [ ] 10.3 Fire a test warning during the owner's Pushover quiet hours. Confirm it reaches Telegram, and reaches Pushover at normal priority without overriding quiet hours. Separately inject a synthetic SMART new-error event through the authorized alert test path (no real disk mutation), let its window end and confirm no resolved/recovered message follows; confirm an ordinary warning still sends its matching recovery.
 - [ ] 10.4 Stop VictoriaMetrics, or scale Alertmanager to zero. Confirm healthchecks.io notifies through both channels within 30 minutes, and reports recovery after restoring.
 - [ ] 10.5 **Stopped ingestion while monitoring keeps running.** Pause Argo CD auto-sync for the `monitoring` Application. Apply a temporary egress-deny NetworkPolicy to the VictoriaMetrics pod, so that its scrapes of other pods and of the host fail while its own queries, vmalert and Alertmanager keep working. Confirm:
   - the VictoriaMetrics query API, vmalert and Alertmanager stay up;

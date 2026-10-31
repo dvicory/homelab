@@ -2,8 +2,11 @@ apiVersion: v1
 kind: Service
 metadata:
   labels:
+    app.kubernetes.io/instance: victoriametrics
+    app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/name: victoriametrics
-    app.kubernetes.io/part-of: monitoring
+    app.kubernetes.io/service: victoriametrics
+    helm.sh/chart: app-template-5.1.0
   name: victoriametrics
   namespace: monitoring
 spec:
@@ -13,6 +16,8 @@ spec:
       protocol: TCP
       targetPort: 8428
   selector:
+    app.kubernetes.io/controller: main
+    app.kubernetes.io/instance: victoriametrics
     app.kubernetes.io/name: victoriametrics
     app.kubernetes.io/part-of: monitoring
   type: ClusterIP

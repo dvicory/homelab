@@ -66,6 +66,8 @@ Configured required-disk expectations SHALL remain independent of current discov
 
 The fleet SHALL alert within 10 minutes when a host storage pool is not fully healthy, when a pool device reports read, write or checksum errors, or when a required media pool or encrypted media mount is absent. It SHALL alert within 1 hour after a pool scrub completes with errors, and within 1 hour when a monitored disk reports a failing or degraded health assessment. It SHALL alert within 1 hour when a monitored filesystem stays below its declared free-space threshold.
 
+Increases in monitored SMART error counters SHALL produce new-error warning notifications, not ongoing physical-failure incidents. The end of a new-error observation window SHALL NOT produce a resolution or recovery notice. This exception does not apply to failing-health or missing/stale telemetry conditions: missing, negative or invalid observations SHALL NOT establish healthy recovery for them.
+
 #### Scenario: A pool degrades
 - **WHEN** a host storage pool leaves its fully healthy state
 - **THEN** an alert naming the pool and its state is delivered within 10 minutes
@@ -77,6 +79,10 @@ The fleet SHALL alert within 10 minutes when a host storage pool is not fully he
 #### Scenario: A disk reports failing health
 - **WHEN** a monitored disk's health self-assessment reports failure or a degraded condition
 - **THEN** an alert naming the disk is delivered within 1 hour
+
+#### Scenario: A disk reports new errors and then its counter stops increasing
+- **WHEN** a monitored SMART error counter increases and subsequent observations show no further increase
+- **THEN** the fleet owner receives a new-error warning without a later resolved or recovered message implying that the disk was repaired; any separate failing-health or missing/stale telemetry condition remains subject to its own recovery evidence
 
 #### Scenario: A filesystem runs low on space
 - **WHEN** a monitored filesystem stays below its declared free-space threshold
@@ -158,15 +164,19 @@ Monitoring SHALL continuously emit a heartbeat that leaves the fleet only while 
 
 ### Requirement: Alerts reach the fleet owner through two independent channels
 
-Alerts SHALL be delivered to the fleet owner through two independent third-party delivery channels. Every alert delivered to the fleet owner SHALL carry a severity, either critical or warning. Every critical alert SHALL be delivered through both channels. Every warning SHALL be delivered through at least one channel. Quiet hours that the fleet owner sets on a channel SHALL NOT silence, suppress or delay a critical alert. During quiet hours a warning MAY be delivered silently or held until they end, but SHALL NOT be dropped because of them. Delivery SHALL report resolution as well as firing. Delivery failures SHALL be detected from failed send attempts: within 15 minutes after an attempt to deliver through one channel fails, an alert about that failure SHALL be delivered through the other channel. That alert need not also be sent to the failed channel. A channel that breaks while it has nothing to send is detected at its next send attempt.
+Alerts SHALL be delivered to the fleet owner through two independent third-party delivery channels. Every alert delivered to the fleet owner SHALL carry a severity, either critical or warning. Every critical alert SHALL be delivered through both channels. Every warning SHALL be delivered through at least one channel. Quiet hours that the fleet owner sets on a channel SHALL NOT silence, suppress or delay a critical alert. During quiet hours a warning MAY be delivered silently or held until they end, but SHALL NOT be dropped because of them. Delivery SHALL report resolution as well as firing for ongoing conditions. Discrete SMART new-error warnings are the narrow exception: delivery SHALL report the event but SHALL NOT send a resolution or recovery notice merely because its observation window ends. Delivery failures SHALL be detected from failed send attempts: within 15 minutes after an attempt to deliver through one channel fails, an alert about that failure SHALL be delivered through the other channel. That alert need not also be sent to the failed channel. A channel that breaks while it has nothing to send is detected at its next send attempt.
 
 #### Scenario: A critical alert fires
 - **WHEN** a critical alert fires
 - **THEN** the fleet owner receives it through both delivery channels, unsilenced even during quiet hours, and receives a resolution notice when it clears
 
 #### Scenario: A warning fires during quiet hours
-- **WHEN** a warning alert fires during quiet hours the fleet owner has set
-- **THEN** the fleet owner receives it through at least one delivery channel, possibly silently or after quiet hours end, and receives a resolution notice when it clears
+- **WHEN** an ongoing warning condition fires during quiet hours the fleet owner has set
+- **THEN** the fleet owner receives it through at least one delivery channel, possibly silently or after quiet hours end, and receives a resolution notice when matching recovery evidence clears it
+
+#### Scenario: A SMART new-error warning ends during quiet hours
+- **WHEN** a discrete SMART new-error warning is delivered during quiet hours and its observation window later ends
+- **THEN** delivery still meets the warning channel and quiet-hours rules, but sends no resolved or recovered message; a separate failing-health or missing/stale condition still sends its resolution after matching recovery
 
 #### Scenario: One channel's credential is revoked
 - **WHEN** an attempt to send a notification through one delivery channel fails

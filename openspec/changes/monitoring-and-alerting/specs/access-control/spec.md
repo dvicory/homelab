@@ -2,7 +2,9 @@
 
 ### Requirement: Monitoring dashboards require central administrator sign-in
 
-Monitoring dashboards SHALL grant access only to an identity that signs in to them through the central identity service and belongs to the central administrator group. Dashboards SHALL NOT grant access to anonymous requests, to local password sign-in, or to an identity outside the administrator group, even one the central identity service knows. Authentication at an entrance in front of the dashboards SHALL NOT by itself grant dashboard access.
+For normal service access, monitoring dashboards SHALL grant access only to an identity that signs in to them through the central identity service and belongs to the central administrator group. Dashboards SHALL NOT grant normal access to anonymous requests, to local password sign-in, or to an identity outside the administrator group, even one the central identity service knows. Authentication at an entrance in front of the dashboards SHALL NOT by itself grant dashboard access.
+
+This requirement governs published dashboard access, not deliberate private emergency management through the existing substrate boundary in `management-boundaries`. Keeping a managed local administrator credential does not authorize local sign-in through a published entrance or create another entrance. Credential generation and private emergency procedures are implementation details in design.md and the runbook.
 
 #### Scenario: An administrator opens the dashboards
 - **WHEN** a member of the central administrator group signs in to the dashboards through the central identity service
@@ -13,12 +15,16 @@ Monitoring dashboards SHALL grant access only to an identity that signs in to th
 - **THEN** the identity service refuses the sign-in or the dashboards grant no access
 
 #### Scenario: An anonymous or local sign-in is attempted
-- **WHEN** a request reaches the dashboards without central sign-in, or attempts local password sign-in
+- **WHEN** a normal service request reaches the dashboards without central sign-in, or attempts local password sign-in
 - **THEN** the dashboards grant no access
 
 #### Scenario: Only the entrance authenticated the request
 - **WHEN** a request passes entrance-level administrator sign-in but carries no dashboard sign-in
 - **THEN** the dashboards grant no access on the strength of the entrance sign-in
+
+#### Scenario: A local administrator credential exists for emergency management
+- **WHEN** Grafana holds a managed local administrator credential for deliberate private emergency use
+- **THEN** normal service access still refuses local password, basic and anonymous sign-in, and every published entrance still requires central administrator sign-in
 
 ### Requirement: Every entrance to the monitoring dashboards requires administrator sign-in first
 

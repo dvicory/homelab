@@ -221,8 +221,10 @@ def smart_disk_metrics(name, path, document, exit_status):
         lines.append(sample("homelab_smart_ata_pending_sectors", labels, pending))
     nvme = document.get("nvme_smart_health_information_log")
     if isinstance(nvme, dict):
-        lines.append(sample("homelab_smart_nvme_critical_warning", labels, as_int(nvme.get("critical_warning", 0))))
-        lines.append(sample("homelab_smart_nvme_media_errors", labels, as_int(nvme.get("media_errors", 0))))
+        if "critical_warning" in nvme:
+            lines.append(sample("homelab_smart_nvme_critical_warning", labels, as_int(nvme["critical_warning"])))
+        if "media_errors" in nvme:
+            lines.append(sample("homelab_smart_nvme_media_errors", labels, as_int(nvme["media_errors"])))
     temperature = (document.get("temperature") or {}).get("current")
     if isinstance(temperature, int):
         lines.append(sample("homelab_smart_temperature_celsius", labels, temperature))

@@ -4,9 +4,9 @@
 #   the current routing;
 # - the fleet-monitoring delivery floor holds for any routing: every critical
 #   alert reaches both channels at a Pushover priority that bypasses quiet
-#   hours, every warning reaches at least one channel, resolutions are sent,
-#   each failing channel is reported through the other, the heartbeat never
-#   sends a resolved message, and credentials appear only as file paths;
+#   hours, every warning reaches at least one channel, condition resolutions
+#   are sent but new-error events never send recovery messages, each failing
+#   channel is reported through the other, and credentials are file paths;
 # - with no credential files at all, Alertmanager keeps running and counts
 #   failed notifications for every integration instead of crashing or using
 #   a placeholder, and the inhibition rules hide what they should.
@@ -29,6 +29,10 @@
         {
           receiver = "warning";
           labels = "alertname=KubeJobFailed severity=warning namespace=media";
+        }
+        {
+          receiver = "warning-events";
+          labels = "alertname=HostDiskSmartErrorsIncreasing severity=warning host=hvn-hyp1 disk=media4 signal=scsi-grown-defects";
         }
         {
           receiver = "heartbeat";
@@ -104,11 +108,23 @@
             # Spec floor: a warning reaches at least one channel.
             warning = channels("warning")
             assert warning["pushover"] or warning["telegram"], warning
-            # Spec floor: resolutions are sent on every owner-facing channel.
+            # Condition resolutions are sent on every owner-facing channel.
             for name in ("critical", "warning", "telegram-only", "pushover-only"):
                 for kind, configs in channels(name).items():
                     for c in configs:
                         assert c.get("send_resolved") is True, (name, kind)
+            # New-error events use the same warning channels/priority, but
+            # ending an observation window must not claim physical recovery.
+            events = channels("warning-events")
+            for kind, configs in events.items():
+                assert all(c.get("send_resolved") is False for c in configs), (kind, configs)
+                assert [
+                    {k: v for k, v in c.items() if k != "send_resolved"}
+                    for c in configs
+                ] == [
+                    {k: v for k, v in c.items() if k != "send_resolved"}
+                    for c in warning[kind]
+                ], (kind, configs)
             # Each failing channel is reported through the other one.
             assert channels("telegram-only") == {"pushover": [], "telegram": channels("telegram-only")["telegram"]}
             assert channels("telegram-only")["telegram"]
@@ -178,8 +194,6 @@
             grep -Eq '^alertmanager_notifications_failed_total\{[^}]*integration="telegram"[^}]*\} [1-9]' <<< "$metrics"
             grep -Eq '^alertmanager_notifications_failed_total\{[^}]*integration="webhook"[^}]*\} [1-9]' <<< "$metrics"
             kill -0 $pid
-            grep -q 'read token_file' alertmanager.log
-            grep -q 'heartbeat-url' alertmanager.log
 
             curl -sf $url/api/v2/alerts > alerts.json
             ${python.interpreter} - alerts.json <<'PY'

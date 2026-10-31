@@ -117,6 +117,56 @@ scenarios:
   base: networking.k8s.io/v1/NetworkPolicy/monitoring/gateway-grafana-backend-ingress
   mutate: .spec.ingress = []
   fail: [backend-isolation-shape]
+- name: grafana-must-not-admit-namespace-clients
+  mutate: .bundle.expected.cluster.routes.grafana.sameNamespaceIngress = true
+  rules: [effective-ingress-authority]
+  fail: [effective-ingress-authority]
+- name: grafana-must-retain-managed-isolation
+  mutate: .bundle.expected.cluster.routes.grafana.manageBackendIngress = false
+  rules: [effective-ingress-authority]
+  fail: [effective-ingress-authority]
+- name: grafana-canonical-isolation-missing
+  mutate: del(.bundle.resources[] | select(.object.kind == "NetworkPolicy" and .object.metadata.name == "gateway-grafana-backend-ingress"))
+  fail: [backend-exact-isolation]
+- name: grafana-additive-gateway-peer-remains-valid
+  mutate: >-
+    .bundle.resources += [{"file":"monitoring/NetworkPolicy-grafana-extra.yaml","document":0,"content":"",
+    "object":{"apiVersion":"networking.k8s.io/v1","kind":"NetworkPolicy","metadata":{"name":"grafana-extra","namespace":"monitoring"},
+    "spec":{"podSelector":{"matchLabels":.bundle.expected.cluster.routes.grafana.backendPodSelector},"policyTypes":["Ingress"],
+    "ingress":[{"from":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"gateway"}},
+    "podSelector":{"matchLabels":{"gateway.envoyproxy.io/owning-gateway-name":"household","gateway.envoyproxy.io/owning-gateway-namespace":"gateway"}}}],
+    "ports":[{"protocol":"TCP","port":3000}]}]}}}]
+  rules: [effective-ingress-authority]
+- name: grafana-additive-same-namespace-pod-rejected
+  mutate: >-
+    .bundle.resources += [{"file":"monitoring/NetworkPolicy-grafana-extra.yaml","document":0,"content":"",
+    "object":{"apiVersion":"networking.k8s.io/v1","kind":"NetworkPolicy","metadata":{"name":"grafana-extra","namespace":"monitoring"},
+    "spec":{"podSelector":{"matchLabels":.bundle.expected.cluster.routes.grafana.backendPodSelector},"policyTypes":["Ingress"],
+    "ingress":[{"from":[{"podSelector":{"matchLabels":{"app.kubernetes.io/name":"vmalert"}}}]}]}}}]
+  fail: [effective-ingress-authority]
+- name: grafana-additive-same-namespace-selector-rejected
+  mutate: >-
+    .bundle.resources += [{"file":"monitoring/NetworkPolicy-grafana-extra.yaml","document":0,"content":"",
+    "object":{"apiVersion":"networking.k8s.io/v1","kind":"NetworkPolicy","metadata":{"name":"grafana-extra","namespace":"monitoring"},
+    "spec":{"podSelector":{},"policyTypes":["Ingress"],
+    "ingress":[{"from":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"monitoring"}}}]}]}}}]
+  fail: [effective-ingress-authority]
+- name: grafana-additive-same-namespace-combined-peer-rejected
+  mutate: >-
+    .bundle.resources += [{"file":"monitoring/NetworkPolicy-grafana-extra.yaml","document":0,"content":"",
+    "object":{"apiVersion":"networking.k8s.io/v1","kind":"NetworkPolicy","metadata":{"name":"grafana-extra","namespace":"monitoring"},
+    "spec":{"podSelector":{"matchLabels":.bundle.expected.cluster.routes.grafana.backendPodSelector},"policyTypes":["Ingress"],
+    "ingress":[{"from":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"monitoring"}},
+    "podSelector":{"matchLabels":{"app.kubernetes.io/name":"vmalert"}}}]}]}}}]
+  fail: [effective-ingress-authority]
+- name: grafana-additive-expression-target-implicit-namespace-rejected
+  mutate: >-
+    .bundle.resources += [{"file":"monitoring/NetworkPolicy-grafana-extra.yaml","document":0,"content":"",
+    "object":{"apiVersion":"networking.k8s.io/v1","kind":"NetworkPolicy","metadata":{"name":"grafana-extra"},
+    "spec":{"podSelector":{"matchExpressions":[{"key":"app.kubernetes.io/name","operator":"In","values":["grafana"]}]},"policyTypes":["Ingress"],
+    "ingress":[{"from":[{"podSelector":{}}]}]}}}] |
+    .bundle.files += ["monitoring/NetworkPolicy-grafana-extra.yaml"]
+  fail: [effective-ingress-authority]
 - name: grafana-route-published-during-provisioning
   mutate: >-
     .bundle.expected.cluster.settings.kubernetes.services.identity.phase = "provisioning" |

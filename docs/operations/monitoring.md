@@ -1,381 +1,379 @@
+<!-- provenance: generated from evaluated Den/Nix declarations by modules/flake/docs/monitoring.nix; edit that source, not this copy. -->
 # Monitoring operations
 
-Monitoring runs in the `monitoring` namespace on the compute guest. It alerts
-the owner through Pushover and Telegram, and an external dead man's switch
-(healthchecks.io) alerts when monitoring itself goes quiet. The proposed
-`fleet-monitoring` capability is in the active
-`openspec/changes/monitoring-and-alerting/` change, not yet the current main
-specification; this runbook covers the configured operations.
+Monitoring runs in `monitoring` on `compute-1`, hosted by
+`hvn-hyp1`. VictoriaMetrics collects and retains metrics,
+vmalert evaluates rules, and Alertmanager sends notifications and the
+external healthchecks.io heartbeat. Grafana is the dashboard and silence
+interface, not the alert evaluator.
 
-| Component | Where | Role |
-| --- | --- | --- |
-| VictoriaMetrics | `monitoring/victoriametrics` | Collects every 30 s and stores 90 days on the retained path `monitoring-metrics`. |
-| vmalert | `monitoring/vmalert` | Evaluates the alert rules every 30 s. |
-| Alertmanager | `monitoring/alertmanager` | Routes alerts to Pushover and Telegram; sends the heartbeat. |
-| Grafana | `https://grafana.<domain>` | Dashboards, administrators only. |
-| kube-state-metrics, blackbox exporter | `monitoring` | Kubernetes object state; endpoint probes and served certificates. |
-| node_exporter, `zpool-status`, `smart-status` | host `hvn-hyp1` | Host metrics, ZFS pool status (every 2 min), SMART health (every 15 min). |
+## Access
 
-Monitoring workloads and core alert routing do not require Kanidm, the Gateway
-or cert-manager. Grafana requires the identity and entrance components. Endpoint
-probes use the Gateway and certificate rules use cert-manager data; those coverage
-paths are limited when their dependencies fail, even though core monitoring runs.
+Open [Grafana](https://grafana.plus2.danielvicory.dev) or its Kanidm tile.
+Normal access is central-administrator-only at both the Gateway and
+Grafana. Grafana refuses its local login form, basic authentication and
+anonymous access. The secondary hostname returns sign-in to the canonical
+hostname. See the generated [route inventory](../operations.md#declared-routes)
+for hostnames and backends.
 
-## Before deploying monitoring changes
+Core collection and delivery do not require Kanidm, the Gateway or
+cert-manager. Grafana does; endpoint probes and certificate monitoring
+also lose coverage when their respective dependencies fail.
 
-Build the monitoring checks and manifest freshness together before deploying.
-For example, on an x86_64 Linux builder:
+Endpoint checks follow the Gateway's published routes. Administrator
+entrances are not probed during identity bootstrap, and Requests is not
+probed before its ready phase; intentionally unpublished routes are not
+endpoint outages.
+
+For direct diagnosis, use authenticated cluster access. On the host, in
+Bash, define this helper for the commands below:
 
 ```sh
-nix build "path:$PWD#checks.x86_64-linux.monitoring-contracts" \
-  "path:$PWD#checks.x86_64-linux.monitoring-rules" \
-  "path:$PWD#checks.x86_64-linux.monitoring-alertmanager" \
-  "path:$PWD#checks.x86_64-linux.prod-home-manifests-fresh"
+k() { incus --project compute exec compute-1 -- k3s kubectl "$@"; }
+k -n monitoring get pods
 ```
 
-Use the builder's native system in these paths. Regenerate changed manifests
-with `nix run "path:$PWD#sync-prod-home-manifests"` and review them before
-running the checks. None of these commands activates the host.
+Prefer VictoriaMetrics' `/vmui` and Alertmanager's UI when identity is
+unavailable; they do not need Grafana's emergency login. On the host:
 
-## One-time setup
+```sh
+k -n monitoring port-forward --address 127.0.0.1 svc/victoriametrics 8428:8428
+# Or, in a separate session:
+k -n monitoring port-forward --address 127.0.0.1 svc/alertmanager 9093:9093
+```
 
-Do these once, in order. Never paste a credential value into a commit, PR,
-issue or chat.
+These commands bind the **guest's** loopback, because `k` executes there.
+Use the SSH tunnel described under [private emergency access](#private-emergency-grafana-access),
+substituting the desired local and remote port. These UIs have no login;
+port-forwarding bypasses NetworkPolicy. Never bind them to all interfaces.
 
-1. **Pushover.** Create an application named "Homelab alerts". Note its API
-   token and your user key. Set your quiet hours in the Pushover app:
-   warnings respect them, critical alerts bypass them.
-2. **Telegram.** Create a dedicated bot with BotFather; do not reuse Hermes's
-   bot. Create the alert chat (a direct chat with the bot, or a private
-   group with it), send one message, and read the chat ID from
-   `https://api.telegram.org/bot<token>/getUpdates`. Do not mute this chat:
-   muting would also silence critical alerts there.
-3. **healthchecks.io.** On the free tier, create one check named "Homelab
-   monitoring heartbeat" with a **period of 5 minutes** and a **grace of 10
-   minutes**. Add its Pushover and Telegram integrations with the same user
-   and chat. Note the check's ping URL. Anyone holding it can send pings and
-   hide an outage, so treat it as a credential.
-4. **Secrets.** Supply the five delivery values through the
-   [runtime-secret flow](../operations.md#runtime-secret-references), then
-   rekey and commit the encrypted files.
-5. **Stage the host before Argo rollout.** With separate deployment approval,
-   activate the host declarations, runtime-secret staging and retained metrics
-   path before releasing the main-tracking Applications. The generated
-   [deployment guidance](../operations.md#deploy-configuration) covers source
-   generation and Argo reconciliation; it is not a host switch command.
-   If staging is incomplete, hold the root and affected identity,
-   identity-gateway and monitoring Applications, not monitoring alone.
+## Notifications and silences
 
-## Runtime Secrets
+Critical alerts go to Pushover and Telegram; Pushover critical delivery
+bypasses quiet hours. Ordinary warnings use both channels and respect
+Pushover quiet hours. Keep the Telegram alert chat unmuted: muting it also
+hides critical messages. Quiet hours belong in the Pushover application.
 
-| Source (`.secrets/hosts/compute-1/<source>.age`) | Kubernetes Secret → key | Supplied by |
-| --- | --- | --- |
-| `monitoring--alertmanager-delivery--pushover-token` | `alertmanager-delivery` → `pushover-token` | Pushover application token |
-| `monitoring--alertmanager-delivery--pushover-user-key` | `alertmanager-delivery` → `pushover-user-key` | Pushover user key |
-| `monitoring--alertmanager-delivery--telegram-bot-token` | `alertmanager-delivery` → `telegram-bot-token` | dedicated bot token |
-| `monitoring--alertmanager-delivery--telegram-chat-id` | `alertmanager-delivery` → `telegram-chat-id` | alert chat ID |
-| `monitoring--alertmanager-delivery--heartbeat-url` | `alertmanager-delivery` → `heartbeat-url` | healthchecks.io ping URL |
-| `monitoring--grafana-admin--secret-key` | `grafana-admin` → `secret-key` | agenix-rekey `alnum-no-newline` generator, committed |
+`HostDiskSmartErrorsIncreasing` is a **new-error event warning**, with a
+separate identity for each disk and counter signal. Its notification says
+that new errors were observed; it does not open an uncleared physical
+incident. The event window ending sends **no recovery notification** and
+does not prove the disk healthy. Inspect the affected disk and surrounding
+history. Actual `HostDiskSmartFailing`, missing/stale telemetry and other
+condition alerts remain separate, with explicit healthy recovery evidence.
+Ordinary condition alerts still send resolutions.
 
-Manage the encrypted sources through the
-[runtime-secret flow](../operations.md#runtime-secret-references).
-Grafana's secret key is generated; the delivery credentials come from the
-providers above.
+`AlertDeliveryFailing` reports a failing notification channel through the
+other channel only. A channel that breaks while idle is detected at its
+next send, not by an independent daily test. `Watchdog` goes only to the
+external heartbeat check.
 
-Delivery values must not end in a newline: Alertmanager reads Pushover's
-token and user key verbatim. A missing credential file leaves Alertmanager
-running, but sends through that integration fail.
+Create a bounded silence in Grafana: **Alerting → Silences → Alertmanager**.
+Match the intended alert and affected labels; record the maintenance reason
+and expiry. When Grafana is unavailable, use the private Alertmanager UI.
+Silences live in disposable Alertmanager storage and are lost with its Pod
+or the guest; inspect and recreate necessary silences after replacement.
+Do not silence `Watchdog`: that stops pings and triggers the external outage
+notice. Pause the healthchecks.io check for planned monitoring outages, and
+unpause it and confirm fresh pings afterwards.
 
-### Rotation
+## Heartbeat down or notifications missing
 
-When a provider credential changes, update its encrypted source above and
-deploy `hvn-hyp1`. Once `compute-stage-secrets` restages the Secret,
-Alertmanager reads its files at each send, so no restart is needed.
-Regenerate the heartbeat URL on the healthchecks.io check if it is exposed.
+The external healthchecks.io check requires a **5-minute period** and
+**10-minute grace**. Enable its Pushover and Telegram integrations for the
+same Pushover user and Telegram chat used by Alertmanager. Inspect these
+settings and the last successful ping when diagnosing missing notifications.
+A new or replaced check provides no coverage until
+the first successful ping. A heartbeat requires fresh stored core-source
+data and working evaluation and routing; an exporter merely serving an old
+value is not sufficient.
 
-Grafana's secret key protects secrets encrypted in its database. After
-changing the key through the generated-secret flow and deploying it,
-replace the Grafana Pod. This recreates its disposable database and
-provisioned configuration; metrics history is unaffected.
-
-## Severity routing
-
-| Severity | Pushover | Telegram | Repeats |
-| --- | --- | --- | --- |
-| critical | priority 1 (bypasses quiet hours) | yes | every 4 h |
-| warning | priority 0 (respects quiet hours) | yes | every 24 h |
-
-To change routing, edit the receivers and routes in
-`modules/den/aspects/kubernetes/services/monitoring/alerting.nix`.
-
-- Quiet hours are set in the Pushover app, never in Homelab.
-- Telegram notifications are enabled for ordinary warning and critical alerts.
-  `Watchdog` goes only to the healthchecks webhook.
-- A failing channel is reported through the other one only
-  (`AlertDeliveryFailing`). A channel that breaks while idle is found at its
-  next send attempt; there is no daily probe yet.
-
-## Grafana
-
-Grafana is public, like Argo CD, and has two sign-in layers, both through
-Kanidm and both limited to the administrator group:
-
-1. The Gateway requires Kanidm sign-in before it forwards any request.
-   Requests without a session are redirected to Kanidm and never reach the
-   Grafana pod.
-2. Grafana signs you in again through the same Kanidm client. Its login
-   form, basic authentication and anonymous access are off, and only the
-   administrator group receives a role.
-
-From outside the household network, open `https://grafana.<domain>`. Grafana
-serves one hostname: sign-in from the backup hostname returns you to the
-canonical one. Grafana appears only in identity phase `normal`.
-
-Dashboards come from Git and cannot be saved over their provisioned originals
-in the UI. For a local change, copy the dashboard into a disposable Grafana,
-edit the copy with Grafana's native editor, and export its JSON. Review its
-queries, data source UID, dashboard UID and links before replacing the local
-asset under `assets/monitoring/dashboards/`. Update its provenance and SHA-256
-in `sources.json`, then regenerate the manifests. Replace upstream dashboards
-from a pinned upstream revision rather than hand-editing their large exports;
-record any local customization as such.
-
-### Break-glass: Grafana without Kanidm
-
-Grafana's built-in `admin` gets a random password at every Pod start. An init
-container writes it to a memory-backed volume, and Grafana reads it with
-`$__file{}` when creating its disposable database. A new Pod gets a new
-database and password; a container restart in the same Pod keeps both.
-
-When Kanidm is down you rarely need Grafana. `kubectl -n monitoring
-port-forward svc/victoriametrics 8428` serves VictoriaMetrics' query UI at
-`/vmui`, and `svc/alertmanager 9093` serves Alertmanager's UI, including
-silences. Port-forwarding is not subject to NetworkPolicy, and these UIs
-have no login, so treat that access like the cluster access it comes from.
-
-To use Grafana itself, run these commands in **Bash on the host**. The login
-form must be turned on, because a password alone gives no way in; basic
-authentication stays off.
-
-1. Hold automated sync on `apps` and `monitoring`, or self-heal reverts
-   step 2:
+1. Check `hvn-hyp1`, the guest, power and uplink. On the host:
+   `incus --project compute info compute-1`.
+2. Check Pods and then the failing component's logs:
 
    ```sh
-   k() { incus --project compute exec compute-1 -- k3s kubectl "$@"; }
-   for app in apps monitoring; do
-     k -n argocd patch application "$app" \
-       --type json -p '[{"op":"remove","path":"/spec/syncPolicy/automated"}]'
-   done
+   k -n monitoring get pods
+   k -n monitoring logs deployment/victoriametrics
+   k -n monitoring logs deployment/vmalert
+   k -n monitoring logs deployment/alertmanager
    ```
 
-2. Turn on the login form. This replaces the Pod, so wait for the rollout:
+3. For `ContainerCreating`, describe the affected Pod. VictoriaMetrics
+   deliberately waits if `/srv/state/monitoring-metrics` or the state-root marker
+   is missing. Restore the real retained mount; never create a substitute
+   directory or marker to force the Pod through.
+4. Check VictoriaMetrics' `vm_storage_is_read_only` metric and free space.
+   Read-only storage stops ingestion and therefore stops the heartbeat.
+   Use [metrics storage](#metrics-storage) below rather than restarting
+   into a new empty history.
+5. Inspect source-down alerts and recent source samples. A running scrape
+   process alone does not prove that fresh core data is stored.
+6. For delivery failure, inspect Alertmanager's notification-failure
+   counters and logs, staged credential availability and outbound access.
+   Check provider state and healthchecks.io integrations, pause state and
+   active Alertmanager silences. Do not paste credentials or the heartbeat
+   URL into reports. If both notification channels fail, neither can
+   report the other's failure.
+
+## Metrics storage
+
+Metrics use retained key `monitoring-metrics` at `/srv/state/monitoring-metrics`
+in the guest. The generated [retained-state inventory](../operations.md#retained-state)
+gives the host path, writer UID/GID and mode. Retained history is not a
+backup. The metrics directory shares its backing pool; the PVC's requested
+size is not an enforced quota or space reservation.
+
+| Symptom | Diagnosis and action |
+| --- | --- |
+| `MonitoringStorageGrowth` | Inspect cardinality and series growth with VictoriaMetrics' `/api/v1/status/tsdb`; repair the source of unexpected growth. |
+| `MonitoringStorageLow` | Inspect actual pool free space and other retained writers; use the alert's severity and current threshold. Recover space before the store's read-only boundary. |
+| `HostFilesystemLowSpace` | Inspect the named host filesystem and backing pool, not only the metrics directory. |
+| `vm_storage_is_read_only = 1` | Recover real free space. Ingestion resumes when the store can write; verify fresh samples and heartbeat pings afterwards. |
+| Missing retained mount or marker | Restore the genuine state root first. Do not point VictoriaMetrics at guest-root storage. |
+
+Read current thresholds and durations in the firing alert and effective
+VictoriaMetrics configuration rather than treating a runbook table as a
+second configuration. Do not delete history, format storage or restore a
+database merely to clear an alert. Investigate the writer and backing
+filesystem first.
+
+Incus mount propagation is one-way. After restoring a host source, verify
+host and guest mounts, wait for `retained-storage` to be Healthy, and
+recreate affected Pods to refresh child mounts. See the generated
+[retained-state guidance](../operations.md#retained-state). A directory's
+existence alone does not prove that its intended filesystem is mounted.
+
+## Credentials and rotation
+
+Use the generated [runtime-secret inventory and procedure](../operations.md#runtime-secret-references)
+for source names, encryption, rekeying and staging. Never put plaintext in
+Git, manifests, command arguments, logs or reports. Keep single-line
+delivery values free of trailing newlines: Alertmanager reads Pushover's
+token and user key verbatim. Missing credential files do not stop
+Alertmanager, but sends through that integration fail.
+
+- **Pushover:** rotate the application token or user key with the provider,
+  then update the matching encrypted source.
+- **Telegram:** use the dedicated monitoring bot and alert chat, not a
+  shared service bot; rotate its token or update its chat ID as needed.
+- **healthchecks.io:** the ping URL is a credential: its holder can forge
+  pings and hide an outage. Regenerate an exposed URL, update its source,
+  and confirm the check's Pushover/Telegram integrations and new pings.
+- **Delivery staging:** deploy the updated host secret declarations and
+  let `compute-stage-secrets` restage them. Alertmanager reads credential
+  files at each send, so delivery rotation does not need a restart. Confirm
+  each affected channel works without exposing its value.
+- **Grafana:** both `monitoring--grafana-admin--admin-password` and
+  `monitoring--grafana-admin--secret-key` are generated managed secrets,
+  staged into `monitoring/grafana-admin`. Rotate through the existing
+  generated-secret flow, not a hand-entered replacement password. The
+  admin password seeds a **new database**; changing its mounted file does
+  not reset the existing database's password. After staging either
+  rotation, replace the Grafana Pod so its disposable database is newly
+  created. A container restart in the same Pod is insufficient. This
+  discards disposable Grafana sessions/local edits, not VictoriaMetrics
+  history. The secret key protects secrets stored in that database.
+
+Normal Grafana access remains central-admin-only even though the managed
+local administrator credential exists. You do not need to retrieve this
+password for routine sign-in.
+
+## Private emergency Grafana access
+
+Prefer the private VictoriaMetrics and Alertmanager UIs first. If Grafana
+itself is necessary without Kanidm, use the following reversible local
+override. Do not weaken Gateway authentication or NetworkPolicy, publish
+a recovery route, or change identity phase.
+
+**Safety gate:** enabling Grafana's form while its Gateway route remains
+published is not private recovery. Hold reconciliation, withdraw the
+entrance and prove that withdrawal has reached the data plane **before**
+enabling any local-auth override. Route deletion alone is not proof of
+propagation. This procedure assumes usable native Argo/cluster access and
+already verified SSH identities; if either is unavailable, stop rather
+than exposing an alternate login. It has no claim of live recovery proof.
+
+1. In Bash on the host, use `k` from [Access](#access). Record the existing
+   automated-sync policies. Hold the root, route owner and workload owner:
 
    ```sh
-   k -n monitoring set env deployment/grafana GF_AUTH_DISABLE_LOGIN_FORM=false \
-     GF_AUTH_OAUTH_AUTO_LOGIN=false GF_SERVER_ROOT_URL=http://localhost:3000/
+   for app in apps identity-gateway monitoring; do
+     k -n argocd get application "$app" -o jsonpath='{.spec.syncPolicy.automated}'
+     printf '\n'
+     k -n argocd patch application "$app" --type merge \
+       -p '{"spec":{"syncPolicy":{"automated":null}}}'
+   done
+   k -n argocd get applications apps identity-gateway monitoring
+   ```
+
+   Holds do not cancel an operation already running. Let it finish or
+   terminate it through native Argo controls, then confirm all three are
+   idle and their holds persist. Do not manually sync them during recovery.
+   The root must remain held or it can restore child automation.
+
+2. Withdraw Grafana's entrance, keeping its authentication policy intact:
+
+   ```sh
+   k -n gateway delete httproute grafana
+   k -n gateway wait --for=delete httproute/grafana --timeout=60s
+   ```
+
+   Verify that no other live route forwards to Grafana, and that every
+   declared hostname (`grafana.plus2.danielvicory.dev`, `grafana.backup.plus2.danielvicory.dev`) no longer reaches Grafana
+   through each active entrance. Confirm the Gateway has applied the
+   withdrawal; use an existing authenticated session as well as signed-out
+   requests, because a Kanidm redirect alone does not prove isolation.
+   If data-plane withdrawal cannot be established, **leave ordinary auth
+   unchanged**. Keep the route absent throughout the remaining work.
+
+3. Enable only the local form on the isolated Grafana. Basic and anonymous
+   access stay disabled. The cookie override is only for loopback HTTP:
+
+   ```sh
+   k -n monitoring set env deployment/grafana \
+     GF_AUTH_DISABLE_LOGIN_FORM=false GF_AUTH_GENERIC_OAUTH_AUTO_LOGIN=false \
+     GF_SERVER_ROOT_URL=http://localhost:3000/ GF_SECURITY_COOKIE_SECURE=false
    k -n monitoring rollout status deployment/grafana
    ```
 
-3. Set a password of your choice. It is read from standard input, so it
-   does not appear in a process list:
+   The rollout creates a new disposable Grafana database. Retrieve the
+   generated `admin-password` from `monitoring/grafana-admin` through
+   private secret access into your password manager; do not print it in
+   shared output or use a CLI password reset as routine rotation.
 
-   ```sh
-   IFS= read -rsp 'Grafana admin password: ' pw; echo
-   printf '%s' "$pw" | k -n monitoring exec -i deployment/grafana -c grafana -- \
-     grafana cli --homepath /usr/share/grafana --config /etc/grafana/grafana.ini \
-     admin reset-admin-password --password-from-stdin
-   unset pw
-   ```
-
-4. Keep the forward on the guest's loopback. In the host session above:
+4. On the host, forward only on the guest's loopback:
 
    ```sh
    k -n monitoring port-forward --address 127.0.0.1 svc/grafana 3000:80
    ```
 
-   In another terminal on the browser's workstation, use the existing
-   authenticated host and guest SSH access:
+   In another terminal on the browser workstation, substitute the existing
+   guest SSH account for `<guest-ssh-user>`:
 
    ```sh
    ssh -N -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=yes \
-     -J hvn-hyp1 \
-     -L 127.0.0.1:3000:127.0.0.1:3000 daniel@10.210.0.10
+     -o 'ProxyCommand=ssh -o StrictHostKeyChecking=yes -W %h:%p hvn-hyp1' \
+     -L 127.0.0.1:3000:127.0.0.1:3000 <guest-ssh-user>@10.210.0.10
    ```
 
-   Both SSH host keys, including the guest's independently staged identity,
-   must already be verified. Stop if that trust is unavailable or changes;
-   do not disable host-key checking. The host is only the SSH jump: the
-   tunnel terminates at the guest's loopback forward, not the host's.
-   Open `http://localhost:3000/login` on the workstation and sign in as
-   `admin`. Stop both foreground commands when finished.
-5. Restore automated sync on `apps`. Its sync restores `monitoring`, which
-   reverts the Deployment; the new Pod has a new random password:
+   Both host and guest keys, including the guest's independently staged
+   identity, must already be verified. Stop if trust is unavailable or
+   changes; never bypass host-key checking. The host is only a jump: the
+   tunnel ends on the guest's loopback, not the host's. Open
+   `http://localhost:3000/login` and sign in as `admin` with the managed
+   password. Stop both foreground commands when finished.
+
+5. **Restore ordinary authentication before re-publication.** Keep the
+   entrance absent and all holds in place. Remove the temporary overrides:
 
    ```sh
-   k -n argocd patch application apps \
-     --type merge -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'
+   k -n monitoring set env deployment/grafana \
+     GF_AUTH_DISABLE_LOGIN_FORM- GF_AUTH_GENERIC_OAUTH_AUTO_LOGIN- \
+     GF_SERVER_ROOT_URL- GF_SECURITY_COOKIE_SECURE-
+   k -n monitoring rollout status deployment/grafana
    ```
 
-   Wait for the Grafana rollout, then confirm that its login form and basic
-   authentication are disabled, OAuth auto-login is restored, and both
-   `apps` and `monitoring` again have automated sync enabled.
+   Confirm effective configuration again disables the form, basic and
+   anonymous auth; enables provider-local OAuth auto-login; restores the
+   canonical HTTPS root URL and secure cookies; and keeps strict central
+   administrator role matching. Confirm the temporary environment values
+   are gone and the local form cannot authenticate. Do not republish if
+   any check is uncertain.
 
-## Silences
+6. Restore the recorded automated-sync policies on `monitoring` and then
+   `identity-gateway`, using native Argo controls. Confirm Grafana is
+   healthy with ordinary auth before the route owner republishes its
+   entrance. Restore `apps` last. Verify the published entrance requires
+   central administrator sign-in at both layers and that all intended
+   automation is restored. If Kanidm is still down, Grafana remains
+   unavailable through its ordinary entrance; do not leave local login
+   enabled to compensate.
 
-Silence through Grafana (Alerting → Silences, data source "Alertmanager").
-Grafana keeps this external Alertmanager UI enabled; its own alert-rule
-execution is disabled because vmalert evaluates the declared rules.
-Silences live in Alertmanager's `emptyDir` and are lost when the pod or the
-guest is replaced; re-create them afterwards. Do not silence `Watchdog`:
-that stops pings and triggers the external outage alert. Pause the check
-in healthchecks.io for planned outages instead.
+## Workload limits
 
-## A "heartbeat down" notice
+In Homelab overview, **Container peaks against limits** shows CPU,
+working-set and throttling peaks for the selected time range. Select a
+range that includes the real load and follow the row's Kubernetes Pod
+dashboard link for the time series.
 
-healthchecks.io alerts 15 minutes after the last ping (the 5-minute period
-plus 10-minute grace). The heartbeat is sent only while fresh data is stored
-and alerts are evaluated and routed. Check:
+`KubeContainerCPUThrottled` means the CPU limit is slowing work, not
+killing the container. `KubeContainerMemoryNearLimit` means little memory
+headroom remains; `KubeContainerOOMKilled` means a kill was observed.
+Inspect workload peaks, actual configured limits and guest memory
+pressure before raising a limit. Leave headroom within the guest's total
+capacity rather than assigning every workload its isolated peak.
 
-1. **The guest, host, power or uplink is down.** Check that `hvn-hyp1`
-   answers and that the guest is running.
-2. **Ingestion stopped.** In the guest, check
-   `kubectl -n monitoring get pods`, then VictoriaMetrics' logs. Look for
-   `vm_storage_is_read_only 1` on `victoriametrics:8428/metrics`: the store
-   refuses writes once the pool has less than 50 GiB free.
-3. **VictoriaMetrics is waiting on its storage.** If the pod is
-   `ContainerCreating`, `kubectl -n monitoring describe pod` names the cause:
-   the retained path `/srv/state/monitoring-metrics` or the state-root marker
-   is missing. This is intentional: it never writes to substitute storage.
-   Restore the retained state root before anything else.
-4. **vmalert or Alertmanager stopped.** Check their pods and logs.
-5. **Heartbeat delivery failed.** Check Alertmanager's webhook failure
-   counter and logs, the staged heartbeat credential, and outbound access
-   to healthchecks.io. Do not copy the ping URL into reports.
-6. **The check or Watchdog is paused.** Check active Alertmanager silences,
-   the external check's last ping and pause state, and its Pushover and
-   Telegram integrations. A new check provides no coverage until its first
-   successful ping.
+## Host telemetry and hardware changes
 
-## Metrics storage
+The exporter listens on `10.210.0.1:9100`;
+only `10.210.0.10` on `incus-compute` is admitted.
+The textfile directory is `/run/host-telemetry`. A failed ZFS or
+SMART collection keeps the previous file and modification time. Inspect
+the status service logs and source freshness, not just exporter uptime or
+a successful systemd unit state.
 
-History lives on the retained path `monitoring-metrics` under the state root
-on `rpool/safe/persist`. It is **bounded but not isolated**: the dataset has
-no quota, so it shares the pool with every other retained path and the host.
-The claim's 20Gi size is a label; Kubernetes does not enforce it.
+An actual storage condition stays open when its input disappears. Restore
+fresh matching observations before calling it recovered: a sibling disk's
+success, a new shared file or a missing/negative/invalid value is not
+healthy evidence. This condition behavior does not turn the new-error
+event warning into a latched incident.
 
-| Alert | Meaning | Action |
-| --- | --- | --- |
-| `MonitoringStorageGrowth` (warning) | History exceeds 20 GiB, expected under 9 GiB. | Look for a cardinality explosion (`/api/v1/status/tsdb`); fix its source. |
-| `MonitoringStorageLow` (warning) | Pool free space under 100 GiB. | Find what is filling `rpool`. |
-| `MonitoringStorageLow` (critical) | Under 70 GiB. Ingestion stops at 50 GiB. | Free space now. |
-| heartbeat down | Under 50 GiB: VictoriaMetrics is read-only. | Free space; ingestion resumes by itself. |
+A completed scrub reports its actual completion and errors. A canceled
+scrub or a scan replaced by a resilver is not a completed scrub. An
+overdue or unknown-history notice calls for checking the pool's history
+and completing a scrub, not assuming success from missing data.
 
-`HostFilesystemLowSpace` (10 % warning, 5 % critical) also covers the host's
-filesystems, including `/persist`.
+SMART discovery includes newly attached OS-exposed non-USB physical disks
+and spares automatically. USB, optical and virtual/synthetic devices are
+excluded. Physical members hidden behind a controller are not claimed as
+covered by whole-disk discovery. Scheduled reads can wake disks; consider
+that effect when attaching hardware. Argo holds do not pause host timers.
 
-## Is a workload hitting its limits?
+Required aliases are independently declared in
+`services.host-telemetry.expectedDisks` on `hvn-hyp1`:
+`media1`, `media2`, `media3`, `media4`, `rpool-a`, `rpool-b`, `spare-a`, `spare-b`, `spare-c`.
+This floor must not shrink to only the disks currently found. A missing
+required alias still raises `HostDiskTelemetryMissing`; an unread
+automatically discovered disk uses the same alert family. Failed discovery
+or unavailable private identity keeps the prior telemetry file unchanged.
 
-Check this before you change a CPU or memory limit.
+For a replacement, preserve the required alias and change its stable
+serial-free WWN/by-path identity deliberately. Retire an alias only when
+the disk is intentionally no longer required; confirm remaining absence
+coverage. Labels must not expose serial numbers, including native NVMe
+WWN/by-id values that embed them. For non-probing OS metadata:
 
-- **Where to look.** Homelab overview → "Container peaks against limits"
-  lists, for the selected time range, each container's highest CPU use and
-  working set as a share of its limit, and its highest share of throttled
-  CPU periods. Set the range to cover the load you care about, for example
-  several simultaneous Jellyfin transcodes, and read that container's row.
-  The panel links to the Kubernetes pod dashboard, which plots the same
-  values over time.
-- **`KubeContainerCPUThrottled`** (warning): the container was throttled in
-  more than 25 % of its 100 ms CPU periods for 15 minutes. It keeps running
-  into its CPU limit, so its work slows; nothing is killed.
-- **`KubeContainerMemoryNearLimit`** (warning): its working set stayed above
-  90 % of its memory limit for 10 minutes. Little headroom remains.
-- **`KubeContainerOOMKilled`** (critical): an OOM kill was observed. Check
-  the container's limit and guest memory pressure before raising limits.
+```sh
+lsblk --json --nodeps --paths --properties-by udev --output NAME,TYPE,TRAN,SUBSYSTEMS
+```
 
-A CPU peak near 100 % of the limit together with throttling means the limit
-sets the pace. A memory peak well below the limit means memory has room.
-Size a new limit from the observed peak plus a margin, and keep the guest's
-total capacity in mind.
+Required pools: `rpool`.
+Required mountpoints: `/mnt/storage-clear/media4`, `/srv/media/data`.
+These are evaluated expectations, **not proof of activated host state**.
+Mount expectations come from Den MergerFS pools, provisioned LUKS mounts
+and `services.host-telemetry.extraRequiredMounts`. See the generated
+[storage inventory](../storage.md) for declarations and backing layout.
 
-## Host telemetry
+- **Add a mount host-first:** activate the host change, verify the exact
+  mount with `findmnt` and its `node_filesystem_size_bytes` series in
+  VictoriaMetrics, then roll out monitoring's new required-mount rule.
+  Missing-mount coverage starts only when the new rule is active.
+- **Remove an expectation monitor-first:** roll out monitoring without
+  that expectation, verify the old rule is absent, then retire the host
+  mount. Coverage ends when the rule is removed; retiring the mount first
+  correctly triggers its old missing-mount alert.
 
-The host exporter listens on the compute bridge address (`10.210.0.1:9100`)
-and the firewall admits only the guest (`10.210.0.10`) on `incus-compute`.
-A failed status run keeps the previous file; the stale-file alerts then
-report it, rather than a failed unit.
+Host activation and Argo rule rollout are not atomic. Query the exact host
+and mountpoint, not a count or path prefix; an unrelated mount cannot
+satisfy an expectation. A filesystem series proves exporter observation,
+not correct backing storage or pool health. Combine it with `findmnt` and
+filesystem/pool alerts. Scrape freshness and the rule's hold affect when
+absence becomes visible; it is not timed directly from unmount.
 
-A completed scrub reports its real completion and errors. A canceled scrub
-or a scan replaced by a resilver has no completed scrub on record; the
-exporter reports an epoch end time, not a successful completion or an
-invented error count. An overdue/unknown-history warning calls for checking
-the pool's scrub history and completing a scrub.
+## Coverage limits
 
-An already firing storage fault stays open when its telemetry disappears.
-Restore the source and verify the matching healthy observation before
-treating it as recovered. SMART notices distinguish the health, NVMe warning
-and individual counter signals; recovery of one does not clear a missing
-sibling. During an outage the notice describes an uncleared condition, not
-a newly measured error count or free-space percentage.
-
-A live exporter repeatedly serving an old `smart.prom` is not a new disk
-collection. Restore the SMART producer and confirm successful collections
-for the affected disk; another disk's file update cannot clear its fault,
-and one post-gap collection does not establish a no-growth interval. Negative
-counter values are not recovery evidence; confirm two successful nonnegative
-collections of the affected input.
-
-SMART discovery automatically includes OS-exposed non-USB physical disks,
-including newly attached disks and spares. No new inventory entry enables them.
-USB storage, optical media and virtual/synthetic devices are excluded.
-
-`services.host-telemetry.expectedDisks` in
-`modules/den/hosts/hvn-hyp1/default.nix` is the independent required-alias floor.
-Keep those names and serial-free WWN/by-path identities when replacing or
-retiring a required disk; do not replace the set with only currently present
-devices. A missing required alias still raises `HostDiskTelemetryMissing`.
-An unread automatically discovered disk uses the same alert family. A failed
-discovery or missing private identity leaves the prior file and mtime intact.
-
-For non-probing OS metadata use
-`lsblk --json --nodeps --paths --properties-by udev --output NAME,TYPE,TRAN,SUBSYSTEMS`.
-Do not publish native NVMe WWN/by-id values: they can encode serial numbers.
-Labels prefer WWN symlinks and otherwise serial-free by-path aliases.
-Physical members hidden behind a controller are not claimed as covered by
-whole-disk OS discovery. There is no learned registry.
-
-The oneshot has read-only current/future block-device reach. Its 15-minute
-reads can wake non-USB disks, including spares and new attachments; Argo holds
-do not prevent this. The monitoring policy is not permission to invoke a probe,
-activate units or run a controller scan.
-
-Required mounts are a **build-time expected list**: each Den MergerFS pool,
-each provisioned `disk.luks-storage` mount, and
-`services.host-telemetry.extraRequiredMounts`. The list is compiled into
-`HostRequiredMountMissing` rules; it is not a metric of the host's activated
-configuration. Each rule tests absence of that exact host and mountpoint's
-`node_filesystem_size_bytes` series for 2 minutes.
-
-- **Add a mount host-first.** Activate the host change, confirm the mount
-  with `findmnt` and its series in VictoriaMetrics, then sync the monitoring
-  rules containing the new expectation. Until those rules arrive, the new
-  mount has no missing-mount coverage.
-- **Remove an expectation monitor-first.** Sync the monitoring rules without
-  that mount, confirm the old rule is gone, then retire the host mount.
-  Coverage ends when the rule is removed. Removing the mount while the old
-  rule remains will correctly fire a missing-mount alert.
-
-Host activation and Argo CD rule rollout are not atomic. Query the exact
-mountpoint rather than a count or path-prefix match: an unrelated mount does
-not satisfy an expectation. A present series proves exporter observation,
-not that the right backing storage is healthy; use `findmnt`, filesystem and
-pool alerts together. Scrape freshness affects when absence becomes visible;
-the 2-minute hold starts at rule evaluation, not necessarily at unmount.
-
-## Known gaps
-
-- Probes start inside the guest. They miss failures in the host's DNAT, LAN
-  DNS, the router and the public edges.
-- Backup freshness and recovery are not monitored. Metrics history is not
-  a backup.
-- A delivery channel that breaks while idle is found at its next send
-  attempt.
+Endpoint probes start inside the guest. They cannot prove the host's DNAT,
+LAN DNS, router or public-edge path works. Backup freshness and recovery
+are not monitored. Metrics history is not a backup, and a quiet delivery
+channel has no independent periodic delivery test.

@@ -2,8 +2,12 @@ apiVersion: v1
 kind: Service
 metadata:
   labels:
+    app.kubernetes.io/instance: alertmanager
+    app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/name: alertmanager
     app.kubernetes.io/part-of: monitoring
+    app.kubernetes.io/service: alertmanager
+    helm.sh/chart: app-template-5.1.0
   name: alertmanager
   namespace: monitoring
 spec:
@@ -13,6 +17,8 @@ spec:
       protocol: TCP
       targetPort: 9093
   selector:
+    app.kubernetes.io/controller: main
+    app.kubernetes.io/instance: alertmanager
     app.kubernetes.io/name: alertmanager
     app.kubernetes.io/part-of: monitoring
   type: ClusterIP

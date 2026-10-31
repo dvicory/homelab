@@ -2,23 +2,31 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   labels:
+    app.kubernetes.io/controller: main
+    app.kubernetes.io/instance: vmalert
+    app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/name: vmalert
     app.kubernetes.io/part-of: monitoring
+    helm.sh/chart: app-template-5.1.0
   name: vmalert
   namespace: monitoring
 spec:
   replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
+      app.kubernetes.io/controller: main
+      app.kubernetes.io/instance: vmalert
       app.kubernetes.io/name: vmalert
-      app.kubernetes.io/part-of: monitoring
   strategy:
     type: Recreate
   template:
     metadata:
       annotations:
-        homelab.danielvicory/config-sha256: 4ef49f68c05085bd751e99958036f0d0912410d095282ec5a239ede4b65a748d
+        homelab.danielvicory/config-sha256: 6b33128289fdd9ede9eb2992e7c60ed8c0c9fbd56cb7079338a1ce8be547ee73
       labels:
+        app.kubernetes.io/controller: main
+        app.kubernetes.io/instance: vmalert
         app.kubernetes.io/name: vmalert
         app.kubernetes.io/part-of: monitoring
     spec:
@@ -36,9 +44,6 @@ spec:
           image: docker.io/victoriametrics/vmalert:v1.151.0@sha256:e519f14c31f4d68015702e684a0fc3f1b4e559aa985d8f4462768f07f55b05c9
           imagePullPolicy: IfNotPresent
           name: vmalert
-          ports:
-            - containerPort: 8880
-              name: http
           readinessProbe:
             httpGet:
               path: /health
@@ -61,7 +66,11 @@ spec:
             - mountPath: /etc/vmalert
               name: rules
               readOnly: true
+      dnsPolicy: ClusterFirst
       enableServiceLinks: false
+      hostIPC: false
+      hostNetwork: false
+      hostPID: false
       nodeSelector:
         kubernetes.io/hostname: compute-1
       securityContext:
@@ -70,7 +79,9 @@ spec:
         runAsUser: 65534
         seccompProfile:
           type: RuntimeDefault
+      serviceAccountName: default
       volumes:
         - configMap:
+            defaultMode: 420
             name: vmalert-rules
           name: rules
