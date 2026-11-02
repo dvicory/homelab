@@ -328,7 +328,7 @@ jobs:
           else
             artifact_attr="groups.$GROUP"
           fi
-          build_args=(--keep-going --fallback)
+          build_args=(--keep-going)
           if [ "$GROUP" = runtime ]; then
             # One runtime suite on this runner, never competing test heaps.
             build_args+=(--max-jobs 1)
