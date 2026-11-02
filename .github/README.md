@@ -294,6 +294,11 @@ Cleanup failure makes the gate fail. The approved sanitized report is included
 in the generic `native-<system>-<application>-<run-id>` evidence artifact even
 on failure; raw fixture logs, kubeconfig and assertion errors are not exported.
 
+Gateway CRD apply/wait commands that exit nonzero identify the operation and
+retain native kubectl stderr in `acceptance.log`. These commands use the public
+CRD and disposable kubeconfig; stdout and secret-bearing fixture setup output
+remain private.
+
 Owned image-import failures distinguish archive copy, `ctr` import and archive
 cleanup, retaining only the zero-based archive ordinal rather than archive names or command arguments. A failed import
 also projects only known dial-failure categories for the fixture's fixed

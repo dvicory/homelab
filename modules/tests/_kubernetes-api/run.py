@@ -380,7 +380,11 @@ def main():
                 report["commandFailure"]["errorCategory"] = classify_docker_error(result.stderr)
             if operation is not None:
                 report["commandFailure"]["operation"] = operation
-                report["commandFailure"]["archiveIndex"] = archive_index
+                if archive_index is not None:
+                    report["commandFailure"]["archiveIndex"] = archive_index
+                if operation in ("gateway-crd-apply", "gateway-crd-wait"):
+                    # Public CRD input and the disposable cluster's kubeconfig only.
+                    print(f"{operation}: {result.stderr}", file=sys.stderr, flush=True)
                 if operation == "ctr-import":
                     report["commandFailure"]["containerdSocketFailure"] = containerd_socket_failure(result.stderr)
                     report["commandFailure"]["containerdRPC"] = capture_containerd_rpc(docker, env, name)
@@ -559,8 +563,8 @@ def main():
                 env[key + "_IP"] = ip
         phase = "gateway-crd-admission"
         crd = Path(settings["crd"]).read_text()
-        kubectl("apply", "--server-side", "-f", "-", input=crd)
-        kubectl("wait", "--for=condition=Established", "--timeout=60s", "crd/gateways.gateway.networking.k8s.io", timeout=70)
+        kubectl("apply", "--server-side", "-f", "-", input=crd, operation="gateway-crd-apply")
+        kubectl("wait", "--for=condition=Established", "--timeout=60s", "crd/gateways.gateway.networking.k8s.io", timeout=70, operation="gateway-crd-wait")
         for family, script in settings["setup"].items():
             phase = f"{family}-fixture-prerequisites"
             run([script], timeout=1200)
@@ -581,8 +585,8 @@ def main():
             if "v1" not in removed:
                 raise ValueError("mutation-v1-rule-missing")
             crd = yaml.safe_dump(obj)
-            kubectl("apply", "--server-side", "-f", "-", input=crd)
-            kubectl("wait", "--for=condition=Established", "--timeout=60s", "crd/gateways.gateway.networking.k8s.io", timeout=70)
+            kubectl("apply", "--server-side", "-f", "-", input=crd, operation="gateway-crd-apply")
+            kubectl("wait", "--for=condition=Established", "--timeout=60s", "crd/gateways.gateway.networking.k8s.io", timeout=70, operation="gateway-crd-wait")
         report["timingsSeconds"]["setup"] = round(time.monotonic() - setup_start, 3)
         phase = "chainsaw-scenarios"
         scenario_start = time.monotonic()
