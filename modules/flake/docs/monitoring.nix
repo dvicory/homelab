@@ -328,6 +328,11 @@ in
         pressure before raising a limit. Leave headroom within the guest's total
         capacity rather than assigning every workload its isolated peak.
 
+        Restart and OOM event alerts require observed counter growth. A cumulative
+        restart count or retained termination reason first seen when collection
+        starts is not evidence of a new incident. Counter resets alone are not
+        restart events.
+
         ## Host telemetry and hardware changes
 
         The exporter listens on `${monitoring.listenAddress}:${toString telemetry.port}`;
@@ -337,7 +342,14 @@ in
         the status service logs and source freshness, not just exporter uptime or
         a successful systemd unit state.
 
-        An actual storage condition stays open when its input disappears. Restore
+        Missing-mount and missing/stale-collector diagnoses require a reporting
+        exporter. An unavailable exporter is a telemetry outage, not proof that
+        its mounts or collectors stopped. `TelemetrySourceDown` reports a source
+        outage after five minutes. A missing file or parse error is distinct from
+        a file whose observed modification time is old.
+
+        Known hardware, free-space and filesystem-statistics faults stay open
+        when their inputs disappear. Restore
         fresh matching observations before calling it recovered: a sibling disk's
         success, a new shared file or a missing/negative/invalid value is not
         healthy evidence. This condition behavior does not turn the new-error
@@ -380,7 +392,7 @@ in
         [storage inventory](../storage.md) for declarations and backing layout.
 
         - **Add a mount host-first:** activate the host change, verify the exact
-          mount with `findmnt` and its `node_filesystem_size_bytes` series in
+          mount with `findmnt` and its `node_filesystem_device_error` series in
           VictoriaMetrics, then roll out monitoring's new required-mount rule.
           Missing-mount coverage starts only when the new rule is active.
         - **Remove an expectation monitor-first:** roll out monitoring without
@@ -390,10 +402,19 @@ in
 
         Host activation and Argo rule rollout are not atomic. Query the exact host
         and mountpoint, not a count or path prefix; an unrelated mount cannot
-        satisfy an expectation. A filesystem series proves exporter observation,
-        not correct backing storage or pool health. Combine it with `findmnt` and
-        filesystem/pool alerts. Scrape freshness and the rule's hold affect when
-        absence becomes visible; it is not timed directly from unmount.
+        satisfy an expectation. The device-error series exists even when statfs
+        is denied: either value proves mount observation, not correct backing
+        storage or pool health. A permission error does not mean the mount is
+        absent. Capacity alerts still use readable filesystems; inspect the
+        physical backing filesystems when the MergerFS view is unreadable.
+        Combine exporter observation with `findmnt` and filesystem/pool alerts.
+        Do not grant the exporter media access to obtain capacity statistics.
+        `HostFilesystemStatsUnavailable` reports statistics-read errors on
+        required non-FUSE filesystems: capacity is unknown, not necessarily full
+        or unmounted. It clears only after matching readable statistics return
+        through a successful scrape; old or incomplete samples are not recovery.
+        Scrape freshness and the rule's hold affect when absence becomes visible;
+        it is not timed directly from unmount.
 
         ## Coverage limits
 

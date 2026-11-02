@@ -157,23 +157,25 @@ let
           "Disk {{ $labels.disk }} ({{ $labels.id }}) on {{ $labels.host }} reported new SMART errors ({{ $labels.signal }})."
           { signal = lib.replaceStrings [ "_" ] [ "-" ] metric; };
       hostLabels.host = host.name;
+      hostReporting = "up{${node}, host=${quote host.name}} == 1";
       bySeverity = f: [
         (f "warning")
         (f "critical")
       ];
+      # Event counters need an observed baseline, not increase()'s guessed zero.
 
       workloads = [
         (alert "KubeContainerOOMKilled" "critical" "0s"
           ''
             (
-              increase(kube_pod_container_status_restarts_total{${ksm}}[10m]) > 0
+              increase_prometheus(kube_pod_container_status_restarts_total{${ksm}}[10m]) > 0
               and on (namespace, pod, container)
               kube_pod_container_status_last_terminated_reason{${ksm}, reason="OOMKilled"} == 1
             )
             or on (namespace, pod, container)
             (
               sum by (namespace, pod, container) (
-                increase(container_oom_events_total{job="cadvisor", container!=""}[10m])
+                increase_prometheus(container_oom_events_total{job="cadvisor", container!=""}[10m])
               ) > 0
             )
           ''
@@ -181,7 +183,7 @@ let
           { }
         )
         (alert "KubeContainerRestarted" "warning" "0s" ''
-          increase(kube_pod_container_status_restarts_total{${ksm}}[10m]) > 0
+          increase_prometheus(kube_pod_container_status_restarts_total{${ksm}}[10m]) > 0
           unless on (namespace, pod, container)
           kube_pod_container_status_last_terminated_reason{${ksm}, reason="OOMKilled"} == 1
         '' "{{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} restarted." { })
@@ -313,11 +315,52 @@ let
         mountpoint:
         alert "HostRequiredMountMissing" "critical" "2m"
           ''
-            absent(node_filesystem_size_bytes{${node}, host=${quote host.name}, mountpoint=${quote mountpoint}})
+            absent(node_filesystem_device_error{${node}, host=${quote host.name}, mountpoint=${quote mountpoint}})
+            and on (job, host) (${hostReporting})
           ''
-          "Required mount ${mountpoint} on ${host.name} is not mounted."
+          "Required mount ${mountpoint} on ${host.name} is not observed by the reporting exporter."
           (hostLabels // { inherit mountpoint; })
       ) host.requiredMounts
+      ++ [
+        (
+          let
+            filesystems = ''${node}, host=${quote host.name}, mountpoint=~${
+              quote (lib.concatMapStringsSep "|" lib.escapeRegex host.requiredMounts)
+            }, fstype!~"fuse.*|tmpfs|ramfs|squashfs|overlay"'';
+            deviceError = "node_filesystem_device_error{${filesystems}}";
+            # Error text changes must not change the incident's identity.
+            # Recovery needs matching capacity from the same successful scrape.
+          in
+          storageAlert "HostFilesystemStatsUnavailable" "critical" "2m"
+            ''
+              max without (device_error) (${deviceError} > 0)
+              and on (job, host) (${hostReporting})
+            ''
+            ''
+              max without (device_error) (
+                (${deviceError} == 0)
+                and (node_filesystem_size_bytes{${filesystems}} > 0)
+                and (node_filesystem_avail_bytes{${filesystems}} >= 0)
+                and (
+                  timestamp(node_filesystem_size_bytes{${filesystems}})
+                  == timestamp(${deviceError})
+                )
+                and (
+                  timestamp(node_filesystem_avail_bytes{${filesystems}})
+                  == timestamp(${deviceError})
+                )
+                and (
+                  timestamp(${deviceError})
+                  == on (job, host, instance) group_left()
+                  timestamp(up{${node}, host=${quote host.name}})
+                )
+              )
+              and on (job, host) (${hostReporting})
+            ''
+            "Required filesystem {{ $labels.mountpoint }} on {{ $labels.host }} has an uncleared statistics-read error; capacity is unknown until readable statistics return."
+            { }
+        )
+      ]
       ++ bySeverity (
         severity:
         let
@@ -378,6 +421,7 @@ let
       # stale behind a live exporter, and a declared item missing from a
       # fresh source. absent() keeps only equality matchers as labels, so
       # these rules set the labels that name the item.
+      # Compound absent(comparison) has no labels; its host-pinned gate uses on().
       sourceDown =
         map (
           job:
@@ -408,27 +452,36 @@ let
         ''absent(node_textfile_mtime_seconds{${node}, host=${quote host.name}, file=~"(.*/)?${file}\\.prom"})'';
       staleness = [
         # Five missed 2-minute runs.
-        (alert "HostZpoolStatusStale" "critical" "0s" ''
-          ${stale "zpool" 600}
-          or node_textfile_scrape_error{${node}} == 1
-          or ${absentFile "zpool"}
-        '' "zpool.prom on ${host.name} has not been refreshed for 10 minutes." hostLabels)
+        (alert "HostZpoolStatusStale" "critical" "0s"
+          ''
+            (
+              ${stale "zpool" 600}
+              or node_textfile_scrape_error{${node}} == 1
+              or ${absentFile "zpool"}
+            )
+            and on (job, host) (${hostReporting})
+          ''
+          "zpool.prom on ${host.name} is missing or older than 10 minutes, or a host textfile has a parse error."
+          hostLabels
+        )
         # Three missed 15-minute runs.
         (alert "HostSmartStatusStale" "critical" "0s" ''
-          ${stale "smart" smartFreshness}
-          or ${absentFile "smart"}
-        '' "smart.prom on ${host.name} has not been refreshed for 45 minutes." hostLabels)
+          (${stale "smart" smartFreshness} or ${absentFile "smart"})
+          and on (job, host) (${hostReporting})
+        '' "smart.prom on ${host.name} is missing or older than 45 minutes." hostLabels)
       ]
       ++ map (
         pool:
         alert "HostZpoolMissing" "critical" "2m" ''
           absent(homelab_zpool_present{${node}, host=${quote host.name}, pool=${quote pool}} == 1)
+          and on() (${hostReporting})
         '' "ZFS pool ${pool} is missing from zpool.prom on ${host.name}." (hostLabels // { inherit pool; })
       ) host.pools
       ++ [
         (alert "HostDiskTelemetryMissing" "critical" "20m"
           ''
             homelab_smart_device_up{${node}, host=${quote host.name}, disk!~${quote (lib.concatStringsSep "|" (map lib.escapeRegex (builtins.attrNames host.disks)))}} == 0
+            and on (job, host) (${hostReporting})
           ''
           "Disk {{ $labels.disk }} ({{ $labels.id }}) on {{ $labels.host }} was not read in the last two SMART runs."
           hostLabels
@@ -439,6 +492,7 @@ let
         alert "HostDiskTelemetryMissing" "critical" "20m"
           ''
             absent(homelab_smart_device_up{${node}, host=${quote host.name}, disk=${quote disk}} == 1)
+            and on() (${hostReporting})
           ''
           "Disk ${disk} (${baseNameOf path}) on ${host.name} was not read in the last two SMART runs."
           (
@@ -466,7 +520,7 @@ let
       delivery = [
         (alert "AlertDeliveryFailing" "critical" "0s" ''
           sum by (integration) (
-            increase(alertmanager_notifications_failed_total{job="alertmanager", integration=~"pushover|telegram"}[15m])
+            increase_prometheus(alertmanager_notifications_failed_total{job="alertmanager", integration=~"pushover|telegram"}[15m])
           ) > 0
         '' "{{ $labels.integration }} notifications are failing." { })
       ];
@@ -479,7 +533,7 @@ let
         alert = "Watchdog";
         expr = ''
           vector(1)
-            and on() (sum(increase(vm_rows_added_to_storage_total{job="victoriametrics"}[3m])) > 0)
+            and on() (sum(increase_prometheus(vm_rows_added_to_storage_total{job="victoriametrics"}[3m])) > 0)
             and on() (
               time() - max(
                   timestamp(kubelet_running_pods{job="kubelet"})
