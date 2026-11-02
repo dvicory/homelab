@@ -613,6 +613,11 @@ Signature verification remains required; CI does not automatically accept
 PR-provided flake configuration or grant upstream cache-write access.
 This permits exact upstream package substitution without changing package
 sources or versions; removing client setup is not a measured whole-CI speedup.
+
+CI keeps Nix's default failure behavior for broken binary-cache downloads:
+it does not rebuild cached packages from source after a transfer fails.
+Packages with no substitute still build normally.
+
 Successful `main` push
 jobs publish their existing outputs, runtime closures, and realized build
 dependencies directly from the build runner; another job's failure does not
