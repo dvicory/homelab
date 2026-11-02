@@ -147,6 +147,96 @@ let
       ];
     }
     {
+      name = "historical first-observed counters do not invent events or ingestion";
+      interval = "30s";
+      input_series = [
+        (series "kube_pod_container_status_restarts_total" (ksm // container "historical-restart") "1x20")
+        (series "kube_pod_container_status_last_terminated_reason" (
+          ksm // container "historical-restart" // { reason = "Unknown"; }
+        ) "1x20")
+        (series "kube_pod_container_status_restarts_total" (ksm // container "historical-oom") "1x20")
+        (series "kube_pod_container_status_last_terminated_reason" (
+          ksm // container "historical-oom" // { reason = "OOMKilled"; }
+        ) "1x20")
+        (series "container_oom_events_total" (
+          { job = "cadvisor"; } // container "historical-cadvisor"
+        ) "1x20")
+        (series "alertmanager_notifications_failed_total" {
+          job = "alertmanager";
+          integration = "pushover";
+        } "1x20")
+        (series "vm_rows_added_to_storage_total" { job = "victoriametrics"; } "1x20")
+        (series "kubelet_running_pods" { job = "kubelet"; } "5x20")
+      ];
+      metricsql_expr_test =
+        lib.concatMap
+          (time: [
+            (expect time "workloads" "KubeContainerRestarted" [ ])
+            (expect time "workloads" "KubeContainerOOMKilled" [ ])
+            (expect time "delivery" "AlertDeliveryFailing" [ ])
+            (expect time "watchdog" "Watchdog" [ ])
+          ])
+          [
+            "0s"
+            "1m"
+            "6m"
+          ];
+    }
+    {
+      name = "counter reset alone is silent; subsequent observed events fire and expire";
+      interval = "30s";
+      input_series = [
+        (series "kube_pod_container_status_restarts_total" (
+          ksm // container "restart-reset"
+        ) "3x4 0x4 1x50")
+        (series "kube_pod_container_status_last_terminated_reason" (
+          ksm // container "restart-reset" // { reason = "Error"; }
+        ) "1x60")
+        (series "kube_pod_container_status_restarts_total" (ksm // container "oom-reset") "3x4 0x4 1x50")
+        (series "kube_pod_container_status_last_terminated_reason" (
+          ksm // container "oom-reset" // { reason = "OOMKilled"; }
+        ) "1x60")
+        (series "container_oom_events_total" (
+          { job = "cadvisor"; } // container "cadvisor-reset"
+        ) "3x4 0x4 1x50")
+        (series "alertmanager_notifications_failed_total" {
+          job = "alertmanager";
+          integration = "pushover";
+        } "3x4 0x4 1x50")
+        (series "vm_rows_added_to_storage_total" { job = "victoriametrics"; } "3x4 0x4 1x50")
+        (series "kubelet_running_pods" { job = "kubelet"; } "5x60")
+      ];
+      metricsql_expr_test =
+        lib.concatMap
+          (time: [
+            (expect time "workloads" "KubeContainerRestarted" [ ])
+            (expect time "workloads" "KubeContainerOOMKilled" [ ])
+            (expect time "delivery" "AlertDeliveryFailing" [ ])
+            (expect time "watchdog" "Watchdog" [ ])
+          ])
+          [
+            "2m"
+            "4m"
+            "22m"
+          ]
+        ++ [
+          (expect "6m" "workloads" "KubeContainerRestarted" [
+            (ksm // container "restart-reset" // { severity = "warning"; })
+          ])
+          (expect "6m" "workloads" "KubeContainerOOMKilled" [
+            (ksm // container "oom-reset" // { severity = "critical"; })
+            (container "cadvisor-reset" // { severity = "critical"; })
+          ])
+          (expect "6m" "delivery" "AlertDeliveryFailing" [
+            {
+              integration = "pushover";
+              severity = "critical";
+            }
+          ])
+          (expect "6m" "watchdog" "Watchdog" [ { severity = "none"; } ])
+        ];
+    }
+    {
       name = "a crash loop fires at 15 minutes and not before";
       interval = "30s";
       input_series = [
@@ -434,6 +524,14 @@ let
       name = "host storage: an absent required mount, and low free space";
       interval = "30s";
       input_series = upEverywhere ++ [
+        (series "node_filesystem_device_error" (
+          nodeLabels
+          // {
+            mountpoint = "/mnt/storage-clear/media4";
+            fstype = "xfs";
+            device_error = "";
+          }
+        ) "0x80")
         (series "node_filesystem_size_bytes" (
           nodeLabels
           // {
@@ -502,6 +600,98 @@ let
         ])
       ];
     }
+    {
+      name = "host storage: an unreadable required mount is present; loss fires and remount clears";
+      interval = "30s";
+      input_series = upEverywhere ++ [
+        (series "node_filesystem_device_error" (
+          nodeLabels
+          // {
+            mountpoint = "/mnt/storage-clear/media4";
+            fstype = "xfs";
+            device_error = "";
+          }
+        ) "0x40")
+        (series "node_filesystem_device_error" (
+          nodeLabels
+          // {
+            mountpoint = "/srv/media/data";
+            fstype = "fuse.mergerfs";
+            device_error = "permission denied";
+          }
+        ) "1x8 stale _x12 1x18")
+      ];
+      metricsql_expr_test = [
+        (expect "3m" "host-storage" "HostRequiredMountMissing" [ ])
+        (expect "10m" "host-storage" "HostRequiredMountMissing" [
+          {
+            job = "host-node";
+            host = hostName;
+            mountpoint = "/srv/media/data";
+            severity = "critical";
+          }
+        ])
+        (expect "14m" "host-storage" "HostRequiredMountMissing" [ ])
+        (expectFiring "14m" "HostFilesystemLowSpace" [ ])
+        (expectFiring "14m" "HostFilesystemStatsUnavailable" [ ])
+      ];
+    }
+    (
+      let
+        physical = nodeLabels // {
+          device = "/dev/mapper/media4";
+          mountpoint = "/mnt/storage-clear/media4";
+          fstype = "xfs";
+        };
+      in
+      {
+        name = "required physical statistics errors survive unknown input and clear only on fresh readable recovery";
+        interval = "1m";
+        input_series = upFor allJobs ++ [
+          (series "up" nodeLabels "1x4 0x3 1x12")
+          (series "node_filesystem_device_error" (
+            physical // { device_error = "input/output error"; }
+          ) "1x4 stale")
+          # Source returns at 9m; matching readable capacity returns only at 11m.
+          (series "node_filesystem_device_error" (physical // { device_error = ""; }) "_x9 0x14")
+          (series "node_filesystem_size_bytes" (physical // { device_error = ""; }) "_x9 100 _x1 100x12")
+          (series "node_filesystem_avail_bytes" (physical // { device_error = ""; }) "_x10 50x13")
+          (series "node_filesystem_device_error" (
+            nodeLabels
+            // {
+              mountpoint = "/srv/media/data";
+              fstype = "fuse.mergerfs";
+              device_error = "permission denied";
+            }
+          ) "1x4 stale _x3 1x12")
+        ];
+        metricsql_expr_test =
+          map
+            (
+              time:
+              expectFiring time "HostFilesystemStatsUnavailable" [
+                (physical // { severity = "critical"; })
+              ]
+            )
+            [
+              "2m30s"
+              "8m30s"
+              "9m30s"
+              "10m30s"
+            ]
+          ++ map (time: expectFiring time "HostRequiredMountMissing" [ ]) [
+            "2m30s"
+            "8m30s"
+            "9m30s"
+            "11m30s"
+          ]
+          ++ [
+            (expectFiring "1m30s" "HostFilesystemStatsUnavailable" [ ])
+            (expectFiring "11m30s" "HostFilesystemStatsUnavailable" [ ])
+            (expectFiring "11m30s" "HostFilesystemLowSpace" [ ])
+          ];
+      }
+    )
     (
       let
         pool = name: nodeLabels // { pool = name; };
@@ -833,17 +1023,19 @@ let
           (expectFiring "4m" "HostDiskSmartErrorsIncreasing" [ ])
           (expectFiring "6m" "HostDiskSmartErrorsIncreasing" [ ])
           (expectFiring "11m" "HostDiskSmartErrorsIncreasing" (
-            map (
-              name:
-              disk name
-              // {
-                severity = "warning";
-                signal = "scsi-grown-defects";
-              }
-            ) [
-              "growing"
-              "reset"
-            ]
+            map
+              (
+                name:
+                disk name
+                // {
+                  severity = "warning";
+                  signal = "scsi-grown-defects";
+                }
+              )
+              [
+                "growing"
+                "reset"
+              ]
           ))
           (expectFiring "140m" "HostDiskSmartErrorsIncreasing" [ ])
           (expectFiring "140m" "HostDiskSmartFailing" [ ])
@@ -973,6 +1165,151 @@ let
         ];
       }
     )
+    {
+      name = "empty exporter startup is unknown, not missing mounts or stale collectors";
+      interval = "30s";
+      input_series = upFor allJobs;
+      metricsql_expr_test =
+        lib.concatMap
+          (
+            time:
+            [
+              (expectFiring time "HostRequiredMountMissing" [ ])
+              (expectFiring time "HostFilesystemStatsUnavailable" [ ])
+            ]
+            ++ map (name: expect time "missing-telemetry" name [ ]) [
+              "HostZpoolStatusStale"
+              "HostSmartStatusStale"
+              "HostZpoolMissing"
+              "HostDiskTelemetryMissing"
+            ]
+          )
+          [
+            "3m"
+            "6m"
+          ]
+        ++ [
+          (expect "6m" "missing-telemetry" "TelemetrySourceDown" [
+            {
+              job = "host-node";
+              host = hostName;
+              severity = "critical";
+            }
+          ])
+        ];
+    }
+    (
+      let
+        present = "1x4 stale _x6 1x4 stale _x6 1x8";
+        mtime = "${toString start}+60x4 stale _x6 ${toString (start + 720)}+60x4 stale _x6 ${toString (start + 1440)}+60x8";
+      in
+      {
+        name = "failed and vanished exporter scrapes do not invent dependent faults before or after source-down";
+        interval = "1m";
+        input_series =
+          upFor allJobs
+          ++ [
+            (series "up" nodeLabels "1x4 0x6 1x4 stale _x6 1x8")
+            (series "node_textfile_mtime_seconds" (
+              nodeLabels // { file = "/run/host-telemetry/zpool.prom"; }
+            ) mtime)
+            (series "node_textfile_mtime_seconds" (
+              nodeLabels // { file = "/run/host-telemetry/smart.prom"; }
+            ) mtime)
+            (series "node_textfile_scrape_error" nodeLabels "0x4 stale _x6 0x4 stale _x6 0x8")
+          ]
+          ++ map (
+            mountpoint:
+            series "node_filesystem_device_error" (
+              nodeLabels // { inherit mountpoint; }
+            ) "0x4 stale _x6 0x4 stale _x6 0x8"
+          ) hvn.requiredMounts
+          ++ map (pool: series "homelab_zpool_present" (nodeLabels // { inherit pool; }) present) hvn.pools
+          ++ lib.mapAttrsToList (
+            disk: path:
+            series "homelab_smart_device_up" (
+              nodeLabels
+              // {
+                inherit disk;
+                id = baseNameOf path;
+              }
+            ) present
+          ) hvn.disks;
+        metricsql_expr_test =
+          lib.concatMap
+            (
+              time:
+              [
+                (expectFiring time "HostRequiredMountMissing" [ ])
+                (expectFiring time "HostFilesystemStatsUnavailable" [ ])
+              ]
+              ++ map (name: expect time "missing-telemetry" name [ ]) [
+                "HostZpoolStatusStale"
+                "HostSmartStatusStale"
+                "HostZpoolMissing"
+                "HostDiskTelemetryMissing"
+              ]
+            )
+            [
+              "4m"
+              "6m"
+              "10m30s"
+              "12m30s"
+              "18m"
+              "22m30s"
+              "24m30s"
+            ]
+          ++ [
+            (expect "6m" "missing-telemetry" "TelemetrySourceDown" [ ])
+            (expect "10m30s" "missing-telemetry" "TelemetrySourceDown" [
+              (nodeLabels // { severity = "critical"; })
+            ])
+            (expect "12m30s" "missing-telemetry" "TelemetrySourceDown" [ ])
+            (expect "22m30s" "missing-telemetry" "TelemetrySourceDown" [
+              {
+                job = "host-node";
+                host = hostName;
+                severity = "critical";
+              }
+            ])
+            (expect "24m30s" "missing-telemetry" "TelemetrySourceDown" [ ])
+          ];
+      }
+    )
+    {
+      name = "missing textfiles behind a live exporter alert immediately and clear on observation";
+      interval = "30s";
+      input_series =
+        upEverywhere
+        ++
+          map
+            (
+              file:
+              series "node_textfile_mtime_seconds" (
+                nodeLabels // { file = "/run/host-telemetry/${file}.prom"; }
+              ) "_x4 ${toString (start + 120)}+30x12"
+            )
+            [
+              "zpool"
+              "smart"
+            ];
+      metricsql_expr_test =
+        lib.concatMap
+          (name: [
+            (expect "1m" "missing-telemetry" name [
+              {
+                job = "host-node";
+                host = hostName;
+                severity = "critical";
+              }
+            ])
+            (expect "3m" "missing-telemetry" name [ ])
+          ])
+          [
+            "HostZpoolStatusStale"
+            "HostSmartStatusStale"
+          ];
+    }
     {
       name = "a scrape job that vanishes from discovery fires through absent(up)";
       interval = "30s";
@@ -1279,7 +1616,7 @@ in
     { pkgs, system, ... }:
     let
       # Native rendering remains covered by prod-home-manifests-fresh.
-      rendered = ../../generated/manifests/prod-home;
+      rulesManifest = ../../generated/manifests/prod-home/monitoring/ConfigMap-vmalert-rules.yaml;
       python = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
       data =
         objects: name:
@@ -1328,13 +1665,15 @@ in
                     {
                       name = stage.name;
                       interval = "30s";
-                      input_series =
-                        map (
-                          mountpoint: series "node_filesystem_size_bytes" (nodeLabels // { inherit mountpoint; }) "100x40"
-                        ) stage.present
-                        ++ lib.optional stage.recovers (
-                          series "node_filesystem_size_bytes" (nodeLabels // { mountpoint = addedMount; }) "_x8 100x32"
-                        );
+                      input_series = [
+                        (series "up" nodeLabels "1x40")
+                      ]
+                      ++ map (
+                        mountpoint: series "node_filesystem_device_error" (nodeLabels // { inherit mountpoint; }) "0x40"
+                      ) stage.present
+                      ++ lib.optional stage.recovers (
+                        series "node_filesystem_device_error" (nodeLabels // { mountpoint = addedMount; }) "_x8 0x32"
+                      );
                       metricsql_expr_test = [
                         (expect "1m30s" "host-storage" "HostRequiredMountMissing" [ ])
                         (expect "3m" "host-storage" "HostRequiredMountMissing" (
@@ -1394,10 +1733,10 @@ in
             __darwinAllowLocalNetworking = true;
           }
           ''
-            python - ${rendered} <<'PY'
+            python - ${rulesManifest} <<'PY'
             from pathlib import Path
             import sys, yaml
-            obj = yaml.safe_load((Path(sys.argv[1]) / "monitoring/ConfigMap-vmalert-rules.yaml").read_text())
+            obj = yaml.safe_load(Path(sys.argv[1]).read_text())
             Path("rules.json").write_text(obj["data"]["rules.json"])
             PY
             cp ${testFile} tests.json
