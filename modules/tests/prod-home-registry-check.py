@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("recovery", sys.argv[1])
 recovery = importlib.util.module_from_spec(spec)
@@ -33,6 +34,47 @@ assert recovery.registry_pull_failure(pods("ErrImagePull", "429 TooManyRequests"
 assert recovery.registry_pull_failure(pods("ErrImagePull", "429 TooManyRequests", deleting=True)) is None
 assert recovery.registry_pull_failure(pods("ErrImagePull", "connection reset")) is None
 assert recovery.registry_pull_failure({}) is None
+
+def check_reaped_stat_race(pgid):
+    # Schedule a real unrelated task's reap between stat open() and read().
+    # No proc contents or exceptions are fabricated.
+    disappearing = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read(1)"],
+        stdin=subprocess.PIPE, start_new_session=True,
+    )
+    pidfd = os.pidfd_open(disappearing.pid)
+    stat_path = Path("/proc") / str(disappearing.pid) / "stat"
+    path_open = Path.open
+    raced = False
+
+    def open_then_reap(path, *args, **kwargs):
+        nonlocal raced
+        stream = path_open(path, *args, **kwargs)
+        if path == stat_path:
+            try:
+                disappearing.stdin.close()
+                disappearing.wait(timeout=5)
+                raced = True
+            except BaseException:
+                stream.close()
+                raise
+        return stream
+
+    try:
+        with patch.object(Path, "open", open_then_reap):
+            assert not recovery._bootstrap_group_has_executable_members(pgid, time.monotonic() + 3), (
+                "a reaped unrelated task prevented proof of the dead owned group")
+        assert raced, "the real stat open/reap/read boundary was not exercised"
+    finally:
+        try:
+            signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        finally:
+            os.close(pidfd)
+            disappearing.stdin.close()
+            disappearing.wait(timeout=5)
+
 
 child = "import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); print('ready',flush=True); time.sleep(60)"
 scratch = tempfile.TemporaryDirectory(prefix="bootstrap-grace-")
@@ -85,14 +127,17 @@ try:
                 assert owned.returncode is None, "leader was reaped before group cleanup"
                 if child_script is not None:
                     assert not select.select([child_fd], [], [], 0)[0], "child exited before group cleanup"
+            if leader_status == 0 and child_script is None:
+                check_reaped_stat_race(owned.pid)
             started = time.monotonic()
             recovery.stop_owned_bootstrap(owned)
             elapsed = time.monotonic() - started
             if child_script == child:
                 assert recovery._BOOTSTRAP_STOP_GRACE <= elapsed < recovery._BOOTSTRAP_STOP_GRACE + 15, (
-                    "live TERM-resistant child did not receive the full bounded grace")
+                    f"live TERM-resistant child did not receive the full bounded grace: {leader_status=}, {elapsed=}")
             else:
-                assert elapsed < recovery._BOOTSTRAP_STOP_GRACE, "empty owned group consumed the remaining cleanup grace"
+                assert elapsed < recovery._BOOTSTRAP_STOP_GRACE, (
+                    f"empty owned group consumed the remaining cleanup grace: {leader_status=}, {expect_cleanup=}, {elapsed=}")
                 if expect_cleanup:
                     assert elapsed >= 1, "graceful child cleanup was cut short"
             assert owned.returncode is not None
