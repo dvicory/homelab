@@ -21,13 +21,14 @@ spec:
             - --fail-open=false
             - --nfqueue-id=98
             - --metrics-bind-address=:9080
+            - --log-verdicts=none
             - --v=0
           env:
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-          image: registry.k8s.io/networking/kube-network-policies:v1.1.2@sha256:c671f98e444825d57c590c92da1b5e66070917c4d3dff1f9279775e6b73254fe
+          image: registry.k8s.io/networking/kube-network-policies:v1.1.3@sha256:d9350ce205a63ba85c67795191304cef0318d084422ca44da49c4655eeba300d
           name: kube-network-policies
           ports:
             - containerPort: 9080

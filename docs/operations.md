@@ -225,9 +225,10 @@ firewall.
 The enforcer fails closed: while it is down with its rules in place,
 every new Pod connection is refused, including allowed ones, until the
 kubelet restarts it. A deliberate stop (deleting or updating the
-DaemonSet) removes its rules first, so Pods are unprotected until the
-new Pod is ready. To log each connection's verdict while
-investigating a refusal, raise its `--v` argument to 2 in
+DaemonSet) removes its rules first, leaving a gap until rules are
+installed again. Its readiness probe checks metrics, not packet
+enforcement. Connection verdict logging is off normally. To investigate
+a refusal, set its `--log-verdicts` argument to `all` in
 `kubernetes.services.network-policy`; Argo reverts edits made only in
 the cluster.
 
