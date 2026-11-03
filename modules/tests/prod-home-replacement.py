@@ -774,7 +774,9 @@ def _bootstrap_group_has_executable_members(pgid: int, deadline: float) -> bool:
                     # start at state (3), with pgrp (5) and starttime (22).
                     try:
                         fields = (Path("/proc") / entry.name / "stat").read_bytes().rsplit(b")", 1)[1].split()
-                    except FileNotFoundError:
+                    except (FileNotFoundError, ProcessLookupError):
+                        # Reaping after open() makes the held proc inode's read
+                        # fail with ESRCH, not ENOENT; neither task can execute.
                         continue
                     if int(fields[2]) != pgid:
                         continue
