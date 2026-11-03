@@ -565,6 +565,8 @@ The generic native executor dispatches `requirements.root`,
 `requirements.ownedStorage` and `loopbackHost`, never application names.
 Owned storage is restricted to an exclusive disposable Linux Docker runner:
 it places `/nix`, Docker and containerd data on its owned Btrfs loop image.
+This keeps Nix outputs, image archives and unpacked image layers in one
+storage pool. `requirements.root` independently controls the app's user.
 Setup refuses an existing image (including dangling symlinks), `/nix`, daemon
 storage symlinks and existing target mounts. Cleanup validates the recorded
 image UUID and exact FSROOT of every mount before stopping Docker/containerd,

@@ -309,7 +309,10 @@ let
             "kubernetes-api-result.json"
           ];
           timeoutSeconds = 7200;
-          requirements.docker = true;
+          requirements = {
+            docker = true;
+            ownedStorage = true;
+          };
           cleanupPrefix = "homelab-api-";
         }
       ];
