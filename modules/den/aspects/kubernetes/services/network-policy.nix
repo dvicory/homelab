@@ -110,16 +110,16 @@
                   containers = [
                     {
                       inherit name;
-                      image = "registry.k8s.io/networking/kube-network-policies:v1.1.2@sha256:c671f98e444825d57c590c92da1b5e66070917c4d3dff1f9279775e6b73254fe";
+                      image = "registry.k8s.io/networking/kube-network-policies:v1.1.3@sha256:d9350ce205a63ba85c67795191304cef0318d084422ca44da49c4655eeba300d";
                       args = [
                         "/bin/netpol"
                         "--hostname-override=$(NODE_NAME)"
                         "--fail-open=false"
                         "--nfqueue-id=98"
                         "--metrics-bind-address=:${toString metricsPort}"
-                        # Verbosity 2 logs every new connection's verdict.
-                        # Raise it only while investigating a denial; the
-                        # packet_count metric counts verdicts at any level.
+                        # Keep per-connection verdict logging off normally;
+                        # use --log-verdicts=all to investigate a refusal.
+                        "--log-verdicts=none"
                         "--v=0"
                       ];
                       env = [

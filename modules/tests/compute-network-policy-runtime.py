@@ -546,7 +546,7 @@ def migrate(lib, guest: Guest, args) -> None:
     WMEM.write_text(str(KERNEL_DEFAULT))
 
 
-def capture_enforcer_failure(guest: Guest, label: str) -> None:
+def capture_enforcer_failure(guest: Guest, label: str) -> dict | None:
     try:
         snapshot = json.loads(guest.kubectl(
             "get", "daemonsets,pods", "-l", f"app.kubernetes.io/name={ENFORCER[1]}",
@@ -558,25 +558,28 @@ def capture_enforcer_failure(guest: Guest, label: str) -> None:
                 "ownerReferences", "deletionTimestamp")},
             "status": item.get("status", {}),
         } for item in snapshot["items"]])
-        pod = next(item["metadata"]["name"] for item in snapshot["items"] if item["kind"] == "Pod")
+        pod = next(item for item in snapshot["items"] if item["kind"] == "Pod")
     except Exception as error:
         observe(f"{label}.enforcer.capture", {"error": type(error).__name__, "detail": str(error)[:400]})
     else:
         for previous in (False, True):
-            log = {"pod": pod, "previous": previous}
+            log = {"pod": pod["metadata"]["name"], "previous": previous}
             try:
                 log["text"] = guest.kubectl(
-                    "logs", pod, "-c", ENFORCER[1], "--tail=100", "--limit-bytes=16384",
+                    "logs", pod["metadata"]["name"], "-c", ENFORCER[1], "--timestamps=true",
+                    "--tail=100" if previous else "--tail=-1",
+                    "--limit-bytes=16384" if previous else "--limit-bytes=65536",
                     f"--previous={str(previous).lower()}", "--request-timeout=10s",
                     namespace=ENFORCER[0], timeout=15)
             except Exception as error:
                 log.update(error=type(error).__name__, detail=str(error)[:400])
             observe(f"{label}.enforcer.log." + str(previous).lower(), log)
+        return pod
 
 
 def capture_enforce_failure(guest: Guest, label: str) -> None:
     """Read live failure state without another traffic probe or table replay."""
-    capture_enforcer_failure(guest, label)
+    pod = capture_enforcer_failure(guest, label)
 
     def capture(name: str, *command: str, limit: int = 16384) -> None:
         try:
@@ -590,6 +593,44 @@ def capture_enforce_failure(guest: Guest, label: str) -> None:
             })
         except Exception as error:
             observe(f"{label}.failure.{name}", {"error": type(error).__name__, "detail": str(error)[:400]})
+
+    # CRI supplies the PID in the guest's procfs, not the fixture host's PID.
+    # Queue port IDs are netlink port IDs: correlate them with socket inodes
+    # and this exact container's fd links rather than assuming port == PID.
+    try:
+        status = next(s for s in pod["status"]["containerStatuses"] if s["name"] == ENFORCER[1])
+        container_id = status["containerID"].removeprefix("containerd://")
+        result = guest.lib.completed(
+            "incus", "--force-local", "--project", guest.project, "exec", guest.instance,
+            "--mode=non-interactive", "--", "k3s", "crictl", "inspect", container_id, timeout=15)
+        if result.returncode:
+            raise RuntimeError(f"crictl inspect exited {result.returncode}: {result.stderr[:400]}")
+        container = json.loads(result.stdout)
+        pid = int(container["info"]["pid"])
+        if pid <= 1 or container["status"]["id"] != container_id:
+            raise ValueError("CRI did not identify the requested running enforcer")
+        observe(f"{label}.failure.enforcer_process", {
+            "container_id": container_id, "pid": pid,
+            "status": {key: container["status"].get(key) for key in ("id", "state", "createdAt", "startedAt", "finishedAt")},
+        })
+        capture("netfilter", "sh", "-c",
+                'date -u +%Y-%m-%dT%H:%M:%SZ; '
+                'for p in 1 $$ "$1"; do printf "process=%s\\n" "$p"; '
+                'for ns in net pid; do printf "%s " "$ns"; readlink "/proc/$p/ns/$ns"; done; done; '
+                'for file in stat cmdline; do printf "\\n%s\\n" "$file"; '
+                'cat "/proc/$1/$file"; done; '
+                'for table in /proc/net/netfilter/nfnetlink_queue '
+                '"/proc/$1/net/netfilter/nfnetlink_queue"; do '
+                'printf "\\n%s\\n" "$table"; cat "$table"; done; '
+                'for table in /proc/net/netlink "/proc/$1/net/netlink"; do printf "\\n%s\\n" "$table"; '
+                'while read -r socket protocol rest; do case "$protocol" in Eth|12) '
+                'printf "%s %s %s\\n" "$socket" "$protocol" "$rest";; esac; done < "$table"; done; '
+                'for fd in /proc/"$1"/fd/*; do target=$(readlink "$fd"); '
+                'case "$target" in socket:*) printf "%s %s\\n" "$fd" "$target";; esac; done; '
+                'printf "final_stat\\n"; cat "/proc/$1/stat"; date -u +%Y-%m-%dT%H:%M:%SZ',
+                "enforcer-netfilter", str(pid), limit=32768)
+    except Exception as error:
+        observe(f"{label}.failure.enforcer_process", {"error": type(error).__name__, "detail": str(error)[:400]})
 
     observe(f"{label}.failure.selection", {
         "selected": guest.plan["selected"], "filler": guest.plan["filler"], "probes": guest.plan["probes"],
