@@ -6,47 +6,18 @@ data:
         {
           "node": "compute-1",
           "paths": [
-            "/srv/state/kubernetes-volumes"
+            "/srv/retained/state"
           ]
         }
       ]
     }
-  helperPod.yaml: |-
-    apiVersion: v1
-    kind: Pod
-    metadata:
-      name: helper-pod
-      namespace: local-path-storage
-      labels:
-        app.kubernetes.io/name: local-path-provisioner
-        helm.sh/chart: local-path-provisioner-0.0.34
-        app.kubernetes.io/instance: local-path-provisioner
-        app.kubernetes.io/version: "v0.0.34"
-        app.kubernetes.io/managed-by: Helm
-    spec:
-      priorityClassName: system-node-critical
-      tolerations:
-        - key: node.kubernetes.io/disk-pressure
-          operator: Exists
-          effect: NoSchedule
-      containers:
-        - name: helper-pod
-          image: busybox:1.37.0@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
-          imagePullPolicy: IfNotPresent
-          resources:
-            limits:
-              cpu: 100m
-              memory: 64Mi
-            requests:
-              cpu: 10m
-              memory: 16Mi
+  helperPod.yaml: '{"apiVersion":"v1","kind":"Pod","metadata":{"name":"helper-pod"},"spec":{"automountServiceAccountToken":false,"containers":[{"image":"busybox:1.37.0@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0","imagePullPolicy":"IfNotPresent","name":"helper-pod","resources":{"limits":{"cpu":"100m","memory":"64Mi"},"requests":{"cpu":"10m","memory":"16Mi"}},"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true},"volumeMounts":[{"mountPath":"/retained","name":"data","readOnly":true}]}]}}'
   setup: |-
     set -eu
-    umask 077
-    mkdir -m 0700 -p "$VOL_DIR"
+    test -d "$VOL_DIR"
   teardown: |-
     set -eu
-    rm -rf "$VOL_DIR"
+    printf 'Retaining %s; deletion requires an explicit operator action.\n' "$VOL_DIR"
 kind: ConfigMap
 metadata:
   labels:

@@ -82,7 +82,6 @@ in
           podSelector.matchLabels = cluster.routes.grafana.backendPodSelector;
         };
         retained = computeResources.retainedPaths.monitoring-metrics;
-        stateMarker = "${computeResources.stateRoot.guestPath}/${computeResources.stateRoot.marker}";
         serviceAddress = name: port: "${name}.${namespace}.svc:${toString port}";
         nodeAddress = host.guestAddress;
         nodeSelector."kubernetes.io/hostname" = computeResources.instance;
@@ -488,6 +487,8 @@ in
                 };
                 persistence = {
                   # Only consume the retained claim; the chart creates no storage.
+                  # The mandatory native runtime validates the actual publication
+                  # at every start; an app-specific marker file adds no identity proof.
                   storage = {
                     type = "persistentVolumeClaim";
                     existingClaim = "monitoring-metrics";
@@ -500,18 +501,6 @@ in
                     globalMounts = [
                       {
                         path = "/etc/victoriametrics";
-                        readOnly = true;
-                      }
-                    ];
-                  };
-                  # A missing marker must fail startup, never create substitute storage.
-                  state-marker = {
-                    type = "hostPath";
-                    hostPath = stateMarker;
-                    hostPathType = "File";
-                    globalMounts = [
-                      {
-                        path = "/run/homelab-state-root";
                         readOnly = true;
                       }
                     ];

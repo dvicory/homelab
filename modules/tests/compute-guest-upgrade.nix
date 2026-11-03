@@ -64,8 +64,42 @@
           (import ../den/aspects/services/kubernetes-runtime-secrets.nix {
             inherit den inputs lib;
           }).den.aspects.services."kubernetes-runtime-secrets".nixos;
+        previousEvaluation = computeAspect {
+          host = previousHost;
+          config = hostConfig;
+          utils = import (pkgs.path + "/nixos/lib/utils.nix") {
+            config = hostConfig;
+            inherit lib pkgs;
+          };
+          inherit lib pkgs;
+        };
+        fixtureRootPath =
+          (builtins.fromJSON previousEvaluation.environment.etc."homelab/retained-root.json".text).root.path;
         computeGuest = pkgs.callPackage (inputs.self + "/pkgs/by-name/compute-runtime/package.nix") { };
-        guestBundle = guest.config.system.build.computeBundle;
+        fixtureSource = {
+          fsType = "tmpfs";
+          name = "compute-upgrade-retained";
+          root = "/";
+        };
+        nodeText = guest.config.environment.etc."homelab/retained-node.json".text;
+        node = builtins.fromJSON (builtins.unsafeDiscardStringContext nodeText);
+        guestBundle =
+          (guest.extendModules {
+            modules = [
+              {
+                environment.etc."homelab/retained-node.json".text = lib.mkForce (
+                  builtins.appendContext (builtins.toJSON (
+                    node
+                    // {
+                      root = node.root // {
+                        source = fixtureSource;
+                      };
+                    }
+                  )) (builtins.getContext nodeText)
+                );
+              }
+            ];
+          }).config.system.build.computeBundle;
         descriptor = builtins.fromJSON hostConfig.environment.etc."homelab/compute.json".text;
         poolPath = descriptor.poolPath;
         scenario = ./compute-guest-upgrade.py;
@@ -90,12 +124,18 @@
               config,
               lib,
               pkgs,
+              utils,
               ...
             }:
             let
               before = computeAspect {
                 host = previousHost;
-                inherit config lib pkgs;
+                inherit
+                  config
+                  lib
+                  pkgs
+                  utils
+                  ;
               };
               beforeSecrets = secretsAspect {
                 host = previousHost;
@@ -103,7 +143,12 @@
               };
               reproduced = computeAspect {
                 host = hostEntity;
-                inherit config lib pkgs;
+                inherit
+                  config
+                  lib
+                  pkgs
+                  utils
+                  ;
               };
               stageUnit = hostConfig.systemd.services.compute-stage-secrets;
             in
@@ -122,9 +167,25 @@
                     == hostConfig.environment.etc."homelab/compute.json".text;
                   message = "compute aspect re-evaluation does not reproduce the host descriptor";
                 }
+                {
+                  assertion =
+                    (builtins.fromJSON before.environment.etc."homelab/retained-root.json".text).root.source
+                    == fixtureSource;
+                  message = "upgrade fixture must declare its exact retained backing mount root";
+                }
               ];
 
               virtualisation = {
+                fileSystems.${fixtureRootPath} = {
+                  device = fixtureSource.name;
+                  fsType = fixtureSource.fsType;
+                  options = [
+                    "size=16M"
+                    "mode=0755"
+                    "uid=${toString current.idmapBase}"
+                    "gid=${toString current.idmapBase}"
+                  ];
+                };
                 cores = 4;
                 memorySize = 5120;
                 diskSize = 65536;
@@ -158,6 +219,12 @@
 
               # The earlier declaration, verbatim from the aspect.
               environment.etc."homelab/compute.json" = before.environment.etc."homelab/compute.json";
+              environment.etc."homelab/retained-root.json" = before.environment.etc."homelab/retained-root.json";
+              systemd.services.compute-retained-parent = before.systemd.services.compute-retained-parent;
+              systemd.services.compute-retained-export = before.systemd.services.compute-retained-export;
+              systemd.services.incus = {
+                inherit (before.systemd.services.incus) requires after;
+              };
               users.users.root.subGidRanges = before.users.users.root.subGidRanges;
               systemd.services.incus-preseed.serviceConfig.ExecStart =
                 before.systemd.services.incus-preseed.serviceConfig.ExecStart;
@@ -266,12 +333,7 @@
       {
         legacyPackages.compute-guest-upgrade-test = test // {
           inherit guestBundle;
-          previousDescriptor =
-            (computeAspect {
-              host = previousHost;
-              config = hostConfig;
-              inherit lib pkgs;
-            }).environment.etc."homelab/compute.json".text;
+          previousDescriptor = previousEvaluation.environment.etc."homelab/compute.json".text;
         };
         checks.compute-guest-upgrade = test // {
           meta = test.meta // {

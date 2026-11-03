@@ -101,9 +101,10 @@ checks.update({
         volumes["storage"].get("persistentVolumeClaim", {}).get("claimName") == "monitoring-metrics"
         and pv.get("local", {}).get("path") == inputs["metricsPath"]
         and pv["storageClassName"] == ""
-        and find(retained, "PersistentVolumeClaim", "monitoring-metrics")["spec"]["volumeName"] == "monitoring-metrics",
-    "VictoriaMetrics can start without the persistent state root's marker":
-        volumes["state-marker"].get("hostPath") == {"path": inputs["markerPath"], "type": "File"},
+        and find(retained, "PersistentVolumeClaim", "monitoring-metrics")["spec"]["volumeName"] == "monitoring-metrics"
+        and any(mount["name"] == "storage" and mount["mountPath"] == "/storage"
+                and not mount.get("readOnly", False) and not mount.get("subPath") and not mount.get("subPathExpr")
+                for mount in vm_container["volumeMounts"]),
     "a monitoring volume creates its host path":
         all(v.get("hostPath", {}).get("type") != "DirectoryOrCreate" for spec in pod_specs for v in spec.get("volumes", [])),
     "a monitoring container has no CPU or memory limit, or the total exceeds 3 CPU and 3.5Gi":

@@ -66,9 +66,6 @@ spec:
             - mountPath: /etc/victoriametrics
               name: scrape
               readOnly: true
-            - mountPath: /run/homelab-state-root
-              name: state-marker
-              readOnly: true
             - mountPath: /storage
               name: storage
       dnsPolicy: ClusterFirst
@@ -90,10 +87,6 @@ spec:
             defaultMode: 420
             name: victoriametrics-scrape
           name: scrape
-        - hostPath:
-            path: /srv/state/.homelab-state-root
-            type: File
-          name: state-marker
         - name: storage
           persistentVolumeClaim:
             claimName: monitoring-metrics

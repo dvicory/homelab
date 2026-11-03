@@ -123,10 +123,11 @@ in
            k -n ${namespace} logs deployment/alertmanager
            ```
 
-        3. For `ContainerCreating`, describe the affected Pod. VictoriaMetrics
-           deliberately waits if `${metrics.guestPath}` or the state-root marker
-           is missing. Restore the real retained mount; never create a substitute
-           directory or marker to force the Pod through.
+        3. For `ContainerCreating`, describe the affected Pod. The default native
+           runtime refuses every retained init/app start, including cached
+           restarts, if the root or entry is missing, replaced or on the wrong
+           backing. Follow [the unavailable-source recovery procedure](../operations.md#restore-an-unavailable-source);
+           never create a substitute directory or marker to force the Pod through.
         4. Check VictoriaMetrics' `vm_storage_is_read_only` metric and free space.
            Read-only storage stops ingestion and therefore stops the heartbeat.
            Use [metrics storage](#metrics-storage) below rather than restarting
@@ -154,7 +155,7 @@ in
         | `MonitoringStorageLow` | Inspect actual pool free space and other retained writers; use the alert's severity and current threshold. Recover space before the store's read-only boundary. |
         | `HostFilesystemLowSpace` | Inspect the named host filesystem and backing pool, not only the metrics directory. |
         | `vm_storage_is_read_only = 1` | Recover real free space. Ingestion resumes when the store can write; verify fresh samples and heartbeat pings afterwards. |
-        | Missing retained mount or marker | Restore the genuine state root first. Do not point VictoriaMetrics at guest-root storage. |
+        | Missing or wrong retained mount/identity | Follow [restore an unavailable source](../operations.md#restore-an-unavailable-source). Do not point VictoriaMetrics at guest-root storage. |
 
         Read current thresholds and durations in the firing alert and effective
         VictoriaMetrics configuration rather than treating a runbook table as a
@@ -162,11 +163,11 @@ in
         database merely to clear an alert. Investigate the writer and backing
         filesystem first.
 
-        Incus mount propagation is one-way. After restoring a host source, verify
-        host and guest mounts, wait for `retained-storage` to be Healthy, and
-        recreate affected Pods to refresh child mounts. See the generated
-        [retained-state guidance](../operations.md#retained-state). A directory's
-        existence alone does not prove that its intended filesystem is mounted.
+        Incus mount propagation is one-way. Keep an unavailable source absent
+        while retiring affected Pods and their old publications, before
+        reattachment. Follow [restore an unavailable source](../operations.md#restore-an-unavailable-source)
+        for the authoritative host-root validation, publication and recovery
+        order. Argo health and directory existence do not prove retained identity.
 
         ## Credentials and rotation
 

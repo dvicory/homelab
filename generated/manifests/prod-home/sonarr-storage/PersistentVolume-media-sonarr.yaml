@@ -13,7 +13,7 @@ spec:
     name: media-sonarr
     namespace: media
   local:
-    path: /srv/state/sonarr
+    path: /srv/retained/state/sonarr
   nodeAffinity:
     required:
       nodeSelectorTerms:

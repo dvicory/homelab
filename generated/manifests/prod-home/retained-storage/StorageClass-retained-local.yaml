@@ -11,6 +11,9 @@ metadata:
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
     defaultVolumeType: local
   name: retained-local
+parameters:
+  allowUnsafePathPattern: "true"
+  pathPattern: '{{ .PVC.Namespace }}.{{ .PVC.Name }}'
 provisioner: rancher.io/local-path
 reclaimPolicy: Retain
 volumeBindingMode: WaitForFirstConsumer

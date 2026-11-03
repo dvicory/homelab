@@ -438,6 +438,8 @@ def create_guest(lib, args, workspace: Path):
         lib.run("mount", "--bind", str(backing), str(target))
         os.chown(target, entry["uid"], entry["gid"])
         os.chmod(target, int(entry["mode"], 8))
+        if entry.get("readOnly"):
+            lib.run("mount", "-o", "remount,bind,ro", str(target))
     public_key = lib.stage_identity(descriptor, Path(descriptor["identityPath"]))
     spec = workspace / "compute.json"
     spec.write_text(json.dumps(dict(descriptor, publicKey=public_key), indent=2) + "\n")

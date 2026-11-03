@@ -153,6 +153,8 @@ def run_scenario(args) -> None:
     check = lib.check
     old = json.loads(Path("/etc/homelab/compute.json").read_text())
     new = json.loads((args.upgraded / "etc/homelab/compute.json").read_text())
+    identity_path = old["retainedPaths"]["identity-kanidm"]["guestPath"]
+    retained_files = [identity_path, identity_path + "/sentinel"]
     check("media" not in old["devices"] and "media" in new["devices"], "fixture boots the pre-capability declaration")
     old_memory, new_memory = (memory_bytes(spec["config"]["limits.memory"]) for spec in (old, new))
     check(old_memory != new_memory, "the earlier declaration has a different memory limit for activation to apply")
@@ -174,12 +176,19 @@ def run_scenario(args) -> None:
     # disposable backing directory with the declared owner and mode.
     for entry in old["requiredPaths"]:
         target = Path(entry["path"])
+        if entry["path"] == old["devices"]["state"]["source"]:
+            # The real parent service supplies the shared, read-only envelope.
+            continue
         backing = workspace / "persist" / str(target).lstrip("/")
         backing.mkdir(parents=True)
         target.mkdir(parents=True, exist_ok=True)
         lib.run("mount", "--bind", str(backing), str(target))
         os.chown(target, entry["uid"], entry["gid"])
         os.chmod(target, int(entry["mode"], 8))
+    root_spec = json.loads(Path("/etc/homelab/retained-root.json").read_text())
+    lib.run("retained-directories", "adopt", "--spec", "/etc/homelab/retained-root.json",
+            "--root", "--confirm", root_spec["root"]["id"])
+    lib.run("systemctl", "restart", "compute-retained-export.service")
     public_key = lib.stage_identity(old, Path(old["identityPath"]))
     specs = {}
     for label, value in (("old", old), ("new", new)):
@@ -223,14 +232,20 @@ def run_scenario(args) -> None:
         observe("before.guest_gid_map", runtime.guest("cat", "/proc/self/gid_map"))
         check(rows(volatile(lib, project, name)["volatile.idmap.current"]) == declared_rows(old),
               "pre-capability guest runs the contiguous ID map")
-        # Retained state as the guest's own directory Job would leave it.
-        runtime.guest("sh", "-ec", """
-            install -d -o 1000 -g 1000 -m 0700 /srv/state/identity-kanidm
-            install -d -o 0 -g 0 -m 0700 /srv/state/kubernetes-volumes
-            printf 'kanidm-db\\n' > /srv/state/identity-kanidm/sentinel
-            chown 1000:1000 /srv/state/identity-kanidm/sentinel
-            chmod 0600 /srv/state/identity-kanidm/sentinel
-            printf 'volume\\n' > /srv/state/kubernetes-volumes/sentinel
+        node = json.loads(runtime.guest("cat", "/etc/homelab/retained-node.json"))
+        entries = {
+            key: {field: old["retainedPaths"][key][field] for field in ("id", "uid", "gid", "mode")}
+            for key in ("identity-kanidm",)
+        }
+        cli_spec = json.dumps({"version": 1, "root": node["root"], "entries": entries})
+        for key, entry in entries.items():
+            runtime.guest("sh", "-ec", "printf '%s' " + shlex.quote(cli_spec) + " | "
+                          + shlex.quote(node["helper"]) + " provision --spec - --entry "
+                          + shlex.quote(key) + " --confirm " + shlex.quote(entry["id"]))
+        runtime.guest("sh", "-ec", f"""
+            printf 'kanidm-db\\n' > {shlex.quote(identity_path + "/sentinel")}
+            chown 1000:1000 {shlex.quote(identity_path + "/sentinel")}
+            chmod 0600 {shlex.quote(identity_path + "/sentinel")}
             mkdir -p /var/lib/upgrade-sentinel
             printf 'guest-root\\n' > /var/lib/upgrade-sentinel/root-owned
             printf 'media-group\\n' > /var/lib/upgrade-sentinel/media-owned
@@ -402,15 +417,13 @@ def run_scenario(args) -> None:
         k3s_pid = runtime.guest("systemctl", "show", "--value", "-p", "MainPID", "k3s")
         groups = [line.split()[1:] for line in runtime.guest("cat", f"/proc/{k3s_pid}/status").splitlines() if line.startswith("Groups:")]
         check(bool(groups) and "505" in groups[0], "K3s holds the media group under the current map")
-        retained = runtime.guest("sh", "-c", "stat -c '%n %u:%g %a' /srv/state/identity-kanidm /srv/state/identity-kanidm/sentinel /srv/state/kubernetes-volumes /srv/state/kubernetes-volumes/sentinel")
+        retained = runtime.guest("stat", "-c", "%n %u:%g %a", *retained_files)
         observe("restarted.retained_in_guest", retained.splitlines())
         check(retained.splitlines() == [
-            "/srv/state/identity-kanidm 1000:1000 700",
-            "/srv/state/identity-kanidm/sentinel 1000:1000 600",
-            "/srv/state/kubernetes-volumes 0:0 700",
-            "/srv/state/kubernetes-volumes/sentinel 0:0 644",
+            f"{identity_path} 1000:1000 700",
+            f"{identity_path}/sentinel 1000:1000 600",
         ], "retained state keeps its guest ownership")
-        check(runtime.guest("cat", "/srv/state/identity-kanidm/sentinel") == "kanidm-db", "retained identity data survives")
+        check(runtime.guest("cat", identity_path + "/sentinel") == "kanidm-db", "retained identity data survives")
         check(runtime.guest("cat", "/var/lib/upgrade-sentinel/root-owned") == "guest-root", "guest root data survives the restart")
         observe("restarted.media_owned_root_file", runtime.guest("stat", "-c", "%u:%g", "/var/lib/upgrade-sentinel/media-owned"))
         stage = lib.completed("systemctl", "restart", "compute-stage-secrets.service", timeout=300)
@@ -456,7 +469,7 @@ def run_scenario(args) -> None:
         observe("replaced.volatile", state)
         check(state["volatile.uuid"] != old_uuid, "replacement has a fresh instance")
         check(rows(state["volatile.idmap.current"]) == declared_rows(new), "replacement runs the current map")
-        check(runtime.guest("sh", "-c", "stat -c '%n %u:%g %a' /srv/state/identity-kanidm /srv/state/identity-kanidm/sentinel /srv/state/kubernetes-volumes /srv/state/kubernetes-volumes/sentinel").splitlines()
+        check(runtime.guest("stat", "-c", "%n %u:%g %a", *retained_files).splitlines()
               == retained.splitlines(), "replacement keeps retained ownership")
         check(guest_exec(lib, project, name, "test", "-e", "/var/lib/upgrade-sentinel/root-owned").returncode != 0,
               "replacement discards the old guest root, as designed")

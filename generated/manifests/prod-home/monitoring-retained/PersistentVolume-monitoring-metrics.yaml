@@ -13,7 +13,7 @@ spec:
     name: monitoring-metrics
     namespace: monitoring
   local:
-    path: /srv/state/monitoring-metrics
+    path: /srv/retained/state/monitoring-metrics
   nodeAffinity:
     required:
       nodeSelectorTerms:

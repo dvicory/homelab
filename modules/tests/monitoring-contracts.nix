@@ -50,7 +50,6 @@ in
           metricsOwner = {
             inherit (compute.retainedPaths.monitoring-metrics) uid gid;
           };
-          markerPath = "${compute.stateGuestPath}/${compute.stateMarker}";
         }
       );
     in

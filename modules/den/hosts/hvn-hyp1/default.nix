@@ -20,7 +20,8 @@ in
       core.nix.gc.enable = false;
       virtualization.compute = rec {
         stateRoot = "/var/lib/homelab/compute-1/state";
-        stateGuestPath = "/srv/state";
+        stateGuestPath = "/srv/retained/state";
+        stateIdentity = "hvn-hyp1/compute-1/retained-v1";
         address = "10.210.0.10";
         pool = "incus-compute";
         network = "incus-compute";
