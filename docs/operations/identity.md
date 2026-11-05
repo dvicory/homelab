@@ -195,6 +195,20 @@ This is a credential migration, not a Jellyfin account migration.
 POSIX accounts enter Kanidm's anonymous directory view; private LDAPS does
 not make the corresponding anonymous HTTPS Unix-account attributes private.
 
+## Server configuration changes
+
+Changes to the declared nonsecret `server.toml` change Kanidm's Pod template.
+The single-replica Deployment uses `Recreate`: it stops the old Pod before
+starting its replacement against the retained database, briefly interrupting
+identity service and dependent sign-ins. The replacement mounts the updated
+configuration; syncing unchanged configuration does not cause another
+configuration rollout. Keep the identity-independent recovery path available.
+
+The rendered identity contract checks changed configuration/template output
+and unchanged-configuration stability; it does not prove a live Pod rollout or
+replacement-file consumption. This mechanism does not cover TLS Secret renewal
+or prove certificate reload behavior.
+
 ## Upgrade
 
 Run `kanidmd domain upgrade-check` and take a restorable backup before

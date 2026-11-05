@@ -569,7 +569,10 @@
                 strategy.type = "Recreate";
                 selector.matchLabels = labels;
                 template = {
-                  metadata.labels = labels;
+                  metadata = {
+                    inherit labels;
+                    annotations."homelab.danielvicory/config-sha256" = builtins.hashString "sha256" serverConfig;
+                  };
                   spec = {
                     automountServiceAccountToken = false;
                     nodeSelector."kubernetes.io/hostname" = computeResources.instance;

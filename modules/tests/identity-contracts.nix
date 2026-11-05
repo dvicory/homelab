@@ -9,7 +9,7 @@ let
   compute =
     config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
   computeResources = config.flake.clusterResources.prod-home // {
-    inherit (compute) instance;
+    inherit (compute) instance retainedPaths;
   };
   identity =
     (import ../den/aspects/kubernetes/services/identity.nix {
@@ -135,6 +135,15 @@ let
   kanidmDeployment = findObject normalObjects "Deployment" namespace "kanidm";
   kanidmService = findObject normalObjects "Service" namespace "kanidm";
   serverConfig = (findObject normalObjects "ConfigMap" namespace "kanidm-config").data."server.toml";
+  mountedServerConfig =
+    objects:
+    let
+      pod = (findObject objects "Deployment" namespace "kanidm").spec.template.spec;
+      container = lib.findFirst (container: container.name == "kanidm") null pod.containers;
+      mount = lib.findFirst (mount: lib.elem mount.mountPath container.args) null container.volumeMounts;
+      volume = lib.findFirst (volume: volume.name == mount.name) null pod.volumes;
+    in
+    (findObject objects "ConfigMap" namespace volume.configMap.name).data.${mount.subPath};
   # NetworkPolicies are additive, regardless of name or application owner.
   admissionObjects =
     identityRendered: gatewayRendered:
@@ -256,6 +265,52 @@ let
       ) rule.verbs
     ) role.rules;
   failures = lib.filterAttrs (_: value: !value) {
+    # Change only the server's hostname input, not its image, command, ports,
+    # storage, placement or security. Follow the mounted file, not a hash format.
+    server-config-rollout =
+      lib.all
+        (
+          phase:
+          let
+            inventory = withPhase phase;
+            baseline = renderIdentity inventory;
+            changed = renderIdentity (
+              lib.recursiveUpdate inventory {
+                routes.idm = {
+                  hostnames = [ "config-rollout.example.test" ];
+                  backendHostname = "config-rollout.example.test";
+                };
+              }
+            );
+            unchanged = renderIdentity (
+              lib.recursiveUpdate inventory {
+                routes.idm.displayName = "Same server configuration";
+              }
+            );
+            baselineObjects = baseline.applications.identity.objects;
+            changedObjects = changed.applications.identity.objects;
+            unchangedObjects = unchanged.applications.identity.objects;
+            deploymentFor = objects: findObject objects "Deployment" namespace "kanidm";
+            baselineSpec = (deploymentFor baselineObjects).spec;
+            changedSpec = (deploymentFor changedObjects).spec;
+          in
+          mountedServerConfig baselineObjects != mountedServerConfig changedObjects
+          && baselineSpec.template != changedSpec.template
+          && baselineSpec.template.spec == changedSpec.template.spec
+          && baselineSpec.template.metadata.labels == changedSpec.template.metadata.labels
+          &&
+            builtins.removeAttrs baselineSpec [ "template" ] == builtins.removeAttrs changedSpec [ "template" ]
+          && baselineSpec.replicas == 1
+          && baselineSpec.strategy.type == "Recreate"
+          && baseline.applications.identity-retained == changed.applications.identity-retained
+          && mountedServerConfig baselineObjects == mountedServerConfig unchangedObjects
+          && baselineSpec.template == (deploymentFor unchangedObjects).spec.template
+        )
+        [
+          "initial"
+          "provisioning"
+          "normal"
+        ];
     # Kanidm serves LDAPS on the declared directory port, on its Service.
     directory-listens =
       lib.hasInfix ''ldapbindaddress = "0.0.0.0:${toString directory.port}"'' serverConfig
