@@ -244,6 +244,12 @@ jobs:
         with:
           persist-credentials: false
 
+      # Temporary B3 diagnostics: scoped dispatch only, never a full CI receipt.
+      - name: Observe storage before allocation
+        if: github.event_name == 'workflow_dispatch' && inputs.check == 'prod-home-consumer-resilience' && inputs.system == 'x86_64-linux' && matrix.check == 'prod-home-consumer-resilience' && matrix.system == 'x86_64-linux'
+        run: |
+          timeout 90s bash .github/ci-storage-snapshot.sh before-allocation || echo 'STORAGE_SNAPSHOT incomplete'
+
       # Put the Nix store on the runner's temporary disk.
       - name: Prepare Nix storage
         if: runner.os == 'Linux'
@@ -320,6 +326,7 @@ jobs:
           SYSTEM: ${{ matrix.system }}
           GROUP: ${{ matrix.group }}
           CHECK: ${{ matrix.check }}
+          STORAGE_DIAGNOSTIC: ${{ github.event_name == 'workflow_dispatch' && inputs.check == 'prod-home-consumer-resilience' && inputs.system == 'x86_64-linux' && matrix.check == 'prod-home-consumer-resilience' && matrix.system == 'x86_64-linux' }}
         run: |
           set -euo pipefail
           if [ -n "$CHECK" ]; then
@@ -350,7 +357,33 @@ jobs:
             '{role: "build", system: $system, group: $group, check: $check, artifact: $artifact[0]}' \
             > "$RUNNER_TEMP/ci-artifact.json"
           drv=$(jq -er .drvPath "$RUNNER_TEMP/artifact.json")
-          nix build -L --out-link "$RUNNER_TEMP/result" --json "${build_args[@]}" "$drv^*" > "$RUNNER_TEMP/build.json"
+          if [ "$STORAGE_DIAGNOSTIC" = true ]; then
+            timeout 90s bash .github/ci-storage-snapshot.sh before-build || echo 'STORAGE_SNAPSHOT incomplete'
+            # Forward the existing stderr stream, observing only its first vda
+            # write-error marker. Do not save or dump VM/application logs.
+            nix build -L --out-link "$RUNNER_TEMP/result" --json "${build_args[@]}" "$drv^*" \
+              2>&1 > "$RUNNER_TEMP/build.json" | (
+                observed=false
+                while IFS= read -r line || [ -n "$line" ]; do
+                  printf '%s\n' "$line" >&2
+                  case "$line" in
+                    *'I/O error, dev vda,'*'(WRITE)'*)
+                      if [ "$observed" = false ]; then
+                        observed=true
+                        timeout 90s bash .github/ci-storage-snapshot.sh first-vda-write-error || echo 'STORAGE_SNAPSHOT incomplete'
+                      fi
+                      ;;
+                  esac
+                done
+              )
+          else
+            nix build -L --out-link "$RUNNER_TEMP/result" --json "${build_args[@]}" "$drv^*" > "$RUNNER_TEMP/build.json"
+          fi
+
+      - name: Observe storage after build
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.check == 'prod-home-consumer-resilience' && inputs.system == 'x86_64-linux' && matrix.check == 'prod-home-consumer-resilience' && matrix.system == 'x86_64-linux'
+        run: |
+          timeout 90s bash .github/ci-storage-snapshot.sh after-build || echo 'STORAGE_SNAPSHOT incomplete'
 
       - name: Upload platform check inventory
         if: always() && matrix.group == 'checks' && matrix.check == ''
