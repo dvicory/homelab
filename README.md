@@ -124,3 +124,7 @@ setup and later application output stay quiet; infrastructure errors do not
 count as expected application refusals.
 
 Native service behavior is the category-integration proof. SABnzbd owns its default `*` category; the local initializer checks must not equate its complete category inventory with the configured Arr instances.
+
+SABnzbd fixture credentials follow the rendered initializer's Secret bindings,
+not its Python source formatting. Contract checks execute the initializer with
+missing and empty credentials and require refusal without writing configuration.

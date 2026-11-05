@@ -642,6 +642,7 @@
                     "path = " + repr(str(config_path)),
                 ).replace("/data", str(data_path))
                 original = os.environ.copy()
+                os.environ.clear()
                 os.environ.update(values)
                 try:
                     exec(compile(translated, "<sabnzbd-init>", "exec"), {"__name__": "__main__"})
@@ -666,6 +667,21 @@
                 config_path = root / "sabnzbd.ini"
                 data_path = root / "data"
                 data_path.mkdir()
+                for key in runtime_values:
+                    for invalid in (None, "", " \n"):
+                        values = dict(runtime_values)
+                        if invalid is None:
+                            del values[key]
+                        else:
+                            values[key] = invalid
+                        try:
+                            run_init(script, config_path, data_path, values)
+                        except (KeyError if invalid is None else ValueError):
+                            pass
+                        else:
+                            raise AssertionError("SABnzbd accepted a missing or empty credential: " + key)
+                        assert not config_path.exists(), "refused credentials wrote SABnzbd configuration"
+
                 initial = ConfigObj(encoding="utf-8")
                 initial["misc"] = {}
                 initial["misc"].update({"custom_misc": "keep-misc", "host": "old-host"})

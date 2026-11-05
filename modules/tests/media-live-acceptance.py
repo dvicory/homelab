@@ -14,7 +14,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import secrets
 import shutil
 import subprocess
@@ -465,7 +464,7 @@ def main():
     previous_cache_root = cache_root.replace(policy_source["templateRevision"], previous_template_revision)
     libraries = json.loads(manifest("jellyfin-configuration", "ConfigMap-jellarr-configuration.yaml")["data"]["config.yml"])["library"]["virtualFolders"]
     keys = {app: secrets.token_hex(32) for app in ("radarr", "sonarr", "prowlarr", "seerr")}
-    sab_init = pods["sabnzbd"]["initContainers"][0]["command"][-1]
+    sab_init = one(pods["sabnzbd"]["initContainers"], "name", "config")
     runtime = {app.upper() + "_API_KEY": value for app, value in keys.items()}
     runtime["SABNZBD_API_KEY"] = secrets.token_hex(32)
     # Each admin app sits behind its Gateway route; its own login is off.
@@ -477,8 +476,8 @@ def main():
         require(manifest("identity-gateway", f"SecurityPolicy-{app}-admin.yaml")["spec"]["targetRefs"][0]["name"] == app,
                 f"{app} route has no Kanidm sign-in policy")
         gateway_hosts[app] = route["hostnames"][0]
-    for name in json.loads(re.search(r"for key in (\[.*?\]):", sab_init).group(1)):
-        runtime.setdefault(name, "synthetic-provider-credential")
+    for item in sab_init["env"]:
+        runtime.setdefault(item["valueFrom"]["secretKeyRef"]["key"], "synthetic-provider-credential")
     network = "homelab-media-live-" + secrets.token_hex(6)
     volume = network + "-fixture"
     source_network = network + "-sources"
@@ -656,8 +655,8 @@ for name in ['seerr-drift-inputs', 'seerr-failure-secrets']:
             api("radarr", "/rootfolder", "POST", {"path": "/data/library/movies-ui"})
 
             def initialize_sab(name):
-                init = pods["sabnzbd"]["initContainers"][0]
-                run(name, apps["sabnzbd"]["image"], *security_options(pods["sabnzbd"], init), *mount("sabnzbd", "/config"), *mount("data", "/data"), "--entrypoint", init["command"][0], argv=tuple(init["command"][1:]), environment=runtime)
+                environment = {item["name"]: runtime[item["valueFrom"]["secretKeyRef"]["key"]] for item in sab_init["env"]}
+                run(name, apps["sabnzbd"]["image"], *security_options(pods["sabnzbd"], sab_init), *mount("sabnzbd", "/config"), *mount("data", "/data"), "--entrypoint", sab_init["command"][0], argv=tuple(sab_init["command"][1:]), environment=environment)
 
             initialize_sab("sab-init")
             start("sabnzbd", 8080)
