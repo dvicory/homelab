@@ -62,7 +62,7 @@
         pkgs.runCommand "media-producer-exit" { nativeBuildInputs = [ python ]; }
           ''
             python - ${./media-live-acceptance.py} <<'PY'
-            import contextlib, io, runpy, subprocess, sys
+            import contextlib, io, re, runpy, subprocess, sys
             acceptance = runpy.run_path(sys.argv[1])
             require_exit = acceptance["require_application_exit"]
             require_exit(0, False, "successful producer")
@@ -130,8 +130,9 @@
                 )
             except acceptance["HTTPError"] as error:
                 label = failure_label(error)
-                assert label.startswith("HTTPError (HTTP 403; media-live-acceptance.py:")
-                assert label.endswith(")") and label.isascii()
+                assert "HTTPError" in label and "HTTP 403" in label
+                assert re.search(r"media-live-acceptance[.]py:[0-9]+(?:,[0-9]+)*", label)
+                assert label.isascii()
                 assert not any(value in label for value in (
                     secret, "credential-bearing-host", "/api", "untrusted-response-body", "http://fixture",
                 ))
@@ -140,9 +141,21 @@
             unsafe = acceptance["HTTPError"](
                 "https://host.invalid/?apikey=" + secret, 401, secret, {"credential": secret}, io.StringIO(secret),
             )
-            assert failure_label(unsafe) == "HTTPError (HTTP 401)"
+            label = failure_label(unsafe)
+            assert "HTTPError" in label and "HTTP 401" in label
+            assert secret not in label and "host.invalid" not in label
             assert failure_label(AssertionError("controlled failure")) == "controlled failure"
             assert failure_label(ValueError(secret)) == "ValueError"
+            for items, field, expected in (([{}], secret, KeyError), (None, "name", TypeError)):
+                try:
+                    acceptance["one"](items, field, secret)
+                except expected as error:
+                    label = failure_label(error)
+                    assert expected.__name__ in label
+                    assert re.search(r"media-live-acceptance[.]py:[0-9]+(?:,[0-9]+)*", label)
+                    assert secret not in label and label.isascii()
+                else:
+                    raise AssertionError("unexpected native-data failure did not reach the diagnostic boundary")
             PY
             touch "$out"
           '';

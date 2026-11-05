@@ -5,7 +5,8 @@ Requires Python/PyYAML, openssl, Docker Engine 26+ (volume-subpath), and an
 explicit local unix Docker socket. Default linux/amd64 matches production;
 Docker Desktop/emulation does not prove the Incus/MergerFS/host storage seam.
 The synthetic HTTPS Secret responder tests bootstrap transport, NOT K8s RBAC.
-Unexpected HTTP failures report only status and fixture source-line numbers.
+Unexpected failures report only their class and fixture source-line numbers,
+plus HTTP status when available; API values and exception arguments stay private.
 """
 import argparse
 import base64
@@ -55,17 +56,17 @@ def require_container_exit(result, failure, name):
 def failure_label(error):
     if isinstance(error, AssertionError):
         return str(error)
+    lines = []
+    trace = error.__traceback__
+    while trace is not None:
+        if trace.tb_frame.f_code.co_filename == __file__ and trace.tb_frame.f_code.co_name != "<module>":
+            lines.append(str(trace.tb_lineno))
+        trace = trace.tb_next
+    location = "media-live-acceptance.py:" + ",".join(lines) if lines else ""
     if isinstance(error, HTTPError):
         status = error.code if type(error.code) is int and 100 <= error.code <= 599 else "unknown"
-        lines = []
-        trace = error.__traceback__
-        while trace is not None:
-            if trace.tb_frame.f_code.co_filename == __file__ and trace.tb_frame.f_code.co_name != "<module>":
-                lines.append(str(trace.tb_lineno))
-            trace = trace.tb_next
-        location = "; media-live-acceptance.py:" + ",".join(lines) if lines else ""
-        return f"HTTPError (HTTP {status}{location})"
-    return type(error).__name__
+        return f"HTTPError (HTTP {status}" + ("; " + location if location else "") + ")"
+    return type(error).__name__ + (" (" + location + ")" if location else "")
 
 
 def command(*args, timeout=60, env=None):
@@ -1215,8 +1216,25 @@ server.serve_forever()
             old_radarr_key, old_sab_key = keys["radarr"], runtime["SABNZBD_API_KEY"]
             old_ids = {app: docker("inspect", "--format", "{{.Id}}", containers[app])
                        for app in ("radarr", "sabnzbd")}
-            sab_before = request(ports["sabnzbd"], "/api?" + urlencode({
-                "mode": "get_config", "output": "json", "apikey": old_sab_key}))["config"]
+            # Empty SAB provider inventories have no registered servers section.
+            # Seed a genuine retained UI-owned provider so preservation is
+            # non-vacuous. Disabled providers never start NNTP connections.
+            request(ports["sabnzbd"], "/api?" + urlencode({
+                "mode": "set_config", "section": "servers", "output": "json",
+                "apikey": old_sab_key, "keyword": "rotation-preserved",
+                "host": "rotation-preserved.invalid", "port": 119,
+                "connections": 1, "enable": 0, "notes": "UI-owned rotation fixture",
+            }))
+            def sab_retained():
+                return {section: request(ports["sabnzbd"], "/api?" + urlencode({
+                    "mode": "get_config", "section": section, "output": "json",
+                    "apikey": runtime["SABNZBD_API_KEY"],
+                }))["config"][section] for section in ("categories", "servers")}
+            sab_before = sab_retained()
+            provider = one(sab_before["servers"], "name", "rotation-preserved")
+            require(provider["host"] == "rotation-preserved.invalid" and provider["enable"] == 0
+                    and provider["notes"] == "UI-owned rotation fixture",
+                    "native retained provider fixture differs or is enabled")
             # Hold actual old-generation helpers inside native API requests.
             # Process-held locks serialize writes but do not fence generations.
             for app in ("radarr", "seerr"):
@@ -1316,9 +1334,8 @@ server.serve_forever()
                     "rotation replaced Prowlarr connection identities")
             require(api("radarr", "/tag/" + str(rotation_tag["id"])) == rotation_tag,
                     "rotation lost retained Arr application data")
-            sab_after = request(ports["sabnzbd"], "/api?" + urlencode({
-                "mode": "get_config", "output": "json", "apikey": runtime["SABNZBD_API_KEY"]}))["config"]
-            require(all(sab_after[name] == sab_before[name] for name in ("categories", "servers")),
+            sab_after = sab_retained()
+            require(sab_after == sab_before,
                     "rotation changed retained SAB categories/providers")
             for app, downloaded in completed_downloads.items():
                 require(docker("exec", containers[app], "/command/s6-setuidgid", "abc",
@@ -1457,7 +1474,7 @@ console.log(queued);''', waiter_pid)
 if __name__ == "__main__":
     try:
         main()
-    except (AssertionError, RuntimeError, OSError, ValueError, KeyError, HTTPError, subprocess.TimeoutExpired) as error:
-        # Never print API URLs, response bodies, exception messages or locals.
+    except Exception as error:
+        # Never print API URLs, response bodies, uncontrolled messages or locals.
         print("media-live-acceptance: " + failure_label(error), file=sys.stderr)
         sys.exit(1)
