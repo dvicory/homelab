@@ -1,126 +1,59 @@
 # homelab
 
-## Local verification
+Declarative NixOS homelab and nix-darwin workstation configuration, organized
+with [Den](https://github.com/denful/den) and flake-parts. The homelab runs
+household identity, media and monitoring services in a managed K3s compute
+guest, with host-owned persistent storage.
 
-Schema, rendered policy and executed Argo health are separate required gates:
+## Find what you need
 
-```sh
-system=$(nix eval --impure --raw --expr builtins.currentSystem)
-nix build --no-link \
-  "path:.#checks.$system.prod-home-manifests-schema" \
-  "path:.#checks.$system.prod-home-manifests-policy" \
-  "path:.#checks.$system.argocd-application-health"
-```
+- **Operate or recover services:** [Household operations](docs/operations.md),
+  [identity](docs/operations/identity.md), [Homarr](docs/operations/homarr.md),
+  [media](docs/operations/media.md), [Jellyfin](docs/operations/jellyfin.md) and
+  [monitoring](docs/operations/monitoring.md).
+- **Understand storage:** [Declared layout](docs/storage.md) and
+  [disk migration](docs/operations/luks-storage-migration.md).
+- **Contribute and verify:** [CI and local checks](CI.md).
+- **Understand decisions and guarantees:** [Architecture decisions](docs/architecture/decisions/)
+  and [current OpenSpec contracts](openspec/specs/).
+  [Active changes](openspec/changes/) are proposals, not current guarantees.
 
-The schema gate validates original canonical YAML against pinned local
-Kubernetes and exact tracked CRD schemas, rejects duplicate keys, and
-accounts for every effective document. Its negative cases reject missing
-schemas, collisions, empty input and skipped validation. Converted CRD
-schemas do not prove CEL admission, all ObjectMeta rules, controller
-behavior or traffic. Kyverno owns rendered repository confinement, ownership,
-retention, lifecycle, authority, identity, Gateway and workload/storage policy.
-The health gate executes Lua from the evaluated production Argo ConfigMap.
+## Where desired state lives
 
-On x86_64 Linux, run the bundled native Gateway admission, runtime-Secret
-ownership, Argo recovery and Gateway traffic/authorization scenarios with a
-local Docker Unix-socket context and a new result filename:
+| Change | Start here |
+| --- | --- |
+| Host hardware, roles or settings | [`modules/den/hosts/`](modules/den/hosts/) |
+| Cluster services, routes or placement | [`modules/den/clusters/`](modules/den/clusters/) |
+| Shared behavior | [`modules/den/aspects/`](modules/den/aspects/) |
+| Entity fields and defaults | [`modules/den/schema/`](modules/den/schema/) |
+| How entities include and contribute to one another | [`modules/den/policies/`](modules/den/policies/) and [`quirks/`](modules/den/quirks/) |
+| Flake outputs and CI selection | [`modules/flake/`](modules/flake/) |
+| Verification behavior | [`modules/tests/`](modules/tests/) |
 
-```sh
-nix run path:.#verify-kubernetes-api -- \
-  --docker-context default --report ./api-result.json
-```
+Keep metadata on Den entities and behavior in aspects. Reuse the existing
+contribution and collection paths rather than adding a parallel registry.
 
-Validate a persisted report through the same fail-closed entry point CI uses:
+## Make a safe change
 
-```sh
-nix run path:.#verify-kubernetes-api -- --check-report ./api-result.json
-```
+1. Read the relevant current contract and runbook. Change the Nix declaration,
+   not a generated copy or a live service's managed settings.
+2. Track new source files with `jj file track <path>` before evaluating the
+   flake. Nix files under `modules/` are imported automatically; underscore-prefixed
+   files are excluded from automatic import.
+3. Regenerate affected documentation or manifests and review the resulting
+   diff. [CI.md](CI.md) explains the files writer; the
+   [deployment runbook](docs/operations.md#deploy-configuration) covers manifests.
+   `flake.nix` is also generated: edit its `flake-file` declarations in modules,
+   then use `nix run .#write-flake`.
+4. Run the relevant checks on a compatible disposable builder using
+   [CI.md](CI.md). Report what executed, not just what evaluated or built.
 
-This creates a pinned disposable K3s fixture with explicit credentials and
-a loopback endpoint. It disables K3s's embedded network-policy controller,
-uses nftables kube-proxy and applies the canonical unprivileged
-`kube-network-policies` enforcer before the scenarios. It then removes its
-containers, volumes and credentials.
-Full acceptance requires the fixed safety-scenario inventory, actual passing
-operations, no skips or mutation/scoping, and successful owned cleanup. The
-`--remove-gateway-tls-cel` and `--argo-mutation` counterfactuals must fail;
-an empty `--test-dir`, `--exclude-test-regex '.*'`, an unmatched `--selector`,
-or a skipped scenario must also fail. Reports contain sanitized progress,
-outcomes and setup/image/scenario/cleanup timings, not kubeconfigs or raw
-assertion errors. A successful scoped experiment is not full acceptance.
-Other frontends require an explicit compatible `--fixture-settings` closure;
-amd64 emulation is not native ARM evidence.
+**Publishing can deploy.** Argo tracks the production branch; see the
+[deployment runbook](docs/operations.md#deploy-configuration) before publishing
+manifest changes. A successful check is not authorization to merge, activate,
+sync or deploy.
 
-Hosted CI joins successful native execution receipts with the required
-schema/policy and genuine host/recovery groups; an omitted group cannot make
-the aggregate pass. An evaluated inventory or built app alone is not execution
-evidence. Unsupported platform rows remain explicit rather than forcing their
-derivations or silently claiming native acceptance.
-
-The native fixture's `/var/run/netns` propagation setup is confined to its
-owned privileged Docker node. It does not change the host's mount propagation
-or establish a production node-startup NetworkPolicy barrier.
-
-The rendered policy accepts identity's configured hostname independently of
-the application base domains and requires its cross-namespace certificate.
-Native Gateway cases verify that certificate in direct and trusted-edge modes.
-The application fixture certificate excludes the identity hostname, so fallback
-certificate selection fails.
-The backend CA negative changes only the owned Kanidm backend TLS volume,
-leaving the frontend identity certificate and its cross-namespace grant intact.
-The separate public-edge VM retains identity-host trust/name transitions,
-cross-edge SNI refusal, queryless logging, upstream TLS recovery and failover.
-
-## Retained host and recovery verification
-
-`runtime-secret-k3s` retains the real host/systemd staging and acknowledgment
-seam. `prod-home-replacement` and `compute-guest-upgrade` retain state-root
-markers, ZFS/FUSE/Incus ID maps, mapped read-only media, credential delivery,
-firewall/device behavior, source loss/return and application state through
-guest replacement. Detailed Argo retirement moved to required native
-scenarios; it no longer runs twice in the broad host scenario.
-
-The replacement fixture's registry uses an explicitly public test-only key
-and fixed certificate validity (2025–2125), with the declared bridge IP as its
-verified name. Deterministic identity keeps a cached guest's embedded CA valid
-when the registry TLS derivation is independently rebuilt. Never use this key
-or certificate outside disposable tests.
-
-The selected `prod-home-registry-failures` process check uses a three-second
-unit cleanup grace with real signals, pidfds and child processes. Bootstrap
-cleanup in the runtime scenarios retains its 30-second production grace.
-
-```sh
-nix build --no-link \
-  .#checks.x86_64-linux.runtime-secret-k3s \
-  .#checks.x86_64-linux.prod-home-replacement \
-  .#checks.x86_64-linux.compute-guest-upgrade \
-  .#checks.x86_64-linux.prepare-luks-storage-runtime
-```
-
-Use a disposable native Linux builder with KVM and the checks' declared
-resources. On a sandboxed builder, launch the upstream `.driver` directly for
-checks declaring `__noChroot`, rather than weakening the host's sandbox. Each
-driver owns its VM, final synchronization and shutdown. Do not run these
-fixtures against production Docker, Incus, mounts or credentials.
-
-Use `python3 modules/tests/compute-network-policy-runtime.py --self-test` for
-portable observer regression checks. The real VM check still exercises traffic,
-migration and recovery; API/exec errors fail rather than count as policy denial.
-On a crash-recovery assertion or enforcement-matrix failure, the disposable
-fixture records enforcer DaemonSet/Pod identities and statuses plus bounded current
-and previous container logs. Both failure paths also capture current Pod addresses,
-backend listeners/logs, nftables sets, NFQUEUE state and effective K3s/proxy state.
-Each query has a deadline and bounded recorded output; these read-only diagnostics
-do not replay tables, retry traffic, extend readiness or observation windows, or
-change acceptance. The original failure is re-raised even if capture fails.
-
-## Media verification
-
-On native x86_64 Linux with Docker Engine 26+, `nix run .#media-live-acceptance -- --docker-host unix:///var/run/docker.sock --platform linux/amd64` runs the full pinned media API suite using packaged manifests/policy inputs and owned disposable Docker volumes, without production mounts or credentials. Hosted CI requires its execution, not merely building the runner; Kubernetes/Incus/recovery evidence remains separate.
-
-Initial Docker fixture failures include bounded, escaped stderr. Successful
-setup and later application output stay quiet; infrastructure errors do not
-count as expected application refusals.
-
-Native service behavior is the category-integration proof. SABnzbd owns its default `*` category; the local initializer checks must not equate its complete category inventory with the configured Arr instances.
+Never use production Docker, Incus, mounts or credentials for test fixtures.
+Keep decrypted secrets out of Git, Nix store outputs, images and logs. Public
+cache signing keys grant trust to executable outputs; do not accept new keys
+or disable signature checks to work around a failed build.
