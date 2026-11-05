@@ -666,6 +666,7 @@ for name in ['seerr-drift-inputs', 'seerr-failure-secrets']:
             daemon_identity(docker, containers["sabnzbd"], "SABnzbd.py", identities["sabnzbd"])
             sab_config = request(ports["sabnzbd"], sab_query)["config"]
             require(sab_config["misc"]["download_dir"] == "/data/downloads/usenet/incomplete" and sab_config["misc"]["complete_dir"] == "/data/downloads/usenet/complete", "SAB native data paths differ")
+            completed_downloads = {}
             for app in ("radarr", "sonarr"):
                 category = policy["arr"][app]["standard"]["category"]
                 actual_dir = one(sab_config["categories"], "name", category)["dir"]
@@ -688,6 +689,7 @@ assert release.stat().st_mode & 0o2000, 'download directory lost setgid'
 assert video.stat().st_mode & 0o7117 == 0, 'download permits world access or execution'
 print(video)
 ''', str(sab_config["misc"]["permissions"]), sab_config["misc"]["complete_dir"], category, str(media_gid))
+                completed_downloads[app] = downloaded
                 require(docker("exec", containers[app], "/command/s6-setuidgid", "abc", "/bin/cat", downloaded) == "shared download payload",
                         f"{app} cannot read SAB's completed download")
             denied(lambda: request(ports["sabnzbd"], "/api?" + urlencode({"mode": "get_config", "output": "json", "apikey": keys["radarr"]})), statuses=(403,))
@@ -1247,8 +1249,9 @@ server.serve_forever()
             denied(lambda: request(ports["sabnzbd"], "/api?" + urlencode({
                 "mode": "get_config", "output": "json", "apikey": old_sab_key})), statuses=(403,))
             # Persisted dependent connections still carry the old generation.
-            stale_client = one(api("sonarr", "/downloadclient"), "name", "SABnzbd (Homelab)")
-            denied(lambda: api("sonarr", "/downloadclient/test", "POST", stale_client), statuses=(400,))
+            for app in ("radarr", "sonarr"):
+                stale_client = one(api(app, "/downloadclient"), "name", "SABnzbd (Homelab)")
+                denied(lambda: api(app, "/downloadclient/test", "POST", stale_client), statuses=(400,))
             stale_application = one(api("prowlarr", "/applications"), "name",
                                     "homelab-" + policy["arr"]["radarr"]["standard"]["name"])
             denied(lambda: api("prowlarr", "/applications/test", "POST", stale_application), statuses=(400,))
@@ -1256,9 +1259,23 @@ server.serve_forever()
             denied(lambda: request(ports["seerr"], "/api/v1/settings/radarr/test",
                                    key=keys["seerr"], method="POST", body=stale_server),
                    statuses=(500,))
+            # An unchanged enabled provider PUT is a native no-op, not a
+            # handshake. Disable the retained clients so the declared enabled
+            # state requires a real transition, tested against SAB on update.
+            for app in ("radarr", "sonarr"):
+                stale_client = one(api(app, "/downloadclient"), "name", "SABnzbd (Homelab)")
+                stale_client["enable"] = False
+                api(app, "/downloadclient/" + str(stale_client["id"]), "PUT", stale_client)
+            refused_state = arr_snapshot()
+            require(all(one(refused_state[app]["/downloadclient"], "name", "SABnzbd (Homelab)")["enable"] is False
+                        for app in ("radarr", "sonarr")), "native clients were not disabled before adoption probe")
             reconcile_configarr(failure=True, overrides={"SABNZBD_API_KEY": old_sab_key}, fetch=False)
-            require(arr_snapshot() == rotation_state, "failed SAB handshake changed visible Arr configuration")
+            require(arr_snapshot() == refused_state, "retired SAB credential enabled or changed retained clients")
+            for app in ("radarr", "sonarr"):
+                refused_client = one(api(app, "/downloadclient"), "name", "SABnzbd (Homelab)")
+                denied(lambda: api(app, "/downloadclient/test", "POST", refused_client), statuses=(400,))
             reconcile_configarr(fetch=False)  # Also repairs Prowlarr applications.
+            require(cache_state() == cold_cache, "rotation changed retained policy repository revisions")
             reconcile_seerr()
             adopted_state = arr_snapshot()
             for app in ("radarr", "sonarr"):
@@ -1278,9 +1295,10 @@ server.serve_forever()
                 "mode": "get_config", "output": "json", "apikey": runtime["SABNZBD_API_KEY"]}))["config"]
             require(all(sab_after[name] == sab_before[name] for name in ("categories", "servers")),
                     "rotation changed retained SAB categories/providers")
-            require(docker("exec", containers["radarr"], "/command/s6-setuidgid", "abc",
-                           "/bin/cat", downloaded) == "shared download payload",
-                    "rotation lost SAB's completed download")
+            for app, downloaded in completed_downloads.items():
+                require(docker("exec", containers[app], "/command/s6-setuidgid", "abc",
+                               "/bin/cat", downloaded) == "shared download payload",
+                        "rotation lost SAB's completed " + app + " download")
             rotated_seerr = verify_seerr()  # Native Arr-backed request selector too.
             require(all(rotated_seerr[app]["id"] == seerr_baseline[app]["id"] for app in rotated_seerr),
                     "rotation replaced Seerr connection identities")

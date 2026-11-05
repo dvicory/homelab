@@ -280,6 +280,11 @@ Seerr hook repairs managed Arr servers only after Configarr. A CLI timeout
 does not terminate an Argo operation: on failure terminate/drain it, suspend
 the CronJobs again and repeat the foreground-deletion fence before rollback.
 
+Hook completion is not a native connection test. Arr accepts an unchanged
+enabled provider update without testing its downstream credentials, and
+disabled providers are not tested on save. Require the explicit handshake
+checks below even when Configarr reports success/no changes.
+
 ### Private native verification
 
 Forward the Services on operator-loopback only in separate terminals.
