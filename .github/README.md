@@ -315,6 +315,20 @@ Gateway prerequisite failures also retain a bounded pre-cleanup witness:
 the pending condition/watch stage, fixed Gateway resources' current and observed
 generations, allowlisted status/reason categories, controller/ancestor matches,
 owned controller/proxy workload readiness, and node address types (not values).
+Node conditions retain the standard MemoryPressure, DiskPressure, PIDPressure and
+NetworkUnavailable types and fixed kubelet pressure reasons; Ready alone does
+not establish scheduling readiness. For each owned Pod, `scheduling` projects
+only fixed resource, taint, affinity, port and volume failure categories from a
+False/Unschedulable PodScheduled condition. It examines at most 16 conditions and
+8,192 message characters; native scheduler messages and taint keys never survive.
+Absent, malformed, oversized or non-failure observations retain an explicit
+status with null categories, not a healthy verdict or zero failures. Unrecognized
+failure text is `unclassified`. Categories are diagnostic hints, not a proven
+root cause; neither they nor the broad Docker timeout category establish a
+network failure. Collection reuses the existing three bounded API reads before
+cleanup, without extra requests, retries or fixture changes.
+Non-list owned-Pod conditions retain `malformed` scheduling status without
+discarding the other captured Gateway, workload or node evidence.
 For one owned proxy, failure-only diagnostics use native `kubectl port-forward`
 bound to localhost. It reads allowlisted Envoy server/XDS/TLS/listener counters
 before the actual readiness endpoint: a refused remote readiness port terminates

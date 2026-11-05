@@ -34,6 +34,7 @@ let
   # root, where the entrance must answer with its redirect to sign-in. A
   # native route missing here fails evaluation.
   healthPaths = {
+    home = "/api/health/live";
     idm = "/status";
     jellyfin = "/health";
     requests = "/api/v1/status";
@@ -90,13 +91,11 @@ in
         # Derive visibility from the Gateway's effective HTTPRoutes, including
         # its identity and Seerr publication boundaries, rather than probing
         # intentionally unpublished entrances.
-        publishedRoutes = lib.getAttrs (
-          map (route: route.metadata.name) (
-            lib.filter (object: object.kind == "HTTPRoute") (
-              config.applications.gateway.objects ++ (config.applications.identity-gateway.objects or [ ])
-            )
+        publishedRoutes = lib.getAttrs (map (route: route.metadata.name) (
+          lib.filter (object: object.kind == "HTTPRoute") (
+            config.applications.gateway.objects ++ (config.applications.identity-gateway.objects or [ ])
           )
-        ) cluster.routes;
+        )) cluster.routes;
         # Send each probe to the gateway NodePort with the route's SNI and Host:
         # the hop the host forwards household HTTPS to.
         probes = lib.mapAttrs (

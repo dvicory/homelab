@@ -30,6 +30,9 @@
         name: route:
         route.auth != "admin"
         && (name != "requests" || cluster.settings.kubernetes.services.seerr.phase == "ready")
+        && (
+          name != "home" || (identityNormal && cluster.settings.kubernetes.services.homarr.phase == "ready")
+        )
       ) cluster.routes;
       adminPublishedRoutes =
         if identityNormal then lib.filterAttrs (_: route: route.auth == "admin") cluster.routes else { };

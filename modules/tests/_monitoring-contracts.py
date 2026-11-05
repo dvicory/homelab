@@ -26,6 +26,8 @@ monitoring = objects("monitoring")
 retained = objects("monitoring-retained")
 identity = objects("identity")
 gateway = objects("identity-gateway")
+published_routes = [obj["metadata"]["name"] for obj in objects("gateway") + gateway
+                    if obj["kind"] == "HTTPRoute"]
 applications = {obj["metadata"]["name"]: obj for obj in objects("apps") if obj["kind"] == "Application"}
 
 
@@ -74,7 +76,7 @@ checks.update({
         all(route["namespace"] != "monitoring" or route["service"] == "grafana" for route in routes.values())
         and (not has_grafana or (routes["grafana"]["auth"] == "admin"
              and routes["grafana"]["manageBackendIngress"] and not routes["grafana"]["sameNamespaceIngress"])),
-    "a declared route has no endpoint probe": sorted(probed_routes) == sorted(routes),
+    "endpoint probes do not match published HTTP routes": sorted(probed_routes) == sorted(published_routes),
     "a scrape job has no TelemetrySourceDown alert": job_names <= source_down_jobs,
     "a Watchdog core source is not scraped": {"kubelet", "cadvisor", "kube-state-metrics", "host-node"} <= job_names,
     "a monitoring image is not pinned as tag@digest":
