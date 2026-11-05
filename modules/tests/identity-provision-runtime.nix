@@ -47,7 +47,8 @@ let
       computeResources = compute;
     }).applications.identity.objects;
   identityObjects = renderIdentity cluster;
-  rolloutDirectoryPort = cluster.settings.kubernetes.services.identity.directory.port + 1;
+  rolloutDirectoryPort =
+    if cluster.settings.kubernetes.services.identity.directory.port == 3637 then 3638 else 3637;
   rolloutObjects = renderIdentity (
     lib.recursiveUpdate cluster {
       settings.kubernetes.services.identity.directory.port = rolloutDirectoryPort;
