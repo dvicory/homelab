@@ -131,8 +131,9 @@ in
         runs are diagnostic: they do not replace a PR's final required status or
         publish helpers, even when every selected job passes.
         In the Actions run, inspect the first failing job and its evidence
-        artifacts; a missing or skipped job is not passing evidence. Do not
-        upload raw fixture logs or credentials to explain a failure.
+        artifacts; a missing or skipped job is not passing evidence. Start with
+        collected sanitized reports. Remove credentials, kubeconfigs and workload
+        data before sharing additional diagnostics.
 
         For Gateway prerequisite failures, inspect the sanitized
         `gatewayPrerequisiteWitness` in the native report. Its categories are
@@ -145,6 +146,22 @@ in
         artifacts; [`required-ci.py`](.github/required-ci.py) owns their final
         join. Maintainers must require the final `Required CI` status in branch
         protection; repository source alone cannot configure that protection.
+
+        ## Update workflow dependencies
+
+        After changing an action reference or adding a workflow, use GitHub's
+        [official locking tool](https://github.com/github/gh-actions-lock):
+
+        ```sh
+        gh actions-lock --no-narrow --no-interactive
+        gh actions-lock --verify
+        ```
+
+        Review the workflow and generated `.github/workflows/actions.lock`
+        together. Do not hand-edit the lockfile or accept a moved reference
+        merely to unblock CI. Locking covers action dependencies, including
+        nested actions; it does not pin container images, arbitrary downloads
+        or dependencies of external reusable workflows.
 
         ## Regenerate documentation
 

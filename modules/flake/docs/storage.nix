@@ -152,9 +152,9 @@ in
         configuration. It is not a source of authority. The current storage
         contract is
         [`storage-foundations`](../openspec/specs/storage-foundations/spec.md).
-        The placement rules are still a proposed change,
-        [`storage-placement-contract`](../openspec/changes/storage-placement-contract/),
-        and become current only when that change is archived. The reasoning
+        Proposed placement rules are in
+        [`storage-placement-contract`](../openspec/changes/storage-placement-contract/).
+        Follow the current specs rather than treating an active proposal as adopted.
         behind the namespace and the device encryption lives in [ADR-0006](architecture/decisions/0006-stable-semantic-storage-namespace.md)
         and [ADR-0007](architecture/decisions/0007-block-level-encryption-for-data-disks.md);
         the disk conversion procedure is in
