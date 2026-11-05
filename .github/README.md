@@ -327,6 +327,8 @@ failure text is `unclassified`. Categories are diagnostic hints, not a proven
 root cause; neither they nor the broad Docker timeout category establish a
 network failure. Collection reuses the existing three bounded API reads before
 cleanup, without extra requests, retries or fixture changes.
+Non-list owned-Pod conditions retain `malformed` scheduling status without
+discarding the other captured Gateway, workload or node evidence.
 For one owned proxy, failure-only diagnostics use native `kubectl port-forward`
 bound to localhost. It reads allowlisted Envoy server/XDS/TLS/listener counters
 before the actual readiness endpoint: a refused remote readiness port terminates

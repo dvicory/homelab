@@ -306,7 +306,7 @@ def gateway_prerequisite_witness(resources, workloads, node, expectation):
                 "KubeletHasSufficientPID", "KubeletHasInsufficientPID",
                 "NetworkUnavailable", "RouteCreated",
             )),
-        } for condition in (raw or [])[:16] if isinstance(condition, dict)]
+        } for condition in (raw if isinstance(raw, list) else [])[:16] if isinstance(condition, dict)]
 
     objects = {(obj.get("kind"), (obj.get("metadata") or {}).get("name"),
                 (obj.get("metadata") or {}).get("namespace", "")): obj for obj in items(resources)}
@@ -960,6 +960,22 @@ def self_check():
     assert pressure["MemoryPressure"]["status"] == "False" and pressure["MemoryPressure"]["reason"] == "KubeletHasSufficientMemory"
     assert pressure["PIDPressure"]["status"] == "Unknown" and pressure["PIDPressure"]["reason"] == "unknown"
     assert pressure["NetworkUnavailable"]["status"] == "unknown"
+    malformed_gateway = gateway_prerequisite_witness({}, {"items": [
+        {"kind": "Deployment", "metadata": {"name": "envoy-gateway", "uid": "controller"}},
+        {"kind": "ReplicaSet", "metadata": {"uid": "replica", "ownerReferences": [
+            {"kind": "Deployment", "uid": "controller", "controller": True}]}},
+        {"kind": "Pod", "metadata": {"ownerReferences": [
+            {"kind": "ReplicaSet", "uid": "replica", "controller": True}]},
+         "status": {"phase": "Pending", "conditions": {sensitive: "Unschedulable"}}},
+    ]}, {"kind": "Node", "status": {"conditions": [
+        {"type": "DiskPressure", "status": "True", "reason": "KubeletHasDiskPressure"},
+    ]}}, {})
+    assert malformed_gateway["pods"][0]["scheduling"] == {"status": "malformed", "categories": None}
+    assert malformed_gateway["pods"][0]["conditions"] == []
+    assert malformed_gateway["node"]["conditions"] == [
+        {"type": "DiskPressure", "status": "True", "observedGeneration": None, "reason": "KubeletHasDiskPressure"},
+    ]
+    assert sensitive not in json.dumps(malformed_gateway)
     missing_gateway = gateway_prerequisite_witness({}, {}, {}, {"resource": sensitive})
     assert not any(resource["present"] for resource in missing_gateway["resources"])
     assert missing_gateway["pods"] == [] and missing_gateway["waitingFor"]["resource"] == "unknown"
