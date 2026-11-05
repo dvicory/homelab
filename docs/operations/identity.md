@@ -197,17 +197,24 @@ not make the corresponding anonymous HTTPS Unix-account attributes private.
 
 ## Server configuration changes
 
-Changes to the declared nonsecret `server.toml` change Kanidm's Pod template.
+The declared nonsecret `server.toml` is published in an immutable,
+content-addressed ConfigMap. Its required volume reference changes Kanidm's
+Pod template when the configuration changes. A replacement cannot fall back to
+an older configuration: it waits if the required revision has not been
+published, including after a failed ConfigMap apply.
+
 The single-replica Deployment uses `Recreate`: it stops the old Pod before
-starting its replacement against the retained database, briefly interrupting
-identity service and dependent sign-ins. The replacement mounts the updated
-configuration; syncing unchanged configuration does not cause another
+starting its replacement against the retained database, interrupting identity
+service and dependent sign-ins. This interruption lasts longer if publication
+or startup fails. Syncing unchanged configuration does not cause another
 configuration rollout. Keep the identity-independent recovery path available.
 
-The rendered identity contract checks changed configuration/template output
-and unchanged-configuration stability; it does not prove a live Pod rollout or
-replacement-file consumption. This mechanism does not cover TLS Secret renewal
-or prove certificate reload behavior.
+The rendered identity contract checks config-only template changes and
+unchanged-configuration stability. The separate `identity-provision-runtime`
+check includes a disposable K3s regression for missing publication, Recreate
+replacement, exact mounted-file adoption, retained state and unchanged resync.
+Neither check establishes production availability. This mechanism does not
+cover TLS Secret renewal or prove certificate reload behavior.
 
 ## Upgrade
 

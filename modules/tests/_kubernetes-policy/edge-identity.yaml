@@ -62,12 +62,22 @@ spec:
             Identity phase must have its own complete population, without initial provisioning or premature
             OIDC transport.
         - expression: >-
-            ['Deployment', 'Service', 'ConfigMap'].all(k, variables.objects.filter(o, o.kind == k && o.metadata.name
-            == (k == 'ConfigMap' ? 'kanidm-config' : 'kanidm') && has(o.metadata.namespace) && o.metadata.namespace
-            == 'identity').size() == 1)
+            ['Deployment', 'Service'].all(k, variables.objects.filter(o, o.kind == k && o.metadata.name
+            == 'kanidm' && has(o.metadata.namespace) && o.metadata.namespace == 'identity').size() == 1)
+            && variables.objects.filter(o, o.kind == 'ConfigMap' && o.metadata.name.startsWith('kanidm-config-')
+            && has(o.metadata.namespace) && o.metadata.namespace == 'identity').size() == 1
           message: >-
             Identity phase must have its own complete population, without initial provisioning or premature
             OIDC transport.
+        - expression: >-
+            variables.objects.filter(o, o.kind == 'Deployment' && o.metadata.name == 'kanidm'
+            && has(o.metadata.namespace) && o.metadata.namespace == 'identity').all(d,
+            d.spec.template.spec.volumes.filter(v, v.name == 'config' && has(v.configMap)
+            && (!has(v.configMap.optional) || !v.configMap.optional)
+            && variables.objects.exists(c, c.kind == 'ConfigMap' && has(c.metadata.namespace)
+            && c.metadata.namespace == 'identity' && c.metadata.name.startsWith('kanidm-config-')
+            && c.metadata.name == v.configMap.name)).size() == 1)
+          message: Kanidm must mount its declared required server configuration revision.
         - expression: >-
             ['ConfigMap', 'ServiceAccount', 'Job'].all(k, variables.objects.filter(o, o.kind == k && o.metadata.name
             == 'kanidm-provision').size() == (variables.phase == 'initial' ? 0 : 1))
@@ -519,7 +529,7 @@ spec:
           kinds:
           - ConfigMap
           names:
-          - kanidm-config
+          - kanidm-config-*
           namespaces:
           - identity
     validate:

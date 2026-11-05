@@ -155,6 +155,18 @@ def identity(obj):
     return "/".join((obj["apiVersion"], obj["kind"], meta.get("namespace", ""), meta["name"]))
 
 
+def kanidm_config_identity(population):
+    # Resolve this one content-addressed resource through its real consumer.
+    deployment, = (obj for obj in population if identity(obj) == "apps/v1/Deployment/identity/kanidm")
+    pod = deployment["spec"]["template"]["spec"]
+    container, = (item for item in pod["containers"] if item["name"] == "kanidm")
+    mount, = (item for item in container["volumeMounts"] if item["mountPath"] in container["args"])
+    volume, = (item for item in pod["volumes"] if item["name"] == mount["name"])
+    config, = (obj for obj in population
+               if identity(obj) == f"v1/ConfigMap/identity/{volume['configMap']['name']}")
+    return identity(config)
+
+
 def resource_spec(ident):
     api, kind, namespace, name = ident.rsplit("/", 3)
     group, _, version = api.rpartition("/")
@@ -266,6 +278,11 @@ def generate(args):
         return {"identity": services["identity"]["phase"], "seerr": services["seerr"]["phase"],
                 "mode": cluster["ingress"]["mode"]}
 
+    def resolve_kanidm_config(variant, ident):
+        if ident == "v1/ConfigMap/identity/{kanidm-server-config}":
+            return kanidm_config_identity(objects(variant)[0])
+        return ident
+
     def base_object(variant, ident):
         for population in objects(variant):
             found = [obj for obj in population if identity(obj) == ident]
@@ -288,7 +305,7 @@ def generate(args):
             target = None
             if "base" in scenario or "object" in scenario:
                 if "base" in scenario:
-                    obj = base_object(variant, scenario["base"])
+                    obj = base_object(variant, resolve_kanidm_config(variant, scenario["base"]))
                 elif isinstance(scenario["object"], str):
                     # Synthetic objects have no genuine counterpart, so they declare their own applicability.
                     obj = owner["objects"][scenario["object"]]["object"]
@@ -301,7 +318,11 @@ def generate(args):
                 dump(directory / "resources.yaml", obj)
             elif "mutate" in scenario:
                 (directory / "mutate.yq").write_text(scenario["mutate"] + "\n")
-            outcomes = expectations(owner, scenario, applicability(owner, phase(variant)), target)
+            declared = applicability(owner, phase(variant))
+            table = {resolve_kanidm_config(variant, ident): rules for ident, rules in declared.items()}
+            if len(table) != len(declared):
+                raise ValueError("Duplicate resolved native policy identities")
+            outcomes = expectations(owner, scenario, table, target)
             policy = f"../../../{owner['policyFile']}"
             if "policyMutate" in scenario:
                 (directory / "policy.yaml").write_text(

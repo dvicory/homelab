@@ -14,8 +14,6 @@ spec:
     type: Recreate
   template:
     metadata:
-      annotations:
-        homelab.danielvicory/config-sha256: 078db9630cc31fc6679d427147c303447ca6aa2594a89361300412793bee411b
       labels:
         app.kubernetes.io/name: kanidm
     spec:
@@ -82,7 +80,7 @@ spec:
           persistentVolumeClaim:
             claimName: identity-kanidm
         - configMap:
-            name: kanidm-config
+            name: kanidm-config-078db9630cc31fc6679d427147c303447ca6aa2594a89361300412793bee411b
           name: config
         - name: tls
           secret:

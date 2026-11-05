@@ -134,7 +134,7 @@ let
   ];
   kanidmDeployment = findObject normalObjects "Deployment" namespace "kanidm";
   kanidmService = findObject normalObjects "Service" namespace "kanidm";
-  serverConfig = (findObject normalObjects "ConfigMap" namespace "kanidm-config").data."server.toml";
+  serverConfig = (mountedServerConfig normalObjects).content;
   mountedServerConfig =
     objects:
     let
@@ -142,8 +142,14 @@ let
       container = lib.findFirst (container: container.name == "kanidm") null pod.containers;
       mount = lib.findFirst (mount: lib.elem mount.mountPath container.args) null container.volumeMounts;
       volume = lib.findFirst (volume: volume.name == mount.name) null pod.volumes;
+      configMap = findObject objects "ConfigMap" namespace volume.configMap.name;
     in
-    (findObject objects "ConfigMap" namespace volume.configMap.name).data.${mount.subPath};
+    {
+      inherit volume;
+      inherit (configMap.metadata) name;
+      immutable = configMap.immutable or false;
+      content = configMap.data.${mount.subPath};
+    };
   # NetworkPolicies are additive, regardless of name or application owner.
   admissionObjects =
     identityRendered: gatewayRendered:
@@ -293,17 +299,34 @@ let
             deploymentFor = objects: findObject objects "Deployment" namespace "kanidm";
             baselineSpec = (deploymentFor baselineObjects).spec;
             changedSpec = (deploymentFor changedObjects).spec;
+            baselineConfig = mountedServerConfig baselineObjects;
+            changedConfig = mountedServerConfig changedObjects;
+            unchangedConfig = mountedServerConfig unchangedObjects;
           in
-          mountedServerConfig baselineObjects != mountedServerConfig changedObjects
+          baselineConfig.content != changedConfig.content
+          && baselineConfig.name != changedConfig.name
+          && baselineConfig.immutable
+          && changedConfig.immutable
+          && !(baselineConfig.volume.configMap.optional or false)
+          && !(changedConfig.volume.configMap.optional or false)
+          && findObject baselineObjects "ConfigMap" namespace changedConfig.name == null
           && baselineSpec.template != changedSpec.template
-          && baselineSpec.template.spec == changedSpec.template.spec
-          && baselineSpec.template.metadata.labels == changedSpec.template.metadata.labels
+          &&
+            baselineSpec.template == lib.recursiveUpdate changedSpec.template {
+              spec.volumes = map (
+                volume:
+                if volume.name == changedConfig.volume.name then
+                  lib.recursiveUpdate volume { configMap.name = baselineConfig.name; }
+                else
+                  volume
+              ) changedSpec.template.spec.volumes;
+            }
           &&
             builtins.removeAttrs baselineSpec [ "template" ] == builtins.removeAttrs changedSpec [ "template" ]
           && baselineSpec.replicas == 1
           && baselineSpec.strategy.type == "Recreate"
           && baseline.applications.identity-retained == changed.applications.identity-retained
-          && mountedServerConfig baselineObjects == mountedServerConfig unchangedObjects
+          && baselineConfig == unchangedConfig
           && baselineSpec.template == (deploymentFor unchangedObjects).spec.template
         )
         [

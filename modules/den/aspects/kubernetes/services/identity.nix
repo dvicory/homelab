@@ -370,6 +370,8 @@
         origin = "https://${domain}"
         ldapbindaddress = "0.0.0.0:${toString directory.port}"
       '';
+      # A missing revision must block startup, never bind an older subPath file.
+      serverConfigName = "kanidm-config-${builtins.hashString "sha256" serverConfig}";
       # Account policy per group. Kanidm applies the strictest value of each
       # setting across a person's groups, so the administrator group states
       # its own minimum instead of relying on Kanidm's default, and a
@@ -551,10 +553,11 @@
               apiVersion = "v1";
               kind = "ConfigMap";
               metadata = {
-                name = "kanidm-config";
+                name = serverConfigName;
                 inherit namespace;
               };
               data."server.toml" = serverConfig;
+              immutable = true;
             }
             {
               apiVersion = "apps/v1";
@@ -569,10 +572,7 @@
                 strategy.type = "Recreate";
                 selector.matchLabels = labels;
                 template = {
-                  metadata = {
-                    inherit labels;
-                    annotations."homelab.danielvicory/config-sha256" = builtins.hashString "sha256" serverConfig;
-                  };
+                  metadata.labels = labels;
                   spec = {
                     automountServiceAccountToken = false;
                     nodeSelector."kubernetes.io/hostname" = computeResources.instance;
@@ -659,7 +659,7 @@
                       }
                       {
                         name = "config";
-                        configMap.name = "kanidm-config";
+                        configMap.name = serverConfigName;
                       }
                       {
                         name = "tls";

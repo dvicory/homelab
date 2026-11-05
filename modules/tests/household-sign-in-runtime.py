@@ -207,8 +207,12 @@ def main():
     base = ",".join("dc=" + part for part in domain.split("."))
 
     # Everything below comes from the committed manifests.
-    kanidm_config = manifest("identity", "ConfigMap-kanidm-config.yaml")["data"]["server.toml"]
     kanidm_pod = manifest("identity", "Deployment-kanidm.yaml")["spec"]["template"]["spec"]
+    config_mount, = (mount for mount in container(kanidm_pod, "kanidm")["volumeMounts"]
+                     if mount["mountPath"] in container(kanidm_pod, "kanidm")["args"])
+    config_volume, = (volume for volume in kanidm_pod["volumes"] if volume["name"] == config_mount["name"])
+    config_map = manifest("identity", f"ConfigMap-{config_volume['configMap']['name']}.yaml")
+    kanidm_config = config_map["data"][config_mount["subPath"]]
     kanidm_service = manifest("identity", "Service-kanidm.yaml")["spec"]
     provision_data = manifest("identity", "ConfigMap-kanidm-provision.yaml")["data"]
     provision_job = container(manifest("identity", "Job-kanidm-provision.yaml")["spec"]["template"]["spec"], "provision")
