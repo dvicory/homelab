@@ -31,6 +31,15 @@ own artifact leaf. Each leaf declares exact derivation/output paths; native
 leaves also declare the executable. Foreign and unsupported derivations stay
 unforced.
 
+Generic Linux build jobs use the Nix installer's native `/nix` layout and
+default build directory. They do not preallocate a fixed-size `/mnt` loop
+image: `/mnt` can be either a smaller separate filesystem or part of the
+runner root, where preallocation would strand free space inside `/nix` at
+the expense of runner scratch. Nix and runner files instead consume the
+existing root filesystem on demand, without an artificial store capacity.
+The Darwin Linux-builder bootstrap and explicitly owned native-application
+storage retain their separate setup and lifecycle.
+
 On a builder for the selected system:
 
 ```sh
@@ -274,7 +283,9 @@ nix build .#checks.x86_64-linux.runtime-secret-k3s.driver
 Manual drivers prefer `XDG_RUNTIME_DIR` over `TMPDIR` and retain VM disks after
 shutdown. Use owned, mode-0700 disk-backed scratch as above: accumulated VM
 images can exhaust `/run/user/$UID` tmpfs and cause guest block-device I/O
-failures. Hosted builds already use the disk-backed `/nix/build` directory.
+failures. Generic hosted builds use Nix's daemon-native
+`/nix/var/nix/builds` directory; the separate bootstrap and explicitly owned
+native-application layouts retain their configured `/nix/build` scratch.
 
 Native descriptors build both runners; their full execution is separately
 required. The API descriptor supplies `--docker-context default`, its owned
