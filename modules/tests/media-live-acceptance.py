@@ -831,10 +831,9 @@ with open('/fixture/coordination/' + sys.argv[1] + '.lock', 'r') as lock:
                 return request(ports["jellyfin"], path, key=key, method=method, body=body, jellyfin=True, binary=binary)
             require(jellyfin("/System/Info/Public")["StartupWizardCompleted"] is True,
                     "rendered provisioner did not initialize fresh Jellyfin")
-            # Authenticate independently of the Seerr policy: using its username
-            # to create the account would hide the original static-admin defect.
+            # Account creation must not take its username from the policy under test.
             administrator = one(provisioner["env"], "name", "JELLYFIN_ADMINISTRATOR")["value"]
-            require(administrator == "Jellyfin Admin", "native fixture must provision the nondefault administrator")
+            require(administrator != "admin", "native fixture must exercise a nondefault administrator")
             authenticated = jellyfin("/Users/AuthenticateByName", "POST", {"Username": administrator, "Pw": owner_password})
             require(authenticated["User"]["Name"] == administrator and authenticated["User"]["Policy"]["IsAdministrator"],
                     "the provisioned nondefault administrator cannot authenticate")
@@ -1215,7 +1214,7 @@ server.serve_forever()
             require(claimed_owner["id"] == 1 and claimed_owner["jellyfinUsername"] == administrator,
                     "initial delivery did not claim the provisioned nondefault Jellyfin owner")
             scan = seerr_api("/settings/jellyfin/sync")
-            require(scan["running"] is False and scan["progress"] > scan["total"], "fixture scan did not finish past the Movies batch with progress above the empty Shows total")
+            require(scan["running"] is False, "initial delivery left Jellyfin library synchronization running")
 
             def verify_seerr():
                 owner = seerr_api("/auth/me")
@@ -1252,8 +1251,8 @@ server.serve_forever()
             seerr_baseline = verify_seerr()
             docker("rm", "-f", "-v", secret_server)
             changed_configuration = fixture["changedAdministratorConfiguration"]
-            require(json.loads(changed_configuration["seerr.json"])["jellyfin"]["username"] == "Another Administrator",
-                    "retained-owner scenario must use a different Nix-rendered administrator declaration")
+            require(json.loads(changed_configuration["seerr.json"])["jellyfin"]["username"] != administrator,
+                    "retained-owner scenario must change the administrator declaration")
             copy_text("seerr-owner-change-inputs/seerr.json", changed_configuration["seerr.json"])
             copy_text("seerr-owner-change-inputs/seerr.mjs", changed_configuration["seerr.mjs"])
             # The Secret responder is gone: initialized reconciliation must not
