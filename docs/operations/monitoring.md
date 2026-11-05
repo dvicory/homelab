@@ -297,6 +297,12 @@ working-set and throttling peaks for the selected time range. Select a
 range that includes the real load and follow the row's Kubernetes Pod
 dashboard link for the time series.
 
+The `monitoring-rules` check evaluates the Kubernetes Pod dashboard's
+provisioned **CPU Usage** query from the rendered dashboards ConfigMap.
+Fixture variables select a synthetic workload with independently expected
+usage of 0.5 CPU cores; missing or ambiguous panel/query selection fails
+the check rather than silently skipping coverage.
+
 `KubeContainerCPUThrottled` means the CPU limit is slowing work, not
 killing the container. `KubeContainerMemoryNearLimit` means little memory
 headroom remains; `KubeContainerOOMKilled` means a kill was observed.
