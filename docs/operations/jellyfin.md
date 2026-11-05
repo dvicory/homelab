@@ -252,7 +252,7 @@ secret is missing, provisioning fails and Jellyfin does not start.
 
 Kubernetes pulls the immutable GHCR digests selected in
 `assets/helper-release/verified.json`. Follow
-[Deliver helper images](../../CI.md#deliver-helper-images) to publish and
+[main helper candidate lane](../../.github/README.md#required-green-main-nix-helper-candidates) to publish and
 verify a candidate; publication does not select it for deployment. Making
 a new GHCR package public requires approval and cannot be reversed.
 

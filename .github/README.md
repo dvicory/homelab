@@ -549,10 +549,7 @@ for application failure. Synchronous and serialized runs require that exact
 outcome, alongside real API/state/lock assertions. `media-producer-exit` checks
 the exit and diagnostic policy without Docker; the application suite does
 not inject Docker startup failures or deliberate crashes. Failure labels
-retain numeric status. Unexpected Jellyfin provisioner and Jellarr bootstrap
-exits additionally report bounded, escaped stdout/stderr tails with the
-generated administrator password redacted; initial Docker fixture startup
-reports bounded, escaped stderr. Other application output stays private.
+retain numeric status.
 
 The household app is also available as `nix run .#household-sign-in-runtime`.
 Run it only as root in an exclusive disposable native x86 Linux Docker
