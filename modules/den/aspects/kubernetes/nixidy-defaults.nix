@@ -36,6 +36,7 @@
                     "jellyfin"
                     "media"
                     "monitoring"
+                    "portal"
                   ];
               clusterResourceWhitelist = [
                 {

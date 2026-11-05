@@ -644,7 +644,7 @@ jobs:
       - name: Clean owned native acceptance storage
         if: always() && matrix.requirements.ownedStorage == true
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           if test -s "$RUNNER_TEMP/native-storage-uuid"; then
             uuid=$(cat "$RUNNER_TEMP/native-storage-uuid")
             loop_dev=$(cat "$RUNNER_TEMP/native-storage-loop")
