@@ -73,11 +73,6 @@ cross-edge SNI refusal, queryless logging, upstream TLS recovery and failover.
 
 ## Retained host and recovery verification
 
-`compute-runtime` pins its indirect go-jose dependency to
-[v4.1.6](https://github.com/go-jose/go-jose/releases/tag/v4.1.6) for the
-upstream JSON, CBC-HMAC and RSA JWK denial-of-service fixes. JWK parsing
-now rejects RSA moduli larger than 4096 bits by default.
-
 `runtime-secret-k3s` retains the real host/systemd staging and acknowledgment
 seam. `prod-home-replacement` and `compute-guest-upgrade` retain state-root
 markers, ZFS/FUSE/Incus ID maps, mapped read-only media, credential delivery,
