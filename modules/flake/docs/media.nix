@@ -7,11 +7,8 @@
 let
   media = config.den.clusters.prod-home.settings.kubernetes.services.media;
   source = builtins.fromJSON (builtins.readFile ../../../assets/media-policy/source.json);
-  preferred = builtins.fromJSON (builtins.readFile ../../../assets/media-policy/hd-preferred.json);
   preferredName = source.profiles.radarr."hd-preferred".name;
   quote = value: "`${value}`";
-  revisionLink =
-    repository: revision: "[`${builtins.substring 0 7 revision}`](${repository}/tree/${revision})";
   instances = lib.concatMap (
     kind: lib.mapAttrsToList (name: cfg: { inherit kind name cfg; }) media.${kind}
   ) (builtins.attrNames source.profiles);
@@ -29,13 +26,6 @@ let
     in
     "| `${instance.kind}` | `${instance.name}` | ${menu} | ${default} |"
   ) instances;
-  qualityRows = map (
-    quality:
-    "- `${quality.name}`"
-    +
-      lib.optionalString (quality ? qualities)
-        " (${lib.concatMapStringsSep ", " quote quality.qualities}; one group)"
-  ) preferred.qualities;
 in
 {
   perSystem =
@@ -95,16 +85,6 @@ in
         and `defaultQualityProfile` settings rather than changing a managed Seerr
         server by hand.
 
-        `${preferredName}` has the same declared fallback ladder in both apps,
-        highest preference first. Members of one group share a quality preference:
-
-        ${lib.concatStringsSep "\n" qualityRows}
-
-        Upgrades target `${preferred.upgrade.until_quality}`, with minimum
-        custom-format upgrade increment `${toString preferred.upgrade.min_format_score}`.
-        DVD here is encoded DVD, not DVD-R/full-disc images. CAM, screeners, unknown,
-        raw/full-disc and low-resolution Blu-ray qualities remain excluded.
-
         An allowed quality is not sufficient to accept a release. The unwanted-format
         penalties still apply: non-2160p x265 and AV1 can score below the minimum even
         for an allowed SD quality. Radarr and Sonarr intentionally have app-specific
@@ -118,12 +98,10 @@ in
 
         ## Update managed policy
 
-        The current source pins are TRaSH ${revisionLink source.repository source.revision}
-        and templates ${revisionLink source.templateRepository source.templateRevision}.
-        Their declarations and selected profiles are in
-        [`source.json`](../../assets/media-policy/source.json); the shared fallback
-        ladder is in [`hd-preferred.json`](../../assets/media-policy/hd-preferred.json).
-        Per-app default/zero scores and exclusions are selected in
+        Edit the immutable source pins and profile selection in
+        [`source.json`](../../assets/media-policy/source.json), the shared quality
+        ladder in [`hd-preferred.json`](../../assets/media-policy/hd-preferred.json),
+        and per-app scores/exclusions in
         [`required-formats.json`](../../assets/media-policy/required-formats.json).
 
         1. Review the candidate upstream changes. In `source.json`, update `revision`
@@ -152,12 +130,11 @@ in
 
         ## Rotate media API keys
 
-        **Separate live-change approval required.** This is an operator procedure,
-        not an automatic rotation mechanism. The example rotates `RADARR_API_KEY`
-        and `SABNZBD_API_KEY` on an **existing**, initialized stack. It does not
-        reset application state. Rehearse with `media-live-acceptance` on disposable
-        storage first; that runner proves native API adoption and integration
-        recovery, not Argo scheduling, host staging or production storage.
+        **Separate live-change approval required.** Rotate `RADARR_API_KEY` and
+        `SABNZBD_API_KEY` on an **existing**, initialized stack as follows.
+        Rehearse with `media-live-acceptance` on disposable storage first; it
+        checks native application adoption and connections, not Argo scheduling,
+        host staging or production storage.
 
         A runtime-secret generation acknowledgment proves publication only.
         Radarr/Sonarr/Prowlarr read their Secret-backed environment at process
@@ -172,12 +149,10 @@ in
         | `PROWLARR_API_KEY` | `deployment/prowlarr` | Configarr |
         | `SEERR_API_KEY` | `statefulset/seerr` | Seerr helper |
 
-        Do not assume a Secret volume update refreshes a helper that already read
-        it. `concurrencyPolicy: Forbid` covers only one CronJob, and the shared
-        process locks serialize writers without fencing generations. Neither
-        prevents an old Job from later restoring an old connection credential.
-        `BeforeHookCreation` removes only the fixed-name hook at its next run,
-        not scheduled Jobs. Fence **all** old writers before publication.
+        Fence **all** old writers before publication: a Job that already read
+        the old Secret can restore old connection credentials later. CronJob
+        concurrency and process locks do not fence generations, and hook
+        replacement does not remove scheduled Jobs.
 
         ### Prepare and fence writers
 
@@ -305,9 +280,8 @@ in
         )
         ```
 
-        This acknowledgment does **not** prove adoption. Replace the affected
-        Pods using their single-replica `Recreate` Deployments, not a second
-        ad-hoc Pod mounting the same state. Record old UIDs first:
+        Replace the affected Pods using their single-replica `Recreate`
+        Deployments, not an ad-hoc Pod mounting the same state. Record old UIDs:
 
         ```sh
         (
@@ -346,10 +320,9 @@ in
         an Argo operation: on failure terminate/drain it, suspend the CronJobs
         again and repeat the foreground-deletion fence before rollback.
 
-        Hook completion is not a native connection test. Arr accepts an unchanged
-        enabled provider update without testing its downstream credentials, and
-        disabled providers are not tested on save. Require the explicit handshake
-        checks below even when Configarr reports success/no changes.
+        Test native connections even after successful reconciliation. Arr does
+        not test downstream credentials when saving an unchanged enabled
+        provider or a disabled provider.
 
         ### Prepare private verification
 
@@ -368,12 +341,9 @@ in
         kubectl --context "$CONTEXT" -n media port-forward service/seerr 15055:5055
         ```
 
-        In the private session, create the Prowlarr adoption helper. When invoked,
-        it adopts Radarr's supplied key in the reserved Prowlarr application,
-        updating the existing ID and preserving other fields/settings. The
-        normal native PUT validates the new connection, and the readback test
-        proves the stored credential works. Do not delete/recreate the application
-        or bypass validation:
+        Create the Prowlarr helper in the private session. It updates Radarr's
+        key on the existing managed application and tests the saved connection.
+        Do not delete/recreate the application or bypass native validation:
 
         ```sh
         cat >"$private/prowlarr-key.py" <<'PY'
@@ -403,11 +373,10 @@ in
         PY
         ```
 
-        Create the verification helper too. When invoked, this checks actual
-        authenticated APIs, optional retired-key refusal, Arr→SAB, Prowlarr→Arr
-        and Seerr→Arr handshakes plus the native Seerr request selector. Values
-        remain in memory or restrictive tmpfs, never curl arguments or printed
-        response bodies:
+        Create the verification helper too. It checks authenticated APIs,
+        retired-key refusal when a previous snapshot exists, native downstream
+        handshakes and Seerr's request selector. Keys stay in memory or private
+        tmpfs, never command arguments or printed response bodies:
 
         ```sh
         cat >"$private/check.py" <<'PY'
