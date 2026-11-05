@@ -8,26 +8,10 @@ let
   inherit (den.lib.policy) pipe;
 in
 {
-  den.policies.collect-host-addrs =
-    { host, ... }:
-    [
-      (pipe.from "host-addrs" [
-        (pipe.collectAll ({ host, ... }: true))
-      ])
-    ];
-
   den.policies.collect-prometheus-targets =
     { host, ... }:
     [
       (pipe.from "prometheus-targets" [
-        (pipe.collect ({ host, ... }: true))
-      ])
-    ];
-
-  den.policies.collect-ollama-endpoints =
-    { host, ... }:
-    [
-      (pipe.from "ollama-endpoints" [
         (pipe.collect ({ host, ... }: true))
       ])
     ];
@@ -43,9 +27,7 @@ in
     ];
 
   den.schema.host.includes = [
-    den.policies.collect-host-addrs
     den.policies.collect-prometheus-targets
-    den.policies.collect-ollama-endpoints
   ];
 
   den.schema.user.includes = [

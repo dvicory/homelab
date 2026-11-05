@@ -76,23 +76,6 @@ let
     };
   };
 
-  exporterType = types.submodule {
-    options = {
-      port = mkOption {
-        type = types.int;
-        description = "Port number";
-      };
-      path = mkOption {
-        type = types.str;
-        default = "/metrics";
-      };
-      interval = mkOption {
-        type = types.str;
-        default = "30s";
-      };
-    };
-  };
-
   # Aspect settings are strict modules shared by host and user entity schemas.
   settingsType = import ./_settings-type.nix { inherit lib den; };
 in
@@ -278,16 +261,6 @@ in
               type = types.nullOr types.path;
               default = null;
               description = "Path to host SSH public key for agenix-rekey hostPubkey";
-            }
-            // {
-              identity = false;
-            };
-
-          exporters =
-            mkOption {
-              type = types.attrsOf exporterType;
-              default = { };
-              description = "Prometheus exporter definitions for this host";
             }
             // {
               identity = false;

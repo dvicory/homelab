@@ -335,6 +335,16 @@ in
 
         ## Host telemetry and hardware changes
 
+        Host exporters publish targets through the `prometheus-targets` quirk;
+        `services.host-telemetry` is the current producer.
+        The `collect-prometheus-targets` policy gathers them, and
+        `services.prometheus-targets-collector` selects this host's entries,
+        resolves their private bridge address and restricts firewall admission
+        to its compute guest.
+        Cluster monitoring consumes the resulting read-only
+        `homelab.monitoring.scrapeTargets`; extend this producer/collector path
+        when adding host telemetry.
+
         The exporter listens on `${monitoring.listenAddress}:${toString telemetry.port}`;
         only `${monitoring.guestAddress}` on `${monitoring.interface}` is admitted.
         The textfile directory is `${telemetry.textfileDirectory}`. A failed ZFS or

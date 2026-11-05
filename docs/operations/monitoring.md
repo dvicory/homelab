@@ -311,6 +311,16 @@ restart events.
 
 ## Host telemetry and hardware changes
 
+Host exporters publish targets through the `prometheus-targets` quirk;
+`services.host-telemetry` is the current producer.
+The `collect-prometheus-targets` policy gathers them, and
+`services.prometheus-targets-collector` selects this host's entries,
+resolves their private bridge address and restricts firewall admission
+to its compute guest.
+Cluster monitoring consumes the resulting read-only
+`homelab.monitoring.scrapeTargets`; extend this producer/collector path
+when adding host telemetry.
+
 The exporter listens on `10.210.0.1:9100`;
 only `10.210.0.10` on `incus-compute` is admitted.
 The textfile directory is `/run/host-telemetry`. A failed ZFS or
