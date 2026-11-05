@@ -155,7 +155,7 @@ in
         Proposed placement rules are in
         [`storage-placement-contract`](../openspec/changes/storage-placement-contract/).
         Follow the current specs rather than treating an active proposal as adopted.
-        behind the namespace and the device encryption lives in [ADR-0006](architecture/decisions/0006-stable-semantic-storage-namespace.md)
+        The reasoning behind the namespace and the device encryption lives in [ADR-0006](architecture/decisions/0006-stable-semantic-storage-namespace.md)
         and [ADR-0007](architecture/decisions/0007-block-level-encryption-for-data-disks.md);
         the disk conversion procedure is in
         [`docs/operations/luks-storage-migration.md`](operations/luks-storage-migration.md).

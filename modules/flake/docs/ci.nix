@@ -171,27 +171,23 @@ in
         [`operations.nix`](modules/den/aspects/kubernetes/operations.nix).
         The [README overview](README.md) is handwritten.
 
-        From the root of the intended JJ workspace, build and invoke the **inner**
-        files writer with explicit Git paths:
+        From the intended checkout root:
 
         ```sh
-        root=$(jj --ignore-working-copy root)
-        system=$(nix eval --impure --raw --expr builtins.currentSystem)
-        writer=$(nix build --no-link --print-out-paths "path:.#allSystems.$system.files.writer.drv")
-        writer_exe=$(nix eval --raw "path:.#allSystems.$system.files.writer.exeFilename")
-        GIT_DIR=$(jj --ignore-working-copy git root) GIT_WORK_TREE="$root" \
-          "$writer/bin/$writer_exe"
+        nix run .#write-files
+        nix run .#diff-files
         ```
 
+        The writer updates generated files; the diff app reports drift without
+        writing. Both select the nearest Git checkout or JJ workspace, ignoring
+        inherited Git paths. They refuse to run outside a checkout.
         Review every resulting change and track new generated files before
-        evaluating their checks. In inherited Git worktrees, do not use the
-        outer `nix run .#write-files` wrapper: workspace discovery can select an
-        unrelated checkout. For a non-writing drift report, use the same steps
-        with `files.diff.drv` and `files.diff.exeFilename` instead of `writer`.
+        evaluating their checks.
         Generated copies also have `checks.<system>."files/<path>"` freshness
         checks. For example:
 
         ```sh
+        system=$(nix eval --impure --raw --expr builtins.currentSystem)
         nix build --no-link -L "path:.#checks.$system.\"files/CI.md\""
         ```
 
