@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Bounded experiment workload, identical for bind and virtiofs. Not production code."""
+"""Bounded experiment workload, identical for bind and virtiofs. Not production code.
+
+--op concurrent --run NAME --commits 1000 requires an empty prepared database.
+It checks atomic pairs, process snapshots and checkpoints, not crash durability.
+"""
 import argparse
 import hashlib
 import json
 import math
+import multiprocessing
 import os
 from pathlib import Path
 import platform
@@ -35,12 +40,14 @@ def fsync_dir(path):
 
 def mount_info(root):
     matches = []
+    device = root.stat().st_dev
     for line in Path("/proc/self/mountinfo").read_text().splitlines():
         fields = line.split()
         mountpoint = fields[4]
         for escaped, plain in ((r"\040", " "), (r"\011", "\t"), (r"\012", "\n"), (r"\134", "\\")):
             mountpoint = mountpoint.replace(escaped, plain)
-        if root.is_relative_to(Path(mountpoint)):
+        if (root.is_relative_to(Path(mountpoint))
+                and fields[2] == f"{os.major(device)}:{os.minor(device)}"):
             separator = fields.index("-")
             matches.append((len(mountpoint), {"mountpoint": mountpoint,
                                              "filesystem": fields[separator + 1],
@@ -235,12 +242,276 @@ def kill_writer(args):
         os.close(fd)
 
 
+def concurrent_snapshot(con, runs):
+    rows = con.execute("SELECT run,seq,payload FROM commits ORDER BY run,seq").fetchall()
+    counts = dict.fromkeys(runs, 0)
+    for run, seq, value in rows:
+        require(run in counts, f"unexpected concurrent run: {run}")
+        require(seq == counts[run], f"noncontiguous concurrent rows: {run}:{seq}")
+        require(value == payload(run, seq), f"concurrent payload mismatch: {run}:{seq}")
+        counts[run] += 1
+    require(all(count % 2 == 0 for count in counts.values()), "half a committed pair visible")
+    return rows, [counts[run] for run in runs]
+
+
+def concurrent_worker(root, runs, role, channel, stopped, deadline):
+    con = None
+    try:
+        con = connect(root)
+        con.execute("PRAGMA wal_autocheckpoint=0")
+        if role.startswith("writer"):
+            run = runs[int(role[-1])]
+            committed, busy = 0, 0
+            while True:
+                require(channel.poll(max(0, deadline - time.monotonic())), "writer command timeout")
+                count = channel.recv()
+                if count == 0:
+                    break
+                for _ in range(count):
+                    while True:
+                        require(time.monotonic() < deadline, "writer deadline exceeded")
+                        try:
+                            con.execute("BEGIN IMMEDIATE")
+                            for seq in (2 * committed, 2 * committed + 1):
+                                con.execute("INSERT INTO commits VALUES (?,?,?)",
+                                            (run, seq, payload(run, seq)))
+                            con.commit()
+                        except sqlite3.OperationalError as error:
+                            con.rollback()
+                            require(error.sqlite_errorcode & 255 == sqlite3.SQLITE_BUSY,
+                                    f"unexpected concurrent writer error: {error}")
+                            busy += 1
+                            require(busy <= 1000, "writer busy retry bound exceeded")
+                            time.sleep(0.005)
+                            continue
+                        break
+                    committed += 1
+                    time.sleep(0.005)
+                channel.send({"event": "written", "pairs": committed, "busy_retries": busy})
+        else:
+            con.execute("BEGIN")
+            original, baseline = concurrent_snapshot(con, runs)
+            require(baseline == [2, 2], f"reader did not pin seed pairs: {baseline}")
+            channel.send({"event": "ready", "rows": baseline})
+            require(channel.poll(max(0, deadline - time.monotonic())), "reader command timeout")
+            command = channel.recv()
+            if command == "release":
+                same, counts = concurrent_snapshot(con, runs)
+                require(same == original, "pinned reader snapshot changed")
+                con.rollback()
+                _, after = concurrent_snapshot(con, runs)
+                require(all(new > old for new, old in zip(after, counts)),
+                        "writers did not progress behind pinned reader")
+                channel.send({"event": "released", "pinned_rows": counts, "fresh_rows": after,
+                              "stable_snapshot": True})
+            else:
+                require(command == "watch", "unexpected reader command")
+                same, _ = concurrent_snapshot(con, runs)
+                require(same == original, "watching reader's pinned seed snapshot changed")
+                con.rollback()
+                snapshots, busy, progress = 0, 0, False
+                first, last = None, baseline
+                while True:
+                    require(time.monotonic() < deadline, "reader deadline exceeded")
+                    try:
+                        con.execute("BEGIN")
+                        before, counts = concurrent_snapshot(con, runs)
+                        time.sleep(0.01)
+                        after, repeated = concurrent_snapshot(con, runs)
+                        require(before == after and counts == repeated, "reader snapshot changed")
+                        con.rollback()
+                    except sqlite3.OperationalError as error:
+                        con.rollback()
+                        require(error.sqlite_errorcode & 255 == sqlite3.SQLITE_BUSY,
+                                f"unexpected concurrent reader error: {error}")
+                        busy += 1
+                        require(busy <= 1000, "reader busy retry bound exceeded")
+                        time.sleep(0.005)
+                        continue
+                    require(all(new >= old for new, old in zip(counts, last)),
+                            "fresh reader snapshot lost committed pairs")
+                    snapshots += 1
+                    first = counts if first is None else first
+                    last = counts
+                    if not progress and snapshots >= 2 and all(
+                            new > old for new, old in zip(counts, baseline)):
+                        progress = True
+                        channel.send({"event": "progress", "snapshots": snapshots, "rows": counts})
+                    if stopped.is_set() and progress and all(
+                            new > old for new, old in zip(counts, first)):
+                        break
+                channel.send({"event": "done", "snapshots": snapshots, "initial_rows": baseline,
+                              "first_rows": first, "last_rows": last, "stable_snapshots": True,
+                              "whole_pairs_and_payloads": True, "busy_retries": busy,
+                              "pinned_seed_stable": True, "progress_during_watch": True})
+    except BaseException as error:
+        channel.send({"event": "error", "role": role, "error": repr(error)})
+        raise SystemExit(1)
+    finally:
+        if con is not None:
+            con.close()
+        channel.close()
+
+
+def concurrent(args):
+    """Check 8..1000 pairs/writer within 55 s; sample 16 MiB data/128 MiB WAL ceilings."""
+    require(args.commits >= 8, "concurrent requires 8..1000 transactions per writer")
+    started = time.monotonic()
+    deadline = started + 55
+    runs = [args.run + ":writer0", args.run + ":writer1"]
+    context = multiprocessing.get_context("spawn")
+    stopped = context.Event()
+    workers, channels = {}, {}
+    checkpoints, readers, writers = {}, {}, {}
+    con = None
+    wal = args.root / "portable.sqlite3-wal"
+    database = args.root / "portable.sqlite3"
+    maximum = {"database_bytes": 0, "wal_bytes": 0}
+
+    def footprint():
+        sizes = {"database_bytes": database.stat().st_size,
+                 "wal_bytes": wal.stat().st_size if wal.exists() else 0}
+        require(sizes["database_bytes"] <= 16 * 1024 * 1024, "database exceeds 16 MiB bound")
+        require(sizes["wal_bytes"] <= 128 * 1024 * 1024, "WAL exceeds 128 MiB bound")
+        for key, value in sizes.items():
+            maximum[key] = max(maximum[key], value)
+        return sizes
+
+    def receive(role, event):
+        channel = channels[role]
+        while not channel.poll(0.02):
+            require(time.monotonic() < deadline, f"concurrent timeout waiting for {role}:{event}")
+            require(workers[role].is_alive(), f"concurrent worker exited: {role}")
+        result = channel.recv()
+        require(time.monotonic() < deadline, "concurrent deadline exceeded")
+        require(result["event"] == event, f"unexpected {role} response: {result}")
+        return result
+
+    def write_batch(count):
+        for role in ("writer0", "writer1"):
+            channels[role].send(count)
+        for role in ("writer0", "writer1"):
+            writers[role] = receive(role, "written")
+
+    def checkpoint(label, mode, blocked=False):
+        before = footprint()
+        checkpoint_started = time.monotonic()
+        result = con.execute(f"PRAGMA wal_checkpoint({mode})").fetchone()
+        checkpoint_elapsed = time.monotonic() - checkpoint_started
+        after = footprint()
+        busy, frames, copied = result
+        if blocked:
+            require(frames > 0 and 0 <= copied < frames, f"checkpoint was not pinned: {result}")
+            require(busy == (0 if mode == "PASSIVE" else 1),
+                    f"unexpected pinned checkpoint status: {result}")
+        elif mode == "TRUNCATE":
+            require(before["wal_bytes"] > 32 and result == (0, 0, 0)
+                    and after["wal_bytes"] == 0, f"WAL did not truncate: {result}")
+        else:
+            require(busy == 0 and frames > 0 and copied == frames,
+                    f"checkpoint did not copy all real frames: {result}")
+        checkpoints[label] = {"mode": mode, "busy": busy, "log_frames": frames,
+                              "checkpointed_frames": copied, "elapsed_s": checkpoint_elapsed,
+                              "wal_bytes_before": before["wal_bytes"],
+                              "wal_bytes_after": after["wal_bytes"]}
+
+    try:
+        con = connect(args.root, create=True)
+        require(con.execute("SELECT count(*) FROM commits").fetchone() == (0,),
+                "concurrent requires an empty prepared database")
+        con.execute("PRAGMA wal_autocheckpoint=0")
+        require(con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone() == (0, 0, 0),
+                "cannot establish empty concurrency WAL")
+        for role in ("writer0", "writer1"):
+            parent, child = context.Pipe()
+            process = context.Process(target=concurrent_worker,
+                                      args=(args.root, runs, role, child, stopped, deadline))
+            process.start()
+            child.close()
+            channels[role], workers[role] = parent, process
+        write_batch(1)
+        for role in ("pinned", "reader0", "reader1"):
+            parent, child = context.Pipe()
+            process = context.Process(target=concurrent_worker,
+                                      args=(args.root, runs, role, child, stopped, deadline))
+            process.start()
+            child.close()
+            channels[role], workers[role] = parent, process
+            readers[role] = receive(role, "ready")
+        # All three processes hold the seed snapshot throughout this first writer advance.
+        first_batch = (args.commits - 4) // 2
+        write_batch(first_batch)
+        for role in ("reader0", "reader1"):
+            channels[role].send("watch")
+        for role in ("reader0", "reader1"):
+            readers[role]["progress"] = receive(role, "progress")
+        for role in ("writer0", "writer1"):
+            channels[role].send(args.commits - 4 - first_batch)
+        checkpoint("pinned_passive", "PASSIVE", blocked=True)
+        checkpoint("pinned_full", "FULL", blocked=True)
+        for role in ("writer0", "writer1"):
+            writers[role] = receive(role, "written")
+        stopped.set()
+        for role in ("reader0", "reader1"):
+            readers[role]["completed"] = receive(role, "done")
+        channels["pinned"].send("release")
+        readers["pinned"]["released"] = receive("pinned", "released")
+        checkpoint("released_passive", "PASSIVE")
+        for mode in ("FULL", "RESTART", "TRUNCATE"):
+            write_batch(1)
+            if mode == "TRUNCATE":
+                # TRUNCATE returns zero counts; first record its actual committed frame count.
+                checkpoint("pretruncate_passive", "PASSIVE")
+            checkpoint("released_" + mode.lower(), mode)
+        rows, counts = concurrent_snapshot(con, runs)
+        require(counts == [2 * args.commits] * 2, f"final row counts differ: {counts}")
+        integrity = con.execute("PRAGMA integrity_check").fetchall()
+        require(integrity == [("ok",)], f"concurrent integrity_check: {integrity}")
+        require(con.execute("SELECT count(*) FROM commits").fetchone() == (4 * args.commits,),
+                "final total row count differs")
+        fsync_dir(args.root)
+        final_sizes = footprint()
+        for role in ("writer0", "writer1"):
+            require(writers[role]["pairs"] == args.commits, "writer transaction count differs")
+            channels[role].send(0)
+        for role, process in workers.items():
+            process.join(timeout=max(0, deadline - time.monotonic()))
+            require(not process.is_alive() and process.exitcode == 0,
+                    f"concurrent worker did not exit cleanly: {role}")
+        emit({"event": "concurrent", "run": args.run, "python": sys.version,
+              "sqlite": sqlite3.sqlite_version, "kernel": platform.release(),
+              "journal_mode": "wal", "synchronous": "FULL", "writer_processes": 2,
+              "page_size": con.execute("PRAGMA page_size").fetchone()[0],
+              "wal_autocheckpoint": con.execute("PRAGMA wal_autocheckpoint").fetchone()[0],
+              "reader_processes": 3, "transactions_per_writer": args.commits,
+              "rows": len(rows), "pairs": len(rows) // 2, "rows_per_writer": counts,
+              "payload_bytes": len(payload(runs[0], 0)), "integrity_check": "ok",
+              "exact_payloads_and_sequences": True, "readers": readers, "writers": writers,
+              "checkpoints": checkpoints, "sampled_peak_bytes": maximum,
+              "final_bytes": final_sizes, "elapsed_s": time.monotonic() - started,
+              "deadline_s": 55, "external_durability_claim": False})
+    finally:
+        stopped.set()
+        for process in workers.values():
+            if process.is_alive():
+                process.terminate()
+        for process in workers.values():
+            process.join(timeout=0.2)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=0.2)
+        for channel in channels.values():
+            channel.close()
+        if con is not None:
+            con.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--op", required=True,
                         choices=["probe", "denied", "contend", "benchmark", "crash-writer",
-                                 "kill-writer", "verify"])
+                                 "kill-writer", "verify", "concurrent"])
     parser.add_argument("--uid", type=int)
     parser.add_argument("--gid", type=int)
     parser.add_argument("--run")
@@ -251,7 +522,7 @@ def main():
     args = parser.parse_args()
     require(args.root.is_absolute(), "root must be absolute")
     require(1 <= args.commits <= 1000, "commit bound is 1..1000")
-    if args.op in ("benchmark", "crash-writer", "kill-writer", "verify"):
+    if args.op in ("benchmark", "crash-writer", "kill-writer", "verify", "concurrent"):
         require(bool(args.run) and len(args.run) <= 128, "bounded run identity required")
     os.umask(0o077)
     if args.op == "denied":
@@ -267,6 +538,8 @@ def main():
         contend(args)
     elif args.op == "kill-writer":
         kill_writer(args)
+    elif args.op == "concurrent":
+        concurrent(args)
     elif args.op == "verify":
         evidence = json.load(sys.stdin)
         con = connect(args.root)
