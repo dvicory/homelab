@@ -236,6 +236,47 @@ def gateway_owned_workloads(workloads):
     return deployments, pods
 
 
+def gateway_scheduling_witness(raw):
+    """Fixed hints from an owned PodScheduled failure, never scheduler text."""
+    result = {"status": "unavailable", "categories": None}
+    if raw is None:
+        return result
+    if not isinstance(raw, list) or any(not isinstance(item, dict) for item in raw[:16]):
+        return {**result, "status": "malformed"}
+    if len(raw) > 16:
+        return {**result, "status": "condition-size-limit"}
+    scheduled = [item for item in raw if item.get("type") == "PodScheduled"]
+    if not scheduled:
+        return result
+    if len(scheduled) != 1 or scheduled[0].get("status") not in ("True", "False", "Unknown"):
+        return {**result, "status": "malformed"}
+    condition = scheduled[0]
+    if condition["status"] != "False" or condition.get("reason") != "Unschedulable":
+        return {**result, "status": "not-reported"}
+    message = condition.get("message")
+    if message is None or message == "":
+        return result
+    if not isinstance(message, str):
+        return {**result, "status": "malformed"}
+    if len(message) > 8192:
+        return {**result, "status": "message-size-limit"}
+    text = message.lower()
+    # ponytail: text hints can miss wording changes; prefer structured scheduler reasons if exposed.
+    categories = [category for marker, category in (
+        ("insufficient cpu", "insufficient-cpu"),
+        ("insufficient memory", "insufficient-memory"),
+        ("insufficient ephemeral-storage", "insufficient-ephemeral-storage"),
+        ("too many pods", "too-many-pods"),
+        ("untolerated taint", "untolerated-taint"),
+        ("node(s) were unschedulable", "node-unschedulable"),
+        ("didn't match pod's node affinity/selector", "node-affinity"),
+        ("didn't have free ports", "host-port"),
+        ("unbound immediate persistentvolumeclaims", "unbound-claims"),
+        ("volume node affinity conflict", "volume-node-affinity"),
+    ) if marker in text]
+    return {"status": "observed", "categories": categories or ["unclassified"]}
+
+
 def gateway_prerequisite_witness(resources, workloads, node, expectation):
     """Fixed fixture status only; no messages, addresses, names, UIDs or spec export."""
     def count(value):
@@ -249,7 +290,7 @@ def gateway_prerequisite_witness(resources, workloads, node, expectation):
 
     def conditions(raw):
         return [{
-            "type": enum(condition.get("type"), ("Accepted", "Programmed", "ResolvedRefs", "Ready", "Available", "Progressing", "ReplicaFailure", "PodScheduled", "Initialized", "ContainersReady")),
+            "type": enum(condition.get("type"), ("Accepted", "Programmed", "ResolvedRefs", "Ready", "Available", "Progressing", "ReplicaFailure", "PodScheduled", "Initialized", "ContainersReady", "MemoryPressure", "DiskPressure", "PIDPressure", "NetworkUnavailable")),
             "status": enum(condition.get("status"), ("True", "False", "Unknown")),
             "observedGeneration": count(condition.get("observedGeneration")),
             "reason": enum(condition.get("reason"), (
@@ -260,6 +301,10 @@ def gateway_prerequisite_witness(resources, workloads, node, expectation):
                 "NotAccepted", "Unschedulable", "MinimumReplicasAvailable", "MinimumReplicasUnavailable",
                 "NewReplicaSetAvailable", "ReplicaSetUpdated", "ProgressDeadlineExceeded", "FailedCreate",
                 "PodCompleted", "ContainersNotReady", "PodReady", "KubeletReady", "KubeletNotReady",
+                "KubeletHasSufficientMemory", "KubeletHasInsufficientMemory",
+                "KubeletHasNoDiskPressure", "KubeletHasDiskPressure",
+                "KubeletHasSufficientPID", "KubeletHasInsufficientPID",
+                "NetworkUnavailable", "RouteCreated",
             )),
         } for condition in (raw or [])[:16] if isinstance(condition, dict)]
 
@@ -304,6 +349,7 @@ def gateway_prerequisite_witness(resources, workloads, node, expectation):
     result["pods"] = [{
         "phase": enum((pod.get("status") or {}).get("phase"), ("Pending", "Running", "Succeeded", "Failed", "Unknown")),
         "conditions": conditions((pod.get("status") or {}).get("conditions")),
+        "scheduling": gateway_scheduling_witness((pod.get("status") or {}).get("conditions")),
         "containers": [{
             "ready": container.get("ready") is True, "restartCount": count(container.get("restartCount")),
             "states": [{"state": state, "reason": enum(value.get("reason"), (
@@ -882,15 +928,21 @@ def self_check():
     }, {
         "kind": "Pod", "metadata": {"name": sensitive, "ownerReferences": [
             {"kind": "ReplicaSet", "uid": "replica", "controller": True}]},
-        "status": {"phase": "Pending", "conditions": [{"type": "PodScheduled", "status": "False", "reason": "Unschedulable", "message": sensitive}],
+        "status": {"phase": "Pending", "conditions": [{"type": "PodScheduled", "status": "False", "reason": "Unschedulable",
+                                                      "message": "0/1 nodes are available: 1 Insufficient memory. " + sensitive}],
                    "containerStatuses": [{"name": sensitive, "ready": False, "restartCount": 0,
                                           "state": {"waiting": {"reason": "CreateContainerError", "message": "permission denied " + sensitive}}}]},
     }, {
         "kind": "Pod", "metadata": {"ownerReferences": [{"kind": "ReplicaSet", "uid": sensitive, "controller": True}]},
-        "status": {"phase": "Running"},
+        "status": {"phase": "Pending", "conditions": [{"type": "PodScheduled", "status": "False", "reason": "Unschedulable",
+                                                      "message": "1 Insufficient cpu " + sensitive}]},
     }]}, {"kind": "Node", "metadata": {"labels": {"kubernetes.io/hostname": "compute-1"}},
           "status": {"addresses": [{"type": "InternalIP", "address": sensitive}],
-                     "conditions": [{"type": "Ready", "status": "True", "reason": "KubeletReady"}]}},
+                     "conditions": [{"type": "Ready", "status": "True", "reason": "KubeletReady"},
+                                    {"type": "DiskPressure", "status": "True", "reason": "KubeletHasDiskPressure", "message": sensitive},
+                                    {"type": "MemoryPressure", "status": "False", "reason": "KubeletHasSufficientMemory"},
+                                    {"type": "PIDPressure", "status": "Unknown", "reason": sensitive},
+                                    {"type": "NetworkUnavailable", "status": sensitive, "reason": sensitive}]}},
         {"resource": "gateway", "condition": "Programmed", "status": "True", "stage": "status", "private": sensitive})
     assert sensitive not in json.dumps(gateway)
     assert gateway["waitingFor"] == {"resource": "gateway", "condition": "Programmed", "status": "True", "stage": "status"}
@@ -900,11 +952,52 @@ def self_check():
     assert not gateway["resources"][2]["ancestors"][0]["controllerMatches"] and not gateway["resources"][2]["ancestors"][0]["targetMatches"]
     assert len(gateway["deployments"]) == 2 and len(gateway["pods"]) == 1
     assert gateway["pods"][0]["conditions"][0]["reason"] == "Unschedulable"
+    assert gateway["pods"][0]["scheduling"] == {"status": "observed", "categories": ["insufficient-memory"]}
     assert gateway["pods"][0]["containers"][0]["states"][0]["errorCategory"] == "permission"
     assert gateway["node"]["hostnameMatches"] and gateway["node"]["addressTypes"] == ["InternalIP"]
+    pressure = {condition["type"]: condition for condition in gateway["node"]["conditions"]}
+    assert pressure["DiskPressure"]["status"] == "True" and pressure["DiskPressure"]["reason"] == "KubeletHasDiskPressure"
+    assert pressure["MemoryPressure"]["status"] == "False" and pressure["MemoryPressure"]["reason"] == "KubeletHasSufficientMemory"
+    assert pressure["PIDPressure"]["status"] == "Unknown" and pressure["PIDPressure"]["reason"] == "unknown"
+    assert pressure["NetworkUnavailable"]["status"] == "unknown"
     missing_gateway = gateway_prerequisite_witness({}, {}, {}, {"resource": sensitive})
     assert not any(resource["present"] for resource in missing_gateway["resources"])
     assert missing_gateway["pods"] == [] and missing_gateway["waitingFor"]["resource"] == "unknown"
+    scheduling_condition = {"type": "PodScheduled", "status": "False", "reason": "Unschedulable"}
+    for message, category in (
+        ("Insufficient cpu", "insufficient-cpu"), ("Insufficient memory", "insufficient-memory"),
+        ("Insufficient ephemeral-storage", "insufficient-ephemeral-storage"), ("Too many pods", "too-many-pods"),
+        ("node(s) had untolerated taint {private: value}", "untolerated-taint"),
+        ("node(s) were unschedulable", "node-unschedulable"),
+        ("node(s) didn't match Pod's node affinity/selector", "node-affinity"),
+        ("node(s) didn't have free ports for the requested pod ports", "host-port"),
+        ("pod has unbound immediate PersistentVolumeClaims", "unbound-claims"),
+        ("node(s) had volume node affinity conflict", "volume-node-affinity"),
+        (sensitive, "unclassified"),
+    ):
+        observed = gateway_scheduling_witness([{**scheduling_condition, "message": message + " " + sensitive}])
+        assert observed == {"status": "observed", "categories": [category]}
+        assert sensitive not in json.dumps(observed)
+    mixed = [{**scheduling_condition, "message": "1 Insufficient cpu, 1 Insufficient memory. " + sensitive},
+             {"type": "Ready", "status": "False", "message": "untolerated taint " + sensitive}]
+    assert gateway_scheduling_witness(mixed) == gateway_scheduling_witness(list(reversed(mixed))) == {
+        "status": "observed", "categories": ["insufficient-cpu", "insufficient-memory"]}
+    for raw, status in (
+        (None, "unavailable"), ([], "unavailable"), ({}, "malformed"), ([None], "malformed"),
+        ([scheduling_condition], "unavailable"), ([scheduling_condition] * 2, "malformed"),
+        ([{**scheduling_condition, "message": True}], "malformed"),
+        ([{**scheduling_condition, "status": True}], "malformed"),
+        ([{**scheduling_condition, "status": "True", "message": "Insufficient cpu"}], "not-reported"),
+        ([{**scheduling_condition, "reason": sensitive, "message": "Insufficient cpu"}], "not-reported"),
+        ([{"type": sensitive}] * 16 + [scheduling_condition], "condition-size-limit"),
+        ([{**scheduling_condition, "message": "Insufficient cpu" + " " * 8192}], "message-size-limit"),
+    ):
+        assert gateway_scheduling_witness(raw) == {"status": status, "categories": None}
+    assert gateway_scheduling_witness([{**scheduling_condition, "message": "Insufficient cpu".ljust(8192)}]) == {
+        "status": "observed", "categories": ["insufficient-cpu"]}
+    for ordered in (gateway["node"]["conditions"], list(reversed(gateway["node"]["conditions"]))):
+        projected = gateway_prerequisite_witness({}, {}, {"kind": "Node", "status": {"conditions": ordered}}, {})
+        assert {item["type"]: item for item in projected["node"]["conditions"]} == pressure
     envoy = envoy_readiness_witness(
         {"state": "INITIALIZING", "version": sensitive + "/1.39.1/clean/RELEASE/BoringSSL", "private": sensitive},
         {"stats": [{"name": "control_plane.connected_state", "value": 0},
@@ -1225,6 +1318,12 @@ def self_check():
     }
     check_acceptance(complete)
     incomplete = [None, {}, {"executed": []}]
+    failed_gateway = copy.deepcopy(complete)
+    failed_gateway.update(status="failed", fullAcceptance=False, executed=[],
+                          failurePhase="gateway-fixture-prerequisites", failureReason="command-failed",
+                          commandFailure={"returnCode": 1, "errorCategory": "condition-timeout"},
+                          gatewayPrerequisiteWitness=gateway)
+    incomplete.append(failed_gateway)
     for key in complete:
         bad = copy.deepcopy(complete)
         del bad[key]
