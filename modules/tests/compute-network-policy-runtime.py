@@ -206,7 +206,6 @@ class Guest:
         self.inputs = inputs
         self.workspace = workspace
         self.plan = json.loads((inputs / "plan.json").read_text())
-        self.legacy_started: int | None = None
 
     def kubectl(self, *args: str, namespace: str | None = None, timeout: int = 180) -> str:
         return self.runtime.kubectl(*args, namespace=namespace, timeout=timeout)
@@ -485,7 +484,6 @@ def as_before_change(lib, guest: Guest, args) -> None:
                                     "cat > /run/systemd/system/k3s.service.d/90-before-enforcer.conf "
                                     f"<<'EOF'\n{override}EOF")
     WMEM.write_text(str(STOPGAP))
-    guest.legacy_started = int(time.time())
     restart_k3s(lib, guest)
     try:
         lib.wait_for("kube-proxy in iptables mode", lambda: guest.kube_proxy_mode() == "iptables"
@@ -501,105 +499,11 @@ def as_before_change(lib, guest: Guest, args) -> None:
         raise
 
 
-def capture_legacy_state(guest: Guest, label: str) -> None:
-    """Temporary read-only diagnostic; never refresh rules or send traffic."""
-    def capture(name: str, *command: str, limit: int = 16384) -> str | None:
-        started = time.time()
-        try:
-            result = guest.lib.completed(
-                "incus", "--force-local", "--project", guest.project, "exec", guest.instance,
-                "--mode=non-interactive", "--", *command, timeout=15)
-            stdout, stderr = result.stdout.encode(), result.stderr.encode()
-            observe(f"{label}.{name}", {
-                "started": started, "completed": time.time(), "returncode": result.returncode,
-                "stdout": stdout[:limit].decode(errors="replace"),
-                "stderr": stderr[:4096].decode(errors="replace"),
-                "stdout_bytes": len(stdout), "stderr_bytes": len(stderr),
-                "truncated": len(stdout) > limit or len(stderr) > 4096,
-            })
-            return result.stdout if result.returncode == 0 else None
-        except Exception as error:
-            observe(f"{label}.{name}", {"error": type(error).__name__, "detail": str(error)[:400]})
-            return None
-
-    try:
-        observe(f"{label}.host", {
-            "at": time.time(), "legacy_started": guest.legacy_started,
-            "wmem_default": WMEM.read_text().strip(),
-            "wmem_max": Path("/proc/sys/net/core/wmem_max").read_text().strip(),
-            "selected": guest.plan["selected"], "filler": guest.plan["filler"],
-        })
-        inventory = capture("inventory", "k3s", "kubectl", "get", "pods,nodes,networkpolicies",
-                            "--all-namespaces", "--request-timeout=10s", "-o", "json", limit=1048576)
-        tools = ("pid=$(systemctl show --value -p MainPID k3s); "
-                 "export PATH=\"$(tr '\\0' '\\n' < /proc/$pid/environ | sed -n 's/^PATH=//p')\"; ")
-        saved = capture("iptables.filter", "sh", "-c", tools + "iptables-save -t filter", limit=1048576)
-        if saved is not None:
-            forward = "\n".join(line for line in saved.splitlines()
-                                if line.startswith("-A KUBE-ROUTER-FORWARD ")).encode()
-            observe(f"{label}.iptables.forward", {
-                "stdout": forward[:262144].decode(errors="replace"), "stdout_bytes": len(forward),
-                "truncated": len(forward) > 262144,
-            })
-        since = f"--since=@{guest.legacy_started}" if guest.legacy_started is not None else "-b"
-        capture("k3s.journal", "journalctl", "-u", "k3s", since, "-n", "200",
-                "--no-pager", "-o", "short-iso", limit=65536)
-        capture("k3s", "sh", "-c",
-                "systemctl show k3s -p MainPID -p ExecStart -p DropInPaths; "
-                "pid=$(systemctl show --value -p MainPID k3s); "
-                "tr '\\0' '\\n' < /proc/$pid/cmdline | grep -E '^--(disable-network-policy|kube-proxy-arg=)'; "
-                "proxy=$(tr '\\0' '\\n' < /proc/$pid/cmdline | sed -n 's/^--kube-proxy-arg=config=//p'); "
-                'printf "proxy_config=%s\\n" "$proxy"; if [ -n "$proxy" ]; then cat "$proxy"; fi; '
-                'for file in "$1" "$2"; do printf "\\n%s\\n" "$file"; '
-                'if [ -f "$file" ]; then cat "$file"; else printf "absent\\n"; fi; done; '
-                'for key in wmem_default wmem_max; do printf "\\n%s=" "$key"; '
-                'cat "/proc/sys/net/core/$key"; done',
-                "legacy-state", "/run/systemd/system/k3s.service.d/90-before-enforcer.conf",
-                "/etc/rancher/k3s/config.yaml.d/50-disable-network-policy.yaml")
-        if inventory is not None and saved is not None:
-            # Mirror selected_pods against this one inventory, not a later API read.
-            names, filler = guest.plan["names"], guest.plan["filler"]
-            selected = {
-                (pod["metadata"]["namespace"], pod["metadata"]["name"]): pod["status"].get("podIP", "")
-                for pod in json.loads(inventory)["items"]
-                if pod["kind"] == "Pod" and pod["status"].get("phase") not in ("Succeeded", "Failed")
-                and not pod["spec"].get("hostNetwork")
-                and ((pod["metadata"]["name"] in guest.plan["selected"]
-                      and names.get(pod["metadata"]["name"]) == pod["metadata"]["namespace"])
-                     or (pod["metadata"]["namespace"] == filler["namespace"]
-                         and pod["metadata"]["name"].startswith(filler["name"] + "-")))
-            }
-            chains = {}
-            for line in saved.splitlines():
-                match = POD_CHAIN.match(line)
-                if match:
-                    chains[(match["namespace"], match["name"])] = match["ip"]
-            observe(f"{label}.chains", {
-                "selected": {f"{ns}/{name}": ip for (ns, name), ip in selected.items()},
-                "parsed": {f"{ns}/{name}": ip for (ns, name), ip in chains.items()},
-                "missing": sorted(f"{ns}/{name}@{ip}" for (ns, name), ip in selected.items()
-                                  if chains.get((ns, name)) != ip),
-            })
-    except Exception as error:
-        observe(f"{label}.capture", {"error": type(error).__name__, "detail": str(error)[:400]})
-
-
 def migrate(lib, guest: Guest, args) -> None:
     """From K3s's embedded controller to the committed enforcer, in the
     runbook's order, with a refused Pod probing throughout."""
     runtime = guest.runtime
-    try:
-        capture_legacy_state(guest, "embedded controller.pre_wait")
-    except Exception:
-        pass  # Observation must not introduce a new scenario failure.
-    try:
-        guest.wait_ready("embedded controller", lambda: not guest.router_chains_missing(), timeout=900)
-    except Exception:
-        try:
-            capture_legacy_state(guest, "embedded controller.failure")
-        except Exception:
-            pass  # Diagnostic failure must not replace the original wait failure.
-        raise
+    guest.wait_ready("embedded controller", lambda: not guest.router_chains_missing(), timeout=900)
     observe("migration.before", {"router_rules": guest.router_rules(), "pods": len(guest.active())})
     lib.check(not guest.reaches("stranger", "radarr", 7878), "before migration: kube-router refuses the stranger")
     stranger = guest.watch_start("stranger", "radarr", 7878)
