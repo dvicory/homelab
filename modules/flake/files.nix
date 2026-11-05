@@ -15,13 +15,30 @@
         program = lib.getExe (
           pkgs.writeShellApplication {
             name = exeFilename;
-            runtimeInputs = [ pkgs.jujutsu ];
+            runtimeInputs = [
+              pkgs.gitMinimal
+              pkgs.jujutsu
+            ];
             text = ''
-              # Discover the workspace without importing an inherited Git HEAD into JJ.
-              if root=$(jj --ignore-working-copy root 2>/dev/null); then
-                GIT_DIR=$(jj --ignore-working-copy git root)
-                export GIT_DIR GIT_WORK_TREE="$root"
-              fi
+              # The nearest checkout owns the destination, not inherited Git state
+              # or a different VCS's enclosing repository.
+              unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+              root=$(pwd -P)
+              while true; do
+                if [[ -e "$root/.git" || -L "$root/.git" ]]; then
+                  GIT_DIR=$(git --git-dir="$root/.git" rev-parse --absolute-git-dir)
+                  break
+                elif [[ -e "$root/.jj" || -L "$root/.jj" ]]; then
+                  GIT_DIR=$(jj --ignore-working-copy --repository "$root" git root)
+                  break
+                elif [[ "$root" == / ]]; then
+                  printf '%s\n' '${exeFilename}: no Git or JJ checkout found' >&2
+                  exit 1
+                fi
+                root=''${root%/*}
+                root=''${root:-/}
+              done
+              export GIT_DIR GIT_WORK_TREE="$root"
               exec ${lib.getExe drv} "$@"
             '';
           }

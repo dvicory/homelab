@@ -65,6 +65,8 @@ let
     "storage-roots-contracts"
     "mergerfs-contracts"
     "identity-contracts"
+    "homarr-contracts"
+    "homarr-encryption-key"
     "public-edge-contracts"
     "idmap-fixtures"
     "pod-security-contracts"
