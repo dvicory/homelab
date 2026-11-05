@@ -51,5 +51,7 @@ spec:
       server: https://kubernetes.default.svc
     - namespace: monitoring
       server: https://kubernetes.default.svc
+    - namespace: portal
+      server: https://kubernetes.default.svc
   sourceRepos:
     - https://github.com/dvicory/homelab.git

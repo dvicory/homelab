@@ -170,6 +170,9 @@ let
             route.exposure == "public"
             && (identityNormal || (route.auth != "admin" && name != "idm"))
             && (name != "requests" || cluster.settings.kubernetes.services.seerr.phase == "ready")
+            && (
+              name != "home" || (identityNormal && cluster.settings.kubernetes.services.homarr.phase == "ready")
+            )
           ) cluster.routes;
           tlsConfig = cfg.tls;
           selectedTLS = if variant == 0 then tlsConfig.primary else tlsConfig.backup;

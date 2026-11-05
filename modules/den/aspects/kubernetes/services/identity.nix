@@ -161,6 +161,8 @@
           ];
         };
       };
+      homarrRoute = cluster.routes.home;
+      homarrUrls = routeUrls homarrRoute;
       clients =
         assert lib.assertMsg (
           adminRoutes ? argocd
@@ -181,6 +183,26 @@
                 name = argocdOidc.secretName;
                 key = argocdOidc.secretKey;
                 labels."app.kubernetes.io/part-of" = "argocd";
+              }
+            ];
+          };
+          homarr = {
+            displayName = "Homarr";
+            landing = "${builtins.head homarrUrls}/";
+            redirects = map (url: "${url}/api/auth/callback/oidc") homarrUrls;
+            eligibleGroup = "homarr-users";
+            scopes = [
+              "openid"
+              "profile"
+              "email"
+              "groups_name"
+            ];
+            secrets = [
+              {
+                namespace = homarrRoute.namespace;
+                name = "homarr-oidc";
+                key = "clientSecret";
+                labels = { };
               }
             ];
           };
@@ -324,6 +346,15 @@
         groups.${householdGroup} = {
           members = [ ];
           overwriteMembers = false;
+        };
+        # One eligibility group reuses the provisioner's single-group scope
+        # map. Nested membership admits both audiences without granting admin.
+        groups.homarr-users = {
+          members = [
+            adminGroup
+            householdGroup
+          ];
+          overwriteMembers = true;
         };
         persons = lib.mapAttrs (name: user: {
           displayName = if user.identity.displayName != "" then user.identity.displayName else name;
@@ -773,6 +804,21 @@
                     {
                       namespaceSelector.matchLabels."kubernetes.io/metadata.name" = grafanaRoute.namespace;
                       podSelector.matchLabels = grafanaRoute.backendPodSelector;
+                    }
+                  ];
+                  ports = [
+                    {
+                      protocol = "TCP";
+                      port = 8443;
+                    }
+                  ];
+                }
+                # Homarr's OIDC backchannel follows the same issuer DNS rewrite.
+                ++ lib.optional normal {
+                  from = [
+                    {
+                      namespaceSelector.matchLabels."kubernetes.io/metadata.name" = homarrRoute.namespace;
+                      podSelector.matchLabels = homarrRoute.backendPodSelector;
                     }
                   ];
                   ports = [
