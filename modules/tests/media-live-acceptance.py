@@ -1048,18 +1048,6 @@ console.log(queued);''', waiter_pid)
             rejected(lambda: verify_arr("sonarr"), "missing native root folder")
             reconcile_configarr()
             verify_arr("sonarr")
-            rotated_baseline = arr_snapshot()
-            docker("rm", "-f", "-v", containers["sabnzbd"])
-            runtime["SABNZBD_API_KEY"] = secrets.token_hex(32)
-            reconcile_configarr(failure=True)
-            require(arr_snapshot() == rotated_baseline, "failed SAB handshake changed visible Arr configuration")
-            initialize_sab("sab-init-rotated")
-            start("sabnzbd", 8080, restart=True)
-            ready(request, ports["sabnzbd"], "/api?" + urlencode({"mode": "version", "output": "json", "apikey": runtime["SABNZBD_API_KEY"]}))
-            reconcile_configarr()
-            for app in ("radarr", "sonarr"):
-                verify_arr(app)
-                require(one(api(app, "/downloadclient"), "name", "SABnzbd (Homelab)")["id"] == one(baseline[app]["/downloadclient"], "name", "SABnzbd (Homelab)")["id"], "credential rotation replaced native client identity")
 
             def verify_libraries():
                 folders = jellyfin("/Library/VirtualFolders", key=owner_token)
@@ -1199,6 +1187,104 @@ server.serve_forever()
                 return result
             seerr_baseline = verify_seerr()
             docker("rm", "-f", "-v", secret_server)
+
+            # Existing-state rotation: fence the old writers BEFORE publication.
+            # Docker exercises the native processes/retained volumes, not Argo
+            # scheduling or Kubernetes foreground Job garbage collection.
+            rotation_state = arr_snapshot()
+            rotation_tag = api("radarr", "/tag", "POST", {"label": "rotation-preserved"})
+            old_radarr_key, old_sab_key = keys["radarr"], runtime["SABNZBD_API_KEY"]
+            old_ids = {app: docker("inspect", "--format", "{{.Id}}", containers[app])
+                       for app in ("radarr", "sabnzbd")}
+            sab_before = request(ports["sabnzbd"], "/api?" + urlencode({
+                "mode": "get_config", "output": "json", "apikey": old_sab_key}))["config"]
+            # Hold actual old-generation helpers inside native API requests.
+            # Process-held locks serialize writes but do not fence generations.
+            for app in ("radarr", "seerr"):
+                docker("pause", containers[app])
+            old_writers = (reconcile_configarr(detached=True, fetch=False),
+                           reconcile_seerr(detached=True))
+            for lock in ("configarr", "seerr"):
+                deadline = time.monotonic() + 10
+                while not lock_held(lock):
+                    require(time.monotonic() < deadline, "old-generation writer did not acquire its lock")
+                    time.sleep(0.05)
+            for writer in old_writers:
+                docker("rm", "-f", "-v", writer)
+                inspected = subprocess.run([*docker_prefix, "container", "inspect", writer],
+                                           capture_output=True, timeout=30, env=docker_env)
+                require(inspected.returncode == 1, "old-generation writer survived removal")
+            for app in ("radarr", "seerr"):
+                docker("unpause", containers[app])
+            require(not lock_held("configarr") and not lock_held("seerr"),
+                    "retired generation retained a writer lock")
+
+            keys["radarr"] = runtime["RADARR_API_KEY"] = secrets.token_hex(32)
+            runtime["SABNZBD_API_KEY"] = secrets.token_hex(32)
+            copy_text("secrets/RADARR_API_KEY", runtime["RADARR_API_KEY"] + "\n")
+            # Publication alone cannot change a running Arr environment or
+            # SAB's retained INI. Both replacement keys are still refused.
+            denied(lambda: api("radarr", "/system/status"))
+            denied(lambda: request(ports["sabnzbd"], "/api?" + urlencode({
+                "mode": "get_config", "output": "json", "apikey": runtime["SABNZBD_API_KEY"]})),
+                   statuses=(403,))
+            api("radarr", "/system/status", key=old_radarr_key)
+            request(ports["sabnzbd"], "/api?" + urlencode({
+                "mode": "get_config", "output": "json", "apikey": old_sab_key}))
+            for app in ("radarr", "sabnzbd"):
+                docker("stop", "--time", "30", containers[app])
+                docker("rm", "-v", containers[app])
+            initialize_sab("sab-init-rotated")  # A main-container restart omits this.
+            start("radarr", 7878, restart=True)
+            start("sabnzbd", 8080, restart=True)
+            ready(request, ports["radarr"], "/api/v3/system/status", key=keys["radarr"])
+            ready(request, ports["sabnzbd"], "/api?" + urlencode({
+                "mode": "get_config", "output": "json", "apikey": runtime["SABNZBD_API_KEY"]}))
+            for app in ("radarr", "sabnzbd"):
+                require(docker("inspect", "--format", "{{.Id}}", containers[app]) != old_ids[app],
+                        "rotation did not replace an affected application")
+            denied(lambda: api("radarr", "/system/status", key=old_radarr_key))
+            denied(lambda: request(ports["sabnzbd"], "/api?" + urlencode({
+                "mode": "get_config", "output": "json", "apikey": old_sab_key})), statuses=(403,))
+            # Persisted dependent connections still carry the old generation.
+            stale_client = one(api("sonarr", "/downloadclient"), "name", "SABnzbd (Homelab)")
+            denied(lambda: api("sonarr", "/downloadclient/test", "POST", stale_client), statuses=(400,))
+            stale_application = one(api("prowlarr", "/applications"), "name",
+                                    "homelab-" + policy["arr"]["radarr"]["standard"]["name"])
+            denied(lambda: api("prowlarr", "/applications/test", "POST", stale_application), statuses=(400,))
+            stale_server = one(seerr_api("/settings/radarr"), "name", "Radarr (Homelab)")
+            denied(lambda: request(ports["seerr"], "/api/v1/settings/radarr/test",
+                                   key=keys["seerr"], method="POST", body=stale_server),
+                   statuses=(500,))
+            reconcile_configarr(failure=True, overrides={"SABNZBD_API_KEY": old_sab_key}, fetch=False)
+            require(arr_snapshot() == rotation_state, "failed SAB handshake changed visible Arr configuration")
+            reconcile_configarr(fetch=False)  # Also repairs Prowlarr applications.
+            reconcile_seerr()
+            adopted_state = arr_snapshot()
+            for app in ("radarr", "sonarr"):
+                verify_arr(app)  # Includes native SAB connection tests.
+                for path in ("/rootfolder", "/qualityprofile", "/customformat"):
+                    require(adopted_state[app][path] == rotation_state[app][path],
+                            "rotation changed retained Arr catalogue/policy records")
+                require(one(api(app, "/downloadclient"), "name", "SABnzbd (Homelab)")["id"] ==
+                        one(rotation_state[app]["/downloadclient"], "name", "SABnzbd (Homelab)")["id"],
+                        "rotation replaced the native download-client identity")
+            verify_prowlarr()  # Native Arr connection tests, not Secret equality.
+            require({item["name"]: item["id"] for item in api("prowlarr", "/applications")} == prowlarr_ids,
+                    "rotation replaced Prowlarr connection identities")
+            require(api("radarr", "/tag/" + str(rotation_tag["id"])) == rotation_tag,
+                    "rotation lost retained Arr application data")
+            sab_after = request(ports["sabnzbd"], "/api?" + urlencode({
+                "mode": "get_config", "output": "json", "apikey": runtime["SABNZBD_API_KEY"]}))["config"]
+            require(all(sab_after[name] == sab_before[name] for name in ("categories", "servers")),
+                    "rotation changed retained SAB categories/providers")
+            require(docker("exec", containers["radarr"], "/command/s6-setuidgid", "abc",
+                           "/bin/cat", downloaded) == "shared download payload",
+                    "rotation lost SAB's completed download")
+            rotated_seerr = verify_seerr()  # Native Arr-backed request selector too.
+            require(all(rotated_seerr[app]["id"] == seerr_baseline[app]["id"] for app in rotated_seerr),
+                    "rotation replaced Seerr connection identities")
+            seerr_baseline = rotated_seerr
             # Unmarked connections, including the generic names and a 4K tier
             # with no declared role, are UI-owned. A marked 4K connection left
             # by an earlier declared role is managed and must be removed.

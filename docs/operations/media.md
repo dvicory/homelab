@@ -115,6 +115,306 @@ Per-app default/zero scores and exclusions are selected in
    succeed and inspect the actual profile qualities, cutoff and scores
    in both apps.
 
+## Rotate media API keys
+
+**Separate live-change approval required.** This is an operator procedure,
+not an automatic rotation mechanism. The example rotates `RADARR_API_KEY`
+and `SABNZBD_API_KEY` on an **existing**, initialized stack. It does not
+reset application state. Rehearse with `media-live-acceptance` on disposable
+storage first; that runner proves native API adoption and integration
+recovery, not Argo scheduling, host staging or production storage.
+
+A runtime-secret generation acknowledgment proves publication only.
+Radarr/Sonarr/Prowlarr read their Secret-backed environment at process
+creation. SABnzbd's `config` initContainer writes the key to retained
+`sabnzbd.ini`; restarting only its main container is insufficient.
+Replace the affected **Pods**, then reconcile the dependent connections:
+
+| Changed value | Consumer replacement | Dependent reconciliation |
+| --- | --- | --- |
+| Arr instance API key | That instance's Deployment | Configarr's Prowlarr application and Seerr's managed Arr server |
+| `SABNZBD_API_KEY` or Usenet credentials | `deployment/sabnzbd` (reruns `config`) | Configarr's `SABnzbd (Homelab)` clients in every Arr instance |
+| `PROWLARR_API_KEY` | `deployment/prowlarr` | Configarr |
+| `SEERR_API_KEY` | `statefulset/seerr` | Seerr helper |
+
+Do not assume a Secret volume update refreshes a helper that already read
+it. `concurrencyPolicy: Forbid` covers only one CronJob, and the shared
+process locks serialize writers without fencing generations. Neither
+prevents an old Job from later restoring an old connection credential.
+`BeforeHookCreation` removes only the fixed-name hook at its next run,
+not scheduled Jobs. Fence **all** old writers before publication.
+
+### Prepare and fence writers
+
+Reserve a maintenance window: Arr requests/imports and SAB downloads can
+be interrupted between Pod replacement and connection recovery. Drain
+active downloads, pause the SAB queue in its native UI and defer requests.
+Preserve catalogue/queue/history and media baselines; do not delete PVCs,
+INI files, databases, lock files or coordination caches. Have the original
+encrypted-source revision and its host deployment ready **before**
+changing anything. This is not atomic or zero-outage rotation.
+For this two-consumer example, book 45 minutes for forward adoption and
+another 45 minutes for recovery; prebuild both host deployments first.
+Bound each Pod replacement to 600 seconds and the full reconciliation to
+900 seconds. Start rollback on the first failure/timeout or at the forward
+deadline, rather than retrying indefinitely. Unavailable dependencies can
+prevent recovery even within that budget; leave reconciliation fenced
+and escalate, never initialize new data.
+
+Use one private Bash session on the physical host with `kubectl` explicitly
+configured for the guest cluster, Python 3, native Argo CLI access and root
+host/Incus access. Do not use shell tracing, terminal recording or shared
+logs. Replace the revision/context placeholders with reviewed values.
+Run each step separately and stop on any nonzero status:
+
+```sh
+set +x
+umask 077
+CONTEXT=<guest-kubeconfig-context>
+BEFORE_REV=<original-encrypted-source-commit>
+ROTATION_REV=<reviewed-replacement-source-commit>
+k() { kubectl --context "$CONTEXT" "$@"; }
+private=$(mktemp -d /dev/shm/media-rotation.XXXXXX)
+k -n media get secret media-runtime -o json >"$private/old.json"
+for app in apps media-configuration; do
+  k -n argocd get application "$app" -o json >"$private/$app.json"
+  k -n argocd patch application "$app" --type merge \
+    -p '{"spec":{"syncPolicy":{"automated":null}}}'
+done
+```
+
+Keep the root `apps` held or it can restore child automation. Holds do not
+cancel an active operation or its retry. Let both Applications become idle,
+or terminate the active operation with `argocd app terminate-op <app>`;
+wait with `argocd app wait apps media-configuration --operation --timeout 120`.
+Confirm neither has a pending `.operation` nor a Running/Terminating
+operation, and that both automated policies remain absent before continuing.
+No other operator may sync these Applications during the window.
+
+Suspend schedules, then foreground-delete every matching hook/scheduled
+Job, including pending, failed and completed Jobs. Select by the **Pod
+template** label: these Jobs do not have that label on their own metadata.
+Foreground deletion and the final Pod check ensure old processes cannot
+resume or retry after publication:
+
+```sh
+for cron in media-configarr media-config-seerr; do
+  k -n media patch cronjob "$cron" --type merge -p '{"spec":{"suspend":true}}'
+done
+k -n media get jobs -o json | python3 -c '
+import json, sys
+for job in json.load(sys.stdin)["items"]:
+    labels = job["spec"]["template"]["metadata"].get("labels", {})
+    if labels.get("app.kubernetes.io/name") in ("media-configarr", "media-config-seerr"):
+        print(job["metadata"]["name"])
+' >"$private/old-jobs"
+while IFS= read -r job; do
+  k -n media delete job "$job" --cascade=foreground --wait=true --timeout=120s
+done <"$private/old-jobs"
+test -z "$(k -n media get pods \
+  -l 'app.kubernetes.io/name in (media-configarr,media-config-seerr)' -o name)"
+k -n media get cronjobs media-configarr media-config-seerr
+```
+
+Both CronJobs must remain suspended, no matching Jobs/Pods may reappear,
+and both Argo holds must persist. A timeout or surviving writer is a stop,
+not permission to proceed. Keep this fence in place during rollback too.
+
+### Publish, adopt, reconcile
+
+Edit only the intended encrypted sources using the
+[runtime-secret procedure](../operations.md#runtime-secret-references),
+rekey and deploy the reviewed host configuration using
+[Deploy configuration](../operations.md#deploy-configuration).
+For this example the host sources are
+`.secrets/hosts/compute-1/media--media-runtime--RADARR_API_KEY.age`
+and `.secrets/hosts/compute-1/media--media-runtime--SABNZBD_API_KEY.age`.
+Do not rotate by editing the Kubernetes Secret or by blindly generating
+every declared secret. Keep the original encrypted artifacts recoverable.
+
+On the host, explicitly restage, run the guest publisher and compare its
+acknowledgment to the staged generation without printing either key:
+
+```sh
+sudo systemctl restart compute-stage-secrets.service
+sudo incus --project compute exec compute-1 -- \
+  systemctl restart kubernetes-runtime-secrets.service
+sudo incus --project compute exec compute-1 -- sh -ec '
+  IFS=" " read -r generation rest < /srv/secrets/runtime-secrets.commit
+  test "$generation" = "generation=$(cat /var/lib/homelab-runtime-secrets/applied-generation)"
+'
+k -n media get secret media-runtime -o json >"$private/new.json"
+```
+
+This acknowledgment does **not** prove adoption. Replace the affected
+Pods using their single-replica `Recreate` Deployments, not a second
+ad-hoc Pod mounting the same state. Record old UIDs first:
+
+```sh
+k -n media get pods -l 'app.kubernetes.io/name in (radarr,sabnzbd)' \
+  -o custom-columns=NAME:.metadata.name,UID:.metadata.uid
+k -n media rollout restart deployment/radarr deployment/sabnzbd
+for app in radarr sabnzbd; do
+  k -n media rollout status deployment/"$app" --timeout=600s
+done
+k -n media get pods -l 'app.kubernetes.io/name in (radarr,sabnzbd)' \
+  -o custom-columns=NAME:.metadata.name,UID:.metadata.uid,INIT:.status.initContainerStatuses
+```
+
+Require new UIDs, no surviving old Pod and SAB's `config` initializer
+terminated successfully. Readiness alone is not authenticated API proof.
+Then sync the **whole** integration Application, not a selective-resource
+sync (which skips hooks). This reapplies the declared CronJobs, permitting
+only new-generation executions now that consumers have adopted:
+
+```sh
+argocd app sync media-configuration --revision "$ROTATION_REV" --timeout 900
+argocd app wait media-configuration --sync --health --operation --timeout 60
+k -n media wait --for=condition=complete job/media-configarr \
+  job/media-config-seerr --timeout=60s
+```
+
+The wave-1 Configarr hook repairs Arr download clients **and** Prowlarr
+`homelab-*` applications; there is no separate Prowlarr Job. The wave-2
+Seerr hook repairs managed Arr servers only after Configarr. A CLI timeout
+does not terminate an Argo operation: on failure terminate/drain it, suspend
+the CronJobs again and repeat the foreground-deletion fence before rollback.
+
+### Private native verification
+
+Forward the Services on operator-loopback only in separate terminals.
+Set `CONTEXT` to the same explicit guest context in each terminal; run one
+forward per terminal and stop each afterward:
+
+```sh
+kubectl --context "$CONTEXT" -n media port-forward service/radarr 17878:7878
+kubectl --context "$CONTEXT" -n media port-forward service/sabnzbd 18080:8080
+kubectl --context "$CONTEXT" -n media port-forward service/prowlarr 19696:9696
+kubectl --context "$CONTEXT" -n media port-forward service/seerr 15055:5055
+```
+
+In the private session, this checks actual authenticated APIs, old-key
+refusal, Arr→SAB, Prowlarr→Arr and Seerr→Arr handshakes plus the native
+Seerr request selector. Values remain in memory or restrictive tmpfs,
+never curl arguments or printed response bodies:
+
+```sh
+cat >"$private/check.py" <<'PY'
+import base64, json, sys
+from urllib.error import HTTPError
+from urllib.parse import urlencode
+from urllib.request import ProxyHandler, Request, build_opener
+def keys(path):
+    return {k: base64.b64decode(v).decode().rstrip("\r\n")
+            for k, v in json.load(open(path))["data"].items()}
+def call(port, path, key, body=None):
+    request = Request("http://127.0.0.1:" + str(port) + path,
+                      None if body is None else json.dumps(body).encode(),
+                      {"X-Api-Key": key, "Content-Type": "application/json"})
+    with build_opener(ProxyHandler({})).open(request, timeout=15) as response:
+        raw = response.read()
+        return json.loads(raw) if raw else None
+def sab(key):
+    return call(18080, "/api?" + urlencode(
+        {"mode": "get_config", "output": "json", "apikey": key}), "")
+try:
+    current = keys(sys.argv[1])
+    previous = keys(sys.argv[2]) if len(sys.argv) == 3 else None
+    if previous is not None:
+        assert current["RADARR_API_KEY"] != previous["RADARR_API_KEY"]
+        assert current["SABNZBD_API_KEY"] != previous["SABNZBD_API_KEY"]
+    call(17878, "/api/v3/system/status", current["RADARR_API_KEY"])
+    sab(current["SABNZBD_API_KEY"])
+    if previous is not None:
+        for probe, code in ((lambda: call(17878, "/api/v3/system/status", previous["RADARR_API_KEY"]), 401),
+                            (lambda: sab(previous["SABNZBD_API_KEY"]), 403)):
+            try:
+                probe()
+            except HTTPError as error:
+                assert error.code == code
+            else:
+                raise AssertionError("previous key still accepted")
+    client, = [c for c in call(17878, "/api/v3/downloadclient", current["RADARR_API_KEY"])
+               if c["name"] == "SABnzbd (Homelab)"]
+    call(17878, "/api/v3/downloadclient/test", current["RADARR_API_KEY"], client)
+    application, = [a for a in call(19696, "/api/v1/applications", current["PROWLARR_API_KEY"])
+                    if a["name"] == "homelab-radarr"]
+    call(19696, "/api/v1/applications/test", current["PROWLARR_API_KEY"], application)
+    server, = [s for s in call(15055, "/api/v1/settings/radarr", current["SEERR_API_KEY"])
+               if s["name"] == "Radarr (Homelab)"]
+    call(15055, "/api/v1/settings/radarr/test", current["SEERR_API_KEY"], server)
+    selector = call(15055, "/api/v1/service/radarr/" + str(server["id"]), current["SEERR_API_KEY"])
+    assert selector["profiles"] and selector["server"]["id"] == server["id"]
+except Exception:
+    sys.exit("Media credential adoption/integration check failed; response suppressed")
+print("Expected generation and native connections healthy" +
+      ("; retired keys denied" if previous is not None else ""))
+PY
+PYTHONOPTIMIZE= python3 "$private/check.py" "$private/new.json" "$private/old.json"
+```
+
+Also test `SABnzbd (Homelab)` in **every** Arr instance's native UI, and
+compare retained catalogue IDs/counts, profile/client/server identities,
+SAB queue/history/categories/providers and media files against the baseline.
+Update any UI-owned/external clients separately: managed reconciliation
+deliberately does not rewrite them. Do not resume downloads/requests
+until the checks pass. Gateway auth and NetworkPolicy stay unchanged.
+
+### Roll back the original generation
+
+1. Reestablish the full writer fence above, including terminating/draining
+   any current Argo operation, suspending both CronJobs and foreground
+   deleting **all** integration Jobs/Pods. Keep root/child automation held.
+2. Restore the exact **original encrypted values**, not new random keys.
+   In a reviewed recovery checkout, restore the two affected host artifacts
+   from `$BEFORE_REV` (and their corresponding original encrypted source/
+   rekey artifacts if managed separately), commit the focused recovery and
+   deploy its host configuration through the normal procedure. For the
+   two paths above:
+
+   ```sh
+   git restore --source="$BEFORE_REV" -- \
+     .secrets/hosts/compute-1/media--media-runtime--RADARR_API_KEY.age \
+     .secrets/hosts/compute-1/media--media-runtime--SABNZBD_API_KEY.age
+   ```
+
+3. Repeat restaging, guest publication and generation acknowledgment.
+   Replace Radarr and SAB Pods again (including SAB's initializer), then
+   sync the full integration Application at the reviewed **recovery**
+   revision. The original Secret alone does not roll back consumers or
+   stored connections.
+4. Test with the **saved original keys**, not merely whatever the restored
+   Secret contains, and reject the forward generation:
+
+   ```sh
+   PYTHONOPTIMIZE= python3 "$private/check.py" "$private/old.json" "$private/new.json"
+   ```
+
+   If forward publication never succeeded (no distinct `new.json` was
+   captured), run the same command with only `old.json`: it proves original
+   credentials and dependent recovery without claiming denial of an
+   unpublished generation. Otherwise the two-file denial check is required.
+   Require unchanged retained data and recover UI-owned clients too.
+   Never restore a database just to roll back an API key.
+
+After either successful rotation or successful rollback, restore the saved
+child policy first and the root policy last, preserving any preexisting
+holds rather than blindly enabling automation:
+
+```sh
+for app in media-configuration apps; do
+  policy=$(python3 -c 'import json,sys; print(json.dumps({"spec":{"syncPolicy":json.load(open(sys.argv[1]))["spec"].get("syncPolicy")}}))' "$private/$app.json")
+  k -n argocd patch application "$app" --type merge -p "$policy"
+done
+k -n media get cronjobs media-configarr media-config-seerr
+rm -rf -- "$private"
+unset private policy
+```
+
+Confirm the declared schedules and saved policies are restored, then
+unpause SAB and resume requests. On failed recovery leave the writers
+fenced; do not silently resume automation or erase recovery evidence.
+
 ## Reconciliation failures
 
 Configarr and the Seerr helper run after configuration sync and every six
