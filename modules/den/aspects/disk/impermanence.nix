@@ -14,8 +14,16 @@
 
     nixos = { host, config, pkgs, ... }: let
       poolName = host.zfs.rootPool.name or null;
+      source = inputs.nixpkgs.legacyPackages.${host.system}.applyPatches {
+        name = "impermanence-systemd-initrd-source";
+        src = inputs.impermanence.outPath;
+        patches = [ ./impermanence-systemd-initrd.patch ];
+        # Preserve the fork's mount requirements; remove only scripted initrd.
+        outputHashMode = "recursive";
+        outputHash = "sha256-4S8Txz69yLaUZmGppmnnPsllH3iuu8ImgQ/XNrBf898=";
+      };
     in {
-      imports = [ inputs.impermanence.nixosModules.impermanence ];
+      imports = [ "${source}/nixos.nix" ];
 
       config = {
         fileSystems."/persist".neededForBoot = true;
@@ -26,7 +34,7 @@
 
       }
       // lib.optionalAttrs (host.hasAspect den.aspects.disk.zfs) {
-        boot.initrd = lib.mkIf config.boot.initrd.systemd.enable {
+        boot.initrd = lib.mkIf config.boot.initrd.enable {
           systemd.storePaths = [ inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.initrdZfsRollback ];
 
           systemd.services.initrd-zfs-rollback = {
