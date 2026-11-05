@@ -31,18 +31,24 @@ let
         builtins.attrNames (lib.filterAttrs (_: enabled: enabled) application.requirements)
       )
     }.
-    ${lib.optionalString (application ? loopbackHost) ''
-      The disposable executor must resolve `${application.loopbackHost}` to
-      `127.0.0.1`; the application does not edit host resolution.
-    ''}${lib.optionalString (application.requirements.ownedStorage or false) ''
-      Use an exclusive disposable runner with owned Docker and scratch storage,
-      never a shared daemon or a production host. Prefer the hosted executor,
-      which prepares this storage, over running the command on a workstation.
-    ''}${lib.optionalString (application ? reportFile) ''
-      Run in an owned evidence directory where `${application.reportFile}` does
-      not already exist. Preserve the sanitized report, not fixture credentials
-      or raw logs.
-    ''}
+    ${
+      lib.optionalString (application ? loopbackHost) ''
+        The disposable executor must resolve `${application.loopbackHost}` to
+        `127.0.0.1`; the application does not edit host resolution.
+      ''
+    }${
+      lib.optionalString (application.requirements.ownedStorage or false) ''
+        Use an exclusive disposable runner with owned Docker and scratch storage,
+        never a shared daemon or a production host. Prefer the hosted executor,
+        which prepares this storage, over running the command on a workstation.
+      ''
+    }${
+      lib.optionalString (application ? reportFile) ''
+        Run in an owned evidence directory where `${application.reportFile}` does
+        not already exist. Preserve the sanitized report, not fixture credentials
+        or raw logs.
+      ''
+    }
 
     ```sh
     nix run .#${application.name} --${

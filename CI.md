@@ -2,10 +2,11 @@
 # Contribute and verify
 
 Start with the [repository map](README.md#where-desired-state-lives).
-Run commands from the checkout root with Nix flakes enabled. Evaluation
-may build import-from-derivation inputs; use a compatible builder even
-for inspection. Do not accept new cache keys or PR-provided Nix settings
-automatically.
+Run commands from the checkout root with Nix flakes enabled. Use a Git
+checkout or colocated JJ clone so Nix selects its tracked source.
+Evaluation may build import-from-derivation inputs; use a compatible
+builder even for inspection. Do not accept new cache keys or
+PR-provided Nix settings automatically.
 
 ## Choose the smallest relevant check
 
@@ -13,7 +14,7 @@ Use the platform inventory below to find a check's name, runtime needs
 and hosted support. Build an individual check with:
 
 ```sh
-nix build --no-link -L "path:.#checks.$system.$check"
+nix build --no-link -L ".#checks.$system.$check"
 ```
 
 Set `system` to the builder's native platform and `check` to the selected
@@ -29,12 +30,12 @@ Inspect check capabilities and unsupported reasons, then build the hosted
 non-runtime checks on a builder for this platform:
 
 ```sh
-nix eval --json path:.#hostedCiPlan.aarch64-darwin.inventory
-nix build --no-link -L path:.#hostedCiJobs.aarch64-darwin.checks
+nix eval --json .#hostedCiPlan.aarch64-darwin.inventory
+nix build --no-link -L .#hostedCiJobs.aarch64-darwin.checks
 ```
 
 Buildable output groups: `checks`, `darwinConfigurations`, `devShells`, `formatters`, `homeConfigurations`, `nixosConfigurations`, `packages`.
-Build one with `nix build --no-link -L path:.#ciJobs.aarch64-darwin.<group>`.
+Build one with `nix build --no-link -L .#ciJobs.aarch64-darwin.<group>`.
 
 ### `aarch64-linux`
 
@@ -42,12 +43,12 @@ Inspect check capabilities and unsupported reasons, then build the hosted
 non-runtime checks on a builder for this platform:
 
 ```sh
-nix eval --json path:.#hostedCiPlan.aarch64-linux.inventory
-nix build --no-link -L path:.#hostedCiJobs.aarch64-linux.checks
+nix eval --json .#hostedCiPlan.aarch64-linux.inventory
+nix build --no-link -L .#hostedCiJobs.aarch64-linux.checks
 ```
 
 Buildable output groups: `checks`, `darwinConfigurations`, `devShells`, `formatters`, `homeConfigurations`, `nixosConfigurations`, `packages`.
-Build one with `nix build --no-link -L path:.#ciJobs.aarch64-linux.<group>`.
+Build one with `nix build --no-link -L .#ciJobs.aarch64-linux.<group>`.
 
 ### `x86_64-linux`
 
@@ -55,12 +56,12 @@ Inspect check capabilities and unsupported reasons, then build the hosted
 non-runtime checks on a builder for this platform:
 
 ```sh
-nix eval --json path:.#hostedCiPlan.x86_64-linux.inventory
-nix build --no-link -L path:.#hostedCiJobs.x86_64-linux.checks
+nix eval --json .#hostedCiPlan.x86_64-linux.inventory
+nix build --no-link -L .#hostedCiJobs.x86_64-linux.checks
 ```
 
 Buildable output groups: `checks`, `darwinConfigurations`, `devShells`, `formatters`, `homeConfigurations`, `nixosConfigurations`, `packages`.
-Build one with `nix build --no-link -L path:.#ciJobs.x86_64-linux.<group>`.
+Build one with `nix build --no-link -L .#ciJobs.x86_64-linux.<group>`.
 
 
 `ciBundles.<system>` builds the full output projection, including checks
@@ -75,7 +76,7 @@ If its source declares `__noChroot`, run the upstream `.driver` on an
 appropriate disposable builder rather than weakening the Nix sandbox:
 
 ```sh
-driver=$(nix build --no-link --print-out-paths "path:.#checks.$system.$check.driver")
+driver=$(nix build --no-link --print-out-paths ".#checks.$system.$check.driver")
 run_dir=$(mktemp -d /var/tmp/homelab-test.XXXXXX)
 chmod 700 "$run_dir"
 XDG_RUNTIME_DIR="$run_dir" "$driver/bin/nixos-test-driver"
@@ -90,17 +91,13 @@ hosted executor uses. Run them only on their named native platform with
 an exclusive disposable Docker daemon. Cleanup failure is a failure;
 scoped, skipped or mutated runs are not full acceptance.
 
-
-
 ### `media-live-acceptance` on `x86_64-linux`
 
 Executor requirements: `docker`.
 
 
-
-
 ```sh
-nix run path:.#media-live-acceptance -- --docker-host unix:///var/run/docker.sock --platform linux/amd64
+nix run .#media-live-acceptance -- --docker-host unix:///var/run/docker.sock --platform linux/amd64
 ```
 
 To use the hosted executor for a reviewed ref instead:
@@ -114,15 +111,13 @@ gh workflow run ci.yml --ref "$REF" -f system=x86_64-linux -f check=media-live-a
 Executor requirements: `docker`, `ownedStorage`, `root`.
 The disposable executor must resolve `id.bzfx.net` to
 `127.0.0.1`; the application does not edit host resolution.
-
 Use an exclusive disposable runner with owned Docker and scratch storage,
 never a shared daemon or a production host. Prefer the hosted executor,
 which prepares this storage, over running the command on a workstation.
 
 
-
 ```sh
-nix run path:.#household-sign-in-runtime --
+nix run .#household-sign-in-runtime --
 ```
 
 To use the hosted executor for a reviewed ref instead:
@@ -134,16 +129,14 @@ gh workflow run ci.yml --ref "$REF" -f system=x86_64-linux -f check=household-si
 ### `verify-kubernetes-api` on `x86_64-linux`
 
 Executor requirements: `docker`.
-
-
 Run in an owned evidence directory where `kubernetes-api-result.json` does
 not already exist. Preserve the sanitized report, not fixture credentials
 or raw logs.
 
 
 ```sh
-nix run path:.#verify-kubernetes-api -- --docker-context default --report kubernetes-api-result.json
-nix run path:.#verify-kubernetes-api -- --check-report kubernetes-api-result.json
+nix run .#verify-kubernetes-api -- --docker-context default --report kubernetes-api-result.json
+nix run .#verify-kubernetes-api -- --check-report kubernetes-api-result.json
 ```
 
 To use the hosted executor for a reviewed ref instead:
@@ -223,7 +216,7 @@ checks. For example:
 
 ```sh
 system=$(nix eval --impure --raw --expr builtins.currentSystem)
-nix build --no-link -L "path:.#checks.$system.\"files/CI.md\""
+nix build --no-link -L ".#checks.$system.\"files/CI.md\""
 ```
 
 ## Deliver helper images
