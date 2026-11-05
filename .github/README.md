@@ -139,6 +139,13 @@ The accelerator grant admits only the declared Jellyfin holder's `/dev/dri`
 mount and evaluated `gpu-render` group. No workload may be privileged, including
 the network-policy enforcer; a dedicated negative fixture guards that boundary.
 
+The required native workload gate owns Secret/projected-volume readability and
+PVC/fsGroup safety; the duplicate `pod-security-contracts` scanner is removed.
+Fixtures cover UID precedence, unknown UIDs, every-key/per-key modes, zero-mode
+fsGroup and regular/init/ephemeral containers, including direct Pods and a
+genuine monitoring Deployment. This is offline policy evidence, not deployed
+admission enforcement.
+
 The gate runs as five independent derivations: `transport`, `gitops`,
 `edge-identity` and two round-robin halves of `workloads`
 (`prod-home-manifests-policy-<family>[-<half>]`). The aggregate
