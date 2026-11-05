@@ -244,28 +244,11 @@ jobs:
         with:
           persist-credentials: false
 
-      # Put the Nix store on the runner's temporary disk.
-      - name: Prepare Nix storage
-        if: runner.os == 'Linux'
-        run: |
-          free_space=$(df -m --output=avail /mnt | tail -n 1)
-          disk_size=$((free_space - 1024))
-          test "$disk_size" -gt 1024
-          sudo fallocate -l "${disk_size}M" /mnt/nix.img
-          loop_dev=$(sudo losetup --find --show /mnt/nix.img)
-          sudo mkfs.btrfs -L nix --nodiscard "$loop_dev"
-          sudo mkdir -p /nix
-          sudo mount "$loop_dev" /nix -o noatime,nobarrier,nodiscard,compress=zstd:1,space_cache=v2,commit=120
-          sudo mkdir -p /nix/build
-          # Keep Btrfs CoW out of disposable VM/build files, not the store.
-          sudo chattr +C /nix/build
-
       - name: Install Nix on Linux
         if: runner.os == 'Linux'
         uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
         with:
           extra_nix_config: |
-            build-dir = /nix/build
             sandbox = relaxed
           github_access_token: ${{ github.token }}
 
