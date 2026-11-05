@@ -173,6 +173,7 @@ umask 077
 CONTEXT=<guest-kubeconfig-context>
 BEFORE_REV=<original-encrypted-source-commit>
 ROTATION_REV=<reviewed-replacement-source-commit>
+RECOVERY_REV=<reviewed-recovery-source-commit>
 k() { kubectl --context "$CONTEXT" "$@"; }
 private=$(mktemp -d /dev/shm/media-rotation.XXXXXX)
 (
@@ -467,9 +468,9 @@ until the checks pass. Gateway auth and NetworkPolicy stay unchanged.
 2. Restore the exact **original encrypted values**, not new random keys.
    In a reviewed recovery checkout, restore the two affected host artifacts
    from `$BEFORE_REV` (and their corresponding original encrypted source/
-   rekey artifacts if managed separately), commit the focused recovery and
-   deploy its host configuration through the normal procedure. For the
-   two paths above:
+   rekey artifacts if managed separately), commit and review the focused
+   recovery as `$RECOVERY_REV`, then deploy that exact host configuration
+   through the normal procedure. For the two paths above:
 
    ```sh
    git restore --source="$BEFORE_REV" -- \
@@ -480,7 +481,19 @@ until the checks pass. Gateway auth and NetworkPolicy stay unchanged.
 3. Repeat **only** the staging/publication/acknowledgment block above.
    Do **not** repeat the forward `new.json` capture. Replace Radarr and
    SAB Pods again (including SAB's initializer), then sync the full
-   integration Application at the reviewed **recovery** revision.
+   integration Application at `$RECOVERY_REV`, not `$ROTATION_REV`:
+
+   ```sh
+   (
+     argocd app sync media-configuration \
+       --revision "${RECOVERY_REV:?Set RECOVERY_REV to the reviewed recovery source commit}" \
+       --timeout 900 || exit
+     argocd app wait media-configuration --sync --health --operation --timeout 60 || exit
+     k -n media wait --for=condition=complete job/media-configarr \
+       job/media-config-seerr --timeout=60s || exit
+   )
+   ```
+
    Require the same new-UID, successful-init, rollout and hook evidence.
    The original Secret alone does not roll back consumers or connections.
 4. Start or reestablish all four loopback forwards and create **both**
