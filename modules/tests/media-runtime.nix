@@ -120,6 +120,29 @@
                     else:
                         assert status != 125
                 assert not captured.getvalue(), "successful setup or later producer emitted startup diagnostics"
+            failure_label = acceptance["failure_label"]
+            secret = "synthetic-credential-must-not-appear"
+            try:
+                acceptance["request_from_container"](
+                    lambda *args: '{"status": 403, "body": "untrusted-response-body"}',
+                    "fixture", "credential-bearing-host.invalid",
+                    "/api?apikey=" + secret, key=secret, body={"password": secret},
+                )
+            except acceptance["HTTPError"] as error:
+                label = failure_label(error)
+                assert label.startswith("HTTPError (HTTP 403; media-live-acceptance.py:")
+                assert label.endswith(")") and label.isascii()
+                assert not any(value in label for value in (
+                    secret, "credential-bearing-host", "/api", "untrusted-response-body", "http://fixture",
+                ))
+            else:
+                raise AssertionError("unexpected HTTP refusal did not reach the diagnostic boundary")
+            unsafe = acceptance["HTTPError"](
+                "https://host.invalid/?apikey=" + secret, 401, secret, {"credential": secret}, io.StringIO(secret),
+            )
+            assert failure_label(unsafe) == "HTTPError (HTTP 401)"
+            assert failure_label(AssertionError("controlled failure")) == "controlled failure"
+            assert failure_label(ValueError(secret)) == "ValueError"
             PY
             touch "$out"
           '';

@@ -167,7 +167,7 @@ in
 
         | Changed value | Consumer replacement | Dependent reconciliation |
         | --- | --- | --- |
-        | Arr instance API key | That instance's Deployment | Configarr's Prowlarr application and Seerr's managed Arr server |
+        | Arr instance API key | That instance's Deployment | Native Prowlarr application-key update below and Seerr's managed Arr server |
         | `SABNZBD_API_KEY` or Usenet credentials | `deployment/sabnzbd` (reruns `config`) | Configarr's `SABnzbd (Homelab)` clients in every Arr instance |
         | `PROWLARR_API_KEY` | `deployment/prowlarr` | Configarr |
         | `SEERR_API_KEY` | `statefulset/seerr` | Seerr helper |
@@ -309,11 +309,14 @@ in
           job/media-config-seerr --timeout=60s
         ```
 
-        The wave-1 Configarr hook repairs Arr download clients **and** Prowlarr
-        `homelab-*` applications; there is no separate Prowlarr Job. The wave-2
-        Seerr hook repairs managed Arr servers only after Configarr. A CLI timeout
-        does not terminate an Argo operation: on failure terminate/drain it, suspend
-        the CronJobs again and repeat the foreground-deletion fence before rollback.
+        The wave-1 Configarr hook repairs Arr download clients and ordinary
+        Prowlarr `homelab-*` application settings. Pinned Configarr 1.32 treats
+        masked Prowlarr application API keys as unchanged, so a key-only Arr
+        rotation additionally requires the native Prowlarr update below; hook
+        success does not perform that adoption. The wave-2 Seerr hook repairs
+        managed Arr servers after Configarr. A CLI timeout does not terminate
+        an Argo operation: on failure terminate/drain it, suspend the CronJobs
+        again and repeat the foreground-deletion fence before rollback.
 
         Hook completion is not a native connection test. Arr accepts an unchanged
         enabled provider update without testing its downstream credentials, and
@@ -331,6 +334,41 @@ in
         kubectl --context "$CONTEXT" -n media port-forward service/sabnzbd 18080:8080
         kubectl --context "$CONTEXT" -n media port-forward service/prowlarr 19696:9696
         kubectl --context "$CONTEXT" -n media port-forward service/seerr 15055:5055
+        ```
+
+        In the private session, explicitly adopt Radarr's current key in the
+        reserved Prowlarr application. This updates the existing ID and preserves
+        its other fields/settings; the normal native PUT validates the new
+        connection, and the readback test proves the stored credential works.
+        Do not delete/recreate the application or bypass validation:
+
+        ```sh
+        cat >"$private/prowlarr-key.py" <<'PY'
+        import base64, json, sys
+        from urllib.request import ProxyHandler, Request, build_opener
+        try:
+            current = {k: base64.b64decode(v).decode().rstrip("\r\n")
+                       for k, v in json.load(open(sys.argv[1]))["data"].items()}
+            def call(path, method="GET", body=None):
+                request = Request("http://127.0.0.1:19696/api/v1" + path,
+                                  None if body is None else json.dumps(body).encode(),
+                                  {"X-Api-Key": current["PROWLARR_API_KEY"], "Content-Type": "application/json"},
+                                  method=method)
+                with build_opener(ProxyHandler({})).open(request, timeout=15) as response:
+                    raw = response.read()
+                    return json.loads(raw) if raw else None
+            application, = [a for a in call("/applications") if a["name"] == "homelab-radarr"]
+            assert application["implementation"] == "Radarr"
+            field, = [f for f in application["fields"] if f["name"] == "apiKey"]
+            field["value"] = current["RADARR_API_KEY"]
+            path = "/applications/" + str(application["id"])
+            call(path, "PUT", application)
+            call("/applications/test", "POST", call(path))
+        except Exception:
+            sys.exit("Prowlarr credential adoption failed; response suppressed")
+        print("Managed Prowlarr application adopted the expected key")
+        PY
+        PYTHONOPTIMIZE= python3 "$private/prowlarr-key.py" "$private/new.json"
         ```
 
         In the private session, this checks actual authenticated APIs, old-key
@@ -421,8 +459,9 @@ in
         3. Repeat restaging, guest publication and generation acknowledgment.
            Replace Radarr and SAB Pods again (including SAB's initializer), then
            sync the full integration Application at the reviewed **recovery**
-           revision. The original Secret alone does not roll back consumers or
-           stored connections.
+           revision. Repeat the native Prowlarr application-key update above with
+           `"$private/old.json"` instead of `"$private/new.json"`. The original
+           Secret alone does not roll back consumers or stored connections.
         4. Test with the **saved original keys**, not merely whatever the restored
            Secret contains, and reject the forward generation:
 

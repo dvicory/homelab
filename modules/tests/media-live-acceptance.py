@@ -5,6 +5,7 @@ Requires Python/PyYAML, openssl, Docker Engine 26+ (volume-subpath), and an
 explicit local unix Docker socket. Default linux/amd64 matches production;
 Docker Desktop/emulation does not prove the Incus/MergerFS/host storage seam.
 The synthetic HTTPS Secret responder tests bootstrap transport, NOT K8s RBAC.
+Unexpected HTTP failures report only status and fixture source-line numbers.
 """
 import argparse
 import base64
@@ -49,6 +50,22 @@ def require_container_exit(result, failure, name):
             output = output[:2034] + "...[truncated]"
         print(f"media-live-acceptance: fixture startup stderr: {output}", file=sys.stderr)
     require_application_exit(result.returncode, failure, name)
+
+
+def failure_label(error):
+    if isinstance(error, AssertionError):
+        return str(error)
+    if isinstance(error, HTTPError):
+        status = error.code if type(error.code) is int and 100 <= error.code <= 599 else "unknown"
+        lines = []
+        trace = error.__traceback__
+        while trace is not None:
+            if trace.tb_frame.f_code.co_filename == __file__ and trace.tb_frame.f_code.co_name != "<module>":
+                lines.append(str(trace.tb_lineno))
+            trace = trace.tb_next
+        location = "; media-live-acceptance.py:" + ",".join(lines) if lines else ""
+        return f"HTTPError (HTTP {status}{location})"
+    return type(error).__name__
 
 
 def command(*args, timeout=60, env=None):
@@ -1274,8 +1291,16 @@ server.serve_forever()
             for app in ("radarr", "sonarr"):
                 refused_client = one(api(app, "/downloadclient"), "name", "SABnzbd (Homelab)")
                 denied(lambda: api(app, "/downloadclient/test", "POST", refused_client), statuses=(400,))
-            reconcile_configarr(fetch=False)  # Also repairs Prowlarr applications.
+            reconcile_configarr(fetch=False)
             require(cache_state() == cold_cache, "rotation changed retained policy repository revisions")
+            # Configarr 1.32 treats a masked Prowlarr API key as unchanged.
+            # Key-only rotation needs a native credential PUT, not a no-op
+            # reconcile or an unrelated sync-level change to force a diff.
+            application = one(api("prowlarr", "/applications"), "name", stale_application["name"])
+            next(item for item in application["fields"] if item["name"] == "apiKey")["value"] = keys["radarr"]
+            api("prowlarr", "/applications/" + str(application["id"]), "PUT", application)
+            api("prowlarr", "/applications/test", "POST",
+                api("prowlarr", "/applications/" + str(application["id"])))
             reconcile_seerr()
             adopted_state = arr_snapshot()
             for app in ("radarr", "sonarr"):
@@ -1424,7 +1449,7 @@ console.log(queued);''', waiter_pid)
             except (AssertionError, OSError, subprocess.TimeoutExpired) as error:
                 errors.append(str(error) if isinstance(error, AssertionError) else type(error).__name__)
             if errors:
-                first = (str(first_error) if isinstance(first_error, AssertionError) else type(first_error).__name__) + "; " if first_error else ""
+                first = failure_label(first_error) + "; " if first_error else ""
                 raise AssertionError(first + "; ".join(errors))
         print("media-live-acceptance: native media APIs, permission refusals, serialized entry points/exit release, policy mutations, reconcile identities and owned cleanup passed (" + args.platform + ")")
 
@@ -1433,7 +1458,6 @@ if __name__ == "__main__":
     try:
         main()
     except (AssertionError, RuntimeError, OSError, ValueError, KeyError, HTTPError, subprocess.TimeoutExpired) as error:
-        # HTTP errors and subprocess output can contain synthetic credentials;
-        # report only controlled assertion labels or exception classes.
-        print("media-live-acceptance: " + (str(error) if isinstance(error, AssertionError) else type(error).__name__), file=sys.stderr)
+        # Never print API URLs, response bodies, exception messages or locals.
+        print("media-live-acceptance: " + failure_label(error), file=sys.stderr)
         sys.exit(1)
