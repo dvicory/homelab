@@ -29,11 +29,13 @@ Use the ordinary Jellyfin username/password login, and Seerr's ordinary
 Jellyfin login, with the person's primary password or separate POSIX password.
 This is LDAP authentication, not OIDC, and LDAP itself does not perform MFA.
 
-The declared local administrator is `admin`. Its agenix-managed
-password serves local recovery and Jellarr's API-key bootstrap, independently
-of Kanidm. Keep this account local; personal directory administrators use
-their own LDAP-backed accounts. A same-named directory person cannot
-authenticate an existing local account with their directory password.
+The local administrator is selected by
+`settings.kubernetes.services.jellyfin.administrator` (default `admin`). Its
+agenix-managed password serves local recovery, Jellarr's API-key bootstrap
+and fresh Seerr first-owner delivery, independently of Kanidm. Keep this
+account local; personal directory administrators use their own LDAP-backed
+accounts. A same-named directory person cannot authenticate an existing
+local account with their directory password.
 
 First-start provisioning creates the declared administrator only on empty
 retained state. Changing its declared name does not create, convert or reset

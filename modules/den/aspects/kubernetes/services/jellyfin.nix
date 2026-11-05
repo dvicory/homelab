@@ -11,7 +11,6 @@ let
     service = "jellyfin";
     port = 8096;
     host = "jellyfin.jellyfin.svc.cluster.local";
-    administrator = "admin";
     adminSecret = {
       name = "jellyfin-admin";
       key = "password";
@@ -82,8 +81,6 @@ in
     description = "Read-only Jellyfin endpoint, administrator Secret reference and configured libraries for consumers.";
   };
 
-  # The one literal lives in `integration`; keep the provisioner-facing setting
-  # defaulted to it.
   den.aspects.kubernetes.services.jellyfin.settings.administrator = lib.mkOption {
     # Jellyfin 12.1 UserManager.ThrowIfInvalidUsername accepts
     # ^(?!\s)[\w\ \-'._@+]+(?<!\s)$ except "." and "..". The patched
@@ -94,7 +91,7 @@ in
       lib.types.addCheck
         (lib.types.strMatching "[A-Za-z0-9_.'@+-]([A-Za-z0-9_ .'@+-]*[A-Za-z0-9_.'@+-])?")
         (name: name != "." && name != "..");
-    default = integration.administrator;
+    default = "admin";
     description = ''
       Initial declarative Jellyfin administrator name: ASCII letters, digits,
       spaces (not leading or trailing), and `_ . ' @ + -`, other than `.` or `..`.
@@ -168,7 +165,9 @@ in
       # docs/operations/jellyfin.md.
       identitySettings = cluster.settings.kubernetes.services.identity;
       directoryHost = builtins.head cluster.routes.idm.hostnames;
-      directoryBase = lib.concatMapStringsSep "," (part: "dc=${part}") (lib.splitString "." directoryHost);
+      directoryBase = lib.concatMapStringsSep "," (part: "dc=${part}") (
+        lib.splitString "." directoryHost
+      );
       memberOf = group: "(memberof=spn=${group}@${directoryHost},${directoryBase})";
       ldapConfiguration = {
         LdapServer = directoryHost;
@@ -345,9 +344,9 @@ in
       }
     ) "Jellyfin release declaration differs from the reviewed coupled release";
     # A plugin built for another Jellyfin major release does not load.
-    assert lib.assertMsg (
-      lib.versions.major ldapPlugin.targetAbi == lib.versions.major provisionerRelease.version
-    ) "Jellyfin LDAP plugin targets Jellyfin ${ldapPlugin.targetAbi}, not ${provisionerRelease.version}";
+    assert lib.assertMsg
+      (lib.versions.major ldapPlugin.targetAbi == lib.versions.major provisionerRelease.version)
+      "Jellyfin LDAP plugin targets Jellyfin ${ldapPlugin.targetAbi}, not ${provisionerRelease.version}";
     {
       applications.jellyfin-retained = {
         inherit namespace;

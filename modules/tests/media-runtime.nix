@@ -10,32 +10,60 @@
       compute =
         config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
       computeResources = {
-        inherit (compute) instance retainedPaths;
+        inherit (compute) accelerator instance retainedPaths;
         inherit (config.flake.clusterResources.prod-home) mediaPaths;
       };
-      # Fresh-state onboarding must not depend on production's publication phase.
-      seerrPhases = pkgs.writeText "media-seerr-phase-fixtures.json" (
-        builtins.toJSON (
-          lib.genAttrs [ "initial" "ready" ] (
+      fixtureCluster = lib.recursiveUpdate cluster {
+        settings.kubernetes.services.jellyfin.administrator = "Jellyfin Admin";
+      };
+      configurationFor =
+        targetCluster:
+        (config.den.aspects.kubernetes.services.media.configuration."k8s-manifests" {
+          cluster = targetCluster;
+          inherit computeResources;
+        }).applications.media-configuration.objects;
+      jellyfinApplications =
+        (config.den.aspects.kubernetes.services.jellyfin."k8s-manifests" {
+          cluster = fixtureCluster;
+          inherit computeResources;
+        }).applications;
+      objectFor =
+        kind: name: objects:
+        lib.findFirst (
+          object: object.kind == kind && object.metadata.name == name
+        ) (throw "Missing native media fixture ${kind}/${name}") objects;
+      fixture = pkgs.writeText "media-native-fixture.json" (
+        builtins.toJSON {
+          jellyfinPod =
+            (objectFor "Deployment" "jellyfin" jellyfinApplications.jellyfin.objects).spec.template.spec;
+          jellarrPod =
+            (objectFor "Job" "jellyfin-configuration" jellyfinApplications.jellyfin-configuration.objects)
+            .spec.template.spec;
+          jellarrData =
+            (objectFor "ConfigMap" "jellarr-configuration" jellyfinApplications.jellyfin-configuration.objects)
+            .data;
+          configuration =
+            (objectFor "ConfigMap" "media-configuration" (configurationFor fixtureCluster)).data;
+          changedAdministratorConfiguration =
+            (objectFor "ConfigMap" "media-configuration" (
+              configurationFor (
+                lib.recursiveUpdate fixtureCluster {
+                  settings.kubernetes.services.jellyfin.administrator = "Another Administrator";
+                }
+              )
+            )).data;
+          # Fresh onboarding must not depend on production's publication phase.
+          seerrPhases = lib.genAttrs [ "initial" "ready" ] (
             phase:
-            let
-              applications =
-                (config.den.aspects.kubernetes.services.media.configuration."k8s-manifests" {
-                  cluster = cluster // {
-                    settings = lib.recursiveUpdate cluster.settings {
-                      kubernetes.services.seerr.phase = phase;
-                    };
-                  };
-                  inherit computeResources;
-                }).applications;
-            in
-            builtins.head (
-              builtins.filter (
-                object: object.kind == "Job" && object.metadata.name == "media-config-seerr"
-              ) applications.media-configuration.objects
+            objectFor "Job" "media-config-seerr" (
+              configurationFor (
+                lib.recursiveUpdate fixtureCluster {
+                  settings.kubernetes.services.seerr.phase = phase;
+                }
+              )
             )
-          )
-        )
+          );
+        }
       );
       source = lib.fileset.toSource {
         root = ../..;
@@ -53,7 +81,7 @@
           pkgs.openssl
         ];
         text = ''
-          exec python ${source}/modules/tests/media-live-acceptance.py --seerr-phases ${seerrPhases} "$@"
+          exec python ${source}/modules/tests/media-live-acceptance.py --fixture ${fixture} "$@"
         '';
       };
     in
