@@ -26,6 +26,20 @@ jobs:
         with:
           persist-credentials: false
 
+      # Native locking covers actions, not external reusable workflows or images.
+      # Downloaded verifier bytes are outside action-lock coverage; pin their digest.
+      - name: Verify direct and transitive action locks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          directory=$(mktemp -d "$RUNNER_TEMP/actions-lock.XXXXXX")
+          trap 'rm -rf -- "$directory"' EXIT
+          gh release download v0.4.1 --repo github/gh-actions-lock --pattern linux-amd64 --dir "$directory"
+          printf '%s  %s\n' 39deb2fe714dbf74b073d8245fc7f3d50cd0eee18d5c0900e9e849ae933ae17e "$directory/linux-amd64" | sha256sum --check --strict
+          chmod 0700 "$directory/linux-amd64"
+          "$directory/linux-amd64" --verify
+
       - name: Run zizmor
         uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
         with:
