@@ -547,9 +547,12 @@ K3s/kernel VM gate.
 The delivered Configarr and Seerr producers use exit 0 for success and exit 1
 for application failure. Synchronous and serialized runs require that exact
 outcome, alongside real API/state/lock assertions. `media-producer-exit` checks
-the small exit policy without Docker; the application suite does not inject
-Docker startup failures or deliberate crashes. Failure labels include only
-numeric status, not Docker/application stderr or generated credentials.
+the exit and diagnostic policy without Docker; the application suite does
+not inject Docker startup failures or deliberate crashes. Failure labels
+retain numeric status. Unexpected Jellyfin provisioner and Jellarr bootstrap
+exits additionally report bounded, escaped stdout/stderr tails with the
+generated administrator password redacted; initial Docker fixture startup
+reports bounded, escaped stderr. Other application output stays private.
 
 The household app is also available as `nix run .#household-sign-in-runtime`.
 Run it only as root in an exclusive disposable native x86 Linux Docker

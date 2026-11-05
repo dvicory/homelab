@@ -40,14 +40,27 @@ def require_application_exit(status, failure, label):
     require(status == expected, f"{label} (exit {status}, expected {expected})")
 
 
-def require_container_exit(result, failure, name):
-    # Only the initial setup fixture reports Docker startup errors.
-    if name == "fixture" and result.returncode and result.stderr:
-        # Escape controls before bounding the diagnostic, including its marker.
-        output = json.dumps(result.stderr, ensure_ascii=True)
-        if len(output) > 2048:
-            output = output[:2034] + "...[truncated]"
-        print(f"media-live-acceptance: fixture startup stderr: {output}", file=sys.stderr)
+def require_container_exit(result, failure, name, *, diagnostic_secrets=None):
+    # Application output stays private unless the caller opts in with its
+    # credential redactions. Keep the exception at the end of bootstrap logs.
+    if result.returncode != (1 if failure else 0):
+        streams = ("stderr",) if name == "fixture" else (
+            ("stdout", "stderr") if diagnostic_secrets is not None else ()
+        )
+        for stream in streams:
+            text = getattr(result, stream)
+            if not text:
+                continue
+            for secret in diagnostic_secrets or ():
+                if secret:
+                    text = text.replace(secret, "[redacted]")
+            # Escape controls before bounding the diagnostic, including its marker.
+            output = json.dumps(text, ensure_ascii=True)
+            limit = 2048 if name == "fixture" else 8192
+            if len(output) > limit:
+                output = (output[:limit - 14] + "...[truncated]" if name == "fixture"
+                          else "[truncated]..." + output[-(limit - 14):])
+            print(f"media-live-acceptance: {name} {stream}: {output}", file=sys.stderr)
     require_application_exit(result.returncode, failure, name)
 
 
@@ -520,7 +533,7 @@ def main():
                 # Kubernetes volumes do not copy image-directory contents or ownership.
                 return ("--mount", f"type=volume,src={volume},dst={target},volume-subpath={subpath},volume-nocopy" + (",readonly" if readonly else ""))
 
-            def run(name, image, *options, argv=(), environment=None, detached=False, failure=False, timeout=900):
+            def run(name, image, *options, argv=(), environment=None, detached=False, failure=False, timeout=900, diagnostic_secrets=None):
                 container = network + "-" + name
                 owned_containers.append(container)  # Register before run: timeouts must not orphan containers.
                 parameters = [*docker_prefix, "run", "--name", container, "--platform", args.platform, "--network", network]
@@ -535,7 +548,7 @@ def main():
                 for key in environment or {}:
                     parameters += ["-e", key]
                 result = subprocess.run([*parameters, image, *argv], capture_output=True, text=True, timeout=timeout, env=env)
-                require_container_exit(result, failure, name)
+                require_container_exit(result, failure, name, diagnostic_secrets=diagnostic_secrets)
                 return container
 
             # The setup helper owns only this new Linux volume; application
@@ -804,11 +817,14 @@ with open('/fixture/coordination/' + sys.argv[1] + '.lock', 'r') as lock:
                 *security_options(pods["jellyfin"], provisioner),
                 *mount("jellyfin", "/config"),
                 *mount("jellyfin-inputs/password", "/run/secrets/password", True),
-                "--tmpfs", "/cache:uid=751,gid=751,mode=0700,size=128m",
+                # Jellyfin 12.1 checks for at least 2 GiB free in /cache even
+                # in Provision mode; use the stock-runtime fixture's 4 GiB cap.
+                "--tmpfs", "/cache:uid=751,gid=751,mode=0700,size=4g",
                 "--tmpfs", "/run/provision:uid=751,gid=751,mode=0700,size=16m",
                 "--entrypoint", provisioner["command"][0],
                 argv=(*provisioner["command"][1:], *provisioner.get("args", [])),
-                environment={item["name"]: item["value"] for item in provisioner["env"]})
+                environment={item["name"]: item["value"] for item in provisioner["env"]},
+                diagnostic_secrets=(owner_password,))
             start("jellyfin", policy["jellyfin"]["port"])
             ready(request, ports["jellyfin"], "/Users/Public")
             def jellyfin(path, method="GET", body=None, key=None, binary=False):
@@ -833,7 +849,7 @@ with open('/fixture/coordination/' + sys.argv[1] + '.lock', 'r') as lock:
                 "--entrypoint", jellarr_bootstrap["command"][0],
                 argv=(*jellarr_bootstrap["command"][1:], *jellarr_bootstrap.get("args", [])),
                 environment={item["name"]: item["value"] for item in jellarr_bootstrap["env"]},
-                timeout=600)
+                timeout=600, diagnostic_secrets=(owner_password,))
             jellarr_key = one(jellyfin("/Auth/Keys", key=owner_token)["Items"], "AppName", "Jellarr")["AccessToken"]
             require(isinstance(jellyfin("/Library/VirtualFolders", key=jellarr_key), list),
                     "the rendered Jellarr bootstrap did not produce a usable native API key")

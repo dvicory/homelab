@@ -95,7 +95,7 @@
             require_exit = acceptance["require_application_exit"]
             require_exit(0, False, "successful producer")
             require_exit(1, True, "refusing producer")
-            for status in (0, 2, 124, 125, 126, 127, 137, 143, -9):
+            for status in (0, 2, 124, 125, 126, 127, 134, 137, 143, -9):
                 try:
                     require_exit(status, True, "refusing producer")
                 except AssertionError:
@@ -148,6 +148,34 @@
                     else:
                         assert status != 125
                 assert not captured.getvalue(), "successful setup or later producer emitted startup diagnostics"
+
+            secret = "generated-owner-password"
+            for name in ("jellyfin-provision", "jellarr-bootstrap"):
+                result = subprocess.CompletedProcess(
+                    ["docker", "run"], 134,
+                    stdout="early-log " + "\u2603" * 3000
+                        + f"\n/cache has insufficient free space\n{secret}\x1b[31m",
+                    stderr=f"Unhandled exception\n{secret}\n",
+                )
+                captured = io.StringIO()
+                with contextlib.redirect_stderr(captured):
+                    try:
+                        require_container_exit(result, False, name, diagnostic_secrets=(secret,))
+                    except AssertionError as error:
+                        assert "exit 134, expected 0" in str(error)
+                    else:
+                        raise AssertionError("bootstrap crash satisfied success")
+                output = captured.getvalue()
+                assert "/cache has insufficient free space" in output and "Unhandled exception" in output
+                assert secret not in output and output.count("[redacted]") == 2
+                assert "[truncated]" in output and "early-log" not in output
+                assert len(output.encode()) <= 16600
+                assert "\x1b" not in output and output.isascii()
+                for status, failure in ((0, False), (1, True)):
+                    captured = io.StringIO()
+                    with contextlib.redirect_stderr(captured):
+                        require_container_exit(completed(status), failure, name, diagnostic_secrets=(secret,))
+                    assert not captured.getvalue(), "expected helper outcome emitted private output"
             PY
             touch "$out"
           '';
