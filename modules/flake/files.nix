@@ -26,7 +26,7 @@
               root=$(pwd -P)
               while true; do
                 if [[ -e "$root/.git" || -L "$root/.git" ]]; then
-                  GIT_DIR=$(git -C "$root" rev-parse --absolute-git-dir)
+                  GIT_DIR=$(git --git-dir="$root/.git" rev-parse --absolute-git-dir)
                   break
                 elif [[ -e "$root/.jj" || -L "$root/.jj" ]]; then
                   GIT_DIR=$(jj --ignore-working-copy --repository "$root" git root)

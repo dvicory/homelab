@@ -14,37 +14,45 @@ let
     non-runtime checks on a builder for this platform:
 
     ```sh
-    nix eval --json path:.#hostedCiPlan.${system}.inventory
-    nix build --no-link -L path:.#hostedCiJobs.${system}.checks
+    nix eval --json .#hostedCiPlan.${system}.inventory
+    nix build --no-link -L .#hostedCiJobs.${system}.checks
     ```
 
-    Buildable output groups: ${lib.concatMapStringsSep ", " quote (builtins.attrNames self.ciJobs.${system})}.
-    Build one with `nix build --no-link -L path:.#ciJobs.${system}.<group>`.
+    Buildable output groups: ${
+      lib.concatMapStringsSep ", " quote (builtins.attrNames self.ciJobs.${system})
+    }.
+    Build one with `nix build --no-link -L .#ciJobs.${system}.<group>`.
   '';
   applicationSection = system: application: ''
     ### `${application.name}` on `${system}`
 
-    Executor requirements: ${lib.concatMapStringsSep ", " quote (
-      builtins.attrNames (lib.filterAttrs (_: enabled: enabled) application.requirements)
-    )}.
+    Executor requirements: ${
+      lib.concatMapStringsSep ", " quote (
+        builtins.attrNames (lib.filterAttrs (_: enabled: enabled) application.requirements)
+      )
+    }.
     ${lib.optionalString (application ? loopbackHost) ''
       The disposable executor must resolve `${application.loopbackHost}` to
       `127.0.0.1`; the application does not edit host resolution.
-    ''}
-    ${lib.optionalString (application.requirements.ownedStorage or false) ''
+    ''}${lib.optionalString (application.requirements.ownedStorage or false) ''
       Use an exclusive disposable runner with owned Docker and scratch storage,
       never a shared daemon or a production host. Prefer the hosted executor,
       which prepares this storage, over running the command on a workstation.
-    ''}
-    ${lib.optionalString (application ? reportFile) ''
+    ''}${lib.optionalString (application ? reportFile) ''
       Run in an owned evidence directory where `${application.reportFile}` does
       not already exist. Preserve the sanitized report, not fixture credentials
       or raw logs.
     ''}
 
     ```sh
-    nix run path:.#${application.name} --${lib.optionalString (application.arguments != [ ]) " ${lib.escapeShellArgs application.arguments}"}
-    ${lib.optionalString (application ? reportCheckArguments) "nix run path:.#${application.name} -- ${lib.escapeShellArgs application.reportCheckArguments}\n"}```
+    nix run .#${application.name} --${
+      lib.optionalString (application.arguments != [ ]) " ${lib.escapeShellArgs application.arguments}"
+    }
+    ${
+      lib.optionalString (
+        application ? reportCheckArguments
+      ) "nix run .#${application.name} -- ${lib.escapeShellArgs application.reportCheckArguments}\n"
+    }```
 
     To use the hosted executor for a reviewed ref instead:
 
@@ -52,10 +60,11 @@ let
     gh workflow run ci.yml --ref "$REF" -f system=${system} -f check=${application.name}
     ```
   '';
-  nativeSections = lib.concatMapStringsSep "\n" (
-    system:
-    lib.concatMapStringsSep "\n" (applicationSection system) self.hostedCiPlan.${system}.nativeApplications
-  ) systems;
+  nativeSections = lib.concatStringsSep "\n" (
+    lib.concatMap (
+      system: map (applicationSection system) self.hostedCiPlan.${system}.nativeApplications
+    ) systems
+  );
 in
 {
   perSystem =
@@ -66,10 +75,11 @@ in
         # Contribute and verify
 
         Start with the [repository map](README.md#where-desired-state-lives).
-        Run commands from the checkout root with Nix flakes enabled. Evaluation
-        may build import-from-derivation inputs; use a compatible builder even
-        for inspection. Do not accept new cache keys or PR-provided Nix settings
-        automatically.
+        Run commands from the checkout root with Nix flakes enabled. Use a Git
+        checkout or colocated JJ clone so Nix selects its tracked source.
+        Evaluation may build import-from-derivation inputs; use a compatible
+        builder even for inspection. Do not accept new cache keys or
+        PR-provided Nix settings automatically.
 
         ## Choose the smallest relevant check
 
@@ -77,7 +87,7 @@ in
         and hosted support. Build an individual check with:
 
         ```sh
-        nix build --no-link -L "path:.#checks.$system.$check"
+        nix build --no-link -L ".#checks.$system.$check"
         ```
 
         Set `system` to the builder's native platform and `check` to the selected
@@ -101,7 +111,7 @@ in
         appropriate disposable builder rather than weakening the Nix sandbox:
 
         ```sh
-        driver=$(nix build --no-link --print-out-paths "path:.#checks.$system.$check.driver")
+        driver=$(nix build --no-link --print-out-paths ".#checks.$system.$check.driver")
         run_dir=$(mktemp -d /var/tmp/homelab-test.XXXXXX)
         chmod 700 "$run_dir"
         XDG_RUNTIME_DIR="$run_dir" "$driver/bin/nixos-test-driver"
@@ -188,7 +198,7 @@ in
 
         ```sh
         system=$(nix eval --impure --raw --expr builtins.currentSystem)
-        nix build --no-link -L "path:.#checks.$system.\"files/CI.md\""
+        nix build --no-link -L ".#checks.$system.\"files/CI.md\""
         ```
 
         ## Deliver helper images
