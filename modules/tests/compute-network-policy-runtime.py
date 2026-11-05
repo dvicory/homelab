@@ -164,6 +164,26 @@ def self_check() -> None:
                 check(accepted, f"invalid crash recovery accepted: {admitted}, {refused}, {recovered}")
     check_recovery(check, caller, stranger, True, "migration")
 
+    frozen = {"status": {"id": "a" * 64, "state": "CONTAINER_RUNNING", "startedAt": 10}, "info": {"pid": 42}}
+    calls = []
+    stack_guest = SimpleNamespace(runtime=SimpleNamespace(guest=lambda *args, **kwargs: json.dumps(frozen)))
+    def capture_stack_command(name, *command, **kwargs):
+        calls.append((name, command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+    with redirect_stdout(StringIO()):
+        capture_crash_stack(stack_guest, frozen, capture_stack_command)
+    check(len(calls) == 3 and calls[0][1][-3:] == ("--signal", "SIGQUIT", frozen["status"]["id"])
+          and calls[-1][1][-1] == frozen["status"]["id"] and "--follow" not in calls[-1][1]
+          and calls[-1][2] == {"limit": 65536, "stderr_limit": 65536},
+          "the destructive stack capture must target and bound the exact failed container")
+    calls.clear()
+    stack_guest.runtime.guest = lambda *args, **kwargs: json.dumps({**frozen, "info": {"pid": 43}})
+    try:
+        capture_crash_stack(stack_guest, frozen, capture_stack_command)
+    except ValueError:
+        pass
+    check(not calls, "a changed failed task must never receive the diagnostic signal")
+
     # Exercise the real reaches method: exec failures are not traffic refusals.
     probe = SimpleNamespace(project="fixture", instance="compute", plan={"names": {"client": "media"}},
                             address=lambda server: "192.0.2.1")
@@ -577,26 +597,50 @@ def capture_enforcer_failure(guest: Guest, label: str) -> dict | None:
         return pod
 
 
+def capture_crash_stack(guest: Guest, frozen: dict, capture) -> None:
+    """TEMPORARY: destructively dump only the frozen, already-failed fixture task."""
+    container_id, pid = frozen["status"]["id"], int(frozen["info"]["pid"])
+    current = json.loads(guest.runtime.guest("k3s", "crictl", "inspect", container_id, timeout=15))
+    if (pid <= 1 or current["status"]["id"] != container_id or int(current["info"]["pid"]) != pid
+            or current["status"]["state"] != "CONTAINER_RUNNING"
+            or current["status"]["startedAt"] != frozen["status"]["startedAt"]):
+        raise ValueError("the failed enforcer task changed before its destructive stack capture")
+    observe("crash.failure.stack_signal", {
+        "container_id": container_id, "pid": pid, "signal": "SIGQUIT", "destructive": True,
+    })
+    # Containerd targets the frozen task, not a potentially reused guest PID.
+    result = capture("stack.signal", "k3s", "ctr", "--namespace", "k8s.io", "tasks", "kill",
+                     "--signal", "SIGQUIT", container_id)
+    if result is not None and result.returncode == 0:
+        # Wait only for this failed process to exit, never for a replacement to
+        # recover. Bound both the wait and the exact-container, non-follow logs.
+        capture("stack.exit", "timeout", "10", "tail", f"--pid={pid}", "-f", "/dev/null")
+        capture("stack.log", "k3s", "crictl", "logs", "--timestamps", "--tail=2000", container_id,
+                limit=65536, stderr_limit=65536)
+
+
 def capture_enforce_failure(guest: Guest, label: str) -> None:
-    """Read live failure state without another traffic probe or table replay."""
+    """Capture passive state, then a TEMPORARY destructive stack on crash failure."""
     pod = capture_enforcer_failure(guest, label)
 
-    def capture(name: str, *command: str, limit: int = 16384) -> None:
+    def capture(name: str, *command: str, limit: int = 16384, stderr_limit: int = 4096):
         try:
             result = guest.lib.completed(
                 "incus", "--force-local", "--project", guest.project, "exec", guest.instance,
                 "--mode=non-interactive", "--", *command, timeout=15)
             observe(f"{label}.failure.{name}", {
                 "returncode": result.returncode, "stdout": result.stdout[:limit],
-                "stderr": result.stderr[:4096],
-                "truncated": len(result.stdout) > limit or len(result.stderr) > 4096,
+                "stderr": result.stderr[:stderr_limit],
+                "truncated": len(result.stdout) > limit or len(result.stderr) > stderr_limit,
             })
+            return result
         except Exception as error:
             observe(f"{label}.failure.{name}", {"error": type(error).__name__, "detail": str(error)[:400]})
 
     # CRI supplies the PID in the guest's procfs, not the fixture host's PID.
     # Queue port IDs are netlink port IDs: correlate them with socket inodes
     # and this exact container's fd links rather than assuming port == PID.
+    frozen = None
     try:
         status = next(s for s in pod["status"]["containerStatuses"] if s["name"] == ENFORCER[1])
         container_id = status["containerID"].removeprefix("containerd://")
@@ -613,6 +657,7 @@ def capture_enforce_failure(guest: Guest, label: str) -> None:
             "container_id": container_id, "pid": pid,
             "status": {key: container["status"].get(key) for key in ("id", "state", "createdAt", "startedAt", "finishedAt")},
         })
+        frozen = container
         capture("netfilter", "sh", "-c",
                 'date -u +%Y-%m-%dT%H:%M:%SZ; '
                 'for p in 1 $$ "$1"; do printf "process=%s\\n" "$p"; '
@@ -660,6 +705,11 @@ def capture_enforce_failure(guest: Guest, label: str) -> None:
     capture("nft.enforcer", "sh", "-c", tools + "nft -j list table inet kube-network-policies", limit=32768)
     capture("nfqueue", "cat", "/proc/net/netfilter/nfnetlink_queue")
     capture("iptables.filter", "sh", "-c", tools + "iptables-save -t filter")
+    if label == "crash" and frozen is not None:
+        try:
+            capture_crash_stack(guest, frozen, capture)
+        except Exception as error:
+            observe("crash.failure.stack_capture", {"error": type(error).__name__, "detail": str(error)[:400]})
 
 
 def crash(lib, guest: Guest) -> None:
