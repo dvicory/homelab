@@ -507,7 +507,7 @@ jobs:
           loop_dev=$(sudo losetup --find --show /mnt/nix.img)
           printf '%s\n' "$loop_dev" > "$RUNNER_TEMP/native-storage-loop"
           sudo mkfs.btrfs -L nix --nodiscard "$loop_dev"
-          sudo blkid -s UUID -o value "$loop_dev" | tee "$RUNNER_TEMP/native-storage-uuid"
+          sudo blkid --probe -s UUID -o value "$loop_dev" | tee "$RUNNER_TEMP/native-storage-uuid"
           test -s "$RUNNER_TEMP/native-storage-uuid"
           sudo mkdir /nix
           sudo mount "$loop_dev" /nix -o noatime,nobarrier,nodiscard,compress=zstd:1,space_cache=v2,commit=120
@@ -551,7 +551,7 @@ jobs:
             if [ "$(jq -r .requirements.ownedStorage <<< "$APPLICATION")" = true ]; then
               df -h / /nix
               for target in /nix /var/lib/docker /var/lib/containerd; do
-                findmnt -rn -M "$target" -o TARGET,SOURCE,FSTYPE,FSROOT,UUID
+                sudo findmnt -rn -M "$target" -o TARGET,SOURCE,FSTYPE,FSROOT,UUID
               done
             fi
             if [ "$(jq -r .requirements.docker <<< "$APPLICATION")" = true ]; then
@@ -644,17 +644,18 @@ jobs:
       - name: Clean owned native acceptance storage
         if: always() && matrix.requirements.ownedStorage == true
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           if test -s "$RUNNER_TEMP/native-storage-uuid"; then
             uuid=$(cat "$RUNNER_TEMP/native-storage-uuid")
             loop_dev=$(cat "$RUNNER_TEMP/native-storage-loop")
             test ! -L /mnt/nix.img
             test "$(sudo losetup --noheadings --output BACK-FILE "$loop_dev")" = /mnt/nix.img
-            test "$(sudo blkid -s UUID -o value "$loop_dev")" = "$uuid"
+            test "$(sudo blkid --probe -s UUID -o value "$loop_dev")" = "$uuid"
+            # UUID probing needs root; validate kernel mount sources separately.
             # Validate every owned mount before stopping daemons or deleting data.
             for target in /nix /var/lib/docker /var/lib/containerd; do
               if mountpoint -q "$target"; then
-                test "$(findmnt -rn -M "$target" -o UUID)" = "$uuid"
+                test "$(findmnt -rn --nofsroot -M "$target" -o SOURCE)" = "$loop_dev"
                 case "$target" in
                   /nix) root=/ ;;
                   *) root="/build/native-acceptance/${target##*/}" ;;

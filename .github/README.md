@@ -573,9 +573,12 @@ The generic native executor dispatches `requirements.root`,
 Owned storage is restricted to an exclusive disposable Linux Docker runner:
 it places `/nix`, Docker and containerd data on its owned Btrfs loop image.
 Setup refuses an existing image (including dangling symlinks), `/nix`, daemon
-storage symlinks and existing target mounts. Cleanup validates the recorded
-image UUID and exact FSROOT of every mount before stopping Docker/containerd,
-unmounting their bind mounts or deleting owned scratch. The Nix store remains
+storage symlinks and existing target mounts. Cleanup directly probes the recorded
+image UUID as root, then validates the exact kernel-reported loop source and
+FSROOT of every mount before stopping Docker/containerd, unmounting their bind
+mounts or deleting owned scratch. UUID diagnostics also run as root: unprivileged
+`findmnt` tag lookup can be blank when udev has no tag and the device is unreadable.
+The Nix store remains
 mounted through post-actions; final mount/loop/image teardown belongs to the
 exclusive disposable runner's lifetime. Independent acceptance cleanup checks
 the whole daemon and owned scratch, not just a name prefix. The executor adds

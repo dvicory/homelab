@@ -148,9 +148,23 @@ patch_validation() { k patch backendtlspolicy idm -n identity --type=merge -p "$
 setup() {
   apply retained
   k apply --server-side -f "$(setting crds)"
-  k wait crd/gateways.gateway.networking.k8s.io crd/envoyproxies.gateway.envoyproxy.io \
-    crd/clienttrafficpolicies.gateway.envoyproxy.io crd/securitypolicies.gateway.envoyproxy.io \
-    crd/backendtlspolicies.gateway.networking.k8s.io --for=condition=Established --timeout=180s
+  local deadline=$((SECONDS + 180)) remaining crd_status established
+  local crds=(
+    crd/gateways.gateway.networking.k8s.io crd/envoyproxies.gateway.envoyproxy.io
+    crd/clienttrafficpolicies.gateway.envoyproxy.io crd/securitypolicies.gateway.envoyproxy.io
+    crd/backendtlspolicies.gateway.networking.k8s.io
+  )
+  while :; do
+    remaining=$((deadline - SECONDS))
+    if ((remaining <= 0)); then
+      echo "Gateway CRDs did not become Established within 180s" >&2
+      return 1
+    fi
+    crd_status=$(k get "${crds[@]}" -o json "--request-timeout=${remaining}s")
+    established=$(jq -r 'all(.items[]; (.status.conditions // []) | any(.type == "Established" and .status == "True"))' <<< "$crd_status")
+    if [[ "$established" == true ]]; then break; fi
+    sleep 1
+  done
   apply controller
   k wait job/envoy-gateway-gateway-helm-certgen -n gateway --for=condition=Complete --timeout=180s
   k rollout status deployment/envoy-gateway -n gateway --timeout=300s
