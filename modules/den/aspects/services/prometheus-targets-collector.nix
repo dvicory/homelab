@@ -38,8 +38,8 @@ in
             (throw "compute network ${compute.network} is not in the Incus preseed")
             config.virtualisation.incus.preseed.networks;
         listenAddress = builtins.head (lib.splitString "/" network.config."ipv4.address");
-        # The pipe also collects other hosts' targets; only this host's are
-        # served here.
+        # Admit only targets owned by this host, even if another policy later
+        # delivers cross-host contributions.
         targets = lib.filter (target: target.host == host.name) prometheus-targets;
         ports = lib.unique (map (target: target.port) targets);
         mergerfsPools = builtins.attrNames (host.settings.services.mergerfs.pools or { });
