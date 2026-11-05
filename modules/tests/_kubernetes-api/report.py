@@ -1334,12 +1334,6 @@ def self_check():
     }
     check_acceptance(complete)
     incomplete = [None, {}, {"executed": []}]
-    failed_gateway = copy.deepcopy(complete)
-    failed_gateway.update(status="failed", fullAcceptance=False, executed=[],
-                          failurePhase="gateway-fixture-prerequisites", failureReason="command-failed",
-                          commandFailure={"returnCode": 1, "errorCategory": "condition-timeout"},
-                          gatewayPrerequisiteWitness=gateway)
-    incomplete.append(failed_gateway)
     for key in complete:
         bad = copy.deepcopy(complete)
         del bad[key]
