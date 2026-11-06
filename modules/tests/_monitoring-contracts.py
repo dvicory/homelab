@@ -64,6 +64,38 @@ volumes = {v["name"]: v for v in vm["volumes"]}
 pv = find(retained, "PersistentVolume", "monitoring-metrics")["spec"]
 ksm_args = find(monitoring, "Deployment", "kube-state-metrics")["spec"]["template"]["spec"]["containers"][0]["args"]
 ksm_resources = next(arg.removeprefix("--resources=").split(",") for arg in ksm_args if arg.startswith("--resources="))
+kubelet_jobs = [job for job in scrape_jobs if job["job_name"] in ("kubelet", "cadvisor")]
+collector_role = find(monitoring, "ClusterRole", "monitoring-victoriametrics")
+collector_rules = collector_role["rules"]
+collector_permissions = {
+    (group, resource, verb)
+    for rule in collector_rules
+    for group in rule.get("apiGroups", [])
+    for resource in rule.get("resources", [])
+    for verb in rule.get("verbs", [])
+}
+collector_binding = find(monitoring, "ClusterRoleBinding", "monitoring-victoriametrics")
+
+
+def verified_kubelet_job(job):
+    tls = job.get("tls_config", {})
+    discovery = job.get("kubernetes_sd_configs", [])
+    return (
+        job.get("scheme") == "https"
+        and job.get("metrics_path") == ("/metrics" if job["job_name"] == "kubelet" else "/metrics/cadvisor")
+        and job.get("bearer_token_file") == "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        and not any(job.get(key) for key in ("bearer_token", "basic_auth", "authorization", "oauth2"))
+        and tls.get("ca_file") == "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+        and tls.get("insecure_skip_verify", False) is False
+        and not tls.get("server_name")
+        and set(tls) <= {"ca_file", "insecure_skip_verify", "server_name"}
+        # The native helper supplies external discovery credentials; do not let
+        # those replacements conceal a production API or credential override.
+        and len(discovery) == 1
+        and all(config.get("role") == "node"
+                and set(config) <= {"role", "selectors", "namespaces", "attach_metadata"}
+                for config in discovery)
+    )
 
 
 checks = dict(inputs["hostChecks"])
@@ -79,6 +111,10 @@ checks.update({
     "endpoint probes do not match published HTTP routes": sorted(probed_routes) == sorted(published_routes),
     "a scrape job has no TelemetrySourceDown alert": job_names <= source_down_jobs,
     "a Watchdog core source is not scraped": {"kubelet", "cadvisor", "kube-state-metrics", "host-node"} <= job_names,
+    "kubelet or cAdvisor bypasses direct authenticated, CA- and SAN-verified HTTPS":
+        {job["job_name"] for job in kubelet_jobs} == {"kubelet", "cadvisor"}
+        and len(kubelet_jobs) == 2
+        and all(verified_kubelet_job(job) for job in kubelet_jobs),
     "a monitoring image is not pinned as tag@digest":
         all(re.fullmatch(r"[^@ ]+:[^@ ]+@sha256:[0-9a-f]{64}", c["image"]) for c in containers),
     "VictoriaMetrics no longer has one non-overlapping retained-store writer":
@@ -90,11 +126,18 @@ checks.update({
     "VictoriaMetrics has lost its narrowly bound read-only discovery credentials":
         vm["serviceAccountName"] == "victoriametrics"
         and not find(monitoring, "ServiceAccount", "victoriametrics").get("automountServiceAccountToken", True)
-        and all(set(rule["verbs"]) <= {"get", "list", "watch"} and set(rule["resources"]) <= {"nodes", "nodes/metrics"}
-                for rule in find(monitoring, "ClusterRole", "monitoring-victoriametrics")["rules"])
-        and find(monitoring, "ClusterRoleBinding", "monitoring-victoriametrics")["roleRef"]["name"] == "monitoring-victoriametrics"
-        and find(monitoring, "ClusterRoleBinding", "monitoring-victoriametrics")["subjects"] == [
-            {"kind": "ServiceAccount", "name": "victoriametrics", "namespace": "monitoring"}],
+        and "aggregationRule" not in collector_role
+        and all(set(rule) <= {"apiGroups", "resources", "verbs", "resourceNames"}
+                and not rule.get("resourceNames") for rule in collector_rules)
+        and collector_permissions == {
+            ("", "nodes", "get"), ("", "nodes", "list"), ("", "nodes", "watch"),
+            ("", "nodes/metrics", "get")}
+        and collector_binding["roleRef"] == {
+            "apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "monitoring-victoriametrics"}
+        and len(collector_binding["subjects"]) == 1
+        and all(subject.get("kind") == "ServiceAccount" and subject.get("name") == "victoriametrics"
+                and subject.get("namespace") == "monitoring" and subject.get("apiGroup", "") == ""
+                for subject in collector_binding["subjects"]),
     "VictoriaMetrics scrape configuration is not projected read-only":
         volumes["scrape"]["configMap"]["name"] == "victoriametrics-scrape"
         and any(mount["name"] == "scrape" and mount["mountPath"] == "/etc/victoriametrics" and mount.get("readOnly")
