@@ -1,4 +1,5 @@
 """Bounded, hash-verified reuse of inventories from this workflow's main runs."""
+import csv
 import hashlib
 import json
 import os
@@ -23,6 +24,124 @@ def digest(path):
     return value.hexdigest()
 
 
+def store_paths(values):
+    if (not isinstance(values, list)
+            or any(not isinstance(value, str) or not re.fullmatch(r"/nix/store/[0-9a-z]{32}-[^/\s]+", value)
+                   for value in values) or len(values) != len(set(values))):
+        raise ValueError("invalid or duplicate native store paths")
+    return set(values)
+
+
+def native_coverage(directory, provenance):
+    """Check the pinned sbomnix CSV/CDX representation, without a live store.
+
+    sbomnix groups outputs by derivation and may list sibling outputs outside
+    the runtime closure. Those are not extra realized/runtime coverage. Every
+    recorded closure path must nevertheless be represented; upstream omissions
+    (including non-package artifacts) make an inventory partial, never clean.
+    """
+    closure = json.loads((directory / "closure.json").read_text())
+    if not isinstance(closure, dict) or not closure:
+        raise ValueError("native closure is empty or malformed")
+    paths = store_paths(list(closure))
+    if paths != store_paths(provenance.get("references")) or provenance.get("outPath") not in paths:
+        raise ValueError("native closure/provenance/selected output mismatch")
+    pending, reachable = [provenance["outPath"]], set()
+    for path, record in closure.items():
+        if (not isinstance(record, dict) or type(record.get("narSize")) is not int
+                or record["narSize"] < 0 or not isinstance(record.get("narHash"), str)
+                or not record["narHash"]):
+            raise ValueError("malformed native closure record: " + path)
+        if not store_paths(record.get("references")) <= paths:
+            raise ValueError("native closure omits a recorded reference")
+    while pending:
+        path = pending.pop()
+        if path not in reachable:
+            reachable.add(path)
+            pending.extend(closure[path]["references"])
+    if reachable != paths:
+        raise ValueError("native closure includes paths unreachable from selected output")
+
+    cdx = json.loads((directory / "native.cdx.json").read_text())
+    if (not isinstance(cdx, dict) or cdx.get("bomFormat") != "CycloneDX"
+            or cdx.get("specVersion") != "1.4" or cdx.get("version") != 1
+            or not isinstance(cdx.get("metadata"), dict)
+            or not isinstance(cdx.get("components"), list)
+            or not isinstance(cdx.get("dependencies"), list)):
+        raise ValueError("malformed sbomnix CycloneDX inventory")
+    metadata = cdx["metadata"]
+    if (not isinstance(metadata.get("properties"), list)
+            or any(not isinstance(prop, dict) for prop in metadata["properties"])
+            or {"name": "sbom_type", "value": "runtime_only"} not in metadata["properties"]):
+        raise ValueError("native inventory is not an unbounded runtime inventory")
+    if any(prop.get("name") == "sbom_dependencies_depth" for prop in metadata.get("properties", [])):
+        raise ValueError("depth-limited native inventory cannot be complete")
+    root = metadata.get("component")
+    components, covered = {}, {}
+    for component in [root, *cdx["components"]]:
+        if (not isinstance(component, dict) or not isinstance(component.get("bom-ref"), str)
+                or not isinstance(component.get("name"), str) or not component["name"]
+                or not isinstance(component.get("version"), str)
+                or not isinstance(component.get("properties"), list)):
+            raise ValueError("native component identity/properties absent")
+        if any(not isinstance(prop, dict) or not isinstance(prop.get("name"), str)
+               or not isinstance(prop.get("value"), str) for prop in component["properties"]):
+            raise ValueError("malformed native component property")
+        ref = component["bom-ref"]
+        if ref in components:
+            raise ValueError("duplicate native component identity")
+        outputs = store_paths([prop["value"] for prop in component["properties"] if prop["name"] == "nix:output_path"])
+        drvs = [prop["value"] for prop in component["properties"] if prop["name"] == "nix:drv_path"]
+        store_paths([ref])
+        if not outputs or (drvs != [ref] if ref.endswith(".drv") else drvs or ref not in outputs):
+            raise ValueError("native component derivation/output identity mismatch")
+        if not outputs & paths:
+            raise ValueError("native component represents no runtime closure output")
+        for path in outputs & paths:
+            if path in covered or (ref.endswith(".drv") and closure[path].get("deriver") not in (None, ref)):
+                raise ValueError("native output has inconsistent component/deriver")
+            covered[path] = ref
+        components[ref] = (component, outputs)
+    if set(covered) != paths:
+        raise ValueError("partial native inventory; unrepresented closure paths: " + ", ".join(sorted(paths - covered.keys())))
+    if provenance["outPath"] not in components[root["bom-ref"]][1]:
+        raise ValueError("native metadata root does not represent selected output")
+    if root["bom-ref"].endswith(".drv") and root["bom-ref"] != provenance.get("drvPath"):
+        raise ValueError("native metadata root derivation differs from selected derivation")
+    dependencies = {}
+    for record in cdx["dependencies"]:
+        if (not isinstance(record, dict) or record.get("ref") not in components
+                or record["ref"] in dependencies or not isinstance(record.get("dependsOn", []), list)
+                or not set(record.get("dependsOn", [])) <= components.keys()):
+            raise ValueError("native dependency identities are inconsistent")
+        dependencies[record["ref"]] = set(record.get("dependsOn", []))
+    if dependencies.keys() != components.keys():
+        raise ValueError("native dependency records omit components")
+    for path, record in closure.items():
+        expected = {covered[reference] for reference in record["references"]} - {covered[path]}
+        if not expected <= dependencies[covered[path]]:
+            raise ValueError("native dependency graph omits closure references")
+
+    with (directory / "native.csv").open(newline="") as stream:
+        rows = csv.DictReader(stream)
+        if not {"store_path", "pname", "version", "out", "output_paths_json", "cpe", "purl"} <= set(rows.fieldnames or []):
+            raise ValueError("sbomnix CSV transport columns absent")
+        seen = set()
+        for row in rows:
+            ref = row["store_path"]
+            if ref not in components or ref in seen or None in row or None in row.values():
+                raise ValueError("native CSV component identity/row mismatch")
+            seen.add(ref)
+            component, outputs = components[ref]
+            if (store_paths(json.loads(row["output_paths_json"])) != outputs
+                    or (row["out"] and row["out"] not in outputs)
+                    or any(row[column] != component.get(field, "") for column, field in
+                           (("pname", "name"), ("version", "version"), ("cpe", "cpe"), ("purl", "purl")))):
+                raise ValueError("native CSV/CDX component or output paths differ")
+        if seen != components.keys():
+            raise ValueError("native CSV omits CDX components")
+
+
 def seal(directory, key):
     manifest = {"inventoryKey": key, "files": {
         path.name: {"sha256": digest(path), "size": path.stat().st_size}
@@ -32,10 +151,14 @@ def seal(directory, key):
     if sum(record["size"] for record in manifest["files"].values()) > MAX_EXPANDED:
         raise ValueError("inventory exceeds reusable artifact size limit")
     (directory / "complete.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    verify(directory, key)
+    try:
+        verify(directory, key)
+    except Exception:
+        (directory / "complete.json").unlink()
+        raise
 
 
-def verify(directory, key, producer=None):
+def verify(directory, key, producer=None, entry=None):
     manifest = json.loads((directory / "complete.json").read_text())
     if manifest["inventoryKey"] != key or set(manifest["files"]) - FILES:
         raise ValueError("inventory identity or file allowlist mismatch")
@@ -50,6 +173,12 @@ def verify(directory, key, producer=None):
         if path.is_symlink() or not path.is_file() or path.stat().st_size != record["size"] or digest(path) != record["sha256"]:
             raise ValueError("inventory hash/size/type mismatch: " + name)
     provenance = json.loads((directory / "provenance.json").read_text())
+    if provenance.get("inventoryKey") != key:
+        raise ValueError("provenance inventory identity mismatch")
+    if entry is not None:
+        for field in ("id", "kind", "system", "drvPath", "outPath", "resolvedImage", "ociPlatform"):
+            if provenance.get(field) != entry.get(field):
+                raise ValueError("cached artifact declaration mismatch: " + field)
     if provenance["kind"] not in ("nix", "oci"):
         raise ValueError("unsupported inventory kind")
     required = {"native.cdx.json", "native.csv", "closure.json"} if provenance["kind"] == "nix" else set()
@@ -57,6 +186,8 @@ def verify(directory, key, producer=None):
         required.add("archive.cdx.json")
     if not required <= set(manifest["files"]):
         raise ValueError("kind-specific inventory files absent: " + ", ".join(sorted(required - set(manifest["files"]))))
+    if provenance["kind"] == "nix":
+        native_coverage(directory, provenance)
     if producer is not None and manifest["producer"] != producer:
         raise ValueError("inventory producer does not match GitHub's run metadata")
     return manifest
@@ -124,11 +255,7 @@ def restore(entry, directory, repository, branch):
                 process.stdout.close()
             directory.mkdir(parents=True, exist_ok=False)
             unpack(archive, directory)
-            verify(directory, entry["inventoryKey"], producer)
-            provenance = json.loads((directory / "provenance.json").read_text())
-            for field in ("id", "kind", "system", "outPath", "resolvedImage"):
-                if provenance.get(field) != entry.get(field):
-                    raise ValueError("cached artifact declaration mismatch: " + field)
+            verify(directory, entry["inventoryKey"], producer, entry)
         print(f"Reused verified inventory artifact {artifact['id']} from {sha}")
         return
     print("No matching trusted inventory; collect will realize the declared artifact")

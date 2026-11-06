@@ -230,7 +230,7 @@ def collect(args):
                       trivyVersion=capture("trivy", "--version"))
     # Cache only complete inventories. Findings/databases are never cached here.
     if (directory / "complete.json").exists():
-        security_artifacts.verify(directory, row["inventoryKey"])
+        security_artifacts.verify(directory, row["inventoryKey"], entry=row)
         original = json.loads((directory / "provenance.json").read_text())
         save(directory / "provenance.json", dict(original, reused=True,
              source=row.get("source"), location=row.get("location"), update=row.get("update"),

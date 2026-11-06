@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Small offline inventory contract check; upstream scanner proof is separate."""
 import argparse
+import copy
+import csv
+import io
 import importlib.util
 import json
 import os
@@ -9,6 +12,7 @@ from pathlib import Path
 import tempfile
 import zipfile
 from unittest.mock import patch
+from types import SimpleNamespace
 
 sys.dont_write_bytecode = True
 
@@ -34,7 +38,10 @@ inventory = {
 }
 
 source = {"path": "/nix/store/selected-source-source", "locked": {"narHash": "sha256-" + "a" * 43 + "="}}
-resolved_paths = {"drvPath": "/nix/store/selected.drv", "outPath": "/nix/store/selected"}
+resolved_paths = {
+    "drvPath": "/nix/store/n2ys7d0rng1c58qqrfnj7pb66qx8r8vq-zlib-1.3.2.drv",
+    "outPath": "/nix/store/4my1cjkysivszznv4342x12r3z2pwdpl-zlib-1.3.2",
+}
 
 
 def rejects(function, *args):
@@ -76,6 +83,122 @@ def native_capture(*args):
     assert "path:" + source["path"] + "#" + inventory["x86_64-linux"]["roots"][0]["target"] in args
     assert "--json" in args and "--apply" in args
     return json.dumps(resolved_paths)
+
+
+def native_fixture(row):
+    """Minimal pinned-upstream-shaped inventory, including collapsed outputs."""
+    root = row["outPath"]
+    dependency = "/nix/store/6wjykzqf6w3kzfhjc4z7dcd84j0dzsgm-glibc-2.42-84"
+    sibling = "/nix/store/24zdslzcp8icc73ck3kawiacaxvsczch-zlib-1.3.2-dev"
+    components = [
+        {"type": "library", "bom-ref": row["drvPath"], "name": "zlib", "version": "1.3.2",
+         "purl": "pkg:nix/zlib@1.3.2", "cpe": "cpe:2.3:a:zlib:zlib:1.3.2:*:*:*:*:*:*:*",
+         "properties": [{"name": "nix:output_path", "value": path} for path in (root, sibling)]
+                       + [{"name": "nix:drv_path", "value": row["drvPath"]}]},
+        {"type": "library", "bom-ref": dependency, "name": "glibc", "version": "2.42-84",
+         "purl": "pkg:nix/glibc@2.42-84", "properties": [{"name": "nix:output_path", "value": dependency}]},
+    ]
+    native = {"bomFormat": "CycloneDX", "specVersion": "1.4", "version": 1,
+              "metadata": {"properties": [{"name": "sbom_type", "value": "runtime_only"}],
+                           "component": components[0]},
+              "components": components[1:],
+              "dependencies": [{"ref": row["drvPath"], "dependsOn": [dependency]}, {"ref": dependency}]}
+    closure = {root: {"narSize": 1, "narHash": "sha256-test", "deriver": row["drvPath"], "references": [dependency]},
+               dependency: {"narSize": 1, "narHash": "sha256-test", "deriver": None, "references": []}}
+    stream = io.StringIO()
+    fields = ["name", "pname", "version", "patches", "system", "out", "outputs", "store_path",
+              "cpe", "purl", "urls", "output_paths_json", "patch_paths_json"]
+    writer = csv.DictWriter(stream, fields, quoting=csv.QUOTE_ALL)
+    writer.writeheader()
+    for component in components:
+        outputs = [prop["value"] for prop in component["properties"] if prop["name"] == "nix:output_path"]
+        writer.writerow(dict.fromkeys(fields, "") | {
+            "name": component["name"] + "-" + component["version"], "pname": component["name"],
+            "version": component["version"], "out": outputs[0], "outputs": str(outputs),
+            "store_path": component["bom-ref"], "cpe": component.get("cpe", ""), "purl": component["purl"],
+            "output_paths_json": json.dumps(outputs), "patch_paths_json": "[]"})
+    return native, closure, stream.getvalue()
+
+
+def forged_manifest(directory, manifest):
+    """Model hashed malformed producer output, not just hash tampering."""
+    manifest = copy.deepcopy(manifest)
+    for name in manifest["files"]:
+        path = directory / name
+        manifest["files"][name] = {"sha256": audit.security_artifacts.digest(path), "size": path.stat().st_size}
+    audit.save(directory / "complete.json", manifest)
+
+
+def check_native_rejection(directory, row, manifest):
+    rejects(audit.security_artifacts.seal, directory, row["inventoryKey"])
+    assert not (directory / "complete.json").exists()
+    forged_manifest(directory, manifest)
+    rejects(audit.security_artifacts.verify, directory, row["inventoryKey"])
+    with patch.object(audit, "current_entry", return_value=row), \
+            patch.object(audit, "capture", return_value="Trivy test version"), patch.object(audit, "run") as calls:
+        rejects(audit.collect, argparse.Namespace(entry="entry.json", directory=str(directory)))
+        rejects(audit.scan, argparse.Namespace(directory=str(directory), output="rejected-report"))
+        calls.assert_not_called()
+
+
+def check_real_native_proof(path):
+    """Admit persisted actual upstream outputs; no store/registry is consulted."""
+    proof = json.loads(Path(path).read_text())["observed_real_closure_proof"]
+    for sample in proof.values():
+        if "raw_csv" not in sample:
+            continue
+        native = sample["raw_evidence"][".cdx.json"]
+        ref = native["metadata"]["component"]["bom-ref"]
+        row = {"kind": "nix", "inventoryKey": "real-proof", "outPath": sample["root"],
+               "drvPath": ref if ref.endswith(".drv") else None, "references": list(sample["raw_path_info"])}
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            audit.save(directory / "native.cdx.json", native)
+            audit.save(directory / "closure.json", sample["raw_path_info"])
+            (directory / "native.csv").write_text(sample["raw_csv"])
+            audit.save(directory / "language.cdx.json", {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1, "components": []})
+            audit.save(directory / "provenance.json", row)
+            audit.security_artifacts.seal(directory, row["inventoryKey"])
+            audit.security_artifacts.verify(directory, row["inventoryKey"])
+            print("Actual sbomnix runtime inventory admitted:", sample["root"])
+
+
+def check_trusted_restore(directory, row):
+    repository, branch, sha = "owner/repository", "main", "a" * 40
+    workflow = audit.security_artifacts.WORKFLOW
+    producer = {"GITHUB_REPOSITORY": repository, "GITHUB_WORKFLOW_REF": f"{repository}/{workflow}@refs/heads/{branch}",
+                "GITHUB_REF": "refs/heads/" + branch, "GITHUB_EVENT_NAME": "schedule", "GITHUB_SHA": sha}
+    with patch.dict(os.environ, producer):
+        audit.security_artifacts.seal(directory, row["inventoryKey"])
+    artifact = {"id": 1, "name": f"security-inventory-v1-{row['id']}-{row['inventoryKey']}",
+                "expired": False, "created_at": "2026-11-06", "size_in_bytes": 1024,
+                "workflow_run": {"id": 2, "head_branch": branch, "head_sha": sha}}
+    run = {"repository": {"full_name": repository}, "head_repository": {"full_name": repository},
+           "path": workflow, "head_branch": branch, "event": "schedule", "head_sha": sha}
+    # These GitHub metadata failures must reject before downloading any bytes.
+    for field, value in (("repository", {"full_name": "other/repository"}),
+                         ("head_repository", {"full_name": "fork/repository"}),
+                         ("path", ".github/workflows/untrusted.yml"), ("head_branch", "other"),
+                         ("event", "pull_request")):
+        with patch.object(audit.security_artifacts, "api", side_effect=[{"artifacts": [artifact]}, dict(run, **{field: value})]), \
+                patch.object(audit.security_artifacts.subprocess, "Popen") as download:
+            audit.security_artifacts.restore(row, Path("must-not-restore"), repository, branch)
+            download.assert_not_called()
+            assert not Path("must-not-restore").exists()
+    with patch.object(audit.security_artifacts, "api", side_effect=[{"artifacts": [artifact]}, dict(run, head_sha="b" * 40)]), \
+            patch.object(audit.security_artifacts.subprocess, "Popen") as download:
+        rejects(audit.security_artifacts.restore, row, Path("must-not-restore"), repository, branch)
+        download.assert_not_called()
+    archive_bytes = io.BytesIO()
+    with zipfile.ZipFile(archive_bytes, "w") as archive:
+        for path in directory.iterdir():
+            archive.write(path, path.name)
+    process = SimpleNamespace(stdout=io.BytesIO(archive_bytes.getvalue()), wait=lambda: 0, poll=lambda: 0)
+    with patch.object(audit.security_artifacts, "api", side_effect=[{"artifacts": [artifact]}, run]), \
+            patch.object(audit.security_artifacts.subprocess, "Popen", return_value=process):
+        audit.security_artifacts.restore(row, Path("restored"), repository, branch)
+    audit.security_artifacts.verify(Path("restored"), row["inventoryKey"], producer, row)
+    rejects(audit.security_artifacts.verify, Path("restored"), row["inventoryKey"], dict(producer, GITHUB_SHA="b" * 40))
 
 with tempfile.TemporaryDirectory() as directory:
     previous = Path.cwd()
@@ -160,33 +283,74 @@ with tempfile.TemporaryDirectory() as directory:
 
         Path("inventory").mkdir()
         audit.save("entry.json", row)
-        Path("inventory/language.cdx.json").write_text("{}")
-        audit.save("inventory/provenance.json", dict(row, state="built", references=["/nix/store/actual"]))
-        try:
-            audit.security_artifacts.seal(Path("inventory"), row["inventoryKey"])
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("incomplete native inventory sealed")
+        native, closure, native_csv = native_fixture(row)
+        audit.save("inventory/language.cdx.json", {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1, "components": []})
+        audit.save("inventory/provenance.json", dict(row, state="built", references=list(closure)))
+        rejects(audit.security_artifacts.seal, Path("inventory"), row["inventoryKey"])
         for name in ("native.cdx.json", "native.csv", "closure.json"):
             Path("inventory", name).write_text("{}")
+        rejects(audit.security_artifacts.seal, Path("inventory"), row["inventoryKey"])
+        audit.save("inventory/native.cdx.json", native)
+        audit.save("inventory/closure.json", closure)
+        Path("inventory/native.csv").write_text(native_csv)
         audit.security_artifacts.seal(Path("inventory"), row["inventoryKey"])
+        manifest = json.loads(Path("inventory/complete.json").read_text())
+        originals = {path.name: path.read_bytes() for path in Path("inventory").iterdir()}
+        # Hash-consistent missing component, root, output, CSV row, and graph
+        # counterexamples must fail at seal, admission, reuse and pre-scan.
+        malformed = [("native.cdx.json", {}), ("native.csv", "{}"), ("closure.json", {})]
+        value = copy.deepcopy(native)
+        value["components"] = []
+        malformed.append(("native.cdx.json", value))
+        value = copy.deepcopy(native)
+        del value["metadata"]["component"]
+        malformed.append(("native.cdx.json", value))
+        value = copy.deepcopy(native)
+        value["metadata"]["component"] = value["components"][0]
+        value["components"] = [native["metadata"]["component"]]
+        malformed.append(("native.cdx.json", value))
+        value = copy.deepcopy(native)
+        value["metadata"]["component"]["properties"] = [prop for prop in value["metadata"]["component"]["properties"]
+                                                       if prop["value"] != row["outPath"]]
+        malformed.append(("native.cdx.json", value))
+        value = copy.deepcopy(native)
+        value["metadata"]["properties"].append({"name": "sbom_dependencies_depth", "value": "1"})
+        malformed.append(("native.cdx.json", value))
+        value = copy.deepcopy(native)
+        value["dependencies"][0]["dependsOn"] = []
+        malformed.append(("native.cdx.json", value))
+        malformed.append(("native.csv", native_csv.splitlines(keepends=True)[0] + native_csv.splitlines(keepends=True)[1]))
+        malformed.append(("native.csv", native_csv.replace('pkg:nix/glibc@2.42-84', 'pkg:nix/other@2.42-84')))
+        malformed.append(("native.csv", native_csv.replace(row["outPath"], "/nix/store/" + "b" * 32 + "-other")))
+        value = copy.deepcopy(closure)
+        del value[next(path for path in closure if path != row["outPath"])]
+        malformed.append(("closure.json", value))
+        value = copy.deepcopy(closure)
+        value[row["outPath"]]["references"].append("/nix/store/" + "c" * 32 + "-omitted")
+        malformed.append(("closure.json", value))
+        value = dict(row, references=[row["outPath"]])
+        malformed.append(("provenance.json", value))
+        for name, value in malformed:
+            if isinstance(value, str):
+                Path("inventory", name).write_text(value)
+            else:
+                audit.save(Path("inventory", name), value)
+            check_native_rejection(Path("inventory"), row, manifest)
+            for filename, content in originals.items():
+                Path("inventory", filename).write_bytes(content)
         with patch.object(audit, "source_metadata", return_value=source), \
                 patch.object(audit, "capture", return_value="Trivy test version"), patch.object(audit, "run") as calls:
             audit.collect(argparse.Namespace(entry="entry.json", directory="inventory", staging_directory=None))
             calls.assert_not_called()  # no rebuild, registry access or inventory regeneration
         reused = json.loads(Path("inventory/provenance.json").read_text())
         assert reused["reused"] and reused["state"] == "built"
-        assert reused["references"] == ["/nix/store/actual"]
-        audit.save("inventory/provenance.json", dict(reused, ociArchive="/nix/store/image"))
-        try:
-            audit.security_artifacts.seal(Path("inventory"), row["inventoryKey"])
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("missing identified OCI archive inventory accepted")
-        Path("inventory/archive.cdx.json").write_text("{}")
+        assert reused["references"] == list(closure)
+        rejects(audit.security_artifacts.verify, Path("inventory"), row["inventoryKey"], None, dict(row, outPath="/nix/store/other"))
+        audit.save("inventory/provenance.json", dict(reused, ociArchive=row["outPath"]))
+        rejects(audit.security_artifacts.seal, Path("inventory"), row["inventoryKey"])
+        audit.save("inventory/archive.cdx.json", {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1, "components": []})
         audit.security_artifacts.seal(Path("inventory"), row["inventoryKey"])
+        check_trusted_restore(Path("inventory"), row)
         Path("source").write_text("actual bytes")
         with patch.object(audit.os, "link", side_effect=PermissionError(audit.errno.EPERM, "protected hardlink")):
             audit.stage_file("source", "staged-copy")
@@ -209,3 +373,8 @@ with tempfile.TemporaryDirectory() as directory:
     finally:
         os.chdir(previous)
 print("inventory contract passed")
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--native-proof", help="persisted generic-native-proof.json with actual upstream CSV/CDX/path-info")
+args = parser.parse_args()
+if args.native_proof:
+    check_real_native_proof(args.native_proof)
