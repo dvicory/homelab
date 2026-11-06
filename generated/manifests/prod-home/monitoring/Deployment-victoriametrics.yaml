@@ -38,7 +38,7 @@ spec:
             - -promscrape.config=/etc/victoriametrics/scrape.json
             - -promscrape.config.strictParse=true
             - -httpListenAddr=:8428
-          image: docker.io/victoriametrics/victoria-metrics:v1.151.0@sha256:6d164540a04f49ba4e696cbdb70f9fee78be1e94b8f2a1292743a0b1ab8275bd
+          image: docker.io/victoriametrics/victoria-metrics:v1.155.0@sha256:f60dc268b54ecf87f6e09d740c2b732838aa9193090cc741417c9f6386a130df
           imagePullPolicy: IfNotPresent
           name: victoriametrics
           ports:
