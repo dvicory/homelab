@@ -46,7 +46,8 @@ It does not audit C libraries or replace application security review.
 `nix flake update nixpkgs-security` updates the package-only input,
 not the fleet's root Nixpkgs. Review source overrides and regenerate
 dependency patches/vendor hashes when advancing supported releases.
-Before restarting Incus, retain a stopped full-state backup and each
+Incus has a 330-second graceful shutdown budget. Before restarting it,
+retain a stopped full-state backup and each
 external storage pool; a profile rollback cannot undo database changes.
 
 ## Declared routes
