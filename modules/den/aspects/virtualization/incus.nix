@@ -49,6 +49,10 @@
             in
             {
               src = patchedSrc;
+              # govulncheck needs go:func.* in the static symbol table.
+              # Stripping it makes advisory symbol names look like ELF evidence.
+              ldflags = lib.remove "-s" old.ldflags;
+              dontStrip = true;
               passthru = old.passthru // {
                 client = old.passthru.client.overrideAttrs (client: {
                   src = patchedSrc;

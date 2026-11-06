@@ -37,11 +37,23 @@ running configuration, but not the boot-loader selection. Automatic
 rollback requires the previous generation's `deploy-rs-activate` hook;
 a plain NixOS profile needs a wrapper around its exact existing system first.
 
-On an x86 Linux checkout, run `nix run path:.#stock-go-audit` to audit
-the selected Incus daemon/client and Tailscale multicall ELF without
-contacting their daemons. It checks compiled Go symbols, compiler and
-linked module versions; application versions come from evaluated Nix.
-It does not audit C libraries or replace application security review.
+On an x86 Linux checkout, run
+`nix run path:.#stock-go-audit -- /absolute/path/to/report-directory`
+to audit the selected Incus daemon/client and Tailscale multicall ELF
+without contacting their daemons. It retains build metadata, extraction
+metadata, complete govulncheck JSON and OSV output for each binary.
+Without a directory argument it retains a temporary report directory
+and prints its path. Reports must be written outside a checkout used
+as the immutable flake source.
+
+The daemon builds retain Go symbol tables. The auditor fails if symbol
+extraction is unavailable or any advisory remains, including a
+module-only match. govulncheck 1.9 can manufacture symbol-shaped
+findings from advisory data when extraction fails; its “Symbol Results”
+heading alone is not proof of extracted symbols. Inspect `extract.json`
+and the precision annotations in `govulncheck-summary.json`; raw findings
+are retained without ignores or database substitutions. Binary symbol
+presence does not establish runtime reachability or audit C libraries.
 
 `nix flake update nixpkgs --flake path:.` advances the ordinary fleet
 channel, including the kernel and K3s. Review retained source patches
@@ -52,14 +64,16 @@ they must not follow the candidate root.
 
 Tailscale retains the `compress` fix for
 [GO-2026-6865](https://vuln.go.dev/ID/GO-2026-6865): control-map zstd
-decoding imports the affected Huffman/FSE decoder. The packaged Linux
-daemon/CLI and auxiliary commands do not import deprecated OpenPGP
+decoding imports the affected Huffman/FSE decoder. Selected-command
+source graphs do not include deprecated OpenPGP
 ([GO-2026-5932](https://vuln.go.dev/ID/GO-2026-5932)) or `x/net/html`
 ([GO-2026-6860](https://vuln.go.dev/ID/GO-2026-6860),
-[GO-2026-6866](https://vuln.go.dev/ID/GO-2026-6866)); a module-wide
-advisory match alone is not a reason to patch unrelated packages.
-Incus uses the ordinary supported release and its dependencies, with
-only the adjacent/empty ID-map correction and local completion fix.
+[GO-2026-6866](https://vuln.go.dev/ID/GO-2026-6866)). This source evidence
+is not a substitute for qualifying the actual packaged ELF, especially
+when a scanner loses extraction precision. Module matches and unresolved
+findings stay visible; they are not grounds to silently declare the
+binary unaffected or patch unrelated packages just to clear a report.
+Incus retains the adjacent/empty ID-map correction and completion fix.
 
 Incus has a 330-second graceful shutdown budget. Before restarting it,
 retain a stopped full-state backup and each
