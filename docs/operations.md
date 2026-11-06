@@ -214,6 +214,18 @@ Also verify service routes, TLS, and native login.
 
 ### NetworkPolicy enforcement after a reboot
 
+The compute container uses the physical host's kernel. Apply kernel
+fixes through the host configuration and reboot the host; replacing
+the guest or restarting Pods does not load a new kernel. After an
+authorized host update, compare these paths on the host:
+
+```sh
+readlink -f /run/booted-system/kernel
+readlink -f /run/current-system/kernel
+```
+
+They should match. `uname -r` alone cannot identify a backported kernel.
+
 kube-network-policies (`kube-system/kube-network-policies`) enforces
 NetworkPolicy; K3s's embedded controller is disabled. After every host
 reboot, guest restart or guest replacement, check on the host, as root:
