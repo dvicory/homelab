@@ -310,13 +310,30 @@ nix build .#nixosConfigurations.compute-1.config.system.build.computeBundle --ou
 nix build .#packages.x86_64-linux.household-bootstrap-bundle --out-link bootstrap-bundle
 ```
 
-The guest bundle keeps the native LXC `metadata.tar.xz`, `rootfs.tar.xz`
-and `system` interface. Rootfs compression uses pixz level 0 to reduce
-preparation time at the cost of a larger archive; the decompressed
-guest payload and metadata are unchanged.
-The production guest remains an unprivileged container. Do not substitute
-a qcow2 disk or change its Incus instance type for this bundle; changing
-backends requires a separately validated retained-data handoff.
+The immutable guest bundle carries a `backend` type, `metadata.tar.xz`,
+`system`, and either `rootfs.tar.xz` (container) or `rootfs.qcow2` (VM).
+The lifecycle checks that type before importing or deleting an instance;
+neither a mismatched bundle nor a backend change in place is a migration.
+
+The guest entity selects `den.aspects.virtualization.incus-guest.provides.container`
+alongside its node-role aspect in `den.hosts.<system>.<instance>.aspect.includes`.
+Containers remain the default declaration. To opt into a VM, select
+`incus-guest.provides.virtual-machine` there instead; do not set the host's
+read-only `settings.virtualization.compute.backend` or override `boot.isContainer`.
+The hosting descriptor resolves its declared instance to that guest entity,
+so the same platform choice drives both the envelope and `computeBundle`.
+The VM uses NixOS's native Incus EFI image and agent,
+the same K3s/bootstrap/identity flow, and virtiofs for the host-owned
+shared filesystem. Its unsigned EFI image requires VM-only
+`security.secureboot=false`; no host firmware setting changes. Accelerator
+delivery is not qualified for this backend, so its grant must be absent.
+
+Before using a VM, verify that the selected Incus/virtiofsd build
+preserves shifted ownership, named/default POSIX ACLs, setgid and
+read-only identity/secret exports. Do not work around mapping failures
+by changing existing ownership, dropping ACLs or disabling confinement.
+Changing backend or filesystem cache policy requires a separately
+approved, fenced retained-data handoff; it is not an in-place replace.
 
 Run guest lifecycle commands as root.
 

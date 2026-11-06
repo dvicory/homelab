@@ -162,16 +162,17 @@
               path = pkgs.writeText "baseline-compute-backend" "container";
             }
           ]
-          ++ map
-            (name: {
-              inherit name;
-              path = "${baselineFixtureGuest.config.system.build.computeBundle}/${name}";
-            })
-            [
-              "metadata.tar.xz"
-              "rootfs.tar.xz"
-              "system"
-            ]
+          ++
+            map
+              (name: {
+                inherit name;
+                path = "${baselineFixtureGuest.config.system.build.computeBundle}/${name}";
+              })
+              [
+                "metadata.tar.xz"
+                "rootfs.tar.xz"
+                "system"
+              ]
         );
         helperGuestBundle = candidateFixtureGuest.config.system.build.computeBundle;
         replacementVersions = pkgs.writeText "prod-home-replacement-versions.json" (
