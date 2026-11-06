@@ -25,6 +25,7 @@ in
         };
       }
     ];
+
     nixos =
       {
         config,
@@ -61,7 +62,7 @@ in
                 hash = "sha256-aq4pBe75wNRFDEa3kSDa/pBLsZws5mOUOjHDUycpmXM=";
               };
               # GO-2026-6865 reaches huff0/fse through control-map zstd decoding.
-              # OpenPGP (GO-2026-5932) and x/net/html are not in this ELF's imports.
+              # OpenPGP and x/net/html are absent from the selected command graph.
               patches = (old.patches or [ ]) ++ [ ./tailscale-go-security.patch ];
               vendorHash = "sha256-l4khfLtoDLrsGm3F8xcgshKe44MdDvlP2P/OzZfCivI=";
             }
@@ -70,7 +71,6 @@ in
           openFirewall = false;
           authKeyFile = lib.mkIf secretExists config.age.secrets.tailscale-auth-key.path;
         };
-
 
         systemd.services.tailscaled.serviceConfig.Environment = [
           "TS_DEBUG_FIREWALL_MODE=nftables"

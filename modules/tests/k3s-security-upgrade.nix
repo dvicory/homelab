@@ -105,6 +105,20 @@
                   )
                   assert machine.succeed("stat -c '%a:%u:%g' /srv/qualification-volume/marker").strip() == "600:0:0"
 
+              def quiesce():
+                  # NixOS intentionally uses KillMode=process; stop alone leaves
+                  # containerd and workload shims alive during normal upgrades.
+                  machine.succeed("systemctl stop k3s.service")
+                  machine.succeed("k3s-killall.sh")
+                  machine.wait_until_succeeds(
+                      "if ${pkgs.procps}/bin/pgrep -x containerd; then false; else test $? -eq 1; fi",
+                      timeout=30,
+                  )
+                  machine.wait_until_succeeds(
+                      "if ${pkgs.procps}/bin/pgrep -f '^/nix/store/[^ ]*/bin/containerd-shim[^ /]*( |$)'; then false; else test $? -eq 1; fi",
+                      timeout=30,
+                  )
+
               def retained():
                   objects = {
                       "namespace": resource("namespace", namespace, False),
@@ -141,7 +155,7 @@
                   probe("write-before-upgrade", write=True)
                   identities = retained()
                   ca = machine.succeed("sha256sum /var/lib/rancher/k3s/server/tls/server-ca.crt").split()[0]
-                  machine.succeed("systemctl stop k3s.service")
+                  quiesce()
                   machine.succeed("tar --acls --xattrs -cpf /var/tmp/old-k3s-state.tar -C / var/lib/rancher etc/rancher srv/qualification-volume")
 
               with subtest("selected release preserves cluster identities, credentials and mounted volume data"):
@@ -152,7 +166,7 @@
                   probe("read-after-upgrade")
 
               with subtest("a cold prior-state restore works with the prior release, not an unsupported downgrade"):
-                  machine.succeed("systemctl stop k3s.service")
+                  quiesce()
                   machine.succeed("rm -rf /var/lib/rancher /etc/rancher /srv/qualification-volume")
                   machine.succeed("tar --acls --xattrs -xpf /var/tmp/old-k3s-state.tar -C /")
                   machine.succeed(f"{baseline}/bin/switch-to-configuration test", timeout=300)
