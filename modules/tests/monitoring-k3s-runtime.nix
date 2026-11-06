@@ -8,8 +8,9 @@
 #   rules are ignored. A client pod that also serves HTTP loses its outbound
 #   connections to another pod and to a node-local service, keeps answering
 #   inbound requests, and regains outbound access when the policy is removed.
-# - The kubelet and cAdvisor export the metrics the Watchdog and the OOM
-#   rule read, so a K3s upgrade that renames one fails here first.
+# - The real collector's rendered jobs verify the kubelet's serving CA and
+#   discovered address SAN, using only get nodes/metrics (never nodes/proxy).
+#   The kubelet and cAdvisor export the metrics the rules read.
 #
 # The VM is not an unprivileged Incus container, as compute-1 is; the live
 # drill remains the check of the deployed guest.
@@ -72,6 +73,7 @@ in
   perSystem =
     { pkgs, system, ... }:
     let
+      collector = pkgs.victoriametrics;
       # The enforcer, not K3s's embedded controller, must be what refuses.
       enforcer =
         assert lib.assertMsg (builtins.elem "--disable-network-policy" k3s.extraFlags)
@@ -94,11 +96,15 @@ in
               restrictNetwork = false;
             };
             networking.firewall.enable = false;
-            environment.systemPackages = [ pkgs.python3 ];
+            environment.systemPackages = [
+              (pkgs.python3.withPackages (ps: [ ps.pyyaml ]))
+              collector
+            ];
             environment.etc = {
               "drill/pods.json".text = manifests;
               "drill/deny-egress.json".text = denyEgress;
               "drill/enforcer.json".text = enforcer;
+              "drill/monitoring".source = ../../generated/manifests/prod-home/monitoring;
             };
             services.k3s = {
               enable = true;
@@ -130,14 +136,11 @@ in
             machine.succeed("systemd-run --unit node-http python3 -m http.server 18080 --directory /tmp/w")
             machine.wait_for_open_port(18080)
 
-            with subtest("the kubelet and cAdvisor export the metrics the rules read"):
-                import re
-                name = machine.succeed(f"{kubectl} get node -o jsonpath='{{.items[0].metadata.name}}'").strip()
-                kubelet = machine.succeed(f"{kubectl} get --raw /api/v1/nodes/{name}/proxy/metrics")
-                cadvisor = machine.succeed(f"{kubectl} get --raw /api/v1/nodes/{name}/proxy/metrics/cadvisor")
-                for text, metric in ((kubelet, "kubelet_running_pods"), (cadvisor, "machine_cpu_cores"), (cadvisor, "container_oom_events_total")):
-                    assert re.search(rf"^{metric}[{{ ]", text, re.M), metric
-                print("EVIDENCE kubelet exports kubelet_running_pods; cAdvisor exports machine_cpu_cores and container_oom_events_total")
+            with subtest("the real collector verifies and scrapes kubelet and cAdvisor with narrow RBAC"):
+                machine.succeed(
+                    "python ${./_monitoring-kubelet-tls.py} /etc/drill/monitoring "
+                    "--k3s ${k3s.package}/bin/k3s"
+                )
 
             with subtest("without a policy the client reaches a pod and the node"):
                 machine.wait_until_succeeds(fetch("client", f"http://{target}:8080/"), timeout=60)

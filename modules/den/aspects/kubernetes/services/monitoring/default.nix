@@ -147,14 +147,14 @@ in
           job_name = job;
           static_configs = [ { inherit targets; } ];
         };
-        # Kubelet and cAdvisor on each node, with the collector's token. K3s
-        # serves the kubelet with a self-signed certificate.
+        # K3s signs serving-kubelet.crt with ServerCA (also projected as the
+        # ServiceAccount CA), including the node's internal IPs in its SANs.
         kubeletJob = job: path: {
           job_name = job;
           scheme = "https";
           metrics_path = path;
           bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token";
-          tls_config.insecure_skip_verify = true;
+          tls_config.ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
           kubernetes_sd_configs = [ { role = "node"; } ];
           relabel_configs = [
             {

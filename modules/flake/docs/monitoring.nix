@@ -71,6 +71,28 @@ in
         substituting the desired local and remote port. These UIs have no login;
         port-forwarding bypasses NetworkPolicy. Never bind them to all interfaces.
 
+        ## Verified kubelet collection
+
+        Kubelet and cAdvisor are scraped directly over HTTPS on the discovered
+        node address, with the collector's ServiceAccount token. Both jobs trust
+        the projected ServiceAccount `ca.crt` and verify the address against the
+        serving certificate's SANs; there is no TLS verification bypass or
+        `nodes/proxy` grant. Discovery has `get/list/watch nodes`, and the
+        kubelet's webhook authorizer grants only `get nodes/metrics`.
+
+        Reproduce without production access or secrets, from the repository root
+        after rendering the manifests with the normal manifest generator:
+
+        ```sh
+        # Portable native collector against loopback TLS fixtures (Linux/macOS):
+        system="$(nix eval --impure --raw --expr builtins.currentSystem)"
+        nix build --no-link "path:.#checks.$system.monitoring-contracts"
+        # Real pinned K3s, actual rendered jobs and collector RBAC (Linux/KVM):
+        nix build --no-link path:.#checks.x86_64-linux.monitoring-k3s-runtime
+        ```
+
+        Neither check deploys or queries the production cluster.
+
         ## Notifications and silences
 
         Critical alerts go to Pushover and Telegram; Pushover critical delivery
