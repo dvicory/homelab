@@ -8,6 +8,14 @@
       }
     ];
 
+    firewall = { config, ... }: [
+      (lib.mkIf config.services.tailscale.enable {
+        networking.firewall.interfaces.${config.services.tailscale.interfaceName}.allowedTCPPorts = [
+          8443
+        ];
+      })
+    ];
+
     nixos =
       { config, pkgs, ... }:
       let
@@ -60,10 +68,6 @@
           # Keep this port closed on LAN and compute-guest interfaces.
           preseed.config."core.https_address" = ":8443";
         };
-
-        networking.firewall.interfaces.${config.services.tailscale.interfaceName}.allowedTCPPorts =
-          lib.mkIf config.services.tailscale.enable
-            [ 8443 ];
 
         systemd.services.incus.serviceConfig.TimeoutStopSec = lib.mkForce "330s";
 

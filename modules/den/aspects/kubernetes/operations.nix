@@ -162,10 +162,29 @@ in
         access path: trusted-edge mode admits only declared edge peers at the
         origin, while public edges omit private routes.
 
-        Incus TCP 8443 is not open on LAN or compute-guest interfaces. Use
-        Tailscale for remote API access, subject to tailnet access policy, or SSH
-        to the host and use its local Incus socket. The local SSH/socket recovery
-        path does not depend on the identity service.
+        Incus UI/API TCP 8443 is open only on the declared Tailscale interface,
+        subject to tailnet access policy. It is closed on LAN and compute-guest
+        interfaces. Management-LAN SSH TCP 22 remains independent: SSH to the
+        host and use its local Incus socket without the UI or identity service.
+
+        Service aspects publish full NixOS configuration fragments through
+        `den.quirks.firewall`; the globally included collector merges them.
+        Payloads include `networking.firewall`, not bare port sets. Compute
+        bridge DNS/DHCP and source-scoped metrics stay service-owned. Tailscale
+        transport UDP 41641 stays open, but its interface is not blanket-trusted.
+        Linux PeerAPI is intercepted in userspace before host INPUT; no ephemeral
+        PeerAPI ports are opened. Ad hoc Tailnet bridge DNS, metrics or discovery
+        consumers have not been established and must not be assumed to work.
+
+        On an isolated x86_64 Linux/KVM builder, qualify the host policy and the
+        unchanged Gateway forwarding path without production credentials:
+
+        ```sh
+        nix build path:.#checks.x86_64-linux.compute-contracts path:.#checks.x86_64-linux.compute-ingress-runtime -L
+        ```
+
+        This fixture exercises real nftables, trusted TLS UI/API requests and
+        management-LAN SSH recovery, not a real Tailscale control-plane login.
 
         Public edges retain queryless access records with upstream status and
         request ID. journald drops whole nginx request-context error records,
