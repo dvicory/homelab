@@ -57,7 +57,7 @@
           preseed.config."core.https_address" = ":8443";
         };
 
-        systemd.services.incus.serviceConfig.TimeoutStopSecond = lib.mkForce "330s";
+        systemd.services.incus.serviceConfig.TimeoutStopSec = lib.mkForce "330s";
 
         # A bind mount that provides /var/lib/incus, such as impermanence's
         # persistence bind, is a mount peer of the filesystem it came from:

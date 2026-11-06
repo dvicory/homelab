@@ -37,10 +37,18 @@
           tar -C image --owner=0 --group=0 --numeric-owner -czf $out metadata.yaml rootfs
         '';
         test =
-          assert lib.assertMsg (oldPackage.version == "7.4.0") "Incus cold-restore baseline must remain stock 7.4.0 from root 801bef6";
-          assert lib.assertMsg (selected.package.version == "7.6.0") "Incus upgrade fixture requires the production-selected 7.6.0 candidate (root 1d060)";
-          assert lib.assertMsg (oldPackage.client.version == oldPackage.version) "Incus baseline client must match the frozen daemon";
-          assert lib.assertMsg (selected.clientPackage.version == selected.package.version) "Incus production client must match the selected daemon";
+          assert lib.assertMsg (
+            oldPackage.version == "7.4.0"
+          ) "Incus cold-restore baseline must remain stock 7.4.0 from root 801bef6";
+          assert lib.assertMsg (
+            selected.package.version == "7.6.0"
+          ) "Incus upgrade fixture requires the production-selected 7.6.0 candidate (root 1d060)";
+          assert lib.assertMsg (
+            oldPackage.client.version == oldPackage.version
+          ) "Incus baseline client must match the frozen daemon";
+          assert lib.assertMsg (
+            selected.clientPackage.version == selected.package.version
+          ) "Incus production client must match the selected daemon";
           pkgs.testers.runNixOSTest {
             name = "incus-security-runtime";
             globalTimeout = 20 * 60;
@@ -102,7 +110,9 @@
             testScript = ''
               image = "${image}"
               baseline = ${builtins.toJSON (identity oldPackage oldPackage.client oldPkgs.incus-ui-canonical)}
-              candidate = ${builtins.toJSON (identity selected.package selected.clientPackage selected.ui.package)}
+              candidate = ${
+                builtins.toJSON (identity selected.package selected.clientPackage selected.ui.package)
+              }
               ${builtins.readFile ./incus-security-runtime.py}
             '';
           };

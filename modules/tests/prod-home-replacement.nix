@@ -20,7 +20,7 @@
           hostConfig
           guest
           ;
-        # Freeze the actual deployed guest declaration AND its complete input
+        # Freeze the existing guest declaration AND its complete input
         # graph. Importing today's guest with an "old" label is not a baseline.
         baselineSource = builtins.fetchTree {
           type = "github";
@@ -29,7 +29,7 @@
           rev = "90920bac376c6640478c1c45feaf6afa2c1c3900";
           narHash = "sha256-2KHmKX0smBDl3Pk554o30z44RxN2sAP1yX5gPvImSBM=";
         };
-        baselineFlake = builtins.getFlake baselineSource.outPath;
+        baselineFlake = builtins.getFlake "github:dvicory/homelab/${baselineSource.rev}";
         baselineGuest = baselineFlake.nixosConfigurations.compute-1;
         baselineLock = builtins.fromJSON (builtins.readFile "${baselineSource.outPath}/flake.lock");
         baselineRoot = baselineLock.nodes.${baselineLock.nodes.root.inputs.nixpkgs}.locked;
@@ -227,14 +227,16 @@
             guestBundle =
               if family == "replacement" then helperGuestBundle else guest.config.system.build.computeBundle;
           in
-          assert lib.assertMsg (
-            family != "replacement"
-            || (
-              baselineRoot.rev == "801bef6abd86b91e51083066b83fb354a11fc640"
-              && baselineFixtureGuest.config.services.k3s.package.version == "1.35.8+k3s1"
-              && lib.hasPrefix "1.36." candidateFixtureGuest.config.services.k3s.package.version
+          assert lib.assertMsg
+            (
+              family != "replacement"
+              || (
+                baselineRoot.rev == "801bef6abd86b91e51083066b83fb354a11fc640"
+                && baselineFixtureGuest.config.services.k3s.package.version == "1.35.8+k3s1"
+                && lib.hasPrefix "1.36." candidateFixtureGuest.config.services.k3s.package.version
+              )
             )
-          ) "Replacement requires frozen main 90920/root 801bef6 K3s 1.35.8+k3s1 and the candidate-root K3s 1.36 guest";
+            "Replacement requires frozen main 90920/root 801bef6 K3s 1.35.8+k3s1 and the candidate-root K3s 1.36 guest";
           (pkgs.testers.runNixOSTest {
             name = if family == "replacement" then "prod-home-replacement" else "prod-home-consumer-resilience";
             globalTimeout = 4 * 60 * 60;

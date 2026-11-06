@@ -10,8 +10,6 @@
       let
         cfg = config.services.crowdsec;
         persistDataDir = "/persist/crowdsec/data";
-        upstreamModulePath = "${inputs.crowdsec}/nixos/modules/services/security/crowdsec/default.nix";
-        upstreamModule = import upstreamModulePath { inherit config lib pkgs; };
       in {
         disabledModules = [
           # Root Nixpkgs renamed the engine module after the current fleet pin.
@@ -20,12 +18,7 @@
         ];
 
         imports = [
-          # This root's manual lacks the newer chapter's redirect metadata.
-          # Preserve the upstream text separately until the root upgrade.
-          (upstreamModule // {
-            _file = upstreamModulePath;
-            meta = builtins.removeAttrs upstreamModule.meta [ "doc" ];
-          })
+          "${inputs.crowdsec}/nixos/modules/services/security/crowdsec"
         ];
 
         config = lib.mkMerge [
@@ -67,11 +60,6 @@
             # cscli owns live console sharing choices; initialize, never reset.
             systemd.tmpfiles.settings."10-crowdsec"
               .${cfg.settings.config.api.server.console_path}."f+".type = lib.mkForce "f";
-
-            environment.etc."crowdsec/upstream-module.md" =
-              lib.mkIf (config.documentation.enable && config.documentation.doc.enable) {
-                source = "${inputs.crowdsec}/nixos/modules/services/security/crowdsec/doc.md";
-              };
 
             # Keep CrowdSec data on the persistent dataset without relying on
             # systemd's private state-directory namespace.
