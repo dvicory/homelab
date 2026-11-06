@@ -20,6 +20,23 @@ let
 in
 {
   den.aspects.services.prometheus-targets-collector = {
+    firewall =
+      { host, prometheus-targets, ... }:
+      let
+        compute = host.settings.virtualization.compute;
+        ports = lib.unique (
+          map (target: target.port) (lib.filter (target: target.host == host.name) prometheus-targets)
+        );
+      in
+      [
+        {
+          # Both interface and source matter, even for a bridge-only listener.
+          networking.firewall.extraInputRules = lib.concatMapStringsSep "\n" (
+            port: ''iifname "${compute.network}" ip saddr ${compute.address} tcp dport ${toString port} accept''
+          ) ports;
+        }
+      ];
+
     nixos =
       {
         host,
@@ -41,7 +58,6 @@ in
         # The pipe also collects other hosts' targets; only this host's are
         # served here.
         targets = lib.filter (target: target.host == host.name) prometheus-targets;
-        ports = lib.unique (map (target: target.port) targets);
         mergerfsPools = builtins.attrNames (host.settings.services.mergerfs.pools or { });
         luksMounts = lib.mapAttrsToList (_: disk: disk.mountpoint) (
           lib.filterAttrs (_: disk: disk.provisioned) (host.settings.disk.luks-storage.disks or { })
@@ -79,13 +95,6 @@ in
               lib.unique (mergerfsPools ++ luksMounts ++ telemetry.extraRequiredMounts)
             );
           };
-
-          # The bind address is bridge-only; this rule also checks the
-          # interface and the source, so the LAN, the tailnet and the
-          # internet cannot reach the ports.
-          networking.firewall.extraInputRules = lib.concatMapStringsSep "\n" (
-            port: ''iifname "${compute.network}" ip saddr ${compute.address} tcp dport ${toString port} accept''
-          ) ports;
         };
       };
   };
