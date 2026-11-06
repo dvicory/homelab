@@ -16,6 +16,7 @@ Runs only inside the disposable fixture-host VM of checks.compute-guest-upgrade.
 from __future__ import annotations
 
 import argparse
+import errno
 import importlib.util
 import json
 import os
@@ -81,6 +82,37 @@ def guest_exec(lib, project: str, name: str, *command: str, user: int | None = N
     if user is not None:
         prefix += ["--user", str(user), "--group", str(group if group is not None else user)]
     return lib.completed(*prefix, "--mode=non-interactive", "--", *command)
+
+
+def check_media_read(lib, project: str, name: str, *, user: int, group: int, allowed: bool) -> None:
+    probe = '''
+import json, os, sys
+result = {
+    "uid": os.getuid(), "euid": os.geteuid(),
+    "gid": os.getgid(), "egid": os.getegid(), "groups": os.getgroups(),
+}
+try:
+    with open(sys.argv[1]) as source:
+        result["data"] = source.read()
+    result["errno"] = None
+except OSError as error:
+    result["errno"] = error.errno
+print(json.dumps(result))
+'''
+    result = guest_exec(lib, project, name, "/run/current-system/sw/bin/python3", "-c", probe, MEDIA_FILE,
+                        user=user, group=group)
+    lib.check(result.returncode == 0, f"media actor {user}:{group} successfully enters the guest: {result.stderr}")
+    actor = json.loads(result.stdout)
+    lib.check((actor["uid"], actor["euid"], actor["gid"], actor["egid"]) == (user, user, group, group),
+              f"media probe runs with the requested credentials {user}:{group}")
+    if allowed:
+        lib.check(505 in [actor["gid"], *actor["groups"]]
+                  and actor["errno"] is None and actor["data"] == "media-capability\n",
+                  "an identity holding GID 505 reads the media file")
+    else:
+        lib.check(505 not in [actor["gid"], *actor["groups"]]
+                  and actor["errno"] in (errno.EACCES, errno.EPERM),
+                  f"identity {user}:{group} reaches an actual permission-denied file open without GID 505")
 
 
 def rootfs_gid_counts(lib, rootfs: str) -> dict:
@@ -174,6 +206,8 @@ def run_scenario(args) -> None:
     # disposable backing directory with the declared owner and mode.
     for entry in old["requiredPaths"]:
         target = Path(entry["path"])
+        if target == Path(old["devices"]["secrets"]["source"]):
+            continue  # The real staging service owns this read-only tmpfs.
         backing = workspace / "persist" / str(target).lstrip("/")
         backing.mkdir(parents=True)
         target.mkdir(parents=True, exist_ok=True)
@@ -394,12 +428,9 @@ def run_scenario(args) -> None:
               "media attachment is mounted in the guest")
         check(guest_exec(lib, project, name, "stat", "-c", "%g", MEDIA_FILE, user=751, group=505).stdout.strip() == "505",
               "guest sees the media file under the fleet GID 505")
-        check(guest_exec(lib, project, name, "cat", MEDIA_FILE, user=751, group=505).stdout == "media-capability\n",
-              "an identity holding GID 505 reads the media file")
-        check(guest_exec(lib, project, name, "cat", MEDIA_FILE, user=751, group=751).returncode != 0,
-              "an identity without GID 505 cannot read the media file")
-        check(guest_exec(lib, project, name, "cat", MEDIA_FILE).returncode != 0,
-              "guest root without GID 505 cannot read the media file")
+        check_media_read(lib, project, name, user=751, group=505, allowed=True)
+        check_media_read(lib, project, name, user=751, group=751, allowed=False)
+        check_media_read(lib, project, name, user=0, group=0, allowed=False)
         k3s_pid = runtime.guest("systemctl", "show", "--value", "-p", "MainPID", "k3s")
         groups = [line.split()[1:] for line in runtime.guest("cat", f"/proc/{k3s_pid}/status").splitlines() if line.startswith("Groups:")]
         check(bool(groups) and "505" in groups[0], "K3s holds the media group under the current map")

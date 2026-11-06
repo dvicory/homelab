@@ -154,7 +154,25 @@
           };
         baselineFixtureGuest = withFixtureTrust baselineGuest;
         candidateFixtureGuest = withFixtureTrust guest;
-        baselineBundle = baselineFixtureGuest.config.system.build.computeBundle;
+        # Add only the new transport marker; keep the actual old payload and input graph.
+        baselineBundle = pkgs.linkFarm "compute-baseline-bundle" (
+          [
+            {
+              name = "backend";
+              path = pkgs.writeText "baseline-compute-backend" "container";
+            }
+          ]
+          ++ map
+            (name: {
+              inherit name;
+              path = "${baselineFixtureGuest.config.system.build.computeBundle}/${name}";
+            })
+            [
+              "metadata.tar.xz"
+              "rootfs.tar.xz"
+              "system"
+            ]
+        );
         helperGuestBundle = candidateFixtureGuest.config.system.build.computeBundle;
         replacementVersions = pkgs.writeText "prod-home-replacement-versions.json" (
           builtins.toJSON {
