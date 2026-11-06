@@ -58,6 +58,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import urllib.parse
 
 
@@ -290,6 +291,26 @@ class Runtime:
 
     def kubectl_json(self, *args: str, namespace: str | None = None):
         return json.loads(self.kubectl(*args, namespace=namespace))
+
+    def check_nested_overlay(self) -> None:
+        mapping = [tuple(map(int, row.split())) for row in self.guest("cat", "/proc/self/uid_map").splitlines()]
+        check(mapping == [(0, self.descriptor["idmapBase"], self.descriptor["idmapSize"])],
+              "K3s remains in the declared unprivileged user namespace")
+        config = tomllib.loads(self.guest("cat", "/var/lib/rancher/k3s/agent/etc/containerd/config.toml"))
+        check(config["plugins"]["io.containerd.cri.v1.images"]["snapshotter"] == "overlayfs",
+              "the live CRI configuration uses overlayfs, not a storage fallback")
+        self.guest("sh", "-ec", '''
+            probe=$(mktemp -d /var/lib/rancher/k3s/agent/containerd/overlay-userns-check.XXXXXX)
+            trap 'umount "$probe/merged" 2>/dev/null || :; rm -rf "$probe"' EXIT
+            mkdir "$probe/lower1" "$probe/lower2" "$probe/upper" "$probe/work" "$probe/merged"
+            printf retained-layer > "$probe/lower1/value"
+            mount -t overlay overlay -o "userxattr,lowerdir=$probe/lower2:$probe/lower1,upperdir=$probe/upper,workdir=$probe/work" "$probe/merged"
+            test "$(cat "$probe/merged/value")" = retained-layer
+            printf writable-layer > "$probe/merged/value"
+            test "$(cat "$probe/upper/value")" = writable-layer
+            test "$(cat "$probe/lower1/value")" = retained-layer
+            umount "$probe/merged"
+        ''')
 
     def metrics_ready(self) -> bool:
         metrics = self.kubectl_json("get", "--raw", f"/apis/metrics.k8s.io/v1beta1/nodes/{self.instance}")
@@ -1949,6 +1970,7 @@ def run_scenario(args: argparse.Namespace) -> None:
                 )
                 runtime.guest("test", "-r", "/srv/media/data/library/movies/recovery.mkv", user=505)
                 wait_for("healthy K3s node", runtime.node_ready)
+                runtime.check_nested_overlay()
                 k3s_pid = runtime.guest("systemctl", "show", "--value", "-p", "MainPID", "k3s")
                 k3s_groups = [
                     line.split()[1:]
@@ -2347,6 +2369,7 @@ def run_scenario(args: argparse.Namespace) -> None:
                     check(new_instance is not None, "helper recreates the guest instance")
                     check(new_instance["config"]["volatile.uuid"] != original_uuid, "replacement has a fresh Incus instance root")
                     wait_for("replacement K3s node", runtime.node_ready)
+                    runtime.check_nested_overlay()
                 new_cluster_token = runtime.guest("cat", "/var/lib/rancher/k3s/server/token")
                 check(new_cluster_token != original_cluster_token, "replacement has fresh disposable K3s cluster state")
                 runtime.check_secret_payload(rotated_payload)

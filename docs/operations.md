@@ -50,6 +50,17 @@ override rejects newer upstream versions rather than downgrading them.
 The upgrade fixtures pin the former production package set separately;
 they must not follow the candidate root.
 
+K3s's bundled containerd overlay capability probe retains its real
+multi-lowerdir mount and selects `userxattr` with `NeedsUserXAttr`, as
+the runtime snapshotter does. This does not grant host capabilities,
+make the Incus guest privileged, or select a storage fallback.
+The native API fixture builds its server and airgap inputs from the
+evaluated compute K3s package; its Secret reconciler still requires
+exact client/server versions. A privileged Docker API fixture or
+direct-VM upgrade does not prove nested Incus compatibility: require
+`compute-guest-upgrade`, `prod-home-replacement` and
+`prod-home-consumer-resilience` before activation.
+
 Tailscale retains the `compress` fix for
 [GO-2026-6865](https://vuln.go.dev/ID/GO-2026-6865): control-map zstd
 decoding imports the affected Huffman/FSE decoder. The packaged Linux

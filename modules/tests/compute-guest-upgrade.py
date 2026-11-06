@@ -372,6 +372,7 @@ def run_scenario(args) -> None:
             check(result.returncode == 0, "the guest restarts under the current map")
             restarted = time.monotonic()
             lib.wait_for("restarted K3s node", runtime.node_ready, timeout=600)
+            runtime.check_nested_overlay()
             lib.wait_for("sentinel ConfigMap", lambda: runtime.kubectl("get", "configmap", "upgrade-sentinel", "-o", "jsonpath={.data.value}", namespace="default") == "keep", timeout=300)
             ready = time.monotonic()
             time.sleep(3)
@@ -430,6 +431,7 @@ def run_scenario(args) -> None:
         observe("restart_again.result", {"returncode": result.returncode, "output": (result.stdout + result.stderr).strip()[-600:]})
         check(result.returncode == 0, "a second restart starts the guest again")
         lib.wait_for("K3s node after the second restart", runtime.node_ready, timeout=600)
+        runtime.check_nested_overlay()
         check(guest_exec(lib, project, name, "cat", MEDIA_FILE, user=751, group=505).stdout == "media-capability\n",
               "the media file is readable after the second restart")
         check(persistent_copies() == [], "the second start leaves no copy under the persistent store")
@@ -449,6 +451,7 @@ def run_scenario(args) -> None:
             RESULTS["timings"]["replace_command"] = round(time.monotonic() - started, 2)
             check(replace.returncode == 0, f"replacement succeeds after the restart: {(replace.stdout + replace.stderr).strip()[-400:]}")
             lib.wait_for("replacement K3s node", runtime.node_ready, timeout=600)
+            runtime.check_nested_overlay()
             RESULTS["timings"]["replace_until_k3s_ready"] = round(time.monotonic() - started, 2)
             time.sleep(3)
         RESULTS["timings"]["replace_api_outage"] = availability.outage()
