@@ -9,7 +9,8 @@ data:
     domain = "id.bzfx.net"
     origin = "https://id.bzfx.net"
     ldapbindaddress = "0.0.0.0:3636"
+immutable: true
 kind: ConfigMap
 metadata:
-  name: kanidm-config
+  name: kanidm-config-078db9630cc31fc6679d427147c303447ca6aa2594a89361300412793bee411b
   namespace: identity

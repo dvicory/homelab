@@ -34,17 +34,26 @@ let
   ) cluster.routes.argocd.hostnames;
   manifests = ../../generated/manifests/prod-home;
   k3sPackage = self.nixosConfigurations.${instance}.config.services.k3s.package;
-  identityObjects =
-    (
-      (import ../den/aspects/kubernetes/services/identity.nix {
-        inherit config lib;
-        inputs.self = self;
-      }).den.aspects.kubernetes.services.identity.k8s-manifests
-      {
-        inherit cluster lib;
-        computeResources = compute;
-      }
-    ).applications.identity.objects;
+  identityAspect =
+    (import ../den/aspects/kubernetes/services/identity.nix {
+      inherit config lib;
+      inputs.self = self;
+    }).den.aspects.kubernetes.services.identity;
+  renderIdentity =
+    inventory:
+    (identityAspect.k8s-manifests {
+      cluster = inventory;
+      inherit lib;
+      computeResources = compute;
+    }).applications.identity.objects;
+  identityObjects = renderIdentity cluster;
+  rolloutDirectoryPort =
+    if cluster.settings.kubernetes.services.identity.directory.port == 3637 then 3638 else 3637;
+  rolloutObjects = renderIdentity (
+    lib.recursiveUpdate cluster {
+      settings.kubernetes.services.identity.directory.port = rolloutDirectoryPort;
+    }
+  );
   # Synthetic native application input only: no application aspect or route.
   fixtureObjects =
     group: scopes:
@@ -149,6 +158,16 @@ in
             }) objects
           );
         sourceManifests = manifestSet "identity-source-b-manifests" identityObjects;
+        rolloutManifests = manifestSet "identity-config-rollout-manifests" (
+          lib.filter (
+            object:
+            builtins.elem object.kind [
+              "Deployment"
+              "Service"
+            ]
+            || (object.kind == "ConfigMap" && object.data ? "server.toml")
+          ) rolloutObjects
+        );
         privateManifests = manifestSet "identity-private-b-manifests" (
           fixtureObjects "fixture-native-users" [
             "openid"
@@ -821,6 +840,177 @@ in
                       f"{kubectl} delete role,rolebinding --namespace identity kanidm-client-secret-fixture-native-oidc"
                   )
                   cluster.succeed("rm -f /root/private-identity-credentials.json")
+
+              with subtest("server configuration: missing publication blocks replacement, adoption and resync preserve state"):
+                  # B comes from the same real renderer, with only a different
+                  # LDAPS port input. The config-only rendering contract remains
+                  # separate from this native Deployment/file-consumption proof.
+                  rollout = "${rolloutManifests}"
+                  with open(f"{rollout}/Deployment-kanidm.yaml") as handle:
+                      desired = json.load(handle)
+                  desired_pod = desired["spec"]["template"]["spec"]
+                  desired_container, = (c for c in desired_pod["containers"] if c["name"] == "kanidm")
+                  desired_mount, = (m for m in desired_container["volumeMounts"] if m["mountPath"] in desired_container["args"])
+                  desired_volume, = (v for v in desired_pod["volumes"] if v["name"] == desired_mount["name"])
+                  config_name = desired_volume["configMap"]["name"]
+                  config_path = f"{rollout}/ConfigMap-{config_name}.yaml"
+                  with open(config_path) as handle:
+                      desired_config = json.load(handle)
+                  assert desired_config["immutable"] is True
+                  assert not desired_volume["configMap"].get("optional", False)
+
+                  def server_snapshot():
+                      deployment = json.loads(cluster.succeed(
+                          f"{kubectl} get deployment --namespace identity kanidm --output json"
+                      ))
+                      pod, = json.loads(cluster.succeed(
+                          f"{kubectl} get pods --namespace identity -l app.kubernetes.io/name=kanidm --output json"
+                      ))["items"]
+                      status, = (c for c in pod["status"]["containerStatuses"] if c["name"] == "kanidm")
+                      assert status["ready"] and "running" in status["state"], status
+                      owner, = (o for o in pod["metadata"]["ownerReferences"] if o.get("controller") and o["kind"] == "ReplicaSet")
+                      return pod, dict(
+                          generation=deployment["metadata"]["generation"], replica_set_uid=owner["uid"],
+                          pod_uid=pod["metadata"]["uid"], container_id=status["containerID"],
+                          restarts=status["restartCount"],
+                      )
+
+                  def server_runtime(pod, snapshot):
+                      container_id = snapshot["container_id"].removeprefix("containerd://")
+                      runtime = json.loads(cluster.succeed(
+                          "${k3sPackage}/bin/k3s crictl inspect --output json " + shlex.quote(container_id)
+                      ))
+                      assert runtime["status"]["state"] == "CONTAINER_RUNNING", runtime["status"]["state"]
+                      assert runtime["status"]["labels"]["io.kubernetes.pod.uid"] == pod["metadata"]["uid"]
+                      assert runtime["status"]["metadata"]["name"] == "kanidm"
+                      pid = runtime["info"]["pid"]
+                      assert type(pid) is int and pid > 0, pid
+                      return container_id, pid
+
+                  def storage_identity(pod):
+                      container, = (c for c in pod["spec"]["containers"] if c["name"] == desired_container["name"])
+                      mounted_volumes = {mount["name"] for mount in container["volumeMounts"]}
+                      claim, = (volume["persistentVolumeClaim"]["claimName"] for volume in pod["spec"]["volumes"]
+                                if volume["name"] in mounted_volumes and "persistentVolumeClaim" in volume)
+                      pvc = json.loads(cluster.succeed(
+                          f"{kubectl} get pvc --namespace {shlex.quote(pod['metadata']['namespace'])} {shlex.quote(claim)} --output json"
+                      ))
+                      pv = json.loads(cluster.succeed(
+                          f"{kubectl} get pv {shlex.quote(pvc['spec']['volumeName'])} --output json"
+                      ))
+                      assert pvc["status"]["phase"] == "Bound" and pv["status"]["phase"] == "Bound"
+                      return dict(pvc_uid=pvc["metadata"]["uid"], pv_uid=pv["metadata"]["uid"],
+                                  volume=pvc["spec"]["volumeName"])
+
+                  old_pod, old_identity = server_snapshot()
+                  old_container_id, old_pid = server_runtime(old_pod, old_identity)
+                  old_volume, = (v for v in old_pod["spec"]["volumes"] if v["name"] == desired_mount["name"])
+                  old_config_name = old_volume["configMap"]["name"]
+                  assert old_config_name != config_name, "B must require a distinct configuration revision"
+                  old_config = json.loads(cluster.succeed(
+                      f"{kubectl} get configmap --namespace identity {old_config_name} --output json"
+                  ))
+                  assert old_config["data"] != desired_config["data"]
+                  storage_before = storage_identity(old_pod)
+                  state_before = probe("state", clients=clients)
+                  credentials_before = digests()
+                  secret_uids = {(s["namespace"], s["name"]): secret(s["namespace"], s["name"])["metadata"]["uid"]
+                                 for _, s in secrets}
+                  missing_config = f"{kubectl} get configmap --namespace identity {config_name} --ignore-not-found --output json"
+                  assert cluster.succeed(missing_config).strip() == ""
+
+                  # Model failed ConfigMap publication by withholding B's map,
+                  # while A remains available. Never restart or delete a Pod.
+                  argo_apply(f"{rollout}/Deployment-kanidm.yaml")
+                  cluster.succeed(
+                      f"{kubectl} wait --namespace identity --for=delete pod/{old_pod['metadata']['name']} --timeout=180s"
+                  )
+                  cluster.wait_until_fails(f"test -e /proc/{old_pid}/exe", timeout=120)
+                  running = json.loads(cluster.succeed("${k3sPackage}/bin/k3s crictl ps --output json"))["containers"]
+                  assert all(c["id"] != old_container_id
+                             and c.get("labels", {}).get("io.kubernetes.pod.uid") != old_identity["pod_uid"]
+                             for c in running), "old database writer is still running"
+                  pod_query = f"{kubectl} get pods --namespace identity -l app.kubernetes.io/name=kanidm --output json"
+                  cluster.wait_until_succeeds(pod_query + " | jq -e '.items | length == 1'", timeout=120)
+                  pending, = json.loads(cluster.succeed(pod_query))["items"]
+                  pending_uid = pending["metadata"]["uid"]
+                  assert pending_uid != old_identity["pod_uid"]
+                  pending_volume, = (v for v in pending["spec"]["volumes"] if v["name"] == desired_mount["name"])
+                  assert pending_volume["configMap"]["name"] == config_name
+                  event_query = (
+                      f"{kubectl} get events --namespace identity --field-selector involvedObject.uid={pending_uid} --output json"
+                  )
+                  cluster.wait_until_succeeds(
+                      event_query + " | jq -e --arg config " + shlex.quote(config_name)
+                      + " 'any(.items[]; .reason == \"FailedMount\" and (.message | contains($config)) "
+                      "and (.message | ascii_downcase | contains(\"not found\")))'", timeout=180
+                  )
+                  failed_mounts = [
+                      dict(reason=e["reason"], message=e["message"], pod_uid=e["involvedObject"]["uid"])
+                      for e in json.loads(cluster.succeed(event_query))["items"]
+                      if e.get("reason") == "FailedMount" and config_name in e.get("message", "")
+                      and "not found" in e.get("message", "").lower()
+                  ]
+                  assert failed_mounts, "missing native failed-publication witness"
+                  pending, = json.loads(cluster.succeed(pod_query))["items"]
+                  assert pending["metadata"]["uid"] == pending_uid
+                  for status in pending["status"].get("containerStatuses", []):
+                      assert not status.get("containerID") and status.get("restartCount", 0) == 0, status
+                      assert not status.get("lastState") and not ({"running", "terminated"} & status.get("state", {}).keys()), status
+                  assert cluster.succeed(missing_config).strip() == ""
+                  retained_config = json.loads(cluster.succeed(
+                      f"{kubectl} get configmap --namespace identity {old_config_name} --output json"
+                  ))
+                  assert retained_config["metadata"]["uid"] == old_config["metadata"]["uid"]
+                  assert retained_config["data"] == old_config["data"]
+                  evidence("config-publication-blocked", dict(
+                      old=old_identity, pending_pod_uid=pending_uid, missing_config=config_name,
+                      old_writer_stopped=True, failed_mounts=failed_mounts,
+                  ))
+
+                  # Kubelet must unblock this exact pending Pod when the genuine
+                  # immutable B configuration appears; no manual Pod restart.
+                  argo_apply(config_path)
+                  argo_apply(f"{rollout}/Service-kanidm.yaml")
+                  cluster.succeed(f"{kubectl} rollout status deployment/kanidm --namespace identity --timeout=300s")
+                  new_pod, new_identity = server_snapshot()
+                  assert new_identity["pod_uid"] == pending_uid
+                  assert new_identity["container_id"] != old_identity["container_id"]
+                  _, new_pid = server_runtime(new_pod, new_identity)
+                  mounted = cluster.succeed("cat " + shlex.quote(f"/proc/{new_pid}/root{desired_mount['mountPath']}"))
+                  assert mounted == desired_config["data"][desired_mount["subPath"]], "running container has stale server configuration"
+                  old_container, = (c for c in old_pod["spec"]["containers"] if c["name"] == "kanidm")
+                  old_port, = (p["containerPort"] for p in old_container["ports"] if p["name"] == "ldaps")
+                  new_port, = (p["containerPort"] for p in desired_container["ports"] if p["name"] == "ldaps")
+                  listening = set()
+                  for protocol in ("tcp", "tcp6"):
+                      for row in cluster.succeed(f"cat /proc/{new_pid}/net/{protocol}").splitlines()[1:]:
+                          fields = row.split()
+                          if fields[3] == "0A":
+                              listening.add(int(fields[1].rsplit(":", 1)[1], 16))
+                  assert new_port != old_port and new_port in listening and old_port not in listening, listening
+                  cluster.wait_until_succeeds("curl -sSf --cacert /root/pki/ca.crt https://${domain}/status", timeout=120)
+                  assert storage_identity(new_pod) == storage_before
+                  assert probe("state", clients=clients) == state_before
+                  assert digests() == credentials_before
+                  assert_published()
+                  assert {(s["namespace"], s["name"]): secret(s["namespace"], s["name"])["metadata"]["uid"]
+                          for _, s in secrets} == secret_uids
+
+                  for path in (config_path, f"{rollout}/Deployment-kanidm.yaml", f"{rollout}/Service-kanidm.yaml"):
+                      argo_apply(path)
+                  deadline = time.monotonic() + 30
+                  observations = 0
+                  while time.monotonic() < deadline:
+                      _, observed = server_snapshot()
+                      assert observed == new_identity, (new_identity, observed)
+                      observations += 1
+                      time.sleep(2)
+                  assert observations >= 2
+                  evidence("config-adopted-and-resync-stable", dict(
+                      current=new_identity, storage=storage_before, ldap_port=new_port,
+                      mounted_bytes=len(mounted.encode()), unchanged_observations=observations,
+                  ))
             '';
           }).overrideTestDerivation
             (_: {

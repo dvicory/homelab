@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 import yaml
 
 from transport import (
-    NativeRejection, aggregate, batch_rows, dump, expected_identities, load, native_rows, run, validate_rows,
+    NativeRejection, aggregate, batch_rows, dump, expected_identities, kanidm_config_identity, load, native_rows, run, validate_rows,
 )
 
 
@@ -37,6 +37,32 @@ def check_loader():
         assert load(path) == {"scenario": selected, "copy": selected}
         path.write_text("scenario: {<<: {fail: [original]}, '<<': retained}\n")
         assert load(path)["scenario"] == {"fail": ["original"], "<<": "retained"}
+
+
+def check_kanidm_config_identity():
+    deployment = {
+        "apiVersion": "apps/v1", "kind": "Deployment",
+        "metadata": {"name": "kanidm", "namespace": "identity"},
+        "spec": {"template": {"spec": {
+            "containers": [{"name": "kanidm", "args": ["server", "-c", "/etc/kanidm/server.toml"],
+                            "volumeMounts": [{"name": "config", "mountPath": "/etc/kanidm/server.toml",
+                                              "subPath": "server.toml"}]}],
+            "volumes": [{"name": "config", "configMap": {"name": "first-config"}}],
+        }}},
+    }
+    first = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "first-config", "namespace": "identity"}}
+    second = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "replacement-config", "namespace": "identity"}}
+    assert kanidm_config_identity([deployment, first, second]) == "v1/ConfigMap/identity/first-config"
+    deployment["spec"]["template"]["spec"]["volumes"][0]["configMap"]["name"] = "replacement-config"
+    assert kanidm_config_identity([deployment, first, second]) == "v1/ConfigMap/identity/replacement-config"
+    for invalid in ([deployment, first], [deployment, second, deepcopy(second)], [first, second],
+                    [deployment, deepcopy(deployment), first, second]):
+        try:
+            kanidm_config_identity(invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("missing or ambiguous mounted Kanidm configuration was accepted")
 
 
 def rejects(category, operation):
@@ -236,6 +262,7 @@ if __name__ == "__main__":
     parser.add_argument("--source-check", choices=("coverage", "provenance", "all"), default="all")
     args = parser.parse_args()
     check_loader()
+    check_kanidm_config_identity()
     for root in args.reports:
         check_reports(root)
     if args.inputs:
