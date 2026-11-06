@@ -150,26 +150,36 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Prepare Nix storage
+      - name: Prepare compressed bootstrap storage
+        uses: wimpysworld/nothing-but-nix@153c2fb8300208f99a907b80563faa3258496a74
+        with:
+          hatchet-protocol: holster
+          witness-carnage: true
+          # The closure export remains outside /nix on /mnt.
+          root-safe-haven: 4096
+          mnt-safe-haven: 4096
+      - name: Keep disposable bootstrap builds uncompressed
         run: |
-          free_space=$(df -m --output=avail /mnt | tail -n 1)
-          disk_size=$((free_space - 4096))
-          test "$disk_size" -gt 1024
-          sudo fallocate -l "${disk_size}M" /mnt/nix.img
-          loop_dev=$(sudo losetup --find --show /mnt/nix.img)
-          sudo mkfs.btrfs -L nix --nodiscard "$loop_dev"
-          sudo mkdir -p /nix
-          sudo mount "$loop_dev" /nix -o noatime,nobarrier,nodiscard,compress=zstd:1,space_cache=v2,commit=120
           sudo mkdir -p /nix/build
           sudo chattr +C /nix/build
 
       - name: Install Nix
         uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+        # Nix 2.35.3 takes recursive ownership of /nix during installation.
+        env:
+          TMPDIR: ${{ runner.temp }}
         with:
           extra_nix_config: |
             build-dir = /nix/build
             sandbox = relaxed
           github_access_token: ${{ github.token }}
+      - &pooled-client-scratch
+        name: Select client scratch after Nix installation
+        if: runner.os == 'Linux'
+        run: |
+          # Keep client/post-action scratch writable after installer chown -R.
+          sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0700 /nix/build/runner-tmp
+          printf 'TMPDIR=/nix/build/runner-tmp\n' >> "$GITHUB_ENV"
       - *shared-public-caches
 
       - name: Build Darwin Linux builder system
@@ -244,30 +254,29 @@ jobs:
         with:
           persist-credentials: false
 
-      # Put the Nix store on the runner's temporary disk.
-      - name: Prepare Nix storage
+      - name: Prepare compressed Nix storage
         if: runner.os == 'Linux'
-        run: |
-          free_space=$(df -m --output=avail /mnt | tail -n 1)
-          disk_size=$((free_space - 1024))
-          test "$disk_size" -gt 1024
-          sudo fallocate -l "${disk_size}M" /mnt/nix.img
-          loop_dev=$(sudo losetup --find --show /mnt/nix.img)
-          sudo mkfs.btrfs -L nix --nodiscard "$loop_dev"
-          sudo mkdir -p /nix
-          sudo mount "$loop_dev" /nix -o noatime,nobarrier,nodiscard,compress=zstd:1,space_cache=v2,commit=120
-          sudo mkdir -p /nix/build
-          # Keep Btrfs CoW out of disposable VM/build files, not the store.
-          sudo chattr +C /nix/build
+        uses: wimpysworld/nothing-but-nix@153c2fb8300208f99a907b80563faa3258496a74
+        with:
+          # Pool root and /mnt without deleting Docker, Incus or KVM tools.
+          hatchet-protocol: carve
+          witness-carnage: true
+      - name: Keep disposable Linux builds uncompressed
+        if: runner.os == 'Linux'
+        run: sudo chattr +C /nix/build
 
       - name: Install Nix on Linux
         if: runner.os == 'Linux'
         uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+        # Installer work must stay outside its recursive /nix ownership change.
+        env:
+          TMPDIR: ${{ runner.temp }}
         with:
           extra_nix_config: |
             build-dir = /nix/build
             sandbox = relaxed
           github_access_token: ${{ github.token }}
+      - *pooled-client-scratch
 
       - name: Enable required container builder capabilities
         if: runner.os == 'Linux' && matrix.requirements.uidRange

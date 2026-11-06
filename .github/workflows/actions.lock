@@ -10,6 +10,7 @@ workflows:
         - 'cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702'
         - 'mic92/hestia@dfed9ced335d28978ba74e513939a10db1f71025'
         - 'step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25'
+        - 'wimpysworld/nothing-but-nix@153c2fb8300208f99a907b80563faa3258496a74'
     '.github/workflows/helper-release.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333'
@@ -52,11 +53,23 @@ dependencies:
         commit: 'sha1-dfed9ced335d28978ba74e513939a10db1f71025'
         owner_id: 96200
         repo_id: 1255744972
+    'srz-zumix/post-run-action@v3':
+        ref: 'v3'
+        commit: 'sha1-42756f7452b9439d0365b7e087b2c364f54209c6'
+        owner_id: 1439172
+        repo_id: 757239631
     'step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25':
         ref: 'v2.22.1'
         commit: 'sha1-ccd8616d44fd3846e67624a50d5aad6d37bf2d25'
         owner_id: 88700172
         repo_id: 422287306
+    'wimpysworld/nothing-but-nix@153c2fb8300208f99a907b80563faa3258496a74':
+        ref: 'main'
+        commit: 'sha1-153c2fb8300208f99a907b80563faa3258496a74'
+        owner_id: 39407681
+        repo_id: 982902962
+        uses:
+            - 'srz-zumix/post-run-action@v3'
     'zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e':
         ref: 'v0.7.1'
         commit: 'sha1-85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e'
