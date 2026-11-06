@@ -164,28 +164,6 @@ def self_check() -> None:
                 check(accepted, f"invalid crash recovery accepted: {admitted}, {refused}, {recovered}")
     check_recovery(check, caller, stranger, True, "migration")
 
-    frozen = {"status": {"id": "a" * 64, "state": "CONTAINER_RUNNING", "startedAt": 10}, "info": {"pid": 42}}
-    calls = []
-    def capture_stack_command(name, *command, **kwargs):
-        calls.append(name)
-        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-    changed_pid = {**frozen, "info": {"pid": 43}}
-    changed_start = {**frozen, "status": {**frozen["status"], "startedAt": 11}}
-    for observations in ((changed_pid,), (frozen, changed_start)):
-        calls.clear()
-        identities = iter(observations)
-        stack_guest = SimpleNamespace(runtime=SimpleNamespace(
-            guest=lambda *args, **kwargs: json.dumps(next(identities))))
-        with redirect_stdout(StringIO()):
-            try:
-                capture_crash_stack(stack_guest, frozen, capture_stack_command)
-            except ValueError:
-                pass
-            else:
-                check(False, "a changed failed task was accepted for destructive capture")
-        check("stack.signal" not in calls,
-              "a task changed before or during passive capture must never receive SIGQUIT")
-
     # Exercise the real reaches method: exec failures are not traffic refusals.
     probe = SimpleNamespace(project="fixture", instance="compute", plan={"names": {"client": "media"}},
                             address=lambda server: "192.0.2.1")
@@ -599,66 +577,26 @@ def capture_enforcer_failure(guest: Guest, label: str) -> dict | None:
         return pod
 
 
-def capture_crash_stack(guest: Guest, frozen: dict, capture) -> None:
-    """TEMPORARY: correlate then destructively dump only the already-failed task."""
-    container_id, pid = frozen["status"]["id"], int(frozen["info"]["pid"])
-
-    def require_frozen_task():
-        current = json.loads(guest.runtime.guest("k3s", "crictl", "inspect", container_id, timeout=15))
-        if (pid <= 1 or current["status"]["id"] != container_id or int(current["info"]["pid"]) != pid
-                or current["status"]["state"] != "CONTAINER_RUNNING"
-                or current["status"]["startedAt"] != frozen["status"]["startedAt"]):
-            raise ValueError("the failed enforcer task changed before its destructive stack capture")
-
-    require_frozen_task()
-    capture("stack.pre_signal", "sh", "-c",
-            'date -u +%Y-%m-%dT%H:%M:%SZ; cat "/proc/$1/stat"; '
-            'for ns in net pid; do readlink "/proc/$1/ns/$ns"; done; '
-            'cat "/proc/$1/net/netfilter/nfnetlink_queue"; '
-            'while read -r socket protocol rest; do case "$protocol" in Eth|12) '
-            'printf "%s %s %s\\n" "$socket" "$protocol" "$rest";; esac; '
-            'done < "/proc/$1/net/netlink"; '
-            'for fd in /proc/"$1"/fd/*; do target=$(readlink "$fd"); '
-            'case "$target" in socket:*) printf "%s %s\\n" "$fd" "$target";; esac; done; '
-            'cat "/proc/$1/stat"; date -u +%Y-%m-%dT%H:%M:%SZ',
-            "enforcer-pre-signal", str(pid), limit=32768)
-    require_frozen_task()
-    observe("crash.failure.stack_signal", {
-        "container_id": container_id, "pid": pid, "signal": "SIGQUIT", "destructive": True,
-    })
-    # Containerd targets the frozen task, not a potentially reused guest PID.
-    result = capture("stack.signal", "k3s", "ctr", "--namespace", "k8s.io", "tasks", "kill",
-                     "--signal", "SIGQUIT", container_id)
-    if result is not None and result.returncode == 0:
-        # Wait only for this failed process to exit, never for a replacement to
-        # recover. Bound both the wait and the exact-container, non-follow logs.
-        capture("stack.exit", "timeout", "10", "tail", f"--pid={pid}", "-f", "/dev/null")
-        capture("stack.log", "k3s", "crictl", "logs", "--timestamps", "--tail=2000", container_id,
-                limit=65536, stderr_limit=65536)
-
-
 def capture_enforce_failure(guest: Guest, label: str) -> None:
-    """Capture passive state, then a TEMPORARY destructive stack on crash failure."""
+    """Read live failure state without another traffic probe or table replay."""
     pod = capture_enforcer_failure(guest, label)
 
-    def capture(name: str, *command: str, limit: int = 16384, stderr_limit: int = 4096):
+    def capture(name: str, *command: str, limit: int = 16384) -> None:
         try:
             result = guest.lib.completed(
                 "incus", "--force-local", "--project", guest.project, "exec", guest.instance,
                 "--mode=non-interactive", "--", *command, timeout=15)
             observe(f"{label}.failure.{name}", {
                 "returncode": result.returncode, "stdout": result.stdout[:limit],
-                "stderr": result.stderr[:stderr_limit],
-                "truncated": len(result.stdout) > limit or len(result.stderr) > stderr_limit,
+                "stderr": result.stderr[:4096],
+                "truncated": len(result.stdout) > limit or len(result.stderr) > 4096,
             })
-            return result
         except Exception as error:
             observe(f"{label}.failure.{name}", {"error": type(error).__name__, "detail": str(error)[:400]})
 
     # CRI supplies the PID in the guest's procfs, not the fixture host's PID.
     # Queue port IDs are netlink port IDs: correlate them with socket inodes
     # and this exact container's fd links rather than assuming port == PID.
-    frozen = None
     try:
         status = next(s for s in pod["status"]["containerStatuses"] if s["name"] == ENFORCER[1])
         container_id = status["containerID"].removeprefix("containerd://")
@@ -675,7 +613,6 @@ def capture_enforce_failure(guest: Guest, label: str) -> None:
             "container_id": container_id, "pid": pid,
             "status": {key: container["status"].get(key) for key in ("id", "state", "createdAt", "startedAt", "finishedAt")},
         })
-        frozen = container
         capture("netfilter", "sh", "-c",
                 'date -u +%Y-%m-%dT%H:%M:%SZ; '
                 'for p in 1 $$ "$1"; do printf "process=%s\\n" "$p"; '
@@ -723,11 +660,6 @@ def capture_enforce_failure(guest: Guest, label: str) -> None:
     capture("nft.enforcer", "sh", "-c", tools + "nft -j list table inet kube-network-policies", limit=32768)
     capture("nfqueue", "cat", "/proc/net/netfilter/nfnetlink_queue")
     capture("iptables.filter", "sh", "-c", tools + "iptables-save -t filter")
-    if label == "crash" and frozen is not None:
-        try:
-            capture_crash_stack(guest, frozen, capture)
-        except Exception as error:
-            observe("crash.failure.stack_capture", {"error": type(error).__name__, "detail": str(error)[:400]})
 
 
 def crash(lib, guest: Guest) -> None:
@@ -941,22 +873,8 @@ def run_scenario(args) -> None:
         enforce(lib, guest, "migrated", guest.now() - 5, expect_nftables=False)
     with lib.phase("the enforcer has no device access"):
         no_device_access(lib, guest)
-    # Temporary exposure diagnostic; retain the existing two-kill oracle and waits.
-    for cycle in range(1, 21):
-        if cycle > 1:
-            with lib.phase(f"diagnostic fresh enforcer {cycle}"):
-                previous = guest.enforcer()["pod"]
-                lib.check(bool(previous), "the owned enforcer Pod exists before replacement")
-                guest.kubectl("delete", "pod", previous, "--wait=true", "--timeout=120s",
-                              namespace=ENFORCER[0], timeout=150)
-                guest.wait_ready(
-                    f"diagnostic fresh enforcer {cycle}",
-                    lambda: (state := guest.enforcer())["pod"] not in ("", previous) and state["ready"],
-                    timeout=600)
-        with lib.phase(f"diagnostic enforcer crash {cycle}/20"):
-            observe("diagnostic.restart_cycle", cycle)
-            crash(lib, guest)
-            RESULTS["observations"][f"diagnostic.restart.{cycle}"] = RESULTS["observations"].pop("crash")
+    with lib.phase("enforcer crash"):
+        crash(lib, guest)
     with lib.phase("enforcement after a guest restart"):
         before = guest.pod_ips()
         restarted = guest.now()
