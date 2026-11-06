@@ -37,6 +37,18 @@ running configuration, but not the boot-loader selection. Automatic
 rollback requires the previous generation's `deploy-rs-activate` hook;
 a plain NixOS profile needs a wrapper around its exact existing system first.
 
+On an x86 Linux checkout, run `nix run path:.#stock-go-audit` to audit
+the selected Incus daemon/client and Tailscale multicall ELF without
+contacting their daemons. It checks compiled Go symbols, compiler and
+linked module versions; application versions come from evaluated Nix.
+It does not audit C libraries or replace application security review.
+
+`nix flake update nixpkgs-security` updates the package-only input,
+not the fleet's root Nixpkgs. Review source overrides and regenerate
+dependency patches/vendor hashes when advancing supported releases.
+Before restarting Incus, retain a stopped full-state backup and each
+external storage pool; a profile rollback cannot undo database changes.
+
 ## Declared routes
 
 | Service | Exposure | Canonical URL | Secondary URL | Backend | Auth |
