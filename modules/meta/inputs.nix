@@ -58,7 +58,7 @@
 
     # Remote ZFS unlock
     hoopsnake = {
-      url = "github:boinkor-net/hoopsnake/106a95e01352db2143f355fba1a328c887e0c807";
+      url = "github:dvicory/hoopsnake/2ac8db429b5159387c47c2499ffb34fc9a7773bd";
       inputs = {
         nixpkgs.follows = "nixpkgs";
         flake-parts.follows = "flake-parts";

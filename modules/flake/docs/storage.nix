@@ -199,13 +199,11 @@ in
         disconnected. Its isolated Headscale preauth flow does not prove
         public Tailscale OAuth or production tailnet policy.
 
-        `core.remote-unlock` includes the Den `core.hoopsnake` aspect. That
-        aspect patches only the pinned upstream NixOS module for systemd-only
-        initrd; the Hoopsnake executable is unchanged. Configuration evaluation
-        imports the committed generated module, without building patched source.
-        The native `write-files` generator applies the patch and retains the
-        upstream license. After changing the pin or patch, run
-        `nix run path:.#write-files` and `nix run path:.#diff-files`.
+        `core.remote-unlock` includes the Den `core.hoopsnake` aspect, which
+        imports the pinned `dvicory/hoopsnake` fork's NixOS module directly.
+        The fork keeps the systemd-only initrd implementation and credentials;
+        the Hoopsnake executable is unchanged. Configuration evaluation does
+        not patch or generate a local copy of the module.
         Do not restore the removed `boot.initrd.systemd.enable` option.
 
         The Impermanence aspect imports pinned official upstream without a
