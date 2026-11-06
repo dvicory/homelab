@@ -46,6 +46,8 @@ It does not audit C libraries or replace application security review.
 `nix flake update nixpkgs-security` updates the package-only input,
 not the fleet's root Nixpkgs. Review source overrides and regenerate
 dependency patches/vendor hashes when advancing supported releases.
+Tailscale rejects a stale release override rather than downgrading a
+newer version supplied by that input.
 Incus has a 330-second graceful shutdown budget. Before restarting it,
 retain a stopped full-state backup and each
 external storage pool; a profile rollback cannot undo database changes.
