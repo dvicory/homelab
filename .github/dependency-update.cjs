@@ -42,12 +42,10 @@ manager(`/^${owner}monitoring/default\\.nix$/`,
 manager(`/^${owner}monitoring/default\\.nix$/`,
   'registry = "(?<registry>[^"\\s]+)";\\s+repository = "(?<repository>[^"\\s]+)";\\s+tag = "' + value + '";\\s+digest = "' + digest + '";',
   'docker', { depNameTemplate: '{{{registry}}}/{{{repository}}}', versioningTemplate: 'docker' });
-// Grafana's chart prefixes sha256 itself; preserve its comment and bare-hex convention.
+// Keep a canonical digest in Nix; the chart still receives bare hex via removePrefix.
 manager(`/^${owner}monitoring/dashboards\\.nix$/`,
-  'repository = "grafana/grafana";\\s+tag = "' + value + '";[\\s\\S]*?sha = "(?<bareDigest>[a-f0-9]{64})";',
-  'docker', { depNameTemplate: 'docker.io/grafana/grafana', versioningTemplate: 'docker',
-    currentDigestTemplate: 'sha256:{{{bareDigest}}}',
-    autoReplaceStringTemplate: '{{{replace (replace "sha256:" "" currentDigest) (replace "sha256:" "" newDigest) (replace currentValue newValue replaceString)}}}' });
+  'repository = "grafana/grafana";\\s+tag = "' + value + '";[\\s\\S]*?sha = lib\\.removePrefix "sha256:" "' + digest + '";',
+  'docker', { depNameTemplate: 'docker.io/grafana/grafana', versioningTemplate: 'docker' });
 image('argocd.nix', 'global\\.image\\.tag = ', 'quay.io/argoproj/argocd');
 image('argocd.nix', 'redis\\.image\\.tag = ', 'docker.io/library/redis');
 // One shared version: Renovate updates controller/version atomically, and the hook
@@ -55,7 +53,7 @@ image('argocd.nix', 'redis\\.image\\.tag = ', 'docker.io/library/redis');
 manager(`/^${owner}cert-manager\\.nix$/`,
   'version = "' + value + '";[\\s\\S]*?image "quay\\.io/jetstack/cert-manager-controller" "' + digest + '"',
   'docker', { depNameTemplate: 'quay.io/jetstack/cert-manager-controller', versioningTemplate: 'docker' });
-// Reviewed Jellyfin runtime/source/helper release is coupled: surface candidates as drafts.
+// Reviewed Jellyfin runtime/source/helper releases need a complete coupled owner update.
 manager('/^pkgs/by-name/jellyfin-provisioner-image/package\\.nix$/',
   'runtimeImage = "(?<depName>docker\\.io/jellyfin/jellyfin):' + value + '";\\s+runtimeDigest = "' + digest + '";',
   'docker', { versioningTemplate: 'docker' });
@@ -72,6 +70,10 @@ manager(`/^${owner}monitoring/default\\.nix$/`,
 
 module.exports = {
   platform: 'github',
+  // Renovate is a read-only resolver/postprocessor, never the publisher.
+  dryRun: 'full',
+  branchPrefix: 'dependency-update/renovate/',
+  branchPrefixOld: 'dependency-update/renovate/',
   username: 'github-actions[bot]',
   gitAuthor: 'github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>',
   onboarding: false,
@@ -89,11 +91,14 @@ module.exports = {
   prBodyNotes: ['Source-owner update plus canonical generated documentation/manifests; no automatic merge or deployment. Generation errors mean the candidate is not ready. GITHUB_TOKEN does not trigger ordinary push/PR CI: a maintainer must explicitly run Nix CI for this branch before review.', immutableSourcePrerequisite],
   binarySource: 'global',
   exposeAllEnv: false,
-  // Absolute main-checkout script cannot be replaced by an updated dependency or clone config.
-  allowedCommands: ['^python3 ' + path.join(__dirname, 'dependency-update.py').replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$'],
+  // Fixed trusted command; dependency names/tags are data, never rendered shell.
+  allowedCommands: ['^python3 ' + path.join(__dirname, 'dependency-update.py').replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ' --prepare-declaration$'],
   postUpgradeTasks: {
-    commands: ['python3 ' + path.join(__dirname, 'dependency-update.py')],
-    fileFilters: ['modules/**/*.nix', 'pkgs/by-name/jellyfin-provisioner-image/package.nix', 'flake.nix', 'flake.lock', 'docs/**/*.md', 'generated/manifests/**/*.yaml', 'generated/manifests/**/*.yml'],
+    commands: ['python3 ' + path.join(__dirname, 'dependency-update.py') + ' --prepare-declaration'],
+    dataFileTemplate: '{{{toJSON (toObject "branch" branchName "base" baseBranch)}}}',
+    // The hook exports independently only after success. Upstream catches hook errors
+    // and otherwise harvests files anyway, so it must never collect candidate files.
+    fileFilters: [],
     executionMode: 'branch',
   },
   packageRules: [
@@ -106,8 +111,8 @@ module.exports = {
       versioning: 'regex:^(?<compatibility>distroless)-v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$' },
     { matchPackageNames: ['docker.io/nikolaik/python-nodejs'],
       versioning: 'regex:^python(?<major>\\d+)\\.(?<minor>\\d+)-nodejs(?<patch>\\d+)$' },
-    { matchPackageNames: ['docker.io/jellyfin/jellyfin'], draftPR: true,
-      prBodyNotes: ['Jellyfin is a coupled reviewed release, not an independently deployable image bump. Reconcile package version/sourceRev/source hash, the provision patch, the k8s owner assertion and the normal verified helper-release selection before marking ready. This updater never rewrites verified release receipts.'] },
+    { matchPackageNames: ['docker.io/jellyfin/jellyfin'], enabled: false,
+      description: 'Jellyfin is a coupled reviewed release. Reconcile source/hash, provision patch, k8s assertion and verified helper-release selection manually before canonical generation. Incomplete draft candidates are not exported; verified receipts are never rewritten.' },
   ],
 };
 
@@ -121,18 +126,8 @@ if (require.main === module) {
       .filter(file => file.endsWith('.nix') && fs.lstatSync(path.join(root, dir, file)).isFile())
       .map(file => `${dir}/${file}`));
   const mapping = [];
-  const immutableManagers = customManagers.filter(rule =>
-    new RegExp(rule.matchStrings[0]).test(`"github:owner/repo/${'a'.repeat(40)}"`));
-  assert.equal(immutableManagers.length, 1, 'immutable pins must remain extracted exactly once');
-  assert.equal(immutableManagers[0].depTypeTemplate, 'immutable-source');
-  const immutableRules = module.exports.packageRules.filter(rule => rule.matchDepTypes?.includes('immutable-source'));
-  assert(immutableRules.length > 0, 'immutable source replacement must have an explicit policy');
-  // No branch authority can be inferred from any of these ancestry outcomes.
-  // Reject before mutation/hooks, including forward proposals until the owner chooses a policy.
-  for (const relation of ['ahead', 'behind', 'diverged']) {
-    assert(immutableRules.every(rule => rule.enabled === false),
-      `${relation} immutable proposals must remain disabled without an authorized tracking policy`);
-  }
+  // Native Renovate config/extract/lookup qualification is authoritative, not a
+  // second hand-written model of Renovate's branch or admission algorithms.
   for (const rule of customManagers) {
     const pattern = new RegExp(rule.managerFilePatterns[0].slice(1, -1));
     for (const file of files.filter(f => pattern.test(f))) {
@@ -140,7 +135,7 @@ if (require.main === module) {
         const resolve = template => template?.replace(/\{\{\{(\w+)\}\}\}/g, (_, key) => match.groups[key] || '');
         mapping.push({ file, dependency: match.groups.depName || resolve(rule.depNameTemplate),
           version: match.groups.currentValue || rule.currentValueTemplate,
-          digest: match.groups.currentDigest || resolve(rule.currentDigestTemplate),
+          digest: match.groups.currentDigest,
           ...(rule.depTypeTemplate === 'immutable-source'
             ? { automaticUpdates: false, prerequisite: immutableSourcePrerequisite } : {}) });
       }

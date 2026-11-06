@@ -84,7 +84,8 @@ jobs:
           PR_BODY: |
             Ordinary root Nixpkgs/channel and input/branch lock refresh using `nix flake update --flake path:.`.
             Authoritative declarations are `modules/meta/inputs.nix` and each module's `flake-file.inputs`.
-            Immutable source pins, image and chart declarations have separate Renovate PRs.
+            Immutable SHA source pins are mapped but disabled until their owners choose a tracking branch/tag policy.
+            Supported release-tag, image and chart declarations use separately prepared update PRs.
             Canonical `write-files` and declaration-derived `sync-*-manifests` apps regenerated
             the accompanying documentation and manifests in an isolated token-free container.
 
@@ -119,51 +120,78 @@ jobs:
           echo 'If PR creation reports "GitHub Actions is not permitted to create or approve pull requests", recurring default-token publication is blocked by Settings > Actions > General > Workflow permissions > Allow GitHub Actions to create and approve pull requests. This workflow never changes that setting or uses replacement credentials.' >> "$GITHUB_STEP_SUMMARY"
 
   declarations:
-    name: Propose source-owned input, image and chart updates
-    if: github.repository == 'dvicory/homelab' && !inputs.dry-run && github.ref == 'refs/heads/main'
+    name: Prepare declarations with read-only upstream Renovate
+    if: github.repository == 'dvicory/homelab' && (github.event_name == 'pull_request' || inputs.dry-run || github.ref == 'refs/heads/main')
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
+      pull-requests: read
       checks: read
       statuses: read
-    steps: &declaration-steps
+    steps:
       - name: Check out trusted updater configuration
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install Nix
         uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
-      - name: Run upstream Renovate with the existing workflow token
+      - name: Validate native configuration and prepare complete candidates
         env:
           RENOVATE_TOKEN: ${{ github.token }}
           RENOVATE_CONFIG_FILE: ${{ github.workspace }}/.github/dependency-update.cjs
           RENOVATE_REPOSITORIES: ${{ github.repository }}
-          RENOVATE_BRANCH_PREFIX: dependency-update/renovate/
-          DRY_RUN: ${{ github.event_name == 'pull_request' || inputs.dry-run }}
           LOG_LEVEL: debug
         run: |
-          # Upstream CLIs use this checkout's existing nixpkgs lock; no App/PAT.
-          # Regeneration uses digest-pinned nixos/nix with a private store, never host /nix.
-          args=()
-          if [ "$DRY_RUN" = true ]; then args+=(--dry-run=full); fi
-          nix shell --inputs-from path:. nixpkgs#renovate nixpkgs#kubernetes-helm nixpkgs#skopeo nixpkgs#python3 --command renovate "${args[@]}"
-      - name: Explain token and review boundaries
+          set -euo pipefail
+          python3 .github/dependency-update.py --self-test
+          # Renovate receives read authority only, even on scheduled publication runs.
+          # Candidate Nix sees only a disposable writable copy and private store.
+          nix shell --inputs-from path:. nixpkgs#renovate nixpkgs#kubernetes-helm nixpkgs#skopeo nixpkgs#python3 --command \
+            bash -eu <<'PREPARE'
+          renovate-config-validator "$RENOVATE_CONFIG_FILE"
+          renovate --dry-run=full
+          python3 "$GITHUB_WORKSPACE/.github/dependency-update.py" --seal-candidates
+          PREPARE
+      - name: Transfer only successfully prepared bounded data
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dependency-update-declaration-candidates
+          path: .github/dependency-update-candidates/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Explain preparation and review boundaries
         if: always()
         run: |
-          echo 'Source mapping: .github/dependency-update.cjs. nixhelm owns charts.*; local chart owners also get recursive hash refresh. Jellyfin candidates are draft-only pending the existing coupled producer/helper-release review. No verified release receipt is rewritten.' >> "$GITHUB_STEP_SUMMARY"
-          echo 'GITHUB_TOKEN does not trigger normal push/PR CI; a maintainer must explicitly dispatch Nix CI on each update branch. No auto merge or deployment.' >> "$GITHUB_STEP_SUMMARY"
-          echo 'If GitHub rejects PR creation, the exact prerequisite is Settings > Actions > General > Workflow permissions > Allow GitHub Actions to create and approve pull requests. The repository-wide read-only default is not a blocker: this workflow requests contents/pull-requests write only in publisher jobs. No setting or credential is changed here.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Renovate runs full dry-run with a read-only token. Only independently validated patches from successful complete canonical generation reach the separate publisher; hook failures prohibit artifact export. No candidate worktree is mounted into the live Renovate clone.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Immutable SHA pins remain disabled until explicit owner branch/tag intent. Jellyfin coupled-release updates are withheld rather than publishing incomplete generated outputs. Maintainers must explicitly dispatch Nix CI before review/manual merge; no automerge or deployment.' >> "$GITHUB_STEP_SUMMARY"
 
-  declarations-plan:
-    name: Resolve declaration updates without publication authority
-    if: github.repository == 'dvicory/homelab' && (github.event_name == 'pull_request' || inputs.dry-run)
+  declarations-pr:
+    name: Publish validated declaration data without candidate execution
+    needs: declarations
+    if: github.repository == 'dvicory/homelab' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.dry-run))
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 15
     permissions:
-      contents: read
-      pull-requests: read
-      checks: read
-      statuses: read
-    steps: *declaration-steps
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out trusted publisher only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download candidate data only
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dependency-update-declaration-candidates
+          path: ${{ runner.temp }}/dependency-update-declarations
+      - name: Validate and publish with exact owned-branch leases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CANDIDATES: ${{ runner.temp }}/dependency-update-declarations
+        run: python3 .github/dependency-update.py --publish-candidates "$CANDIDATES"
+      - name: Explain default-token policy prerequisite on failure
+        if: failure()
+        run: |
+          echo 'If GitHub rejects PR creation, recurring default-token publication requires Settings > Actions > General > Workflow permissions > Allow GitHub Actions to create and approve pull requests. Actual publication remains unproven until a real run succeeds. This workflow changes no setting and introduces no credential.' >> "$GITHUB_STEP_SUMMARY"
