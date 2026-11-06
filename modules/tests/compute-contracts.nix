@@ -11,8 +11,8 @@ let
   guest = self.nixosConfigurations.compute-1.config;
   hostEntity = config.den.hosts.x86_64-linux.hvn-hyp1;
   compute = hostEntity.settings.virtualization.compute;
-  # The host's compute aspect, evaluated with a changed declaration.
-  computeAspect =
+  # The host's compute aspect and typed settings, evaluated with changed declarations.
+  computeDefinition =
     (import ../den/aspects/virtualization/compute.nix {
       inherit
         den
@@ -20,7 +20,29 @@ let
         inputs
         config
         ;
-    }).den.aspects.virtualization.compute.nixos;
+    }).den.aspects.virtualization.compute;
+  computeAspect = computeDefinition.nixos;
+  rejectedSettings =
+    change:
+    let
+      evaluate =
+        overrides:
+        (lib.evalModules {
+          modules = [
+            {
+              imports = computeDefinition.settings.imports;
+              options = removeAttrs computeDefinition.settings [ "imports" ];
+            }
+            {
+              config = {
+                inherit (compute) instance;
+              }
+              // overrides;
+            }
+          ];
+        }).config.backend;
+    in
+    builtins.deepSeq (evaluate { }) (!(builtins.tryEval (evaluate change)).success);
   evaluateWith =
     change:
     computeAspect {
@@ -41,7 +63,12 @@ let
     .success;
   withDevice =
     name: device: current:
-    current // { devices = current.devices // { ${name} = device; }; };
+    current
+    // {
+      devices = current.devices // {
+        ${name} = device;
+      };
+    };
   ungranted =
     builtins.fromJSON
       (evaluateWith (current: current // { accelerator = null; }))
@@ -74,6 +101,15 @@ let
   );
   assertions = {
     intended-host-owns-compute = owners == [ "hvn-hyp1" ];
+    backend-is-not-an-independent-host-choice = rejectedSettings { backend = compute.backend; };
+    undeclared-guest-is-rejected = rejectedSettings { instance = "undeclared-compute-guest"; };
+    mismatched-guest-boot-mode-is-rejected = builtins.deepSeq guest.system.build.computeBundle.drvPath (
+      !(builtins.tryEval (
+        (self.nixosConfigurations.compute-1.extendModules {
+          modules = [ { boot.isContainer = lib.mkForce (!guest.boot.isContainer); } ];
+        }).config.system.build.computeBundle.drvPath
+      )).success
+    );
     unprivileged-confinement =
       project.restricted == "true"
       && project."restricted.containers.lowlevel" == "block"
@@ -161,7 +197,9 @@ let
         "unix-hotplug"
         "usb"
       ]
-      && project."restricted.devices.unix-char" == (if compute.accelerator != null then "allow" else "block");
+      &&
+        project."restricted.devices.unix-char"
+        == (if compute.accelerator != null then "allow" else "block");
     # gpu-render never enters the guest's ID map.
     accelerator-grant-leaves-id-map =
       descriptor.config."raw.idmap" == ungranted.config."raw.idmap"

@@ -65,7 +65,10 @@
             inherit den inputs lib;
           }).den.aspects.services."kubernetes-runtime-secrets".nixos;
         computeGuest = pkgs.callPackage (inputs.self + "/pkgs/by-name/compute-runtime/package.nix") { };
-        guestBundle = guest.config.system.build.computeBundle;
+        # The permission oracle needs the actual open errno inside the actor.
+        guestBundle = (guest.extendModules {
+          modules = [ ({ pkgs, ... }: { environment.systemPackages = [ pkgs.python3 ]; }) ];
+        }).config.system.build.computeBundle;
         descriptor = builtins.fromJSON hostConfig.environment.etc."homelab/compute.json".text;
         poolPath = descriptor.poolPath;
         scenario = ./compute-guest-upgrade.py;
