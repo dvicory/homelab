@@ -16,6 +16,8 @@ let
   authKeyFile = inputs.self + "/.secrets/shared/tailscale-auth-key.age";
 in
 {
+  flake-file.inputs.nixpkgs-security.url = "github:NixOS/nixpkgs/nixos-unstable";
+
   den.aspects.core.network.tailscale = {
     firewall = { config, ... }: [
       {
@@ -25,11 +27,16 @@ in
         };
       }
     ];
-
     nixos =
-      { config, host, ... }:
+      {
+        config,
+        host,
+        pkgs,
+        ...
+      }:
       let
         secretExists = builtins.pathExists authKeyFile;
+        securityPkgs = inputs.nixpkgs-security.legacyPackages.${pkgs.stdenv.hostPlatform.system};
       in
       {
         secretRequests.tailscale-auth-key = lib.mkIf secretExists {
@@ -41,10 +48,25 @@ in
 
         services.tailscale = {
           enable = true;
+          # Package-only security pin; retain the release recipe's Go 1.27 toolchain.
+          package = securityPkgs.tailscale.overrideAttrs (
+            final: old: {
+              version = "1.104.5";
+              src = securityPkgs.fetchFromGitHub {
+                owner = "tailscale";
+                repo = "tailscale";
+                tag = "v${final.version}";
+                hash = "sha256-aq4pBe75wNRFDEa3kSDa/pBLsZws5mOUOjHDUycpmXM=";
+              };
+              patches = (old.patches or [ ]) ++ [ ./tailscale-go-security.patch ];
+              vendorHash = "sha256-wiugBc4W0/F0HpAPaJUVWyum8g15+0rmSXV1s4U0ppQ=";
+            }
+          );
           # The service-owned firewall fragment admits only the transport port.
           openFirewall = false;
           authKeyFile = lib.mkIf secretExists config.age.secrets.tailscale-auth-key.path;
         };
+
 
         systemd.services.tailscaled.serviceConfig.Environment = [
           "TS_DEBUG_FIREWALL_MODE=nftables"
