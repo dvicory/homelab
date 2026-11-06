@@ -522,8 +522,9 @@ def main():
         else:
             raise RuntimeError("readiness-timeout")
         version = json.loads(kubectl("get", "--raw=/version").stdout)
-        if version["gitVersion"] != "v1.35.8+k3s1":
+        if version["gitVersion"] != "v1.36.5+k3s1":
             raise ValueError("target-version-mismatch")
+        report["serverGitVersion"] = version["gitVersion"]
         phase = "disposable-kubeconfig"
         info = json.loads(d("inspect", name).stdout)[0]
         ports = info["NetworkSettings"]["Ports"]["6443/tcp"]

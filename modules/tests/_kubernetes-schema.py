@@ -173,7 +173,7 @@ def validate(args):
         raise ValueError("zero effective deployment documents selected")
     paths = sorted({entry[0] for entry in expected})
     command = [str(args.kubeconform), "-strict", "-summary", "-verbose", "-output", "json",
-               "-kubernetes-version", "1.35.8", "-schema-location",
+               "-kubernetes-version", "1.36.5", "-schema-location",
                str(args.schemas / "{{.Group}}__{{.ResourceKind}}__{{.ResourceAPIVersion}}.json"), *paths]
     result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     args.report.write_text(result.stdout)

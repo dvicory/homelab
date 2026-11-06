@@ -35,18 +35,18 @@
       nativePkgs = inputs.nixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system};
       nativeKubectl =
         if pkgs.stdenv.hostPlatform.isLinux then
-          nativePkgs.k3s_1_35.k3sBundle
+          nativePkgs.k3s_1_36.k3sBundle
         else
           nativePkgs.kubectl.override {
             # K3s' multicall bundle is Linux-only. Reuse the native Unix kubectl
             # recipe with a verified source pin from the supported server minor.
             kubernetes = nativePkgs.kubernetes.overrideAttrs (_: {
-              version = "1.35.0";
+              version = "1.36.5";
               src = nativePkgs.fetchFromGitHub {
                 owner = "kubernetes";
                 repo = "kubernetes";
-                tag = "v1.35.0";
-                hash = "sha256-AT1/4RhnVK/mAoNVqPIfSwbzD8VNRqKumOpE0fidJ74=";
+                tag = "v1.36.5";
+                hash = "sha256-M5wVu5678Eow6xMLNZXcfPLlS9z11RpwwzvmYd8NEeE=";
               };
             });
           };
@@ -54,8 +54,8 @@
       helperPaths = lib.concatMap (fixture: fixture.settings.paths or [ ]) fixtureList;
       settings =
         assert lib.assertMsg (
-          lib.versions.majorMinor nativeKubectl.version == "1.35"
-        ) "The native Kubernetes fixture requires a host kubectl from the pinned K3s 1.35 minor.";
+          lib.versions.majorMinor nativeKubectl.version == "1.36"
+        ) "The native Kubernetes fixture requires a host kubectl from the pinned K3s 1.36 minor.";
         pkgs.writeText "kubernetes-api-fixture.json" (
           builtins.toJSON (
             {
@@ -76,7 +76,7 @@
                 ]
                 ++ helperPaths
               );
-              image = "rancher/k3s:v1.35.8-k3s1@sha256:59fe491fd3b73204e499e40b325240d85c42c7189c3ae50150d37b78243f3b32";
+              image = "rancher/k3s:v1.36.5-k3s1@sha256:057cfd5a9d51b89f1f0ee139c28d5d5fdd5aa7ddeac2742a0ba90c6dbc0329bb";
               crd = ../../generated/manifests/prod-home/gateway-crds/CustomResourceDefinition-gateways-gateway-networking-k8s-io.yaml;
               networkPolicy = ../../generated/manifests/prod-home/network-policy;
               scenarios = ./_kubernetes-api;
