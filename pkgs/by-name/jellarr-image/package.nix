@@ -41,7 +41,8 @@ let
     ];
     pnpmDeps = fetchPnpmDeps {
       fetcherVersion = 4;
-      hash = "sha256-jo1BjRAjjfNKF0xb5cLCuELSveHeJ98iLPhMDKP1QbI=";
+      # pnpm 12.9.0; all 237 integrity-pinned dependencies are unchanged.
+      hash = "sha256-qNVnhHjTFPhJxJ8oZPBSfJs2OjNSlbmS31okZuSGWMU=";
       inherit pnpm;
       inherit (finalAttrs) pname src version;
     };

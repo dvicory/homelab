@@ -315,6 +315,35 @@ jobs:
           system_path=$(cat "$RUNNER_TEMP/darwin-builder-cache/system-path")
           sudo nix copy --option require-sigs false --from "file://$RUNNER_TEMP/darwin-builder-cache" "$system_path"
 
+      - name: Diagnose full inventory evaluation in a bounded native scope
+        if: matrix.system == 'x86_64-linux' && matrix.check == 'den-semantics' && startsWith(github.ref, 'refs/heads/diag/')
+        run: |
+          set -euo pipefail
+          free -b
+          unit="ci-inventory-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          probe_status=0
+          sudo systemd-run --unit="$unit" --wait --pipe \
+            --uid="$(id -u)" --gid="$(id -g)" \
+            --working-directory="$PWD" \
+            --setenv="HOME=$HOME" --setenv="PATH=$PATH" \
+            --setenv=GC_PRINT_STATS=1 \
+            --property=MemoryMax=75% --property=MemorySwapMax=0 \
+            --property=MemoryAccounting=yes --property=RuntimeMaxSec=1800 \
+            /usr/bin/time -v "$(command -v nix)" eval --json \
+            ".#hostedCiArtifacts.x86_64-linux" \
+            --apply 'p: {
+              inventory = builtins.mapAttrs (_: entries: map
+                (e: if e.runtime && e.hosted then builtins.removeAttrs e [ "drvPath" ] else e)
+                entries) p.inventory;
+              artifact = p.groups.checks;
+            }' \
+            > "$RUNNER_TEMP/inventory-memory-probe.json" || probe_status=$?
+          sudo systemctl show "$unit" \
+            -p Result -p ExecMainCode -p ExecMainStatus -p MemoryPeak -p MemorySwapPeak
+          sudo journalctl -u "$unit" --no-pager -n 30
+          printf 'Native bounded inventory exit: %s\n' "$probe_status"
+          exit "$probe_status"
+
       - name: Build
         env:
           SYSTEM: ${{ matrix.system }}
@@ -335,10 +364,28 @@ jobs:
           fi
           # Release the evaluation heap before any build/VM starts (PR #64).
           if [ "$GROUP" = checks ] && [ -z "$CHECK" ]; then
-            # Share the full inventory only with its complete aggregate.
+            # Keep fast checks together; do not retain every VM graph in that heap.
             nix eval --json ".#hostedCiArtifacts.$SYSTEM" \
-              --apply "p: { inherit (p) inventory; artifact = p.$artifact_attr; }" \
-              > "$RUNNER_TEMP/check-projection.json"
+              --apply "p: {
+                inventory = builtins.mapAttrs (_: entries: map
+                  (e: if e.runtime && e.hosted then builtins.removeAttrs e [ \"drvPath\" ] else e)
+                  entries) p.inventory;
+                artifact = p.$artifact_attr;
+              }" > "$RUNNER_TEMP/check-projection-base.json"
+            # ponytail: serial evaluators bound VM heaps; use bounded nix-eval-jobs if startup dominates.
+            : > "$RUNNER_TEMP/runtime-derivations.jsonl"
+            while IFS= read -r runtime_check; do
+              runtime_attr=$(jq -rn --arg check "$runtime_check" '$check | @json')
+              nix eval --raw ".#hostedCiArtifacts.$SYSTEM.checks.$runtime_attr.drvPath" \
+                | jq -Rc --arg name "$runtime_check" '{key: $name, value: .}' \
+                >> "$RUNNER_TEMP/runtime-derivations.jsonl"
+            done < <(jq -r '.inventory.runtime[].name' "$RUNNER_TEMP/check-projection-base.json")
+            jq --slurpfile runtime "$RUNNER_TEMP/runtime-derivations.jsonl" '
+              ($runtime | from_entries) as $drvs |
+              .inventory |= with_entries(.value |= map(
+                if .runtime and .hosted then . + {drvPath: $drvs[.name]} else . end
+              ))
+            ' "$RUNNER_TEMP/check-projection-base.json" > "$RUNNER_TEMP/check-projection.json"
             jq -c .inventory "$RUNNER_TEMP/check-projection.json" > "$RUNNER_TEMP/check-inventory.json"
             jq -c .artifact "$RUNNER_TEMP/check-projection.json" > "$RUNNER_TEMP/artifact.json"
             cat "$RUNNER_TEMP/check-inventory.json"

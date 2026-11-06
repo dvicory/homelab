@@ -135,6 +135,10 @@ mutation is not a successful policy denial.
 Policy, fixture and generated Test loading rejects duplicate YAML mapping keys,
 including keys inside merge sources, before generating expected outcomes.
 Valid merge overrides and aliases remain supported.
+The transport prelude checks population nonemptiness without a dynamic `size()`
+call over raw CRDs and uses typed inventory memberships to stay within Kyverno's
+native cost budget. Compiler, parameter and cost-limit
+errors remain evaluation failures, never successful expected denials.
 The accelerator grant admits only the declared Jellyfin holder's `/dev/dri`
 mount and evaluated `gpu-render` group. No workload may be privileged, including
 the network-policy enforcer; a dedicated negative fixture guards that boundary.

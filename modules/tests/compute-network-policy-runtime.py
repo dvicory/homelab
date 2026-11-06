@@ -835,6 +835,11 @@ def run_scenario(args) -> None:
     workspace = Path(tempfile.mkdtemp(prefix="network-policy-"))
     with lib.phase("create the compute guest"):
         runtime = create_guest(lib, args, workspace)
+        node = runtime.kubectl_json("get", "nodes", "-o", "json")["items"][0]["metadata"]["name"]
+        rootfs = runtime.kubectl_json("get", "--raw", f"/api/v1/nodes/{node}/proxy/stats/summary")["node"]["fs"]
+        observe("guest.rootfs", rootfs)
+        lib.check(0 < rootfs["availableBytes"] <= rootfs["capacityBytes"],
+                  "the unprivileged ZFS guest exposes usable real rootfs capacity through the kubelet")
     guest = Guest(lib, runtime, args.inputs, workspace)
     # Enforcement must work at the kernel's default buffer, not at a tuned one.
     lib.check(args.kernel_default_wmem == KERNEL_DEFAULT and int(WMEM.read_text()) == KERNEL_DEFAULT,

@@ -1735,7 +1735,9 @@ def observe_guest(runtime: Runtime, bundle: Path, expected: dict) -> dict:
     executable = runtime.guest("sh", "-ec", 'readlink -f "$(command -v k3s)"')
     pid = runtime.guest("systemctl", "show", "--value", "-p", "MainPID", "k3s")
     server_executable = runtime.guest("readlink", "-f", f"/proc/{pid}/exe")
-    version = "v" + expected["version"]
+    # Nixpkgs omits the CLI's upstream "v" prefix; API gitVersion retains it.
+    executable_version = expected["version"]
+    version = "v" + executable_version
     executable_output = runtime.guest("k3s", "--version")
     server_output = runtime.guest(f"/proc/{pid}/exe", "--version")
     versions = runtime.kubectl_json("version", "-o", "json")
@@ -1747,12 +1749,13 @@ def observe_guest(runtime: Runtime, bundle: Path, expected: dict) -> dict:
           "the running guest system is the selected bundle's system")
     check(executable.startswith(expected["package"] + "/"),
           "the guest CLI resolves into the selected real K3s package")
-    check(re.search(r"\bk3s version " + re.escape(version) + r"(?:\s|$)", executable_output) is not None
-          and re.search(r"\bk3s version " + re.escape(version) + r"(?:\s|$)", server_output) is not None
+    # Upstream prints argv[0]'s basename, which is "exe" through /proc.
+    check(re.match(r"\S+ version v?" + re.escape(executable_version) + r"(?:\s|$)", executable_output) is not None
+          and re.match(r"\S+ version v?" + re.escape(executable_version) + r"(?:\s|$)", server_output) is not None
           and versions["clientVersion"]["gitVersion"] == version
           and versions["serverVersion"]["gitVersion"] == version
           and node["status"]["nodeInfo"]["kubeletVersion"] == version,
-          f"executable, running executable, client, server and kubelet all report {version}")
+          f"CLI and running executable report {executable_version}; client, server and kubelet report {version}")
     runtime.guest("test", "-s", "/var/lib/rancher/k3s/server/db/state.db")
     evidence = {
         **expected, "bundle": selected, "system": system, "executable": executable,
