@@ -177,6 +177,43 @@ in
         nested actions; it does not pin container images, arbitrary downloads
         or dependencies of external reusable workflows.
 
+        ## Review repository Actions policy
+
+        [`modules/flake/github-actions.nix`](modules/flake/github-actions.nix)
+        owns the approved action identities, SHA-pinning requirement and read-only
+        workflow defaults. It generates [`.github/actions-policy.yml`](.github/actions-policy.yml)
+        for review; GitHub does not auto-read that file. Action authorization is
+        separate from revision resolution in `actions.lock`.
+
+        Inspect an explicitly named repository without changing its settings:
+
+        ```sh
+        nix run .#github-actions-policy -- plan --repo OWNER/NAME
+        ```
+
+        Exit status is 0 for equal policy and 1 for drift. Inactive selected-action
+        policy is reported as unknown (`null`), not an empty allowlist. Missing
+        owned API fields or failed reads fail closed; API errors retain `gh`'s
+        status. Allowlist order and duplicate entries do not cause drift, but
+        narrower live version/SHA patterns remain drift.
+
+        Only with separate owner approval for that repository, reconcile and
+        read back the owned fields:
+
+        ```sh
+        nix run .#github-actions-policy -- apply --repo OWNER/NAME
+        ```
+
+        There is no default target, credential setup or automatic rollback.
+        Partial failure may leave changes in place: inspect a fresh plan before
+        retrying. Organization restrictions can reject repository changes.
+        Use existing authorized credentials (fine-grained Administration read
+        for plan, write for apply; classic tokens require `repo`). Do not grant
+        broader scopes implicitly. Real API qualification belongs on an owned,
+        empty disposable public repository, never the Homelab repository;
+        GitHub documents allowlist patterns as applying to public repositories.
+        Ordinary CI only builds/projections; it must not apply these settings.
+
         ## Regenerate documentation
 
         [Documentation generators](modules/flake/docs/) produce the README and
