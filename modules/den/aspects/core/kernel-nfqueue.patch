@@ -1,0 +1,37 @@
+CVE-2026-98624: serialize NFQUEUE socket release with configuration.
+
+Upstream: https://git.kernel.org/stable/c/07a3ec8fdc5a1267c00cd6fd1cf8bbb5cda913c1
+Generated from the selected Linux 6.18.49 source before and after applying
+that stable commit with pkgs.applyPatches.
+
+--- a/net/netfilter/nfnetlink_queue.c
++++ b/net/netfilter/nfnetlink_queue.c
+@@ -1340,6 +1340,7 @@
+ 	if (event == NETLINK_URELEASE && n->protocol == NETLINK_NETFILTER) {
+ 		int i;
+ 
++		nfnl_lock(NFNL_SUBSYS_QUEUE);
+ 		/* destroy all instances for this portid */
+ 		spin_lock(&q->instances_lock);
+ 		for (i = 0; i < INSTANCE_BUCKETS; i++) {
+@@ -1353,6 +1354,7 @@
+ 			}
+ 		}
+ 		spin_unlock(&q->instances_lock);
++		nfnl_unlock(NFNL_SUBSYS_QUEUE);
+ 	}
+ 	return NOTIFY_DONE;
+ }
+@@ -1674,9 +1676,9 @@
+ 
+ 	/* Lookup queue under RCU. After peer_portid check (or for new queue
+ 	 * in BIND case), the queue is owned by the socket sending this message.
+-	 * A socket cannot simultaneously send a message and close, so while
+-	 * processing this CONFIG message, nfqnl_rcv_nl_event() (triggered by
+-	 * socket close) cannot destroy this queue. Safe to use without RCU.
++	 * nfqnl_rcv_nl_event() will block on the nfnl subsys mutex that is
++	 * held by the caller, so the queue cannot be destroyed in parallel,
++	 * even after we drop the RCU read lock.
+ 	 */
+ 	rcu_read_lock();
+ 	queue = instance_lookup(q, queue_num);
