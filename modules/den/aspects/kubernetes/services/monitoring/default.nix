@@ -26,8 +26,8 @@ let
   };
   image = {
     repository = "docker.io/victoriametrics/victoria-metrics";
-    tag = "v1.151.0";
-    digest = "sha256:6d164540a04f49ba4e696cbdb70f9fee78be1e94b8f2a1292743a0b1ab8275bd";
+    tag = "v1.155.0";
+    digest = "sha256:f60dc268b54ecf87f6e09d740c2b732838aa9193090cc741417c9f6386a130df";
     pullPolicy = "IfNotPresent";
   };
   # Native routes are probed on a health path; administrator routes at the

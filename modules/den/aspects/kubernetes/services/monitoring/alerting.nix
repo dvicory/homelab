@@ -16,7 +16,7 @@ let
   images = {
     vmalert = {
       repository = "docker.io/victoriametrics/vmalert";
-      tag = "v1.151.0@sha256:e519f14c31f4d68015702e684a0fc3f1b4e559aa985d8f4462768f07f55b05c9";
+      tag = "v1.155.0@sha256:3256cba5ddaca5974eae6141105cec4ce37871f1c213f0a5c267ec0111bc68e1";
     };
     alertmanager = {
       repository = "quay.io/prometheus/alertmanager";
