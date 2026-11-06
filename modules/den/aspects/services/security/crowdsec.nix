@@ -1,9 +1,8 @@
 { inputs, ... }: {
   flake-file.inputs = {
-    # CrowdSec refactor from TornaxO7's follow-up PR:
-    # https://github.com/NixOS/nixpkgs/pull/535319
-    # Reference config: https://github.com/1randomguy/nixconfig/blob/main/modules/nixos/homelab/services/crowdsec.nix
-    crowdsec-pr.url = "github:dvicory/nixpkgs/crowdsec";
+    # Channel module plus upstream's tmpfiles percent-escaping fix.
+    # https://github.com/NixOS/nixpkgs/commit/6bb67f729e59cf0b784da894be55bc8eb8491dca
+    crowdsec.url = "github:dvicory/nixpkgs/b7ede101d44b588263ea5dd9d9ea1d027c097a5c";
   };
 
   den.aspects.services.security.crowdsec = {
@@ -13,13 +12,13 @@
         persistDataDir = "/persist/crowdsec/data";
       in {
         disabledModules = [
-          # Root Nixpkgs renamed the engine module after the current fleet pin.
+          # Replace the native directory as a unit, including its manual section.
           "services/security/crowdsec"
           "services/security/crowdsec.nix"
         ];
 
         imports = [
-          "${inputs.crowdsec-pr}/nixos/modules/services/security/crowdsec.nix"
+          "${inputs.crowdsec}/nixos/modules/services/security/crowdsec"
         ];
 
         config = lib.mkMerge [
@@ -37,7 +36,7 @@
             services.crowdsec = {
               autoUpdateService = true;
 
-              package = pkgs.callPackage "${inputs.crowdsec-pr}/pkgs/by-name/cr/crowdsec/package.nix" { };
+              package = pkgs.callPackage "${inputs.crowdsec}/pkgs/by-name/cr/crowdsec/package.nix" { };
 
               hub.collections = [ "crowdsecurity/linux" ];
 
@@ -57,6 +56,10 @@
                 console.enrollKeyFile = config.age.secrets."crowdsec-enrollmentKey".path;
               };
             };
+
+            # cscli owns live console sharing choices; initialize, never reset.
+            systemd.tmpfiles.settings."10-crowdsec"
+              .${cfg.settings.config.api.server.console_path}."f+".type = lib.mkForce "f";
 
             # Keep CrowdSec data on the persistent dataset without relying on
             # systemd's private state-directory namespace.
@@ -115,7 +118,7 @@
         ];
 
         imports = [
-          "${inputs.crowdsec-pr}/nixos/modules/services/security/crowdsec-firewall-bouncer.nix"
+          "${inputs.crowdsec}/nixos/modules/services/security/crowdsec-firewall-bouncer.nix"
         ];
 
         config = lib.mkIf config.services.crowdsec-firewall-bouncer.enable {

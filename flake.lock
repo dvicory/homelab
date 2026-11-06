@@ -96,19 +96,19 @@
         "type": "github"
       }
     },
-    "crowdsec-pr": {
+    "crowdsec": {
       "locked": {
-        "lastModified": 1788724433,
-        "narHash": "sha256-Ssrb+imztb6EX+aNSQkyL9AGBRZFilDFH7nfs7h2ts8=",
+        "lastModified": 1793991153,
+        "narHash": "sha256-3vpqjHZyX7KEIOYWEHQrutwyW8Cct8/BvC/ep2HxTLM=",
         "owner": "dvicory",
         "repo": "nixpkgs",
-        "rev": "98dbf12cb2bb49c47f82bbdb4a6a3190792bdb00",
+        "rev": "b7ede101d44b588263ea5dd9d9ea1d027c097a5c",
         "type": "github"
       },
       "original": {
         "owner": "dvicory",
-        "ref": "crowdsec",
         "repo": "nixpkgs",
+        "rev": "b7ede101d44b588263ea5dd9d9ea1d027c097a5c",
         "type": "github"
       }
     },
@@ -1856,7 +1856,7 @@
       "inputs": {
         "agenix": "agenix",
         "agenix-rekey": "agenix-rekey",
-        "crowdsec-pr": "crowdsec-pr",
+        "crowdsec": "crowdsec",
         "den": "den",
         "deploy-rs": "deploy-rs",
         "devshell": "devshell_2",
