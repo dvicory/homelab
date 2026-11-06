@@ -42,8 +42,14 @@ in
           enable = true;
           # Package-only security pin; retain the release recipe's Go 1.27 toolchain.
           package = securityPkgs.tailscale.overrideAttrs (
-            final: old: {
+            final: old:
+            let
               version = "1.104.5";
+            in
+            assert lib.assertMsg (lib.versionAtLeast version old.version)
+              "Tailscale ${old.version} supersedes the ${version} release override; remove the release override and refresh its dependency patch.";
+            {
+              inherit version;
               src = securityPkgs.fetchFromGitHub {
                 owner = "tailscale";
                 repo = "tailscale";
