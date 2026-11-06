@@ -13,6 +13,44 @@
       # Non-target frontends explicitly materialize them with a Linux builder;
       # amd64 emulation is reported and is not native ARM evidence.
       linuxPkgs = inputs.nixpkgs.legacyPackages.x86_64-linux;
+      configurations = import ./_compute-configurations.nix {
+        inherit self lib;
+        system = linuxPkgs.stdenv.hostPlatform.system;
+        hostName = config.den.clusters.prod-home.hostName;
+      };
+      k3sPackage = configurations.guest.config.services.k3s.package;
+      kubernetesVersion = lib.head (lib.splitString "+" k3sPackage.version);
+      # Exercise the selected Nix runtime, not an independently pinned registry
+      # server that drifts away from the production Secret reconciler's client.
+      serverImage = linuxPkgs.dockerTools.buildLayeredImage {
+        name = "homelab/native-kubernetes-api";
+        tag = lib.replaceStrings [ "+" ] [ "-" ] k3sPackage.version;
+        contents = [
+          k3sPackage
+          linuxPkgs.busybox
+          linuxPkgs.cacert
+          linuxPkgs.dockerTools.fakeNss
+        ];
+        extraCommands = ''
+          mkdir -p tmp run var/lib/rancher/k3s/agent/images
+          chmod 1777 tmp
+          ln -s ${k3sPackage.airgap-images} var/lib/rancher/k3s/agent/images/k3s-airgap-images.tar.zst
+        '';
+        config = {
+          Entrypoint = [ "${k3sPackage}/bin/k3s" ];
+          Env = [
+            "PATH=/bin"
+            "SSL_CERT_FILE=${linuxPkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+            "CRI_CONFIG_FILE=/var/lib/rancher/k3s/agent/etc/crictl.yaml"
+          ];
+          Volumes = {
+            "/var/lib/kubelet" = { };
+            "/var/lib/rancher/k3s" = { };
+            "/var/lib/cni" = { };
+            "/var/log" = { };
+          };
+        };
+      };
       fixtureArgs = {
         inherit
           pkgs
@@ -35,18 +73,18 @@
       nativePkgs = inputs.nixpkgs.legacyPackages.${pkgs.stdenv.hostPlatform.system};
       nativeKubectl =
         if pkgs.stdenv.hostPlatform.isLinux then
-          nativePkgs.k3s_1_35.k3sBundle
+          nativePkgs.k3s.k3sBundle
         else
           nativePkgs.kubectl.override {
-            # K3s' multicall bundle is Linux-only. Reuse the native Unix kubectl
-            # recipe with a verified source pin from the supported server minor.
+            # The Linux multicall bundle cannot execute on Darwin. Build its
+            # exact upstream Kubernetes client with the existing native recipe.
             kubernetes = nativePkgs.kubernetes.overrideAttrs (_: {
-              version = "1.35.0";
+              version = kubernetesVersion;
               src = nativePkgs.fetchFromGitHub {
                 owner = "kubernetes";
                 repo = "kubernetes";
-                tag = "v1.35.0";
-                hash = "sha256-AT1/4RhnVK/mAoNVqPIfSwbzD8VNRqKumOpE0fidJ74=";
+                tag = "v${kubernetesVersion}";
+                hash = "sha256-M5wVu5678Eow6xMLNZXcfPLlS9z11RpwwzvmYd8NEeE=";
               };
             });
           };
@@ -54,8 +92,8 @@
       helperPaths = lib.concatMap (fixture: fixture.settings.paths or [ ]) fixtureList;
       settings =
         assert lib.assertMsg (
-          lib.versions.majorMinor nativeKubectl.version == "1.35"
-        ) "The native Kubernetes fixture requires a host kubectl from the pinned K3s 1.35 minor.";
+          lib.versions.majorMinor nativeKubectl.version == lib.versions.majorMinor k3sPackage.version
+        ) "The native Kubernetes fixture requires a host kubectl from the selected K3s minor.";
         pkgs.writeText "kubernetes-api-fixture.json" (
           builtins.toJSON (
             {
@@ -76,7 +114,9 @@
                 ]
                 ++ helperPaths
               );
-              image = "rancher/k3s:v1.35.8-k3s1@sha256:59fe491fd3b73204e499e40b325240d85c42c7189c3ae50150d37b78243f3b32";
+              image = imageReference serverImage;
+              imageArchive = serverImage;
+              serverVersion = "v${k3sPackage.version}";
               crd = ../../generated/manifests/prod-home/gateway-crds/CustomResourceDefinition-gateways-gateway-networking-k8s-io.yaml;
               networkPolicy = ../../generated/manifests/prod-home/network-policy;
               scenarios = ./_kubernetes-api;

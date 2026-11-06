@@ -1,0 +1,17 @@
+--- a/github.com/containerd/containerd/v2/plugins/snapshots/overlay/overlayutils/check.go
++++ b/github.com/containerd/containerd/v2/plugins/snapshots/overlay/overlayutils/check.go
+@@ -67,6 +67,14 @@
+ 		Type:    "overlay",
+ 		Source:  "overlay",
+ 		Options: []string{opts},
++	}
++	// Probe with the same user-namespace xattr mode as NewSnapshotter.
++	userxattr, err := NeedsUserXAttr(d)
++	if err != nil {
++		return fmt.Errorf("failed to detect overlay userxattr support: %w", err)
++	}
++	if userxattr {
++		m.Options = append(m.Options, "userxattr")
+ 	}
+ 	dest := filepath.Join(td, "merged")
+ 	if err := m.Mount(dest); err != nil {
