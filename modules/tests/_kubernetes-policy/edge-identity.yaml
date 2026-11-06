@@ -523,24 +523,6 @@ spec:
         paramRef:
           name: policy-facts
           parameterNotFoundAction: Deny
-  - name: identity-backup-absent
-    match:
-      any:
-      - resources:
-          kinds:
-          - ConfigMap
-          names:
-          - kanidm-config-*
-          namespaces:
-          - identity
-    validate:
-      failureAction: Enforce
-      cel:
-        expressions:
-        - expression: >-
-            !object.data['server.toml'].contains('[online_backup]') && !object.data['server.toml'].contains('schedule
-            =') && !object.data['server.toml'].contains('versions =')
-          message: identity backup absent
   - name: oidc-backend
     match:
       any:

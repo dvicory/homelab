@@ -134,7 +134,7 @@ let
   ];
   kanidmDeployment = findObject normalObjects "Deployment" namespace "kanidm";
   kanidmService = findObject normalObjects "Service" namespace "kanidm";
-  serverConfig = (mountedServerConfig normalObjects).content;
+  serverConfig = builtins.fromTOML (mountedServerConfig normalObjects).content;
   mountedServerConfig =
     objects:
     let
@@ -334,9 +334,23 @@ let
           "provisioning"
           "normal"
         ];
+    server-local-backup-disabled =
+      lib.all
+        (
+          rendered:
+          !(
+            (builtins.fromTOML (mountedServerConfig rendered.applications.identity.objects).content)
+            ? online_backup
+          )
+        )
+        [
+          initial
+          provisioning
+          normal
+        ];
     # Kanidm serves LDAPS on the declared directory port, on its Service.
     directory-listens =
-      lib.hasInfix ''ldapbindaddress = "0.0.0.0:${toString directory.port}"'' serverConfig
+      serverConfig.ldapbindaddress == "0.0.0.0:${toString directory.port}"
       && builtins.elem {
         name = "ldaps";
         containerPort = directory.port;
