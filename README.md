@@ -1,59 +1,50 @@
+<!-- provenance: generated from evaluated Den entities and Nixidy Gateway objects by modules/flake/docs/readme.nix; regenerate with nix run .#write-files. -->
 # homelab
 
-Declarative NixOS homelab and nix-darwin workstation configuration, organized
-with [Den](https://github.com/denful/den) and flake-parts. The homelab runs
-household identity, media and monitoring services in a managed K3s compute
-guest, with host-owned persistent storage.
+NixOS homelab and nix-darwin workstation configuration, composed with
+[Den](https://github.com/denful/den) and flake-parts.
 
-## Find what you need
+## Fleet
 
-- **Operate or recover services:** [Household operations](docs/operations.md),
-  [identity](docs/operations/identity.md), [Homarr](docs/operations/homarr.md),
-  [media](docs/operations/media.md), [Jellyfin](docs/operations/jellyfin.md) and
-  [monitoring](docs/operations/monitoring.md).
-- **Understand storage:** [Declared layout](docs/storage.md) and
-  [disk migration](docs/operations/luks-storage-migration.md).
-- **Contribute and verify:** [CI and local checks](CI.md).
-- **Understand decisions and guarantees:** [Architecture decisions](docs/architecture/decisions/)
-  and [current OpenSpec contracts](openspec/specs/).
-  [Active changes](openspec/changes/) are proposals, not current guarantees.
+| Host | Environment | Platform | IPv4 | Managed guest of |
+| --- | --- | --- | --- | --- |
+| [`daniels-2021-mbp`](modules/den/hosts/daniels-2021-mbp/default.nix) | `home` | `aarch64-darwin` | — | — |
+| [`builder`](modules/den/hosts/builder/default.nix) | `dev` | `aarch64-linux` | `192.168.65.90` | — |
+| [`compute-1`](modules/den/hosts/compute-1/default.nix) | `prod` | `x86_64-linux` | `10.210.0.10` | [`hvn-hyp1`](modules/den/hosts/hvn-hyp1/default.nix) |
+| [`hvn-hyp1`](modules/den/hosts/hvn-hyp1/default.nix) | `prod` | `x86_64-linux` | `172.27.50.17` | — |
 
-## Where desired state lives
+## Services and topology
 
-| Change | Start here |
-| --- | --- |
-| Host hardware, roles or settings | [`modules/den/hosts/`](modules/den/hosts/) |
-| Cluster services, routes or placement | [`modules/den/clusters/`](modules/den/clusters/) |
-| Shared behavior | [`modules/den/aspects/`](modules/den/aspects/) |
-| Entity fields and defaults | [`modules/den/schema/`](modules/den/schema/) |
-| How entities include and contribute to one another | [`modules/den/policies/`](modules/den/policies/) and [`quirks/`](modules/den/quirks/) |
-| Flake outputs and CI selection | [`modules/flake/`](modules/flake/) |
-| Verification behavior | [`modules/tests/`](modules/tests/) |
+### `prod-home`
 
-Keep metadata on Den entities and behavior in aspects. Reuse the existing
-contribution and collection paths rather than adding a parallel registry.
+- **Kubernetes API:** `1.35.8`; ingress `direct` on NodePort `30443`.
+- **Persistent state:** `/var/lib/homelab/compute-1/state` on [`hvn-hyp1`](modules/den/hosts/hvn-hyp1/default.nix), mounted at `/srv/state` in the guest. [Paths and owners](docs/operations.md#retained-state).
+- **GitOps:** [generated manifests](generated/manifests/prod-home/), tracked from `main` by Argo CD. [Deployment runbook](docs/operations.md#deploy-configuration).
 
-## Make a safe change
+| Backend | Canonical hostname | Exposure | Sign-in | In manifests |
+| --- | --- | --- | --- | --- |
+| `argocd/argocd-server` | [`argocd.plus2.danielvicory.dev`](https://argocd.plus2.danielvicory.dev/) | `public` | Gateway admin | yes |
+| `monitoring/grafana` | [`grafana.plus2.danielvicory.dev`](https://grafana.plus2.danielvicory.dev/) | `public` | Gateway admin | yes |
+| `portal/homarr` | `home.plus2.danielvicory.dev` | `public` | Application | no |
+| `identity/kanidm` | [`id.bzfx.net`](https://id.bzfx.net/) | `public` | Application | yes |
+| `jellyfin/jellyfin` | [`jellyfin.plus2.danielvicory.dev`](https://jellyfin.plus2.danielvicory.dev/) | `private` | Application | yes |
+| `media/prowlarr` | [`prowlarr.plus2.danielvicory.dev`](https://prowlarr.plus2.danielvicory.dev/) | `public` | Gateway admin | yes |
+| `media/radarr` | [`radarr.plus2.danielvicory.dev`](https://radarr.plus2.danielvicory.dev/) | `public` | Gateway admin | yes |
+| `media/seerr` | [`requests.plus2.danielvicory.dev`](https://requests.plus2.danielvicory.dev/) | `public` | Application | yes |
+| `media/sabnzbd` | [`sabnzbd.plus2.danielvicory.dev`](https://sabnzbd.plus2.danielvicory.dev/) | `public` | Gateway admin | yes |
+| `media/sonarr` | [`sonarr.plus2.danielvicory.dev`](https://sonarr.plus2.danielvicory.dev/) | `public` | Gateway admin | yes |
 
-1. Read the relevant current contract and runbook. Change the Nix declaration,
-   not a generated copy or a live service's managed settings.
-2. Track new source files with `jj file track <path>` before evaluating the
-   flake. Nix files under `modules/` are imported automatically; underscore-prefixed
-   files are excluded from automatic import.
-3. Regenerate affected documentation or manifests and review the resulting
-   diff. [CI.md](CI.md) explains the files writer; the
-   [deployment runbook](docs/operations.md#deploy-configuration) covers manifests.
-   `flake.nix` is also generated: edit its `flake-file` declarations in modules,
-   then use `nix run .#write-flake`.
-4. Run the relevant checks on a compatible disposable builder using
-   [CI.md](CI.md). Report what executed, not just what evaluated or built.
+Routes reflect generated manifests, not live health.
+[Route details and publication gates](docs/operations.md#declared-routes) explain aliases and onboarding.
 
-**Publishing can deploy.** Argo tracks the production branch; see the
-[deployment runbook](docs/operations.md#deploy-configuration) before publishing
-manifest changes. A successful check is not authorization to merge, activate,
-sync or deploy.
+## Operate and recover
 
-Never use production Docker, Incus, mounts or credentials for test fixtures.
-Keep decrypted secrets out of Git, Nix store outputs, images and logs. Public
-cache signing keys grant trust to executable outputs; do not accept new keys
-or disable signature checks to work around a failed build.
+- [Household operations](docs/operations.md): deployment, retained state and runtime secrets.
+- [Identity](docs/operations/identity.md) · [Homarr](docs/operations/homarr.md) · [Media](docs/operations/media.md) · [Jellyfin](docs/operations/jellyfin.md) · [Monitoring](docs/operations/monitoring.md).
+- [Storage layout](docs/storage.md) · [Disk migration](docs/operations/luks-storage-migration.md).
+
+## Sources and checks
+
+- [Cluster and route declarations](modules/den/clusters/home.nix) · [Service implementations](modules/den/aspects/kubernetes/services/) · [Compute lifecycle](modules/den/aspects/virtualization/compute.nix).
+- [CI and local checks](CI.md) · [Regenerate this page](CI.md#regenerate-documentation).
+- [Current contracts](openspec/specs/) · [Architecture decisions](docs/architecture/decisions/).
