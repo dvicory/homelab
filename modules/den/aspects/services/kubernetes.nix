@@ -22,6 +22,17 @@
         services.k3s = {
           enable = true;
           role = "server";
+          # The startup probe must mount with the same userns xattr mode as
+          # containerd's overlay snapshotter; retain its real multi-layer mount.
+          package = pkgs.k3s.override {
+            overrideBundleAttrs = old: {
+              goModules = pkgs.applyPatches {
+                name = "k3s-overlay-userxattr-go-modules";
+                src = old.goModules;
+                patches = [ ./k3s-overlay-userxattr.patch ];
+              };
+            };
+          };
           # SQLite, Flannel, CoreDNS, and kube-proxy remain the supported
           # single-node path. Only packaged components outside this slice are
           # disabled.
