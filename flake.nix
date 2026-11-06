@@ -105,6 +105,7 @@
     nixos-facter-modules.url = "github:nix-community/nixos-facter-modules";
     nixpkgs.url = "https://channels.nixos.org/nixos-unstable/nixexprs.tar.xz";
     nixpkgs-multiverse.url = "github:fzakaria/nixpkgs-multiverse/9e89229225547747c0150f396ffa413d80bc1427";
+    nixpkgs-security.url = "github:NixOS/nixpkgs/nixos-unstable";
     quadlet-nix.url = "github:SEIAROTg/quadlet-nix";
     secure-hermes-nix = {
       url = "github:dvicory/secure-hermes-nix";
