@@ -69,6 +69,42 @@ Configuration evaluation is not boot proof. Retain executed VM results
 and separately verify physical firmware can select either ESP before
 relying on redundancy.
 
+## CrowdSec persistent state and migration
+
+CrowdSec keeps its database, local/Central API credentials, hub data and
+console sharing settings in `/persist/crowdsec/data`. Back up that
+persistent tree with the engine and bouncer stopped before changing
+versions. Do not copy only the live SQLite database.
+
+The upstream module's generic reset guide is available at
+`/etc/crowdsec/upstream-module.md`. Its examples use upstream defaults;
+use the persistent paths here rather than substituting those defaults.
+
+`cscli` owns live console sharing choices. The console file is initialized
+only when absent; activation must not overwrite it with generated
+defaults. Profiles, simulation and acquisition files remain declarative
+and update from Nix configuration.
+
+The bouncer registration key under
+`/var/lib/crowdsec-firewall-bouncer-register` is not persisted. An empty
+root keeps the database registration but loses that key; the native
+registration service replaces it and authenticates with the new key.
+Do not assume its bytes survive an ephemeral-root reboot.
+
+On a disposable native `x86_64-linux` KVM builder, run:
+
+```sh
+nix build .#checks.x86_64-linux.crowdsec-upgrade -L --no-link
+```
+
+The scenario upgrades the historical 1.8.0 integration to pinned 1.8.1,
+cold-boots both generations with an empty root and retained data, and
+runs old executables against state written by the new version without
+restoring its backup. It checks LAPI credentials, console choices,
+retained decisions, authenticated bouncer access, packet blocking and
+unban recovery. It does not use production credentials or prove remote
+CAPI/console enrollment.
+
 ## `hvn-hyp1`
 
 ### LUKS data disks

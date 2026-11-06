@@ -32,7 +32,7 @@
       url = "github:sini/agenix-rekey/feat/settings";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    crowdsec-pr.url = "github:dvicory/nixpkgs/crowdsec";
+    crowdsec.url = "github:dvicory/nixpkgs/b7ede101d44b588263ea5dd9d9ea1d027c097a5c";
     den.url = "github:denful/den/5f78bef87047c5ecd632a5a23c9b3718f1de3301";
     deploy-rs = {
       url = "github:serokell/deploy-rs";
