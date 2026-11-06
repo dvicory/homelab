@@ -73,13 +73,13 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     hoopsnake = {
-      url = "github:boinkor-net/hoopsnake/106a95e01352db2143f355fba1a328c887e0c807";
+      url = "github:dvicory/hoopsnake/2ac8db429b5159387c47c2499ffb34fc9a7773bd";
       inputs = {
         flake-parts.follows = "flake-parts";
         nixpkgs.follows = "nixpkgs";
       };
     };
-    impermanence.url = "github:dvicory/impermanence/systemd-requires";
+    impermanence.url = "github:nix-community/impermanence/fa627f4c8b8e92f58f58a73d99ee4e1304e64eb2";
     import-tree.url = "github:vic/import-tree";
     lanzaboote = {
       url = "github:nix-community/lanzaboote/v1.1.0";
