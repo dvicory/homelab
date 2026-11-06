@@ -6,12 +6,29 @@
       let
         host = inputs.self.nixosConfigurations.hvn-hyp1.config;
         findingSummary = pkgs.writeText "stock-go-audit-findings.jq" ''
+          def validScanEnvelope:
+            if length == 0 or (all(.[]; type == "object") | not) then false
+            else
+              all(.[]; (keys | length) == 1 and
+                (to_entries[0].value | type) == "object" and
+                (keys[0] as $key | ["config", "progress", "osv", "finding", "SBOM"] | index($key) != null)) and
+              ([.[] | select(has("config"))] | length) == 1 and
+              (if (.[0].config | type) != "object" then false
+               else .[0].config |
+                 .protocol_version == "v1.0.0" and
+                 .scanner_name == "govulncheck" and
+                 .scan_mode == "binary" and .scan_level == "symbol"
+               end)
+            end;
+          validScanEnvelope as $validEnvelope |
+          [.[] | .finding? // empty] as $findings |
           {
             binary: $binary,
             extraction: {precision: $precision, symbolCount: $symbolCount},
-            unresolved: ($precision != "extracted-symbols" or any(.[]; has("finding"))),
+            scanEnvelopeValid: $validEnvelope,
+            unresolved: (($validEnvelope | not) or $precision != "extracted-symbols" or ($findings | length > 0)),
             findings: [
-              .[] | .finding? // empty |
+              $findings[] |
               . + {
                 audit_precision:
                   if $precision != "extracted-symbols" then $precision
@@ -118,7 +135,9 @@
         };
         checks.stock-go-audit-report =
           pkgs.runCommand "stock-go-audit-report" { nativeBuildInputs = [ pkgs.jq ]; } ''
+            config='{"config":{"protocol_version":"v1.0.0","scanner_name":"govulncheck","scanner_version":"1.9.0","scan_level":"symbol","scan_mode":"binary"}}'
             printf '%s\n' \
+              "$config" \
               '{"finding":{"osv":"GO-TEST","trace":[{"module":"example"}]}}' \
               '{"finding":{"osv":"GO-TEST","trace":[{"module":"example","package":"example/p"}]}}' \
               '{"finding":{"osv":"GO-TEST","trace":[{"module":"example","package":"example/p","function":"Vulnerable"}]}}' \
@@ -140,11 +159,32 @@
             ' symbols.json
             summarize unavailable 0 > unavailable.json
             jq -e '.unresolved and all(.findings[]; .audit_precision == "unavailable")' unavailable.json
-            printf '%s\n' '{"config":{"scan_level":"symbol"}}' > findings.json
+            printf '%s\n' "$config" > findings.json
             summarize extracted-symbols 1 > empty.json
-            jq -e '(.unresolved | not) and .findings == []' empty.json
+            jq -e '.scanEnvelopeValid and (.unresolved | not) and .findings == []' empty.json
             summarize module-fallback 0 > incomplete.json
             jq -e '.unresolved and .findings == []' incomplete.json
+            for invalid in "" '{}' '{"config":{}}' '{"foreign":true}' 'null'; do
+              printf '%s\n' "$invalid" > findings.json
+              summarize extracted-symbols 1 > invalid.json
+              jq -e '(.scanEnvelopeValid | not) and .unresolved' invalid.json
+            done
+            for invalid in '{"foreign":true}' '{"finding":null}'; do
+              printf '%s\n' "$config" "$invalid" > findings.json
+              summarize extracted-symbols 1 > foreign.json
+              jq -e '(.scanEnvelopeValid | not) and .unresolved' foreign.json
+            done
+            printf '%s\n' "$config" "$config" > findings.json
+            summarize extracted-symbols 1 > duplicate.json
+            jq -e '(.scanEnvelopeValid | not) and .unresolved' duplicate.json
+            for incompatible in \
+              '.config.protocol_version = "v9.0.0"' \
+              '.config.scan_mode = "source"' \
+              '.config.scan_level = "module"'; do
+              printf '%s\n' "$config" | jq "$incompatible" > findings.json
+              summarize extracted-symbols 1 > incompatible.json
+              jq -e '(.scanEnvelopeValid | not) and .unresolved' incompatible.json
+            done
             touch "$out"
           '';
       }
