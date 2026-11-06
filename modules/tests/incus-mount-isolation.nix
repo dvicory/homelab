@@ -23,7 +23,7 @@
     lib.optionalAttrs (system == "x86_64-linux") (
       let
         incus =
-          (import ../den/aspects/virtualization/incus.nix { inherit inputs lib; })
+          (import ../den/aspects/virtualization/incus.nix { inherit lib; })
           .den.aspects.virtualization.incus;
 
         # A unified Incus image: busybox and its store closure, with an init

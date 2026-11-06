@@ -16,8 +16,6 @@ let
   authKeyFile = inputs.self + "/.secrets/shared/tailscale-auth-key.age";
 in
 {
-  flake-file.inputs.nixpkgs-security.url = "github:NixOS/nixpkgs/nixos-unstable";
-
   den.aspects.core.network.tailscale = {
     firewall = { config, ... }: [
       {
@@ -30,13 +28,11 @@ in
     nixos =
       {
         config,
-        host,
         pkgs,
         ...
       }:
       let
         secretExists = builtins.pathExists authKeyFile;
-        securityPkgs = inputs.nixpkgs-security.legacyPackages.${pkgs.stdenv.hostPlatform.system};
       in
       {
         secretRequests.tailscale-auth-key = lib.mkIf secretExists {
@@ -48,8 +44,8 @@ in
 
         services.tailscale = {
           enable = true;
-          # Package-only security pin; retain the release recipe's Go 1.27 toolchain.
-          package = securityPkgs.tailscale.overrideAttrs (
+          # Retain the supported release until ordinary Nixpkgs catches up.
+          package = pkgs.tailscale.overrideAttrs (
             final: old:
             let
               version = "1.104.5";
@@ -58,14 +54,16 @@ in
               "Tailscale ${old.version} supersedes the ${version} release override; remove the release override and refresh its dependency patch.";
             {
               inherit version;
-              src = securityPkgs.fetchFromGitHub {
+              src = pkgs.fetchFromGitHub {
                 owner = "tailscale";
                 repo = "tailscale";
                 tag = "v${final.version}";
                 hash = "sha256-aq4pBe75wNRFDEa3kSDa/pBLsZws5mOUOjHDUycpmXM=";
               };
+              # GO-2026-6865 reaches huff0/fse through control-map zstd decoding.
+              # OpenPGP (GO-2026-5932) and x/net/html are not in this ELF's imports.
               patches = (old.patches or [ ]) ++ [ ./tailscale-go-security.patch ];
-              vendorHash = "sha256-wiugBc4W0/F0HpAPaJUVWyum8g15+0rmSXV1s4U0ppQ=";
+              vendorHash = "sha256-l4khfLtoDLrsGm3F8xcgshKe44MdDvlP2P/OzZfCivI=";
             }
           );
           # The service-owned firewall fragment admits only the transport port.

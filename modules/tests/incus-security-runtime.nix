@@ -4,6 +4,8 @@
     { pkgs, system, ... }:
     lib.optionalAttrs (system == "x86_64-linux") (
       let
+        # Production's exact package set, independent of the candidate root.
+        baseline = import ./_security-baseline.nix { inherit system; };
         selected = inputs.self.nixosConfigurations.hvn-hyp1.config.virtualisation.incus;
         busybox = pkgs.busybox;
         closure = pkgs.closureInfo { rootPaths = [ busybox ]; };
@@ -31,8 +33,9 @@
               restrictNetwork = true;
               incus = {
                 enable = true;
-                package = pkgs.incus;
+                package = baseline.incus;
                 ui.enable = true;
+                ui.package = baseline.incus-ui-canonical;
                 preseed = {
                   config."core.https_address" = "127.0.0.1:8443";
                   storage_pools = [
@@ -70,6 +73,7 @@
           };
           testScript = ''
             image = "${image}"
+            baseline_version = "${baseline.incus.version}"
             selected_package = "${selected.package}"
             ${builtins.readFile ./incus-security-runtime.py}
           '';

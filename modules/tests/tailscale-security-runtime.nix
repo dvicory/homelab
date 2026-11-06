@@ -4,7 +4,7 @@
     { pkgs, system, ... }:
     lib.optionalAttrs (system == "x86_64-linux") (
       let
-        old = pkgs.tailscale;
+        old = (import ./_security-baseline.nix { inherit system; }).tailscale;
         selected = inputs.self.nixosConfigurations.hvn-hyp1.config.services.tailscale.package;
         certificates =
           pkgs.runCommand "tailscale-runtime-certificates"
@@ -112,6 +112,7 @@
           };
           testScript = ''
             old_package = "${old}"
+            old_version = "${old.version}"
             selected_package = "${selected}"
             ${builtins.readFile ./tailscale-security-runtime.py}
           '';

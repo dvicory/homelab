@@ -1,4 +1,4 @@
-{ inputs, lib, ... }: {
+{ lib, ... }: {
   den.aspects.virtualization.incus = {
     persist = [
       {
@@ -19,7 +19,6 @@
     nixos =
       { config, pkgs, ... }:
       let
-        securityPkgs = inputs.nixpkgs-security.legacyPackages.${pkgs.stdenv.hostPlatform.system};
         stateDirectory = "/var/lib/incus";
         # Directories impermanence binds from persistent storage, if any.
         persisted = lib.concatMap (persistence: lib.catAttrs "dirPath" persistence.directories) (
@@ -36,27 +35,23 @@
       {
         virtualisation.incus = {
           enable = true;
-          # Incus 7.6 fixes client-certificate chain validation; also fix its
-          # remaining crypto advisory and preserve adjacent raw ID maps.
-          package = securityPkgs.incus.overrideAttrs (
+          # Incus 7.6 includes the client-certificate authentication fix.
+          # Preserve adjacent raw ID maps with the ordinary root package.
+          package = pkgs.incus.overrideAttrs (
             old:
             let
-              vendorHash = "sha256-wwoVC/l67NasfeEVXZD9oIttTEfcxbusiSSyIAWRMs0=";
               patchedSrc = pkgs.applyPatches {
                 inherit (old) src;
                 patches = [
                   ./incus-adjacent-idmap.patch
-                  ./incus-go-security.patch
                 ];
               };
             in
             {
               src = patchedSrc;
-              inherit vendorHash;
               passthru = old.passthru // {
                 client = old.passthru.client.overrideAttrs (client: {
                   src = patchedSrc;
-                  inherit vendorHash;
                   # Concurrent completion generators still race to create
                   # config.yml; --force-local skips that first-run write.
                   postInstall =
@@ -69,7 +64,6 @@
             }
           );
           ui.enable = true;
-          ui.package = securityPkgs.incus-ui-canonical;
           # Only the explicitly opened Tailscale port admits remote management.
           # Keep this port closed on LAN and compute-guest interfaces.
           preseed.config."core.https_address" = ":8443";
