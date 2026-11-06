@@ -941,8 +941,22 @@ def run_scenario(args) -> None:
         enforce(lib, guest, "migrated", guest.now() - 5, expect_nftables=False)
     with lib.phase("the enforcer has no device access"):
         no_device_access(lib, guest)
-    with lib.phase("enforcer crash"):
-        crash(lib, guest)
+    # Temporary exposure diagnostic; retain the existing two-kill oracle and waits.
+    for cycle in range(1, 21):
+        if cycle > 1:
+            with lib.phase(f"diagnostic fresh enforcer {cycle}"):
+                previous = guest.enforcer()["pod"]
+                lib.check(bool(previous), "the owned enforcer Pod exists before replacement")
+                guest.kubectl("delete", "pod", previous, "--wait=true", "--timeout=120s",
+                              namespace=ENFORCER[0], timeout=150)
+                guest.wait_ready(
+                    f"diagnostic fresh enforcer {cycle}",
+                    lambda: (state := guest.enforcer())["pod"] not in ("", previous) and state["ready"],
+                    timeout=600)
+        with lib.phase(f"diagnostic enforcer crash {cycle}/20"):
+            observe("diagnostic.restart_cycle", cycle)
+            crash(lib, guest)
+            RESULTS["observations"][f"diagnostic.restart.{cycle}"] = RESULTS["observations"].pop("crash")
     with lib.phase("enforcement after a guest restart"):
         before = guest.pod_ips()
         restarted = guest.now()
