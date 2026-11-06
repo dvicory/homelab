@@ -61,8 +61,10 @@ in
                 tag = "v${final.version}";
                 hash = "sha256-aq4pBe75wNRFDEa3kSDa/pBLsZws5mOUOjHDUycpmXM=";
               };
+              # Keep actual Go symbols available to the binary auditor.
+              ldflags = lib.remove "-s" old.ldflags;
+              dontStrip = true;
               # GO-2026-6865 reaches huff0/fse through control-map zstd decoding.
-              # OpenPGP and x/net/html are absent from the selected command graph.
               patches = (old.patches or [ ]) ++ [ ./tailscale-go-security.patch ];
               vendorHash = "sha256-l4khfLtoDLrsGm3F8xcgshKe44MdDvlP2P/OzZfCivI=";
             }
