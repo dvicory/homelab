@@ -13,22 +13,11 @@ let
     knownHostsPath =
       if cfg.knownHostsPath != null then cfg.knownHostsPath else "/etc/ssh/ssh_known_hosts";
 
-    deployPkgs =
-      let
-        pkgs' = import inputs.nixpkgs { inherit system; };
-      in
-      import inputs.nixpkgs {
-        inherit system;
-        overlays = [
-          inputs.deploy-rs.overlays.default
-          (self: super: {
-            deploy-rs = {
-              inherit (pkgs') deploy-rs;
-              lib = super.deploy-rs.lib;
-            };
-          })
-        ];
-      };
+    # Use the pinned input on both sides of the activation protocol.
+    deployPkgs = import inputs.nixpkgs {
+      inherit system;
+      overlays = [ inputs.deploy-rs.overlays.default ];
+    };
   in {
     hostname = if cfg.target != null then cfg.target else name;
 

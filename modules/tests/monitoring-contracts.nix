@@ -41,6 +41,7 @@ in
     let
       rendered = ../../generated/manifests/prod-home;
       python = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
+      collector = pkgs.victoriametrics;
       contractInputs = pkgs.writeText "monitoring-contract-inputs.json" (
         builtins.toJSON {
           inherit hostChecks;
@@ -58,10 +59,17 @@ in
       checks.monitoring-contracts =
         pkgs.runCommand "monitoring-contracts"
           {
-            nativeBuildInputs = [ python ];
+            nativeBuildInputs = [
+              python
+              pkgs.openssl
+              collector
+            ];
+            # The real collector talks only to loopback TLS fixtures.
+            __darwinAllowLocalNetworking = true;
           }
           ''
             python ${./_monitoring-contracts.py} ${rendered} ${contractInputs}
+            python ${./_monitoring-kubelet-tls.py} ${rendered}/monitoring
             touch $out
           '';
     };

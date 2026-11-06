@@ -11,36 +11,45 @@
 #      # paste the key (tskey-auth-...)
 #   3. agenix rekey && git add .secrets && git commit
 #   4. Redeploy — the aspect picks up the secret automatically.
-{ inputs, lib, ... }: let
+{ inputs, lib, ... }:
+let
   authKeyFile = inputs.self + "/.secrets/shared/tailscale-auth-key.age";
-in {
+in
+{
   den.aspects.core.network.tailscale = {
-    nixos = { config, host, ... }: let
-      secretExists = builtins.pathExists authKeyFile;
-    in {
-      secretRequests.tailscale-auth-key = lib.mkIf secretExists {
-        provider = "agenix";
-        ageFile = authKeyFile;
-        mode = "0400";
-        restartUnits = [ "tailscaled.service" ];
-      };
+    firewall = { config, ... }: [
+      {
+        networking.firewall = {
+          checkReversePath = "loose";
+          allowedUDPPorts = [ config.services.tailscale.port ];
+        };
+      }
+    ];
 
-      services.tailscale = {
-        enable = true;
-        openFirewall = true;
-        authKeyFile = lib.mkIf secretExists config.age.secrets.tailscale-auth-key.path;
-      };
+    nixos =
+      { config, host, ... }:
+      let
+        secretExists = builtins.pathExists authKeyFile;
+      in
+      {
+        secretRequests.tailscale-auth-key = lib.mkIf secretExists {
+          provider = "agenix";
+          ageFile = authKeyFile;
+          mode = "0400";
+          restartUnits = [ "tailscaled.service" ];
+        };
 
-      networking.firewall = {
-        checkReversePath = "loose";
-        trustedInterfaces = [ config.services.tailscale.interfaceName ];
-        allowedUDPPorts = [ config.services.tailscale.port ];
-      };
+        services.tailscale = {
+          enable = true;
+          # The service-owned firewall fragment admits only the transport port.
+          openFirewall = false;
+          authKeyFile = lib.mkIf secretExists config.age.secrets.tailscale-auth-key.path;
+        };
 
-      systemd.services.tailscaled.serviceConfig.Environment = [
-        "TS_DEBUG_FIREWALL_MODE=nftables"
-      ];
-    };
+        systemd.services.tailscaled.serviceConfig.Environment = [
+          "TS_DEBUG_FIREWALL_MODE=nftables"
+        ];
+      };
 
     persist = [ "/var/lib/tailscale" ];
   };

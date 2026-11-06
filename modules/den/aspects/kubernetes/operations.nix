@@ -101,6 +101,11 @@ in
         later-wave applications. It does not stop running workloads or pause
         independently syncing child Applications.
 
+        Host deployment with deploy-rs `--test` changes the system profile and
+        running configuration, but not the boot-loader selection. Automatic
+        rollback requires the previous generation's `deploy-rs-activate` hook;
+        a plain NixOS profile needs a wrapper around its exact existing system first.
+
         ## Declared routes
 
         | Service | Exposure | Canonical URL | Secondary URL | Backend | Auth |
@@ -122,6 +127,41 @@ in
         For `direct` ingress, point each hostname at the host's LAN or Tailscale
         address. TCP 443 forwards to the guest's NodePort. For `trustedEdges`,
         point DNS at the edge.
+
+        The shared direct listener also serves `private` routes. Do not forward
+        it to the Internet expecting the exposure label or missing DNS records
+        to protect those routes. Plan public ingress with an explicit private
+        access path: trusted-edge mode admits only declared edge peers at the
+        origin, while public edges omit private routes.
+
+        Incus UI/API TCP 8443 is open only on the declared Tailscale interface,
+        subject to tailnet access policy. It is closed on LAN and compute-guest
+        interfaces. Management-LAN SSH TCP 22 remains independent: SSH to the
+        host and use its local Incus socket without the UI or identity service.
+
+        Service aspects publish full NixOS configuration fragments through
+        `den.quirks.firewall`; the globally included collector merges them.
+        Payloads include `networking.firewall`, not bare port sets. Compute
+        bridge DNS/DHCP and source-scoped metrics stay service-owned. Tailscale
+        transport UDP 41641 stays open, but its interface is not blanket-trusted.
+        Linux PeerAPI is intercepted in userspace before host INPUT; no ephemeral
+        PeerAPI ports are opened. Ad hoc Tailnet bridge DNS, metrics or discovery
+        consumers have not been established and must not be assumed to work.
+
+        On an isolated x86_64 Linux/KVM builder, qualify the host policy and the
+        unchanged Gateway forwarding path without production credentials:
+
+        ```sh
+        nix build path:.#checks.x86_64-linux.compute-contracts path:.#checks.x86_64-linux.compute-ingress-runtime -L
+        ```
+
+        This fixture exercises real nftables, trusted TLS UI/API requests and
+        management-LAN SSH recovery, not a real Tailscale control-plane login.
+
+        Public edges retain queryless access records with upstream status and
+        request ID. journald drops whole nginx request-context error records,
+        so their detailed failure causes are lost. Lifecycle diagnostics remain
+        available; older retained logs are unchanged.
 
         ## Retained state
 
@@ -274,13 +314,15 @@ in
         its nftables mode) or another component failed to update the guest's
         firewall.
 
-        The enforcer fails closed: while it is down with its rules in place,
+        The enforcer fails closed while it is down with its rules in place:
         every new Pod connection is refused, including allowed ones, until the
         kubelet restarts it. A deliberate stop (deleting or updating the
         DaemonSet) removes its rules first, leaving a gap until rules are
-        installed again. Its readiness probe checks metrics, not packet
-        enforcement. Connection verdict logging is off normally. To investigate
-        a refusal, set its `--log-verdicts` argument to `all` in
+        installed again. Initial startup also has no enforcement guarantee.
+        Its readiness probe checks metrics, not packet enforcement.
+        Close or qualify these lifecycle gaps before broader public exposure.
+        Connection verdict logging is off normally. To investigate a refusal,
+        set its `--log-verdicts` argument to `all` in
         `kubernetes.services.network-policy`; Argo reverts edits made only in
         the cluster.
 
