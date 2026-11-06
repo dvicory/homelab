@@ -20,10 +20,37 @@
           ;
         selected = hostConfig.virtualisation.incus.package;
         coreutils = "${pkgs.coreutils}/bin";
-        # This runs while GDB has the inferior stopped. Only sandbox paths and
-        # kernel memory counters are read, never files from the test database.
+        # This runs while the inferior is stopped. Read mapped-file metadata
+        # and kernel counters, never database contents or process memory.
         context = pkgs.writeShellScript "incus-sigbus-context" ''
           set -u
+          label= inferior_pid= rest=
+          read -r label inferior_pid rest || true
+          ${coreutils}/cat > /dev/null
+          (
+            printf '\n=== mapped-file identities and sizes; compare mapped and current inode ===\n'
+            if [ "$label" != process ] || [[ ! "$inferior_pid" =~ ^[0-9]+$ ]]; then
+              printf 'Native inferior PID unavailable; mapped-file metadata not captured\n'
+            else
+              declare -A seen=()
+              count=0
+              # ponytail: first 64 mapped inodes; raise cap if the fault falls outside them.
+              while read -r range permissions offset device inode path; do
+                [ "$inode" != 0 ] && [ -n "$path" ] || continue
+                key="$device:$inode"
+                [ "''${seen[$key]+yes}" != yes ] || continue
+                seen[$key]=yes
+                count=$((count + 1))
+                if [ "$count" -gt 64 ]; then
+                  printf 'Mapped-file metadata truncated after 64 distinct inodes\n'
+                  break
+                fi
+                printf 'mapped_device=%s mapped_inode=%s path=%s\n' "$device" "$inode" "$path"
+                ${coreutils}/stat -L --format='current_device=%D current_inode=%i size=%s path=%N' -- "$path" ||
+                  ${coreutils}/stat -L --format='mapped_device=%D mapped_inode=%i size=%s path=%N' -- "/proc/$inferior_pid/map_files/$range"
+              done < "/proc/$inferior_pid/maps"
+            fi
+          ) 2>&1 | ${bounded 16384}
           (
             paths=(. "$TMPDIR")
             if [ -d /dev/shm ]; then paths+=(/dev/shm); fi
@@ -37,7 +64,9 @@
         '';
         # Drain after the byte cap so a closed pipe cannot interrupt GDB's
         # command list before it passes SIGBUS back to the native inferior.
-        bounded = bytes: "${pkgs.bash}/bin/bash -c '${coreutils}/head -c ${toString bytes}; ${coreutils}/cat > /dev/null'";
+        bounded =
+          bytes:
+          "${pkgs.bash}/bin/bash -c '${coreutils}/head -c ${toString bytes}; ${coreutils}/cat > /dev/null'";
         commands = pkgs.writeText "incus-sigbus.gdb" ''
           set pagination off
           set confirm off
@@ -67,8 +96,8 @@
             pipe info proc status | ${bounded 4096}
             printf "\n=== faulting instructions: at most 8 instructions / 4 KiB ===\n"
             pipe x/8i $pc | ${bounded 4096}
-            printf "\n=== filesystem and memory context: at most 12 KiB ===\n"
-            shell ${context}
+            printf "\n=== mapped-file, filesystem and memory context: at most 28 KiB ===\n"
+            pipe info proc | ${context}
             printf "\n=== end bounded capture; delivering original SIGBUS ===\n"
             continue
           end
@@ -100,9 +129,9 @@
       in
       {
         checks.incus-sigbus-capture =
-          assert lib.assertMsg
-            (selected.drvPath == "/nix/store/aq3212g95732idfwgkjvayjgr2r8ifzp-incus-7.4.0.drv")
-            "Incus SIGBUS capture must use the exact recurrent package";
+          assert lib.assertMsg (
+            selected.drvPath == "/nix/store/aq3212g95732idfwgkjvayjgr2r8ifzp-incus-7.4.0.drv"
+          ) "Incus SIGBUS capture must use the exact recurrent package";
           selected.overrideAttrs (old: {
             pname = "${old.pname}-sigbus-capture";
             # Keep the builder's entire checkPhase, hooks, exclusions, flags,
