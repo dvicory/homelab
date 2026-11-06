@@ -31,15 +31,6 @@ own artifact leaf. Each leaf declares exact derivation/output paths; native
 leaves also declare the executable. Foreign and unsupported derivations stay
 unforced.
 
-Generic Linux build jobs use the Nix installer's native `/nix` layout and
-default build directory. They do not preallocate a fixed-size `/mnt` loop
-image: `/mnt` can be either a smaller separate filesystem or part of the
-runner root, where preallocation would strand free space inside `/nix` at
-the expense of runner scratch. Nix and runner files instead consume the
-existing root filesystem on demand, without an artificial store capacity.
-The Darwin Linux-builder bootstrap and explicitly owned native-application
-storage retain their separate setup and lifecycle.
-
 On a builder for the selected system:
 
 ```sh
@@ -276,9 +267,7 @@ nix build .#checks.x86_64-linux.runtime-secret-k3s.driver
 Manual drivers prefer `XDG_RUNTIME_DIR` over `TMPDIR` and retain VM disks after
 shutdown. Use owned, mode-0700 disk-backed scratch as above: accumulated VM
 images can exhaust `/run/user/$UID` tmpfs and cause guest block-device I/O
-failures. Generic hosted builds use Nix's daemon-native
-`/nix/var/nix/builds` directory; the separate bootstrap and explicitly owned
-native-application layouts retain their configured `/nix/build` scratch.
+failures. Hosted builds already use the disk-backed `/nix/build` directory.
 
 Native descriptors build both runners; their full execution is separately
 required. The API descriptor supplies `--docker-context default`, its owned
@@ -577,12 +566,9 @@ The generic native executor dispatches `requirements.root`,
 Owned storage is restricted to an exclusive disposable Linux Docker runner:
 it places `/nix`, Docker and containerd data on its owned Btrfs loop image.
 Setup refuses an existing image (including dangling symlinks), `/nix`, daemon
-storage symlinks and existing target mounts. Cleanup directly probes the recorded
-image UUID as root, then validates the exact kernel-reported loop source and
-FSROOT of every mount before stopping Docker/containerd, unmounting their bind
-mounts or deleting owned scratch. UUID diagnostics also run as root: unprivileged
-`findmnt` tag lookup can be blank when udev has no tag and the device is unreadable.
-The Nix store remains
+storage symlinks and existing target mounts. Cleanup validates the recorded
+image UUID and exact FSROOT of every mount before stopping Docker/containerd,
+unmounting their bind mounts or deleting owned scratch. The Nix store remains
 mounted through post-actions; final mount/loop/image teardown belongs to the
 exclusive disposable runner's lifetime. Independent acceptance cleanup checks
 the whole daemon and owned scratch, not just a name prefix. The executor adds
