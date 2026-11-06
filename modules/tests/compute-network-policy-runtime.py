@@ -166,23 +166,25 @@ def self_check() -> None:
 
     frozen = {"status": {"id": "a" * 64, "state": "CONTAINER_RUNNING", "startedAt": 10}, "info": {"pid": 42}}
     calls = []
-    stack_guest = SimpleNamespace(runtime=SimpleNamespace(guest=lambda *args, **kwargs: json.dumps(frozen)))
     def capture_stack_command(name, *command, **kwargs):
-        calls.append((name, command, kwargs))
+        calls.append(name)
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-    with redirect_stdout(StringIO()):
-        capture_crash_stack(stack_guest, frozen, capture_stack_command)
-    check(len(calls) == 3 and calls[0][1][-3:] == ("--signal", "SIGQUIT", frozen["status"]["id"])
-          and calls[-1][1][-1] == frozen["status"]["id"] and "--follow" not in calls[-1][1]
-          and calls[-1][2] == {"limit": 65536, "stderr_limit": 65536},
-          "the destructive stack capture must target and bound the exact failed container")
-    calls.clear()
-    stack_guest.runtime.guest = lambda *args, **kwargs: json.dumps({**frozen, "info": {"pid": 43}})
-    try:
-        capture_crash_stack(stack_guest, frozen, capture_stack_command)
-    except ValueError:
-        pass
-    check(not calls, "a changed failed task must never receive the diagnostic signal")
+    changed_pid = {**frozen, "info": {"pid": 43}}
+    changed_start = {**frozen, "status": {**frozen["status"], "startedAt": 11}}
+    for observations in ((changed_pid,), (frozen, changed_start)):
+        calls.clear()
+        identities = iter(observations)
+        stack_guest = SimpleNamespace(runtime=SimpleNamespace(
+            guest=lambda *args, **kwargs: json.dumps(next(identities))))
+        with redirect_stdout(StringIO()):
+            try:
+                capture_crash_stack(stack_guest, frozen, capture_stack_command)
+            except ValueError:
+                pass
+            else:
+                check(False, "a changed failed task was accepted for destructive capture")
+        check("stack.signal" not in calls,
+              "a task changed before or during passive capture must never receive SIGQUIT")
 
     # Exercise the real reaches method: exec failures are not traffic refusals.
     probe = SimpleNamespace(project="fixture", instance="compute", plan={"names": {"client": "media"}},
@@ -598,13 +600,29 @@ def capture_enforcer_failure(guest: Guest, label: str) -> dict | None:
 
 
 def capture_crash_stack(guest: Guest, frozen: dict, capture) -> None:
-    """TEMPORARY: destructively dump only the frozen, already-failed fixture task."""
+    """TEMPORARY: correlate then destructively dump only the already-failed task."""
     container_id, pid = frozen["status"]["id"], int(frozen["info"]["pid"])
-    current = json.loads(guest.runtime.guest("k3s", "crictl", "inspect", container_id, timeout=15))
-    if (pid <= 1 or current["status"]["id"] != container_id or int(current["info"]["pid"]) != pid
-            or current["status"]["state"] != "CONTAINER_RUNNING"
-            or current["status"]["startedAt"] != frozen["status"]["startedAt"]):
-        raise ValueError("the failed enforcer task changed before its destructive stack capture")
+
+    def require_frozen_task():
+        current = json.loads(guest.runtime.guest("k3s", "crictl", "inspect", container_id, timeout=15))
+        if (pid <= 1 or current["status"]["id"] != container_id or int(current["info"]["pid"]) != pid
+                or current["status"]["state"] != "CONTAINER_RUNNING"
+                or current["status"]["startedAt"] != frozen["status"]["startedAt"]):
+            raise ValueError("the failed enforcer task changed before its destructive stack capture")
+
+    require_frozen_task()
+    capture("stack.pre_signal", "sh", "-c",
+            'date -u +%Y-%m-%dT%H:%M:%SZ; cat "/proc/$1/stat"; '
+            'for ns in net pid; do readlink "/proc/$1/ns/$ns"; done; '
+            'cat "/proc/$1/net/netfilter/nfnetlink_queue"; '
+            'while read -r socket protocol rest; do case "$protocol" in Eth|12) '
+            'printf "%s %s %s\\n" "$socket" "$protocol" "$rest";; esac; '
+            'done < "/proc/$1/net/netlink"; '
+            'for fd in /proc/"$1"/fd/*; do target=$(readlink "$fd"); '
+            'case "$target" in socket:*) printf "%s %s\\n" "$fd" "$target";; esac; done; '
+            'cat "/proc/$1/stat"; date -u +%Y-%m-%dT%H:%M:%SZ',
+            "enforcer-pre-signal", str(pid), limit=32768)
+    require_frozen_task()
     observe("crash.failure.stack_signal", {
         "container_id": container_id, "pid": pid, "signal": "SIGQUIT", "destructive": True,
     })
