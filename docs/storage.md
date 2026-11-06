@@ -54,11 +54,18 @@ public Tailscale OAuth or production tailnet policy.
 
 `core.remote-unlock` includes the Den `core.hoopsnake` aspect. That
 aspect patches only the pinned upstream NixOS module for systemd-only
-initrd; the Hoopsnake executable is unchanged. The Impermanence aspect
-separately removes its fork's scripted fallback while retaining mount
-requirements. Regenerate either patch from its exact source and rebuild
-its recursive source hash when changing a pin or patch. Do not restore
-the removed `boot.initrd.systemd.enable` option.
+initrd; the Hoopsnake executable is unchanged. Configuration evaluation
+imports the committed generated module, without building patched source.
+The native `write-files` generator applies the patch and retains the
+upstream license. After changing the pin or patch, run
+`nix run path:.#write-files` and `nix run path:.#diff-files`.
+Do not restore the removed `boot.initrd.systemd.enable` option.
+
+The Impermanence aspect imports pinned official upstream without a
+local source patch. The VM scenario checks systemd's resolved
+`Requires` and `After` dependencies on the persistence mount in both
+initrd and stage 2. Active bind mounts must refer to the same backing
+directories, verified by their device and inode identities.
 
 Configuration evaluation is not boot proof. Retain executed VM results
 and separately verify physical firmware can select either ESP before
