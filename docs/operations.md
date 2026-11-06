@@ -46,9 +46,10 @@ Without a directory argument it retains a temporary report directory
 and prints its path. Reports must be written outside a checkout used
 as the immutable flake source.
 
-The daemon builds retain Go symbol tables. The auditor fails if symbol
-extraction is unavailable or any advisory remains, including a
-module-only match. govulncheck 1.9 can manufacture symbol-shaped
+The daemon builds retain Go symbol tables. The auditor fails if the
+scan envelope is absent, duplicated or incompatible, symbol extraction
+is unavailable, or any advisory remains, including a module-only match.
+govulncheck 1.9 can manufacture symbol-shaped
 findings from advisory data when extraction fails; its “Symbol Results”
 heading alone is not proof of extracted symbols. Inspect `extract.json`
 and the precision annotations in `govulncheck-summary.json`; raw findings
