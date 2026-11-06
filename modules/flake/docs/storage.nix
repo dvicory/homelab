@@ -152,52 +152,30 @@ in
         configuration. It is not a source of authority. The current storage
         contract is
         [`storage-foundations`](../openspec/specs/storage-foundations/spec.md).
-        The placement rules are still a proposed change,
-        [`storage-placement-contract`](../openspec/changes/storage-placement-contract/),
-        and become current only when that change is archived. The reasoning
-        behind the namespace and the device encryption lives in [ADR-0006](architecture/decisions/0006-stable-semantic-storage-namespace.md)
+        Proposed placement rules are in
+        [`storage-placement-contract`](../openspec/changes/storage-placement-contract/).
+        Follow the current specs rather than treating an active proposal as adopted.
+        The reasoning behind the namespace and the device encryption lives in [ADR-0006](architecture/decisions/0006-stable-semantic-storage-namespace.md)
         and [ADR-0007](architecture/decisions/0007-block-level-encryption-for-data-disks.md);
         the disk conversion procedure is in
         [`docs/operations/luks-storage-migration.md`](operations/luks-storage-migration.md).
 
-        ## Root ESP mirror updates and disposable proof
+        ## Update mirrored root boot files
 
-        A configured ZFS root mirror uses native udev link priorities to mount
-        an available configured ESP at `/boot`, including in the initrd.
-        `/boot` remains required for boot; a single-disk host keeps its existing
-        device. The bootloader installer explicitly mounts the other available
-        ESP in a private temporary mount, copies boot entries and pre-unlock
-        credentials, and generates that ESP's own random seed. An absent member
-        is skipped; failure to mount an available member fails the update.
-        No routine activation formats either member.
+        Keep `/boot` mounted for bootloader updates. The installer copies boot
+        entries and pre-unlock credentials to each other available configured
+        ESP in a private mount. An absent member is skipped; failure to mount
+        an available member fails the update. Routine activation does not format
+        either member. Investigate an update failure rather than formatting an
+        ESP or bypassing its mount checks.
 
-        Switching a running host to the mirror changes the `/boot` device, so
-        activation remounts `/boot`. Before that remount,
-        `root-esp-link.service` reloads udev rules and re-runs them on the
-        present ESPs so that `/dev/disk/root-esp` exists.
-
-        These are current implementation details, not an additional fleet-wide
-        surviving-member guarantee in `storage-foundations`.
-
-        On a disposable `x86_64-linux` KVM builder, run:
-
-        ```sh
-        nix build .#checks.x86_64-linux.root-esp-mirror -L --no-link
-        ```
-
-        The native disko/UEFI scenario installs with the mirror unmounted,
-        checks both ESPs have nonempty, different random seeds, tests an update,
-        a live switch from a pre-mirror configuration that keeps `/boot`
-        mounted, and refusal of an unrelated source mount, then boots
-        and unlocks encrypted ZFS with each disk independently absent. It also
-        consumes disposable credentials through the same initrd secret paths
-        and systemd `LoadCredential` boundary as the pinned Hoopsnake module.
-        The credential consumer starts after `initrd-nixos-copy-secrets.service`
-        has populated those paths, matching Hoopsnake's service ordering.
-        It does not prove external Tailscale OAuth or live Hoopsnake access.
-        Neither this declaration nor configuration evaluation proves degraded
-        boot: retain the executed VM proof and separately verify firmware can
-        select either physical ESP before relying on redundancy.
+        Switching a running host to the mirrored layout remounts `/boot`.
+        Before relying on redundancy, obtain authorization for a maintenance
+        window and verify that firmware can select either physical ESP and that
+        boot and unlock work with each disk independently absent. Configuration
+        evaluation and disposable verification are not proof of the physical
+        host's boot path. The current guarantees remain those in
+        [`storage-foundations`](../openspec/specs/storage-foundations/spec.md).
 
         ${hostSections}
       '';
