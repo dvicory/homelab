@@ -69,6 +69,23 @@ nix build --no-link path:.#checks.x86_64-linux.monitoring-k3s-runtime
 
 Neither check deploys or queries the production cluster.
 
+The declared VictoriaMetrics and vmalert image releases must match the
+root Nixpkgs package used by collector, rule and heartbeat checks.
+`monitoring-contracts` checks both image tags against that package;
+the TLS drill also checks the actual collector binary's version.
+Update both digest-pinned images deliberately when updating the root,
+rather than changing the tested subject or selecting an older compiler.
+
+The 1.151.0 → 1.155.0 candidate follows the upstream
+[upgrade guidance](https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#how-to-upgrade-victoriametrics)
+and [release notes](https://github.com/VictoriaMetrics/VictoriaMetrics/releases/tag/v1.155.0).
+The intervening notes require no single-node storage-format migration;
+1.155.0's `/admin/tenants` change concerns cluster `vmselect`, not this
+single-node store. Preserve the existing retained path, sole Recreate
+writer, 90-day retention and 50 GiB free-space floor. A candidate does
+not authorize activation, deleting history or inventing empty recovery
+storage; retained history still is not a backup.
+
 ## Notifications and silences
 
 Critical alerts go to Pushover and Telegram; Pushover critical delivery

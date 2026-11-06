@@ -91,6 +91,32 @@ Incus has a 330-second graceful shutdown budget. Before restarting it,
 retain a stopped full-state backup and each
 external storage pool; a profile rollback cannot undo database changes.
 
+CrowdSec uses the native directory module and 1.8.1 package from the
+pinned CrowdSec component source, not the historical flat fork module.
+The native module owns the manual's reset section; deleting its data
+directories is destructive recovery, not a migration step.
+Keep `/persist/crowdsec/data` intact: it holds SQLite decisions, local
+API credentials, online API credentials and console sharing state.
+Generated console defaults initialize missing state without replacing
+operator sharing choices; other configuration remains declarative.
+The enrollment key remains an agenix runtime secret, and registration
+keeps its existing setup ownership and sandbox. The bouncer key under
+`/var/lib/crowdsec-firewall-bouncer-register` is not newly persisted;
+native registration must reconcile its loss after an ephemeral-root boot.
+
+Before an upgrade, stop the engine, setup, bouncer and registration
+units and retain a consistent copy of the whole persistent CrowdSec
+directory and current bouncer registration directory. Run
+`nix build .#checks.x86_64-linux.crowdsec-upgrade` on an authorized KVM
+test host: it activates the actual old 1.8.0 and new 1.8.1 aspects,
+cold-boots both with retained state, verifies credentials, decisions
+and packet enforcement, and attempts old-binary rollback against
+new-touched state. This fixture uses the candidate root package set
+for both generations; it is not a complete historical host upgrade.
+It does not enroll production console/CAPI identities or prove
+compatibility with every live database. Retain the stopped-state
+backup even if this bounded rollback fixture passes.
+
 ## Declared routes
 
 | Service | Exposure | Canonical URL | Secondary URL | Backend | Auth |

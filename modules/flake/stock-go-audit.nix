@@ -134,59 +134,60 @@
           '';
         };
         checks.stock-go-audit-report =
-          pkgs.runCommand "stock-go-audit-report" { nativeBuildInputs = [ pkgs.jq ]; } ''
-            config='{"config":{"protocol_version":"v1.0.0","scanner_name":"govulncheck","scanner_version":"1.9.0","scan_level":"symbol","scan_mode":"binary"}}'
-            printf '%s\n' \
-              "$config" \
-              '{"finding":{"osv":"GO-TEST","trace":[{"module":"example"}]}}' \
-              '{"finding":{"osv":"GO-TEST","trace":[{"module":"example","package":"example/p"}]}}' \
-              '{"finding":{"osv":"GO-TEST","trace":[{"module":"example","package":"example/p","function":"Vulnerable"}]}}' \
-              > findings.json
-            summarize() {
-              jq -s --arg binary fixture --arg precision "$1" --argjson symbolCount "$2" \
-                -f ${findingSummary} findings.json
-            }
-            summarize module-fallback 0 > fallback.json
-            jq -e '
-              .unresolved and (.findings | length == 3) and
-              all(.findings[]; .audit_precision == "module-fallback") and
-              .findings[2].trace[0].function == "Vulnerable"
-            ' fallback.json
-            summarize extracted-symbols 1 > symbols.json
-            jq -e '
-              .unresolved and
-              [.findings[].audit_precision] == ["module", "package", "extracted-symbol"]
-            ' symbols.json
-            summarize unavailable 0 > unavailable.json
-            jq -e '.unresolved and all(.findings[]; .audit_precision == "unavailable")' unavailable.json
-            printf '%s\n' "$config" > findings.json
-            summarize extracted-symbols 1 > empty.json
-            jq -e '.scanEnvelopeValid and (.unresolved | not) and .findings == []' empty.json
-            summarize module-fallback 0 > incomplete.json
-            jq -e '.unresolved and .findings == []' incomplete.json
-            for invalid in "" '{}' '{"config":{}}' '{"foreign":true}' 'null'; do
-              printf '%s\n' "$invalid" > findings.json
-              summarize extracted-symbols 1 > invalid.json
-              jq -e '(.scanEnvelopeValid | not) and .unresolved' invalid.json
-            done
-            for invalid in '{"foreign":true}' '{"finding":null}'; do
-              printf '%s\n' "$config" "$invalid" > findings.json
-              summarize extracted-symbols 1 > foreign.json
-              jq -e '(.scanEnvelopeValid | not) and .unresolved' foreign.json
-            done
-            printf '%s\n' "$config" "$config" > findings.json
-            summarize extracted-symbols 1 > duplicate.json
-            jq -e '(.scanEnvelopeValid | not) and .unresolved' duplicate.json
-            for incompatible in \
-              '.config.protocol_version = "v9.0.0"' \
-              '.config.scan_mode = "source"' \
-              '.config.scan_level = "module"'; do
-              printf '%s\n' "$config" | jq "$incompatible" > findings.json
-              summarize extracted-symbols 1 > incompatible.json
-              jq -e '(.scanEnvelopeValid | not) and .unresolved' incompatible.json
-            done
-            touch "$out"
-          '';
+          pkgs.runCommand "stock-go-audit-report" { nativeBuildInputs = [ pkgs.jq ]; }
+            ''
+              config='{"config":{"protocol_version":"v1.0.0","scanner_name":"govulncheck","scanner_version":"1.9.0","scan_level":"symbol","scan_mode":"binary"}}'
+              printf '%s\n' \
+                "$config" \
+                '{"finding":{"osv":"GO-TEST","trace":[{"module":"example"}]}}' \
+                '{"finding":{"osv":"GO-TEST","trace":[{"module":"example","package":"example/p"}]}}' \
+                '{"finding":{"osv":"GO-TEST","trace":[{"module":"example","package":"example/p","function":"Vulnerable"}]}}' \
+                > findings.json
+              summarize() {
+                jq -s --arg binary fixture --arg precision "$1" --argjson symbolCount "$2" \
+                  -f ${findingSummary} findings.json
+              }
+              summarize module-fallback 0 > fallback.json
+              jq -e '
+                .unresolved and (.findings | length == 3) and
+                all(.findings[]; .audit_precision == "module-fallback") and
+                .findings[2].trace[0].function == "Vulnerable"
+              ' fallback.json
+              summarize extracted-symbols 1 > symbols.json
+              jq -e '
+                .unresolved and
+                [.findings[].audit_precision] == ["module", "package", "extracted-symbol"]
+              ' symbols.json
+              summarize unavailable 0 > unavailable.json
+              jq -e '.unresolved and all(.findings[]; .audit_precision == "unavailable")' unavailable.json
+              printf '%s\n' "$config" > findings.json
+              summarize extracted-symbols 1 > empty.json
+              jq -e '.scanEnvelopeValid and (.unresolved | not) and .findings == []' empty.json
+              summarize module-fallback 0 > incomplete.json
+              jq -e '.unresolved and .findings == []' incomplete.json
+              for invalid in "" '{}' '{"config":{}}' '{"foreign":true}' 'null'; do
+                printf '%s\n' "$invalid" > findings.json
+                summarize extracted-symbols 1 > invalid.json
+                jq -e '(.scanEnvelopeValid | not) and .unresolved' invalid.json
+              done
+              for invalid in '{"foreign":true}' '{"finding":null}'; do
+                printf '%s\n' "$config" "$invalid" > findings.json
+                summarize extracted-symbols 1 > foreign.json
+                jq -e '(.scanEnvelopeValid | not) and .unresolved' foreign.json
+              done
+              printf '%s\n' "$config" "$config" > findings.json
+              summarize extracted-symbols 1 > duplicate.json
+              jq -e '(.scanEnvelopeValid | not) and .unresolved' duplicate.json
+              for incompatible in \
+                '.config.protocol_version = "v9.0.0"' \
+                '.config.scan_mode = "source"' \
+                '.config.scan_level = "module"'; do
+                printf '%s\n' "$config" | jq "$incompatible" > findings.json
+                summarize extracted-symbols 1 > incompatible.json
+                jq -e '(.scanEnvelopeValid | not) and .unresolved' incompatible.json
+              done
+              touch "$out"
+            '';
       }
     );
 }

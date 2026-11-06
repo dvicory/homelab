@@ -6,11 +6,18 @@
   };
 
   den.aspects.services.security.crowdsec = {
-    nixos = { config, lib, pkgs, ... }:
+    nixos =
+      {
+        config,
+        lib,
+        pkgs,
+        ...
+      }:
       let
         cfg = config.services.crowdsec;
         persistDataDir = "/persist/crowdsec/data";
-      in {
+      in
+      {
         disabledModules = [
           # Replace the native directory as a unit, including its manual section.
           "services/security/crowdsec"
@@ -42,8 +49,7 @@
 
               settings = {
                 config.config_paths.data_dir = persistDataDir;
-                config.api.server.online_client.credentials_path =
-                  "${persistDataDir}/online_api_credentials.yaml";
+                config.api.server.online_client.credentials_path = "${persistDataDir}/online_api_credentials.yaml";
 
                 acquisitions = [
                   {
@@ -58,8 +64,8 @@
             };
 
             # cscli owns live console sharing choices; initialize, never reset.
-            systemd.tmpfiles.settings."10-crowdsec"
-              .${cfg.settings.config.api.server.console_path}."f+".type = lib.mkForce "f";
+            systemd.tmpfiles.settings."10-crowdsec".${cfg.settings.config.api.server.console_path}."f+".type =
+              lib.mkForce "f";
 
             # Keep CrowdSec data on the persistent dataset without relying on
             # systemd's private state-directory namespace.
@@ -74,7 +80,6 @@
                 ];
               };
             };
-
 
             # Run cscli in the same sandboxed context as CrowdSec while
             # pointing it at the persistent data directory.
@@ -110,24 +115,32 @@
       };
 
     provides.bouncer = {
-      nixos = { config, lib, pkgs, ... }: let
-        persistDataDir = "/persist/crowdsec/data";
-      in {
-        disabledModules = [
-          "services/security/crowdsec-firewall-bouncer.nix"
-        ];
-
-        imports = [
-          "${inputs.crowdsec}/nixos/modules/services/security/crowdsec-firewall-bouncer.nix"
-        ];
-
-        config = lib.mkIf config.services.crowdsec-firewall-bouncer.enable {
-          systemd.services.crowdsec-firewall-bouncer-register.serviceConfig.ReadWritePaths = lib.mkForce [
-            persistDataDir
-            "/var/lib/crowdsec-firewall-bouncer-register"
+      nixos =
+        {
+          config,
+          lib,
+          pkgs,
+          ...
+        }:
+        let
+          persistDataDir = "/persist/crowdsec/data";
+        in
+        {
+          disabledModules = [
+            "services/security/crowdsec-firewall-bouncer.nix"
           ];
+
+          imports = [
+            "${inputs.crowdsec}/nixos/modules/services/security/crowdsec-firewall-bouncer.nix"
+          ];
+
+          config = lib.mkIf config.services.crowdsec-firewall-bouncer.enable {
+            systemd.services.crowdsec-firewall-bouncer-register.serviceConfig.ReadWritePaths = lib.mkForce [
+              persistDataDir
+              "/var/lib/crowdsec-firewall-bouncer-register"
+            ];
+          };
         };
-      };
     };
   };
 }
