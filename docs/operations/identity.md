@@ -225,9 +225,10 @@ cover TLS Secret renewal or prove certificate reload behavior.
 
 ## Upgrade
 
-Run `kanidmd domain upgrade-check` and take a restorable backup before
-upgrading. Upgrade minor releases sequentially; successful database
-migrations cannot be downgraded. Match the CLI version to the server.
+Kanidm does not schedule local backups. Run `kanidmd domain upgrade-check`
+and take a restorable backup before upgrading. Upgrade minor releases
+sequentially; successful database migrations cannot be downgraded. Match
+the CLI version to the server.
 
 ## Gateway authentication failures
 
