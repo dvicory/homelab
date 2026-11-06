@@ -368,6 +368,7 @@ let
 
           services.nginx = {
             enable = true;
+            logError = "stderr";
             recommendedOptimisation = true;
             recommendedProxySettings = false;
             commonHttpConfig = ''
@@ -387,6 +388,11 @@ let
             recommendedTlsSettings = true;
             virtualHosts = virtualHosts;
           };
+          # nginx's fixed error format appends the raw request, including
+          # OAuth callback queries. Keep lifecycle diagnostics, but discard
+          # request-bearing records before journald stores or forwards them.
+          # Queryless access records retain status, upstream status and ID.
+          systemd.services.nginx.serviceConfig.LogFilterPatterns = [ "~request: " ];
 
           networking.firewall.allowedTCPPorts = [
             80

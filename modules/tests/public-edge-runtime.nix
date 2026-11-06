@@ -227,8 +227,9 @@
               def access_log(edge, path):
                   for _ in range(30):
                       logs = edge.succeed("cat /var/log/nginx/access.log")
+                      diagnostics = edge.succeed("journalctl -u nginx.service --no-pager -o cat")
                       for secret in ("query-secret-", "code-secret-", "credential-canary-", "cookie-secret-"):
-                          assert secret not in logs, "sensitive request data reached the edge access log"
+                          assert secret not in logs + diagnostics, "sensitive request data reached an edge log"
                       entries = [json.loads(line) for line in logs.splitlines()]
                       matches = [entry for entry in entries if entry.get("path") == path]
                       if matches:
@@ -361,16 +362,34 @@
                   if certificate == "wrong-name":
                       origin.succeed("curl --cacert ${certificates}/origin.crt -sSf --resolve wrong.test:8443:10.0.0.10 https://wrong.test:8443/ | grep -qx origin")
                   expected = "200" if certificate == "origin" else "502"
-                  for hostname, address, trust in (
-                      ("service.primary.test", "10.0.0.11", "edge"),
-                      ("service.backup.test", "10.0.0.12", "edge"),
-                      ("id.bzfx.net", "10.0.0.11", "identity"),
-                      ("id.bzfx.net", "10.0.0.12", "identity"),
+                  for edge, hostname, address, trust in (
+                      (remote, "service.primary.test", "10.0.0.11", "edge"),
+                      (home, "service.backup.test", "10.0.0.12", "edge"),
+                      (remote, "id.bzfx.net", "10.0.0.11", "identity"),
+                      (home, "id.bzfx.net", "10.0.0.12", "identity"),
                   ):
+                      path = f"/tls-{certificate}-{hostname}"
                       client.succeed(
                           f"test $(curl --cacert ${certificates}/{trust}.crt -sS -o /dev/null "
-                          f"-w '%{{http_code}}' --resolve {hostname}:443:{address} https://{hostname}/) = {expected}"
+                          f"-w '%{{http_code}}' --resolve {hostname}:443:{address} "
+                          f"'https://{hostname}{path}?code=code-secret-{certificate}') = {expected}"
                       )
+                      assert access_log(edge, path)["status"] == int(expected)
+
+              origin.succeed("systemctl stop nginx.service")
+              for edge, hostname, address in (
+                  (remote, "service.primary.test", "10.0.0.11"),
+                  (home, "service.backup.test", "10.0.0.12"),
+              ):
+                  path = "/connection-failure"
+                  client.succeed(
+                      "test $(curl --cacert ${certificates}/edge.crt -sS -o /dev/null "
+                      f"-w '%{{http_code}}' --resolve {hostname}:443:{address} "
+                      f"'https://{hostname}{path}?code=code-secret-connection') = 502"
+                  )
+                  assert access_log(edge, path)["status"] == 502
+              origin.succeed("systemctl start nginx.service")
+              origin.wait_for_open_port(8443, addr="10.0.0.10")
 
               remote.succeed("systemctl stop nginx.service")
               client.fail(
