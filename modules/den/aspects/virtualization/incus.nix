@@ -27,7 +27,7 @@
       {
         virtualisation.incus = {
           enable = true;
-          # Incus 7.4 rejects adjacent raw ID maps; remove with the upstream fix.
+          # Adjacent raw ID maps remain broken in the pinned Incus release.
           package = pkgs.incus.overrideAttrs (
             old:
             let
@@ -54,8 +54,13 @@
           );
           ui.enable = true;
           ui.package = pkgs.incus-ui-canonical;
+          # Only the explicitly opened Tailscale port admits remote management.
+          # Keep this port closed on LAN and compute-guest interfaces.
           preseed.config."core.https_address" = ":8443";
         };
+
+        networking.firewall.interfaces.${config.services.tailscale.interfaceName}.allowedTCPPorts =
+          lib.mkIf config.services.tailscale.enable [ 8443 ];
 
         systemd.services.incus.serviceConfig.TimeoutStopSecond = lib.mkForce "330s";
 
@@ -120,8 +125,6 @@
             message = "incus-mount-isolation does not isolate persistence binds below ${stateDirectory}, but impermanence binds ${lib.concatStringsSep ", " inside}.";
           }
         ];
-
-        networking.firewall.allowedTCPPorts = [ 8443 ];
       };
   };
 }

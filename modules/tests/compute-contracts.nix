@@ -9,6 +9,18 @@
 let
   host = self.nixosConfigurations.hvn-hyp1.config;
   guest = self.nixosConfigurations.compute-1.config;
+  incusFirewallRestricted =
+    firewall:
+    let
+      portClosed =
+        interface:
+        !(builtins.elem 8443 interface.allowedTCPPorts)
+        && builtins.all (range: !(range.from <= 8443 && range.to >= 8443)) interface.allowedTCPPortRanges;
+    in
+    portClosed firewall
+    && builtins.all (
+      name: name == host.services.tailscale.interfaceName || portClosed firewall.interfaces.${name}
+    ) (builtins.attrNames firewall.interfaces);
   hostEntity = config.den.hosts.x86_64-linux.hvn-hyp1;
   compute = hostEntity.settings.virtualization.compute;
   # The host's compute aspect, evaluated with a changed declaration.
@@ -41,7 +53,12 @@ let
     .success;
   withDevice =
     name: device: current:
-    current // { devices = current.devices // { ${name} = device; }; };
+    current
+    // {
+      devices = current.devices // {
+        ${name} = device;
+      };
+    };
   ungranted =
     builtins.fromJSON
       (evaluateWith (current: current // { accelerator = null; }))
@@ -161,7 +178,9 @@ let
         "unix-hotplug"
         "usb"
       ]
-      && project."restricted.devices.unix-char" == (if compute.accelerator != null then "allow" else "block");
+      &&
+        project."restricted.devices.unix-char"
+        == (if compute.accelerator != null then "allow" else "block");
     # gpu-render never enters the guest's ID map.
     accelerator-grant-leaves-id-map =
       descriptor.config."raw.idmap" == ungranted.config."raw.idmap"
@@ -215,10 +234,33 @@ let
         [
           compute.network
           devices.eth0.host_name
+          host.services.tailscale.interfaceName
           "*"
           "all"
         ]
         ++ builtins.attrNames config.den.hosts.x86_64-linux.hvn-hyp1.networking.interfaces
+      );
+    incus-not-open-on-untrusted-interfaces = incusFirewallRestricted host.networking.firewall;
+    incus-interface-port-rejected =
+      !(incusFirewallRestricted
+        (self.nixosConfigurations.hvn-hyp1.extendModules {
+          modules = [ { networking.firewall.interfaces.guard-test-lan.allowedTCPPorts = [ 8443 ]; } ];
+        }).config.networking.firewall
+      );
+    incus-interface-range-rejected =
+      !(incusFirewallRestricted
+        (self.nixosConfigurations.hvn-hyp1.extendModules {
+          modules = [
+            {
+              networking.firewall.interfaces.guard-test-lan.allowedTCPPortRanges = [
+                {
+                  from = 8442;
+                  to = 8444;
+                }
+              ];
+            }
+          ];
+        }).config.networking.firewall
       );
     # Rule content is covered by the compute-ingress-runtime VM test, which
     # drives real packets through the generated nftables tables. What stays
