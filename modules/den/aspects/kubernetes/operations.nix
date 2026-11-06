@@ -257,6 +257,24 @@ in
 
         ### NetworkPolicy enforcement after a reboot
 
+        The compute container uses the physical host's kernel. Apply kernel
+        fixes through the host configuration and reboot the host; replacing
+        the guest or restarting Pods does not load a new kernel.
+
+        Set `host_build_output` to the store path printed by
+        `nix build --no-link --print-out-paths .#nixosConfigurations.${cluster.hostName}.config.system.build.toplevel`
+        from the reviewed revision. After an authorized host update and reboot,
+        compare these paths on the host:
+
+        ```sh
+        readlink -f "$host_build_output/kernel"
+        readlink -f /run/booted-system/kernel
+        readlink -f /run/current-system/kernel
+        ```
+
+        All three must match. Matching only the booted and current paths, or
+        checking `uname -r` alone, does not prove that a backport is active.
+
         kube-network-policies (`kube-system/kube-network-policies`) enforces
         NetworkPolicy; K3s's embedded controller is disabled. After every host
         reboot, guest restart or guest replacement, check on the host, as root:
