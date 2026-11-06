@@ -287,7 +287,7 @@ in
                   assert state["registered"] == clients, state["registered"]
                   for client in clients:
                       found = state["clients"][client]
-                      assert found["scope_maps"] == {"homelab-admin": scopes[client]}, (client, found)
+                      assert found["scope_maps"] == {eligibility[client]: scopes[client]}, (client, found)
                       assert found["sup_scope_maps"] == [], (client, found)
                       assert found["strict_redirect"] == ["true"], (client, found)
                   assert state["clients"]["argocd"]["redirects"] == sorted(gateway_callbacks + callbacks), state["clients"]["argocd"]
@@ -365,6 +365,7 @@ in
               cluster.succeed(f"{kubectl} apply -f ${manifests}/identity-retained")
               cluster.succeed(f"{kubectl} create namespace gateway")
               cluster.succeed(f"{kubectl} create namespace argocd")
+              cluster.succeed(f"{kubectl} apply -f ${manifests}/homarr-retained/Namespace-portal.yaml")
               cluster.succeed(
                   "umask 077 && mkdir -p /root/pki && cd /root/pki && "
                   "openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 "
@@ -427,6 +428,7 @@ in
                   f"{kubectl} get configmap --namespace identity kanidm-provision --output json"
               ))["data"]["clients.json"])
               scopes = {client["name"]: sorted(client["scopes"]) for client in declared}
+              eligibility = {client["name"]: client["eligibleGroup"] for client in declared}
               clients = sorted(scopes)
               secrets = [
                   (client["name"], {key: target[key] for key in ("namespace", "name", "key")})
@@ -666,6 +668,60 @@ in
                   assert probe("private-oauth", person="fixture-invited", client="argocd",
                                redirect=callbacks[0], scopes=["openid", "groups_name"], allowed=False) == {"denied": True}
                   evidence("source-B-native-ordinary-user", claims)
+
+              with subtest("Home accepts household and administrator sign-in, not arbitrary identities"):
+                  consumer = json.loads(cluster.succeed(
+                      f"{kubectl} create --dry-run=client --output json "
+                      "-f ${manifests}/homarr/StatefulSet-homarr.yaml"
+                  ))
+                  container = next(c for c in consumer["spec"]["template"]["spec"]["containers"] if c["name"] == "main")
+                  env = {entry["name"]: entry for entry in container["env"]}
+                  client_secret = env["AUTH_OIDC_CLIENT_SECRET"]["valueFrom"]["secretKeyRef"]
+                  request = dict(
+                      client=env["AUTH_OIDC_CLIENT_ID"]["value"],
+                      scopes=env["AUTH_OIDC_SCOPE_OVERWRITE"]["value"].split(),
+                      published=dict(namespace=consumer["metadata"]["namespace"],
+                                     name=client_secret["name"], key=client_secret["key"]),
+                  )
+                  # Household membership is UI-managed and must survive reconciliation.
+                  probe("invite-replacement", group="${cluster.settings.kubernetes.services.identity.householdGroup}")
+                  for executable in ("published A", "source B"):
+                      with subtest(f"{executable}: Home authorization follows the configured consumer"):
+                          if executable == "published A":
+                              cluster.succeed(
+                                  f"{kubectl} create --dry-run=client --output json "
+                                  f"-f {private_identity}/Job-kanidm-provision.yaml "
+                                  "| jq -f ${trustJob} > /root/job.json"
+                              )
+                          else:
+                              selected, scopes, secrets = select_private(private_identity)
+                              clients = sorted(scopes)
+                          # Each executable must revoke a real stale outsider grant,
+                          # not inherit the previous executable's reconciled policy.
+                          probe("stale-maps", client=request["client"], groups=["fixture-native-outsiders"])
+                          run_job("Complete")
+                          if executable == "published A":
+                              assert last_job_execution["pods"], "no selected helper Pod"
+                              for pod in last_job_execution["pods"]:
+                                  container = next(c for c in pod["spec"]["containers"] if c["name"] == "provision")
+                                  assert container["image"] == registry_image, container
+                          else:
+                              assert_private_exit(0)
+                          for hostname in json.loads(${builtins.toJSON (builtins.toJSON cluster.routes.home.hostnames)}):
+                              request["redirect"] = f"https://{hostname}/api/auth/callback/oidc"
+                              for person, group in (
+                                  (members[0], "${cluster.settings.kubernetes.services.identity.adminGroup}"),
+                                  ("fixture-replacement", "${cluster.settings.kubernetes.services.identity.householdGroup}"),
+                              ):
+                                  claims = probe("private-oauth", person=person, **request)
+                                  groups = claims[env["AUTH_OIDC_GROUPS_ATTRIBUTE"]["value"]]
+                                  assert group in groups and all("@" not in name for name in groups), claims
+                                  assert claims["iss"] == env["AUTH_OIDC_ISSUER"]["value"], claims
+                              assert probe("private-oauth", person="fixture-uninvited",
+                                           allowed=False, **request) == {"denied": True}
+                          assert probe("private-oauth", person="fixture-replacement", client="argocd",
+                                       redirect=callbacks[0], scopes=["openid", "groups_name"],
+                                       allowed=False) == {"denied": True}
 
               with subtest("source B: entity reconciliation failure cannot retain eligibility"):
                   configmap = json.loads(cluster.succeed(

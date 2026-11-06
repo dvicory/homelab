@@ -328,7 +328,8 @@ let
     # administrator route has exactly one client, named after the route,
     # whose display name and landing are that application's.
     one-client-per-admin-route =
-      builtins.attrNames normalState.systems.oauth2 == builtins.attrNames adminRoutes
+      builtins.attrNames (builtins.removeAttrs normalState.systems.oauth2 [ "homarr" ])
+      == builtins.attrNames adminRoutes
       && lib.all (
         name:
         let
@@ -419,11 +420,6 @@ let
       && !(builtins.elem "groups" normalOidc.requestedScopes)
       && normalArgocd.rbac.scopes == "[groups]"
       && envValue "KANIDM_ADMIN_GROUP" == cluster.settings.kubernetes.services.identity.adminGroup
-      &&
-        builtins.attrNames normalState.groups == lib.sort builtins.lessThan [
-          (envValue "KANIDM_ADMIN_GROUP")
-          householdGroup
-        ]
       && normalArgocd.rbac."policy.csv" == "g, ${envValue "KANIDM_ADMIN_GROUP"}, role:admin\n"
       && normalArgocd.rbac."policy.default" == "";
     argocd-client-secret-reference =
