@@ -241,6 +241,24 @@ let
         ++ builtins.attrNames config.den.hosts.x86_64-linux.hvn-hyp1.networking.interfaces
       );
     incus-not-open-on-untrusted-interfaces = incusFirewallRestricted host.networking.firewall;
+    incus-tailnet-port-present =
+      builtins.elem 8443
+        host.networking.firewall.interfaces.${host.services.tailscale.interfaceName}.allowedTCPPorts;
+    tailscale-transport-present = builtins.elem host.services.tailscale.port host.networking.firewall.allowedUDPPorts;
+    independent-ssh-recovery =
+      host.services.openssh.enable && builtins.elem 22 host.networking.firewall.allowedTCPPorts;
+    bridge-service-ports-present =
+      builtins.elem 53 host.networking.firewall.interfaces.${compute.network}.allowedTCPPorts
+      &&
+        builtins.all
+          (port: builtins.elem port host.networking.firewall.interfaces.${compute.network}.allowedUDPPorts)
+          [
+            53
+            67
+          ];
+    kubelet-pod-bridge-port-present =
+      builtins.elem 10250 guest.networking.firewall.interfaces.cni0.allowedTCPPorts
+      && !(builtins.elem 10250 guest.networking.firewall.allowedTCPPorts);
     incus-interface-port-rejected =
       !(incusFirewallRestricted
         (self.nixosConfigurations.hvn-hyp1.extendModules {
@@ -262,11 +280,10 @@ let
           ];
         }).config.networking.firewall
       );
-    # Rule content is covered by the compute-ingress-runtime VM test, which
-    # drives real packets through the generated nftables tables. What stays
-    # here is the firewall inventory the synthetic listener cannot exercise:
-    # the guest must open the NodePort and the host must not open ingress or
-    # management ports on its input chain.
+    # INPUT admission/denial, real Incus TLS UI/API, SSH recovery and the
+    # forwarded Gateway datapath are covered by compute-ingress-runtime.
+    # Inventory the guest's NodePort too: its namespace listener intentionally
+    # stands in for the guest, not for the guest's own firewall.
     household-direct-ingress-ports =
       let
         ingress = config.den.clusters.prod-home.ingress;
