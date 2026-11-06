@@ -43,11 +43,24 @@ contacting their daemons. It checks compiled Go symbols, compiler and
 linked module versions; application versions come from evaluated Nix.
 It does not audit C libraries or replace application security review.
 
-`nix flake update nixpkgs-security` updates the package-only input,
-not the fleet's root Nixpkgs. Review source overrides and regenerate
-dependency patches/vendor hashes when advancing supported releases.
-Tailscale rejects a stale release override rather than downgrading a
-newer version supplied by that input.
+`nix flake update nixpkgs --flake path:.` advances the ordinary fleet
+channel, including the kernel and K3s. Review retained source patches
+and vendor hashes against the selected releases. The Tailscale release
+override rejects newer upstream versions rather than downgrading them.
+The upgrade fixtures pin the former production package set separately;
+they must not follow the candidate root.
+
+Tailscale retains the `compress` fix for
+[GO-2026-6865](https://vuln.go.dev/ID/GO-2026-6865): control-map zstd
+decoding imports the affected Huffman/FSE decoder. The packaged Linux
+daemon/CLI and auxiliary commands do not import deprecated OpenPGP
+([GO-2026-5932](https://vuln.go.dev/ID/GO-2026-5932)) or `x/net/html`
+([GO-2026-6860](https://vuln.go.dev/ID/GO-2026-6860),
+[GO-2026-6866](https://vuln.go.dev/ID/GO-2026-6866)); a module-wide
+advisory match alone is not a reason to patch unrelated packages.
+Incus uses the ordinary supported release and its dependencies, with
+only the adjacent/empty ID-map correction and local completion fix.
+
 Incus has a 330-second graceful shutdown budget. Before restarting it,
 retain a stopped full-state backup and each
 external storage pool; a profile rollback cannot undo database changes.

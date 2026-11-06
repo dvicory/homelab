@@ -73,13 +73,13 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     hoopsnake = {
-      url = "github:boinkor-net/hoopsnake/106a95e01352db2143f355fba1a328c887e0c807";
+      url = "github:dvicory/hoopsnake/2ac8db429b5159387c47c2499ffb34fc9a7773bd";
       inputs = {
         flake-parts.follows = "flake-parts";
         nixpkgs.follows = "nixpkgs";
       };
     };
-    impermanence.url = "github:dvicory/impermanence/systemd-requires";
+    impermanence.url = "github:nix-community/impermanence/fa627f4c8b8e92f58f58a73d99ee4e1304e64eb2";
     import-tree.url = "github:vic/import-tree";
     lanzaboote = {
       url = "github:nix-community/lanzaboote/v1.1.0";
@@ -105,7 +105,6 @@
     nixos-facter-modules.url = "github:nix-community/nixos-facter-modules";
     nixpkgs.url = "https://channels.nixos.org/nixos-unstable/nixexprs.tar.xz";
     nixpkgs-multiverse.url = "github:fzakaria/nixpkgs-multiverse/9e89229225547747c0150f396ffa413d80bc1427";
-    nixpkgs-security.url = "github:NixOS/nixpkgs/nixos-unstable";
     quadlet-nix.url = "github:SEIAROTg/quadlet-nix";
     secure-hermes-nix = {
       url = "github:dvicory/secure-hermes-nix";

@@ -2,8 +2,6 @@
   lib,
   stdenv,
   buildGoModule,
-  go,
-  fetchurl,
   makeWrapper,
   kubectl,
   yq-go,
@@ -11,17 +9,7 @@
   openssh,
   util-linux,
 }:
-let
-  # Keep a security-fixed compiler without overriding newer fleet versions.
-  securityGo = if lib.versionAtLeast go.version "1.26.10" then go else go.overrideAttrs {
-    version = "1.26.10";
-    src = fetchurl {
-      url = "https://go.dev/dl/go1.26.10.src.tar.gz";
-      hash = "sha256-/WPog7ovK/ypPBZGsx6+9j4rHk0rMXyXidl2po2B828=";
-    };
-  };
-in
-(buildGoModule.override { go = securityGo; }) {
+buildGoModule {
   pname = "compute-runtime";
   version = "0-unstable";
   src = lib.cleanSource ./.;

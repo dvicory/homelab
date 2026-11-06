@@ -5,15 +5,14 @@
     lib.optionalAttrs (system == "x86_64-linux") (
       let
         host = inputs.self.nixosConfigurations.hvn-hyp1.config;
-        securityPkgs = inputs.nixpkgs-security.legacyPackages.${system};
       in
       {
         packages.stock-go-audit = pkgs.writeShellApplication {
           name = "stock-go-audit";
           runtimeInputs = [
-            securityPkgs.go_1_27
-            securityPkgs.govulncheck
-            securityPkgs.osv-scanner
+            pkgs.go_1_27
+            pkgs.govulncheck
+            pkgs.osv-scanner
             pkgs.jq
           ];
           text = ''

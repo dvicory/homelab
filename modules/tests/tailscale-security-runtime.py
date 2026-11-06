@@ -109,6 +109,7 @@ expected_preferences = {
     "WantRunning": True,
 }
 with subtest("old peers enroll once and exchange real VPN traffic"):
+    assert old_version == "1.102.3"
     for machine in [peer1, peer2]:
         machine.wait_for_unit("tailscaled.service", timeout=90)
         machine.wait_for_unit("nginx.service", timeout=90)
@@ -119,6 +120,7 @@ with subtest("old peers enroll once and exchange real VPN traffic"):
             "--accept-dns=false --accept-routes=true"
         )
         running(machine, old_package)
+        assert json.loads(machine.succeed(f"{TS} status --json"))["Version"].split("-")[0] == old_version
         assert preferences(machine) == expected_preferences
     identities = {machine.name: identity(machine) for machine in [peer1, peer2]}
     assert identities["peer1"]["id"] != identities["peer2"]["id"]

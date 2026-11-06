@@ -43,7 +43,7 @@
 
       systemd.network.networks = toSystemdNetwork;
 
-      boot.initrd.systemd = lib.mkIf config.boot.initrd.systemd.enable {
+      boot.initrd.systemd = lib.mkIf config.boot.initrd.enable {
         services."resolved-cert-setup" = lib.mkIf (
           config.services.resolved.enable
           && (

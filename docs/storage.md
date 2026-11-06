@@ -39,18 +39,35 @@ nix build .#checks.x86_64-linux.root-esp-mirror -L --no-link
 ```
 
 The native disko/UEFI scenario installs with the mirror unmounted,
-checks both ESPs have nonempty, different random seeds, tests an update,
-a live switch from a pre-mirror configuration that keeps `/boot`
-mounted, and refusal of an unrelated source mount, then boots
-and unlocks encrypted ZFS with each disk independently absent. It also
-consumes disposable credentials through the same initrd secret paths
-and systemd `LoadCredential` boundary as the pinned Hoopsnake module.
-The credential consumer starts after `initrd-nixos-copy-secrets.service`
-has populated those paths, matching Hoopsnake's service ordering.
-It does not prove external Tailscale OAuth or live Hoopsnake access.
-Neither this declaration nor configuration evaluation proves degraded
-boot: retain the executed VM proof and separately verify firmware can
-select either physical ESP before relying on redundancy.
+checks distinct ESP random seeds, update propagation, a live switch
+that keeps `/boot` mounted, and refusal of an unrelated source mount.
+It boots encrypted ZFS with each disk independently absent.
+
+Disposable runtime credentials feed the real Hoopsnake service through
+initrd secret files and systemd `LoadCredential`. An unauthorized SSH
+key is rejected while ZFS remains locked. Authorized SSH answers the
+native password request; boot continues without a harness switch-root.
+The scenario checks ephemeral-root rollback, retained state, service
+shutdown, and a separate bounded console recovery with networking
+disconnected. Its isolated Headscale preauth flow does not prove
+public Tailscale OAuth or production tailnet policy.
+
+`core.remote-unlock` includes the Den `core.hoopsnake` aspect, which
+imports the pinned `dvicory/hoopsnake` fork's NixOS module directly.
+The fork keeps the systemd-only initrd implementation and credentials;
+the Hoopsnake executable is unchanged. Configuration evaluation does
+not patch or generate a local copy of the module.
+Do not restore the removed `boot.initrd.systemd.enable` option.
+
+The Impermanence aspect imports pinned official upstream without a
+local source patch. The VM scenario checks systemd's resolved
+`Requires` and `After` dependencies on the persistence mount in both
+initrd and stage 2. Active bind mounts must refer to the same backing
+directories, verified by their device and inode identities.
+
+Configuration evaluation is not boot proof. Retain executed VM results
+and separately verify physical firmware can select either ESP before
+relying on redundancy.
 
 ## `hvn-hyp1`
 

@@ -13,6 +13,8 @@
         persistDataDir = "/persist/crowdsec/data";
       in {
         disabledModules = [
+          # Root Nixpkgs renamed the engine module after the current fleet pin.
+          "services/security/crowdsec"
           "services/security/crowdsec.nix"
         ];
 

@@ -78,6 +78,9 @@ def start_daemon():
 start_all()
 machine.wait_for_unit("incus-preseed.service", timeout=120)
 start_daemon()
+assert baseline_version == "7.4.0"
+assert query("/1.0")["environment"]["server_version"] == baseline_version
+assert machine.succeed(f"{IC} --version").strip() == baseline_version
 baseline_system = machine.succeed("readlink -f /run/current-system").strip()
 
 with subtest("old daemon retains real resources and accepts only a trusted client"):
