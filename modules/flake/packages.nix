@@ -32,6 +32,9 @@
       agenix-restart-guard = lib.optionalAttrs isLinux {
         agenix-restart-guard = callPackage (self + "/pkgs/by-name/agenix-restart-guard/package.nix") { };
       };
+      k3s = lib.optionalAttrs isLinux {
+        k3s = callPackage (self + "/pkgs/by-name/k3s/package.nix") { };
+      };
       compute-runtime = callPackage (self + "/pkgs/by-name/compute-runtime/package.nix") { };
       helper-release = callPackage (self + "/pkgs/by-name/helper-release/package.nix") { };
       prepare-luks-storage = lib.optionalAttrs isLinux {
@@ -78,6 +81,7 @@
         inherit helper-release;
       }
       // agenix-restart-guard
+      // k3s
       // prepare-luks-storage
       // kanidm-provision-image
       // retained-directories-image

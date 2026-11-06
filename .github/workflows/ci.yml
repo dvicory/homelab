@@ -335,10 +335,28 @@ jobs:
           fi
           # Release the evaluation heap before any build/VM starts (PR #64).
           if [ "$GROUP" = checks ] && [ -z "$CHECK" ]; then
-            # Share the full inventory only with its complete aggregate.
+            # Keep fast checks together; do not retain every VM graph in that heap.
             nix eval --json ".#hostedCiArtifacts.$SYSTEM" \
-              --apply "p: { inherit (p) inventory; artifact = p.$artifact_attr; }" \
-              > "$RUNNER_TEMP/check-projection.json"
+              --apply "p: {
+                inventory = builtins.mapAttrs (_: entries: map
+                  (e: if e.runtime && e.hosted then builtins.removeAttrs e [ \"drvPath\" ] else e)
+                  entries) p.inventory;
+                artifact = p.$artifact_attr;
+              }" > "$RUNNER_TEMP/check-projection-base.json"
+            # ponytail: serial evaluators bound VM heaps; use bounded nix-eval-jobs if startup dominates.
+            : > "$RUNNER_TEMP/runtime-derivations.jsonl"
+            while IFS= read -r runtime_check; do
+              runtime_attr=$(jq -rn --arg check "$runtime_check" '$check | @json')
+              nix eval --raw ".#hostedCiArtifacts.$SYSTEM.checks.$runtime_attr.drvPath" \
+                | jq -Rc --arg name "$runtime_check" '{key: $name, value: .}' \
+                >> "$RUNNER_TEMP/runtime-derivations.jsonl"
+            done < <(jq -r '.inventory.runtime[].name' "$RUNNER_TEMP/check-projection-base.json")
+            jq --slurpfile runtime "$RUNNER_TEMP/runtime-derivations.jsonl" '
+              ($runtime | from_entries) as $drvs |
+              .inventory |= with_entries(.value |= map(
+                if .runtime and .hosted then . + {drvPath: $drvs[.name]} else . end
+              ))
+            ' "$RUNNER_TEMP/check-projection-base.json" > "$RUNNER_TEMP/check-projection.json"
             jq -c .inventory "$RUNNER_TEMP/check-projection.json" > "$RUNNER_TEMP/check-inventory.json"
             jq -c .artifact "$RUNNER_TEMP/check-projection.json" > "$RUNNER_TEMP/artifact.json"
             cat "$RUNNER_TEMP/check-inventory.json"

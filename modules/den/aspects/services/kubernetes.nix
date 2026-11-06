@@ -17,6 +17,7 @@
         networking.firewall.interfaces.cni0.allowedTCPPorts = [ 10250 ];
         services.k3s = {
           enable = true;
+          package = pkgs.callPackage (inputs.self + "/pkgs/by-name/k3s/package.nix") { };
           role = "server";
           # SQLite, Flannel, CoreDNS, and kube-proxy remain the supported
           # single-node path. Only packaged components outside this slice are

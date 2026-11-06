@@ -40,6 +40,18 @@ scenarios:
   variant: canonical
   mutate: .bundle.files += ["gateway/unknown.txt"]
   fail: [complete-original-transport]
+- name: transport-empty-original-content
+  variant: canonical
+  mutate: .bundle.resources[0].content = ""
+  fail: [complete-original-transport]
+- name: transport-missing-inventory-short-circuits-resource-fields
+  variant: canonical
+  mutate: .bundle.files = [] | del(.bundle.resources[0].file)
+  fail: [complete-original-transport]
+- name: transport-invalid-resource-short-circuits-inventory
+  variant: canonical
+  mutate: .bundle.resources[0].content = "" | del(.bundle.resources[1].file)
+  fail: [complete-original-transport]
 - name: transport-fail-closed-missing-policy
   variant: canonical
   reject: missing-policy

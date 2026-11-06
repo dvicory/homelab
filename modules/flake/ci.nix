@@ -106,6 +106,7 @@ let
     "compute-guest-upgrade"
     "identity-provision-runtime"
     "incus-mount-isolation"
+    "incus-security-runtime"
     "crowdsec-upgrade"
     "root-esp-mirror"
     "prod-home-replacement"

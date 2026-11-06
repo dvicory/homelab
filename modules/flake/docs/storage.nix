@@ -223,9 +223,9 @@ in
         persistent tree with the engine and bouncer stopped before changing
         versions. Do not copy only the live SQLite database.
 
-        The upstream module's generic reset guide is available at
-        `/etc/crowdsec/upstream-module.md`. Its examples use upstream defaults;
-        use the persistent paths here rather than substituting those defaults.
+        The upstream module's generic reset guide is included in the NixOS
+        manual. Its examples use upstream defaults; use the persistent paths
+        here rather than substituting those defaults.
 
         `cscli` owns live console sharing choices. The console file is initialized
         only when absent; activation must not overwrite it with generated
