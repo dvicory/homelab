@@ -170,6 +170,15 @@ func verifyRuntimeSecretInventory(expected []runtimeSecret, staged []byte) error
 	return nil
 }
 
+// VerifyRuntimeSecretDeclaration binds staged names to the selected declaration.
+func VerifyRuntimeSecretDeclaration(raw json.RawMessage, staged []byte) error {
+	expected, err := declaredRuntimeSecrets(raw)
+	if err != nil {
+		return err
+	}
+	return verifyRuntimeSecretInventory(expected, staged)
+}
+
 // Evaluate the readiness predicate inside the guest. Neither Secret values nor
 // native kubectl diagnostics cross back to the host; only the exit status does.
 func secretReadyCommand(secret runtimeSecret) []string {
@@ -263,20 +272,23 @@ func verifyRuntimeGeneration(marker, yaml, names []byte) (string, error) {
 	return generation, nil
 }
 
-func readRuntimeGeneration(root string) (string, error) {
+// ReadRuntimeSecretGeneration verifies the committed staged file checksums and
+// returns the verified inventory. The caller must serialize against staging.
+func ReadRuntimeSecretGeneration(root string) (string, []byte, error) {
 	marker, err := os.ReadFile(filepath.Join(root, "runtime-secrets.commit"))
 	if err != nil {
-		return "", fmt.Errorf("read runtime Secret generation marker: %w", err)
+		return "", nil, fmt.Errorf("read runtime Secret generation marker: %w", err)
 	}
 	yaml, err := os.ReadFile(filepath.Join(root, "runtime-secrets.yaml"))
 	if err != nil {
-		return "", fmt.Errorf("read staged runtime Secret YAML: %w", err)
+		return "", nil, fmt.Errorf("read staged runtime Secret YAML: %w", err)
 	}
 	names, err := os.ReadFile(filepath.Join(root, "runtime-secrets.names"))
 	if err != nil {
-		return "", fmt.Errorf("read staged runtime Secret inventory: %w", err)
+		return "", nil, fmt.Errorf("read staged runtime Secret inventory: %w", err)
 	}
-	return verifyRuntimeGeneration(marker, yaml, names)
+	generation, err := verifyRuntimeGeneration(marker, yaml, names)
+	return generation, names, err
 }
 
 func waitRuntimeSecrets(ctx context.Context, secrets []runtimeSecret, probe func(context.Context, runtimeSecret) error) error {

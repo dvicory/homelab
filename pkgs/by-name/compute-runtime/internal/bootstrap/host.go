@@ -53,13 +53,9 @@ func stageCurrentRuntimeSecrets(ctx context.Context, secrets []runtimeSecret) (s
 		}
 		return "", fmt.Errorf("stage runtime Secrets: %w", err)
 	}
-	generation, err := readRuntimeGeneration(runtimeSecretStagePath)
+	generation, staged, err := ReadRuntimeSecretGeneration(runtimeSecretStagePath)
 	if err != nil {
 		return "", fmt.Errorf("verify staged runtime Secrets: %w", err)
-	}
-	staged, err := os.ReadFile(filepath.Join(runtimeSecretStagePath, "runtime-secrets.names"))
-	if err != nil {
-		return "", fmt.Errorf("verify staged runtime Secrets: read inventory: %w", err)
 	}
 	if err := verifyRuntimeSecretInventory(secrets, staged); err != nil {
 		return "", fmt.Errorf("verify staged runtime Secrets: %w", err)
