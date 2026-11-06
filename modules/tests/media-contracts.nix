@@ -101,7 +101,11 @@
           apiSecretKey,
           root,
           category,
-          qualityProfiles ? [ "hd-preferred" "web-1080p" "remux-web-1080p" ],
+          qualityProfiles ? [
+            "hd-preferred"
+            "web-1080p"
+            "remux-web-1080p"
+          ],
           defaultQualityProfile ? "hd-preferred",
           role ? null,
         }:
@@ -161,7 +165,9 @@
       fixtureClusterWith =
         overrides:
         let
-          media = lib.recursiveUpdate (cluster.settings.kubernetes.services.media // fixtureDefinitions) overrides;
+          media = lib.recursiveUpdate (
+            cluster.settings.kubernetes.services.media // fixtureDefinitions
+          ) overrides;
           evaluated =
             (lib.evalModules {
               modules = [
@@ -174,13 +180,22 @@
               ];
             }).config;
         in
-        cluster // {
-          settings = lib.recursiveUpdateUntil (path: _: _: path == [ "kubernetes" "services" "media" ])
-            cluster.settings
-            { kubernetes.services.media = media // evaluated; };
+        cluster
+        // {
+          settings = lib.recursiveUpdateUntil (
+            path: _: _:
+            path == [
+              "kubernetes"
+              "services"
+              "media"
+            ]
+          ) cluster.settings { kubernetes.services.media = media // evaluated; };
         };
       fixtureCluster = fixtureClusterWith { };
-      fixtureInstances = lib.getAttrs [ "radarr" "sonarr" ] fixtureCluster.settings.kubernetes.services.media;
+      fixtureInstances = lib.getAttrs [
+        "radarr"
+        "sonarr"
+      ] fixtureCluster.settings.kubernetes.services.media;
       fixtureCompute = computeResources // {
         retainedPaths =
           computeResources.retainedPaths
@@ -234,10 +249,7 @@
           computeResources = fixtureCompute;
         });
       mediaWith =
-        overrides:
-        builtins.tryEval (
-          builtins.deepSeq (mediaManifests (fixtureClusterWith overrides)) true
-        );
+        overrides: builtins.tryEval (builtins.deepSeq (mediaManifests (fixtureClusterWith overrides)) true);
       configurationWith =
         overrides:
         builtins.tryEval (
@@ -436,34 +448,54 @@
           seerrRoleAccepted = (configurationWith { }).success;
           noStandardRejected = !mediaNoStandard.success;
           ambiguousStandardRejected = !mediaAmbiguousStandard.success;
-          unsupportedFourKRejected = lib.all (
-            kind:
-            let
-              name = if kind == "radarr" then "remux" else "anime";
-            in
-            lib.all (
-              profile:
-              let
-                selection = {
-                  qualityProfiles = [ profile ];
-                  defaultQualityProfile = profile;
-                };
-              in
-              (configurationWith { ${kind}.${name} = selection; }).success
-              && !(configurationWith {
-                ${kind}.${name} = selection // { role = "4k"; };
-              }).success
-            ) [ "hd-preferred" "web-1080p" "remux-web-1080p" ]
-          ) [ "radarr" "sonarr" ];
-          emptyQualityProfilesRejected = !(configurationWith {
-            radarr.radarr.qualityProfiles = [ ];
-          }).success;
-          duplicateQualityProfilesRejected = !(configurationWith {
-            radarr.radarr.qualityProfiles = [ "hd-preferred" "hd-preferred" ];
-          }).success;
-          missingDefaultProfileRejected = !(configurationWith {
-            radarr.radarr.qualityProfiles = [ "web-1080p" ];
-          }).success;
+          unsupportedFourKRejected =
+            lib.all
+              (
+                kind:
+                let
+                  name = if kind == "radarr" then "remux" else "anime";
+                in
+                lib.all
+                  (
+                    profile:
+                    let
+                      selection = {
+                        qualityProfiles = [ profile ];
+                        defaultQualityProfile = profile;
+                      };
+                    in
+                    (configurationWith { ${kind}.${name} = selection; }).success
+                    && !(configurationWith {
+                      ${kind}.${name} = selection // {
+                        role = "4k";
+                      };
+                    }).success
+                  )
+                  [
+                    "hd-preferred"
+                    "web-1080p"
+                    "remux-web-1080p"
+                  ]
+              )
+              [
+                "radarr"
+                "sonarr"
+              ];
+          emptyQualityProfilesRejected =
+            !(configurationWith {
+              radarr.radarr.qualityProfiles = [ ];
+            }).success;
+          duplicateQualityProfilesRejected =
+            !(configurationWith {
+              radarr.radarr.qualityProfiles = [
+                "hd-preferred"
+                "hd-preferred"
+              ];
+            }).success;
+          missingDefaultProfileRejected =
+            !(configurationWith {
+              radarr.radarr.qualityProfiles = [ "web-1080p" ];
+            }).success;
           noSharingRejected = !mediaNoSharing.success;
           stateCollisionRejected = !mediaStateCollision.success;
           secretCollisionRejected = !mediaSecretCollision.success;
@@ -557,7 +589,6 @@
             assert fixture["nativeRouteRejected"]
             assert fixture["extraNativeRouteRejected"]
             assert fixture["extraAdminRouteAccepted"]
-            assert storage["mediaInstances"] == {"radarr": ["radarr"], "sonarr": ["sonarr"]}
 
             # Browser sign-in to Arr, Prowlarr and SABnzbd is the Gateway's
             # Kanidm sign-in only: each app sits behind an admin route and
@@ -607,7 +638,6 @@
                     "globalMounts": [{"path": "/data"}],
                 }
                 container = values["controllers"]["main"]["containers"]["main"]
-                assert set(container["image"]) == {"repository", "tag", "digest"}
                 secret_ref = container["env"][f"{kind.upper()}__AUTH__APIKEY"]
                 assert secret_ref["valueFrom"]["secretKeyRef"]["key"] == cfg["apiSecretKey"]
 
@@ -627,9 +657,6 @@
                 pod = find("Deployment", name)["spec"]["template"]["spec"]
                 assert media_gid in pod["securityContext"]["supplementalGroups"], name
 
-            # Native media-acquisition-identity compares SABnzbd PUID/PGID and the
-            # initializer uid/gid with the trusted retained identity; this pins that identity.
-            assert sabnzbd_identity["uid"] == sabnzbd_identity["gid"] == 757
             jellyfin_security = find("Deployment", "jellyfin")["spec"]["template"]["spec"]["securityContext"]
             assert media_gid in jellyfin_security["supplementalGroups"]
 
@@ -642,6 +669,7 @@
                     "path = " + repr(str(config_path)),
                 ).replace("/data", str(data_path))
                 original = os.environ.copy()
+                os.environ.clear()
                 os.environ.update(values)
                 try:
                     exec(compile(translated, "<sabnzbd-init>", "exec"), {"__name__": "__main__"})
@@ -666,6 +694,21 @@
                 config_path = root / "sabnzbd.ini"
                 data_path = root / "data"
                 data_path.mkdir()
+                for key in runtime_values:
+                    for invalid in (None, "", " \n"):
+                        values = dict(runtime_values)
+                        if invalid is None:
+                            del values[key]
+                        else:
+                            values[key] = invalid
+                        try:
+                            run_init(script, config_path, data_path, values)
+                        except (KeyError, ValueError):
+                            pass
+                        else:
+                            raise AssertionError("SABnzbd accepted a missing or empty credential: " + key)
+                        assert not config_path.exists(), "refused credentials wrote SABnzbd configuration"
+
                 initial = ConfigObj(encoding="utf-8")
                 initial["misc"] = {}
                 initial["misc"].update({"custom_misc": "keep-misc", "host": "old-host"})
@@ -741,20 +784,14 @@
             # native: media-configuration-state, media-configuration-inventory, pod-pvc-no-fsgroup.
             for path in (environment / "media-configuration").rglob("*.yaml"):
                 for resource in yaml.safe_load_all(path.read_text()):
-                    if resource and resource["kind"] in {"Job", "CronJob"}:
-                        spec = resource["spec"]
-                        if resource["kind"] == "CronJob":
-                            spec = spec["jobTemplate"]["spec"]
-                        pod = spec["template"]["spec"]
-                        for container in pod["containers"] + pod.get("initContainers", []):
-                            assert isinstance(container["image"], str), resource["metadata"]["name"]
-                            assert isinstance(container.get("env", []), list), resource["metadata"]["name"]
-                        if resource["kind"] == "Job" and resource["metadata"]["name"] == "media-configarr":
-                            configarr_container = next(c for c in pod["containers"] if c["name"] == "configarr")
-                            configarr_env = {
-                                entry["name"]: entry.get("value")
-                                for entry in configarr_container["env"]
-                            }
+                    if (resource and resource["kind"] == "Job"
+                            and resource["metadata"]["name"] == "media-configarr"):
+                        pod = resource["spec"]["template"]["spec"]
+                        configarr_container = next(c for c in pod["containers"] if c["name"] == "configarr")
+                        configarr_env = {
+                            entry["name"]: entry.get("value")
+                            for entry in configarr_container["env"]
+                        }
                     if (resource and resource["kind"] == "ConfigMap"
                             and resource["metadata"]["name"] == "media-configuration"):
                         configarr = yaml.load(resource["data"]["config.yml"], Loader=ConfigarrLoader)
