@@ -91,7 +91,7 @@ in
         and hosted support. Build an individual check with:
 
         ```sh
-        nix build --no-link -L ".#checks.$system.$check"
+        nix build --no-link -L ".#checks.$system.\"$check\""
         ```
 
         Set `system` to the builder's native platform and `check` to the selected
@@ -115,7 +115,7 @@ in
         appropriate disposable builder rather than weakening the Nix sandbox:
 
         ```sh
-        driver=$(nix build --no-link --print-out-paths ".#checks.$system.$check.driver")
+        driver=$(nix build --no-link --print-out-paths ".#checks.$system.\"$check\".driver")
         run_dir=$(mktemp -d /var/tmp/homelab-test.XXXXXX)
         chmod 700 "$run_dir"
         XDG_RUNTIME_DIR="$run_dir" "$driver/bin/nixos-test-driver"
