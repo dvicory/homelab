@@ -31,6 +31,16 @@
             # argument. Send the same native commands an operator enters in that shell.
             session.sendline("zfs get -H -o value keystatus rpool")
             session.expect_exact("\r\nunavailable\r\n")
+            session.sendline("systemctl show --no-pager sysroot-var-lib-nixos.mount -p Requires -p After -p What; echo __MOUNT_GRAPH_DONE__")
+            session.expect_exact("\r\n__MOUNT_GRAPH_DONE__\r\n")
+            properties = dict(
+                line.split("=", 1) for line in session.before.splitlines()
+                if line.startswith(("Requires=", "After=", "What="))
+            )
+            assert properties["What"] == "/sysroot/persist/var/lib/nixos", properties
+            for dependency in ["Requires", "After"]:
+                assert "sysroot-persist.mount" in properties[dependency].split(), properties
+            print("INITRD_BIND_GRAPH", properties)
             session.sendline("exec /bin/systemd-tty-ask-password-agent --query")
             session.expect("Enter key for rpool:")
             session.sendline(passphrase)
@@ -198,12 +208,26 @@
                 assert result != 0 and "Permission denied (publickey)" in output, output
                 # The helper observes the *actual* locked keystatus after rejection,
                 # then answers the native request whose consumer runs zfs load-key.
-                client.succeed(f"printf '%s\\n' {shlex.quote(runtime_passphrase)} | ${python}/bin/python ${sshUnlock} {address}")
+                client.log(client.succeed(f"printf '%s\\n' {shlex.quote(runtime_passphrase)} | ${python}/bin/python ${sshUnlock} {address}"))
 
             def assert_boot(vm, timeout=90):
                 vm.wait_for_unit("multi-user.target", timeout=timeout)
                 vm.succeed("test $(zfs get -H -o value keystatus rpool) = available && test $(zfs get -H -o value keylocation rpool) = prompt")
                 vm.succeed("test ! -e /ephemeral-marker && test $(cat /var/lib/fixture/persistent-marker) = persistent && test $(cat /persist/var/lib/fixture/persistent-marker) = persistent")
+                for unit, source in [
+                    ("var-lib-nixos.mount", "/persist/var/lib/nixos"),
+                    ("var-lib-fixture.mount", "/persist/var/lib/fixture"),
+                ]:
+                    graph = vm.succeed(f"systemctl show --no-pager {unit} -p Requires -p After -p What -p ActiveState")
+                    properties = dict(line.split("=", 1) for line in graph.splitlines())
+                    assert properties["ActiveState"] == "active", properties
+                    target = source.removeprefix("/persist")
+                    vm.succeed(f"findmnt --mountpoint {target}")
+                    identities = vm.succeed(f"stat -c '%d:%i' {target} {source}").splitlines()
+                    assert identities[0] == identities[1], (unit, identities)
+                    for dependency in ["Requires", "After"]:
+                        assert "persist.mount" in properties[dependency].split(), properties
+                    vm.log(f"STAGE2_BIND_GRAPH {unit} {properties}")
                 events = [
                     json.loads(line)
                     for line in vm.succeed("journalctl -b -o json --no-pager").splitlines()

@@ -51,7 +51,7 @@
     # agenix + agenix-rekey declared by batteries/agenix.nix (self-contained)
 
     # Impermanence
-    impermanence.url = "github:dvicory/impermanence/systemd-requires";
+    impermanence.url = "github:nix-community/impermanence/fa627f4c8b8e92f58f58a73d99ee4e1304e64eb2";
 
     # Hardware detection
     nixos-facter-modules.url = "github:nix-community/nixos-facter-modules";

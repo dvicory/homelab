@@ -1222,17 +1222,17 @@
         "nixpkgs": "nixpkgs_5"
       },
       "locked": {
-        "lastModified": 1788598344,
-        "narHash": "sha256-Zzbfrqh/dLyFNuA4VKdn6Ao2a9C6YBKAMjGC36yQDFk=",
-        "owner": "dvicory",
+        "lastModified": 1792739756,
+        "narHash": "sha256-s0TeXWG5Ci75Y/Hzon0Z7NrN/fG773Rc54/z6oPFszQ=",
+        "owner": "nix-community",
         "repo": "impermanence",
-        "rev": "0aba88a5241d0a2786168aa72ee2e25f2cf5707b",
+        "rev": "fa627f4c8b8e92f58f58a73d99ee4e1304e64eb2",
         "type": "github"
       },
       "original": {
-        "owner": "dvicory",
-        "ref": "systemd-requires",
+        "owner": "nix-community",
         "repo": "impermanence",
+        "rev": "fa627f4c8b8e92f58f58a73d99ee4e1304e64eb2",
         "type": "github"
       }
     },
