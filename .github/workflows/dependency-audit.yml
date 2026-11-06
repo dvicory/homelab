@@ -8,6 +8,9 @@ on:
     paths:
       - "pkgs/by-name/compute-runtime/**"
       - "flake.lock"
+      - "modules/den/aspects/virtualization/incus*"
+      - "modules/den/aspects/core/network/tailscale*"
+      - "modules/flake/stock-go-audit.nix"
       - ".github/workflows/dependency-audit.yml"
   push:
     branches:
@@ -15,6 +18,9 @@ on:
     paths:
       - "pkgs/by-name/compute-runtime/**"
       - "flake.lock"
+      - "modules/den/aspects/virtualization/incus*"
+      - "modules/den/aspects/core/network/tailscale*"
+      - "modules/flake/stock-go-audit.nix"
       - ".github/workflows/dependency-audit.yml"
 
 permissions:
@@ -54,3 +60,19 @@ jobs:
             osv-scanner scan source \
               --lockfile=pkgs/by-name/compute-runtime/go.mod \
               --all-vulns --no-call-analysis=go
+
+  stock-go:
+    name: Audit selected Incus and Tailscale binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+
+      - name: Audit linked modules and binary symbols
+        run: nix run path:.#stock-go-audit
