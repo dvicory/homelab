@@ -45,6 +45,7 @@ in
       contractInputs = pkgs.writeText "monitoring-contract-inputs.json" (
         builtins.toJSON {
           inherit hostChecks;
+          collectorVersion = collector.version;
           routes = cluster.routes;
           adminGroup = cluster.settings.kubernetes.services.identity.adminGroup;
           metricsPath = compute.retainedPaths.monitoring-metrics.guestPath;
