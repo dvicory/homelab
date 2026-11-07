@@ -32,6 +32,8 @@ var readinessMarkers = []string{
 	"failed to load plugin", "failed to register node", "node not found", "connection refused",
 	"permission denied", "operation not permitted", "read-only file system", "invalid argument",
 	"no space left on device", "certificate signed by unknown authority", "certificate has expired",
+	"failed to start containermanager", "failed to get rootfs info", "cannot find filesystem info for device",
+	"stat fs failed for zfs", "executable file not found", "initialize logging",
 	"cgroup", "swap", "user namespace", "setgroups", "oom_score_adj", "apparmor", "seccomp",
 	"overlayfs", "userxattr", "nftables", "conntrack", "containerd successfully booted", "starting kubelet",
 }

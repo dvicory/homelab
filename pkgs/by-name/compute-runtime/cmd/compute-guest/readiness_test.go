@@ -18,7 +18,7 @@ func TestReadinessWitnessNeverRetainsGuestText(t *testing.T) {
 		case "systemctl":
 			text = "ActiveState=activating\nSubState=auto-restart\nResult=" + secret + "\nExecMainStatus=1\nNRestarts=17\nEnvironment=" + secret
 		case "journalctl":
-			text = "Failed to run Kubelet: permission denied " + secret
+			text = "Failed to run Kubelet: permission denied; Failed to start ContainerManager: failed to get rootfs info: cannot find filesystem info for device " + secret
 		case "tail":
 			text = "failed to load plugin: operation not permitted " + strings.Repeat(secret, 20000)
 		case "k3s":
@@ -39,7 +39,7 @@ func TestReadinessWitnessNeverRetainsGuestText(t *testing.T) {
 	if calls != 5 || strings.Contains(text, secret) || strings.Contains(text, "Environment") {
 		t.Fatalf("unbounded or sensitive witness: calls=%d %s", calls, text)
 	}
-	for _, expected := range []string{"failed to run kubelet", "permission denied", "operation not permitted", "cni plugin not initialized", "connection refused", `"ExecMainStatus":"1"`, `"NRestarts":"17"`, `"Result":"unknown"`, `"status":"False"`, `"status":"false"`} {
+	for _, expected := range []string{"failed to run kubelet", "permission denied", "operation not permitted", "cni plugin not initialized", "connection refused", "failed to start containermanager", "failed to get rootfs info", "cannot find filesystem info for device", `"ExecMainStatus":"1"`, `"NRestarts":"17"`, `"Result":"unknown"`, `"status":"False"`, `"status":"false"`} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("missing fixed diagnostic %q: %s", expected, text)
 		}

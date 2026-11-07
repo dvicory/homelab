@@ -22,15 +22,22 @@
         services.k3s = {
           enable = true;
           role = "server";
-          # The startup probe must mount with the same userns xattr mode as
-          # containerd's overlay snapshotter; retain its real multi-layer mount.
+          # Keep the real overlay mount probe userns-compatible. Backport
+          # cAdvisor's released ZFS-query fallback to real mountpoint statfs:
+          # Incus exposes /dev/zfs, but this guest has no host-ZFS authority.
           package = pkgs.k3s.override {
             overrideBundleAttrs = old: {
               goModules = pkgs.applyPatches {
-                name = "k3s-overlay-userxattr-go-modules";
+                name = "k3s-userns-go-modules";
                 src = old.goModules;
-                patches = [ ./k3s-overlay-userxattr.patch ];
+                patches = [
+                  ./k3s-overlay-userxattr.patch
+                  ./k3s-cadvisor-zfs-vfs.patch
+                ];
               };
+              postCheck = (old.postCheck or "") + ''
+                go test -mod=vendor github.com/google/cadvisor/fs/zfs
+              '';
             };
           };
           # SQLite, Flannel, CoreDNS, and kube-proxy remain the supported
