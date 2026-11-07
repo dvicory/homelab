@@ -106,6 +106,11 @@ in
         rollback requires the previous generation's `deploy-rs-activate` hook;
         a plain NixOS profile needs a wrapper around its exact existing system first.
 
+        Native `deploy-schema` and `deploy-activate` checks use deploy-rs's own
+        validation and build the exact activation wrappers for that platform's
+        enabled deployment nodes. They do not activate a system or replace the
+        controlled production dry-activation and recovery checks.
+
         On an x86 Linux checkout, run
         `nix run path:.#stock-go-audit -- /absolute/path/to/report-directory`
         to audit the selected Incus daemon/client and Tailscale multicall ELF

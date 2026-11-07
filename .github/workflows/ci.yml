@@ -335,16 +335,11 @@ jobs:
           fi
           # Release the evaluation heap before any build/VM starts (PR #64).
           if [ "$GROUP" = checks ] && [ -z "$CHECK" ]; then
-            # Share the full inventory only with its complete aggregate.
-            nix eval --json ".#hostedCiArtifacts.$SYSTEM" \
-              --apply "p: { inherit (p) inventory; artifact = p.$artifact_attr; }" \
-              > "$RUNNER_TEMP/check-projection.json"
-            jq -c .inventory "$RUNNER_TEMP/check-projection.json" > "$RUNNER_TEMP/check-inventory.json"
-            jq -c .artifact "$RUNNER_TEMP/check-projection.json" > "$RUNNER_TEMP/artifact.json"
+            # Release the full runtime-fixture heap before evaluating the fast aggregate.
+            nix eval --json ".#hostedCiArtifacts.$SYSTEM.inventory" > "$RUNNER_TEMP/check-inventory.json"
             cat "$RUNNER_TEMP/check-inventory.json"
-          else
-            nix eval --json ".#hostedCiArtifacts.$SYSTEM.$artifact_attr" > "$RUNNER_TEMP/artifact.json"
           fi
+          nix eval --json ".#hostedCiArtifacts.$SYSTEM.$artifact_attr" > "$RUNNER_TEMP/artifact.json"
           jq -n --arg system "$SYSTEM" --arg group "$GROUP" --arg check "$CHECK" \
             --slurpfile artifact "$RUNNER_TEMP/artifact.json" \
             '{role: "build", system: $system, group: $group, check: $check, artifact: $artifact[0]}' \

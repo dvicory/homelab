@@ -210,9 +210,14 @@ in
         migration, Incus/MergerFS storage or Kubernetes RBAC.
 
         Pin-change state failures report bounded field paths and numeric
-        differences, not credential/string values. The exact state-equality
-        guard still fails; diagnostics do not classify a difference as harmless
-        or authorize removing its preservation check.
+        differences, not credential/string values. Snapshots ignore only the
+        order of contiguous leading
+        disabled leaf qualities in managed profiles: native execution proved
+        Configarr 1.36 changes that prefix's order when quality-size writes
+        become no-ops. Every leaf field, membership and duplicate remains
+        checked; enabled priority, groups, later disabled positions and UI-owned
+        ordering remain exact. Native policy/profile checks still enforce the
+        declared qualities, cutoff and scores; other state differences fail.
 
         ### Source cache and offline recovery
 

@@ -23,8 +23,9 @@ actual runner availability and start order.
 
 `hostedCiArtifacts.<system>` supplies lazy `groups`, `checks`,
 `nativeApplications` and `bootstrap` leaves, plus the local check `inventory`.
-Complete fast-check executors evaluate their inventory and aggregate together,
-then release the evaluator before building. A selected-check dispatch forces only
+Complete fast-check executors evaluate inventory and aggregate in separate
+processes, releasing the runtime-fixture heap before aggregate evaluation.
+A selected-check dispatch forces only
 its artifact leaf and records its exact selected receipt, without evaluating or
 uploading a complete platform inventory. Other executors also force only their
 own artifact leaf. Each leaf declares exact derivation/output paths; native
