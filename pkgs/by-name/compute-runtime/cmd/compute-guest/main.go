@@ -1021,6 +1021,14 @@ func waitReady(server incus.InstanceServer, name string) error {
 	if lastErr == nil {
 		lastErr = errors.New("readiness probes did not complete")
 	}
+	witness := collectReadinessWitness(func(argv []string, output io.Writer) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		return incusops.Exec(ctx, server, name, argv, strings.NewReader(""), output, io.Discard)
+	})
+	if encoded, err := json.Marshal(witness); err == nil {
+		fmt.Fprintf(os.Stderr, "compute-guest: pre-stop readiness witness: %s\n", encoded)
+	}
 	return fmt.Errorf("readiness failed at %s: %w; the guest was stopped and retained inputs were not removed", layer, lastErr)
 }
 
