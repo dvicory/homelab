@@ -134,22 +134,65 @@ let
   ];
   kanidmDeployment = findObject normalObjects "Deployment" namespace "kanidm";
   kanidmService = findObject normalObjects "Service" namespace "kanidm";
-  serverConfig = builtins.fromTOML (mountedServerConfig normalObjects).content;
+  exactlyOne =
+    description: values:
+    assert lib.assertMsg (builtins.length values == 1) "Expected one ${description}";
+    builtins.head values;
   mountedServerConfig =
     objects:
     let
-      pod = (findObject objects "Deployment" namespace "kanidm").spec.template.spec;
-      container = lib.findFirst (container: container.name == "kanidm") null pod.containers;
-      mount = lib.findFirst (mount: lib.elem mount.mountPath container.args) null container.volumeMounts;
-      volume = lib.findFirst (volume: volume.name == mount.name) null pod.volumes;
-      configMap = findObject objects "ConfigMap" namespace volume.configMap.name;
+      deployment = exactlyOne "Kanidm Deployment" (
+        lib.filter (
+          object:
+          object.kind == "Deployment"
+          && object.metadata.name == "kanidm"
+          && (object.metadata.namespace or "") == namespace
+        ) objects
+      );
+      pod = deployment.spec.template.spec;
+      container = exactlyOne "Kanidm container" (
+        lib.filter (container: container.name == "kanidm") pod.containers
+      );
+      mount = exactlyOne "mounted Kanidm server configuration" (
+        lib.filter (mount: lib.elem mount.mountPath container.args) container.volumeMounts
+      );
+      volume = exactlyOne "Kanidm configuration volume" (
+        lib.filter (volume: volume.name == mount.name) pod.volumes
+      );
+      configMap = exactlyOne "mounted Kanidm ConfigMap" (
+        lib.filter (
+          object:
+          object.kind == "ConfigMap"
+          && object.metadata.name == volume.configMap.name
+          && (object.metadata.namespace or "") == namespace
+        ) objects
+      );
+      key =
+        if volume.configMap ? items then
+          (exactlyOne "Kanidm server configuration key" (
+            lib.filter (item: item.path == mount.subPath) volume.configMap.items
+          )).key
+        else
+          mount.subPath;
     in
+    assert lib.assertMsg (
+      !(volume.configMap.optional or false)
+    ) "Kanidm server configuration must be required";
     {
       inherit volume;
-      inherit (configMap.metadata) name;
       immutable = configMap.immutable or false;
-      content = configMap.data.${mount.subPath};
+      inherit (configMap.metadata) name;
+      inherit key;
+      content = configMap.data.${key};
     };
+  parsedServerConfig = objects: builtins.fromTOML (mountedServerConfig objects).content;
+  localBackupDisabled = objects: !(parsedServerConfig objects ? online_backup);
+  phaseObjects = map (rendered: rendered.applications.identity.objects) [
+    initial
+    provisioning
+    normal
+  ];
+  serverConfig = parsedServerConfig normalObjects;
   # NetworkPolicies are additive, regardless of name or application owner.
   admissionObjects =
     identityRendered: gatewayRendered:
@@ -333,20 +376,7 @@ let
           "provisioning"
           "normal"
         ];
-    server-local-backup-disabled =
-      lib.all
-        (
-          rendered:
-          !(
-            (builtins.fromTOML (mountedServerConfig rendered.applications.identity.objects).content)
-            ? online_backup
-          )
-        )
-        [
-          initial
-          provisioning
-          normal
-        ];
+    server-local-backup-disabled = lib.all localBackupDisabled phaseObjects;
     # Kanidm serves LDAPS on the declared directory port, on its Service.
     directory-listens =
       serverConfig.ldapbindaddress == "0.0.0.0:${toString directory.port}"

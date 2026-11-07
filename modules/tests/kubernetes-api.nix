@@ -89,6 +89,20 @@
             });
           };
       imageReference = image: image.imageReference or "${image.imageName}:${image.imageTag}";
+      reporter = pkgs.replaceVars ./_kubernetes-api/report.py {
+        expectedImage = imageReference serverImage;
+        expectedServerVersion = "v${k3sPackage.version}";
+      };
+      apiHelpers = pkgs.linkFarm "kubernetes-api-helpers" [
+        {
+          name = "report.py";
+          path = reporter;
+        }
+        {
+          name = "run.py";
+          path = ./_kubernetes-api/run.py;
+        }
+      ];
       helperPaths = lib.concatMap (fixture: fixture.settings.paths or [ ]) fixtureList;
       settings =
         assert lib.assertMsg (
@@ -162,17 +176,18 @@
       runner = pkgs.writeShellScriptBin "verify-kubernetes-api" ''
         if [ "''${1-}" = "--check-report" ]; then
           shift
-          exec ${python}/bin/python3 ${./_kubernetes-api}/report.py --check-full "$@"
+          exec ${python}/bin/python3 ${reporter} --check-full "$@"
         fi
-        exec ${python}/bin/python3 ${./_kubernetes-api}/run.py ${defaultFixture} "$@"
+        export PYTHONPATH=${apiHelpers}
+        exec ${python}/bin/python3 -P -m run ${defaultFixture} "$@"
       '';
     in
     {
       checks.verification-reports = pkgs.runCommand "verification-reports" { } ''
         export PYTHONDONTWRITEBYTECODE=1
-        export PYTHONPATH=${./_kubernetes-api}
-        ${python}/bin/python3 ${./_kubernetes-api}/report.py
-        ${python}/bin/python3 -c 'import run; run.self_check()'
+        export PYTHONPATH=${apiHelpers}
+        ${python}/bin/python3 ${reporter}
+        ${python}/bin/python3 -P -c 'import run; run.self_check()'
         ${python}/bin/python3 ${../../.github/required-ci.py} --self-test
         touch "$out"
       '';

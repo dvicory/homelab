@@ -1,4 +1,8 @@
 """Fail closed on named safety scenarios, not incidental operation counts."""
+# Bound by Nix to the selected guest package, never supplied by a report.
+EXPECTED_IMAGE = "@expectedImage@"
+EXPECTED_SERVER_VERSION = "@expectedServerVersion@"
+
 
 # Independent of fixture discovery and supplied settings: missing a family or
 # selecting a smaller fixture cannot redefine full acceptance.
@@ -850,12 +854,16 @@ def check_report(raw, required):
             raise ValueError("scenario-failure-or-skip")
 
 
-def check_acceptance(report):
-    """Validate the persisted sanitized result with independent safety identities."""
+def check_acceptance(report, expected_image=EXPECTED_IMAGE, expected_server_version=EXPECTED_SERVER_VERSION):
+    """Validate persisted results against the independent packaged identities."""
     if not isinstance(report, dict):
         raise ValueError("acceptance-report-shape")
     if report.get("scenario") != "kubernetes-native-safety":
         raise ValueError("acceptance-scenario")
+    if not expected_image or expected_image.startswith("@") or report.get("image") != expected_image:
+        raise ValueError("acceptance-image")
+    if not expected_server_version or expected_server_version.startswith("@") or report.get("serverGitVersion") != expected_server_version:
+        raise ValueError("target-version-mismatch")
     supplied = report.get("requiredScenarios")
     if not isinstance(supplied, list) or len(supplied) != len(REQUIRED_SCENARIOS) or set(supplied) != set(REQUIRED_SCENARIOS):
         raise ValueError("required-scenario-inventory")
@@ -1323,8 +1331,11 @@ def self_check():
     varied = copy.deepcopy(good)
     varied["tests"][0]["steps"][0]["operations"] *= 3
     check_report(varied, required)
+    expected_image = "homelab/native-kubernetes-api:1.2.3-k3s1" if EXPECTED_IMAGE.startswith("@") else EXPECTED_IMAGE
+    expected_server_version = "v1.2.3+k3s1" if EXPECTED_SERVER_VERSION.startswith("@") else EXPECTED_SERVER_VERSION
     complete = {
         "scenario": "kubernetes-native-safety", "requiredScenarios": REQUIRED_SCENARIOS,
+        "image": expected_image, "serverGitVersion": expected_server_version,
         "executed": sanitize_tests({"name": name, "status": "passed", "steps": [
             {"status": "passed", "operations": [{"status": "passed", "type": "assert"}]},
         ]} for name in REQUIRED_SCENARIOS),
@@ -1332,7 +1343,7 @@ def self_check():
         "mutation": {"gatewayTLSCEL": False, "argo": ""},
         "cleanup": {key: True for key in ("containers", "volumes", "network", "credentials")},
     }
-    check_acceptance(complete)
+    check_acceptance(complete, expected_image, expected_server_version)
     incomplete = [None, {}, {"executed": []}]
     for key in complete:
         bad = copy.deepcopy(complete)
@@ -1341,6 +1352,11 @@ def self_check():
     for key, value in (
         ("executed", []), ("requiredScenarios", REQUIRED_SCENARIOS[:-1]),
         ("scoped", True), ("scoped", None), ("status", "failed"), ("fullAcceptance", False),
+        ("image", "homelab/native-kubernetes-api:1.2.2-k3s1"),
+        ("image", "rancher/k3s:1.2.3-k3s1"),
+        ("image", expected_image + "-modified"),
+        ("serverGitVersion", "v1.2.2+k3s1"), ("serverGitVersion", "v1.2.3"),
+        ("serverGitVersion", expected_server_version + "-modified"),
         ("mutation", {"gatewayTLSCEL": True, "argo": ""}), ("failureReason", "command-failed"),
         ("mutation", {"gatewayTLSCEL": 0, "argo": ""}),
         ("failurePhase", "cleanup"), ("commandFailure", {"returnCode": 1}),
@@ -1373,12 +1389,21 @@ def self_check():
         else:
             bad["executed"].pop()
         incomplete.append(bad)
-    for bad in incomplete:
-        try:
-            check_acceptance(bad)
-        except ValueError:
-            continue
-        raise AssertionError("incomplete acceptance accepted")
+    # Exercise the builder on persisted JSON, not source text or wiring.
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory(prefix="acceptance-report-") as directory:
+        persisted = Path(directory) / "report.json"
+        persisted.write_text(json.dumps(complete))
+        check_acceptance(json.loads(persisted.read_text()), expected_image, expected_server_version)
+        for bad in incomplete:
+            persisted.write_text(json.dumps(bad))
+            try:
+                check_acceptance(json.loads(persisted.read_text()), expected_image, expected_server_version)
+            except ValueError:
+                continue
+            raise AssertionError("incomplete acceptance accepted")
 
 
 if __name__ == "__main__":
