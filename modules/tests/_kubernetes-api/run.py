@@ -34,6 +34,72 @@ def capture_containerd_rpc(docker_command, env, node):
         return {"errorCategory": "transport"}
 
 
+def capture_import_runtime_failure(docker_command, env, node):
+    """Investigation-only numbers/categories; never persist native log bytes."""
+    import re
+    import shutil
+
+    witness = {}
+    try:
+        witness["hostRootDiskFreeBytes"] = shutil.disk_usage("/").free
+        witness["hostWorkDiskFreeBytes"] = shutil.disk_usage(tempfile.gettempdir()).free
+    except OSError as error:
+        witness["hostDiskUsageError"] = type(error).__name__
+
+    def query(*command):
+        return subprocess.run([*docker_command, *command], env=env, capture_output=True,
+                              text=True, timeout=5)
+
+    try:
+        result = query("inspect", node)
+        witness["inspectReturnCode"] = result.returncode
+        if result.returncode == 0:
+            inspected = json.loads(result.stdout)[0]
+            state = inspected["State"]
+            witness["state"] = {key: state[key] for key in ("Running", "OOMKilled", "ExitCode")
+                                if type(state.get(key)) in (bool, int)}
+            witness["memoryLimitBytes"] = inspected["HostConfig"]["Memory"]
+            witness["restartCount"] = inspected["RestartCount"]
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, IndexError) as error:
+        witness["inspectError"] = type(error).__name__
+    try:
+        result = query("exec", node, "cat", "/sys/fs/cgroup/memory.events")
+        witness["memoryEventsReturnCode"] = result.returncode
+        if result.returncode == 0:
+            allowed = {"low", "high", "max", "oom", "oom_kill", "oom_group_kill", "sock_throttled"}
+            witness["memoryEvents"] = {key: int(value) for line in result.stdout.splitlines()
+                                       if len(parts := line.split()) == 2
+                                       for key, value in [parts] if key in allowed and value.isdecimal()}
+    except (OSError, subprocess.TimeoutExpired) as error:
+        witness["memoryEventsError"] = type(error).__name__
+    try:
+        result = query("logs", "--tail", "200", node)
+        witness["logsReturnCode"] = result.returncode
+        if result.returncode == 0:
+            text = (result.stdout + result.stderr).lower()
+            categories = {
+                "containerdExited": ("containerd exited", "containerd process exited"),
+                "containerdKilled": ("containerd exited: signal: killed",),
+                "kubeletExited": ("kubelet exited",),
+                "rootfsInformationFailure": ("failed to get rootfs info", "cannot find filesystem info for device"),
+                "allocationFailure": ("out of memory", "cannot allocate memory", "oom-kill"),
+                "spaceFailure": ("no space left on device", "disk quota exceeded"),
+                "fatal": ("level=fatal",),
+                "panic": ("panic:", "fatal error:"),
+            }
+            witness["logCategories"] = {key: any(pattern in text for pattern in patterns)
+                                        for key, patterns in categories.items()}
+            witness["componentExitCodes"] = [
+                {"component": component, "exitCode": int(code)}
+                for component, code in re.findall(r"\b(containerd|kubelet) exited:\s*exit status (\d+)\b", text)
+                if int(code) <= 255
+            ][-8:]
+    except (OSError, subprocess.TimeoutExpired) as error:
+        witness["logsError"] = type(error).__name__
+    print(json.dumps({"event": "owned-import-runtime-failure", "witness": witness}),
+          file=sys.stderr, flush=True)
+
+
 def capture_envoy_dns(kubectl_command, docker_command, env, node, pod):
     """Probe the actual owned Envoy network namespace; never retain native bytes."""
     import re
@@ -389,6 +455,7 @@ def main():
                 if operation == "ctr-import":
                     report["commandFailure"]["containerdSocketFailure"] = containerd_socket_failure(result.stderr)
                     report["commandFailure"]["containerdRPC"] = capture_containerd_rpc(docker, env, name)
+                    capture_import_runtime_failure(docker, env, name)
             raise RuntimeError("command-failed")
         return result
 
