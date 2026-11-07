@@ -48,11 +48,7 @@ in
           # only after it restarts.
           "limits.cpu" = "12";
           "limits.memory" = "32GiB";
-          "limits.processes" = "8192";
           "security.guestapi" = "false";
-          "security.idmap.isolated" = "true";
-          "security.nesting" = "true";
-          "security.privileged" = "false";
         };
         devices = {
           root = {

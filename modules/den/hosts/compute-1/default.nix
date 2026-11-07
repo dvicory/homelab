@@ -1,4 +1,8 @@
-{ config, den, ... }:
+{
+  config,
+  den,
+  ...
+}:
 let
   mediaGid = config.den.groups.media.gid;
   ingress = config.den.clusters.prod-home.ingress;
@@ -8,6 +12,12 @@ in
     environment = "prod";
     system-access-groups = [ "server-access" ];
     settings.core.users.secrets.enable = false;
+    aspect = {
+      includes = [
+        den.aspects.compute-1
+        den.aspects.virtualization.incus-guest.provides.container
+      ];
+    };
     networking.interfaces.eth0 = {
       dhcp = "yes";
       managed = false;
@@ -23,31 +33,16 @@ in
 
     nixos =
       {
-        config,
         lib,
-        pkgs,
         ...
       }:
-      let
-        rootfs = config.system.build.images.lxc;
-        metadata = config.system.build.images."lxc-metadata";
-        # Keep the native archive inputs and format; favor preparation speed
-        # over compressed size without changing the guest system closure.
-        rootfsPath = "${rootfs.override { compressCommand = "pixz -0 -t"; }}/${rootfs.passthru.filePath}";
-        metadataPath = "${metadata}/${metadata.passthru.filePath}";
-      in
       {
-        boot.isContainer = true;
-        hardware.enableAllHardware = false;
-        # The native Incus image otherwise permits an empty root console password.
-        users.users.root.initialHashedPassword = lib.mkIf (!config.boot.isContainer) (lib.mkForce "!");
         # Kubelet must traverse the unshifted root:media (2770) hostPath
         # before it can mount the library for media-capable pods.
         systemd.services.k3s.serviceConfig.SupplementaryGroups = [ (toString mediaGid) ];
         # Exists without the GPU, so a Pod that mounts it still starts.
         systemd.tmpfiles.rules = [ "d /dev/dri 0755 root root -" ];
         networking.hostName = "compute-1";
-        networking.useHostResolvConf = false;
         networking.firewall.allowedTCPPorts = [
           22
           6443
@@ -58,62 +53,6 @@ in
           ingress.mode == "direct"
         ) ingress.nodePort;
         programs.command-not-found.enable = lib.mkForce false;
-
-        services.openssh = {
-          enable = true;
-          startWhenNeeded = false;
-          generateHostKeys = false;
-          hostKeys = [
-            {
-              path = "/srv/identity/ssh_host_ed25519_key";
-              type = "ed25519";
-            }
-          ];
-          settings = {
-            PermitRootLogin = "no";
-            PasswordAuthentication = false;
-            KbdInteractiveAuthentication = false;
-          };
-        };
-
-        # The host stages this key pair read-only. A missing or mismatched pair
-        # must stop sshd rather than trigger NixOS's key generator.
-        systemd.services.compute-ssh-host-key-check = {
-          description = "Verify the staged compute guest SSH identity";
-          requiredBy = [ "sshd.service" ];
-          before = [ "sshd.service" ];
-          serviceConfig = {
-            Type = "oneshot";
-            ExecStart = pkgs.writeShellScript "verify-compute-ssh-host-key" ''
-              set -euo pipefail
-              private=/srv/identity/ssh_host_ed25519_key
-              public=/srv/identity/ssh_host_ed25519_key.pub
-              test -s "$private"
-              test -s "$public"
-              actual="$(${pkgs.openssh}/bin/ssh-keygen -y -f "$private" | ${pkgs.coreutils}/bin/cut -d ' ' -f 1-2)"
-              declared="$(${pkgs.coreutils}/bin/cut -d ' ' -f 1-2 "$public")"
-              test "$actual" = "$declared"
-            '';
-          };
-        };
-
-        # Native LXC variants provide the two tarballs. The bundle records
-        # their exact paths without copying them or building them on a host
-        # that only evaluates this guest.
-        system.build.computeBundle = pkgs.linkFarm "compute-1-bundle" [
-          {
-            name = "metadata.tar.xz";
-            path = metadataPath;
-          }
-          {
-            name = "rootfs.tar.xz";
-            path = rootfsPath;
-          }
-          {
-            name = "system";
-            path = rootfs.passthru.config.system.build.toplevel;
-          }
-        ];
 
         # Guest management remains disabled until its independent host-key
         # trust is provisioned. The host/Incus path remains the recovery path.

@@ -147,8 +147,21 @@ func TestRuntimeGenerationBinding(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if generation, err := readRuntimeGeneration(root); err != nil || generation != runtimeGenerationID(yaml, names) {
+	if generation, _, err := ReadRuntimeSecretGeneration(root); err != nil || generation != runtimeGenerationID(yaml, names) {
 		t.Fatalf("snapshot generation rejected: %q, %v", generation, err)
+	}
+	markerPath := filepath.Join(root, "runtime-secrets.commit")
+	if err := os.WriteFile(markerPath, []byte("invalid-generation\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ReadRuntimeSecretGeneration(root); err == nil {
+		t.Fatal("accepted a malformed staged generation")
+	}
+	if err := os.Remove(markerPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ReadRuntimeSecretGeneration(root); err == nil {
+		t.Fatal("accepted a missing staged generation")
 	}
 }
 

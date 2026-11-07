@@ -11,6 +11,7 @@ let
   # resulting NixOS configuration, so it is captured here where the compute
   # aspect can resolve a declared capability name to its stable GID.
   fleetGroups = config.den.groups or { };
+  fleetHosts = config.den.hosts;
   prodHomeIngress = config.den.clusters.prod-home.ingress;
   idmap = import ./_idmap.nix { inherit lib; };
   planFor =
@@ -51,6 +52,41 @@ in
 {
   den.aspects.virtualization.compute = {
     settings = {
+      imports = [
+        (
+          { config, ... }:
+          let
+            guests = lib.filter (guest: guest.name == config.instance) (
+              lib.concatMap lib.attrValues (lib.attrValues fleetHosts)
+            );
+            guest =
+              assert lib.assertMsg (
+                builtins.length guests == 1
+              ) "Compute instance ${config.instance} must name exactly one declared Den guest entity.";
+              builtins.head guests;
+            platforms = den.aspects.virtualization.incus-guest.provides;
+            selected = lib.filter (name: guest.hasAspect platforms.${name}) [
+              "container"
+              "virtual-machine"
+            ];
+          in
+          {
+            config.backend =
+              assert lib.assertMsg (
+                builtins.length selected == 1
+              ) "Compute instance ${config.instance} must select exactly one Incus guest platform aspect.";
+              builtins.head selected;
+          }
+        )
+      ];
+      backend = mkOption {
+        type = types.enum [
+          "container"
+          "virtual-machine"
+        ];
+        readOnly = true;
+        description = "Incus guest type derived from the declared instance's selected Den platform aspect.";
+      };
       project = mkOption {
         type = types.str;
         description = "Incus project owning the compute envelope.";
@@ -182,6 +218,7 @@ in
       }:
       let
         cfg = host.settings.virtualization.compute;
+        isContainer = cfg.backend == "container";
         # Direct household ingress DNATs tcp/443 from the LAN uplink and
         # Tailscale to the guest's declared gateway NodePort. No TLS
         # termination and no SNAT: the peer connection keeps the client
@@ -304,8 +341,37 @@ in
           assert lib.assertMsg (
             !(cfg.instanceConfig ? "raw.idmap")
           ) "raw.idmap is derived from storageCapabilities and must not be declared directly on the instance";
-          cfg.instanceConfig // { "raw.idmap" = idmapPlan.rawIdmap; };
-        baseDevices = lib.mapAttrs (_: entry: removeAttrs entry [ "requiredPath" ]) cfg.devices;
+          (lib.optionalAttrs isContainer {
+            "limits.processes" = "8192";
+            "security.idmap.isolated" = "true";
+            "security.nesting" = "true";
+            "security.privileged" = "false";
+          })
+          // (lib.optionalAttrs (!isContainer) {
+            "agent.nic_config" = "true";
+            # The upstream NixOS EFI image does not carry a Secure Boot chain.
+            "security.secureboot" = "false";
+          })
+          // cfg.instanceConfig
+          // {
+            "raw.idmap" = idmapPlan.rawIdmap;
+          };
+        baseDevices = lib.mapAttrs (
+          _: entry:
+          let
+            device = removeAttrs entry [ "requiredPath" ];
+          in
+          if !isContainer && (entry.type or null) == "disk" && (entry.source or null) != null then
+            removeAttrs device [
+              "propagation"
+              "recursive"
+            ]
+            // {
+              "io.bus" = "virtiofs";
+            }
+          else
+            device
+        ) cfg.devices;
         requiredDeviceEntries = lib.filterAttrs (
           _: entry:
           (entry.type or null) == "disk"
@@ -332,6 +398,9 @@ in
         );
         devices =
           assert lib.assertMsg (
+            isContainer || grant == null
+          ) "Compute VM accelerator delivery is not qualified; remove the accelerator grant for a VM.";
+          assert lib.assertMsg (
             reservedCollisions == [ ]
           ) "Incus device map uses reserved names: ${lib.concatStringsSep ", " reservedCollisions}";
           assert lib.assertMsg (characterDevices == [ ])
@@ -352,7 +421,7 @@ in
               type = "disk";
               source = cfg.stateRoot;
               path = stateGuestPath;
-              propagation = "rprivate";
+              ${if isContainer then "propagation" else "io.bus"} = if isContainer then "rprivate" else "virtiofs";
               readonly = "false";
               required = "true";
             };
@@ -362,6 +431,7 @@ in
               path = "/srv/secrets";
               readonly = "true";
               required = "true";
+              ${if isContainer then null else "io.bus"} = "virtiofs";
             };
           };
         projectConfig = {
@@ -481,6 +551,14 @@ in
             mode = "0700";
             readOnly = false;
           }
+          {
+            path = secretPath;
+            uid = idmapPlan.hostUid 0;
+            gid = idmapPlan.hostGid 0;
+            mode = "0700";
+            readOnly = true;
+            fsType = "tmpfs";
+          }
         ]
         ++ deviceRequiredPaths;
         descriptor = {
@@ -503,6 +581,7 @@ in
             idmapSize
             retainedPaths
             identityPath
+            backend
             ;
           # The generator only matters on the workstation that runs `agenix generate`.
           runtimeSecrets = lib.mapAttrs (_: entry: removeAttrs entry [ "generator" ]) cfg.runtimeSecrets;

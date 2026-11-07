@@ -27,6 +27,7 @@ import (
 	"github.com/lxc/incus/v7/shared/api"
 
 	"github.com/dvicory/homelab/compute-runtime/internal/adoption"
+	"github.com/dvicory/homelab/compute-runtime/internal/bootstrap"
 	"github.com/dvicory/homelab/compute-runtime/internal/incusops"
 )
 
@@ -56,23 +57,25 @@ type cliArgs struct {
 }
 
 type descriptor struct {
-	Project       string                `json:"project"`
-	Instance      string                `json:"instance"`
-	Profile       string                `json:"profile"`
-	Pool          string                `json:"pool"`
-	Network       string                `json:"network"`
-	Address       string                `json:"address"`
-	ProjectConfig api.ConfigMap         `json:"projectConfig"`
-	PoolPath      string                `json:"poolPath"`
-	NetworkConfig api.ConfigMap         `json:"networkConfig"`
-	Config        api.ConfigMap         `json:"config"`
-	Devices       api.DevicesMap        `json:"devices"`
-	RequiredPaths []requiredPath        `json:"requiredPaths"`
-	IdentityPath  string                `json:"identityPath"`
-	PublicKey     string                `json:"publicKey"`
-	IDMapBase     int64                 `json:"idmapBase"`
-	IDMapSize     int64                 `json:"idmapSize"`
-	IDMap         map[string][]idMapRow `json:"idmap"`
+	Backend        api.InstanceType      `json:"backend"`
+	Project        string                `json:"project"`
+	Instance       string                `json:"instance"`
+	Profile        string                `json:"profile"`
+	Pool           string                `json:"pool"`
+	Network        string                `json:"network"`
+	Address        string                `json:"address"`
+	ProjectConfig  api.ConfigMap         `json:"projectConfig"`
+	PoolPath       string                `json:"poolPath"`
+	NetworkConfig  api.ConfigMap         `json:"networkConfig"`
+	Config         api.ConfigMap         `json:"config"`
+	Devices        api.DevicesMap        `json:"devices"`
+	RequiredPaths  []requiredPath        `json:"requiredPaths"`
+	IdentityPath   string                `json:"identityPath"`
+	PublicKey      string                `json:"publicKey"`
+	RuntimeSecrets json.RawMessage       `json:"runtimeSecrets"`
+	IDMapBase      int64                 `json:"idmapBase"`
+	IDMapSize      int64                 `json:"idmapSize"`
+	IDMap          map[string][]idMapRow `json:"idmap"`
 }
 
 type requiredPath struct {
@@ -81,6 +84,7 @@ type requiredPath struct {
 	GID      *int64  `json:"gid"`
 	Mode     *string `json:"mode"`
 	ReadOnly *bool   `json:"readOnly"`
+	FSType   string  `json:"fsType"`
 }
 
 type idMapRow struct {
@@ -176,7 +180,17 @@ func run(argv []string) error {
 		fmt.Println()
 		return nil
 	}
-	instance, err := inspectEnvelope(server, projectServer, spec)
+	// Keep the staged generation stable through preflight and replacement.
+	// The staging service takes this same lock exclusively.
+	secretLock, err := openLifecycleLock(filepath.Join(lifecycleLockDir, "compute-"+spec.Project+"-"+spec.Instance+"-secrets.lock"), nil)
+	if err != nil {
+		return err
+	}
+	defer secretLock.Close()
+	if err := syscall.Flock(int(secretLock.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
+		return fmt.Errorf("cannot acquire runtime Secret publication lock: %w", err)
+	}
+	instance, err := inspectEnvelope(server, projectServer, spec, args.operation != "inspect")
 	if err != nil {
 		return err
 	}
@@ -192,7 +206,7 @@ func run(argv []string) error {
 	if args.bundle == "" {
 		return errors.New("--bundle is required")
 	}
-	selected, err := validateBundle(args.bundle)
+	selected, err := validateBundle(args.bundle, spec.Backend)
 	if err != nil {
 		return err
 	}
@@ -220,7 +234,7 @@ func run(argv []string) error {
 	if err := retainBundle(spec, selected); err != nil {
 		return err
 	}
-	fingerprint, err := importImage(projectServer, selected)
+	fingerprint, err := importImage(projectServer, selected, spec.Backend)
 	if err != nil {
 		return err
 	}
@@ -330,10 +344,13 @@ func loadDescriptor(path string) (descriptorData, error) {
 	if err := json.Unmarshal(content, &spec); err != nil {
 		return descriptorData{}, fmt.Errorf("decode descriptor: %w", err)
 	}
+	if _, err := imageRootfs(spec.Backend); err != nil {
+		return descriptorData{}, err
+	}
 	return descriptorData{spec: spec, raw: raw}, nil
 }
 
-func inspectEnvelope(server, projectServer incus.InstanceServer, spec descriptor) (*api.Instance, error) {
+func inspectEnvelope(server, projectServer incus.InstanceServer, spec descriptor, requireCurrentSecrets bool) (*api.Instance, error) {
 	missing, err := checkPreseed(server, spec)
 	if err != nil {
 		return nil, err
@@ -352,6 +369,9 @@ func inspectEnvelope(server, projectServer incus.InstanceServer, spec descriptor
 		return nil, err
 	}
 	if err := checkRequiredPaths(spec); err != nil {
+		return nil, err
+	}
+	if err := checkRuntimeSecrets(spec, requireCurrentSecrets); err != nil {
 		return nil, err
 	}
 	if err := checkIdentity(spec); err != nil {
@@ -413,7 +433,7 @@ func checkInstance(spec descriptor, instance *api.Instance) error {
 		}
 		actual[key] = value
 	}
-	if instance.Type != string(api.InstanceTypeContainer) || !reflect.DeepEqual(instance.Profiles, []string{spec.Profile}) || !reflect.DeepEqual(actual, spec.Config) || !reflect.DeepEqual(instance.ExpandedDevices, spec.Devices) {
+	if instance.Type != string(spec.Backend) || !reflect.DeepEqual(instance.Profiles, []string{spec.Profile}) || !reflect.DeepEqual(actual, spec.Config) || !reflect.DeepEqual(instance.ExpandedDevices, spec.Devices) {
 		return errors.New("existing instance has incompatible effective configuration; refusing mutation")
 	}
 	return nil
@@ -448,6 +468,15 @@ func checkRequiredPaths(spec descriptor) error {
 		if uint64(st.Mode&0o7777) != mode {
 			return fmt.Errorf("unexpected required path mode: %s; never repair permissions", entry.Path)
 		}
+		if entry.FSType != "" {
+			output, err := runNative(context.Background(), nativeCommandTime, "findmnt", "-n", "-o", "FSTYPE", "-M", entry.Path)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(output) != entry.FSType {
+				return fmt.Errorf("required host path is not mounted as %s: %s", entry.FSType, entry.Path)
+			}
+		}
 		if entry.ReadOnly != nil {
 			output, err := runNative(context.Background(), nativeCommandTime, "findmnt", "-n", "-o", "VFS-OPTIONS", "-M", entry.Path)
 			if err != nil {
@@ -472,18 +501,67 @@ func checkRequiredPaths(spec descriptor) error {
 	return nil
 }
 
+func checkStagedFile(path string, rootID int64, mode uint32) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("inspect staged file %s: %w", path, err)
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || !info.Mode().IsRegular() || st.Mode&0o7777 != mode ||
+		int64(st.Uid) != rootID || int64(st.Gid) != rootID {
+		return fmt.Errorf("unexpected staged file identity or mode: %s", path)
+	}
+	return nil
+}
+
+func checkRuntimeSecrets(spec descriptor, requireCurrent bool) error {
+	root := spec.Devices["secrets"]["source"]
+	if !filepath.IsAbs(root) {
+		return errors.New("runtime Secret source is not an absolute path")
+	}
+	for _, member := range []string{"runtime-secrets.commit", "runtime-secrets.yaml", "runtime-secrets.names"} {
+		if err := checkStagedFile(filepath.Join(root, member), spec.IDMapBase, 0o400); err != nil {
+			return err
+		}
+	}
+	_, inventory, err := bootstrap.ReadRuntimeSecretGeneration(root)
+	if err != nil {
+		return err
+	}
+	if requireCurrent {
+		return bootstrap.VerifyRuntimeSecretDeclaration(spec.RuntimeSecrets, inventory)
+	}
+	return nil
+}
+
 func checkIdentity(spec descriptor) error {
 	if strings.TrimSpace(spec.PublicKey) == "" {
 		return errors.New("guest public identity is not provisioned in the host declaration")
 	}
-	public, err := runNative(context.Background(), nativeCommandTime, "ssh-keygen", "-y", "-f", filepath.Join(spec.IdentityPath, "ssh_host_ed25519_key"))
+	privatePath := filepath.Join(spec.IdentityPath, "ssh_host_ed25519_key")
+	publicPath := privatePath + ".pub"
+	if err := checkStagedFile(privatePath, spec.IDMapBase, 0o400); err != nil {
+		return err
+	}
+	if err := checkStagedFile(publicPath, spec.IDMapBase, 0o444); err != nil {
+		return err
+	}
+	staged, err := os.ReadFile(publicPath)
+	if err != nil {
+		return fmt.Errorf("read staged guest public key: %w", err)
+	}
+	public, err := runNative(context.Background(), nativeCommandTime, "ssh-keygen", "-y", "-f", privatePath)
 	if err != nil {
 		return err
 	}
 	actualFields := strings.Fields(public)
 	expectedFields := strings.Fields(spec.PublicKey)
-	if len(actualFields) < 2 || len(expectedFields) < 2 || actualFields[0] != expectedFields[0] || actualFields[1] != expectedFields[1] {
-		return errors.New("staged guest private key does not match the declared public identity")
+	stagedFields := bytes.Fields(staged)
+	if len(actualFields) < 2 || len(expectedFields) < 2 || len(stagedFields) < 2 ||
+		actualFields[0] != expectedFields[0] || actualFields[1] != expectedFields[1] ||
+		!bytes.Equal(stagedFields[0], []byte(expectedFields[0])) ||
+		!bytes.Equal(stagedFields[1], []byte(expectedFields[1])) {
+		return errors.New("staged guest key pair does not match the declared public identity")
 	}
 	return nil
 }
@@ -501,14 +579,19 @@ func checkIDMap(server incus.InstanceServer, spec descriptor, instance *api.Inst
 		return err
 	}
 	if instance != nil {
-		raw, ok := instance.Config["volatile.idmap.current"]
-		if !ok {
-			raw, ok = instance.ExpandedConfig["volatile.idmap.current"]
+		var uidRanges, gidRanges []idRange
+		var err error
+		if spec.Backend == api.InstanceTypeVM {
+			// A VM has no outer container namespace. Its raw.idmap describes
+			// the shared-filesystem transport, not the guest process map.
+			uidRanges, gidRanges, err = parseRawIDMap(instance.ExpandedConfig["raw.idmap"])
+		} else {
+			raw := instance.Config["volatile.idmap.current"]
+			if raw == "" {
+				raw = instance.ExpandedConfig["volatile.idmap.current"]
+			}
+			uidRanges, gidRanges, err = parseEffectiveIDMap(raw)
 		}
-		if !ok || raw == "" {
-			return errors.New("existing instance has no valid effective ID map; refusing mutation")
-		}
-		uidRanges, gidRanges, err := parseEffectiveIDMap(raw)
 		if err != nil {
 			return fmt.Errorf("existing instance has no valid effective ID map; refusing mutation: %w", err)
 		}
@@ -549,7 +632,7 @@ func checkIDMap(server incus.InstanceServer, spec descriptor, instance *api.Inst
 		}
 	}
 
-	allInstances, err := server.GetInstancesAllProjects(api.InstanceTypeContainer)
+	allInstances, err := server.GetInstancesAllProjects(api.InstanceTypeAny)
 	if err != nil {
 		return fmt.Errorf("inspect all Incus instances for ID-map collisions: %w", err)
 	}
@@ -564,7 +647,12 @@ func checkIDMap(server incus.InstanceServer, spec descriptor, instance *api.Inst
 		if !comparable {
 			continue
 		}
-		otherUID, otherGID, err := parseEffectiveIDMap(raw)
+		var otherUID, otherGID []idRange
+		if other.Type == string(api.InstanceTypeVM) {
+			otherUID, otherGID, err = parseRawIDMap(raw)
+		} else {
+			otherUID, otherGID, err = parseEffectiveIDMap(raw)
+		}
 		if err != nil {
 			return fmt.Errorf("inspect effective ID map for %s/%s: %w", other.Project, other.Name, err)
 		}
@@ -583,6 +671,13 @@ func checkIDMap(server incus.InstanceServer, spec descriptor, instance *api.Inst
 }
 
 func collisionIDMap(instance api.Instance) (string, bool, error) {
+	if instance.Type == string(api.InstanceTypeVM) {
+		raw := instance.ExpandedConfig["raw.idmap"]
+		if raw == "" {
+			raw = instance.Config["raw.idmap"]
+		}
+		return raw, raw != "", nil
+	}
 	if instance.Config["security.privileged"] == "true" || instance.ExpandedConfig["security.privileged"] == "true" {
 		return "", false, nil
 	}
@@ -611,6 +706,57 @@ func overlapsAnyHostRange(candidate idRange, desired []idRange) bool {
 		}
 	}
 	return false
+}
+
+// parseRawIDMap reads Incus host-range/guest-range rows for VM filesystem maps.
+// The upstream idmap package adds cgo/libacl; keep collision parsing data-only.
+func parseRawIDMap(raw string) ([]idRange, []idRange, error) {
+	span := func(value string) (int64, int64, error) {
+		first, last, ranged := strings.Cut(value, "-")
+		start, err := strconv.ParseUint(first, 10, 32)
+		if err != nil {
+			return 0, 0, err
+		}
+		end := start
+		if ranged {
+			end, err = strconv.ParseUint(last, 10, 32)
+			if err != nil || end < start {
+				return 0, 0, errors.New("invalid ID range")
+			}
+		}
+		return int64(start), int64(end - start + 1), nil
+	}
+	var uid, gid []idRange
+	for _, line := range strings.Split(raw, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) != 3 || (fields[0] != "uid" && fields[0] != "gid" && fields[0] != "both") {
+			return nil, nil, errors.New("invalid raw.idmap row")
+		}
+		host, count, err := span(fields[1])
+		if err != nil {
+			return nil, nil, err
+		}
+		guest, guestCount, err := span(fields[2])
+		if err != nil || count != guestCount {
+			return nil, nil, errors.New("invalid raw.idmap guest range")
+		}
+		row := idRange{nsid: guest, hostid: host, rangeN: count}
+		if fields[0] != "gid" {
+			uid = append(uid, row)
+		}
+		if fields[0] != "uid" {
+			gid = append(gid, row)
+		}
+	}
+	if len(uid) == 0 && len(gid) == 0 {
+		return nil, nil, errors.New("raw.idmap has no UID or GID rows")
+	}
+	sort.Slice(uid, func(i, j int) bool { return lessIDRange(uid[i], uid[j]) })
+	sort.Slice(gid, func(i, j int) bool { return lessIDRange(gid[i], gid[j]) })
+	return uid, gid, nil
 }
 
 func parseEffectiveIDMap(raw string) ([]idRange, []idRange, error) {
@@ -796,7 +942,7 @@ func openLifecycleLock(path string, inheritedFD *int) (*os.File, error) {
 	return file, nil
 }
 
-func validateBundle(path string) (string, error) {
+func validateBundle(path string, backend api.InstanceType) (string, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return "", fmt.Errorf("cannot resolve bundle: %w", err)
@@ -816,12 +962,41 @@ func validateBundle(path string) (string, error) {
 	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
 		return "", errors.New("bundle must be an immutable Nix store output")
 	}
-	for _, member := range []string{"metadata.tar.xz", "rootfs.tar.xz", "system"} {
+	rootfs, err := imageRootfs(backend)
+	if err != nil {
+		return "", err
+	}
+	if err := checkBundleBackend(resolved, backend); err != nil {
+		return "", err
+	}
+	for _, member := range []string{"metadata.tar.xz", rootfs, "system"} {
 		if _, err := os.Stat(filepath.Join(resolved, member)); err != nil {
 			return "", fmt.Errorf("incomplete bundle: %s", member)
 		}
 	}
 	return resolved, nil
+}
+
+func imageRootfs(backend api.InstanceType) (string, error) {
+	switch backend {
+	case api.InstanceTypeContainer:
+		return "rootfs.tar.xz", nil
+	case api.InstanceTypeVM:
+		return "rootfs.qcow2", nil
+	default:
+		return "", fmt.Errorf("unsupported compute backend %q", backend)
+	}
+}
+
+func checkBundleBackend(bundle string, backend api.InstanceType) error {
+	content, err := os.ReadFile(filepath.Join(bundle, "backend"))
+	if err != nil {
+		return fmt.Errorf("read bundle backend: %w", err)
+	}
+	if strings.TrimSpace(string(content)) != string(backend) {
+		return errors.New("bundle backend does not match the declared instance type; refusing mutation")
+	}
+	return nil
 }
 
 func retainBundle(spec descriptor, bundle string) error {
@@ -835,9 +1010,13 @@ func retainBundle(spec descriptor, bundle string) error {
 	return err
 }
 
-func importImage(server incus.InstanceServer, bundle string) (string, error) {
+func importImage(server incus.InstanceServer, bundle string, backend api.InstanceType) (string, error) {
+	rootfsName, err := imageRootfs(backend)
+	if err != nil {
+		return "", err
+	}
 	digest := sha256.New()
-	for _, member := range []string{"metadata.tar.xz", "rootfs.tar.xz"} {
+	for _, member := range []string{"metadata.tar.xz", rootfsName} {
 		file, err := os.Open(filepath.Join(bundle, member))
 		if err != nil {
 			return "", fmt.Errorf("open image member %s: %w", member, err)
@@ -858,6 +1037,9 @@ func importImage(server incus.InstanceServer, bundle string) (string, error) {
 	}
 	for _, image := range images {
 		if image.Fingerprint == fingerprint {
+			if image.Type != string(backend) {
+				return "", errors.New("existing image has an incompatible instance type")
+			}
 			return fingerprint, nil
 		}
 	}
@@ -867,7 +1049,7 @@ func importImage(server incus.InstanceServer, bundle string) (string, error) {
 		return "", fmt.Errorf("open image metadata: %w", err)
 	}
 	defer metadata.Close()
-	rootfs, err := os.Open(filepath.Join(bundle, "rootfs.tar.xz"))
+	rootfs, err := os.Open(filepath.Join(bundle, rootfsName))
 	if err != nil {
 		return "", fmt.Errorf("open image rootfs: %w", err)
 	}
@@ -876,8 +1058,8 @@ func importImage(server incus.InstanceServer, bundle string) (string, error) {
 		MetaFile:   metadata,
 		MetaName:   "metadata.tar.xz",
 		RootfsFile: rootfs,
-		RootfsName: "rootfs.tar.xz",
-		Type:       "container",
+		RootfsName: rootfsName,
+		Type:       string(backend),
 	})
 	if err != nil {
 		return "", fmt.Errorf("import image: %w", err)
@@ -921,7 +1103,7 @@ func lifecycle(projectServer incus.InstanceServer, spec descriptor, instance *ap
 			Type:        "image",
 			Fingerprint: fingerprint,
 		},
-		Type:  api.InstanceTypeContainer,
+		Type:  spec.Backend,
 		Start: false,
 	})
 	if err != nil {
