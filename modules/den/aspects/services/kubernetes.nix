@@ -22,6 +22,24 @@
         services.k3s = {
           enable = true;
           role = "server";
+          # Keep the real overlay mount probe userns-compatible. Backport
+          # cAdvisor's released ZFS-query fallback to real mountpoint statfs:
+          # The nested guest has no ZFS CLI for those storage-specific queries.
+          package = pkgs.k3s.override {
+            overrideBundleAttrs = old: {
+              goModules = pkgs.applyPatches {
+                name = "k3s-userns-go-modules";
+                src = old.goModules;
+                patches = [
+                  ./k3s-overlay-userxattr.patch
+                  ./k3s-cadvisor-zfs-vfs.patch
+                ];
+              };
+              postCheck = (old.postCheck or "") + ''
+                go test -mod=vendor github.com/google/cadvisor/fs/zfs
+              '';
+            };
+          };
           # SQLite, Flannel, CoreDNS, and kube-proxy remain the supported
           # single-node path. Only packaged components outside this slice are
           # disabled.

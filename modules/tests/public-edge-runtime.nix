@@ -145,6 +145,11 @@
                     "C /run/origin-tls/server.crt 0644 nginx nginx - ${certificates}/origin.crt"
                     "C /run/origin-tls/server.key 0600 nginx nginx - ${certificates}/origin.key"
                   ];
+                  # nginx binds this address during its configuration check.
+                  systemd.services.nginx = {
+                    requires = [ "network-addresses-eth1.service" ];
+                    after = [ "network-addresses-eth1.service" ];
+                  };
                   services.nginx = {
                     enable = true;
                     virtualHosts.origin = {
@@ -239,7 +244,12 @@
                   raise AssertionError(f"no queryless edge access log entry for {path}")
 
               start_all()
+              # The backdoor can be ready before normal client network setup.
+              client.wait_for_unit("multi-user.target")
               origin.wait_for_unit("nginx.service")
+              assert origin.succeed(
+                  "systemctl show nginx.service --property=NRestarts --value"
+              ).strip() == "0", "origin nginx restarted during boot"
               remote.wait_for_unit("nginx.service")
               home.wait_for_unit("nginx.service")
               remote.wait_for_open_port(443)

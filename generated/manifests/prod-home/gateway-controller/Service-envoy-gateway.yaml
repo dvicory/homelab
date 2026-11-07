@@ -5,9 +5,9 @@ metadata:
     app.kubernetes.io/instance: envoy-gateway
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/name: gateway-helm
-    app.kubernetes.io/version: v1.9.1
+    app.kubernetes.io/version: v1.9.3
     control-plane: envoy-gateway
-    helm.sh/chart: gateway-helm-1.9.1
+    helm.sh/chart: gateway-helm-1.9.3
   name: envoy-gateway
   namespace: gateway
 spec:

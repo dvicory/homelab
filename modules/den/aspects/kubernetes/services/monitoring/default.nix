@@ -26,8 +26,8 @@ let
   };
   image = {
     repository = "docker.io/victoriametrics/victoria-metrics";
-    tag = "v1.151.0";
-    digest = "sha256:6d164540a04f49ba4e696cbdb70f9fee78be1e94b8f2a1292743a0b1ab8275bd";
+    tag = "v1.155.0";
+    digest = "sha256:f60dc268b54ecf87f6e09d740c2b732838aa9193090cc741417c9f6386a130df";
     pullPolicy = "IfNotPresent";
   };
   # Native routes are probed on a health path; administrator routes at the
@@ -565,8 +565,8 @@ in
                 image = {
                   registry = "quay.io";
                   repository = "prometheus/blackbox-exporter";
-                  tag = "v0.28.0";
-                  digest = "sha256:e753ff9f3fc458d02cca5eddab5a77e1c175eee484a8925ac7d524f04366c2fc";
+                  tag = "v0.29.1";
+                  digest = "sha256:ea1c7aa3ef3f307cd03e85f34abb604478ccb90b567fc690da0cd9776da76b13";
                 };
                 config.modules = lib.mapAttrs' (_: probe: lib.nameValuePair probe.module probe.config) probes;
                 configReloader.enabled = false;

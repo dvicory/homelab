@@ -479,8 +479,15 @@ def validate_rows(rows, expected, name):
     # Pinned 1.19 can report CEL/compiler errors with RESULT Pass.
     diagnostics = ("resulted in error:", "fails to compile:", "fails to evaluate:",
                    "compilation failed:", "error in parameterized resource:")
-    if any(marker in row["Message"].lower() for row in rows for marker in diagnostics):
-        raise NativeRejection("native-evaluation-error", f"Native evaluation/compiler/parameter error: {name}")
+    errors = [row for row in rows if any(marker in row["Message"].lower() for marker in diagnostics)]
+    if errors:
+        row = errors[0]
+        # Keep the native identity and the diagnostic tail (after potentially long CEL text).
+        detail = row["Message"][-2000:]
+        raise NativeRejection(
+            "native-evaluation-error",
+            f"Native evaluation/compiler/parameter error: {name}: "
+            f"{row['POLICY']}/{row['RULE']} on {row['RESOURCE']}: {detail}")
     statuses = [row["REASON"].partition(", got ")[2] for row in rows]
     if "error" in statuses or any(row["REASON"] in ("Invalid Policy", "Error") for row in rows):
         raise NativeRejection("native-evaluation-error", f"Native error status: {name}")

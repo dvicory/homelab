@@ -376,13 +376,29 @@ The required runtime inventory is partitioned, not selected by changed files:
 
 | Check | Mandatory scenario families |
 | --- | --- |
-| `prod-home-replacement` | Preseed adoption conflict; missing retained mount and permission drift; missing secrets and incomplete/complete rotation; bootstrap without Git and recovery; retained-marker/volume refusal; mapped retained-path owners and writes; lifecycle lock and identity/effective-config refusals; in-place OS activation; fresh Incus/K3s replacement retaining bytes, ownership, credentials and identity; accelerator grant after replacement; Argo retirement retaining Namespace/PV/PVC and data. |
+| `prod-home-replacement` | Preseed adoption conflict; missing retained mount and permission drift; missing secrets and incomplete/complete rotation; bootstrap without Git and recovery; retained-marker/volume refusal; mapped retained-path owners and writes; lifecycle lock and identity/effective-config refusals; same-baseline OS activation and different-bundle create refusal; explicit frozen K3s 1.35 guest → selected 1.36 guest replacement with exact bundle/system/CLI/running-server/API provenance, a fresh instance/node/SQLite datastore/token and discarded old datastore object; retained data inode, ownership, credentials, SSH keys and application user/play state; accelerator grant after replacement; Argo retirement retaining Namespace/PV/PVC and data. |
 | `prod-home-consumer-resilience` | Accelerator absence, hotplug, host/guest/workload permissions, ungranted/nonholder refusals, loss and return; Jellarr's declared-only encoding updates and key reuse; post-preflight provisioning failure, immutable partial state and kubelet refusal retries with the full 60-second observation; live media writer/read-only boundaries, mount loss/return without node restart, boot without media with the full 180-second observation, restoration; Argo self-healing retaining unmanaged objects and application data. |
 
 Fixture Git availability and retirement request an Argo hard refresh instead
 of waiting for its background polling interval. Argo still fetches the real
 Git origin and performs reconciliation; all health, refusal, and retained
 object assertions remain required.
+
+Replacement freezes main `90920bac376c6640478c1c45feaf6afa2c1c3900` and its
+complete locked input graph (root `801bef6abd86b91e51083066b83fb354a11fc640`).
+Both actual production guest declarations receive only the same disposable
+registry CA; versions and package paths come from their evaluated K3s packages.
+The running-server probe executes `/proc/<MainPID>/exe` and binds its bytes to
+the selected server payload. CLI version checks compare the exact selected
+version token, not upstream's incidental `argv[0]`-derived program label.
+Structured witnesses log each observed CLI, running executable, client,
+server and kubelet version before strict checks.
+Both guests must pass the nested unprivileged overlay and real filesystem
+statistics gates. The candidate host, manifests and application images are
+used throughout, so this is guest replacement/application recovery, not a full
+historical host or application-release upgrade. The old SQLite state is
+discarded, not migrated. Retained files stay mounted in place: this acceptance
+does not prove cold backup, export or restore of application state.
 
 ### First real upgrade
 

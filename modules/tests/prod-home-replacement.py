@@ -15,13 +15,22 @@ over the network. Jellyfin behavior itself is exercised through the
 jellyfin_smoke helper; this driver owns only platform orchestration.
 
 CI requires both fixture families on independent KVM runners. Replacement
-owns lifecycle/refusal and retained-state replacement; consumer resilience owns
-accelerator, provision-failure, media-loss, and self-healing transitions.
+alone creates frozen main 90920/root 801bef6's real K3s 1.35 guest, refuses
+different-bundle create, then explicitly replaces it with the selected 1.36.
+The old SQLite datastore is discarded, not migrated in place. Both guests use
+the shipped bootstrap/Argo/application recovery with the same application
+manifests/images and host-owned data/identity. This is not a full historical
+host upgrade or a cold backup/restore test: the outer host and application
+releases are the candidate's. Host activation does not install a new guest
+bundle. Consumer resilience owns candidate-only accelerator, provision-failure,
+media-loss and self-healing transitions.
 Detailed Argo resource retirement is required through the native API suite.
 
   sudo modules/tests/prod-home-replacement.py \
     --scenario replacement \
     --bundle /nix/store/...-compute-1-bundle \
+    --baseline-bundle /nix/store/...-frozen-compute-1-bundle \
+    --versions /nix/store/...-prod-home-replacement-versions.json \
     --fixture /tmp/compute-fixture.json \
     --repo /nix/store/...-prod-home-recovery-repo \
     --seed /nix/store/...-prod-home-test-seed \
@@ -58,6 +67,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import urllib.parse
 
 
@@ -290,6 +300,37 @@ class Runtime:
 
     def kubectl_json(self, *args: str, namespace: str | None = None):
         return json.loads(self.kubectl(*args, namespace=namespace))
+
+    def check_nested_overlay(self) -> None:
+        mapping = [tuple(map(int, row.split())) for row in self.guest("cat", "/proc/self/uid_map").splitlines()]
+        check(mapping == [(0, self.descriptor["idmapBase"], self.descriptor["idmapSize"])],
+              "K3s remains in the declared unprivileged user namespace")
+        config = tomllib.loads(self.guest("cat", "/var/lib/rancher/k3s/agent/etc/containerd/config.toml"))
+        check(config["plugins"]["io.containerd.cri.v1.images"]["snapshotter"] == "overlayfs",
+              "the live CRI configuration uses overlayfs, not a storage fallback")
+        self.guest("sh", "-ec", '''
+            probe=$(mktemp -d /var/lib/rancher/k3s/agent/containerd/overlay-userns-check.XXXXXX)
+            trap 'umount "$probe/merged" 2>/dev/null || :; rm -rf "$probe"' EXIT
+            mkdir "$probe/lower1" "$probe/lower2" "$probe/upper" "$probe/work" "$probe/merged"
+            printf retained-layer > "$probe/lower1/value"
+            mount -t overlay overlay -o "userxattr,lowerdir=$probe/lower2:$probe/lower1,upperdir=$probe/upper,workdir=$probe/work" "$probe/merged"
+            test "$(cat "$probe/merged/value")" = retained-layer
+            printf writable-layer > "$probe/merged/value"
+            test "$(cat "$probe/upper/value")" = writable-layer
+            test "$(cat "$probe/lower1/value")" = retained-layer
+            umount "$probe/merged"
+        ''')
+
+        def rootfs_stats():
+            summary = self.kubectl_json("get", "--request-timeout=10s", "--raw",
+                                        f"/api/v1/nodes/{self.instance}/proxy/stats/summary")
+            filesystem = summary["node"]["fs"]
+            return filesystem if filesystem.get("capacityBytes", 0) > 0 else None
+
+        filesystem = wait_for("positive kubelet root filesystem statistics", rootfs_stats, timeout=60)
+        check(0 < filesystem["availableBytes"] <= filesystem["capacityBytes"]
+              and filesystem.get("inodes", 0) > 0,
+              "kubelet reports real usable rootfs capacity and inodes inside the unprivileged guest")
 
     def metrics_ready(self) -> bool:
         metrics = self.kubectl_json("get", "--raw", f"/apis/metrics.k8s.io/v1beta1/nodes/{self.instance}")
@@ -1720,6 +1761,67 @@ def verify_helper_selection(runtime: Runtime, kubeconfig: Path, origin: GitOrigi
                   "disposable helper registry process and writable state are removed")
 
 
+def observe_guest(runtime: Runtime, bundle: Path, expected: dict) -> dict:
+    """Bind executable, client and live server evidence to the selected image."""
+    system = runtime.guest("readlink", "-f", "/run/current-system")
+    selected = instance_query(runtime.project, runtime.instance)["config"]["user.homelab.bundle"]
+    executable = runtime.guest("sh", "-ec", 'readlink -f "$(command -v k3s)"')
+    pid = runtime.guest("systemctl", "show", "--value", "-p", "MainPID", "k3s")
+    server_executable = runtime.guest("readlink", "-f", f"/proc/{pid}/exe")
+    version = "v" + expected["version"].removeprefix("v")
+    executable_output = runtime.guest("k3s", "--version")
+    server_output = runtime.guest(f"/proc/{pid}/exe", "--version")
+    versions = runtime.kubectl_json("version", "-o", "json")
+    node = runtime.kubectl_json("get", "node", runtime.instance, "-o", "json")
+    namespace = runtime.kubectl_json("get", "namespace/kube-system", "-o", "json")
+    print("GUEST_VERSION_WITNESS " + json.dumps({
+        "expectedVersion": version,
+        "executableVersionOutput": executable_output,
+        "runningExecutableVersionOutput": server_output,
+        "clientVersion": versions["clientVersion"]["gitVersion"],
+        "serverVersion": versions["serverVersion"]["gitVersion"],
+        "kubeletVersion": node["status"]["nodeInfo"]["kubeletVersion"],
+    }, sort_keys=True), flush=True)
+    check(bundle.resolve() == Path(expected["bundle"]).resolve()
+          and selected == str(bundle.resolve()), "Incus provenance records the selected immutable bundle")
+    check(system == str(Path(expected["system"]).resolve()),
+          "the running guest system is the selected bundle's system")
+    # The wrapped CLI extracts the separately built server payload at runtime.
+    package_executable = runtime.guest("readlink", "-f", expected["package"] + "/bin/k3s")
+    server_sha256 = runtime.guest("sha256sum", f"/proc/{pid}/exe").split()[0]
+    package_server_sha256 = runtime.guest("sha256sum", expected["serverPackage"] + "/bin/k3s").split()[0]
+    check(executable == package_executable and server_sha256 == package_server_sha256,
+          "the guest CLI resolves to the selected package and the running server matches its exact payload bytes")
+    # Upstream's display name is filepath.Base(argv[0]), not binary identity.
+    # Compare the exact version token; paths and payload bytes are bound above.
+    for label, output in (("guest CLI", executable_output), ("running server executable", server_output)):
+        fields = output.partition("\n")[0].split()
+        check(len(fields) >= 3 and fields[1] == "version"
+              and fields[2].removeprefix("v") == version.removeprefix("v"),
+              f"the {label} reports the selected version {version}")
+    check(versions["clientVersion"]["gitVersion"] == version,
+          f"the guest's embedded kubectl client reports {version}")
+    check(versions["serverVersion"]["gitVersion"] == version,
+          f"the live Kubernetes server reports {version}")
+    check(node["status"]["nodeInfo"]["kubeletVersion"] == version,
+          f"the live node's kubelet reports {version}")
+    runtime.guest("test", "-s", "/var/lib/rancher/k3s/server/db/state.db")
+    evidence = {
+        **expected, "bundle": selected, "system": system, "executable": executable,
+        "serverExecutable": server_executable, "executableVersion": executable_output.splitlines()[0],
+        "serverExecutableSha256": server_sha256,
+        "runningExecutableVersion": server_output.splitlines()[0],
+        "clientVersion": versions["clientVersion"]["gitVersion"],
+        "serverVersion": versions["serverVersion"]["gitVersion"],
+        "kubeletVersion": node["status"]["nodeInfo"]["kubeletVersion"],
+        "nodeUid": node["metadata"]["uid"], "datastoreNamespaceUid": namespace["metadata"]["uid"],
+        "instanceUuid": instance_query(runtime.project, runtime.instance)["config"]["volatile.uuid"],
+        "tokenSha256": hashlib.sha256(runtime.guest("cat", "/var/lib/rancher/k3s/server/token").encode()).hexdigest(),
+    }
+    print("GUEST_PROVENANCE " + json.dumps(evidence, sort_keys=True), flush=True)
+    return evidence
+
+
 def run_scenario(args: argparse.Namespace) -> None:
     fixture_architecture = platform.machine()
     spec = importlib.util.spec_from_file_location("jellyfin_smoke", args.smoke)
@@ -1727,6 +1829,19 @@ def run_scenario(args: argparse.Namespace) -> None:
     spec.loader.exec_module(smoke)
     fixture = json.loads(args.fixture.read_text())
     descriptor = json_copy(fixture["descriptor"])
+    initial_bundle = args.baseline_bundle if args.scenario == "replacement" else args.bundle
+    version_inputs = None
+    if args.scenario == "replacement":
+        check(args.baseline_bundle is not None and args.versions is not None,
+              "cross-version replacement requires the frozen baseline and evaluated version provenance")
+        version_inputs = json.loads(args.versions.read_text())
+        check(version_inputs["baseline"]["version"].removeprefix("v") == "1.35.8+k3s1"
+              and version_inputs["candidate"]["version"].removeprefix("v").startswith("1.36."),
+              "replacement is bound to real frozen 1.35.8 and selected candidate 1.36 packages")
+        check(initial_bundle.resolve() != args.bundle.resolve()
+              and Path(version_inputs["baseline"]["system"]).resolve()
+              != Path(version_inputs["candidate"]["system"]).resolve(),
+              "baseline and candidate have different immutable bundle and system provenance")
     media_pool = fixture["mediaPool"]
     check(isinstance(fixture["mediaRootScript"], str) and fixture["mediaRootScript"].strip(), "fixture contains the native media-root script")
     check(all(isinstance(media_pool[key], str) and media_pool[key].strip() for key in ("path", "start", "stop")), "fixture contains native media pool commands")
@@ -1742,13 +1857,15 @@ def run_scenario(args: argparse.Namespace) -> None:
     print(f"FIXTURE ARCHITECTURE: {fixture_architecture}", flush=True)
     print(f"HOST KERNEL: {run('uname', '-a')}", flush=True)
     print(f"HOST ZFS:\n{run('zfs', 'version')}", flush=True)
-    check(args.bundle.is_dir() and str(args.bundle.resolve()).startswith("/nix/store/"), "bundle is an immutable Nix store output")
-    for member in ("metadata.tar.xz", "rootfs.tar.xz", "system"):
-        check((args.bundle / member).exists(), f"bundle contains {member}")
-    rootfs_members = run("tar", "-tJf", str(args.bundle / "rootfs.tar.xz"), timeout=600).splitlines()
     deployed_identity_paths = {"etc/ssh/ssh_host_ed25519_key", "srv/identity/ssh_host_ed25519_key"}
-    check(not any(member.removeprefix("./").lstrip("/") in deployed_identity_paths for member in rootfs_members),
-          "guest root artifact contains no preinstalled runtime host identity")
+    for bundle in dict.fromkeys((initial_bundle, args.bundle)):
+        check(bundle.is_dir() and str(bundle.resolve()).startswith("/nix/store/"),
+              f"bundle is an immutable Nix store output: {bundle}")
+        for member in ("metadata.tar.xz", "rootfs.tar.xz", "system"):
+            check((bundle / member).exists(), f"bundle contains {member}")
+        rootfs_members = run("tar", "-tJf", str(bundle / "rootfs.tar.xz"), timeout=600).splitlines()
+        check(not any(member.removeprefix("./").lstrip("/") in deployed_identity_paths for member in rootfs_members),
+              "guest root artifact contains no preinstalled runtime host identity")
     check(args.helper.is_file(), "compute helper exists")
     for member in (
         "apps/Application-retained-storage.yaml",
@@ -1786,7 +1903,7 @@ def run_scenario(args: argparse.Namespace) -> None:
         for path in sorted(host_paths):
             prepare_directory(path, safe_dirs)
         spec_path = workspace / "compute.json"
-        runtime = Runtime(descriptor, spec_path, args.helper, args.bundle)
+        runtime = Runtime(descriptor, spec_path, args.helper, initial_bundle)
         runtime.media_path.mkdir(mode=0o000)
         # Prepare the bind sources before running the exact locked host command.
         preseed_command = ("env", f"PATH={fixture['preseedPath']}",
@@ -1936,7 +2053,7 @@ def run_scenario(args: argparse.Namespace) -> None:
                 run("udevadm", "settle")
             runtime.created_instance = True
             with phase("compute-create-and-k3s-ready"):
-                runtime.helper_run("create", bundle=args.bundle, timeout=3_600)
+                runtime.helper_run("create", bundle=initial_bundle, timeout=3_600)
                 guest_architecture = runtime.guest("uname", "-m")
                 check(
                     guest_architecture == fixture_architecture,
@@ -1949,6 +2066,7 @@ def run_scenario(args: argparse.Namespace) -> None:
                 )
                 runtime.guest("test", "-r", "/srv/media/data/library/movies/recovery.mkv", user=505)
                 wait_for("healthy K3s node", runtime.node_ready)
+                runtime.check_nested_overlay()
                 k3s_pid = runtime.guest("systemctl", "show", "--value", "-p", "MainPID", "k3s")
                 k3s_groups = [
                     line.split()[1:]
@@ -1957,6 +2075,8 @@ def run_scenario(args: argparse.Namespace) -> None:
                 ]
                 check(k3s_groups and "505" in k3s_groups[0], "K3s kubelet can traverse the media group")
                 wait_for("unrelated CoreDNS availability", runtime.unrelated_ready)
+                if version_inputs is not None:
+                    baseline_observed = observe_guest(runtime, initial_bundle, version_inputs["baseline"])
             runtime.check_secret_payload(secret_payload)
             # Change one input but remove another: no partial new credential
             # set may replace the previously published complete set.
@@ -2145,9 +2265,21 @@ def run_scenario(args: argparse.Namespace) -> None:
             if args.scenario == "replacement":
                 original_uuid = query_incus(f"/1.0/instances/{quote_path(instance_name)}", project=project)["config"]["volatile.uuid"]
                 original_cluster_token = runtime.guest("cat", "/var/lib/rancher/k3s/server/token")
-                runtime.helper_run("create", bundle=args.bundle)
+                runtime.kubectl("create", "configmap", "replacement-disposable", "--from-literal=value=old-datastore",
+                                namespace="kube-system")
+                identity_before = {
+                    member: hashlib.sha256((Path(descriptor["identityPath"]) / member).read_bytes()).hexdigest()
+                    for member in ("ssh_host_ed25519_key", "ssh_host_ed25519_key.pub")
+                }
+                runtime.helper_run("create", bundle=initial_bundle)
                 check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid,
                       "repeated creation preserves the existing guest")
+                refused = completed(*runtime.helper_command("create", bundle=args.bundle), timeout=3_600)
+                check(refused.returncode != 0
+                      and "creation cannot update an existing instance; use replace" in refused.stdout + refused.stderr,
+                      "different-bundle create refuses an implicit guest upgrade")
+                check(observe_guest(runtime, initial_bundle, version_inputs["baseline"]) == baseline_observed,
+                      "repeated and refused creation leave the baseline system, K3s and datastore identities unchanged")
                 with Path(f"/run/lock/compute-{project}-{instance_name}.lock").open("a") as lock:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     runtime.helper_expect_failure("replace", "concurrent maintenance", "cannot acquire lifecycle lock")
@@ -2162,11 +2294,11 @@ def run_scenario(args: argparse.Namespace) -> None:
                               "identical inspection succeeds when that descriptor refers to the selected held lock")
                 check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid,
                       "concurrent maintenance cannot replace the guest")
-                runtime.guest("nix-env", "--profile", "/nix/var/nix/profiles/system", "--set", str((args.bundle / "system").resolve()))
-                runtime.guest(str((args.bundle / "system").resolve() / "bin/switch-to-configuration"), "switch", timeout=600)
-                wait_for("Jellyfin after independent OS activation", runtime.app_ready)
-                check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid,
-                      "in-place system activation preserves the guest instance")
+                runtime.guest("nix-env", "--profile", "/nix/var/nix/profiles/system", "--set", str((initial_bundle / "system").resolve()))
+                runtime.guest(str((initial_bundle / "system").resolve() / "bin/switch-to-configuration"), "switch", timeout=600)
+                wait_for("Jellyfin after same-baseline OS activation", runtime.app_ready)
+                check(observe_guest(runtime, initial_bundle, version_inputs["baseline"]) == baseline_observed,
+                      "same-baseline activation preserves the old instance, bundle, system, K3s and datastore")
                 smoke.verify_state(base, username, password, "Movies", item_id)
                 other_key = workspace / "other-identity"
                 run("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(other_key))
@@ -2347,8 +2479,21 @@ def run_scenario(args: argparse.Namespace) -> None:
                     check(new_instance is not None, "helper recreates the guest instance")
                     check(new_instance["config"]["volatile.uuid"] != original_uuid, "replacement has a fresh Incus instance root")
                     wait_for("replacement K3s node", runtime.node_ready)
+                    runtime.check_nested_overlay()
+                    candidate_observed = observe_guest(runtime, args.bundle, version_inputs["candidate"])
+                    check(all(candidate_observed[key] != baseline_observed[key]
+                              for key in ("bundle", "system", "executable", "serverExecutable",
+                                          "instanceUuid", "nodeUid", "datastoreNamespaceUid", "tokenSha256")),
+                          "explicit replacement changes image/system/executables and creates a fresh SQLite cluster")
+                    check(runtime.kubectl("get", "configmap/replacement-disposable", "--ignore-not-found",
+                                          "-o", "json", namespace="kube-system") == "",
+                          "the old SQLite datastore's disposable object does not survive replacement")
+                    runtime.bundle = args.bundle
                 new_cluster_token = runtime.guest("cat", "/var/lib/rancher/k3s/server/token")
                 check(new_cluster_token != original_cluster_token, "replacement has fresh disposable K3s cluster state")
+                check(all(hashlib.sha256((Path(descriptor["identityPath"]) / member).read_bytes()).hexdigest() == digest
+                          for member, digest in identity_before.items()),
+                      "explicit cross-version replacement preserves the host-owned SSH key pair")
                 runtime.check_secret_payload(rotated_payload)
                 check(all((secret_inputs / source).read_bytes() == value for source, value in secret_values.items()),
                       "guest recreation preserves credential inputs rather than regenerating them")
@@ -2363,8 +2508,14 @@ def run_scenario(args: argparse.Namespace) -> None:
                 base = forward_start(runtime, kubeconfig)
                 runtime.verify_access_boundaries()
                 check(marker.read_text() == "retained-state\n", "guest replacement preserves retained application data")
-                check(marker.stat().st_uid == marker_stat.st_uid and marker.stat().st_gid == marker_stat.st_gid and marker.stat().st_mode == marker_stat.st_mode, "guest replacement preserves retained data ownership and mode")
-                smoke.verify_state(base, username, password, "Movies", item_id)
+                check(marker.stat().st_ino == marker_stat.st_ino
+                      and marker.stat().st_uid == marker_stat.st_uid
+                      and marker.stat().st_gid == marker_stat.st_gid
+                      and marker.stat().st_mode == marker_stat.st_mode,
+                      "cross-version replacement preserves retained data inode, ownership and mode")
+                _, recovered_user_id = smoke.verify_state(base, username, password, "Movies", item_id)
+                check(recovered_user_id == user_id,
+                      "real Argo/Jellarr/Jellyfin recovery preserves the retained application user identity and played item")
                 check(runtime.node_ready(), "replacement node is healthy")
                 with phase("replacement-regains-the-accelerator-grant"):
                     check(guest_render_node(runtime) == CHARACTER_NODE,
@@ -2375,6 +2526,13 @@ def run_scenario(args: argparse.Namespace) -> None:
                 replacement_pool_mount = run("findmnt", "-n", "-o", "FSTYPE,SOURCE,TARGET", "-M", str(pool_path))
                 check(replacement_pool_mount == pool_mount,
                       "Incus storage pool remains on the same ZFS dataset through guest replacement")
+                print("GUEST_REPLACEMENT " + json.dumps({
+                    "baseline": baseline_observed, "candidate": candidate_observed,
+                    "mechanism": "explicit-compute-guest-replace",
+                    "datastore": "fresh-sqlite-not-in-place-migration",
+                    "retainedApplicationRecovered": True, "retainedUserId": recovered_user_id,
+                    "retainedItemId": item_id, "hostSshIdentityPreserved": True,
+                }, sort_keys=True), flush=True)
                 runtime.forward_stop()
         finally:
             if sys.exc_info()[0] is not None and runtime.created_instance:
@@ -2433,7 +2591,9 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--scenario", required=True, choices=("replacement", "consumer-resilience"),
                         help="required fixture family; CI runs both on independent KVM runners")
-    result.add_argument("--bundle", required=True, type=Path, help="Nix store guest bundle for the fixture architecture")
+    result.add_argument("--bundle", required=True, type=Path, help="candidate Nix store guest bundle for the fixture architecture")
+    result.add_argument("--baseline-bundle", type=Path, help="replacement only: frozen main 90920/root 801bef6 real K3s 1.35 bundle")
+    result.add_argument("--versions", type=Path, help="replacement only: evaluated baseline/candidate source, system and K3s provenance JSON")
     result.add_argument("--fixture", required=True, type=Path, help="evaluated host fixture JSON")
     result.add_argument("--repo", required=True, type=Path, help="canonical recovery inputs: Jellyfin manifests")
     result.add_argument("--seed", required=True, type=Path, help="bootstrap seed tree; the shipped wrapper is pointed at it")

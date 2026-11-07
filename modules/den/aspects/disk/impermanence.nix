@@ -26,7 +26,7 @@
 
       }
       // lib.optionalAttrs (host.hasAspect den.aspects.disk.zfs) {
-        boot.initrd = lib.mkIf config.boot.initrd.systemd.enable {
+        boot.initrd = lib.mkIf config.boot.initrd.enable {
           systemd.storePaths = [ inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.initrdZfsRollback ];
 
           systemd.services.initrd-zfs-rollback = {

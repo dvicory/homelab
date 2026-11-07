@@ -301,6 +301,7 @@ def main():
         "image": settings["image"], "architecture": platform.machine(), "fixtureArchitecture": "x86_64-linux",
         "emulatedFixture": platform.machine().lower() not in ("x86_64", "amd64"), "nativeARMProof": False,
         "kubectlPackageVersion": settings.get("kubectlVersion", "unknown"),
+        "serverPackageVersion": settings.get("serverVersion", "unknown"),
         "mutation": {"gatewayTLSCEL": args.remove_gateway_tls_cel, "argo": args.argo_mutation},
         "fullAcceptance": False, "scoped": scoped, "status": "failed",
         "cleanup": {"containers": False, "volumes": False, "network": False, "credentials": False},
@@ -457,8 +458,9 @@ def main():
         phase = "image-fetch"
         image_start = time.monotonic()
         report["imageCached"] = d("image", "inspect", settings["image"], check=False).returncode == 0
-        if not report["imageCached"]:
-            d("pull", "--platform", "linux/amd64", settings["image"], timeout=600)
+        # Reload the immutable Nix archive even if a mutable local tag exists.
+        # A cached same-version image may predate a selected source patch.
+        d("load", "--input", settings["imageArchive"], timeout=600)
         for image in settings["images"]:
             d("load", "--input", image["archive"], timeout=600)
         registry_images = set(settings.get("registryImages", []))
@@ -522,7 +524,8 @@ def main():
         else:
             raise RuntimeError("readiness-timeout")
         version = json.loads(kubectl("get", "--raw=/version").stdout)
-        if version["gitVersion"] != "v1.35.8+k3s1":
+        report["serverGitVersion"] = version["gitVersion"]
+        if version["gitVersion"] != settings["serverVersion"]:
             raise ValueError("target-version-mismatch")
         phase = "disposable-kubeconfig"
         info = json.loads(d("inspect", name).stdout)[0]
@@ -932,7 +935,7 @@ def self_check(runner=None):
             settings = {
                 "docker": "fixture-docker", "kubectl": "fixture-kubectl", "path": "",
                 "scenarios": str(root), "requiredScenarios": runner.REQUIRED_SCENARIOS,
-                "image": "fixture@sha256:" + "0" * 64, "secret": {},
+                "image": "fixture@sha256:" + "0" * 64, "imageArchive": "fixture.tar", "secret": {},
             }
             settings_path = root / "settings.json"
             settings_path.write_text(json.dumps(settings))
@@ -940,15 +943,15 @@ def self_check(runner=None):
             def exercise(primary, cleanup):
                 def dispatch(command, **options):
                     args = command[5:] if command[1:2] == ["--host"] else command[1:]
-                    if args[:1] == ["pull"] or cleanup and args[:1] == ["ps"]:
-                        code, diagnostic = (23, "no space left on device") if args[0] == "pull" else (29, "permission denied")
+                    if primary and args[:1] == ["load"] or cleanup and args[:1] == ["ps"]:
+                        code, diagnostic = (23, "no space left on device") if args[0] == "load" else (29, "permission denied")
                         return real_run([sys.executable, "-c",
                                          "import sys; sys.stderr.write(sys.argv[1]); sys.exit(int(sys.argv[2]))",
                                          diagnostic + " " + sensitive, str(code)], **options)
                     if args[:2] == ["context", "inspect"]:
                         text = json.dumps([{"Endpoints": {"docker": {"Host": "unix:///fixture.sock"}}}])
                     else:
-                        assert args == ["info"] or args[:1] == ["ps"] or args[:2] == ["image", "inspect"], command
+                        assert args == ["info"] or args[:1] in (["ps"], ["load"]) or args[:2] == ["image", "inspect"], command
                         text = ""
                     return subprocess.CompletedProcess(command, int(primary and args[:2] == ["image", "inspect"]), text, "")
 
@@ -966,7 +969,7 @@ def self_check(runner=None):
             baseline = exercise(True, False)
             assert all(baseline["cleanup"].values())
             failure = baseline["commandFailure"]
-            assert (failure["returnCode"], failure["subcommand"], failure["errorCategory"]) == (23, "pull", "disk-full")
+            assert (failure["returnCode"], failure["subcommand"], failure["errorCategory"]) == (23, "load", "disk-full")
             result = exercise(True, True)
             assert result["commandFailure"] == baseline["commandFailure"]
             assert result["failurePhase"] == baseline["failurePhase"] == "image-fetch"

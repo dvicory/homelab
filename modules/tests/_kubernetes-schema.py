@@ -172,8 +172,11 @@ def validate(args):
     if count == 0:
         raise ValueError("zero effective deployment documents selected")
     paths = sorted({entry[0] for entry in expected})
+    kubernetes_version = (args.schemas / "kubernetes-version").read_text().strip()
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", kubernetes_version):
+        raise ValueError("invalid selected Kubernetes schema version")
     command = [str(args.kubeconform), "-strict", "-summary", "-verbose", "-output", "json",
-               "-kubernetes-version", "1.35.8", "-schema-location",
+               "-kubernetes-version", kubernetes_version, "-schema-location",
                str(args.schemas / "{{.Group}}__{{.ResourceKind}}__{{.ResourceAPIVersion}}.json"), *paths]
     result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     args.report.write_text(result.stdout)

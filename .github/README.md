@@ -23,8 +23,12 @@ actual runner availability and start order.
 
 `hostedCiArtifacts.<system>` supplies lazy `groups`, `checks`,
 `nativeApplications` and `bootstrap` leaves, plus the local check `inventory`.
-Complete fast-check executors evaluate their inventory and aggregate together,
-then release the evaluator before building. A selected-check dispatch forces only
+Complete fast-check executors resolve the
+lazy plan and fast derivations, then resolve each runtime derivation in its own
+Nix process before reassembling the complete inventory. This keeps all exact
+derivation bindings without holding every runtime fixture graph in one
+evaluator. Aggregate evaluation runs in a separate process.
+A selected-check dispatch forces only
 its artifact leaf and records its exact selected receipt, without evaluating or
 uploading a complete platform inventory. Other executors also force only their
 own artifact leaf. Each leaf declares exact derivation/output paths; native
@@ -217,7 +221,9 @@ bridge peers do not prove Incus mounts, ID maps or host nftables.
 the evaluated production systemd unit starts, creates its state directory,
 acknowledges the exact generation, fails with `Result=exit-code` on incomplete
 delivery without changing prior state, and succeeds again after repair.
-`public-edge-runtime` covers public-edge TLS/header/request/logging boundaries.
+`public-edge-runtime` covers public-edge TLS/header/request/logging boundaries;
+its synthetic origin waits for static-address configuration and rejects nginx
+boot restarts without changing native start-rate limits.
 Host checks retain mount/ID-map/filesystem/firewall/service-delivery evidence;
 no Kubernetes-only replacement justifies removing that coverage.
 

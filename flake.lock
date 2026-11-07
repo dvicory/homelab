@@ -96,19 +96,19 @@
         "type": "github"
       }
     },
-    "crowdsec-pr": {
+    "crowdsec": {
       "locked": {
-        "lastModified": 1788724433,
-        "narHash": "sha256-Ssrb+imztb6EX+aNSQkyL9AGBRZFilDFH7nfs7h2ts8=",
+        "lastModified": 1793991153,
+        "narHash": "sha256-3vpqjHZyX7KEIOYWEHQrutwyW8Cct8/BvC/ep2HxTLM=",
         "owner": "dvicory",
         "repo": "nixpkgs",
-        "rev": "98dbf12cb2bb49c47f82bbdb4a6a3190792bdb00",
+        "rev": "b7ede101d44b588263ea5dd9d9ea1d027c097a5c",
         "type": "github"
       },
       "original": {
         "owner": "dvicory",
-        "ref": "crowdsec",
         "repo": "nixpkgs",
+        "rev": "b7ede101d44b588263ea5dd9d9ea1d027c097a5c",
         "type": "github"
       }
     },
@@ -1202,17 +1202,17 @@
         ]
       },
       "locked": {
-        "lastModified": 1787578205,
-        "narHash": "sha256-lACQjfZXTffq+V92ktoomxrNG5LBcDO1elKKowmmbUA=",
-        "owner": "boinkor-net",
+        "lastModified": 1793991710,
+        "narHash": "sha256-dlaebMXdVm7b1bgIJ4H67N3OHNsadFq3IBzSriztqgY=",
+        "owner": "dvicory",
         "repo": "hoopsnake",
-        "rev": "106a95e01352db2143f355fba1a328c887e0c807",
+        "rev": "2ac8db429b5159387c47c2499ffb34fc9a7773bd",
         "type": "github"
       },
       "original": {
-        "owner": "boinkor-net",
+        "owner": "dvicory",
         "repo": "hoopsnake",
-        "rev": "106a95e01352db2143f355fba1a328c887e0c807",
+        "rev": "2ac8db429b5159387c47c2499ffb34fc9a7773bd",
         "type": "github"
       }
     },
@@ -1222,17 +1222,17 @@
         "nixpkgs": "nixpkgs_5"
       },
       "locked": {
-        "lastModified": 1788598344,
-        "narHash": "sha256-Zzbfrqh/dLyFNuA4VKdn6Ao2a9C6YBKAMjGC36yQDFk=",
-        "owner": "dvicory",
+        "lastModified": 1792739756,
+        "narHash": "sha256-s0TeXWG5Ci75Y/Hzon0Z7NrN/fG773Rc54/z6oPFszQ=",
+        "owner": "nix-community",
         "repo": "impermanence",
-        "rev": "0aba88a5241d0a2786168aa72ee2e25f2cf5707b",
+        "rev": "fa627f4c8b8e92f58f58a73d99ee4e1304e64eb2",
         "type": "github"
       },
       "original": {
-        "owner": "dvicory",
-        "ref": "systemd-requires",
+        "owner": "nix-community",
         "repo": "impermanence",
+        "rev": "fa627f4c8b8e92f58f58a73d99ee4e1304e64eb2",
         "type": "github"
       }
     },
@@ -1644,11 +1644,11 @@
     },
     "nixpkgs_7": {
       "locked": {
-        "lastModified": 1788531059,
-        "narHash": "sha256-/Mz6ovEL+KZ9b0UkWEBd/DtmODXuXW3FhNnuGQYghvg=",
-        "rev": "801bef6abd86b91e51083066b83fb354a11fc640",
+        "lastModified": 1793726008,
+        "narHash": "sha256-iNjybNORi/2+shilhMlkNr01UHWKOHRGzQyIyvobs9o=",
+        "rev": "1d060086d60cb76a40cf37109f979d88a5bd6396",
         "type": "tarball",
-        "url": "https://releases.nixos.org/nixos/unstable/nixos-26.11pre1067334.801bef6abd86/nixexprs.tar.xz"
+        "url": "https://releases.nixos.org/nixos/unstable/nixos-26.11pre1107793.1d060086d60c/nixexprs.tar.xz"
       },
       "original": {
         "type": "tarball",
@@ -1856,7 +1856,7 @@
       "inputs": {
         "agenix": "agenix",
         "agenix-rekey": "agenix-rekey",
-        "crowdsec-pr": "crowdsec-pr",
+        "crowdsec": "crowdsec",
         "den": "den",
         "deploy-rs": "deploy-rs",
         "devshell": "devshell_2",

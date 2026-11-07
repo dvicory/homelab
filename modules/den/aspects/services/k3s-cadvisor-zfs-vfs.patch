@@ -1,0 +1,137 @@
+From: upstream cAdvisor 0e107a38f5941b558c03ee3572906632a8198ae8
+Subject: fs/zfs: fall back to real VFS statistics when ZFS queries are unavailable
+
+Backported to the selected v0.56.2 fs/ layout (upstream moved it to lib/fs/).
+
+--- a/github.com/google/cadvisor/fs/zfs/plugin.go
++++ b/github.com/google/cadvisor/fs/zfs/plugin.go
+@@ -24,6 +24,12 @@
+ 
+ type zfsPlugin struct{}
+ 
++// Overridable for tests.
++var (
++	zfsDevicePath = "/dev/zfs"
++	getZfsStats   = GetZfsStats
++)
++
+ // NewPlugin creates a new ZFS filesystem plugin.
+ func NewPlugin() fs.FsPlugin {
+ 	return &zfsPlugin{}
+@@ -44,15 +50,19 @@
+ }
+ 
+ // GetStats returns filesystem statistics for ZFS.
++//
++// When /dev/zfs is missing, or when zfs tooling cannot collect stats (common
++// in unprivileged containers that still see the device node but lack
++// permission to use it), fall back to VFS so mountpoint capacity remains
++// available via statfs.
+ func (p *zfsPlugin) GetStats(device string, partition fs.PartitionInfo) (*fs.FsStats, error) {
+-	// Check if ZFS is available - if /dev/zfs doesn't exist, fall back to VFS
+-	if _, err := os.Stat("/dev/zfs"); os.IsNotExist(err) {
++	if _, err := os.Stat(zfsDevicePath); err != nil {
+ 		return nil, fs.ErrFallbackToVFS
+ 	}
+ 
+-	capacity, free, avail, err := GetZfsStats(device)
++	capacity, free, avail, err := getZfsStats(device)
+ 	if err != nil {
+-		return nil, err
++		return nil, fs.ErrFallbackToVFS
+ 	}
+ 
+ 	return &fs.FsStats{
+--- /dev/null
++++ b/github.com/google/cadvisor/fs/zfs/plugin_test.go
+@@ -0,0 +1,90 @@
++// Copyright 2024 Google Inc. All Rights Reserved.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package zfs
++
++import (
++	"errors"
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/google/cadvisor/fs"
++)
++
++func TestGetStatsFallsBackWhenDevMissing(t *testing.T) {
++	oldPath := zfsDevicePath
++	zfsDevicePath = filepath.Join(t.TempDir(), "missing-zfs")
++	defer func() { zfsDevicePath = oldPath }()
++
++	_, err := NewPlugin().GetStats("tank/root", fs.PartitionInfo{Mountpoint: "/"})
++	if !errors.Is(err, fs.ErrFallbackToVFS) {
++		t.Fatalf("GetStats() error = %v, want ErrFallbackToVFS", err)
++	}
++}
++
++func TestGetStatsFallsBackOnZfsError(t *testing.T) {
++	// Simulate /dev/zfs present but unusable (e.g. EPERM in an unprivileged
++	// container): device node exists, yet zfs list fails.
++	dev := filepath.Join(t.TempDir(), "zfs")
++	if err := os.WriteFile(dev, nil, 0o644); err != nil {
++		t.Fatal(err)
++	}
++
++	oldPath, oldFn := zfsDevicePath, getZfsStats
++	zfsDevicePath = dev
++	getZfsStats = func(string) (uint64, uint64, uint64, error) {
++		return 0, 0, 0, os.ErrPermission
++	}
++	defer func() {
++		zfsDevicePath = oldPath
++		getZfsStats = oldFn
++	}()
++
++	_, err := NewPlugin().GetStats("tank/root", fs.PartitionInfo{Mountpoint: "/"})
++	if !errors.Is(err, fs.ErrFallbackToVFS) {
++		t.Fatalf("GetStats() error = %v, want ErrFallbackToVFS", err)
++	}
++}
++
++func TestGetStatsSuccess(t *testing.T) {
++	dev := filepath.Join(t.TempDir(), "zfs")
++	if err := os.WriteFile(dev, nil, 0o644); err != nil {
++		t.Fatal(err)
++	}
++
++	oldPath, oldFn := zfsDevicePath, getZfsStats
++	zfsDevicePath = dev
++	getZfsStats = func(pool string) (uint64, uint64, uint64, error) {
++		if pool != "tank/root" {
++			t.Errorf("pool = %q, want tank/root", pool)
++		}
++		return 300, 100, 100, nil
++	}
++	defer func() {
++		zfsDevicePath = oldPath
++		getZfsStats = oldFn
++	}()
++
++	stats, err := NewPlugin().GetStats("tank/root", fs.PartitionInfo{Mountpoint: "/"})
++	if err != nil {
++		t.Fatalf("GetStats() unexpected error: %v", err)
++	}
++	if stats.Capacity != 300 || stats.Free != 100 || stats.Available != 100 {
++		t.Errorf("stats = %+v, want capacity=300 free=100 available=100", stats)
++	}
++	if stats.Type != fs.ZFS {
++		t.Errorf("Type = %q, want %q", stats.Type, fs.ZFS)
++	}
++}
