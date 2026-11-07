@@ -604,6 +604,24 @@ in
         selecting the previous image. No production migration or rollback is
         established by source or reconciliation-helper checks.
 
+        On a disposable native Linux Docker Engine 26+ fixture, run
+        `nix run path:.#media-live-acceptance -- --docker-host unix:///var/run/docker.sock`.
+        The real-app suite creates Seerr state with MAIN
+        `90920bac376c6640478c1c45feaf6afa2c1c3900`'s frozen image and owned helper,
+        stops Seerr, and archives its complete configuration before upgrading.
+        It checks native sign-in, owner identity, libraries, managed and UI-owned
+        Arr connections, request selectors and paired-helper idempotence.
+        Recovery stops the new image and restores the cold archive before
+        starting the old image with its old helper; it never downgrades a
+        migrated database in place. A passing run proves only this synthetic
+        upgrade/restore path, not production backup freshness, production
+        migration, Incus/MergerFS storage or Kubernetes RBAC.
+
+        Pin-change state failures report bounded field paths and numeric
+        differences, not credential/string values. The exact state-equality
+        guard still fails; diagnostics do not classify a difference as harmless
+        or authorize removing its preservation check.
+
         ### Source cache and offline recovery
 
         Both policy repositories live below

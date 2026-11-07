@@ -573,21 +573,21 @@ established by source or reconciliation-helper checks.
 
 On a disposable native Linux Docker Engine 26+ fixture, run
 `nix run path:.#media-live-acceptance -- --docker-host unix:///var/run/docker.sock`.
-The existing real-app suite also creates Seerr state with MAIN
-`90920bac376c6640478c1c45feaf6afa2c1c3900`'s independently frozen 3.4.1 image
-and owned helper, stops Seerr, and archives its complete configuration
-directory before starting the selected image on that retained state.
-It checks native Jellyfin sign-in, owner identity, library selections,
-managed and UI-owned Arr connections, request selectors, and paired-helper
-idempotence. Recovery stops the new image, restores the cold archive, and
-checks the old image with the old helper; it never downgrades a migrated
-database in place. A passing native run proves only this synthetic
-consumer-visible upgrade/restore path, not production backup freshness,
-production migration, Incus/MergerFS storage or Kubernetes RBAC.
-If the native pin-change state guard fails, its diagnostic reports bounded
-field paths and numeric differences, not credential/string values. The
-exact state-equality guard still fails; the diagnostic does not classify a
-difference as harmless or authorize deleting its preservation check.
+The real-app suite creates Seerr state with MAIN
+`90920bac376c6640478c1c45feaf6afa2c1c3900`'s frozen image and owned helper,
+stops Seerr, and archives its complete configuration before upgrading.
+It checks native sign-in, owner identity, libraries, managed and UI-owned
+Arr connections, request selectors and paired-helper idempotence.
+Recovery stops the new image and restores the cold archive before
+starting the old image with its old helper; it never downgrades a
+migrated database in place. A passing run proves only this synthetic
+upgrade/restore path, not production backup freshness, production
+migration, Incus/MergerFS storage or Kubernetes RBAC.
+
+Pin-change state failures report bounded field paths and numeric
+differences, not credential/string values. The exact state-equality
+guard still fails; diagnostics do not classify a difference as harmless
+or authorize removing its preservation check.
 
 ### Source cache and offline recovery
 
