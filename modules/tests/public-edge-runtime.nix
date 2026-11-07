@@ -219,9 +219,14 @@
                 };
             };
             testScript = ''
+              import faulthandler
               import json
+              import os
               import re
               import shlex
+              import signal
+              import subprocess
+              import sys
               import time
 
               def access_log(edge, path):
@@ -238,7 +243,51 @@
                       time.sleep(1)
                   raise AssertionError(f"no queryless edge access log entry for {path}")
 
-              start_all()
+              # The driver starts stdout readers only after monitor/shell/QMP
+              # handshakes. A live pre-handshake child otherwise stays silent
+              # until the global timeout, hiding the actual launch failure.
+              # This captures once after 120s; the existing global deadline
+              # remains responsible for terminating an irrecoverably stuck VM.
+              def startup_diagnostics(_signal, _frame):
+                  faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+                  for machine in machines_qemu:
+                      process = machine.process
+                      print("VM_STARTUP " + json.dumps({
+                          "name": machine.name,
+                          "pid": process.pid if process is not None else None,
+                          "returncode": process.poll() if process is not None else None,
+                          "monitor": machine.monitor is not None,
+                          "shell": machine.shell is not None,
+                          "qmp": machine.qmp_client is not None,
+                          "booted": machine.booted,
+                      }), flush=True)
+                      if process is not None and process.stdout is not None and machine.serial_thread is None:
+                          fd = process.stdout.fileno()
+                          was_blocking = os.get_blocking(fd)
+                          os.set_blocking(fd, False)
+                          try:
+                              pending = os.read(fd, 16384).decode(errors="replace")
+                          except OSError as error:
+                              pending = f"<stdout unavailable: {error}>"
+                          finally:
+                              os.set_blocking(fd, was_blocking)
+                          print(f"VM_STARTUP_OUTPUT {machine.name}: {pending}", flush=True)
+                  try:
+                      processes = subprocess.run(
+                          ["${pkgs.procps}/bin/ps", "-eo", "pid,ppid,stat,wchan:32,comm"],
+                          capture_output=True, text=True, timeout=5, check=False,
+                      )
+                      print("VM_STARTUP_PROCESSES\n" + processes.stdout[:16384], flush=True)
+                  except subprocess.TimeoutExpired:
+                      print("VM_STARTUP_PROCESSES: ps exceeded its five-second bound", flush=True)
+
+              previous_alarm = signal.signal(signal.SIGALRM, startup_diagnostics)
+              signal.alarm(120)
+              try:
+                  start_all()
+              finally:
+                  signal.alarm(0)
+                  signal.signal(signal.SIGALRM, previous_alarm)
               origin.wait_for_unit("nginx.service")
               remote.wait_for_unit("nginx.service")
               home.wait_for_unit("nginx.service")
