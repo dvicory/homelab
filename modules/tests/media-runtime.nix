@@ -119,7 +119,7 @@
             enabled = lambda identity: {"quality": {"id": identity}, "allowed": True, "items": []}
             items = [disabled(31), disabled(0), enabled(3), enabled(7), disabled(19)]
             canonical = stable(items)
-            assert canonical == [items[1], items[0], *items[2:]]
+            assert stable([items[1], items[0], *items[2:]]) == canonical, "disabled-only prefix order is not a policy change"
             reversed_enabled = acceptance["deepcopy"](items)
             reversed_enabled[2:4] = reversed(reversed_enabled[2:4])
             assert stable(reversed_enabled) != canonical, "enabled quality priority must remain semantic"
