@@ -23,8 +23,11 @@ actual runner availability and start order.
 
 `hostedCiArtifacts.<system>` supplies lazy `groups`, `checks`,
 `nativeApplications` and `bootstrap` leaves, plus the local check `inventory`.
-Complete fast-check executors evaluate inventory and aggregate in separate
-processes, releasing the runtime-fixture heap before aggregate evaluation.
+Complete fast-check executors resolve the
+lazy plan and fast derivations, then resolve each runtime derivation in its own
+Nix process before reassembling the complete inventory. This keeps all exact
+derivation bindings without holding every runtime fixture graph in one
+evaluator. Aggregate evaluation runs in a separate process.
 A selected-check dispatch forces only
 its artifact leaf and records its exact selected receipt, without evaluating or
 uploading a complete platform inventory. Other executors also force only their

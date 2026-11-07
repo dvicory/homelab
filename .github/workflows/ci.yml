@@ -335,8 +335,32 @@ jobs:
           fi
           # Release the evaluation heap before any build/VM starts (PR #64).
           if [ "$GROUP" = checks ] && [ -z "$CHECK" ]; then
-            # Release the full runtime-fixture heap before evaluating the fast aggregate.
-            nix eval --json ".#hostedCiArtifacts.$SYSTEM.inventory" > "$RUNNER_TEMP/check-inventory.json"
+            # Resolve each runtime fixture in its own evaluator, never all fixture graphs together.
+            nix eval --json ".#hostedCiPlan.$SYSTEM.inventory" > "$RUNNER_TEMP/planned-inventory.json"
+            nix eval --json ".#hostedCiArtifacts.$SYSTEM.inventory.fast" > "$RUNNER_TEMP/fast-inventory.json"
+            : > "$RUNNER_TEMP/runtime-inventory.jsonl"
+            while IFS= read -r name; do
+              check_attr=$(jq -rn --arg name "$name" '$name | @json')
+              nix eval --json ".#hostedCiArtifacts.$SYSTEM.checks.$check_attr.drvPath" > "$RUNNER_TEMP/runtime-drv.json"
+              jq -cn --arg name "$name" --slurpfile drv "$RUNNER_TEMP/runtime-drv.json" \
+                '{name: $name, drvPath: $drv[0]}' >> "$RUNNER_TEMP/runtime-inventory.jsonl"
+            done < <(jq -r '.runtime[].name' "$RUNNER_TEMP/planned-inventory.json")
+            jq -en --slurpfile plan "$RUNNER_TEMP/planned-inventory.json" \
+              --slurpfile fast "$RUNNER_TEMP/fast-inventory.json" \
+              --slurpfile runtime "$RUNNER_TEMP/runtime-inventory.jsonl" '
+              ($fast[0] + $runtime) as $resolved |
+              ($plan[0].fast + $plan[0].runtime | map(.name) | sort) as $expected |
+              if ($resolved | map(.name) | sort) != $expected
+                 or ($resolved | map(.name) | unique | length) != ($resolved | length)
+                 or any($resolved[]; (.drvPath | type) != "string"
+                        or (.drvPath | startswith("/nix/store/") and endswith(".drv") | not))
+              then error("missing, duplicate or invalid independently evaluated check derivation")
+              else
+                ($resolved | map({key: .name, value: .drvPath}) | from_entries) as $drvs |
+                $plan[0] | with_entries(.value |= map(. + {
+                  drvPath: (if .hosted then $drvs[.name] else null end)
+                }))
+              end' > "$RUNNER_TEMP/check-inventory.json"
             cat "$RUNNER_TEMP/check-inventory.json"
           fi
           nix eval --json ".#hostedCiArtifacts.$SYSTEM.$artifact_attr" > "$RUNNER_TEMP/artifact.json"
