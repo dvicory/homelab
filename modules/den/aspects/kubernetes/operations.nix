@@ -216,6 +216,16 @@ in
         a qcow2 disk or change its Incus instance type for this bundle; changing
         backends requires a separately validated retained-data handoff.
 
+        The selected K3s 1.36.5 package backports cAdvisor's
+        [ZFS VFS fallback correction](https://github.com/google/cadvisor/commit/0e107a38f5941b558c03ee3572906632a8198ae8),
+        released in cAdvisor 0.60.6. In an unprivileged, idmapped Incus guest,
+        `/dev/zfs` can exist but be unusable; cAdvisor 0.56.2 then fails to
+        discover the root filesystem and prevents kubelet startup. The backport
+        uses real filesystem statistics when the device cannot be opened or
+        `zfs list` fails; it does not grant the guest ZFS access. Remove the local
+        backport when the selected Nixpkgs K3s includes this correction and the
+        native ZFS/Incus readiness and replacement scenarios pass.
+
         Run guest lifecycle commands as root.
 
         Adopt and inspect an existing guest:
@@ -230,6 +240,14 @@ in
         ```sh
         compute-guest create --bundle ./guest-bundle
         ```
+
+        Updating root Nixpkgs changes the guest bundle, not an existing guest's
+        installed system. Host activation and a guest restart do not install
+        the new bundle. `create` refuses a different bundle for an existing
+        instance; use explicit replacement to update K3s and the guest system.
+        This recreates the disposable cluster datastore. Retained application
+        data and runtime identity stay attached; bootstrap the new cluster
+        afterward rather than restoring the old K3s datastore.
 
         Replace an existing guest (**destructive**):
 

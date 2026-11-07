@@ -856,6 +856,10 @@ def check_acceptance(report):
         raise ValueError("acceptance-report-shape")
     if report.get("scenario") != "kubernetes-native-safety":
         raise ValueError("acceptance-scenario")
+    if report.get("image") != "rancher/k3s:v1.36.5-k3s1@sha256:057cfd5a9d51b89f1f0ee139c28d5d5fdd5aa7ddeac2742a0ba90c6dbc0329bb":
+        raise ValueError("acceptance-image")
+    if report.get("serverGitVersion") != "v1.36.5+k3s1":
+        raise ValueError("target-version-mismatch")
     supplied = report.get("requiredScenarios")
     if not isinstance(supplied, list) or len(supplied) != len(REQUIRED_SCENARIOS) or set(supplied) != set(REQUIRED_SCENARIOS):
         raise ValueError("required-scenario-inventory")
@@ -1325,6 +1329,8 @@ def self_check():
     check_report(varied, required)
     complete = {
         "scenario": "kubernetes-native-safety", "requiredScenarios": REQUIRED_SCENARIOS,
+        "image": "rancher/k3s:v1.36.5-k3s1@sha256:057cfd5a9d51b89f1f0ee139c28d5d5fdd5aa7ddeac2742a0ba90c6dbc0329bb",
+        "serverGitVersion": "v1.36.5+k3s1",
         "executed": sanitize_tests({"name": name, "status": "passed", "steps": [
             {"status": "passed", "operations": [{"status": "passed", "type": "assert"}]},
         ]} for name in REQUIRED_SCENARIOS),
@@ -1341,6 +1347,10 @@ def self_check():
     for key, value in (
         ("executed", []), ("requiredScenarios", REQUIRED_SCENARIOS[:-1]),
         ("scoped", True), ("scoped", None), ("status", "failed"), ("fullAcceptance", False),
+        ("image", "rancher/k3s:v1.35.8-k3s1@sha256:59fe491fd3b73204e499e40b325240d85c42c7189c3ae50150d37b78243f3b32"),
+        ("image", "rancher/k3s:v1.36.5-k3s1"),
+        ("image", "rancher/k3s:v1.36.5-k3s1@sha256:59fe491fd3b73204e499e40b325240d85c42c7189c3ae50150d37b78243f3b32"),
+        ("serverGitVersion", "v1.35.8+k3s1"), ("serverGitVersion", "v1.36.5"),
         ("mutation", {"gatewayTLSCEL": True, "argo": ""}), ("failureReason", "command-failed"),
         ("mutation", {"gatewayTLSCEL": 0, "argo": ""}),
         ("failurePhase", "cleanup"), ("commandFailure", {"returnCode": 1}),

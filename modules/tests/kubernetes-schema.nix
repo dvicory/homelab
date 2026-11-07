@@ -6,7 +6,7 @@
       manifests = rootPath + "/generated/manifests/prod-home";
       python = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
       helper = ./_kubernetes-schema.py;
-      registryRevision = "8df8a883b68a24a104b4a9e43c1288090ae60b3b";
+      registryRevision = "a6f9a32d2ccb64b6e4f5b41419b9c2e8ee0cce18";
       schemaInputs = builtins.fromJSON (builtins.readFile ./_kubernetes-schema-inputs.json);
       converter = pkgs.fetchurl {
         # The commit behind upstream v0.8.0, not a moving tag or local fork.
@@ -29,7 +29,7 @@
         in
         "cp ${source} \"$out/${filename}\"";
       schemas =
-        pkgs.runCommand "prod-home-kubernetes-schemas-1.35.8"
+        pkgs.runCommand "prod-home-kubernetes-schemas-1.36.5"
           {
             nativeBuildInputs = [ python ];
           }
