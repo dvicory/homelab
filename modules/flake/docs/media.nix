@@ -208,9 +208,10 @@ in
 
         In the `initial` publication phase the requests route is withheld. Only the
         PostSync Seerr Job may claim the first owner; its scheduled Job cannot.
-        Fresh state uses the declared Jellyfin administrator. Initialized state
-        keeps its existing owner: changing the declared administrator does not
-        transfer ownership.
+        Fresh state uses `settings.kubernetes.services.jellyfin.administrator`
+        (default `admin`), the same account used by Jellyfin provisioning and
+        Jellarr's API-key bootstrap. Initialized state keeps its existing owner:
+        changing the declared administrator does not transfer ownership.
 
         1. Confirm the Seerr Job succeeds:
 

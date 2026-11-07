@@ -12,28 +12,23 @@ compute guest listed under "Current stack" in
 
 ## Household directory sign-in
 
-The household integration declares a `plugins` initContainer using the same
-`jellyfin-provisioner-image` as fresh-state provisioning, with the explicit
-`jellyfin-install-plugins` command. The normal Linux flake package
-`jellyfin-ldap-plugin` supplies the Nix-pinned official LDAP Authentication v24
-files and installer bundled in that producer; no additional helper image or
-registry namespace is needed. Deployment requires a selected verified release
-containing that installer, not merely an updated producer in the checkout.
-Installation runs after fresh-state provisioning and before the stock runtime.
-Jellarr configures only declared settings of the loaded plugin through its
-native API, preserving plugin-owned user links. Do not install another version
-through the dashboard or disable TLS verification.
+Deploy only a verified helper release containing the LDAP installer. The
+plugin is installed before Jellyfin starts; Jellarr applies its declared
+settings without replacing plugin-owned user links. Do not install another
+version through the dashboard or disable TLS verification.
 
 Enroll people as described in [Identity operations](identity.md#household-media-credentials).
 Use the ordinary Jellyfin username/password login, and Seerr's ordinary
 Jellyfin login, with the person's primary password or separate POSIX password.
 This is LDAP authentication, not OIDC, and LDAP itself does not perform MFA.
 
-The declared local administrator is `admin`. Its agenix-managed
-password serves local recovery and Jellarr's API-key bootstrap, independently
-of Kanidm. Keep this account local; personal directory administrators use
-their own LDAP-backed accounts. A same-named directory person cannot
-authenticate an existing local account with their directory password.
+The local administrator is selected by
+`settings.kubernetes.services.jellyfin.administrator` (default `admin`). Its
+agenix-managed password serves local recovery, Jellarr's API-key bootstrap
+and fresh Seerr first-owner delivery, independently of Kanidm. Keep this
+account local; personal directory administrators use their own LDAP-backed
+accounts. A same-named directory person cannot authenticate an existing
+local account with their directory password.
 
 First-start provisioning creates the declared administrator only on empty
 retained state. Changing its declared name does not create, convert or reset
@@ -46,16 +41,11 @@ directory-backed administration are checked again at each sign-in. Removing
 membership denies fresh sign-in but does not revoke established sessions:
 an existing session can still return HTTP 200 with the same Jellyfin user ID.
 
-Before deploying directory integration, select a genuinely published and
-anonymously verified helper release containing the LDAP installer and Kanidm
-`policies.json` reconciliation, as described in "Deliver helper images".
-Do not derive consumer digests from the current producers or import their
-archives to bypass selection. Publication and selection do not authorize
-account enrollment, policy activation or auth rollout.
-Keep Seerr in phase `initial` until the owner accepts household sign-in from
-an actual media client and Seerr and separately approves the live transition.
-Disposable fixture success is not production acceptance; live household
-acceptance remains open.
+Before deploying directory integration, select a verified release containing
+the LDAP installer and Kanidm policy reconciliation; see "Deliver helper
+images". Keep Seerr in phase `initial` until the owner accepts sign-in from
+an actual media client and Seerr and approves the live transition. Image
+publication and disposable checks do not authorize enrollment or rollout.
 
 To roll back directory integration, revert the plugin initContainer and
 Jellarr LDAP settings together and restart Jellyfin. Preserve retained users,
@@ -65,25 +55,16 @@ only after directory consumers are removed.
 
 ### Disposable household acceptance
 
-The native `household-sign-in-runtime` flake app and CI lane materialize the
-same Python suite and committed manifests. The Jellyfin provisioner, Kanidm
-provisioner and Jellarr use actual selected immutable verified GHCR identities
-and normal registry pulls, not local archives, preloads or compatibility aliases.
-Updating an unselected producer must not change those consumer identities.
-They run against real pinned services in an owned disposable Docker fixture,
-not on the production host and not inside a new Docker VM test envelope.
+Run `nix run .#household-sign-in-runtime` as root on disposable native
+x86_64 Linux with a running Docker daemon. Reserve the fixture's workload
+names, state and loopback ports. The hostname `id.bzfx.net` must resolve to
+`127.0.0.1` on that host; the app does not change host resolution. Never
+redirect that production hostname on a production host.
 
-Run as root on disposable native x86_64 Linux with a running Docker daemon.
-Reserve the fixture's workload names, state and loopback ports for the suite.
-Before starting, the canonical hostname `id.bzfx.net` must
-resolve to `127.0.0.1` on that host. The app never edits host resolution.
-The disposable GitHub runner may explicitly add that loopback hosts entry;
-do not redirect the production hostname on a production host.
-
-This application lane exercises authentication and certificate verification.
-The directory K3s/kernel VM gate separately proves NetworkPolicy enforcement;
-Docker success cannot prove that boundary. Neither fixture replaces
-owner-approved deployment and real-device household acceptance.
+This checks native authentication and certificate verification, not
+Kubernetes NetworkPolicy enforcement. Run the directory K3s/kernel VM gate
+for that boundary. Neither check replaces approved deployment and
+real-device household acceptance.
 
 ## Storage
 
@@ -269,30 +250,17 @@ secret is missing, provisioning fails and Jellyfin does not start.
 
 ## Deliver helper images
 
-All four Nix-built helpers use the immutable GHCR digests in
-`assets/helper-release/verified.json`. Kubernetes pulls them normally; routine
-helper updates need no image import, guest activation or replacement.
+Kubernetes pulls the immutable GHCR digests selected in
+`assets/helper-release/verified.json`. Follow
+[Deliver helper images](../../CI.md#deliver-helper-images) to publish and
+verify a candidate; publication does not select it for deployment. Making
+a new GHCR package public requires approval and cannot be reversed.
 
-Follow [Deliver helper images](../../CI.md#deliver-helper-images) to publish
-and verify a candidate. Publication does not select it for deployment;
-consumer selection needs its own reviewed change.
-New package visibility must be made public through the explicitly approved
-GitHub operation before anonymous verification can succeed; public visibility
-is irreversible.
-
-Before publication, content audits inspect every Docker manifest-selected layer
-regardless of its filename, plus image configuration and metadata. Public
-certificate PEMs are allowed; private keys, credential directories and encrypted
-production-secret inputs are refused.
-
-Keep selected and supported rollback versions and layers in GHCR without
-automatic pruning. Keep their reviewed source and digest mappings. CI transfer
-artifacts expire and are not backups; there is no second archive store or
-promise of offline/exact-digest reconstruction. If a version is lost, rebuilding
-needs its locked sources/inputs and may produce a different digest. During a
-registry outage, a selected uncached image must fail visibly, not run a mutable
-fallback. Explicit rollback selects a previous still-available verified release
-through the reviewed application path, not guest recreation or activation.
+Retain selected and rollback releases, their layers, and reviewed
+source/digest mappings. CI artifacts expire and are not backups; rebuilding
+may produce a different digest. During a registry outage an uncached image
+must fail visibly, never use a mutable fallback. To roll back, select a
+previous still-available verified release through the same review path.
 
 To select a release:
 
@@ -360,48 +328,11 @@ producer first, then select it only after normal main publication verifies it:
 7. After sync, accept hardware transcoding as described in "Accept hardware
    transcoding". A new release changes ffmpeg and the iHD driver.
 
-Expected result: selected source, patch and stock runtime cannot drift
-independently; changing an unselected producer leaves the selected release
-unchanged. `jellyfin-contracts` and both runtime checks pass. Each runtime
-fixture bootstraps the genuine Incus/ZFS/MergerFS/K3s/Argo stack from canonical
-manifests, provisions Jellyfin, delivers staged secrets, and verifies the stock
-image, administrator, libraries, and playback state.
-
-The required runtime inventory is partitioned, not selected by changed files:
-
-| Check | Mandatory scenario families |
-| --- | --- |
-| `prod-home-replacement` | Preseed adoption conflict; missing retained mount and permission drift; missing secrets and incomplete/complete rotation; bootstrap without Git and recovery; retained-marker/volume refusal; mapped retained-path owners and writes; lifecycle lock and identity/effective-config refusals; in-place OS activation; fresh Incus/K3s replacement retaining bytes, ownership, credentials and identity; accelerator grant after replacement; Argo retirement retaining Namespace/PV/PVC and data. |
-| `prod-home-consumer-resilience` | Accelerator absence, hotplug, host/guest/workload permissions, ungranted/nonholder refusals, loss and return; Jellarr's declared-only encoding updates and key reuse; post-preflight provisioning failure, immutable partial state and kubelet refusal retries with the full 60-second observation; live media writer/read-only boundaries, mount loss/return without node restart, boot without media with the full 180-second observation, restoration; Argo self-healing retaining unmanaged objects and application data. |
-
-Fixture Git availability and retirement request an Argo hard refresh instead
-of waiting for its background polling interval. Argo still fetches the real
-Git origin and performs reconciliation; all health, refusal, and retained
-object assertions remain required.
-
-### First real upgrade
-
-Nobody has run this procedure yet. Jellyfin 12.1 was the first release
-deployed, and the owner deferred the exercise to the next real upgrade (task
-1.5 of the archived change `reproducible-jellyfin-compute`). At that upgrade,
-record each item below in the upgrade pull request:
-
-- [ ] The new `version`, `sourceRev`, `runtimeImage`, `runtimeDigest`, and
-  `provisionPatchRev` all name the same upstream release, and they change in
-  one reviewed change.
-- [ ] `provision.patch` applies to the new source, or an upstream Provision
-  mode replaced it and the patch is removed.
-- [ ] On the upgrade branch, a temporary edit that changes only the server
-  image or digest, or only the provisioner source, fails evaluation.
-- [ ] Both `prod-home-replacement` and `prod-home-consumer-resilience` pass
-  their complete required scenario inventories at the upgrade's head.
-- [ ] After the Argo sync, the `provision` log on the production host reports
-  that `/config` is initialized and left unchanged, the server reports the
-  new version, and the administrator, libraries, and playback still work.
-- [ ] Hardware transcoding is accepted on the production host with the new
-  release.
-
-When every item is recorded, remove this subsection.
+Record both runtime-check results in the upgrade pull request. After the
+approved rollout, confirm the `provision` log reports initialized `/config`
+left unchanged, the server reports the new version, and the existing
+administrator, libraries and playback still work. Record the hardware
+transcoding acceptance too.
 
 ## Provisioning failures
 

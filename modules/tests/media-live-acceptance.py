@@ -40,14 +40,27 @@ def require_application_exit(status, failure, label):
     require(status == expected, f"{label} (exit {status}, expected {expected})")
 
 
-def require_container_exit(result, failure, name):
-    # Only the initial setup fixture reports Docker startup errors.
-    if name == "fixture" and result.returncode and result.stderr:
-        # Escape controls before bounding the diagnostic, including its marker.
-        output = json.dumps(result.stderr, ensure_ascii=True)
-        if len(output) > 2048:
-            output = output[:2034] + "...[truncated]"
-        print(f"media-live-acceptance: fixture startup stderr: {output}", file=sys.stderr)
+def require_container_exit(result, failure, name, *, diagnostic_secrets=None):
+    # Application output stays private unless the caller opts in with its
+    # credential redactions. Keep the exception at the end of bootstrap logs.
+    if result.returncode != (1 if failure else 0):
+        streams = ("stderr",) if name == "fixture" else (
+            ("stdout", "stderr") if diagnostic_secrets is not None else ()
+        )
+        for stream in streams:
+            text = getattr(result, stream)
+            if not text:
+                continue
+            for secret in diagnostic_secrets or ():
+                if secret:
+                    text = text.replace(secret, "[redacted]")
+            # Escape controls before bounding the diagnostic, including its marker.
+            output = json.dumps(text, ensure_ascii=True)
+            limit = 2048 if name == "fixture" else 8192
+            if len(output) > limit:
+                output = (output[:limit - 14] + "...[truncated]" if name == "fixture"
+                          else "[truncated]..." + output[-(limit - 14):])
+            print(f"media-live-acceptance: {name} {stream}: {output}", file=sys.stderr)
     require_application_exit(result.returncode, failure, name)
 
 
@@ -414,7 +427,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--docker-host", required=True, help="explicit local unix:// Docker socket")
     parser.add_argument("--platform", default="linux/amd64", choices=("linux/amd64", "linux/arm64"))
-    parser.add_argument("--seerr-phases", required=True, type=Path, help="Nix-rendered initial and ready Seerr Jobs")
+    parser.add_argument("--fixture", required=True, type=Path, help="Nix-rendered nondefault Jellyfin administrator and Seerr phase fixture")
     args = parser.parse_args()
     require(args.docker_host.startswith("unix:///") and Path(args.docker_host[7:]).is_socket(), "only an existing explicit local Unix Docker socket is allowed")
     require(not os.environ.get("PYTHONOPTIMIZE"), "acceptance cannot run with Python optimization")
@@ -425,13 +438,14 @@ def main():
     docker = lambda *items, **kwargs: command(*docker_prefix, *items, env=docker_env, **kwargs)
     server = json.loads(docker("version", "--format", "{{json .Server}}"))
     require(tuple(map(int, server["ApiVersion"].split("."))) >= (1, 45), "Docker API 1.45+ is required for Linux volume subpaths")
-    cm = manifest("media-configuration", "ConfigMap-media-configuration.yaml")["data"]
+    fixture = json.loads(args.fixture.read_text())
+    cm = fixture["configuration"]
     policy = json.loads(cm["seerr.json"])
     configarr_pod = pod("media-configuration", "Job-media-configarr.yaml")
     configarr = one(configarr_pod["containers"], "name", "configarr")
     periodic_configarr_pod = manifest("media-configuration", "CronJob-media-configarr.yaml")["spec"]["jobTemplate"]["spec"]["template"]["spec"]
     periodic_configarr = one(periodic_configarr_pod["containers"], "name", "configarr")
-    seerr_phases = json.loads(args.seerr_phases.read_text())
+    seerr_phases = fixture["seerrPhases"]
     initial_job = seerr_phases["initial"]["spec"]
     initial_pod = initial_job["template"]["spec"]
     initial_configure = one(initial_pod["containers"], "name", "configure")
@@ -441,10 +455,14 @@ def main():
     periodic_job = manifest("media-configuration", "CronJob-media-config-seerr.yaml")["spec"]["jobTemplate"]["spec"]
     periodic_pod = periodic_job["template"]["spec"]
     periodic_configure = one(periodic_pod["containers"], "name", "configure")
-    pods = {app: pod(app, f"Deployment-{app}.yaml") for app in ("radarr", "sonarr", "prowlarr", "sabnzbd", "jellyfin")}
+    pods = {app: pod(app, f"Deployment-{app}.yaml") for app in ("radarr", "sonarr", "prowlarr", "sabnzbd")}
+    pods["jellyfin"] = fixture["jellyfinPod"]
     pods["seerr"] = pod("seerr", "StatefulSet-seerr.yaml")
     apps = {app: one(value["containers"], "name", "jellyfin" if app == "jellyfin" else "main") for app, value in pods.items()}
-    for container in (*apps.values(), configarr, initial_configure, configure, periodic_configure):
+    provisioner = one(pods["jellyfin"]["initContainers"], "name", "provision")
+    jellarr_pod = fixture["jellarrPod"]
+    jellarr_bootstrap = one(jellarr_pod["initContainers"], "name", "bootstrap")
+    for container in (*apps.values(), configarr, initial_configure, configure, periodic_configure, provisioner, jellarr_bootstrap):
         require("@sha256:" in container["image"], "native scenario requires digest-pinned images")
     identities = {}
     for app, container in apps.items():
@@ -463,7 +481,7 @@ def main():
     # https://github.com/recyclarr/config-templates/commit/4ae377bb704fc7fd69a544ad04e91357e0b09f62
     previous_template_revision = "86bed2fded1acbe364e165c1d7d60be0d5473e63"
     previous_cache_root = cache_root.replace(policy_source["templateRevision"], previous_template_revision)
-    libraries = json.loads(manifest("jellyfin-configuration", "ConfigMap-jellarr-configuration.yaml")["data"]["config.yml"])["library"]["virtualFolders"]
+    libraries = json.loads(fixture["jellarrData"]["config.yml"])["library"]["virtualFolders"]
     keys = {app: secrets.token_hex(32) for app in ("radarr", "sonarr", "prowlarr", "seerr")}
     sab_init = pods["sabnzbd"]["initContainers"][0]["command"][-1]
     runtime = {app.upper() + "_API_KEY": value for app, value in keys.items()}
@@ -515,7 +533,7 @@ def main():
                 # Kubernetes volumes do not copy image-directory contents or ownership.
                 return ("--mount", f"type=volume,src={volume},dst={target},volume-subpath={subpath},volume-nocopy" + (",readonly" if readonly else ""))
 
-            def run(name, image, *options, argv=(), environment=None, detached=False, failure=False, timeout=900):
+            def run(name, image, *options, argv=(), environment=None, detached=False, failure=False, timeout=900, diagnostic_secrets=None):
                 container = network + "-" + name
                 owned_containers.append(container)  # Register before run: timeouts must not orphan containers.
                 parameters = [*docker_prefix, "run", "--name", container, "--platform", args.platform, "--network", network]
@@ -530,7 +548,7 @@ def main():
                 for key in environment or {}:
                     parameters += ["-e", key]
                 result = subprocess.run([*parameters, image, *argv], capture_output=True, text=True, timeout=timeout, env=env)
-                require_container_exit(result, failure, name)
+                require_container_exit(result, failure, name, diagnostic_secrets=diagnostic_secrets)
                 return container
 
             # The setup helper owns only this new Linux volume; application
@@ -561,9 +579,10 @@ for name in s['directories'] + ['library/movies-ui', 'downloads/usenet/incomplet
         if p == root: break
         os.chown(p, 0, s['media_gid']); p.chmod(0o2770)
 private = data / 'private'; private.mkdir(); os.chown(private, 0, 999); private.chmod(0o700)
-for name in ['config', 'seerr-inputs', 'secrets', 'kube']:
+for name in ['config', 'seerr-inputs', 'secrets', 'kube', 'jellarr-inputs', 'seerr-owner-change-inputs']:
     p = root / name; p.mkdir(); os.chown(p, 1000, 1000); p.chmod(0o755)
 coordination = root / 'coordination'; coordination.mkdir(); os.chown(coordination, 1000, 1000); coordination.chmod(0o700)
+inputs = root / 'jellyfin-inputs'; inputs.mkdir(); os.chown(inputs, 751, 751); inputs.chmod(0o700)
 for name in ['seerr-drift-inputs', 'seerr-failure-secrets']:
     p = root / name; p.mkdir(); os.chown(p, 1000, 1000); p.chmod(0o755)
 ''', json.dumps(setup))
@@ -790,17 +809,49 @@ with open('/fixture/coordination/' + sys.argv[1] + '.lock', 'r') as lock:
                         profile["formatItems"].sort(key=lambda item: item["format"])
                 return snapshot
 
+            owner_password = secrets.token_hex(32)
+            copy_text("jellyfin-inputs/password", owner_password + "\n")
+            docker("exec", keeper, "/lsiopy/bin/python", "-c",
+                   "import os; p='/fixture/jellyfin-inputs/password'; os.chown(p,751,751); os.chmod(p,0o400)")
+            run("jellyfin-provision", provisioner["image"],
+                *security_options(pods["jellyfin"], provisioner),
+                *mount("jellyfin", "/config"),
+                *mount("jellyfin-inputs/password", "/run/secrets/password", True),
+                # Jellyfin 12.1 checks for at least 2 GiB free in /cache even
+                # in Provision mode; use the stock-runtime fixture's 4 GiB cap.
+                "--tmpfs", "/cache:uid=751,gid=751,mode=0700,size=4g",
+                "--tmpfs", "/run/provision:uid=751,gid=751,mode=0700,size=16m",
+                "--entrypoint", provisioner["command"][0],
+                argv=(*provisioner["command"][1:], *provisioner.get("args", [])),
+                environment={item["name"]: item["value"] for item in provisioner["env"]},
+                diagnostic_secrets=(owner_password,))
             start("jellyfin", policy["jellyfin"]["port"])
             ready(request, ports["jellyfin"], "/Users/Public")
             def jellyfin(path, method="GET", body=None, key=None, binary=False):
                 return request(ports["jellyfin"], path, key=key, method=method, body=body, jellyfin=True, binary=binary)
-            owner_password = secrets.token_hex(32)
-            require(jellyfin("/System/Info/Public")["StartupWizardCompleted"] is False, "fixture Jellyfin unexpectedly claimed")
-            jellyfin("/Startup/Configuration", "POST", {"UICulture": "en-US", "MetadataCountryCode": "US", "PreferredMetadataLanguage": "en"})
-            jellyfin("/Startup/User")  # Native wizard initializes the first user here.
-            jellyfin("/Startup/User", "POST", {"Name": policy["jellyfin"]["username"], "Password": owner_password})
-            jellyfin("/Startup/Complete", "POST", {})
-            owner_token = jellyfin("/Users/AuthenticateByName", "POST", {"Username": policy["jellyfin"]["username"], "Pw": owner_password})["AccessToken"]
+            require(jellyfin("/System/Info/Public")["StartupWizardCompleted"] is True,
+                    "rendered provisioner did not initialize fresh Jellyfin")
+            # Account creation must not take its username from the policy under test.
+            administrator = one(provisioner["env"], "name", "JELLYFIN_ADMINISTRATOR")["value"]
+            require(administrator != "admin", "native fixture must exercise a nondefault administrator")
+            authenticated = jellyfin("/Users/AuthenticateByName", "POST", {"Username": administrator, "Pw": owner_password})
+            require(authenticated["User"]["Name"] == administrator and authenticated["User"]["Policy"]["IsAdministrator"],
+                    "the provisioned nondefault administrator cannot authenticate")
+            owner_token = authenticated["AccessToken"]
+            denied(lambda: jellyfin("/Users/AuthenticateByName", "POST", {"Username": administrator, "Pw": "wrong-" + owner_password}))
+            copy_text("jellarr-inputs/bootstrap.mjs", fixture["jellarrData"]["bootstrap.mjs"])
+            run("jellarr-bootstrap", jellarr_bootstrap["image"],
+                *security_options(jellarr_pod, jellarr_bootstrap),
+                *mount("jellarr-inputs", "/config", True),
+                *mount("jellyfin-inputs/password", "/run/secrets/password", True),
+                "--tmpfs", "/run/jellarr:uid=751,gid=751,mode=0700,size=1m",
+                "--entrypoint", jellarr_bootstrap["command"][0],
+                argv=(*jellarr_bootstrap["command"][1:], *jellarr_bootstrap.get("args", [])),
+                environment={item["name"]: item["value"] for item in jellarr_bootstrap["env"]},
+                timeout=600, diagnostic_secrets=(owner_password,))
+            jellarr_key = one(jellyfin("/Auth/Keys", key=owner_token)["Items"], "AppName", "Jellarr")["AccessToken"]
+            require(isinstance(jellyfin("/Library/VirtualFolders", key=jellarr_key), list),
+                    "the rendered Jellarr bootstrap did not produce a usable native API key")
             denied(lambda: jellyfin("/Library/VirtualFolders", key=keys["radarr"]))
             daemon_identity(docker, containers["jellyfin"], "/jellyfin/jellyfin", identities["jellyfin"])
 
@@ -1160,10 +1211,10 @@ server.serve_forever()
             library_ids = verify_libraries()
             reconcile_seerr(initial=True)
             claimed_owner = seerr_api("/auth/me")
-            require(claimed_owner["id"] == 1 and claimed_owner["jellyfinUsername"] == policy["jellyfin"]["username"],
-                    "initial delivery did not claim the declared Jellyfin owner")
+            require(claimed_owner["id"] == 1 and claimed_owner["jellyfinUsername"] == administrator,
+                    "initial delivery did not claim the provisioned nondefault Jellyfin owner")
             scan = seerr_api("/settings/jellyfin/sync")
-            require(scan["running"] is False and scan["progress"] > scan["total"], "fixture scan did not finish past the Movies batch with progress above the empty Shows total")
+            require(scan["running"] is False, "initial delivery left Jellyfin library synchronization running")
 
             def verify_seerr():
                 owner = seerr_api("/auth/me")
@@ -1199,6 +1250,15 @@ server.serve_forever()
                 return result
             seerr_baseline = verify_seerr()
             docker("rm", "-f", "-v", secret_server)
+            changed_configuration = fixture["changedAdministratorConfiguration"]
+            require(json.loads(changed_configuration["seerr.json"])["jellyfin"]["username"] != administrator,
+                    "retained-owner scenario must change the administrator declaration")
+            copy_text("seerr-owner-change-inputs/seerr.json", changed_configuration["seerr.json"])
+            copy_text("seerr-owner-change-inputs/seerr.mjs", changed_configuration["seerr.mjs"])
+            # The Secret responder is gone: initialized reconciliation must not
+            # authenticate the new declaration or depend on bootstrap credentials.
+            reconcile_seerr(initial=True, inputs_name="seerr-owner-change-inputs")
+            require(verify_seerr() == seerr_baseline, "changed administrator declaration altered initialized Seerr state")
             # Unmarked connections, including the generic names and a 4K tier
             # with no declared role, are UI-owned. A marked 4K connection left
             # by an earlier declared role is managed and must be removed.
