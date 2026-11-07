@@ -13,7 +13,7 @@ buildGoModule {
   pname = "compute-runtime";
   version = "0-unstable";
   src = lib.cleanSource ./.;
-  vendorHash = "sha256-TKtUFKvQPnYAIzFpcGKSSZyXRvRjfhLRd91ibNq6HMI=";
+  vendorHash = "sha256-ZvluqlCu8Y6S/byXKRJBPxhUbrP54tb7leRXSRyH0i4=";
 
   subPackages = [
     "cmd/household-bootstrap"
