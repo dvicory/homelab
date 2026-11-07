@@ -617,10 +617,13 @@ in
         upgrade/restore path, not production backup freshness, production
         migration, Incus/MergerFS storage or Kubernetes RBAC.
 
-        Pin-change state failures report bounded field paths and numeric
-        differences, not credential/string values. The exact state-equality
-        guard still fails; diagnostics do not classify a difference as harmless
-        or authorize removing its preservation check.
+        Pin-change state failures report bounded field paths plus identity-aware
+        quality-profile evidence: native profile IDs, managed/UI-owned categories,
+        ordered quality IDs, group members, allowed flags, enabled priority,
+        cutoff and format scores. Arbitrary native names and credential values
+        are not printed. The exact state-equality guard still fails; diagnostics
+        do not classify a difference as harmless or authorize removing its
+        preservation check.
 
         ### Source cache and offline recovery
 
