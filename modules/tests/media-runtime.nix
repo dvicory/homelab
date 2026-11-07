@@ -114,24 +114,6 @@
             )
             assert redacted == [{"path": ["fields", "0", "value"], "before": "str", "after": "str"}]
             assert len(difference(list(range(100)), list(range(1, 101)))) == 16
-            profile_difference = acceptance["quality_profile_difference"]
-            profile = {"id": 41, "name": "arbitrary-private-native-name", "cutoff": 7,
-                       "items": [{"quality": {"id": 0}, "allowed": False, "items": []},
-                                 {"id": 1001, "allowed": True, "items": [
-                                     {"quality": {"id": 7}, "allowed": True, "items": []}]}],
-                       "formatItems": [{"format": 5, "score": 1700}]}
-            before = {app: {"/qualityprofile": [acceptance["deepcopy"](profile)]}
-                      for app in ("radarr", "sonarr")}
-            after = acceptance["deepcopy"](before)
-            after["radarr"]["/qualityprofile"][0]["items"].reverse()
-            policy_diff = profile_difference(before, after, {"radarr": set(), "sonarr": set()},
-                                             {"radarr": {"id": 41}, "sonarr": {"id": 42}})
-            assert policy_diff["changedProfileCount"] == 1
-            old, new = (policy_diff["profiles"][0][key] for key in ("before", "after"))
-            assert old["id"] == new["id"] == 41 and old["category"] == new["category"] == "ui-owned"
-            assert old["enabledOrder"] == new["enabledOrder"] == [1001]
-            assert old["qualities"] != new["qualities"] and old["formatScores"] == new["formatScores"] == [[5, 1700]]
-            assert "arbitrary-private-native-name" not in repr(policy_diff)
             stable = acceptance["stable_disabled_prefix"]
             disabled = lambda identity: {"quality": {"id": identity}, "allowed": False, "items": []}
             enabled = lambda identity: {"quality": {"id": identity}, "allowed": True, "items": []}

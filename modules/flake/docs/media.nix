@@ -617,11 +617,9 @@ in
         upgrade/restore path, not production backup freshness, production
         migration, Incus/MergerFS storage or Kubernetes RBAC.
 
-        Pin-change state failures report bounded field paths plus identity-aware
-        quality-profile evidence: native profile IDs, managed/UI-owned categories,
-        ordered quality IDs, group members, allowed flags, enabled priority,
-        cutoff and format scores. Arbitrary native names and credential values
-        are not printed. Snapshots ignore only the order of contiguous leading
+        Pin-change state failures report bounded field paths and numeric
+        differences, not credential/string values. Snapshots ignore only the
+        order of contiguous leading
         disabled leaf qualities in managed profiles: native execution proved
         Configarr 1.36 changes that prefix's order when quality-size writes
         become no-ops. Every leaf field, membership and duplicate remains
