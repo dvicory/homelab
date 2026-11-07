@@ -104,6 +104,24 @@
             assert old["enabledOrder"] == new["enabledOrder"] == [1001]
             assert old["qualities"] != new["qualities"] and old["formatScores"] == new["formatScores"] == [[5, 1700]]
             assert "arbitrary-private-native-name" not in repr(policy_diff)
+            stable = acceptance["stable_disabled_prefix"]
+            disabled = lambda identity: {"quality": {"id": identity}, "allowed": False, "items": []}
+            enabled = lambda identity: {"quality": {"id": identity}, "allowed": True, "items": []}
+            items = [disabled(31), disabled(0), enabled(3), enabled(7), disabled(19)]
+            canonical = stable(items)
+            assert canonical == [items[1], items[0], *items[2:]]
+            reversed_enabled = acceptance["deepcopy"](items)
+            reversed_enabled[2:4] = reversed(reversed_enabled[2:4])
+            assert stable(reversed_enabled) != canonical, "enabled quality priority must remain semantic"
+            admitted = acceptance["deepcopy"](items)
+            admitted[0]["allowed"] = True
+            assert stable(admitted) != canonical, "newly admitted UHD must not be normalized away"
+            assert stable([*items, disabled(31)]) != canonical, "duplicate qualities must remain visible"
+            group = {"id": 1000, "allowed": False, "items": [disabled(15), disabled(3)]}
+            grouped = [group, disabled(31), disabled(0)]
+            assert stable(grouped) == grouped, "disabled groups and their membership/order are not incidental leaves"
+            moved_later = [*items[:2], items[4], *items[2:4]]
+            assert stable(moved_later) != canonical, "a disabled node crossing the enabled boundary must remain visible"
             require_exit = acceptance["require_application_exit"]
             require_exit(0, False, "successful producer")
             require_exit(1, True, "refusing producer")

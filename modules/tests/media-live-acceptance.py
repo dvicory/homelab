@@ -96,6 +96,17 @@ def quality_profile_difference(expected, actual, managed_names, ui_profiles):
             "changedProfileCount": len(result), "profiles": result[:12]}
 
 
+def stable_disabled_prefix(items):
+    """Only order disabled leaves preceding every selectable quality/group."""
+    count = 0
+    for item in items:
+        if (item.get("allowed") is not False or item.get("items") or
+                type(item.get("quality", {}).get("id")) is not int):
+            break
+        count += 1
+    return sorted(items[:count], key=lambda item: item["quality"]["id"]) + items[count:]
+
+
 def require_application_exit(status, failure, label):
     expected = 1 if failure else 0
     require(status == expected, f"{label} (exit {status}, expected {expected})")
@@ -878,9 +889,15 @@ with open('/fixture/coordination/' + sys.argv[1] + '.lock', 'r') as lock:
                 snapshot = {app: {path: [{key: value for key, value in item.items() if key != "freeSpace"} for item in api(app, path)] for path in ("/rootfolder", "/qualityprofile", "/customformat", "/downloadclient")} for app in ("radarr", "sonarr")}
                 # Score updates can reorder formatItems; format IDs and scores,
                 # not this presentation order, are the preservation boundary.
-                for resources in snapshot.values():
+                for app, resources in snapshot.items():
                     for profile in resources["/qualityprofile"]:
                         profile["formatItems"].sort(key=lambda item: item["format"])
+                        if profile["name"] in {item["name"] for item in policy_source["profiles"][app].values()}:
+                            # Native run 42336356237 proved Configarr's size-change
+                            # vs no-change cache order affects only this disabled
+                            # leaf prefix. Keep every field, enabled rank/group,
+                            # later disabled position and UI-owned order exact.
+                            profile["items"] = stable_disabled_prefix(profile["items"])
                 return snapshot
 
             start("jellyfin", policy["jellyfin"]["port"])
