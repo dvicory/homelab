@@ -39,6 +39,29 @@ def require(condition, label):
         raise AssertionError(label)
 
 
+def state_difference(expected, actual, path=()):
+    """Bounded field paths and numeric identities; never print API string values."""
+    if expected == actual:
+        return []
+    result = []
+    missing = object()
+    if isinstance(expected, dict) and isinstance(actual, dict):
+        children = ((str(key)[:80], expected.get(key, missing), actual.get(key, missing))
+                    for key in sorted(expected.keys() | actual.keys()))
+    elif isinstance(expected, list) and isinstance(actual, list):
+        children = ((str(index), expected[index] if index < len(expected) else missing,
+                     actual[index] if index < len(actual) else missing)
+                    for index in range(max(len(expected), len(actual))))
+    else:
+        safe = lambda value: value if value is None or type(value) in (int, float, bool) else "missing" if type(value) is object else type(value).__name__
+        return [{"path": list(path), "before": safe(expected), "after": safe(actual)}]
+    for key, before, after in children:
+        result.extend(state_difference(before, after, (*path, key)))
+        if len(result) >= 16:
+            break
+    return result[:16]
+
+
 def require_application_exit(status, failure, label):
     expected = 1 if failure else 0
     require(status == expected, f"{label} (exit {status}, expected {expected})")
@@ -992,7 +1015,10 @@ test "$(printf '%s\\n' "$2" | GIT_NO_LAZY_FETCH=1 git -C "$repo" cat-file --batc
             previous_policy = arr_snapshot()
             reconcile_configarr()
             require(cache_state(previous_cache_root) == previous_cache, "pin change altered the older native cache")
-            require(arr_snapshot() == previous_policy, "native pin change altered application identities or data")
+            current_policy = arr_snapshot()
+            if current_policy != previous_policy:
+                raise AssertionError("native pin change altered application identities or data: " +
+                                     json.dumps(state_difference(previous_policy, current_policy), ensure_ascii=True))
             cold_cache = cache_state()
             require(cold_cache["trash-guides"]["head"] == policy_source["revision"], "native TRaSH checkout is not pinned")
             require(cold_cache["recyclarr-config"]["head"] == policy_source["templateRevision"], "native template checkout is not pinned")

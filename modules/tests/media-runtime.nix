@@ -100,6 +100,20 @@
             python - ${./media-live-acceptance.py} <<'PY'
             import contextlib, io, re, runpy, subprocess, sys
             acceptance = runpy.run_path(sys.argv[1])
+            difference = acceptance["state_difference"]
+            assert difference({"id": 1}, {"id": 1}) == []
+            assert difference({"id": 1}, {"id": 2}) == [
+                {"path": ["id"], "before": 1, "after": 2}
+            ]
+            assert difference({"optional": None}, {}) == [
+                {"path": ["optional"], "before": None, "after": "missing"}
+            ]
+            redacted = difference(
+                {"fields": [{"value": "synthetic-secret-before"}]},
+                {"fields": [{"value": "synthetic-secret-after"}]},
+            )
+            assert redacted == [{"path": ["fields", "0", "value"], "before": "str", "after": "str"}]
+            assert len(difference(list(range(100)), list(range(1, 101)))) == 16
             require_exit = acceptance["require_application_exit"]
             require_exit(0, False, "successful producer")
             require_exit(1, True, "refusing producer")
