@@ -174,6 +174,10 @@ checks the old image with the old helper; it never downgrades a migrated
 database in place. A passing native run proves only this synthetic
 consumer-visible upgrade/restore path, not production backup freshness,
 production migration, Incus/MergerFS storage or Kubernetes RBAC.
+If the native pin-change state guard fails, its diagnostic reports bounded
+field paths and numeric differences, not credential/string values. The
+exact state-equality guard still fails; the diagnostic does not classify a
+difference as harmless or authorize deleting its preservation check.
 
 ### Source cache and offline recovery
 
