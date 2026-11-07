@@ -621,9 +621,13 @@ in
         quality-profile evidence: native profile IDs, managed/UI-owned categories,
         ordered quality IDs, group members, allowed flags, enabled priority,
         cutoff and format scores. Arbitrary native names and credential values
-        are not printed. The exact state-equality guard still fails; diagnostics
-        do not classify a difference as harmless or authorize removing its
-        preservation check.
+        are not printed. Snapshots ignore only the order of contiguous leading
+        disabled leaf qualities in managed profiles: native execution proved
+        Configarr 1.36 changes that prefix's order when quality-size writes
+        become no-ops. Every leaf field, membership and duplicate remains
+        checked; enabled priority, groups, later disabled positions and UI-owned
+        ordering remain exact. Native policy/profile checks still enforce the
+        declared qualities, cutoff and scores; other state differences fail.
 
         ### Source cache and offline recovery
 
