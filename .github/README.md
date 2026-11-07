@@ -759,6 +759,8 @@ Dependabot groups action updates into a weekly pull request after a seven-day
 cooldown. `.github/workflows/security.yml` runs zizmor when GitHub automation
 changes and is also called by every Nix CI run, rejecting medium-or-higher
 findings before helper publication.
+The same job rejects tracked `.pyc`/`.pyo` files; ignore rules do not remove
+bytecode already in history.
 
 The reusable call uses GitHub's documented [same-commit local workflow
 reference](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#calling-a-reusable-workflow).
