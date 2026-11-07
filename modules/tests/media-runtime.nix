@@ -6,6 +6,14 @@
     { pkgs, ... }:
     let
       python = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
+      # Freeze both sides of the old API/image pair independently of this checkout.
+      oldHomelab = builtins.fetchTree {
+        type = "github";
+        owner = "dvicory";
+        repo = "homelab";
+        rev = "90920bac376c6640478c1c45feaf6afa2c1c3900";
+        narHash = "sha256-2KHmKX0smBDl3Pk554o30z44RxN2sAP1yX5gPvImSBM=";
+      };
       cluster = config.den.clusters.prod-home;
       compute =
         config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
@@ -81,7 +89,7 @@
           pkgs.openssl
         ];
         text = ''
-          exec python ${source}/modules/tests/media-live-acceptance.py --fixture ${fixture} "$@"
+          exec python ${source}/modules/tests/media-live-acceptance.py --fixture ${fixture} --seerr-baseline ${oldHomelab} "$@"
         '';
       };
     in

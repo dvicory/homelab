@@ -571,6 +571,20 @@ rollback across those migrations requires restoring the backup, not merely
 selecting the previous image. No production migration or rollback is
 established by source or reconciliation-helper checks.
 
+On a disposable native Linux Docker Engine 26+ fixture, run
+`nix run path:.#media-live-acceptance -- --docker-host unix:///var/run/docker.sock`.
+The existing real-app suite also creates Seerr state with MAIN
+`90920bac376c6640478c1c45feaf6afa2c1c3900`'s independently frozen 3.4.1 image
+and owned helper, stops Seerr, and archives its complete configuration
+directory before starting the selected image on that retained state.
+It checks native Jellyfin sign-in, owner identity, library selections,
+managed and UI-owned Arr connections, request selectors, and paired-helper
+idempotence. Recovery stops the new image, restores the cold archive, and
+checks the old image with the old helper; it never downgrades a migrated
+database in place. A passing native run proves only this synthetic
+consumer-visible upgrade/restore path, not production backup freshness,
+production migration, Incus/MergerFS storage or Kubernetes RBAC.
+
 ### Source cache and offline recovery
 
 Both policy repositories live below

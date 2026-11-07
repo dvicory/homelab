@@ -4,6 +4,8 @@
 Requires Python/PyYAML, openssl, Docker Engine 26+ (volume-subpath), and an
 explicit local unix Docker socket. Default linux/amd64 matches production;
 Docker Desktop/emulation does not prove the Incus/MergerFS/host storage seam.
+The Seerr rehearsal restores a stopped pre-upgrade directory, never opens an
+old image on migrated data, and does not prove production backup or recovery.
 The synthetic HTTPS Secret responder tests bootstrap transport, NOT K8s RBAC.
 Bootstrap callers may opt into bounded, escaped failure output with supplied
 credentials redacted. Other uncontrolled exceptions report only their class,
@@ -158,6 +160,32 @@ except (URLError, OSError):
         raise OSError("isolated browser transport unavailable")
     result["body"] = base64.b64decode(result["body"])
     return result
+
+
+def seerr_native_login(docker, client, endpoint, username, password):
+    """Use a fresh native Jellyfin login and cookie session, never an API key."""
+    result = json.loads(docker("exec", client, "/lsiopy/bin/python", "-c", '''
+import json, sys
+from http.cookiejar import CookieJar
+from urllib.error import HTTPError
+from urllib.request import HTTPCookieProcessor, ProxyHandler, Request, build_opener
+value = json.loads(sys.argv[1])
+opener = build_opener(ProxyHandler({}), HTTPCookieProcessor(CookieJar()))
+headers = {'Content-Type': 'application/json', 'Origin': value['url']}
+try:
+    with opener.open(Request(value['url'] + '/api/v1/auth/jellyfin',
+                            json.dumps(value['credentials']).encode(), headers), timeout=15) as response:
+        logged_in = json.load(response)
+    with opener.open(Request(value['url'] + '/api/v1/auth/me', headers=headers), timeout=15) as response:
+        me = json.load(response)
+    assert me['id'] == logged_in['id']
+    print(json.dumps({'status': 200, 'user': {key: me[key] for key in ('id', 'jellyfinUsername', 'permissions')}}))
+except HTTPError as error:
+    print(json.dumps({'status': error.code}))
+''', json.dumps({"url": "http://" + endpoint, "credentials": {"username": username, "password": password}})))
+    if result["status"] >= 400:
+        raise HTTPError("http://fixture", result["status"], "native sign-in refused", {}, None)
+    return result["user"]
 
 
 def ready(request, port, path, *, key=None):
@@ -445,7 +473,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--docker-host", required=True, help="explicit local unix:// Docker socket")
     parser.add_argument("--platform", default="linux/amd64", choices=("linux/amd64", "linux/arm64"))
-    parser.add_argument("--fixture", required=True, type=Path, help="Nix-rendered nondefault Jellyfin administrator and Seerr phase fixture")
+    parser.add_argument("--fixture", required=True, type=Path, help="Nix-rendered Jellyfin administrator and Seerr phase fixture")
+    parser.add_argument("--seerr-baseline", required=True, type=Path, help="frozen 90920 source tree supplied by Nix")
     args = parser.parse_args()
     require(args.docker_host.startswith("unix:///") and Path(args.docker_host[7:]).is_socket(), "only an existing explicit local Unix Docker socket is allowed")
     require(not os.environ.get("PYTHONOPTIMIZE"), "acceptance cannot run with Python optimization")
@@ -480,6 +509,11 @@ def main():
     provisioner = one(pods["jellyfin"]["initContainers"], "name", "provision")
     jellarr_pod = fixture["jellarrPod"]
     jellarr_bootstrap = one(jellarr_pod["initContainers"], "name", "bootstrap")
+    baseline_root = args.seerr_baseline
+    old_seerr = one(yaml.safe_load((baseline_root / "generated/manifests/prod-home/seerr/StatefulSet-seerr.yaml").read_text())["spec"]["template"]["spec"]["containers"], "name", "main")
+    old_helper = (baseline_root / "modules/den/aspects/kubernetes/services/seerr.mjs").read_text()
+    require("@sha256:" in old_seerr["image"] and old_seerr["image"] != apps["seerr"]["image"],
+            "Seerr upgrade requires a distinct immutable historical image")
     for container in (*apps.values(), configarr, initial_configure, configure, periodic_configure, provisioner, jellarr_bootstrap):
         require("@sha256:" in container["image"], "native scenario requires digest-pinned images")
     identities = {}
@@ -616,9 +650,9 @@ for name in ['seerr-drift-inputs', 'seerr-failure-secrets']:
                 policy_source["templateRevision"], previous_template_revision))
             ports, containers = {}, {}
 
-            def start(app, port, restart=False):
+            def start(app, port, restart=False, image=None, state=None):
                 hostname = policy["jellyfin"]["ip"] if app == "jellyfin" else app + ".media.svc"
-                options = [*mount(app, "/app/config" if app == "seerr" else "/config"), "--network-alias", hostname]
+                options = [*mount(state or app, "/app/config" if app == "seerr" else "/config"), "--network-alias", hostname]
                 if app in ("radarr", "sonarr", "sabnzbd"):
                     options += mount("data", "/data")
                 if app == "jellyfin":
@@ -640,7 +674,7 @@ for name in ['seerr-drift-inputs', 'seerr-failure-secrets']:
                 options += security_options(pods[app], apps[app])
                 environment = {item["name"]: item.get("value", runtime.get(item.get("valueFrom", {}).get("secretKeyRef", {}).get("key"))) for item in apps[app].get("env", [])}
                 require(all(value is not None for value in environment.values()), "unresolved synthetic container environment")
-                containers[app] = run(app + ("-rotated" if restart else ""), apps[app]["image"], *options, environment=environment, detached=True)
+                containers[app] = run(app + ("-rotated" if restart else ""), image or apps[app]["image"], *options, environment=environment, detached=True)
                 ports[app] = f"{hostname}:{port}"
 
             def api(app, path, method="GET", body=None, key=None):
@@ -852,7 +886,6 @@ with open('/fixture/coordination/' + sys.argv[1] + '.lock', 'r') as lock:
                     "rendered provisioner did not initialize fresh Jellyfin")
             # Account creation must not take its username from the policy under test.
             administrator = one(provisioner["env"], "name", "JELLYFIN_ADMINISTRATOR")["value"]
-            require(administrator != "admin", "native fixture must exercise a nondefault administrator")
             authenticated = jellyfin("/Users/AuthenticateByName", "POST", {"Username": administrator, "Pw": owner_password})
             require(authenticated["User"]["Name"] == administrator and authenticated["User"]["Policy"]["IsAdministrator"],
                     "the provisioned nondefault administrator cannot authenticate")
@@ -1169,8 +1202,11 @@ context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); context.load_cert_chain('/fix
 server.socket = context.wrap_socket(server.socket, server_side=True)
 server.serve_forever()
 ''')
-            secret_server = run("synthetic-secret", apps["sabnzbd"]["image"], "--network-alias", "kubernetes.default.svc", *mount("kube", "/fixture", True), "--entrypoint", "/lsiopy/bin/python", argv=("/fixture/server.py",), detached=True)
-            run("secret-ready", initial_configure["image"], *security_options(initial_pod, initial_configure), *mount("kube", "/fixture", True), argv=("node", "-e", '''const fs = require('node:fs');
+            def start_secret_server():
+                return run("synthetic-secret", apps["sabnzbd"]["image"], "--network-alias", "kubernetes.default.svc", *mount("kube", "/fixture", True), "--entrypoint", "/lsiopy/bin/python", argv=("/fixture/server.py",), detached=True)
+            secret_server = start_secret_server()
+            def secret_ready():
+                run("secret-ready", initial_configure["image"], *security_options(initial_pod, initial_configure), *mount("kube", "/fixture", True), argv=("node", "-e", '''const fs = require('node:fs');
             const target = 'https://kubernetes.default.svc/api/v1/namespaces/jellyfin/secrets/jellyfin-admin';
             (async () => {
               for (let attempt = 0; attempt < 30; attempt++) {
@@ -1182,8 +1218,9 @@ server.serve_forever()
               }
               process.exitCode = 1;
             })().catch(() => { process.exitCode = 1; });'''), environment={"NODE_EXTRA_CA_CERTS": "/fixture/cert"})
+            secret_ready()
             seerr_sequence = 0
-            def reconcile_seerr(failure=False, periodic=False, detached=False, inputs_name="seerr-inputs", secrets_name="secrets", initial=False):
+            def reconcile_seerr(failure=False, periodic=False, detached=False, inputs_name="seerr-inputs", secrets_name="secrets", initial=False, state_name="seerr"):
                 nonlocal seerr_sequence
                 seerr_sequence += 1
                 job = initial_job if initial else periodic_job if periodic else seerr_job
@@ -1191,7 +1228,7 @@ server.serve_forever()
                 source = one(source_pod["containers"], "name", "configure")
                 subpaths = {
                     "configuration": inputs_name, "secrets": secrets_name,
-                    "seerr-state": "seerr", "coordination": "coordination",
+                    "seerr-state": state_name, "coordination": "coordination",
                     "kubernetes-api": "kube",
                 }
                 options = security_options(source_pod, source)
@@ -1504,6 +1541,104 @@ console.log(queued);''', waiter_pid)
                 reconcile_seerr(periodic=True)
                 require(seerr_api("/settings/main")["applicationUrl"] == policy["seerr"]["applicationUrl"], "ordinary periodic reconciliation did not restore declared settings")
                 require(verify_seerr() == seerr_baseline, "post-contention reconciliation lost native idempotence")
+
+            # The fresh-state and security-negative cases above remain on the
+            # selected image. Use a separate owned directory for the historical
+            # real application, with its own frozen GET-write helper.
+            def stop_seerr():
+                docker("stop", "--time", "60", containers["seerr"], timeout=90)
+                stopped = json.loads(docker("inspect", containers["seerr"]))[0]["State"]
+                require(stopped["Status"] == "exited" and not stopped["OOMKilled"] and stopped["ExitCode"] != 137,
+                        "Seerr did not stop without forced kill before cold state capture/restore")
+                docker("rm", "-v", containers["seerr"])
+
+            stop_seerr()
+            docker("exec", keeper, "/lsiopy/bin/python", "-c", '''import os
+os.mkdir('/fixture/seerr-upgrade', 0o700)
+os.chown('/fixture/seerr-upgrade', 1000, 1000)''')
+            copy_text("seerr-upgrade/anime-list.xml", '<anime-list><anime anidbid="1"/></anime-list>\n')
+            start("seerr", 5055, image=old_seerr["image"], state="seerr-upgrade")
+            old_public = ready(request, ports["seerr"], "/api/v1/settings/public")
+            require(old_public["initialized"] is False and old_public["mediaServerType"] == 4,
+                    "historical Seerr fixture was not pristine")
+            copy_text("seerr-inputs/seerr.mjs", old_helper)
+            # The historical helper reads retained settings during first-owner
+            # delivery; mount the historical directory, not the fresh fixture.
+            secret_server = start_secret_server()
+            secret_ready()
+            reconcile_seerr(initial=True, state_name="seerr-upgrade")
+            docker("rm", "-f", "-v", secret_server)
+            claimed_owner = seerr_api("/auth/me")
+            require(claimed_owner["id"] == 1 and claimed_owner["jellyfinUsername"] == administrator,
+                    "historical initial delivery did not claim the provisioned Jellyfin owner")
+            old_managed = verify_seerr()
+            for app in ("radarr", "sonarr"):
+                template = {key: value for key, value in old_managed[app].items() if key != "id"}
+                seerr_write("/settings/" + app, "POST", {**template, "name": "UI-owned recovery " + app, "isDefault": False})
+
+            def recovery_snapshot():
+                denied(lambda: request(ports["seerr"], "/api/v1/auth/me"))
+                denied(lambda: seerr_native_login(docker, keeper, ports["seerr"],
+                                                  administrator, "wrong-" + owner_password))
+                return {
+                    "owner": seerr_native_login(docker, keeper, ports["seerr"], administrator, owner_password),
+                    "managed": verify_seerr(),
+                    "connections": {app: seerr_api("/settings/" + app) for app in ("radarr", "sonarr")},
+                    "libraries": sorted(
+                        ({key: item[key] for key in ("id", "name", "type", "enabled")}
+                         for item in seerr_api("/settings/jellyfin")["libraries"]), key=lambda item: item["id"]),
+                    "applicationUrl": seerr_api("/settings/main")["applicationUrl"],
+                    "media": {item["tmdbId"]: item["jellyfinMediaId"]
+                              for item in seerr_api("/media?take=" + str(movie_batch))["results"]},
+                }
+
+            old_state = recovery_snapshot()
+            require(old_state["media"] == movie_ids, "historical Seerr did not persist every native Jellyfin fixture movie")
+            reconcile_seerr(periodic=True, state_name="seerr-upgrade")
+            require(recovery_snapshot() == old_state, "historical helper was not idempotent before upgrade")
+            stop_seerr()
+            # tar records original ownership/modes as well as SQLite, settings,
+            # sessions and sidecars. No writer is running during either copy.
+            backup_digest = docker("exec", keeper, "/lsiopy/bin/python", "-c", '''import hashlib, tarfile
+from pathlib import Path
+backup = Path('/fixture/seerr-upgrade-backup.tar')
+with tarfile.open(backup, 'w') as archive:
+    archive.add('/fixture/seerr-upgrade', arcname='seerr-upgrade')
+backup.chmod(0o600)
+print(hashlib.sha256(backup.read_bytes()).hexdigest())''')
+            copy_text("seerr-inputs/seerr.mjs", cm["seerr.mjs"])
+            start("seerr", 5055, image=apps["seerr"]["image"], state="seerr-upgrade")
+            ready(request, ports["seerr"], "/api/v1/settings/public")
+            require(recovery_snapshot() == old_state, "selected Seerr lost retained state or native login before reconciliation")
+            reconcile_seerr(state_name="seerr-upgrade")
+            require(recovery_snapshot() == old_state, "paired new helper changed retained native state")
+            library_state = seerr_api("/settings/jellyfin")["libraries"]
+            for _ in range(2):
+                seerr_api("/settings/jellyfin/library")
+                require(seerr_api("/settings/jellyfin")["libraries"] == library_state,
+                        "new Seerr library GET changed retained selection")
+            reconcile_seerr(periodic=True, state_name="seerr-upgrade")
+            require(recovery_snapshot() == old_state, "paired new helper lost retained-state idempotence")
+            stop_seerr()
+            # Never run the old image against the new-touched database. Replace
+            # the entire stopped directory from the untouched cold archive first.
+            docker("exec", keeper, "/lsiopy/bin/python", "-c", '''import hashlib, shutil, sys, tarfile
+from pathlib import Path
+backup = Path('/fixture/seerr-upgrade-backup.tar')
+assert hashlib.sha256(backup.read_bytes()).hexdigest() == sys.argv[1]
+shutil.rmtree('/fixture/seerr-upgrade')
+with tarfile.open(backup) as archive:
+    archive.extractall('/fixture', filter='fully_trusted')
+''', backup_digest)
+            copy_text("seerr-inputs/seerr.mjs", old_helper)
+            start("seerr", 5055, image=old_seerr["image"], state="seerr-upgrade")
+            ready(request, ports["seerr"], "/api/v1/settings/public")
+            require(recovery_snapshot() == old_state, "old image plus cold backup did not recover native state/login")
+            reconcile_seerr(periodic=True, state_name="seerr-upgrade")
+            require(recovery_snapshot() == old_state, "restored historical helper changed recovered native state")
+            print("media-live-acceptance: Seerr retained-state upgrade and cold-backup restore passed " +
+                  json.dumps({"baseline": "90920bac376c6640478c1c45feaf6afa2c1c3900",
+                              "oldImage": old_seerr["image"], "newImage": apps["seerr"]["image"]}, sort_keys=True))
         finally:
             # Register resources before creation; exhaust cleanup even on timeout.
             first_error = sys.exc_info()[1]
