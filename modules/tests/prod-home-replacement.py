@@ -312,6 +312,17 @@ class Runtime:
             umount "$probe/merged"
         ''')
 
+        def rootfs_stats():
+            summary = self.kubectl_json("get", "--request-timeout=10s", "--raw",
+                                        f"/api/v1/nodes/{self.instance}/proxy/stats/summary")
+            filesystem = summary["node"]["fs"]
+            return filesystem if filesystem.get("capacityBytes", 0) > 0 else None
+
+        filesystem = wait_for("positive kubelet root filesystem statistics", rootfs_stats, timeout=60)
+        check(0 < filesystem["availableBytes"] <= filesystem["capacityBytes"]
+              and filesystem.get("inodes", 0) > 0,
+              "kubelet reports real usable rootfs capacity and inodes inside the unprivileged guest")
+
     def metrics_ready(self) -> bool:
         metrics = self.kubectl_json("get", "--raw", f"/apis/metrics.k8s.io/v1beta1/nodes/{self.instance}")
         return metrics["metadata"]["name"] == self.instance and {"cpu", "memory"} <= metrics["usage"].keys()

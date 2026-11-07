@@ -65,24 +65,30 @@ def stop_daemon():
     ).strip() == "0"
 
 
-def start_daemon():
+def start_daemon(expected):
     machine.succeed("systemctl start incus.socket incus.service")
     machine.wait_for_unit("incus.service", timeout=90)
     machine.wait_until_succeeds(f"{IC} query /1.0", timeout=90)
     machine.wait_for_open_port(8443, timeout=60)
     version = query("/1.0")["environment"]["server_version"]
     client = machine.succeed(f"{IC} --version").strip()
-    machine.log(f"Incus daemon={version} client={client}")
+    pid = int(machine.succeed("systemctl show incus.service --property=MainPID --value"))
+    executable = machine.succeed(f"readlink -f /proc/{pid}/exe").strip()
+    client_executable = machine.succeed("readlink -f $(command -v incus)").strip()
+    environment = shlex.split(machine.succeed(
+        "systemctl show incus.service --property=Environment --value"
+    ))
+    assert version == expected["daemon_version"], (version, expected)
+    assert client == expected["client_version"], (client, expected)
+    assert executable == expected["package"] + "/bin/incusd", (executable, expected)
+    assert client_executable == expected["client"] + "/bin/incus", (client_executable, expected)
+    assert "INCUS_UI=" + expected["ui"] in environment, environment
+    machine.log(f"Incus daemon={version} client={client} executable={executable} client_executable={client_executable}")
 
 
 start_all()
 machine.wait_for_unit("incus-preseed.service", timeout=120)
-start_daemon()
-assert baseline_version == "7.4.0"
-# Incus omits the zero patch component from its API and CLI release strings.
-baseline_release = baseline_version.removesuffix(".0")
-assert query("/1.0")["environment"]["server_version"] == baseline_release
-assert machine.succeed(f"{IC} --version").strip() == baseline_release
+start_daemon(baseline_identity)
 baseline_system = machine.succeed("readlink -f /run/current-system").strip()
 
 with subtest("old daemon retains real resources and accepts only a trusted client"):
@@ -120,9 +126,7 @@ with subtest("clean old daemon stop and full state plus external dir-pool cold b
 
 with subtest("supported daemon keeps server identity trust and instance data"):
     machine.succeed(f"{baseline_system}/specialisation/security-update/bin/switch-to-configuration test")
-    start_daemon()
-    pid = int(machine.succeed("systemctl show incus.service --property=MainPID --value"))
-    assert machine.succeed(f"readlink -f /proc/{pid}/exe").strip().startswith(selected_package + "/bin/")
+    start_daemon(selected_identity)
     assert identity() == server_identity
     assert resources() == expected_resources
     authorization()
@@ -135,7 +139,7 @@ with subtest("stopped cold restore recovers old daemon identity authorization an
         "tar --xattrs --acls --numeric-owner -C /var/lib -xpf /tmp/incus-old-cold.tar",
         f"{baseline_system}/bin/switch-to-configuration test",
     )
-    start_daemon()
+    start_daemon(baseline_identity)
     assert identity() == server_identity
     assert resources() == expected_resources
     authorization()

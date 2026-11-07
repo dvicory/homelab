@@ -5,9 +5,9 @@ metadata:
     app.kubernetes.io/instance: envoy-gateway
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/name: gateway-helm
-    app.kubernetes.io/version: v1.9.1
+    app.kubernetes.io/version: v1.9.3
     control-plane: envoy-gateway
-    helm.sh/chart: gateway-helm-1.9.1
+    helm.sh/chart: gateway-helm-1.9.3
   name: envoy-gateway
   namespace: gateway
 spec:
@@ -38,9 +38,16 @@ spec:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: metadata.namespace
+            - name: ENVOY_GATEWAY_SERVICE_ACCOUNT
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.serviceAccountName
+            - name: ENVOY_GATEWAY_FULLNAME
+              value: envoy-gateway-gateway-helm
             - name: KUBERNETES_CLUSTER_DOMAIN
               value: cluster.local
-          image: docker.io/envoyproxy/gateway:v1.9.1@sha256:0049bcb384c591c6a6dd043fe5c9929ef6e74f230e12dd678d2d3701df9b301e
+          image: docker.io/envoyproxy/gateway:v1.9.3@sha256:192fc9bdadb6d2462e8cf7bd702ce3dd9648f3310c6038787448a1f509b7cd9f
           imagePullPolicy: IfNotPresent
           livenessProbe:
             httpGet:

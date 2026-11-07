@@ -565,8 +565,8 @@ in
                 image = {
                   registry = "quay.io";
                   repository = "prometheus/blackbox-exporter";
-                  tag = "v0.28.0";
-                  digest = "sha256:e753ff9f3fc458d02cca5eddab5a77e1c175eee484a8925ac7d524f04366c2fc";
+                  tag = "v0.29.1";
+                  digest = "sha256:ea1c7aa3ef3f307cd03e85f34abb604478ccb90b567fc690da0cd9776da76b13";
                 };
                 config.modules = lib.mapAttrs' (_: probe: lib.nameValuePair probe.module probe.config) probes;
                 configReloader.enabled = false;

@@ -7,7 +7,7 @@ metadata:
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/name: argocd-application-controller
     app.kubernetes.io/part-of: argocd
-    app.kubernetes.io/version: v3.5.2-sha256-e2aadfae709d904e87f46ba4aa49601d827b3022db22cd4d0
+    app.kubernetes.io/version: v3.5.6-sha256-8e5cc5bb008df8a09dba439462e58c94c55b7735888d3ebde
     helm.sh/chart: argo-cd-10.6.0
   name: argocd-application-controller
   namespace: argocd
@@ -22,15 +22,15 @@ spec:
   template:
     metadata:
       annotations:
-        checksum/cm: 2b2f71aad1dd3f420303f5787e3d72d4ca3d88ed69de3dc326e7e76f65a70ccf
-        checksum/cmd-params: 753e13a5e8cf24ab53894c88d02aa0864b0ec7daad3e1daf65abfcec545e8065
+        checksum/cm: c3c0e6cc8a9dadc5bb219cc07ec7ae4186b53c20ead4711aaee3da1903602d9a
+        checksum/cmd-params: 77da33e873b911bce37aef2b94288e13da6d8d4d7c8227b5f0fcc455abb6bac4
       labels:
         app.kubernetes.io/component: application-controller
         app.kubernetes.io/instance: argocd
         app.kubernetes.io/managed-by: Helm
         app.kubernetes.io/name: argocd-application-controller
         app.kubernetes.io/part-of: argocd
-        app.kubernetes.io/version: v3.5.2-sha256-e2aadfae709d904e87f46ba4aa49601d827b3022db22cd4d0
+        app.kubernetes.io/version: v3.5.6-sha256-8e5cc5bb008df8a09dba439462e58c94c55b7735888d3ebde
         helm.sh/chart: argo-cd-10.6.0
     spec:
       affinity:
@@ -332,7 +332,7 @@ spec:
                   optional: true
             - name: KUBECACHEDIR
               value: /tmp/kubecache
-          image: quay.io/argoproj/argocd:v3.5.2@sha256:e2aadfae709d904e87f46ba4aa49601d827b3022db22cd4d03aae816a2e7097b
+          image: quay.io/argoproj/argocd:v3.5.6@sha256:8e5cc5bb008df8a09dba439462e58c94c55b7735888d3ebde0c25fc05e4e5335
           imagePullPolicy: IfNotPresent
           name: application-controller
           ports:

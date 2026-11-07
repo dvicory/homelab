@@ -289,7 +289,7 @@ def collect(args):
         provenance["state"] = "built"
         provenance["references"] = list(closure)
     else:
-        run("trivy", "--config", "", "image", "--ignorefile", "", "--platform", row["ociPlatform"],
+        run("trivy", "--config", "", "image", "--image-src", "remote", "--ignorefile", "", "--platform", row["ociPlatform"],
             "--format", "cyclonedx", "--output", str(directory / "language.cdx.json"), row["resolvedImage"])
         provenance["state"] = "referenced"
     save(directory / "provenance.json", provenance)
