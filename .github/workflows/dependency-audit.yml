@@ -26,6 +26,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: go-audit-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   govulncheck:
     name: Audit compute-runtime advisories

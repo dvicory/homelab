@@ -61,8 +61,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
-      contents: write
-      pull-requests: write
+      contents: write # Push validated data to the updater-owned branch.
+      pull-requests: write # Open or refresh review PRs; never merge them.
     steps:
       - name: Check out trusted base
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -126,9 +126,9 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: read
-      pull-requests: read
-      checks: read
-      statuses: read
+      pull-requests: read # Inspect existing updater PRs during preparation.
+      checks: read # Inspect existing branch check runs without changing them.
+      statuses: read # Inspect commit statuses without publishing a status.
     steps:
       - name: Check out trusted updater configuration
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -173,8 +173,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
-      contents: write
-      pull-requests: write
+      contents: write # Publish only validated patches under the owned namespace.
+      pull-requests: write # Create or refresh review PRs; no candidate execution.
     steps:
       - name: Check out trusted publisher only
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
