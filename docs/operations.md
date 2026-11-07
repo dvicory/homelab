@@ -107,7 +107,7 @@ native registration must reconcile its loss after an ephemeral-root boot.
 Before an upgrade, stop the engine, setup, bouncer and registration
 units and retain a consistent copy of the whole persistent CrowdSec
 directory and current bouncer registration directory. Run
-`nix build .#checks.x86_64-linux.crowdsec-upgrade` on an authorized KVM
+`nix build path:.#checks.x86_64-linux.crowdsec-upgrade` on an authorized KVM
 test host: it activates the actual old 1.8.0 and new 1.8.1 aspects,
 cold-boots both with retained state, verifies credentials, decisions
 and packet enforcement, and attempts old-binary rollback against
@@ -116,6 +116,84 @@ for both generations; it is not a complete historical host upgrade.
 It does not enroll production console/CAPI identities or prove
 compatibility with every live database. Retain the stopped-state
 backup even if this bounded rollback fixture passes.
+
+## Software vulnerability management
+
+`Software vulnerability inventory` scans declaration-derived host/compute
+roots, packages and OCI digests on source changes and twice weekly.
+Its plan artifact lists unsupported coverage; desired/built/referenced
+artifacts never imply deployed state. Kubernetes image references use
+canonical manifests whose freshness is checked separately by CI.
+
+Local commands (Linux, Nix 2.34.8+, Python 3, yq-go, skopeo and the
+workflow's exact upstream sbomnix/vulnxscan/Trivy/Grype/Vulnix environment):
+
+```sh
+security_work=$(mktemp -d)
+python .github/security-audit.py plan --output "$security_work/plan.json"
+jq '.entries[] | select(.target == "packages.x86_64-linux.compute-runtime")' \
+  "$security_work/plan.json" > "$security_work/descriptor.json"
+python .github/security-audit.py resolve --entry "$security_work/descriptor.json" \
+  --output "$security_work/entry.json"
+python .github/security-audit.py collect --entry "$security_work/entry.json" \
+  --directory "$security_work/inventory"
+python .github/security-audit.py scan --directory "$security_work/inventory" \
+  --output "$security_work/report"
+```
+
+The controller reads output names, never package values or foreign IFD.
+`resolve` runs on the matching native platform and pins the selected
+derivation/output plus immutable source before cache lookup. Keep output
+files outside the checkout; stale source/resolved entries fail closed.
+
+`collect` stages exact Nix reference closures for Trivy **rootfs**
+analysis (filesystem mode misses Go binaries). Protected store files
+require copies; budget closure-sized temporary disk and select its
+location with `--staging-directory`. OCI archives are inventoried too.
+`scan` refreshes advisories from saved inventory without builds or host/
+registry access. Reuse accepts only bounded, hash-verified inventory from
+this workflow's own default-branch producers; retained artifacts expire
+after 90 days. No findings/advisory DB is reused as a security verdict.
+
+Native completion also requires CSV/CDX output identities and dependency
+coverage to agree with the selected root's recursive Nix closure.
+Missing or unmatched outputs block sealing, reuse and scanning; a
+hash-valid partial SBOM is not a complete inventory.
+
+Native CPE/name/version matches are candidates, not applicability
+decisions. SBOM rescans omit Vulnix and automatic patch suppression;
+inspect retained patch CSV/evidence. Trivy adds supported-language/OCI
+matching, not native NixOS matching or call reachability. Missing binary
+main versions, bundled dependencies, dynamic downloads and Darwin are
+explicit limits; the existing actual-Go-binary audit remains.
+GitHub SARIF categories and full reports retain source/update ownership,
+fixed-version hints and provenance. Scan/report errors remain failures.
+
+`Compare Nix advisory remediation` accepts a declared x86 target and
+uses upstream flakevuln's current/re-locked **build-dependency** report;
+it is not a runtime/deployed comparison or committed dependency update.
+Its collector has read authority only; a separate data-only job uploads
+SARIF without executing repository Nix.
+
+`Dependency update PRs` runs upstream Renovate with read authority.
+Candidate Nix runs only in a disposable checkout with a private store.
+Complete generation and bounded regular-file validation precede export;
+failed preparation cannot publish an incomplete candidate. A separate
+write-authorized publisher consumes validated patches, never candidate
+Nix or Renovate, and uses exact leases within its own branch namespace.
+It never merges/deploys or rewrites verified release receipts.
+
+Arbitrary immutable source SHAs remain mapped but cannot safely follow
+default HEAD automatically; their owner must declare an authorized
+branch URL or supported release-tag policy. Jellyfin updates remain
+withheld until the coupled producer/helper release is ready, rather
+than proposing an incomplete runtime-only change.
+Default-token PRs need manually dispatched Nix CI and manual review.
+If GitHub rejects PR creation, the exact prerequisite is Settings →
+Actions → General → Workflow permissions → Allow GitHub Actions to
+create and approve pull requests. Actual default-token publication
+remains unproven until a successful run; no settings or replacement
+credentials bypass that boundary.
 
 ## Declared routes
 
