@@ -1774,6 +1774,14 @@ def observe_guest(runtime: Runtime, bundle: Path, expected: dict) -> dict:
     versions = runtime.kubectl_json("version", "-o", "json")
     node = runtime.kubectl_json("get", "node", runtime.instance, "-o", "json")
     namespace = runtime.kubectl_json("get", "namespace/kube-system", "-o", "json")
+    print("GUEST_VERSION_WITNESS " + json.dumps({
+        "expectedVersion": version,
+        "executableVersionOutput": executable_output,
+        "runningExecutableVersionOutput": server_output,
+        "clientVersion": versions["clientVersion"]["gitVersion"],
+        "serverVersion": versions["serverVersion"]["gitVersion"],
+        "kubeletVersion": node["status"]["nodeInfo"]["kubeletVersion"],
+    }, sort_keys=True), flush=True)
     check(bundle.resolve() == Path(expected["bundle"]).resolve()
           and selected == str(bundle.resolve()), "Incus provenance records the selected immutable bundle")
     check(system == str(Path(expected["system"]).resolve()),
@@ -1784,13 +1792,19 @@ def observe_guest(runtime: Runtime, bundle: Path, expected: dict) -> dict:
     package_server_sha256 = runtime.guest("sha256sum", expected["serverPackage"] + "/bin/k3s").split()[0]
     check(executable == package_executable and server_sha256 == package_server_sha256,
           "the guest CLI resolves to the selected package and the running server matches its exact payload bytes")
-    cli_version = r"\bk3s version v?" + re.escape(version.removeprefix("v")) + r"(?:\s|$)"
-    check(re.search(cli_version, executable_output) is not None
-          and re.search(cli_version, server_output) is not None
-          and versions["clientVersion"]["gitVersion"] == version
-          and versions["serverVersion"]["gitVersion"] == version
-          and node["status"]["nodeInfo"]["kubeletVersion"] == version,
-          f"executable, running executable, client, server and kubelet all report {version}")
+    # Upstream's display name is filepath.Base(argv[0]), not binary identity.
+    # Compare the exact version token; paths and payload bytes are bound above.
+    for label, output in (("guest CLI", executable_output), ("running server executable", server_output)):
+        fields = output.partition("\n")[0].split()
+        check(len(fields) >= 3 and fields[1] == "version"
+              and fields[2].removeprefix("v") == version.removeprefix("v"),
+              f"the {label} reports the selected version {version}")
+    check(versions["clientVersion"]["gitVersion"] == version,
+          f"the guest's embedded kubectl client reports {version}")
+    check(versions["serverVersion"]["gitVersion"] == version,
+          f"the live Kubernetes server reports {version}")
+    check(node["status"]["nodeInfo"]["kubeletVersion"] == version,
+          f"the live node's kubelet reports {version}")
     runtime.guest("test", "-s", "/var/lib/rancher/k3s/server/db/state.db")
     evidence = {
         **expected, "bundle": selected, "system": system, "executable": executable,
@@ -1799,6 +1813,7 @@ def observe_guest(runtime: Runtime, bundle: Path, expected: dict) -> dict:
         "runningExecutableVersion": server_output.splitlines()[0],
         "clientVersion": versions["clientVersion"]["gitVersion"],
         "serverVersion": versions["serverVersion"]["gitVersion"],
+        "kubeletVersion": node["status"]["nodeInfo"]["kubeletVersion"],
         "nodeUid": node["metadata"]["uid"], "datastoreNamespaceUid": namespace["metadata"]["uid"],
         "instanceUuid": instance_query(runtime.project, runtime.instance)["config"]["volatile.uuid"],
         "tokenSha256": hashlib.sha256(runtime.guest("cat", "/var/lib/rancher/k3s/server/token").encode()).hexdigest(),
