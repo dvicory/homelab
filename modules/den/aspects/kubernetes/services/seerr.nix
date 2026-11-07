@@ -7,10 +7,11 @@ let
     memory = "1Gi";
     apiSecretKey = "SEERR_API_KEY";
   };
+  # Fixes Seerr API leaks and CA distrust; bundled Next.js findings remain upstream.
   images.seerr = {
     repository = "ghcr.io/seerr-team/seerr";
-    tag = "v3.4.1";
-    digest = "sha256:f4768de5f616248d723e05891f3345a1402123775d03bf0890dbfedc0831bda1";
+    tag = "v3.5.1";
+    digest = "sha256:d8fab675b55ad293ded98fd71efcfd46054cbad9746534ae1cc4794a88c0b3be";
   };
   retainedEntry =
     computeResources: key:
