@@ -26,6 +26,21 @@ jobs:
         with:
           persist-credentials: false
 
+      # Native locking covers actions, not external reusable workflows or images.
+      # Verify the immutable verifier release's signed asset attestation before execution.
+      - name: Verify direct and transitive action locks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          directory=$(mktemp -d "$RUNNER_TEMP/actions-lock.XXXXXX")
+          trap 'rm -rf -- "$directory"' EXIT
+          version=v0.4.1
+          gh release download "$version" --repo github/gh-actions-lock --pattern linux-amd64 --dir "$directory"
+          gh release verify-asset "$version" "$directory/linux-amd64" --repo github/gh-actions-lock
+          chmod 0700 "$directory/linux-amd64"
+          "$directory/linux-amd64" --verify
+
       - name: Run zizmor
         uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
         with:
