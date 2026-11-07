@@ -202,8 +202,7 @@ fixed-version hints and provenance. Scan/report errors remain failures.
 Projected SARIF uses component-qualified rule IDs (original advisory IDs,
 locations and detector fingerprints remain in result properties). GitHub
 only matches the reserved `primaryLocationLineHash` partial key; the uploader
-owns that source-line hash, not the component hash. Custom
-`homelab/component/v1` keys support other SARIF consumers, not GitHub matching.
+owns that source-line hash, not the component hash.
 Trivy input-SBOM staging paths are normalized for identity, not evidence.
 This identity cutover can replace older alerts; changed package versions or
 inventory-relative component paths can also create new identities.

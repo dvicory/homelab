@@ -336,7 +336,6 @@ def project_sarif(sarif, row, inventory_path=None):
             properties["inventoryLocations"] = original
             properties["inventoryFingerprints"] = {
                 key: finding.pop(key) for key in ("fingerprints", "partialFingerprints") if key in finding}
-            finding["partialFingerprints"] = {"homelab/component/v1": semantic}
             locations = ([properties["package"] + "@" + properties["version"]] if inventory_path is None else
                          [location.get("message", {}).get("text", "") for location in original])
             finding["message"]["text"] += "\nInventory component: " + "; ".join(filter(None, locations))
