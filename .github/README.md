@@ -221,7 +221,9 @@ bridge peers do not prove Incus mounts, ID maps or host nftables.
 the evaluated production systemd unit starts, creates its state directory,
 acknowledges the exact generation, fails with `Result=exit-code` on incomplete
 delivery without changing prior state, and succeeds again after repair.
-`public-edge-runtime` covers public-edge TLS/header/request/logging boundaries.
+`public-edge-runtime` covers public-edge TLS/header/request/logging boundaries;
+its synthetic origin waits for static-address configuration and rejects nginx
+boot restarts without changing native start-rate limits.
 Host checks retain mount/ID-map/filesystem/firewall/service-delivery evidence;
 no Kubernetes-only replacement justifies removing that coverage.
 
