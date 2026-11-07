@@ -177,6 +177,40 @@ in
         nested actions; it does not pin container images, arbitrary downloads
         or dependencies of external reusable workflows.
 
+        ## Manage repository Actions policy
+
+        [`modules/flake/github-actions.nix`](modules/flake/github-actions.nix)
+        declares approved actions, SHA pinning and workflow token permissions.
+        It generates [`.github/actions-policy.yml`](.github/actions-policy.yml)
+        for review. GitHub does not read this file: changing it does not change
+        live settings. The policy approves action identities; `actions.lock`
+        pins their revisions.
+        Pattern allowlists apply only to public repositories; the command rejects
+        private targets.
+
+        Review live drift without changing settings:
+
+        ```sh
+        nix run .#github-actions-policy -- plan --repo OWNER/NAME
+        ```
+
+        Exit status 0 means the policy matches; 1 reports drift. Failed API
+        requests are reported separately and retain `gh`'s exit status.
+
+        After reviewing the plan and authorizing changes to that repository:
+
+        ```sh
+        nix run .#github-actions-policy -- apply --repo OWNER/NAME
+        ```
+
+        Apply writes live settings and verifies the owned fields by readback.
+        It needs repository Administration write permission; plan needs read
+        permission. Classic tokens require `repo`. The command does not change
+        credentials, and ordinary CI does not apply policy.
+
+        If apply fails, earlier writes may persist. Inspect a fresh plan before
+        retrying; there is no automatic rollback.
+
         ## Regenerate documentation
 
         [Documentation generators](modules/flake/docs/) produce the README and

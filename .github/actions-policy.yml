@@ -1,0 +1,28 @@
+# Generated from modules/flake/github-actions.nix; GitHub does not auto-read this file.
+# Inspect: nix run .#github-actions-policy -- plan --repo OWNER/NAME
+# Reconcile only with owner approval: nix run .#github-actions-policy -- apply --repo OWNER/NAME
+%YAML 1.1
+---
+permissions:
+  allowed_actions: selected
+  enabled: true
+  sha_pinning_required: true
+selected-actions:
+  github_owned_allowed: false
+  patterns_allowed:
+  - actions/checkout@*
+  - Mic92/hestia@*
+  - Mic92/hestia/matrix@*
+  - cachix/cachix-action@*
+  - cachix/install-nix-action@*
+  - zizmorcore/zizmor-action@*
+  - step-security/harden-runner@*
+  - github/codeql-action/*@*
+  - actions/upload-artifact@*
+  - actions/download-artifact@*
+  - wimpysworld/nothing-but-nix@*
+  - srz-zumix/post-run-action@*
+  verified_allowed: false
+workflow:
+  can_approve_pull_request_reviews: false
+  default_workflow_permissions: read
