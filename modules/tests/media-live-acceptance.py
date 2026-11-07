@@ -60,42 +60,6 @@ def state_difference(expected, actual, path=()):
     return result[:16]
 
 
-def quality_profile_difference(expected, actual, managed_names, ui_profiles):
-    """Identity-aware numeric policy evidence; no arbitrary native names/strings."""
-    def nodes(items):
-        return [[item.get("id"), item.get("quality", {}).get("id"), item.get("allowed"),
-                 nodes(item.get("items") or [])] for item in items]
-
-    def project(app, profile):
-        if profile is None:
-            return None
-        qualities = nodes(profile["items"])
-        category = ("managed" if profile["name"] in managed_names[app] else
-                    "ui-owned" if profile["id"] == ui_profiles[app]["id"] else "native-unmanaged")
-        return {
-            "category": category,
-            **{key: profile.get(key) for key in (
-                "id", "cutoff", "upgradeAllowed", "minFormatScore",
-                "cutoffFormatScore", "minUpgradeFormatScore")},
-            "languageId": profile.get("language", {}).get("id"),
-            "qualities": qualities,
-            "enabledOrder": [node[0] if node[0] is not None else node[1]
-                             for node in qualities if node[2]],
-            "formatScores": sorted([item["format"], item["score"]] for item in profile["formatItems"]),
-        }
-
-    result = []
-    for app in ("radarr", "sonarr"):
-        before = {item["id"]: item for item in expected[app]["/qualityprofile"]}
-        after = {item["id"]: item for item in actual[app]["/qualityprofile"]}
-        for identity in sorted(before.keys() | after.keys()):
-            if before.get(identity) != after.get(identity):
-                result.append({"app": app, "before": project(app, before.get(identity)),
-                               "after": project(app, after.get(identity))})
-    return {"nodeShape": ["groupId", "qualityId", "allowed", "children"],
-            "changedProfileCount": len(result), "profiles": result[:12]}
-
-
 def stable_disabled_prefix(items):
     """Only order disabled leaves preceding every selectable quality/group."""
     count = 0
@@ -998,15 +962,8 @@ test "$(printf '%s\\n' "$2" | GIT_NO_LAZY_FETCH=1 git -C "$repo" cat-file --batc
             require(cache_state(previous_cache_root) == previous_cache, "pin change altered the older native cache")
             current_policy = arr_snapshot()
             if current_policy != previous_policy:
-                details = {
-                    "fields": state_difference(previous_policy, current_policy),
-                    "qualityProfiles": quality_profile_difference(
-                        previous_policy, current_policy,
-                        {app: {item["name"] for item in policy_source["profiles"][app].values()}
-                         for app in ("radarr", "sonarr")}, unmanaged_profiles),
-                }
                 raise AssertionError("native pin change altered application identities or data: " +
-                                     json.dumps(details, ensure_ascii=True, separators=(",", ":")))
+                                     json.dumps(state_difference(previous_policy, current_policy), ensure_ascii=True))
             cold_cache = cache_state()
             require(cold_cache["trash-guides"]["head"] == policy_source["revision"], "native TRaSH checkout is not pinned")
             require(cold_cache["recyclarr-config"]["head"] == policy_source["templateRevision"], "native template checkout is not pinned")
