@@ -2265,7 +2265,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             if args.scenario == "replacement":
                 original_uuid = query_incus(f"/1.0/instances/{quote_path(instance_name)}", project=project)["config"]["volatile.uuid"]
                 original_cluster_token = runtime.guest("cat", "/var/lib/rancher/k3s/server/token")
-                runtime.kubectl("create", "configmap/replacement-disposable", "--from-literal=value=old-datastore",
+                runtime.kubectl("create", "configmap", "replacement-disposable", "--from-literal=value=old-datastore",
                                 namespace="kube-system")
                 identity_before = {
                     member: hashlib.sha256((Path(descriptor["identityPath"]) / member).read_bytes()).hexdigest()
