@@ -15,8 +15,8 @@ let
   };
   images.sabnzbd = {
     repository = "ghcr.io/linuxserver/sabnzbd";
-    tag = "5.1.2-ls271";
-    digest = "sha256:64c4c2b6ed546237451cbfec33aa8bac1396865c1a266dd247c02b36ffe27c62";
+    tag = "5.1.3-ls280";
+    digest = "sha256:693c208f697d0b411410edd92a98b52c8c754c01f5c078a975cbc892044260f5";
   };
   retainedEntry =
     computeResources: key:

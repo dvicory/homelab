@@ -319,8 +319,8 @@ let
     };
     image = {
       repository = "ghcr.io/linuxserver/radarr";
-      tag = "6.3.0.10514-ls315";
-      digest = "sha256:95ba0801df4d9d1d79d0d9a3849f656542497dab061d91b87ad4f53a71aff3ef";
+      tag = "6.4.4.10685-ls325";
+      digest = "sha256:ade5937813c6ae415b29db729386e53fea3ecf067a019849bafbe2d2a6ec02ba";
     };
   };
   sonarr = mkArr {
@@ -333,8 +333,8 @@ let
     };
     image = {
       repository = "ghcr.io/linuxserver/sonarr";
-      tag = "4.0.19.2979-ls323";
-      digest = "sha256:4d9df314875e1249ab7d6170c2b9b3dc1d8e6383f168ceb10dc9a5ad9b324739";
+      tag = "4.0.20.3014-ls2";
+      digest = "sha256:386c962ee6e260e3a5656b25df2ed056bcc9b6410e197d075f9547fd14c23bca";
     };
   };
 in
