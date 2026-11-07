@@ -150,6 +150,9 @@ files outside the checkout; stale source/resolved entries fail closed.
 analysis (filesystem mode misses Go binaries). Protected store files
 require copies; budget closure-sized temporary disk and select its
 location with `--staging-directory`. OCI archives are inventoried too.
+Hosted jobs create private Btrfs staging **after** Nix installation:
+the installer recursively resets `/nix` ownership. An installer failure
+does not attempt artifact upload from an uninitialized staging path.
 `scan` refreshes advisories from saved inventory without builds or host/
 registry access. Reuse accepts only bounded, hash-verified inventory from
 this workflow's own default-branch producers; retained artifacts expire
