@@ -48,8 +48,16 @@ in
   };
 
   perSystem =
-    { inputs', ... }:
+    { inputs', system, ... }:
+    let
+      nodes = lib.filterAttrs (
+        name: _: self.nixosConfigurations.${name}.pkgs.stdenv.hostPlatform.system == system
+      ) toDeployNodes;
+    in
     {
+      checks = lib.optionalAttrs (nodes != { }) (
+        inputs.deploy-rs.lib.${system}.deployChecks (self.deploy // { inherit nodes; })
+      );
       apps = {
         inherit (inputs'.deploy-rs.apps) deploy-rs;
       };
