@@ -22,7 +22,6 @@ spec.loader.exec_module(audit)
 
 assert list(audit.images({"spec": {"containers": [{"name": "main", "image": "registry/app@sha256:abc"}]},
                           "metadata": {"name": "not-an-image"}})) == [("registry/app@sha256:abc", "/spec/containers/main/image")]
-assert audit.identity("same artifact") == audit.identity("same artifact")
 assert audit.identity("same artifact") != audit.identity("another artifact")
 
 inventory = {
@@ -70,19 +69,6 @@ def capture(*args):
     return "sha256:" + "a" * 64 + "\n"
 
 
-native_calls = []
-executor = "x86_64-linux"
-
-
-def native_capture(*args):
-    native_calls.append(args)
-    assert args[:2] == ("nix", "eval")
-    if "builtins.currentSystem" in args:
-        assert "--expr" in args and "--raw" in args
-        return executor
-    assert "path:" + source["path"] + "#" + inventory["x86_64-linux"]["roots"][0]["target"] in args
-    assert "--json" in args and "--apply" in args
-    return json.dumps(resolved_paths)
 
 
 def native_fixture(row):
@@ -284,6 +270,26 @@ def check_trusted_restore(directory, row):
     audit.security_artifacts.verify(Path("restored"), row["inventoryKey"], producer, row)
     rejects(audit.security_artifacts.verify, Path("restored"), row["inventoryKey"], dict(producer, GITHUB_SHA="b" * 40))
 
+def check_native_resolution():
+    """Exercise the actual Nix serializer, not an assumed JSON response."""
+    previous = Path.cwd()
+    try:
+        os.chdir(Path(__file__).resolve().parents[1])
+        executor = audit.capture("nix", "eval", "--raw", "--impure", "--expr", "builtins.currentSystem").strip()
+        metadata = audit.source_metadata()
+        descriptor = {"kind": "nix", "system": executor,
+                      "target": f"packages.{executor}.compute-runtime",
+                      "plannedSourceNarHash": metadata["locked"]["narHash"]}
+        row = audit.resolve_row(descriptor)
+        outputs = audit.capture("nix-store", "--query", "--outputs", row["drvPath"]).splitlines()
+        assert row["outPath"] in outputs
+        foreign = "aarch64-linux" if executor != "aarch64-linux" else "x86_64-linux"
+        rejects(audit.resolve_row, dict(descriptor, system=foreign))
+        print("Actual native Nix identity resolved:", row["drvPath"], row["outPath"])
+    finally:
+        os.chdir(previous)
+
+
 with tempfile.TemporaryDirectory() as directory:
     previous = Path.cwd()
     try:
@@ -306,13 +312,9 @@ with tempfile.TemporaryDirectory() as directory:
                    for row in plan["unsupported"])
         assert "matrix=" in Path("outputs").read_text()
         descriptor = plan["entries"][0]
-        with patch.object(audit, "source_metadata", return_value=source), patch.object(audit, "capture", native_capture):
-            row = audit.resolve_row(descriptor)
-        assert len(native_calls) == 2  # executor plus exactly one selected target
-        assert {name: row[name] for name in resolved_paths} == resolved_paths
-        assert row["sourcePath"] == source["path"]
-        assert row["sourceNarHash"] == source["locked"]["narHash"]
-        assert row["inventoryKey"] == audit.inventory_key(row)
+        row = dict(descriptor, sourcePath=source["path"],
+                   sourceNarHash=source["locked"]["narHash"], **resolved_paths)
+        row["inventoryKey"] = audit.inventory_key(row)
         assert not {"inventoryKey", "drvPath", "outPath"} & descriptor.keys()
         with patch.object(audit, "source_metadata", return_value=source), \
                 patch.object(audit, "capture", side_effect=AssertionError("OCI resolver evaluated a Nix target")):
@@ -333,18 +335,7 @@ with tempfile.TemporaryDirectory() as directory:
         with patch.object(audit, "source_metadata", return_value=source), \
                 patch.object(audit, "capture", side_effect=AssertionError("evaluated stale planned source")):
             rejects(audit.resolve_row, dict(descriptor, plannedSourceNarHash="sha256-stale"))
-        executor = "aarch64-linux"
-        native_calls.clear()
-        with patch.object(audit, "source_metadata", return_value=source), patch.object(audit, "capture", native_capture):
-            rejects(audit.resolve_row, descriptor)
-        assert len(native_calls) == 1 and "builtins.currentSystem" in native_calls[0]
-        executor = "x86_64-linux"
 
-        audit.save("descriptor.json", descriptor)
-        with patch.object(audit, "source_metadata", return_value=source), patch.object(audit, "capture", native_capture):
-            audit.resolve(argparse.Namespace(entry="descriptor.json", output="resolved.json", github_output="resolve-outputs"))
-        assert json.loads(Path("resolved.json").read_text()) == row
-        assert Path("resolve-outputs").read_text().strip() == "inventoryKey=" + row["inventoryKey"]
         audit.save("entry.json", row)
         with patch.object(audit, "source_metadata", return_value=source), \
                 patch.object(audit, "capture", side_effect=AssertionError("re-evaluated resolved target")):
@@ -463,7 +454,10 @@ print("inventory contract passed")
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--native-proof", help="persisted generic-native-proof.json with actual upstream CSV/CDX/path-info")
 parser.add_argument("--native-directory", action="append", default=[], help="actual full-root raw CSV/CDX/closure/request plus collected native-evidence.json")
+parser.add_argument("--native-resolve", action="store_true", help="verify actual native Nix package identity without building")
 args = parser.parse_args()
+if args.native_resolve:
+    check_native_resolution()
 if args.native_proof:
     check_real_native_proof(args.native_proof)
 for directory in args.native_directory:

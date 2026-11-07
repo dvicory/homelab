@@ -221,6 +221,8 @@ in
         `resolve` runs on the matching native platform and pins the selected
         derivation/output plus immutable source before cache lookup. Keep output
         files outside the checkout; stale source/resolved entries fail closed.
+        Native compute-runtime jobs also check Nix identity serialization against
+        actual derivation metadata; malformed output never becomes a guessed scan root.
 
         `collect` stages exact Nix reference closures for Trivy **rootfs**
         analysis (filesystem mode misses Go binaries). Protected store files

@@ -102,9 +102,10 @@ def resolve_row(descriptor):
         executor = capture("nix", "eval", "--raw", "--impure", "--expr", "builtins.currentSystem").strip()
         if executor != row["system"]:
             raise ValueError("Nix target resolution requires its matching native executor")
+        # Nix JSON coerces an attrset containing outPath to a string.
         selected = json.loads(capture("nix", "eval", "--json", f"path:{metadata['path']}#{row['target']}",
-            "--apply", 'package: assert (package.type or null) == "derivation"; { inherit (package) drvPath outPath; }'))
-        row.update(selected)
+            "--apply", 'package: assert (package.type or null) == "derivation"; { inherit (package) drvPath; outputPath = package.outPath; }'))
+        row.update(drvPath=selected["drvPath"], outPath=selected["outputPath"])
     row["sourcePath"] = metadata["path"]
     row["sourceNarHash"] = metadata["locked"]["narHash"]
     row["inventoryKey"] = inventory_key(row)
