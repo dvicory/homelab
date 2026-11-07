@@ -1,0 +1,197 @@
+name: Dependency update PRs
+
+on:
+  schedule:
+    - cron: "17 9 * * 1"
+  pull_request:
+    paths:
+      - ".github/dependency-update.*"
+      - ".github/workflows/dependency-update.yml"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Resolve updates without pushing branches or creating PRs
+        type: boolean
+        default: true
+
+# No global write authority; only the two publisher jobs can update their own PR branches.
+permissions: {}
+
+concurrency:
+  group: dependency-update
+  cancel-in-progress: false
+
+jobs:
+  nix-lock:
+    name: Prepare ordinary Nix input update and generated outputs
+    if: github.repository == 'dvicory/homelab' && (github.event_name == 'pull_request' || inputs.dry-run || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source declarations and current lock
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Nix
+        uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+        with:
+          github_access_token: ${{ github.token }}
+      - name: Refresh root channel, floating inputs and tracked branches
+        run: |
+          # flake.nix is generated; source URLs remain owned by modules/meta/inputs.nix
+          # and the modules declaring their own flake-file.inputs. Never rewrite it here.
+          nix flake update --flake path:.
+          python3 .github/dependency-update.py --refresh-generated
+          python3 .github/dependency-update.py --write-patch "$RUNNER_TEMP/dependency-update.patch"
+          git diff --stat HEAD -- flake.lock docs generated/manifests >> "$GITHUB_STEP_SUMMARY"
+      - name: Transfer bounded generated candidate data to publisher
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dependency-update-nix-candidate
+          path: ${{ runner.temp }}/dependency-update.patch
+          if-no-files-found: error
+          retention-days: 7
+
+  nix-pr:
+    name: Propose Nix lock update without merging or deploying
+    needs: nix-lock
+    if: github.repository == 'dvicory/homelab' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.dry-run))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # Push validated data to the updater-owned branch.
+      pull-requests: write # Open or refresh review PRs; never merge them.
+    steps:
+      - name: Check out trusted base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download prepared candidate patch only
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dependency-update-nix-candidate
+          path: ${{ runner.temp }}/dependency-update
+      - name: Validate allowed paths and apply generated data without candidate execution
+        env:
+          PATCH: ${{ runner.temp }}/dependency-update/dependency-update.patch
+        run: python3 .github/dependency-update.py --apply-patch "$PATCH"
+      - name: Create or refresh ordinary update PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_BODY: |
+            Ordinary root Nixpkgs/channel and input/branch lock refresh using `nix flake update --flake path:.`.
+            Authoritative declarations are `modules/meta/inputs.nix` and each module's `flake-file.inputs`.
+            Immutable SHA source pins are mapped but disabled until their owners choose a tracking branch/tag policy.
+            Supported release-tag, image and chart declarations use separately prepared update PRs.
+            Canonical `write-files` and declaration-derived `sync-*-manifests` apps regenerated
+            the accompanying documentation and manifests in an isolated token-free container.
+
+            No automatic merge, deployment or activation. GitHub does not trigger ordinary push/PR
+            workflows for GITHUB_TOKEN changes: a maintainer must explicitly dispatch Nix CI with
+            this branch selected, review the full fleet/package candidate and merge manually.
+        run: |
+          set -euo pipefail
+          if git diff --cached --quiet -- flake.lock docs generated/manifests; then
+            echo 'No Nix input or generated output changes.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          branch=dependency-update/nix-lock
+          # Only this updater-owned branch is replaceable, with an exact remote lease.
+          lease=$(git ls-remote origin "refs/heads/$branch" | cut -f1)
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'chore(deps): refresh Nix inputs'
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            push "--force-with-lease=refs/heads/$branch:$lease" origin "HEAD:refs/heads/$branch"
+          number=$(gh pr list --head "$branch" --base main --state open --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh pr edit "$number" --title 'chore(deps): refresh Nix inputs' --body "$PR_BODY"
+          else
+            gh pr create --head "$branch" --base main --title 'chore(deps): refresh Nix inputs' --body "$PR_BODY"
+          fi
+      - name: Explain token policy prerequisite on failure
+        if: failure()
+        run: |
+          echo 'If PR creation reports "GitHub Actions is not permitted to create or approve pull requests", recurring default-token publication is blocked by Settings > Actions > General > Workflow permissions > Allow GitHub Actions to create and approve pull requests. This workflow never changes that setting or uses replacement credentials.' >> "$GITHUB_STEP_SUMMARY"
+
+  declarations:
+    name: Prepare declarations with read-only upstream Renovate
+    if: github.repository == 'dvicory/homelab' && (github.event_name == 'pull_request' || inputs.dry-run || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      pull-requests: read # Inspect existing updater PRs during preparation.
+      checks: read # Inspect existing branch check runs without changing them.
+      statuses: read # Inspect commit statuses without publishing a status.
+    steps:
+      - name: Check out trusted updater configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Nix
+        uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+      - name: Validate native configuration and prepare complete candidates
+        env:
+          RENOVATE_TOKEN: ${{ github.token }}
+          RENOVATE_CONFIG_FILE: ${{ github.workspace }}/.github/dependency-update.cjs
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
+          LOG_LEVEL: debug
+        run: |
+          set -euo pipefail
+          python3 .github/dependency-update.py --self-test
+          # Renovate receives read authority only, even on scheduled publication runs.
+          # Candidate Nix sees only a disposable writable copy and private store.
+          nix shell --inputs-from path:. nixpkgs#renovate nixpkgs#kubernetes-helm nixpkgs#skopeo nixpkgs#python3 --command \
+            bash -eu <<'PREPARE'
+          renovate-config-validator "$RENOVATE_CONFIG_FILE"
+          renovate --dry-run=full
+          python3 "$GITHUB_WORKSPACE/.github/dependency-update.py" --seal-candidates
+          PREPARE
+      - name: Transfer only successfully prepared bounded data
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dependency-update-declaration-candidates
+          path: .github/dependency-update-candidates/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Explain preparation and review boundaries
+        if: always()
+        run: |
+          echo 'Renovate runs full dry-run with a read-only token. Only independently validated patches from successful complete canonical generation reach the separate publisher; hook failures prohibit artifact export. No candidate worktree is mounted into the live Renovate clone.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Immutable SHA pins remain disabled until explicit owner branch/tag intent. Jellyfin coupled-release updates are withheld rather than publishing incomplete generated outputs. Maintainers must explicitly dispatch Nix CI before review/manual merge; no automerge or deployment.' >> "$GITHUB_STEP_SUMMARY"
+
+  declarations-pr:
+    name: Publish validated declaration data without candidate execution
+    needs: declarations
+    if: github.repository == 'dvicory/homelab' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.dry-run))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write # Publish only validated patches under the owned namespace.
+      pull-requests: write # Create or refresh review PRs; no candidate execution.
+    steps:
+      - name: Check out trusted publisher only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download candidate data only
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dependency-update-declaration-candidates
+          path: ${{ runner.temp }}/dependency-update-declarations
+      - name: Validate and publish with exact owned-branch leases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CANDIDATES: ${{ runner.temp }}/dependency-update-declarations
+        run: python3 .github/dependency-update.py --publish-candidates "$CANDIDATES"
+      - name: Explain default-token policy prerequisite on failure
+        if: failure()
+        run: |
+          echo 'If GitHub rejects PR creation, recurring default-token publication requires Settings > Actions > General > Workflow permissions > Allow GitHub Actions to create and approve pull requests. Actual publication remains unproven until a real run succeeds. This workflow changes no setting and introduces no credential.' >> "$GITHUB_STEP_SUMMARY"

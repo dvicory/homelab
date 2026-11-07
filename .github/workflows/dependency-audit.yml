@@ -26,6 +26,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: go-audit-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   govulncheck:
     name: Audit compute-runtime advisories
@@ -75,4 +79,15 @@ jobs:
         uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
 
       - name: Audit linked modules and binary symbols
-        run: nix run path:.#stock-go-audit
+        env:
+          REPORT_DIRECTORY: ${{ runner.temp }}/stock-go-audit
+        run: nix run path:.#stock-go-audit -- "$REPORT_DIRECTORY"
+
+      - name: Retain complete binary provenance and advisory reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: stock-go-audit-reports
+          path: ${{ runner.temp }}/stock-go-audit
+          if-no-files-found: error
+          retention-days: 14
