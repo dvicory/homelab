@@ -265,6 +265,8 @@ def collect(args):
         provenance["stagingBudgetBytes"] = staging_bytes
         run("sbomnix", f"path:{row['sourcePath']}#{row['target']}", "--require-cpe-dictionary",
             "--cdx", str(directory / "native.cdx.json"), "--csv", str(directory / "native.csv"), "--spdx", "")
+        security_artifacts.record_native_evidence(directory, provenance,
+            lambda ref: capture("nix-store", "--query", "--outputs", ref).splitlines())
         # Trivy does not follow Nix references or symlinks. Present every exact
         # reference as ordinary directories, preserving symlinks but not following
         # them. Prefer hardlinks; protected store files/cross-device staging
@@ -301,6 +303,7 @@ def scan(args):
     row = json.loads((directory / "provenance.json").read_text())
     security_artifacts.verify(directory, row["inventoryKey"])
     if row["kind"] == "nix":
+        row["nativeCoverage"] = json.loads((directory / "native-evidence.json").read_text())["coverage"]
         # Require an update check, not a silently stale restored scanner DB.
         os.environ.update(GRYPE_DB_AUTO_UPDATE="true", GRYPE_DB_REQUIRE_UPDATE_CHECK="true")
         run("grype", "db", "update")
@@ -338,6 +341,14 @@ def scan(args):
         trivyDatabase=capture("trivy", "--version"),
         deployed="unobserved"))
     summary = f"### Security inventory `{row['id']}`\n\nSource: `{row['source']}`\n\nArtifact: `{row.get('outPath', row.get('resolvedImage'))}`\n\nUpdate owner: {row['update']}\n\nBuilt/referenced is not deployed. Native matches are candidates, not reachability or backport verdicts. Reusable native scans omit Vulnix/patch suppression; inspect native.csv and evidence before dismissal. Trivy is complementary language/OCI coverage, not native Nix matching. Full findings, fixed-version hints, inventory and database provenance are attached as artifacts.\n"
+    if row["kind"] == "nix":
+        coverage = row["nativeCoverage"]
+        summary += (f"\nComposite native closure: {coverage['closurePathCount']} paths; "
+                    f"{coverage['representedPathCount']} represented by upstream components; "
+                    f"{coverage['opaquePathCount']} opaque raw paths; "
+                    f"{coverage['unversionedPathCount']} represented paths without versions; "
+                    f"{coverage['noCpePathCount']} represented paths without CPEs. "
+                    f"{coverage['warning']} Exact affected paths are in inventory/native-evidence.json.\n")
     (output / "summary.md").write_text(summary)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
