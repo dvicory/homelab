@@ -44,7 +44,15 @@ def field(text, name):
 def charts(text):
     for match in CHART.finditer(text):
         block = match.group(1)
-        version = field(text, "chartVersion") if "version = chartVersion;" in block else field(block, "version")
+        if "version = chartVersion;" in block:
+            version = field(text, "chartVersion")
+        elif "inherit version;" in block:
+            versions = re.findall(r'\bversion\s*=\s*"([^"\n]+)";', text)
+            if len(versions) != 1:
+                raise ValueError("inherited chart version must have one literal owner")
+            version = versions[0]
+        else:
+            version = field(block, "version")
         yield match, field(block, "repo"), field(block, "chart"), version
 
 
@@ -65,7 +73,8 @@ def refresh_cert_images(text):
         repository, old_digest = match.groups()
         if repository.endswith("-controller"):
             continue
-        digest = run("skopeo", "inspect", "--format", "{{.Digest}}", f"docker://{repository}:{version}")
+        digest = run("skopeo", "--override-os", "linux", "--override-arch", "amd64",
+                     "inspect", "--no-creds", "--format", "{{.Digest}}", f"docker://{repository}:{version}")
         if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
             raise ValueError(f"invalid registry digest for {repository}")
         text = text.replace(match.group(0), f'image "{repository}" "{digest}"')
@@ -440,6 +449,19 @@ chart = lib.helm.downloadHelmChart {
   version = chartVersion; inherit chartHash;
 };'''
     assert [(repo, chart, version) for _, repo, chart, version in charts(text)] == [("oci://example.test/charts", "example", "1.2.3")]
+    inherited = '''version = "v1.21.3";
+chart = lib.helm.downloadHelmChart {
+  repo = "oci://quay.io/jetstack/charts"; chart = "cert-manager";
+  inherit version; chartHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+};'''
+    assert [(repo, chart, version) for _, repo, chart, version in charts(inherited)] == [
+        ("oci://quay.io/jetstack/charts", "cert-manager", "v1.21.3")]
+    try:
+        list(charts('version = "other";\n' + inherited))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("ambiguous inherited chart owner accepted")
     new = "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="
     assert field(replace_hash(text, field(text, "chartHash"), new), "chartHash") == new
     assert GITHUB.findall('url = "github:owner/repo/abc";') == ['"github:owner/repo/abc"']

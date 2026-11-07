@@ -196,7 +196,7 @@ def plan(args):
             repository, reference = image_reference(image)
             architecture = "arm64" if system == "aarch64-linux" else "amd64"
             digest = capture("skopeo", "--override-os", "linux", "--override-arch", architecture,
-                             "inspect", "--format", "{{.Digest}}", "docker://" + reference).strip()
+                             "inspect", "--no-creds", "--format", "{{.Digest}}", "docker://" + reference).strip()
             if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
                 raise ValueError("registry did not return a valid sha256 digest")
             if "@" in reference and digest != reference.rsplit("@", 1)[1]:

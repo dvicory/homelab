@@ -225,6 +225,9 @@ in
         after 90 days. No findings/advisory DB is reused as a security verdict.
         Source-local scanner configuration and ignore files are not loaded;
         the retained Grype policy declares no repository-supplied ignore rules.
+        Image-tag digest lookups are explicitly anonymous and ignore ambient
+        container authentication files. Private-registry support needs an
+        explicit credential design rather than inherited host authentication.
 
         Native completion compares CSV/CDX identities and dependency coverage
         with the selected root's exact recursive closure. Alternative derivation
@@ -259,6 +262,8 @@ in
         write-authorized publisher consumes validated patches, never candidate
         Nix or Renovate, and uses exact leases within its own branch namespace.
         It never merges/deploys or rewrites verified release receipts.
+        Chart updates reject ambiguous inherited version bindings rather than
+        selecting an unrelated owner's version.
 
         Arbitrary immutable source SHAs remain mapped but cannot safely follow
         default HEAD automatically; their owner must declare an authorized
