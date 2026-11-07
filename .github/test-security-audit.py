@@ -24,6 +24,59 @@ assert list(audit.images({"spec": {"containers": [{"name": "main", "image": "reg
                           "metadata": {"name": "not-an-image"}})) == [("registry/app@sha256:abc", "/spec/containers/main/image")]
 assert audit.identity("same artifact") != audit.identity("another artifact")
 
+def check_sarif_projection():
+    rule = {"id": "CVE-same", "helpUri": "https://example.test/CVE-same",
+            "properties": {"security-severity": "8.0"}}
+    results = [
+        {"ruleId": rule["id"], "ruleIndex": 0, "message": {"text": "detector evidence"},
+         "locations": [{"physicalLocation": {
+             "artifactLocation": {"uri": path}, "region": {"startLine": 7}},
+             "message": {"text": path + ": dependency@1.0"}}],
+         "partialFingerprints": {"primaryLocationLineHash": "old detector line", "detector/v1": path},
+         "fingerprints": {"detector/v1": "old detector identity"},
+         "properties": {"package": "dependency", "version": version}}
+        for path, version in (("bin/one", "1.0"), ("bin/two", "2.0"), ("/first/language.cdx.json", "3.0"))]
+    raw = {"runs": [{"tool": {"driver": {"name": "detector", "rules": [rule]}}, "results": results}]}
+    row = {"id": "stable-declaration-slot", "location": "flake.lock"}
+    for inventory in (None, Path("/first/language.cdx.json")):
+        projected = audit.project_sarif(copy.deepcopy(raw), row, inventory)
+        rerun = audit.project_sarif(copy.deepcopy(raw), row, inventory)
+        relocated = copy.deepcopy(raw)
+        for finding in relocated["runs"][0]["results"]:
+            finding["message"]["text"] = "updated advisory wording"
+            location = finding["locations"][0]
+            location["physicalLocation"]["region"]["startLine"] = 99
+            location["physicalLocation"]["artifactLocation"]["uri"] = location["physicalLocation"]["artifactLocation"]["uri"].replace("/first/", "/elsewhere/")
+            location["message"]["text"] = location["message"]["text"].replace("/first/", "/elsewhere/")
+        relocated["runs"][0]["results"].reverse()
+        relocated = audit.project_sarif(relocated, row, Path("/elsewhere/language.cdx.json") if inventory else None)
+        # GitHub ignores custom partial keys: uniqueness must survive using only
+        # ruleId + the common physical declaration (and its common line hash).
+        def consumer_ids(document):
+            return {(finding["ruleId"], finding["locations"][0]["physicalLocation"]["artifactLocation"]["uri"])
+                    for finding in document["runs"][0]["results"]}
+        assert len(consumer_ids(projected)) == len(results)
+        assert projected == rerun
+        assert consumer_ids(projected) == consumer_ids(relocated)
+        run = projected["runs"][0]
+        assert run["tool"]["driver"]["rules"][0] == rule
+        for original, finding in zip(results, run["results"]):
+            descriptor = run["tool"]["driver"]["rules"][finding["ruleIndex"]]
+            assert descriptor["id"] == finding["ruleId"] and descriptor["helpUri"] == rule["helpUri"]
+            assert descriptor["properties"]["security-severity"] == "8.0"
+            assert finding["properties"]["inventoryRuleId"] == rule["id"]
+            assert finding["properties"]["inventoryLocations"] == original["locations"]
+            assert finding["properties"]["inventoryFingerprints"] == {
+                key: original[key] for key in ("fingerprints", "partialFingerprints")}
+            assert "fingerprints" not in finding
+            assert set(finding["partialFingerprints"]) == {"homelab/component/v1"}
+            assert finding["locations"][0]["physicalLocation"]["region"] == {"startLine": 1}
+            assert finding["message"]["text"].startswith(original["message"]["text"])
+
+
+check_sarif_projection()
+
+
 inventory = {
     "x86_64-linux": {"nativeSupported": True, "limits": ["not deployed"],
         "roots": [{"target": "nixosConfigurations.any-new-guest.config.system.build.toplevel",

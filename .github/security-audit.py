@@ -5,6 +5,7 @@ plan evaluates declarations; collect produces immutable reusable inventories;
 scan refreshes advisory data without evaluating, building, or contacting hosts.
 """
 import argparse
+import copy
 from datetime import datetime, timezone
 import errno
 import hashlib
@@ -297,6 +298,53 @@ def collect(args):
     security_artifacts.seal(directory, row["inventoryKey"])
 
 
+def project_sarif(sarif, row, inventory_path=None):
+    """Attribute inventory findings without impersonating source-line hashes."""
+    for sarif_run in sarif["runs"]:
+        rules = sarif_run["tool"]["driver"]["rules"]
+        originals = {rule["id"]: rule for rule in rules}
+        projected = {}
+        for finding in sarif_run.get("results", []):
+            original = finding.get("locations", [])
+            properties = finding.setdefault("properties", {})
+            rule_id = finding["ruleId"]
+            if inventory_path is None:
+                component = [properties["package"], properties["version"]]
+            else:
+                # Trivy OS results name the input SBOM, not an installed file.
+                # Its staging prefix must not become part of component identity.
+                component = [
+                    [location["physicalLocation"]["artifactLocation"]["uri"],
+                     location.get("message", {}).get("text", "")]
+                    for location in original]
+                component = [[value.replace(str(inventory_path), inventory_path.name)
+                              for value in location] for location in component]
+            semantic = hashlib.sha256(json.dumps(
+                [row["id"], rule_id, component], sort_keys=True).encode()).hexdigest()
+            # GitHub ignores custom partial keys. Qualify the rule instead so
+            # same-CVE components at one declaration remain separate alerts.
+            qualified = rule_id + "/component/" + semantic
+            if qualified not in projected:
+                rule = copy.deepcopy(originals[rule_id])
+                rule["id"] = qualified
+                rule.setdefault("properties", {})["inventoryRuleId"] = rule_id
+                projected[qualified] = len(rules)
+                rules.append(rule)
+            finding["ruleId"] = qualified
+            finding["ruleIndex"] = projected[qualified]
+            properties["inventoryRuleId"] = rule_id
+            properties["inventoryLocations"] = original
+            properties["inventoryFingerprints"] = {
+                key: finding.pop(key) for key in ("fingerprints", "partialFingerprints") if key in finding}
+            finding["partialFingerprints"] = {"homelab/component/v1": semantic}
+            locations = ([properties["package"] + "@" + properties["version"]] if inventory_path is None else
+                         [location.get("message", {}).get("text", "") for location in original])
+            finding["message"]["text"] += "\nInventory component: " + "; ".join(filter(None, locations))
+            finding["locations"] = [{"physicalLocation": {
+                "artifactLocation": {"uri": row["location"]}, "region": {"startLine": 1}}}]
+    return sarif
+
+
 def scan(args):
     directory = Path(args.directory).resolve()
     output = Path(args.output).resolve()
@@ -319,6 +367,8 @@ def scan(args):
             "--format", "sarif", "--out", str(output / "native.sarif"),
             "--evidence-out", str(output / "native-evidence.json"),
             "--sarif-location", row["location"])
+        path = output / "native.sarif"
+        save(path, project_sarif(json.loads(path.read_text()), row))
     for name in ("language", "archive"):
         sbom = directory / f"{name}.cdx.json"
         if not sbom.exists():
@@ -327,21 +377,8 @@ def scan(args):
             "--output", str(output / f"{name}.json"), str(sbom))
         run("trivy", "--config", "", "convert", "--format", "sarif",
             "--output", str(output / f"{name}.sarif"), str(output / f"{name}.json"))
-        # Attach upstream alerts to their responsible declaration, not a cache
-        # path. Original component paths remain in JSON and immutable SBOMs.
-        sarif = json.loads((output / f"{name}.sarif").read_text())
-        for sarif_run in sarif["runs"]:
-            for finding in sarif_run.get("results", []):
-                original = finding.get("locations", [])
-                component = json.dumps([row["id"], finding["ruleId"], original], sort_keys=True)
-                # Different packages/binaries must not collapse onto the same
-                # declaration line after source attribution.
-                finding.setdefault("partialFingerprints", {})["primaryLocationLineHash"] = hashlib.sha256(component.encode()).hexdigest()
-                finding.setdefault("properties", {})["inventoryLocations"] = original
-                locations = [location.get("message", {}).get("text", "") for location in original]
-                finding["message"]["text"] += "\nInventory component: " + "; ".join(filter(None, locations))
-                finding["locations"] = [{"physicalLocation": {"artifactLocation": {"uri": row["location"]}, "region": {"startLine": 1}}}]
-        save(output / f"{name}.sarif", sarif)
+        path = output / f"{name}.sarif"
+        save(path, project_sarif(json.loads(path.read_text()), row, sbom))
     save(output / "provenance.json", dict(row, advisoryRefreshAt=datetime.now(timezone.utc).isoformat(),
         nativeRefresh="Grype CPE matching; no Nix-unsupported OSV, Vulnix or patch applicability suppression",
         trivyDatabase=capture("trivy", "--config", "", "--version"),
