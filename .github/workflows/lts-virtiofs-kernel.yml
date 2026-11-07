@@ -1,0 +1,75 @@
+name: Disposable LTS virtiofs kernel compilation
+
+on:
+  push:
+    branches:
+      - experiment/virtiofs-lts-6-18-62-hosted
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Check out the frozen compiler target
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare disposable Nix storage
+        run: |
+          free_space=$(df -m --output=avail /mnt | tail -n 1)
+          disk_size=$((free_space - 1024))
+          test "$disk_size" -gt 16384
+          sudo fallocate -l "${disk_size}M" /mnt/nix.img
+          loop_dev=$(sudo losetup --find --show /mnt/nix.img)
+          sudo mkfs.btrfs -L nix --nodiscard "$loop_dev"
+          sudo mkdir -p /nix
+          sudo mount "$loop_dev" /nix -o noatime,nodiscard,compress=zstd:1,space_cache=v2
+          sudo mkdir -p /nix/build
+          sudo chattr +C /nix/build
+          free -h
+          df -h / /nix
+      - name: Install Nix
+        uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+        with:
+          github_access_token: ${{ github.token }}
+          extra_nix_config: |
+            build-dir = /nix/build
+            max-jobs = 1
+            cores = 4
+            builders =
+      - name: Create runner-owned artifact storage after installation
+        run: sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /nix/qualification
+      - name: Configure the existing public caches
+        run: |
+          {
+            printf 'NIX_CONFIG<<EOF\n%s\n' "${NIX_CONFIG:-}"
+            nix eval --raw --file modules/nix/caches.nix --apply '
+              module:
+              let settings = module.flake.modules.generic.nix-common.nix.settings;
+              in "extra-substituters = ${builtins.concatStringsSep " " settings.extra-substituters}\n"
+                + "extra-trusted-public-keys = ${builtins.concatStringsSep " " settings.extra-trusted-public-keys}\n"
+            '
+            printf 'EOF\n'
+          } >> "$GITHUB_ENV"
+      - name: Build the exact previously admitted kernel
+        run: |
+          set -euo pipefail
+          drv=$(nix eval --raw --file .github/lts-virtiofs-kernel.nix --apply 'kernel: kernel.drvPath')
+          test "$drv" = /nix/store/wq6fwwa4vdsj5wvz66sm6fbp35b036wp-linux-6.18.62.drv
+          mkdir -p /nix/qualification/kernel-evidence
+          printf '%s\n' "$GITHUB_SHA" > /nix/qualification/kernel-evidence/source-commit
+          printf '%s\n' "$drv" > /nix/qualification/kernel-evidence/kernel-drv
+          nix derivation show "$drv" > /nix/qualification/kernel-evidence/derivation.json
+          nix build --no-link --json "$drv^*" > /nix/qualification/kernel-evidence/build.json
+          nix copy --to file:///nix/qualification/kernel-cache "$drv^*"
+      - name: Preserve the kernel binary cache and provenance
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: frozen-lts-kernel-${{ github.run_id }}
+          path: /nix/qualification
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
