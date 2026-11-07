@@ -239,6 +239,8 @@
                   raise AssertionError(f"no queryless edge access log entry for {path}")
 
               start_all()
+              # The backdoor can be ready before normal client network setup.
+              client.wait_for_unit("multi-user.target")
               origin.wait_for_unit("nginx.service")
               remote.wait_for_unit("nginx.service")
               home.wait_for_unit("nginx.service")
