@@ -107,7 +107,8 @@ in
           helm.releases.argocd = {
             chart = charts.argoproj.argo-cd;
             values = {
-              global.image.tag = "v3.5.2@sha256:e2aadfae709d904e87f46ba4aa49601d827b3022db22cd4d03aae816a2e7097b";
+              # Same-minor security fixes: GHSA-fmxq-cgp8-87wp and GHSA-j6cw-g6p4-7hch.
+              global.image.tag = "v3.5.6@sha256:8e5cc5bb008df8a09dba439462e58c94c55b7735888d3ebde0c25fc05e4e5335";
               redis.image.repository = "docker.io/library/redis";
               redis.image.tag = "8.6.4-alpine@sha256:2cc044fc5a07c9b701f8f1255a309ae9ad7856e694ac03513bf3648c01e40763";
               nameOverride = "argocd";

@@ -134,7 +134,63 @@ let
   ];
   kanidmDeployment = findObject normalObjects "Deployment" namespace "kanidm";
   kanidmService = findObject normalObjects "Service" namespace "kanidm";
-  serverConfig = (findObject normalObjects "ConfigMap" namespace "kanidm-config").data."server.toml";
+  exactlyOne =
+    description: values:
+    assert lib.assertMsg (builtins.length values == 1) "Expected one ${description}";
+    builtins.head values;
+  mountedServerConfig =
+    objects:
+    let
+      deployment = exactlyOne "Kanidm Deployment" (
+        lib.filter (
+          object:
+          object.kind == "Deployment"
+          && object.metadata.name == "kanidm"
+          && (object.metadata.namespace or "") == namespace
+        ) objects
+      );
+      pod = deployment.spec.template.spec;
+      container = exactlyOne "Kanidm container" (
+        lib.filter (container: container.name == "kanidm") pod.containers
+      );
+      mount = exactlyOne "mounted Kanidm server configuration" (
+        lib.filter (mount: lib.elem mount.mountPath container.args) container.volumeMounts
+      );
+      volume = exactlyOne "Kanidm configuration volume" (
+        lib.filter (volume: volume.name == mount.name) pod.volumes
+      );
+      configMap = exactlyOne "mounted Kanidm ConfigMap" (
+        lib.filter (
+          object:
+          object.kind == "ConfigMap"
+          && object.metadata.name == volume.configMap.name
+          && (object.metadata.namespace or "") == namespace
+        ) objects
+      );
+      key =
+        if volume.configMap ? items then
+          (exactlyOne "Kanidm server configuration key" (
+            lib.filter (item: item.path == mount.subPath) volume.configMap.items
+          )).key
+        else
+          mount.subPath;
+    in
+    assert lib.assertMsg (
+      !(volume.configMap.optional or false)
+    ) "Kanidm server configuration must be required";
+    {
+      inherit (configMap.metadata) name;
+      inherit key;
+      content = configMap.data.${key};
+    };
+  parsedServerConfig = objects: builtins.fromTOML (mountedServerConfig objects).content;
+  localBackupDisabled = objects: !(parsedServerConfig objects ? online_backup);
+  phaseObjects = map (rendered: rendered.applications.identity.objects) [
+    initial
+    provisioning
+    normal
+  ];
+  serverConfig = parsedServerConfig normalObjects;
   # NetworkPolicies are additive, regardless of name or application owner.
   admissionObjects =
     identityRendered: gatewayRendered:
@@ -256,9 +312,56 @@ let
       ) rule.verbs
     ) role.rules;
   failures = lib.filterAttrs (_: value: !value) {
+    server-local-backup-disabled = lib.all localBackupDisabled phaseObjects;
+    # Exercise the real mounted configuration in every lifecycle phase.
+    server-settings-fixtures = lib.all (
+      objects:
+      let
+        mounted = mountedServerConfig objects;
+        withContent =
+          content:
+          map (
+            object:
+            if
+              object.kind == "ConfigMap"
+              && object.metadata.name == mounted.name
+              && (object.metadata.namespace or "") == namespace
+            then
+              object
+              // {
+                data = object.data // {
+                  ${mounted.key} = content;
+                };
+              }
+            else
+              object
+          ) objects;
+        harmless = withContent (
+          lib.replaceStrings
+            [ ''ldapbindaddress = "0.0.0.0:${toString directory.port}"'' ]
+            [ ''ldapbindaddress="0.0.0.0:${toString directory.port}" # unchanged listener'' ]
+            mounted.content
+          + "\n# [online_backup]\n# schedule = \"@daily\"\n# versions = 3\n"
+        );
+      in
+      localBackupDisabled harmless
+      && (parsedServerConfig harmless).ldapbindaddress == "0.0.0.0:${toString directory.port}"
+      &&
+        lib.all
+          (
+            table:
+            !localBackupDisabled (
+              withContent (mounted.content + "\n${table}\nschedule=\"@daily\"\nversions=3\n")
+            )
+          )
+          [
+            "[online_backup]"
+            "[ online_backup ]"
+          ]
+    ) phaseObjects;
     # Kanidm serves LDAPS on the declared directory port, on its Service.
     directory-listens =
-      lib.hasInfix ''ldapbindaddress = "0.0.0.0:${toString directory.port}"'' serverConfig
+      serverConfig.ldapbindaddress == "0.0.0.0:${toString directory.port}"
       && builtins.elem {
         name = "ldaps";
         containerPort = directory.port;

@@ -160,7 +160,7 @@ async function configure() {
     }
   }
 
-  // The Seerr library GET mutates enabled flags. Discover the ID from Jellyfin first.
+  // Discover the declared IDs from Jellyfin before mutating Seerr's library flags.
   const jellyfinUrl = (jellyfinSettings.useSsl ? 'https://' : 'http://') +
     jellyfinSettings.ip + ':' + jellyfinSettings.port + jellyfinSettings.urlBase;
   const configuredJellyfin = await request('/settings/jellyfin');
@@ -179,15 +179,34 @@ async function configure() {
   const selected = declaredLibraries.map(library => {
     const folder = one(folders?.Items, item => item.Name === library.name && item.Type === 'CollectionFolder' &&
       item.CollectionType === library.collectionType, library.name + ' library');
-    if (typeof folder?.Id !== 'string' || !folder.Id || folder.Id.includes(',')) {
+    if (typeof folder?.Id !== 'string' || !folder.Id) {
       throw new Error('Configured ' + library.name + ' library not found or invalid');
     }
     if (folders.Items.filter(item => item.Id === folder.Id).length !== 1) throw new Error('Ambiguous ' + library.name + ' library ID');
     return { ...library, id: folder.Id };
   });
   const ids = selected.map(library => library.id);
-  // enable takes a comma-separated list; Jellyfin IDs never contain commas.
-  const enabled = await request('/settings/jellyfin/library?sync=true&enable=' + encodeURIComponent(ids.join(',')));
+  // Seerr 3.5 separates discovery from flag updates; library GETs are read-only.
+  const discovered = await request('/settings/jellyfin/library/sync', 'POST');
+  for (const library of selected) {
+    const found = one(discovered, item => item.id === library.id, library.name + ' library');
+    if (found?.name !== library.name || found.type !== seerrType[library.collectionType]) {
+      throw new Error('Seerr did not discover the configured ' + library.name + ' library');
+    }
+  }
+  for (const library of discovered) {
+    if (typeof library.id !== 'string' || !library.id || typeof library.enabled !== 'boolean') {
+      throw new Error('Unsupported Seerr library');
+    }
+    const enabled = ids.includes(library.id);
+    if (library.enabled !== enabled) {
+      const updated = await request('/settings/jellyfin/library/' + encodeURIComponent(library.id), 'PUT', { enabled });
+      if (updated?.id !== library.id || updated.enabled !== enabled) {
+        throw new Error('Seerr did not update the configured library flag');
+      }
+    }
+  }
+  const enabled = await request('/settings/jellyfin/library');
   for (const library of selected) {
     const active = one(enabled, item => item.id === library.id, 'enabled ' + library.name + ' library');
     if (active?.name !== library.name || active.type !== seerrType[library.collectionType] || active.enabled !== true) {

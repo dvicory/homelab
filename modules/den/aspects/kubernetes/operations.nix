@@ -136,6 +136,13 @@ in
         multi-lowerdir mount and selects `userxattr` with `NeedsUserXAttr`, as
         the runtime snapshotter does. This does not grant host capabilities,
         make the Incus guest privileged, or select a storage fallback.
+        Its bundled cAdvisor backports the released
+        [ZFS statistics correction](https://github.com/google/cadvisor/commit/0e107a38f5941b558c03ee3572906632a8198ae8):
+        a visible but unusable `/dev/zfs` must not erase rootfs capacity.
+        If ZFS-specific queries cannot run, existing VFS `statfs` reports the
+        mounted filesystem's real capacity and inodes. This is statistics
+        collection, not a snapshotter change; no host ZFS device authority or
+        administration tools are granted to the guest.
         The native API fixture builds its server and airgap inputs from the
         evaluated compute K3s package; its Secret reconciler still requires
         exact client/server versions. A privileged Docker API fixture or

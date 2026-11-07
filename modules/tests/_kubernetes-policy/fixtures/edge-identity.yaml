@@ -6,7 +6,7 @@ policy: edge-identity
 policyFile: edge-identity.yaml
 rules:
   admission-candidates: [provisioning-serviceaccount, provisioning-rbac-postsync, provisioning-secret-role, provisioning-secret-binding,
-    administrator-membership, identity-data-deployment, identity-data-claim, identity-data-volume, identity-backup-absent,
+    administrator-membership, identity-data-deployment, identity-data-claim, identity-data-volume,
     oidc-backend, oidc-system-pki, oidc-reference-grant, provisioner-system-pki, route-inventory, route-domain-placement,
     request-header-sanitizer, route-timeouts, backend-tls, client-traffic-origin, private-origin-isolation, gateway-native-origin,
     proxy-native-origin, gateway-class, gateway-controller-image, gateway-proxy-image, controller-config-pinned-images,
@@ -33,7 +33,6 @@ positive:
     # Kanidm owns its port-specific ingress; no all-port Gateway policy is rendered.
     networking.k8s.io/v1/NetworkPolicy/jellyfin/gateway-jellyfin-backend-ingress: [backend-isolation-shape]
     v1/ConfigMap/gateway/envoy-gateway-config: [controller-config-pinned-images]
-    v1/ConfigMap/identity/kanidm-config: [identity-backup-absent]
     v1/ConfigMap/verification/verification-bundle: [identity-populations, administrator-publication-atomic, native-idm-population,
       seerr-publication, route-population, route-service-grant-joins, backend-tls-population, origin-populations,
       gateway-populations, backend-exact-isolation, effective-ingress-authority]
@@ -274,10 +273,6 @@ scenarios:
   mutate: del(.bundle.resources[] | select(.object.kind == "PersistentVolumeClaim" and .object.metadata.name ==
     "identity-kanidm"))
   fail: [native-idm-population]
-- name: identity-active-backup-rejected
-  base: v1/ConfigMap/identity/kanidm-config
-  mutate: .data["server.toml"] = "version = \"2\"\n[online_backup]\nschedule = \"@daily\"\nversions = 3\n"
-  fail: [identity-backup-absent]
 - name: oidc-system-pki-replaced
   base: gateway.networking.k8s.io/v1/BackendTLSPolicy/identity/kanidm-oidc-tls
   mutate: .spec.validation.wellKnownCACertificates = "Private"

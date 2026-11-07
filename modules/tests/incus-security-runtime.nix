@@ -7,6 +7,13 @@
         # Production's exact package set, independent of the candidate root.
         baseline = import ./_security-baseline.nix { inherit system; };
         selected = inputs.self.nixosConfigurations.hvn-hyp1.config.virtualisation.incus;
+        identity = package: client: ui: {
+          package = toString package;
+          client = toString client;
+          ui = toString ui;
+          daemon_version = lib.removeSuffix ".0" package.version;
+          client_version = lib.removeSuffix ".0" client.version;
+        };
         busybox = pkgs.busybox;
         closure = pkgs.closureInfo { rootPaths = [ busybox ]; };
         image = pkgs.runCommand "incus-security-image.tar.gz" { } ''
@@ -34,6 +41,7 @@
               incus = {
                 enable = true;
                 package = baseline.incus;
+                clientPackage = baseline.incus.client;
                 ui.enable = true;
                 ui.package = baseline.incus-ui-canonical;
                 preseed = {
@@ -68,13 +76,23 @@
             ];
             specialisation.security-update.configuration.virtualisation.incus = {
               package = lib.mkForce selected.package;
+              clientPackage = lib.mkForce selected.clientPackage;
               ui.package = lib.mkForce selected.ui.package;
             };
           };
           testScript = ''
+            import json
             image = "${image}"
-            baseline_version = "${baseline.incus.version}"
-            selected_package = "${selected.package}"
+            baseline_identity = json.loads(${
+              builtins.toJSON (
+                builtins.toJSON (identity baseline.incus baseline.incus.client baseline.incus-ui-canonical)
+              )
+            })
+            selected_identity = json.loads(${
+              builtins.toJSON (
+                builtins.toJSON (identity selected.package selected.clientPackage selected.ui.package)
+              )
+            })
             ${builtins.readFile ./incus-security-runtime.py}
           '';
         };

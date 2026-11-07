@@ -14,8 +14,8 @@ let
   };
   image = {
     repository = "ghcr.io/linuxserver/prowlarr";
-    tag = "2.5.2.5491-ls159";
-    digest = "sha256:c7502a75b021d964481c129c84590b9cbc40f83aadd4e553f173871bc0deaa3c";
+    tag = "2.7.0.5723-ls167";
+    digest = "sha256:431d7efebcef466e56adaa40a7a2fa2b0e85159a037b8bf465eaadbf0cf5bedf";
   };
   retainedEntry =
     computeResources: key:

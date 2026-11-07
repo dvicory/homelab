@@ -524,6 +524,7 @@ def main():
         else:
             raise RuntimeError("readiness-timeout")
         version = json.loads(kubectl("get", "--raw=/version").stdout)
+        report["serverGitVersion"] = version["gitVersion"]
         if version["gitVersion"] != settings["serverVersion"]:
             raise ValueError("target-version-mismatch")
         phase = "disposable-kubeconfig"

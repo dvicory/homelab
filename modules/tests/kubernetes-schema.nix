@@ -1,12 +1,26 @@
-{ lib, rootPath, ... }:
+{
+  config,
+  lib,
+  rootPath,
+  self,
+  ...
+}:
 {
   perSystem =
     { pkgs, ... }:
     let
       manifests = rootPath + "/generated/manifests/prod-home";
+      # Match the API fixture's selected Linux guest package, even on Darwin.
+      configurations = import ./_compute-configurations.nix {
+        inherit self lib;
+        system = "x86_64-linux";
+        hostName = config.den.clusters.prod-home.hostName;
+      };
+      k3sPackage = configurations.guest.config.services.k3s.package;
+      kubernetesVersion = lib.head (lib.splitString "+" k3sPackage.version);
       python = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
       helper = ./_kubernetes-schema.py;
-      registryRevision = "8df8a883b68a24a104b4a9e43c1288090ae60b3b";
+      registryRevision = "a6f9a32d2ccb64b6e4f5b41419b9c2e8ee0cce18";
       schemaInputs = builtins.fromJSON (builtins.readFile ./_kubernetes-schema-inputs.json);
       converter = pkgs.fetchurl {
         # The commit behind upstream v0.8.0, not a moving tag or local fork.
@@ -16,10 +30,13 @@
       copyInput =
         input:
         let
-          source = pkgs.fetchurl {
-            url = "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/${registryRevision}/${input.path}";
-            inherit (input) hash;
-          };
+          source =
+            assert lib.assertMsg (lib.hasPrefix "v${kubernetesVersion}-" input.path)
+              "Pinned Kubernetes schemas must match the selected K3s package.";
+            pkgs.fetchurl {
+              url = "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/${registryRevision}/${input.path}";
+              inherit (input) hash;
+            };
           apiParts = lib.splitString "/" (input.apiVersion or "");
           filename =
             if input ? kind then
@@ -29,12 +46,13 @@
         in
         "cp ${source} \"$out/${filename}\"";
       schemas =
-        pkgs.runCommand "prod-home-kubernetes-schemas-1.35.8"
+        pkgs.runCommand "prod-home-kubernetes-schemas-${kubernetesVersion}"
           {
             nativeBuildInputs = [ python ];
           }
           ''
             mkdir -p "$out"
+            printf '%s\n' ${lib.escapeShellArg kubernetesVersion} > "$out/kubernetes-version"
             ${lib.concatMapStringsSep "\n" copyInput schemaInputs}
             ${python}/bin/python ${helper} derive \
               --manifests ${manifests} --schemas "$out" --converter ${converter}
