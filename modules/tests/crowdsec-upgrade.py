@@ -1,6 +1,15 @@
+import array
+import faulthandler
+import fcntl
 import json
 import os
 import shlex
+import signal
+import sys
+import termios
+import threading
+import time
+from pathlib import Path
 
 
 data_dir = "/persist/crowdsec/data"
@@ -127,7 +136,94 @@ def cold_boot(system, version):
     assert "Bouncer registered but API key is not present" in registration_log, registration_log
 
 
-start_all()
+# Diagnostic branch only: preserve the parallel launcher and its global timeout.
+# Never read a child's stdout here: that would compete with the driver's reader.
+def startup_snapshot(phase):
+    def read_proc(path):
+        try:
+            with open(path) as source:
+                return source.read(32768)
+        except OSError as error:
+            return f"<{type(error).__name__}>"
+
+    def pending_stdout(machine):
+        if machine.process is None or machine.process.stdout is None:
+            return None
+        pending = array.array("i", [0])
+        try:
+            fcntl.ioctl(machine.process.stdout.fileno(), termios.FIONREAD, pending)
+            return pending[0]
+        except (OSError, ValueError) as error:
+            return f"<{type(error).__name__}>"
+
+    processes = []
+    for proc in sorted(Path("/proc").glob("[0-9]*"))[:128]:
+        status = {}
+        for line in read_proc(proc / "status").splitlines():
+            key, _, value = line.partition(":")
+            if key in ("Name", "State", "PPid", "Threads", "VmRSS"):
+                status[key] = value.strip()
+        tasks = [
+            {"tid": task.name, "wchan": read_proc(task / "wchan"),
+             "stat": read_proc(task / "stat")}
+            for task in sorted((proc / "task").glob("[0-9]*"))[:32]
+        ]
+        fds = {}
+        for fd in sorted((proc / "fd").glob("*"))[:32]:
+            try:
+                fds[fd.name] = os.readlink(fd)
+            except OSError as error:
+                fds[fd.name] = f"<{type(error).__name__}>"
+        processes.append({"pid": proc.name, "status": status, "tasks": tasks, "fds": fds})
+    print("VM_STARTUP " + json.dumps({
+        "phase": phase,
+        "elapsed": time.monotonic() - startup_started,
+        "python": sys.version,
+        "kernel": os.uname().release,
+        "threads": [
+            {"name": thread.name, "ident": thread.ident, "native_id": thread.native_id}
+            for thread in threading.enumerate()
+        ],
+        "machines": [
+            {"name": machine.name,
+             "pid": machine.process.pid if machine.process is not None else None,
+             "returncode": machine.process.returncode if machine.process is not None else None,
+             "monitor": machine.monitor is not None,
+             "shell": machine.shell is not None,
+             "qmp": machine.qmp_client is not None,
+             "serial_thread": machine.serial_thread is not None,
+             "stdout_pending_bytes": pending_stdout(machine),
+             "booted": machine.booted}
+            for machine in machines_qemu
+        ],
+        "processes": processes,
+        "resources": {
+            path: read_proc(path) for path in (
+                "/proc/meminfo", "/proc/pressure/memory", "/proc/self/limits",
+                "/proc/self/cgroup", "/proc/net/unix",
+                "/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current",
+                "/sys/fs/cgroup/memory.events", "/sys/fs/cgroup/pids.max",
+                "/sys/fs/cgroup/pids.current",
+            )
+        },
+        "bounds": {"processes": 128, "tasksPerProcess": 32, "fdsPerProcess": 32,
+                   "bytesPerFile": 32768, "stallSnapshots": 1},
+    }), file=sys.stderr, flush=True)
+
+
+startup_started = time.monotonic()
+startup_snapshot("before-start-all")
+previous_alarm = signal.signal(signal.SIGALRM, lambda _signal, _frame: startup_snapshot("stalled-120s"))
+# The native watchdog dumps stacks even if Python cannot run the signal handler.
+faulthandler.dump_traceback_later(120, repeat=False)
+signal.alarm(120)
+try:
+    start_all()
+finally:
+    signal.alarm(0)
+    faulthandler.cancel_dump_traceback_later()
+    signal.signal(signal.SIGALRM, previous_alarm)
+startup_snapshot("after-start-all")
 old_system = fixture.succeed("readlink -f /run/current-system").strip()
 new_system = fixture.succeed(f"readlink -f {old_system}/specialisation/upgraded").strip()
 
