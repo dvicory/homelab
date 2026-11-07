@@ -154,11 +154,17 @@ location with `--staging-directory`. OCI archives are inventoried too.
 registry access. Reuse accepts only bounded, hash-verified inventory from
 this workflow's own default-branch producers; retained artifacts expire
 after 90 days. No findings/advisory DB is reused as a security verdict.
+Source-local scanner configuration and ignore files are not loaded;
+the retained Grype policy declares no repository-supplied ignore rules.
 
-Native completion also requires CSV/CDX output identities and dependency
-coverage to agree with the selected root's recursive Nix closure.
-Missing or unmatched outputs block sealing, reuse and scanning; a
-hash-valid partial SBOM is not a complete inventory.
+Native completion compares CSV/CDX identities and dependency coverage
+with the selected root's exact recursive closure. Alternative derivation
+claims require retained output-query evidence; the selected root stays
+bound to its derivation. Missing derived/versioned software blocks
+sealing, reuse and scanning. Raw unversioned paths remain in an explicit
+opaque ledger; `native-evidence.json` also lists missing versions/CPEs.
+These paths may contain application code with unknown CVE identities.
+Complete composite inventory is not complete CVE coverage or a clean verdict.
 
 Native CPE/name/version matches are candidates, not applicability
 decisions. SBOM rescans omit Vulnix and automatic patch suppression;
@@ -166,6 +172,8 @@ inspect retained patch CSV/evidence. Trivy adds supported-language/OCI
 matching, not native NixOS matching or call reachability. Missing binary
 main versions, bundled dependencies, dynamic downloads and Darwin are
 explicit limits; the existing actual-Go-binary audit remains.
+Referenced lockfiles, including source/test fixtures, do not establish
+that their dependency packages were built or are running.
 GitHub SARIF categories and full reports retain source/update ownership,
 fixed-version hints and provenance. Scan/report errors remain failures.
 

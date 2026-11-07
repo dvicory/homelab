@@ -227,7 +227,7 @@ def collect(args):
     directory.mkdir(parents=True, exist_ok=True)
     provenance = dict(row, schema=SCHEMA, collectedAt=datetime.now(timezone.utc).isoformat(),
                       sourceRevision=os.environ.get("GITHUB_SHA"), sbomnix=SBOMNIX,
-                      trivyVersion=capture("trivy", "--version"))
+                      trivyVersion=capture("trivy", "--config", "", "--version"))
     # Cache only complete inventories. Findings/databases are never cached here.
     if (directory / "complete.json").exists():
         security_artifacts.verify(directory, row["inventoryKey"], entry=row)
@@ -246,8 +246,8 @@ def collect(args):
             with tarfile.open(root) as archive:
                 is_image = any(member.name.lstrip("./") in ("manifest.json", "index.json") for member in archive)
             if is_image:
-                run("trivy", "image", "--input", str(root), "--format", "cyclonedx",
-                    "--output", str(directory / "archive.cdx.json"))
+                run("trivy", "--config", "", "image", "--ignorefile", "", "--input", str(root),
+                    "--format", "cyclonedx", "--output", str(directory / "archive.cdx.json"))
                 provenance["ociArchive"] = str(root)
         closure = json.loads(capture("nix", "path-info", "--json", "--json-format", "1", "--recursive", row["outPath"]))
         save(directory / "closure.json", closure)
@@ -265,6 +265,8 @@ def collect(args):
         provenance["stagingBudgetBytes"] = staging_bytes
         run("sbomnix", f"path:{row['sourcePath']}#{row['target']}", "--require-cpe-dictionary",
             "--cdx", str(directory / "native.cdx.json"), "--csv", str(directory / "native.csv"), "--spdx", "")
+        security_artifacts.record_native_evidence(directory, provenance,
+            lambda ref: capture("nix-store", "--query", "--outputs", ref).splitlines())
         # Trivy does not follow Nix references or symlinks. Present every exact
         # reference as ordinary directories, preserving symlinks but not following
         # them. Prefer hardlinks; protected store files/cross-device staging
@@ -282,13 +284,13 @@ def collect(args):
                 else:
                     stage_file(source, destination)
             # rootfs, not filesystem: upstream fs mode omits compiled Go binaries.
-            run("trivy", "rootfs", "--format", "cyclonedx", "--output",
-                str(directory / "language.cdx.json"), temporary)
+            run("trivy", "--config", "", "rootfs", "--ignorefile", "", "--format", "cyclonedx",
+                "--output", str(directory / "language.cdx.json"), temporary)
         provenance["state"] = "built"
         provenance["references"] = list(closure)
     else:
-        run("trivy", "image", "--platform", row["ociPlatform"], "--format", "cyclonedx", "--output",
-            str(directory / "language.cdx.json"), row["resolvedImage"])
+        run("trivy", "--config", "", "image", "--ignorefile", "", "--platform", row["ociPlatform"],
+            "--format", "cyclonedx", "--output", str(directory / "language.cdx.json"), row["resolvedImage"])
         provenance["state"] = "referenced"
     save(directory / "provenance.json", provenance)
     security_artifacts.seal(directory, row["inventoryKey"])
@@ -301,8 +303,12 @@ def scan(args):
     row = json.loads((directory / "provenance.json").read_text())
     security_artifacts.verify(directory, row["inventoryKey"])
     if row["kind"] == "nix":
-        # Require an update check, not a silently stale restored scanner DB.
-        os.environ.update(GRYPE_DB_AUTO_UPDATE="true", GRYPE_DB_REQUIRE_UPDATE_CHECK="true")
+        row["nativeCoverage"] = json.loads((directory / "native-evidence.json").read_text())["coverage"]
+        # Ignore source-local scanner configuration, not vulnerability findings.
+        policy = output / "grype-policy.yaml"
+        save(policy, {"ignore": []})
+        os.environ.update(GRYPE_CONFIG=str(policy), GRYPE_DB_AUTO_UPDATE="true",
+                          GRYPE_DB_REQUIRE_UPDATE_CHECK="true")
         run("grype", "db", "update")
         with (output / "grype-db.json").open("w") as stream:
             run("grype", "db", "status", "--output", "json", stdout=stream)
@@ -316,8 +322,10 @@ def scan(args):
         sbom = directory / f"{name}.cdx.json"
         if not sbom.exists():
             continue
-        run("trivy", "sbom", "--format", "json", "--output", str(output / f"{name}.json"), str(sbom))
-        run("trivy", "convert", "--format", "sarif", "--output", str(output / f"{name}.sarif"), str(output / f"{name}.json"))
+        run("trivy", "--config", "", "sbom", "--ignorefile", "", "--format", "json",
+            "--output", str(output / f"{name}.json"), str(sbom))
+        run("trivy", "--config", "", "convert", "--format", "sarif",
+            "--output", str(output / f"{name}.sarif"), str(output / f"{name}.json"))
         # Attach upstream alerts to their responsible declaration, not a cache
         # path. Original component paths remain in JSON and immutable SBOMs.
         sarif = json.loads((output / f"{name}.sarif").read_text())
@@ -335,9 +343,17 @@ def scan(args):
         save(output / f"{name}.sarif", sarif)
     save(output / "provenance.json", dict(row, advisoryRefreshAt=datetime.now(timezone.utc).isoformat(),
         nativeRefresh="Grype CPE matching; no Nix-unsupported OSV, Vulnix or patch applicability suppression",
-        trivyDatabase=capture("trivy", "--version"),
+        trivyDatabase=capture("trivy", "--config", "", "--version"),
         deployed="unobserved"))
     summary = f"### Security inventory `{row['id']}`\n\nSource: `{row['source']}`\n\nArtifact: `{row.get('outPath', row.get('resolvedImage'))}`\n\nUpdate owner: {row['update']}\n\nBuilt/referenced is not deployed. Native matches are candidates, not reachability or backport verdicts. Reusable native scans omit Vulnix/patch suppression; inspect native.csv and evidence before dismissal. Trivy is complementary language/OCI coverage, not native Nix matching. Full findings, fixed-version hints, inventory and database provenance are attached as artifacts.\n"
+    if row["kind"] == "nix":
+        coverage = row["nativeCoverage"]
+        summary += (f"\nComposite native closure: {coverage['closurePathCount']} paths; "
+                    f"{coverage['representedPathCount']} represented by upstream components; "
+                    f"{coverage['opaquePathCount']} opaque raw paths; "
+                    f"{coverage['unversionedPathCount']} represented paths without versions; "
+                    f"{coverage['noCpePathCount']} represented paths without CPEs. "
+                    f"{coverage['warning']} Exact affected paths are in inventory/native-evidence.json.\n")
     (output / "summary.md").write_text(summary)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:

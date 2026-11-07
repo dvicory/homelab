@@ -158,9 +158,93 @@ def check_real_native_proof(path):
             (directory / "native.csv").write_text(sample["raw_csv"])
             audit.save(directory / "language.cdx.json", {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1, "components": []})
             audit.save(directory / "provenance.json", row)
+            audit.security_artifacts.record_native_evidence(directory, row,
+                lambda ref: (_ for _ in ()).throw(AssertionError("tiny proof queried the original store")))
             audit.security_artifacts.seal(directory, row["inventoryKey"])
             audit.security_artifacts.verify(directory, row["inventoryKey"])
             print("Actual sbomnix runtime inventory admitted:", sample["root"])
+
+
+def check_composite_native(row):
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = Path(temporary)
+        native, closure, native_csv = native_fixture(row)
+        opaque = "/nix/store/" + "d" * 32 + "-source"
+        root = row["outPath"]
+        closure[root]["deriver"] = "/nix/store/" + "e" * 32 + "-alternative.drv"
+        closure[root]["references"].append(opaque)
+        closure[opaque] = {"narSize": 1, "narHash": "sha256-test", "deriver": None, "references": []}
+        provenance = dict(row, references=list(closure))
+        audit.save(directory / "native.cdx.json", native)
+        audit.save(directory / "closure.json", closure)
+        audit.save(directory / "provenance.json", provenance)
+        audit.save(directory / "language.cdx.json", {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1, "components": []})
+        (directory / "native.csv").write_text(native_csv)
+        with patch.object(audit, "capture", return_value=root + "\n") as query:
+            audit.security_artifacts.record_native_evidence(directory, provenance,
+                lambda ref: audit.capture("nix-store", "--query", "--outputs", ref).splitlines())
+            query.assert_called_once_with("nix-store", "--query", "--outputs", row["drvPath"])
+        audit.security_artifacts.seal(directory, row["inventoryKey"])
+        evidence = json.loads((directory / "native-evidence.json").read_text())
+        assert evidence["coverage"]["opaquePaths"] == [opaque]
+        assert evidence["coverage"]["opaquePathCount"] == 1
+        assert evidence["coverage"]["noCpePathCount"] == 1
+        assert evidence["coverage"]["warning"] == audit.security_artifacts.NATIVE_WARNING
+        manifest = json.loads((directory / "complete.json").read_text())
+        for change in ("missing-alternative-output", "omitted-opaque", "false-safe-warning"):
+            bad = copy.deepcopy(evidence)
+            if change == "missing-alternative-output":
+                bad["derivationOutputs"][row["drvPath"]] = []
+            elif change == "omitted-opaque":
+                bad["coverage"]["opaquePaths"] = []
+                bad["coverage"]["opaquePathCount"] = 0
+            else:
+                bad["coverage"]["warning"] = "safe"
+            audit.save(directory / "native-evidence.json", bad)
+            check_native_rejection(directory, row, manifest)
+        audit.save(directory / "native-evidence.json", evidence)
+        # Regenerating all auxiliary accounting cannot conceal omitted software,
+        # even when its path-info deriver is unavailable.
+        native["components"] = []
+        native["dependencies"] = [{"ref": row["drvPath"]}]
+        audit.save(directory / "native.cdx.json", native)
+        (directory / "native.csv").write_text("".join(native_csv.splitlines(keepends=True)[:2]))
+        audit.security_artifacts.record_native_evidence(directory, provenance, lambda ref: [root])
+        check_native_rejection(directory, row, manifest)
+
+
+def check_full_native_directory(path):
+    directory = Path(path)
+    native = json.loads((directory / "native.cdx.json").read_text())
+    closure = json.loads((directory / "closure.json").read_text())
+    request = json.loads((directory / "request.json").read_text())
+    provenance = {"outPath": request["root"], "drvPath": native["metadata"]["component"]["bom-ref"],
+                  "references": list(closure)}
+    coverage = audit.security_artifacts.native_coverage(directory, provenance)
+    print("Actual full native composite inventory admitted:", json.dumps(coverage))
+    with tempfile.TemporaryDirectory() as temporary:
+        copy_directory = Path(temporary)
+        for name in ("native.cdx.json", "native.csv", "closure.json", "native-evidence.json"):
+            (copy_directory / name).write_bytes((directory / name).read_bytes())
+        # Remove a genuine versioned upstream component from this actual root.
+        component = next(component for component in native["components"] if component.get("version") and component.get("cpe"))
+        native["components"].remove(component)
+        native["dependencies"] = [record for record in native["dependencies"] if record["ref"] != component["bom-ref"]]
+        for record in native["dependencies"]:
+            if "dependsOn" in record:
+                record["dependsOn"] = [ref for ref in record["dependsOn"] if ref != component["bom-ref"]]
+        audit.save(copy_directory / "native.cdx.json", native)
+        with (copy_directory / "native.csv").open(newline="") as stream:
+            reader = csv.DictReader(stream)
+            fields = reader.fieldnames
+            rows = [row for row in reader if row["store_path"] != component["bom-ref"]]
+        with (copy_directory / "native.csv").open("w", newline="") as stream:
+            writer = csv.DictWriter(stream, fields, quoting=csv.QUOTE_ALL)
+            writer.writeheader()
+            writer.writerows(rows)
+        outputs = json.loads((copy_directory / "native-evidence.json").read_text())["derivationOutputs"]
+        audit.security_artifacts.record_native_evidence(copy_directory, provenance, lambda ref: outputs[ref])
+        rejects(audit.security_artifacts.native_coverage, copy_directory, provenance)
 
 
 def check_trusted_restore(directory, row):
@@ -293,7 +377,10 @@ with tempfile.TemporaryDirectory() as directory:
         audit.save("inventory/native.cdx.json", native)
         audit.save("inventory/closure.json", closure)
         Path("inventory/native.csv").write_text(native_csv)
+        audit.security_artifacts.record_native_evidence(Path("inventory"), row,
+            lambda ref: (_ for _ in ()).throw(AssertionError("fixture queried the original store")))
         audit.security_artifacts.seal(Path("inventory"), row["inventoryKey"])
+        check_composite_native(row)
         manifest = json.loads(Path("inventory/complete.json").read_text())
         originals = {path.name: path.read_bytes() for path in Path("inventory").iterdir()}
         # Hash-consistent missing component, root, output, CSV row, and graph
@@ -375,6 +462,9 @@ with tempfile.TemporaryDirectory() as directory:
 print("inventory contract passed")
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--native-proof", help="persisted generic-native-proof.json with actual upstream CSV/CDX/path-info")
+parser.add_argument("--native-directory", action="append", default=[], help="actual full-root raw CSV/CDX/closure/request plus collected native-evidence.json")
 args = parser.parse_args()
 if args.native_proof:
     check_real_native_proof(args.native_proof)
+for directory in args.native_directory:
+    check_full_native_directory(directory)

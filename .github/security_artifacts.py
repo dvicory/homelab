@@ -9,11 +9,12 @@ import subprocess
 import tempfile
 import zipfile
 
-FILES = {"native.cdx.json", "native.csv", "closure.json", "language.cdx.json", "archive.cdx.json", "provenance.json"}
+FILES = {"native.cdx.json", "native.csv", "closure.json", "native-evidence.json", "language.cdx.json", "archive.cdx.json", "provenance.json"}
 WORKFLOW = ".github/workflows/vulnerability-management.yml"
 EVENTS = {"push", "schedule", "workflow_dispatch"}
 MAX_ARCHIVE = 64 * 1024 * 1024
 MAX_EXPANDED = 256 * 1024 * 1024
+NATIVE_WARNING = "Opaque/unversioned outputs may contain application code with unknown CVE identity; no-CPE outputs lack native CPE matching. Composite inventory completeness is not complete CVE coverage, a clean scan, or a nonaffected verdict."
 
 
 def digest(path):
@@ -32,13 +33,43 @@ def store_paths(values):
     return set(values)
 
 
+def record_native_evidence(directory, provenance, query_outputs):
+    """Retain metadata evidence, not substitute components or CVE verdicts."""
+    closure = json.loads((directory / "closure.json").read_text())
+    cdx = json.loads((directory / "native.cdx.json").read_text())
+    root = cdx["metadata"]["component"]
+    components = [root, *cdx["components"]]
+    owners, outputs, unversioned, no_cpe = {}, {}, set(), set()
+    for component in components:
+        ref = component["bom-ref"]
+        represented = {prop["value"] for prop in component["properties"] if prop["name"] == "nix:output_path"} & closure.keys()
+        if not component["version"]:
+            unversioned.update(represented)
+        if not component.get("cpe"):
+            no_cpe.update(represented)
+        for path in represented:
+            owners[path] = ref
+            # Nix records one deriver hint, not the only derivation capable of
+            # producing an output. Retain the claimed derivation's real outputs.
+            if ref.endswith(".drv") and closure[path].get("deriver") not in (None, ref) and ref not in outputs:
+                outputs[ref] = sorted(store_paths(query_outputs(ref)))
+    opaque = sorted(closure.keys() - owners.keys())
+    evidence = {"derivationOutputs": outputs, "coverage": {
+        "closurePathCount": len(closure), "representedPathCount": len(owners),
+        "opaquePathCount": len(opaque), "opaquePaths": opaque,
+        "unversionedPathCount": len(unversioned), "unversionedPaths": sorted(unversioned),
+        "noCpePathCount": len(no_cpe), "noCpePaths": sorted(no_cpe),
+        "warning": NATIVE_WARNING}}
+    (directory / "native-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
+
+
 def native_coverage(directory, provenance):
     """Check the pinned sbomnix CSV/CDX representation, without a live store.
 
     sbomnix groups outputs by derivation and may list sibling outputs outside
-    the runtime closure. Those are not extra realized/runtime coverage. Every
-    recorded closure path must nevertheless be represented; upstream omissions
-    (including non-package artifacts) make an inventory partial, never clean.
+    the runtime closure. Preserve its raw documents. The closure ledger covers
+    opaque unversioned raw paths separately, with unknown CVE identity; a
+    missing versioned/derived software output is never classified as opaque.
     """
     closure = json.loads((directory / "closure.json").read_text())
     if not isinstance(closure, dict) or not closure:
@@ -61,6 +92,20 @@ def native_coverage(directory, provenance):
             pending.extend(closure[path]["references"])
     if reachable != paths:
         raise ValueError("native closure includes paths unreachable from selected output")
+    evidence = json.loads((directory / "native-evidence.json").read_text())
+    if (not isinstance(evidence, dict) or set(evidence) != {"derivationOutputs", "coverage"}
+            or not isinstance(evidence["coverage"], dict)
+            or set(evidence["coverage"]) != {"closurePathCount", "representedPathCount", "opaquePathCount", "opaquePaths",
+                                             "unversionedPathCount", "unversionedPaths", "noCpePathCount", "noCpePaths", "warning"}):
+        raise ValueError("native coverage evidence malformed")
+    derivation_outputs = evidence["derivationOutputs"]
+    if not isinstance(derivation_outputs, dict):
+        raise ValueError("native derivation output evidence malformed")
+    for ref, outputs in derivation_outputs.items():
+        store_paths([ref])
+        if not ref.endswith(".drv"):
+            raise ValueError("native output evidence is not a derivation")
+        store_paths(outputs)
 
     cdx = json.loads((directory / "native.cdx.json").read_text())
     if (not isinstance(cdx, dict) or cdx.get("bomFormat") != "CycloneDX"
@@ -98,12 +143,20 @@ def native_coverage(directory, provenance):
         if not outputs & paths:
             raise ValueError("native component represents no runtime closure output")
         for path in outputs & paths:
-            if path in covered or (ref.endswith(".drv") and closure[path].get("deriver") not in (None, ref)):
-                raise ValueError("native output has inconsistent component/deriver")
+            if path in covered:
+                raise ValueError("native output has duplicate component owners")
+            if (ref.endswith(".drv") and closure[path].get("deriver") not in (None, ref)
+                    and path not in derivation_outputs.get(ref, [])):
+                raise ValueError("native alternative deriver lacks recorded output evidence")
             covered[path] = ref
         components[ref] = (component, outputs)
-    if set(covered) != paths:
-        raise ValueError("partial native inventory; unrepresented closure paths: " + ", ".join(sorted(paths - covered.keys())))
+    opaque = store_paths(evidence["coverage"]["opaquePaths"])
+    if opaque != paths - covered.keys():
+        raise ValueError("native opaque ledger differs from unrepresented closure paths")
+    for path in opaque:
+        label = Path(path).name[33:]
+        if closure[path].get("deriver") is not None or re.search(r"-(?:(?:git|unstable)-)?v?[0-9]", label):
+            raise ValueError("missing software component cannot be opaque: " + path)
     if provenance["outPath"] not in components[root["bom-ref"]][1]:
         raise ValueError("native metadata root does not represent selected output")
     if root["bom-ref"].endswith(".drv") and root["bom-ref"] != provenance.get("drvPath"):
@@ -118,7 +171,9 @@ def native_coverage(directory, provenance):
     if dependencies.keys() != components.keys():
         raise ValueError("native dependency records omit components")
     for path, record in closure.items():
-        expected = {covered[reference] for reference in record["references"]} - {covered[path]}
+        if path not in covered:
+            continue  # raw opaque edges remain recorded in the exact closure ledger
+        expected = {covered[reference] for reference in record["references"] if reference in covered} - {covered[path]}
         if not expected <= dependencies[covered[path]]:
             raise ValueError("native dependency graph omits closure references")
 
@@ -140,6 +195,16 @@ def native_coverage(directory, provenance):
                 raise ValueError("native CSV/CDX component or output paths differ")
         if seen != components.keys():
             raise ValueError("native CSV omits CDX components")
+    coverage = evidence["coverage"]
+    unversioned = {path for path, ref in covered.items() if not components[ref][0]["version"]}
+    no_cpe = {path for path, ref in covered.items() if not components[ref][0].get("cpe")}
+    if (coverage["closurePathCount"] != len(paths) or coverage["representedPathCount"] != len(covered)
+            or coverage["opaquePathCount"] != len(opaque)
+            or store_paths(coverage["unversionedPaths"]) != unversioned or coverage["unversionedPathCount"] != len(unversioned)
+            or store_paths(coverage["noCpePaths"]) != no_cpe or coverage["noCpePathCount"] != len(no_cpe)
+            or coverage["warning"] != NATIVE_WARNING):
+        raise ValueError("native coverage accounting differs from the inventories")
+    return coverage
 
 
 def seal(directory, key):
@@ -181,7 +246,7 @@ def verify(directory, key, producer=None, entry=None):
                 raise ValueError("cached artifact declaration mismatch: " + field)
     if provenance["kind"] not in ("nix", "oci"):
         raise ValueError("unsupported inventory kind")
-    required = {"native.cdx.json", "native.csv", "closure.json"} if provenance["kind"] == "nix" else set()
+    required = {"native.cdx.json", "native.csv", "closure.json", "native-evidence.json"} if provenance["kind"] == "nix" else set()
     if provenance.get("ociArchive"):
         required.add("archive.cdx.json")
     if not required <= set(manifest["files"]):
