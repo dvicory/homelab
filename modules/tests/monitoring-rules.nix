@@ -1,6 +1,6 @@
-# Unit tests for the rendered prod-home alert rules. vmalert-tool from the
-# same VictoriaMetrics release as the pinned images evaluates the rule file
-# that the vmalert ConfigMap carries, unchanged, against synthetic series.
+# Unit tests for the rendered prod-home alert rules and pod CPU dashboard query.
+# vmalert-tool from the same VictoriaMetrics release as the pinned images
+# evaluates the provisioned rules and query against synthetic series.
 #
 # Alert cases pin a time bound from the fleet-monitoring spec: the alert is
 # expected to fire by the bound and, where the spec says so, not before.
@@ -75,10 +75,11 @@ let
     pod = name;
   };
   container = name: pod name // { container = "jellyfin"; };
+  dashboardTestName = "the upstream pod CPU dashboard selects the cluster-labeled recording rule";
 
   tests = [
     {
-      name = "the upstream pod CPU dashboard selects the cluster-labeled recording rule";
+      name = dashboardTestName;
       interval = "30s";
       input_series = [
         (series "container_cpu_usage_seconds_total" (
@@ -93,8 +94,6 @@ let
       ];
       metricsql_expr_test = [
         {
-          # k8s-resources-pod.json CPU Usage query, with dashboard variables resolved.
-          expr = ''sum(max by (cluster, namespace, pod, container)(node_namespace_pod_container:container_cpu_usage_seconds_total:sum_rate5m{namespace="jellyfin", pod="jellyfin-0", cluster="prod-home", container!=""})) by (container)'';
           eval_time = "10m";
           exp_samples = [
             {
@@ -1617,6 +1616,7 @@ in
     let
       # Native rendering remains covered by prod-home-manifests-fresh.
       rulesManifest = ../../generated/manifests/prod-home/monitoring/ConfigMap-vmalert-rules.yaml;
+      dashboardsManifest = ../../generated/manifests/prod-home/monitoring/ConfigMap-grafana-dashboards.yaml;
       python = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
       data =
         objects: name:
@@ -1733,14 +1733,28 @@ in
             __darwinAllowLocalNetworking = true;
           }
           ''
-            python - ${rulesManifest} <<'PY'
+            python - ${rulesManifest} ${dashboardsManifest} ${testFile} <<'PY'
             from pathlib import Path
-            import sys, yaml
+            from string import Template
+            import json, sys, yaml
             obj = yaml.safe_load(Path(sys.argv[1]).read_text())
             Path("rules.json").write_text(obj["data"]["rules.json"])
+
+            dashboards = yaml.safe_load(Path(sys.argv[2]).read_text())["data"]
+            dashboard = json.loads(dashboards["k8s-resources-pod.json"])
+            # The pinned dashboard has top-level panels and no target refIds.
+            # Its usage series has an automatic legend; requests/limits are named.
+            cpu_panel, = [panel for panel in dashboard["panels"] if panel.get("title") == "CPU Usage"]
+            cpu_query, = [target for target in cpu_panel["targets"] if target.get("legendFormat") == "__auto"]
+            expr = Template(cpu_query["expr"]).substitute(
+                namespace="jellyfin", pod="jellyfin-0", cluster="prod-home",
+            )
+            tests = json.loads(Path(sys.argv[3]).read_text())
+            dashboard_test, = [test for test in tests["tests"] if test["name"] == ${builtins.toJSON dashboardTestName}]
+            query_test, = dashboard_test["metricsql_expr_test"]
+            query_test["expr"] = expr
+            Path("tests.json").write_text(json.dumps(tests))
             PY
-            cp ${testFile} tests.json
-            chmod u+w rules.json tests.json
             vmalert-tool unittest --files=tests.json
             ${lib.concatStringsSep "\n" mountStages}
             touch $out
