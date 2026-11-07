@@ -68,7 +68,14 @@ in
           trap 'rm -rf -- "$tmp"' EXIT
           stage='reading repository policy'
           writes_started=false
-          trap 'status=$?; printf "github-actions-policy: failed while %s (status %s).\n" "$stage" "$status" >&2; if [[ "$writes_started" == true ]]; then printf "%s\n" "Policy may be partially applied; no rollback attempted. Inspect with plan before retrying." >&2; fi; exit "$status"' ERR
+          failed() {
+            printf 'github-actions-policy: failed while %s (status %s).\n' "$stage" "$1" >&2
+            if [[ "$writes_started" == true ]]; then
+              printf '%s\n' 'Policy may be partially applied; no rollback attempted. Inspect with plan before retrying.' >&2
+            fi
+            exit "$1"
+          }
+          trap 'failed "$?"' ERR
 
           api() {
             gh api --hostname github.com \
@@ -146,6 +153,13 @@ in
           }
 
           jq -S '."selected-actions".patterns_allowed |= (sort | unique)' ${desired} > "$tmp/desired.json"
+          stage='reading repository visibility'
+          api --method GET "repos/$repo" > "$tmp/repository.json"
+          stage='requiring a public repository for action pattern allowlists'
+          jq -s -e '
+            if length == 1 and (.[0] | type == "object") and .[0].private == false
+            then true else error("action pattern allowlists require a public repository") end
+          ' "$tmp/repository.json" > /dev/null
           snapshot
           if equal "$tmp/current.json" "$tmp/desired.json"; then
             printf 'Policy matches %s.\n' "$repo"
@@ -203,11 +217,25 @@ in
         # Generated from modules/flake/github-actions.nix; GitHub does not auto-read this file.
         # Inspect: nix run .#github-actions-policy -- plan --repo OWNER/NAME
         # Reconcile only with owner approval: nix run .#github-actions-policy -- apply --repo OWNER/NAME
-      '' + builtins.readFile yaml;
+      ''
+      + builtins.readFile yaml;
       packages.github-actions-policy = application;
       apps.github-actions-policy = {
         type = "app";
         program = lib.getExe application;
       };
+      checks.github-actions-policy-arguments = pkgs.runCommand "github-actions-policy-arguments" { } ''
+        if ${lib.getExe application} apply; then
+          exit 1
+        else
+          test "$?" -eq 2
+        fi
+        if ${lib.getExe application} apply --repo https://github.com/owner/repo; then
+          exit 1
+        else
+          test "$?" -eq 2
+        fi
+        touch "$out"
+      '';
     };
 }
