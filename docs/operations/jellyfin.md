@@ -29,16 +29,18 @@ Use the ordinary Jellyfin username/password login, and Seerr's ordinary
 Jellyfin login, with the person's primary password or separate POSIX password.
 This is LDAP authentication, not OIDC, and LDAP itself does not perform MFA.
 
-The declared local administrator is `admin`. Its agenix-managed
-password serves local recovery and Jellarr's API-key bootstrap, independently
-of Kanidm. Keep this account local; personal directory administrators use
-their own LDAP-backed accounts. A same-named directory person cannot
-authenticate an existing local account with their directory password.
+Select the local administrator with
+`settings.kubernetes.services.jellyfin.administrator`. Its agenix-managed
+password supports local recovery, Jellarr's API-key bootstrap and fresh Seerr
+first-owner setup, independently of Kanidm. Keep this account local; use
+separate LDAP-backed accounts for personal directory administrators. A
+same-named directory person cannot use their directory password to sign in
+to an existing local account.
 
-First-start provisioning creates the declared administrator only on empty
-retained state. Changing its declared name does not create, convert or reset
-users on an initialized server. Retain the local account and its matching
-credential when restoring `/config`.
+First-start provisioning creates this administrator only on empty `/config`.
+For initialized or restored state, keep the setting and password secret
+matched to an existing local administrator. Changing the declaration does not
+rename, create or reset an account.
 
 Only `jellyfin-users` or `homelab-admin` membership permits directory sign-in;
 outsiders are refused without creating a Jellyfin account. Membership and
@@ -52,10 +54,9 @@ anonymously verified helper release containing the LDAP installer and Kanidm
 Do not derive consumer digests from the current producers or import their
 archives to bypass selection. Publication and selection do not authorize
 account enrollment, policy activation or auth rollout.
-Keep Seerr in phase `initial` until the owner accepts household sign-in from
-an actual media client and Seerr and separately approves the live transition.
-Disposable fixture success is not production acceptance; live household
-acceptance remains open.
+For a new directory-integration rollout, keep Seerr in `initial` until the
+owner accepts sign-in from a media client and Seerr. Obtain separate
+publication approval. Disposable fixture success is not production acceptance.
 
 To roll back directory integration, revert the plugin initContainer and
 Jellarr LDAP settings together and restart Jellyfin. Preserve retained users,
@@ -263,9 +264,8 @@ Record the results in the change or upgrade pull request.
 2. When you restore initialized `/config`, use that state's existing
    administrator password. The secret does not reset it.
 
-The administrator name may use ASCII letters, digits, spaces (not leading or
-trailing), and `_ . ' @ + -`. Evaluation rejects other names. If the password
-secret is missing, provisioning fails and Jellyfin does not start.
+If the password secret is missing, provisioning fails and Jellyfin does not
+start.
 
 ## Deliver helper images
 
@@ -367,17 +367,8 @@ fixture bootstraps the genuine Incus/ZFS/MergerFS/K3s/Argo stack from canonical
 manifests, provisions Jellyfin, delivers staged secrets, and verifies the stock
 image, administrator, libraries, and playback state.
 
-The required runtime inventory is partitioned, not selected by changed files:
-
-| Check | Mandatory scenario families |
-| --- | --- |
-| `prod-home-replacement` | Preseed adoption conflict; missing retained mount and permission drift; missing secrets and incomplete/complete rotation; bootstrap without Git and recovery; retained-marker/volume refusal; mapped retained-path owners and writes; lifecycle lock and identity/effective-config refusals; in-place OS activation; fresh Incus/K3s replacement retaining bytes, ownership, credentials and identity; accelerator grant after replacement; Argo retirement retaining Namespace/PV/PVC and data. |
-| `prod-home-consumer-resilience` | Accelerator absence, hotplug, host/guest/workload permissions, ungranted/nonholder refusals, loss and return; Jellarr's declared-only encoding updates and key reuse; post-preflight provisioning failure, immutable partial state and kubelet refusal retries with the full 60-second observation; live media writer/read-only boundaries, mount loss/return without node restart, boot without media with the full 180-second observation, restoration; Argo self-healing retaining unmanaged objects and application data. |
-
-Fixture Git availability and retirement request an Argo hard refresh instead
-of waiting for its background polling interval. Argo still fetches the real
-Git origin and performs reconciliation; all health, refusal, and retained
-object assertions remain required.
+Both runtime checks must run their complete required scenario inventories;
+do not select scenarios by changed files.
 
 ### First real upgrade
 

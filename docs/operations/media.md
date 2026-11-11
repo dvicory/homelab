@@ -583,9 +583,13 @@ delete coordination, lock files or retained application state as a workaround.
 
 In the `initial` publication phase the requests route is withheld. Only the
 PostSync Seerr Job may claim the first owner; its scheduled Job cannot.
-Fresh state uses the declared Jellyfin administrator. Initialized state
-keeps its existing owner: changing the declared administrator does not
-transfer ownership.
+Fresh Seerr setup signs in as
+`admin`,
+configured by `settings.kubernetes.services.jellyfin.administrator`, with
+its existing password secret. Before retrying failed setup, confirm the
+setting and secret match the local account in retained Jellyfin state.
+Initialized Seerr keeps its existing owner; changing the declaration does
+not transfer ownership.
 
 1. Confirm the Seerr Job succeeds:
 
