@@ -62,7 +62,7 @@
         pkgs.runCommand "media-producer-exit" { nativeBuildInputs = [ python ]; }
           ''
             python - ${./media-live-acceptance.py} <<'PY'
-            import contextlib, io, runpy, subprocess, sys
+            import contextlib, io, re, runpy, subprocess, sys
             acceptance = runpy.run_path(sys.argv[1])
             require_exit = acceptance["require_application_exit"]
             require_exit(0, False, "successful producer")
@@ -120,6 +120,42 @@
                     else:
                         assert status != 125
                 assert not captured.getvalue(), "successful setup or later producer emitted startup diagnostics"
+            failure_label = acceptance["failure_label"]
+            secret = "synthetic-credential-must-not-appear"
+            try:
+                acceptance["request_from_container"](
+                    lambda *args: '{"status": 403, "body": "untrusted-response-body"}',
+                    "fixture", "credential-bearing-host.invalid",
+                    "/api?apikey=" + secret, key=secret, body={"password": secret},
+                )
+            except acceptance["HTTPError"] as error:
+                label = failure_label(error)
+                assert "HTTPError" in label and "HTTP 403" in label
+                assert re.search(r"media-live-acceptance[.]py:[0-9]+(?:,[0-9]+)*", label)
+                assert label.isascii()
+                assert not any(value in label for value in (
+                    secret, "credential-bearing-host", "/api", "untrusted-response-body", "http://fixture",
+                ))
+            else:
+                raise AssertionError("unexpected HTTP refusal did not reach the diagnostic boundary")
+            unsafe = acceptance["HTTPError"](
+                "https://host.invalid/?apikey=" + secret, 401, secret, {"credential": secret}, io.StringIO(secret),
+            )
+            label = failure_label(unsafe)
+            assert "HTTPError" in label and "HTTP 401" in label
+            assert secret not in label and "host.invalid" not in label
+            assert failure_label(AssertionError("controlled failure")) == "controlled failure"
+            assert failure_label(ValueError(secret)) == "ValueError"
+            for items, field, expected in (([{}], secret, KeyError), (None, "name", TypeError)):
+                try:
+                    acceptance["one"](items, field, secret)
+                except expected as error:
+                    label = failure_label(error)
+                    assert expected.__name__ in label
+                    assert re.search(r"media-live-acceptance[.]py:[0-9]+(?:,[0-9]+)*", label)
+                    assert secret not in label and label.isascii()
+                else:
+                    raise AssertionError("unexpected native-data failure did not reach the diagnostic boundary")
             PY
             touch "$out"
           '';
