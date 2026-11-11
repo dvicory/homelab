@@ -69,7 +69,6 @@ let
     "homarr-encryption-key"
     "public-edge-contracts"
     "idmap-fixtures"
-    "pod-security-contracts"
     "ssa-defaults-contracts"
     "jellyfin-contracts"
     "media-contracts"
