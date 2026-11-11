@@ -67,6 +67,12 @@ and vendor hashes against the selected releases. The Tailscale release
 override rejects newer upstream versions rather than downgrading them.
 The upgrade fixtures pin the former production package set separately;
 they must not follow the candidate root.
+`modules/meta/go-security.nix` supplies the released Go 1.26.11 and
+1.27.4 compiler fixes pending Nixpkgs #586271/#586269, without a second
+package snapshot or a Go source patch. It covers Den host and native
+package sets and keeps any equal or newer ordinary-root compiler.
+Remove it once both upstream recipes catch up. The helper audit uses
+its selected package compiler; a shell's unrelated Go is not proof.
 
 K3s's bundled containerd overlay capability probe retains its real
 multi-lowerdir mount and selects `userxattr` with `NeedsUserXAttr`, as
