@@ -92,10 +92,7 @@ in
         (lib.types.strMatching "[A-Za-z0-9_.'@+-]([A-Za-z0-9_ .'@+-]*[A-Za-z0-9_.'@+-])?")
         (name: name != "." && name != "..");
     default = "admin";
-    description = ''
-      Initial declarative Jellyfin administrator name: ASCII letters, digits,
-      spaces (not leading or trailing), and `_ . ' @ + -`, other than `.` or `..`.
-    '';
+    description = "Local Jellyfin administrator used for provisioning and dependent setup.";
   };
 
   den.aspects.kubernetes.services.jellyfin.settings.transcoding = lib.mkOption {
