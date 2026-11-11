@@ -1,4 +1,4 @@
-{ den, lib, inputs, ... }: {
+{ den, lib, ... }: {
   den.aspects.core."remote-unlock" = {
     includes = [ den.aspects.core.hoopsnake ];
 
@@ -55,11 +55,12 @@
         };
 
         environment.systemPackages = [
-          inputs.hoopsnake.packages.${pkgs.stdenv.hostPlatform.system}.hoopsnake
+          config.boot.initrd.network.hoopsnake.package
         ];
 
         boot.initrd.network.hoopsnake = {
           enable = true;
+          package = pkgs.hoopsnake;
           ssh.authorizedKeysFile = authorizedKeysFile;
           systemd-credentials = {
             privateHostKey.file = "/boot/boot_host_key";
