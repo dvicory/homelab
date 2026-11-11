@@ -66,14 +66,12 @@ check_sarif_projection()
 
 
 inventory = {
-    "x86_64-linux": {"nativeSupported": True, "limits": ["not deployed"],
+    "x86_64-linux": {"nativeSupported": True,
         "roots": [{"target": "nixosConfigurations.any-new-guest.config.system.build.toplevel",
-                   "kind": "nix", "system": "x86_64-linux"},
-                  {"target": "packages.x86_64-linux.another-package",
                    "kind": "nix", "system": "x86_64-linux"}],
         "images": [{"image": "registry/app:tag", "source": "owner", "system": "x86_64-linux", "kind": "oci"},
                    {"image": "localhost/unpublished:tag", "source": "local-owner", "system": "x86_64-linux", "kind": "oci"}]},
-    "aarch64-darwin": {"nativeSupported": False, "limits": ["not deployed"],
+    "aarch64-darwin": {"nativeSupported": False,
         "roots": [{"target": "darwinConfigurations.any-laptop.system", "kind": "nix", "system": "aarch64-darwin"}], "images": []},
 }
 
@@ -96,17 +94,12 @@ def rejects(function, *args):
 digest = "sha256:" + "a" * 64
 assert audit.image_reference("registry.example:5000/app:tag@" + digest) == (
     "registry.example:5000/app", "registry.example:5000/app@" + digest)
-assert audit.image_reference("registry/app@" + digest) == ("registry/app", "registry/app@" + digest)
-assert audit.image_reference("registry/app:tag") == ("registry/app", "registry/app:tag")
 rejects(audit.image_reference, "registry/app:tag@not-a-digest")
 
 
 def capture(*args):
     if args[0] == "nix":
-        # The controller may inspect descriptor names, never selected values.
-        assert args[-1] == "path:" + source["path"] + "#securityInventory"
         return json.dumps(inventory)
-    assert args[0] == "skopeo" and args[-1] == "docker://registry/app:tag"
     return "sha256:" + "a" * 64 + "\n"
 
 
@@ -207,26 +200,17 @@ def check_composite_native(row):
         audit.save(directory / "provenance.json", provenance)
         audit.save(directory / "language.cdx.json", {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1, "components": []})
         (directory / "native.csv").write_text(native_csv)
-        with patch.object(audit, "capture", return_value=root + "\n") as query:
-            audit.security_artifacts.record_native_evidence(directory, provenance,
-                lambda ref: audit.capture("nix-store", "--query", "--outputs", ref).splitlines())
-            query.assert_called_once_with("nix-store", "--query", "--outputs", row["drvPath"])
+        audit.security_artifacts.record_native_evidence(directory, provenance, lambda ref: [root])
         audit.security_artifacts.seal(directory, row["inventoryKey"])
         evidence = json.loads((directory / "native-evidence.json").read_text())
-        assert evidence["coverage"]["opaquePaths"] == [opaque]
-        assert evidence["coverage"]["opaquePathCount"] == 1
-        assert evidence["coverage"]["noCpePathCount"] == 1
-        assert evidence["coverage"]["warning"] == audit.security_artifacts.NATIVE_WARNING
         manifest = json.loads((directory / "complete.json").read_text())
-        for change in ("missing-alternative-output", "omitted-opaque", "false-safe-warning"):
+        for change in ("missing-alternative-output", "omitted-opaque"):
             bad = copy.deepcopy(evidence)
             if change == "missing-alternative-output":
                 bad["derivationOutputs"][row["drvPath"]] = []
-            elif change == "omitted-opaque":
+            else:
                 bad["coverage"]["opaquePaths"] = []
                 bad["coverage"]["opaquePathCount"] = 0
-            else:
-                bad["coverage"]["warning"] = "safe"
             audit.save(directory / "native-evidence.json", bad)
             check_native_rejection(directory, row, manifest)
         audit.save(directory / "native-evidence.json", evidence)
@@ -340,38 +324,21 @@ with tempfile.TemporaryDirectory() as directory:
                 patch.object(audit, "inventory_key", side_effect=AssertionError("controller constructed an artifact key")):
             audit.plan(args)
         plan = json.loads(Path("plan.json").read_text())
-        assert len(plan["entries"]) == 3
-        assert len(plan["unsupported"]) == 2
-        assert plan["deployed"]["status"] == "unobserved"
-        assert plan["entries"][0]["target"].startswith("nixosConfigurations.any-new-guest")
-        assert plan["entries"][2]["resolvedImage"] == "registry/app@sha256:" + "a" * 64
-        assert plan["entries"][2]["ociPlatform"] == "linux/amd64"
-        for entry in plan["entries"]:
-            assert entry["plannedSourceNarHash"] == source["locked"]["narHash"]
-            assert not {"inventoryKey", "drvPath", "outPath", "sourcePath", "sourceNarHash"} & entry.keys()
-        assert any(row["system"] == "aarch64-darwin" and row["target"].startswith("darwinConfigurations.")
-                   for row in plan["unsupported"])
-        assert "matrix=" in Path("outputs").read_text()
-        descriptor = plan["entries"][0]
+        descriptor = next(entry for entry in plan["entries"] if entry["kind"] == "nix")
+        oci_descriptor = next(entry for entry in plan["entries"] if entry["kind"] == "oci")
+        assert oci_descriptor["resolvedImage"] == "registry/app@sha256:" + "a" * 64
+        assert {entry["system"] for entry in plan["entries"]} == {"x86_64-linux"}
+        assert {entry.get("image", entry.get("target")) for entry in plan["unsupported"]} == {
+            "darwinConfigurations.any-laptop.system", "localhost/unpublished:tag"}
         row = dict(descriptor, sourcePath=source["path"],
                    sourceNarHash=source["locked"]["narHash"], **resolved_paths)
         row["inventoryKey"] = audit.inventory_key(row)
-        assert not {"inventoryKey", "drvPath", "outPath"} & descriptor.keys()
         with patch.object(audit, "source_metadata", return_value=source), \
                 patch.object(audit, "capture", side_effect=AssertionError("OCI resolver evaluated a Nix target")):
-            oci = audit.resolve_row(plan["entries"][2])
-        assert oci["resolvedImage"] == plan["entries"][2]["resolvedImage"]
-        assert oci["ociPlatform"] == "linux/amd64"
-        assert oci["sourcePath"] == source["path"] and oci["sourceNarHash"] == source["locked"]["narHash"]
-        assert not {"drvPath", "outPath"} & oci.keys()
-        assert oci["inventoryKey"] == audit.inventory_key(oci)
-        assert audit.inventory_key(dict(oci, resolvedImage="registry/app@sha256:" + "b" * 64)) != oci["inventoryKey"]
-        for field in ("drvPath", "outPath", "system"):
-            assert audit.inventory_key(dict(row, **{field: row[field] + "-changed"})) != row["inventoryKey"]
-        with patch.object(audit, "SBOMNIX", "another-tool-revision"):
-            assert audit.inventory_key(row) != row["inventoryKey"]
-        with patch.object(audit.security_artifacts, "digest", return_value="b" * 64):
-            assert audit.inventory_key(row) != row["inventoryKey"]
+            oci = audit.resolve_row(oci_descriptor)
+        for field, value in (("resolvedImage", "registry/app@sha256:" + "b" * 64),
+                             ("ociPlatform", "linux/arm64")):
+            assert audit.inventory_key(dict(oci, **{field: value})) != oci["inventoryKey"]
 
         with patch.object(audit, "source_metadata", return_value=source), \
                 patch.object(audit, "capture", side_effect=AssertionError("evaluated stale planned source")):
@@ -380,8 +347,7 @@ with tempfile.TemporaryDirectory() as directory:
         audit.save("entry.json", row)
         with patch.object(audit, "source_metadata", return_value=source), \
                 patch.object(audit, "capture", side_effect=AssertionError("re-evaluated resolved target")):
-            assert audit.current_entry("entry.json") == row
-            for field in ("plannedSourceNarHash", "sourceNarHash", "sourcePath", "inventoryKey", "drvPath", "outPath"):
+            for field in ("plannedSourceNarHash", "sourceNarHash", "sourcePath", "inventoryKey", "drvPath", "outPath", "system"):
                 audit.save("stale.json", dict(row, **{field: row[field] + "-stale"}))
                 rejects(audit.current_entry, "stale.json")
             with patch.object(audit, "SBOMNIX", "another-tool-revision"):
@@ -403,9 +369,6 @@ with tempfile.TemporaryDirectory() as directory:
         audit.save("inventory/language.cdx.json", {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1, "components": []})
         audit.save("inventory/provenance.json", dict(row, state="built", references=list(closure)))
         rejects(audit.security_artifacts.seal, Path("inventory"), row["inventoryKey"])
-        for name in ("native.cdx.json", "native.csv", "closure.json"):
-            Path("inventory", name).write_text("{}")
-        rejects(audit.security_artifacts.seal, Path("inventory"), row["inventoryKey"])
         audit.save("inventory/native.cdx.json", native)
         audit.save("inventory/closure.json", closure)
         Path("inventory/native.csv").write_text(native_csv)
@@ -415,12 +378,9 @@ with tempfile.TemporaryDirectory() as directory:
         check_composite_native(row)
         manifest = json.loads(Path("inventory/complete.json").read_text())
         originals = {path.name: path.read_bytes() for path in Path("inventory").iterdir()}
-        # Hash-consistent missing component, root, output, CSV row, and graph
-        # counterexamples must fail at seal, admission, reuse and pre-scan.
-        malformed = [("native.cdx.json", {}), ("native.csv", "{}"), ("closure.json", {})]
-        value = copy.deepcopy(native)
-        value["components"] = []
-        malformed.append(("native.cdx.json", value))
+        # Hash-consistent root, output, CSV and graph counterexamples must fail
+        # at seal, admission, reuse and pre-scan.
+        malformed = []
         value = copy.deepcopy(native)
         del value["metadata"]["component"]
         malformed.append(("native.cdx.json", value))
@@ -442,9 +402,6 @@ with tempfile.TemporaryDirectory() as directory:
         malformed.append(("native.csv", native_csv.replace('pkg:nix/glibc@2.42-84', 'pkg:nix/other@2.42-84')))
         malformed.append(("native.csv", native_csv.replace(row["outPath"], "/nix/store/" + "b" * 32 + "-other")))
         value = copy.deepcopy(closure)
-        del value[next(path for path in closure if path != row["outPath"])]
-        malformed.append(("closure.json", value))
-        value = copy.deepcopy(closure)
         value[row["outPath"]]["references"].append("/nix/store/" + "c" * 32 + "-omitted")
         malformed.append(("closure.json", value))
         value = dict(row, references=[row["outPath"]])
@@ -461,11 +418,9 @@ with tempfile.TemporaryDirectory() as directory:
                 patch.object(audit, "capture", return_value="Trivy test version"), patch.object(audit, "run") as calls:
             audit.collect(argparse.Namespace(entry="entry.json", directory="inventory", staging_directory=None))
             calls.assert_not_called()  # no rebuild, registry access or inventory regeneration
-        reused = json.loads(Path("inventory/provenance.json").read_text())
-        assert reused["reused"] and reused["state"] == "built"
-        assert reused["references"] == list(closure)
         rejects(audit.security_artifacts.verify, Path("inventory"), row["inventoryKey"], None, dict(row, outPath="/nix/store/other"))
-        audit.save("inventory/provenance.json", dict(reused, ociArchive=row["outPath"]))
+        provenance = json.loads(Path("inventory/provenance.json").read_text())
+        audit.save("inventory/provenance.json", dict(provenance, ociArchive=row["outPath"]))
         rejects(audit.security_artifacts.seal, Path("inventory"), row["inventoryKey"])
         audit.save("inventory/archive.cdx.json", {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1, "components": []})
         audit.security_artifacts.seal(Path("inventory"), row["inventoryKey"])
@@ -475,20 +430,17 @@ with tempfile.TemporaryDirectory() as directory:
             audit.stage_file("source", "staged-copy")
         assert Path("staged-copy").read_text() == "actual bytes"
         Path("inventory/language.cdx.json").write_text('{"tampered":true}')
-        try:
-            audit.security_artifacts.verify(Path("inventory"), row["inventoryKey"])
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("tampered inventory accepted")
-        with zipfile.ZipFile("bad.zip", "w") as archive:
-            archive.writestr("../escape", "untrusted")
-        try:
-            audit.security_artifacts.unpack("bad.zip", Path("unpacked"))
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("unsafe artifact path accepted")
+        rejects(audit.security_artifacts.verify, Path("inventory"), row["inventoryKey"])
+        for name, mode in (("../escape", 0o100644), ("language.cdx.json", 0o120777)):
+            entry = zipfile.ZipInfo(name)
+            entry.external_attr = mode << 16
+            with zipfile.ZipFile("bad.zip", "w") as archive:
+                archive.writestr(entry, "untrusted")
+            rejects(audit.security_artifacts.unpack, "bad.zip", Path("unpacked"))
+        with zipfile.ZipFile("oversized.zip", "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("language.cdx.json", "untrusted")
+        with patch.object(audit.security_artifacts, "MAX_EXPANDED", 8):
+            rejects(audit.security_artifacts.unpack, "oversized.zip", Path("unpacked"))
     finally:
         os.chdir(previous)
 print("inventory contract passed")

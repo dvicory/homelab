@@ -25,7 +25,7 @@ jobs:
   nix-lock:
     name: Prepare ordinary Nix input update and generated outputs
     if: github.repository == 'dvicory/homelab' && (github.event_name == 'pull_request' || inputs.dry-run || github.ref == 'refs/heads/main')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     permissions:
       contents: read
@@ -58,7 +58,7 @@ jobs:
     name: Propose Nix lock update without merging or deploying
     needs: nix-lock
     if: github.repository == 'dvicory/homelab' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.dry-run))
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: write # Push validated data to the updater-owned branch.
@@ -82,16 +82,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR_BODY: |
-            Ordinary root Nixpkgs/channel and input/branch lock refresh using `nix flake update --flake path:.`.
-            Authoritative declarations are `modules/meta/inputs.nix` and each module's `flake-file.inputs`.
-            Immutable SHA source pins are mapped but disabled until their owners choose a tracking branch/tag policy.
-            Supported release-tag, image and chart declarations use separately prepared update PRs.
-            Canonical `write-files` and declaration-derived `sync-*-manifests` apps regenerated
-            the accompanying documentation and manifests in an isolated token-free container.
+            Updates Nix inputs with `nix flake update --flake path:.` and regenerates
+            canonical documentation and Kubernetes manifests in an isolated token-free container.
 
-            No automatic merge, deployment or activation. GitHub does not trigger ordinary push/PR
-            workflows for GITHUB_TOKEN changes: a maintainer must explicitly dispatch Nix CI with
-            this branch selected, review the full fleet/package candidate and merge manually.
+            Before merging, approve pending workflow runs or dispatch Nix CI on this
+            branch. Review the full fleet/package candidate and generated manifests.
+
+            The updater does not merge or activate hosts. Merging generated manifests
+            to main can roll out services through Argo.
         run: |
           set -euo pipefail
           if git diff --cached --quiet -- flake.lock docs generated/manifests; then
@@ -122,7 +120,7 @@ jobs:
   declarations:
     name: Prepare declarations with read-only upstream Renovate
     if: github.repository == 'dvicory/homelab' && (github.event_name == 'pull_request' || inputs.dry-run || github.ref == 'refs/heads/main')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 90
     permissions:
       contents: read
@@ -170,7 +168,7 @@ jobs:
     name: Publish validated declaration data without candidate execution
     needs: declarations
     if: github.repository == 'dvicory/homelab' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.dry-run))
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
       contents: write # Publish only validated patches under the owned namespace.

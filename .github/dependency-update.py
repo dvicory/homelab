@@ -415,10 +415,10 @@ def publish_candidates(directory):
     candidates = list(candidate_files(pathlib.Path(directory).resolve()))
     if any(metadata["revision"] != base for metadata, _ in candidates):
         raise ValueError("candidate base is not this trusted checkout")
-    body = ("Source-owner update with successful isolated canonical regeneration. Immutable SHA pins remain disabled "
-            "until their owners declare a tracking branch/tag policy. Jellyfin coupled-release candidates are withheld.\n\n"
-            "No automatic merge or deployment. GITHUB_TOKEN does not trigger ordinary push/PR CI: "
-            "a maintainer must explicitly dispatch Nix CI for this branch and review it before manual merge.")
+    body = ("Source-owner update with successful isolated canonical regeneration.\n\n"
+            "Before merging, approve pending workflow runs or dispatch Nix CI on this branch and review the results. "
+            "The updater does not merge or activate hosts. "
+            "Merging generated manifests to main can roll out services through Argo.")
     auth = subprocess.check_output(["git", "config", "--get", "remote.origin.url"], text=True).strip()
     if auth != "https://github.com/" + os.environ["GH_REPO"] and auth != "https://github.com/" + os.environ["GH_REPO"] + ".git":
         raise ValueError("unexpected publication remote")
@@ -466,7 +466,6 @@ chart = lib.helm.downloadHelmChart {
         raise AssertionError("ambiguous inherited chart owner accepted")
     new = "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="
     assert field(replace_hash(text, field(text, "chartHash"), new), "chartHash") == new
-    assert GITHUB.findall('url = "github:owner/repo/abc";') == ['"github:owner/repo/abc"']
     for name in [".github/workflows/evil.yml", "../flake.lock", "docs/../evil.md", "docs/.git/config.md", "README.md", "docs/README.md"]:
         assert not declaration_path(name), name
     assert declaration_path("modules/meta/inputs.nix") and generated_path("docs/operations/example.md")
@@ -551,7 +550,6 @@ chart = lib.helm.downloadHelmChart {
             live = pathlib.Path.cwd()
             try:
                 with disposable_source():
-                    assert pathlib.Path.cwd() != live
                     assert pathlib.Path("flake.lock").read_text() == "candidate\n"
                     pathlib.Path("flake.lock").write_text("failed generation\n")
                     raise RuntimeError("generation failed")

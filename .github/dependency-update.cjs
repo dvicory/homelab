@@ -87,8 +87,6 @@ module.exports = {
   prConcurrentLimit: 5,
   automerge: false,
   platformAutomerge: false,
-  // Default-token pushes/PRs do not trigger CI. A maintainer must explicitly dispatch Nix CI.
-  prBodyNotes: ['Source-owner update plus canonical generated documentation/manifests; no automatic merge or deployment. Generation errors mean the candidate is not ready. GITHUB_TOKEN does not trigger ordinary push/PR CI: a maintainer must explicitly run Nix CI for this branch before review.', immutableSourcePrerequisite],
   binarySource: 'global',
   exposeAllEnv: false,
   // Fixed trusted command; dependency names/tags are data, never rendered shell.

@@ -234,7 +234,7 @@ Complete generation and bounded regular-file validation precede export;
 failed preparation cannot publish an incomplete candidate. A separate
 write-authorized publisher consumes validated patches, never candidate
 Nix or Renovate, and uses exact leases within its own branch namespace.
-It never merges/deploys or rewrites verified release receipts.
+It never merges or activates hosts, or rewrites verified release receipts.
 Chart updates reject ambiguous inherited version bindings rather than
 selecting an unrelated owner's version.
 
@@ -243,7 +243,9 @@ default HEAD automatically; their owner must declare an authorized
 branch URL or supported release-tag policy. Jellyfin updates remain
 withheld until the coupled producer/helper release is ready, rather
 than proposing an incomplete runtime-only change.
-Default-token PRs need manually dispatched Nix CI and manual review.
+Before merging, approve pending workflow runs or dispatch Nix CI on the
+updater branch and review the results. Merging generated manifests to main
+can roll out services through Argo; host activation remains separate.
 If GitHub rejects PR creation, the exact prerequisite is Settings →
 Actions → General → Workflow permissions → Allow GitHub Actions to
 create and approve pull requests. Actual default-token publication

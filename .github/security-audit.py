@@ -209,13 +209,9 @@ def plan(args):
             unsupported.append(dict(row, inventoryFailure=True, reason="OCI digest resolution failed: " + str(error)))
     for row in entries:
         row["plannedSourceNarHash"] = planned_source
-        row["runner"] = "ubuntu-24.04-arm" if row["system"] == "aarch64-linux" else "ubuntu-24.04"
+        row["runner"] = "ubuntu-26.04-arm" if row["system"] == "aarch64-linux" else "ubuntu-26.04"
     result = {"schema": SCHEMA, "entries": entries, "unsupported": unsupported,
-              "limits": sorted({limit for p in inventory.values() for limit in p["limits"]}),
-              "updateCoverage": {"immutableShaPins": {"automaticUpdates": False,
-                  "mappingCommand": "node .github/dependency-update.cjs",
-                  "prerequisite": "Source owner must declare an authorized tracking branch URL or supported release-tag policy; remote HEAD is not branch authority."}},
-              "deployed": {"status": "unobserved", "reason": "CI has no production credentials and does not infer activation from a build"}}
+              "deployed": {"status": "unobserved"}}
     save(args.output, result)
     if args.github_output:
         with open(args.github_output, "a") as stream:

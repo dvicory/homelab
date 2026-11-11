@@ -84,8 +84,6 @@ in
       manifestPackages = map (name: "${name}-manifests") (builtins.attrNames environments);
     in
     {
-      schema = 1;
-      inherit system;
       nativeSupported = lib.hasSuffix "-linux" system;
       roots =
         configRows system "nixosConfigurations" "config.system.build.toplevel"
@@ -93,21 +91,9 @@ in
         ++ packageRows system (lib.removeAttrs ((self.packages or { }).${system} or { }) manifestPackages);
       images = hostImages system;
       manifests = lib.mapAttrsToList (name: _: {
-        target = "nixidyEnvs.${system}.${name}.config.build.environmentPackage";
-        packageTarget = "packages.${system}.${name}-manifests";
         platform = config.den.clusters.${name}.hostSystem or null;
         source = "generated/manifests/${name}";
-        state = "desired";
       }) environments;
-      limits = [
-        "Desired evaluation is not deployment evidence. No production profiles or Kubernetes APIs are contacted."
-        "Built output reference closures exclude build-only dependencies and do not prove code reachability."
-        "Nix CPE/name/version matching is heuristic; local backports and identity collisions require review."
-        "Reusable native SBOM rescans use Grype CPE matching; Nix-unsupported OSV, Vulnix and automatic patch suppression are not applied."
-        "Trivy covers supported languages and OCI distributions, not native Nix package CVEs."
-        "Dynamic downloaded images/binaries and application-owned internals absent from declarations are unsupported."
-        "Immutable SHA input pins remain mapped but automatic HEAD replacement is disabled until the owner declares an authorized branch URL or supported release-tag policy."
-      ];
     }
   );
 }
