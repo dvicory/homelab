@@ -1929,11 +1929,11 @@
         "systems": "systems_7"
       },
       "locked": {
-        "lastModified": 1789866248,
-        "narHash": "sha256-KXXaDoRqMfQZKU7YCPcDDoaZGh6LlaGyoY/uiLpZ5hk=",
+        "lastModified": 1794437933,
+        "narHash": "sha256-EZK8MM91Sx+lG9VX8dNdRR6LngWHfimo5dZm+2GpJwk=",
         "owner": "dvicory",
         "repo": "secure-hermes-nix",
-        "rev": "e4f4e9022d151d2efc3206f54302dab74fee0b3f",
+        "rev": "f5aa177200ebb17979855dcfea34d900c8caef96",
         "type": "github"
       },
       "original": {
