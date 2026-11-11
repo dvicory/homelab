@@ -273,14 +273,9 @@ All four Nix-built helpers use the immutable GHCR digests in
 `assets/helper-release/verified.json`. Kubernetes pulls them normally; routine
 helper updates need no image import, guest activation or replacement.
 
-The [main helper candidate lane](../../.github/README.md#required-green-main-nix-helper-candidates)
-builds the existing Jellyfin provisioner and Jellarr alongside the retained
-directory and Kanidm helpers. It publishes automatically only from an exact
-merged-main push after all required CI succeeds, without a per-release approval
-click. It checks source/run/attempt, archive/config/rootfs/platform identity
-and anonymous access to immutable manifest digests. It does not automatically
-select a release; required tests, review and a separately approved consumer
-merge still govern selection.
+Follow [Deliver helper images](../../CI.md#deliver-helper-images) to publish
+and verify a candidate. Publication does not select it for deployment;
+consumer selection needs its own reviewed change.
 New package visibility must be made public through the explicitly approved
 GitHub operation before anonymous verification can succeed; public visibility
 is irreversible.
