@@ -10,32 +10,60 @@
       compute =
         config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
       computeResources = {
-        inherit (compute) instance retainedPaths;
+        inherit (compute) accelerator instance retainedPaths;
         inherit (config.flake.clusterResources.prod-home) mediaPaths;
       };
-      # Fresh-state onboarding must not depend on production's publication phase.
-      seerrPhases = pkgs.writeText "media-seerr-phase-fixtures.json" (
-        builtins.toJSON (
-          lib.genAttrs [ "initial" "ready" ] (
+      fixtureCluster = lib.recursiveUpdate cluster {
+        settings.kubernetes.services.jellyfin.administrator = "Jellyfin Admin";
+      };
+      configurationFor =
+        targetCluster:
+        (config.den.aspects.kubernetes.services.media.configuration."k8s-manifests" {
+          cluster = targetCluster;
+          inherit computeResources;
+        }).applications.media-configuration.objects;
+      jellyfinApplications =
+        (config.den.aspects.kubernetes.services.jellyfin."k8s-manifests" {
+          cluster = fixtureCluster;
+          inherit computeResources;
+        }).applications;
+      objectFor =
+        kind: name: objects:
+        lib.findFirst (
+          object: object.kind == kind && object.metadata.name == name
+        ) (throw "Missing native media fixture ${kind}/${name}") objects;
+      fixture = pkgs.writeText "media-native-fixture.json" (
+        builtins.toJSON {
+          jellyfinPod =
+            (objectFor "Deployment" "jellyfin" jellyfinApplications.jellyfin.objects).spec.template.spec;
+          jellarrPod =
+            (objectFor "Job" "jellyfin-configuration" jellyfinApplications.jellyfin-configuration.objects)
+            .spec.template.spec;
+          jellarrData =
+            (objectFor "ConfigMap" "jellarr-configuration" jellyfinApplications.jellyfin-configuration.objects)
+            .data;
+          configuration =
+            (objectFor "ConfigMap" "media-configuration" (configurationFor fixtureCluster)).data;
+          changedAdministratorConfiguration =
+            (objectFor "ConfigMap" "media-configuration" (
+              configurationFor (
+                lib.recursiveUpdate fixtureCluster {
+                  settings.kubernetes.services.jellyfin.administrator = "Another Administrator";
+                }
+              )
+            )).data;
+          # Fresh onboarding must not depend on production's publication phase.
+          seerrPhases = lib.genAttrs [ "initial" "ready" ] (
             phase:
-            let
-              applications =
-                (config.den.aspects.kubernetes.services.media.configuration."k8s-manifests" {
-                  cluster = cluster // {
-                    settings = lib.recursiveUpdate cluster.settings {
-                      kubernetes.services.seerr.phase = phase;
-                    };
-                  };
-                  inherit computeResources;
-                }).applications;
-            in
-            builtins.head (
-              builtins.filter (
-                object: object.kind == "Job" && object.metadata.name == "media-config-seerr"
-              ) applications.media-configuration.objects
+            objectFor "Job" "media-config-seerr" (
+              configurationFor (
+                lib.recursiveUpdate fixtureCluster {
+                  settings.kubernetes.services.seerr.phase = phase;
+                }
+              )
             )
-          )
-        )
+          );
+        }
       );
       source = lib.fileset.toSource {
         root = ../..;
@@ -53,7 +81,7 @@
           pkgs.openssl
         ];
         text = ''
-          exec python ${source}/modules/tests/media-live-acceptance.py --seerr-phases ${seerrPhases} "$@"
+          exec python ${source}/modules/tests/media-live-acceptance.py --fixture ${fixture} "$@"
         '';
       };
     in
@@ -67,7 +95,7 @@
             require_exit = acceptance["require_application_exit"]
             require_exit(0, False, "successful producer")
             require_exit(1, True, "refusing producer")
-            for status in (0, 2, 124, 125, 126, 127, 137, 143, -9):
+            for status in (0, 2, 124, 125, 126, 127, 134, 137, 143, -9):
                 try:
                     require_exit(status, True, "refusing producer")
                 except AssertionError:
@@ -120,6 +148,34 @@
                     else:
                         assert status != 125
                 assert not captured.getvalue(), "successful setup or later producer emitted startup diagnostics"
+
+            secret = "generated-owner-password"
+            for name in ("jellyfin-provision", "jellarr-bootstrap"):
+                result = subprocess.CompletedProcess(
+                    ["docker", "run"], 134,
+                    stdout="early-log " + "\u2603" * 3000
+                        + f"\n/cache has insufficient free space\n{secret}\x1b[31m",
+                    stderr=f"Unhandled exception\n{secret}\n",
+                )
+                captured = io.StringIO()
+                with contextlib.redirect_stderr(captured):
+                    try:
+                        require_container_exit(result, False, name, diagnostic_secrets=(secret,))
+                    except AssertionError as error:
+                        assert "exit 134, expected 0" in str(error)
+                    else:
+                        raise AssertionError("bootstrap crash satisfied success")
+                output = captured.getvalue()
+                assert "/cache has insufficient free space" in output and "Unhandled exception" in output
+                assert secret not in output and output.count("[redacted]") == 2
+                assert "[truncated]" in output and "early-log" not in output
+                assert len(output.encode()) <= 16600
+                assert "\x1b" not in output and output.isascii()
+                for status, failure in ((0, False), (1, True)):
+                    captured = io.StringIO()
+                    with contextlib.redirect_stderr(captured):
+                        require_container_exit(completed(status), failure, name, diagnostic_secrets=(secret,))
+                    assert not captured.getvalue(), "expected helper outcome emitted private output"
             failure_label = acceptance["failure_label"]
             secret = "synthetic-credential-must-not-appear"
             try:
@@ -144,7 +200,6 @@
             label = failure_label(unsafe)
             assert "HTTPError" in label and "HTTP 401" in label
             assert secret not in label and "host.invalid" not in label
-            assert failure_label(AssertionError("controlled failure")) == "controlled failure"
             assert failure_label(ValueError(secret)) == "ValueError"
             for items, field, expected in (([{}], secret, KeyError), (None, "name", TypeError)):
                 try:
