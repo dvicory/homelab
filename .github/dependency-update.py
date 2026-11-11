@@ -249,14 +249,16 @@ def generate_in_disposable(input_changed=False):
     original = {name: pathlib.Path(name).read_bytes() for name in changed_paths()
                 if not generated_path(name) and name != "flake.nix"}
     owner = pathlib.Path.cwd().stat()
+    # Keep package builders unprivileged; root builds can leave Nix's purity HOME behind.
     command = [
         "docker", "run", "--rm", "--interactive", "--cap-drop=ALL",
-        "--cap-add=DAC_OVERRIDE", "--cap-add=CHOWN", "--security-opt=no-new-privileges",
+        "--cap-add=DAC_OVERRIDE", "--cap-add=CHOWN", "--cap-add=FOWNER",
+        "--cap-add=SETUID", "--cap-add=SETGID", "--cap-add=KILL", "--security-opt=no-new-privileges",
         "--memory=4g", "--cpus=2", "--pids-limit=256",
         "--mount", f"type=bind,source={pathlib.Path.cwd()},target=/work",
         "--tmpfs", "/work/.git", "--tmpfs", "/tmp:exec",
         "--env", f"OUTPUT_OWNER={owner.st_uid}:{owner.st_gid}", "--env", "NIX_REMOTE=local",
-        "--env", "NIX_CONFIG=experimental-features = nix-command flakes\nmax-jobs = 1\ncores = 2\naccept-flake-config = false\nsandbox = false\nbuild-users-group =",
+        "--env", "NIX_CONFIG=experimental-features = nix-command flakes\nmax-jobs = 1\ncores = 2\naccept-flake-config = false\nsandbox = false\nbuild-users-group = nixbld",
         "--workdir", "/work", NIX_IMAGE,
     ]
     setup = """set -euo pipefail

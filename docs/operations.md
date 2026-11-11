@@ -228,6 +228,8 @@ SARIF without executing repository Nix.
 
 `Dependency update PRs` runs upstream Renovate with read authority.
 Candidate Nix runs only in a disposable checkout with a private store.
+Package derivations use native unprivileged Nix build users; generator
+applications remain controller-owned inside that disposable container.
 Complete generation and bounded regular-file validation precede export;
 failed preparation cannot publish an incomplete candidate. A separate
 write-authorized publisher consumes validated patches, never candidate
