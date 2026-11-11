@@ -11,7 +11,6 @@ let
     service = "jellyfin";
     port = 8096;
     host = "jellyfin.jellyfin.svc.cluster.local";
-    administrator = "admin";
     adminSecret = {
       name = "jellyfin-admin";
       key = "password";
@@ -82,8 +81,6 @@ in
     description = "Read-only Jellyfin endpoint, administrator Secret reference and configured libraries for consumers.";
   };
 
-  # The one literal lives in `integration`; keep the provisioner-facing setting
-  # defaulted to it.
   den.aspects.kubernetes.services.jellyfin.settings.administrator = lib.mkOption {
     # Jellyfin 12.1 UserManager.ThrowIfInvalidUsername accepts
     # ^(?!\s)[\w\ \-'._@+]+(?<!\s)$ except "." and "..". The patched
@@ -94,7 +91,7 @@ in
       lib.types.addCheck
         (lib.types.strMatching "[A-Za-z0-9_.'@+-]([A-Za-z0-9_ .'@+-]*[A-Za-z0-9_.'@+-])?")
         (name: name != "." && name != "..");
-    default = integration.administrator;
+    default = "admin";
     description = ''
       Initial declarative Jellyfin administrator name: ASCII letters, digits,
       spaces (not leading or trailing), and `_ . ' @ + -`, other than `.` or `..`.

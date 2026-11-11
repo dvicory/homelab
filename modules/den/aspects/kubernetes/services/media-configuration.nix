@@ -342,7 +342,7 @@
               useSsl = jellyfinRoute.backendTLS;
               urlBase = routePrefix jellyfinRoute;
               externalHostname = "https://${builtins.head jellyfinRoute.hostnames}${routePrefix jellyfinRoute}";
-              username = apps.jellyfin.administrator;
+              username = cluster.settings.kubernetes.services.jellyfin.administrator;
               # Only the video libraries intended for requests.
               libraries = map (library: { inherit (library) name collectionType; }) (
                 lib.filter (library: library.requestable or false) apps.jellyfin.libraries
