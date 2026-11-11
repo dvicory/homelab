@@ -128,6 +128,26 @@ in
           else
             ""
         ) secretNames;
+        normalizeRuntimeSecret = pkgs.writeShellScript "normalize-runtime-secret" ''
+          set -eu
+          file=$1
+          original="$(${pkgs.coreutils}/bin/stat -c %s -- "$file")"
+          size=$original
+          while [ "$size" -gt 0 ]; do
+            byte="$(${pkgs.coreutils}/bin/od -An -tu1 -j "$((size - 1))" -N 1 -- "$file")"
+            [ "$byte" -eq 10 ] || break
+            size=$((size - 1))
+            if [ "$size" -gt 0 ]; then
+              byte="$(${pkgs.coreutils}/bin/od -An -tu1 -j "$((size - 1))" -N 1 -- "$file")"
+              if [ "$byte" -eq 13 ]; then
+                size=$((size - 1))
+              fi
+            fi
+          done
+          if [ "$size" -ne "$original" ]; then
+            ${pkgs.coreutils}/bin/truncate -s "$size" -- "$file"
+          fi
+        '';
         stageRuntimeSecrets = pkgs.writeShellScript "stage-kubernetes-runtime-secrets" ''
           set -eu
           exec 8>/run/lock/compute-${cfg.project}-${cfg.instance}-secrets.lock
@@ -156,6 +176,7 @@ in
             test -d "$agenixRoot"
             ${lib.concatMapStringsSep "\n" (name: ''
               install -m 0400 "$agenixRoot/${name}" "$sourceSnapshot/${name}"
+              ${normalizeRuntimeSecret} "$sourceSnapshot/${name}"
               test -s "$sourceSnapshot/${name}"
             '') secretNames}
           ''}
@@ -217,6 +238,8 @@ in
       assert lib.assertMsg (invalidSourceNames == [ ])
         "Runtime Secret source names must be basename-only identifiers: ${lib.concatStringsSep ", " invalidSourceNames}";
       {
+        system.build.normalize-runtime-secret = normalizeRuntimeSecret;
+
         secretRequests = lib.genAttrs (lib.filter delivered secretNames) (
           name:
           {

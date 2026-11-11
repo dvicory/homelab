@@ -172,10 +172,11 @@ in
 
         Use the generated [runtime-secret inventory and procedure](../operations.md#runtime-secret-references)
         for source names, encryption, rekeying and staging. Never put plaintext in
-        Git, manifests, command arguments, logs or reports. Keep single-line
-        delivery values free of trailing newlines: Alertmanager reads Pushover's
-        token and user key verbatim. Missing credential files do not stop
-        Alertmanager, but sends through that integration fail.
+        Git, manifests, command arguments, logs or reports. Delivery sources may
+        end in LF or CRLF: runtime-secret staging removes trailing line endings
+        before Alertmanager reads the files. Empty staged values are refused.
+        Missing credential files do not stop Alertmanager, but sends through
+        that integration fail.
 
         - **Pushover:** rotate the application token or user key with the provider,
           then update the matching encrypted source.

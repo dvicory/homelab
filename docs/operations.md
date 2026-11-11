@@ -96,25 +96,12 @@ Manage operator secrets with `agenix edit` and rekey under
 Never put plaintext credentials or recovery output in Git, Nix
 outputs, images, documentation, or logs.
 
-For a single-line credential that must not end in a newline, run this
-in Bash at the repository root, replacing `<source>` with its table
-entry. Input is hidden and kept out of command arguments; the temporary
-editor contains only commands, never the credential:
-
-```sh
-(
-  set +x
-  umask 077
-  editor=$(mktemp)
-  trap 'rm -f "$editor"' EXIT
-  cat >"$editor" <<'BASH'
-IFS= read -rsp 'Secret: ' value || exit 1
-printf '\n'
-printf '%s' "$value" > "$1"
-BASH
-  EDITOR="bash $editor" agenix edit ".secrets/hosts/compute-1/<source>.age"
-)
-```
+Kubernetes runtime-secret staging removes trailing LF and CRLF line
+endings from its private copies before publication, so normal
+editor-added final newlines are accepted. Encrypted sources and
+decrypted agenix files remain unchanged. Embedded line breaks, spaces
+and other bytes are preserved; empty staged values are refused.
+This cleanup does not apply to host disk keys or other agenix consumers.
 
 Track new encrypted sources with `jj file track` before running
 `agenix rekey`, so the Git-backed flake includes their conditional
