@@ -26,8 +26,8 @@ substitute. Cert-manager remains the only writer of cluster TLS Secrets.
 
 ## Administrator applications in Kanidm
 
-Each administrator route has its own Kanidm OAuth2 client, named after the
-route. Kanidm lists the clients a person may use as applications on its
+Each administrator route has its own Kanidm OAuth2 client. Kanidm lists the
+clients a person may use as applications on its
 home page, so members of `homelab-admin` see one entry per administrator
 application, under the route's `displayName`. Each entry opens its
 application. People outside `homelab-admin` see none of them.
@@ -43,14 +43,34 @@ native sign-in, and provisioning publishes the same secret to
 `monitoring/grafana-oidc`. Both native callbacks coexist with the Gateway callback;
 neither application's entrance sign-in alone grants application access.
 
+OIDC consumers use the shared `den.clusters.<cluster>.oidcApps` schema.
+Administrator routes register their Gateway client automatically. Native OIDC
+apps declare their callback, login-start path, scopes and Secret reference next
+to their application configuration; applications without OIDC do not register.
+The app, Gateway and Kanidm use the same evaluated client settings.
+Callback and login-start paths must start with `/`.
+
+Argo CD and Grafana keep both sign-in checks. Both checks request the same
+permissions, so switching between them does not require another approval.
+The first sign-in after this update may ask for approval once; later sign-ins
+reuse it until the requested permissions change. Argo CD may still show its
+own login button. Its Kanidm tile starts `/auth/login` directly; no application
+patch or custom redirect is used.
+
+Configuration derivation does not discover changes inside an upstream app.
+When upgrading an app, verify its actual authorization request and callback.
+The identity runtime check exercises approval reuse and still requires fresh
+approval when the requested permissions change.
+
 The declaration owns every Kanidm OAuth2 client. On each run the Job
 deletes clients it does not declare, including any created by hand.
 Declare a new client in Nix instead.
 
 The selected helper accepts an explicit `eligibleGroup` per client and owns
-both normal and supplemental scope maps. Administrator applications select
-`homelab-admin`; Homarr selects `homarr-users`, whose nested members are
-`homelab-admin` and `jellyfin-users`. Provisioning owns that aggregate, not
+both normal and supplemental scope maps. Administrator routes must select
+`homelab-admin`; configuration rejects any other eligibility group for them.
+Homarr selects `homarr-users`, whose nested members are `homelab-admin` and
+`jellyfin-users`. Provisioning owns that aggregate, not
 household membership or person credentials. Homarr grants board permissions
 separately; portal eligibility does not confer administration.
 

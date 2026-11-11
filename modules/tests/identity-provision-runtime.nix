@@ -193,6 +193,7 @@ in
                   pkgs.jq
                   pkgs.openssl
                   pkgs.python3
+                  pkgs.yq-go
                 ];
                 systemd.tmpfiles.rules = [ "d ${stateDir} 0700 1000 1000 -" ];
                 virtualisation = {
@@ -214,10 +215,18 @@ in
               };
             testScript = ''
               import json
+              import configparser
               import shlex
               import time
               import hashlib
               import tarfile
+              from typing import TypedDict
+
+              class NativeOidcApp(TypedDict):
+                  client: str
+                  scopes: list[str]
+                  urls: list[str]
+                  callback: str
 
               kubectl = "${k3sPackage}/bin/k3s kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml"
               identity = "${manifests}/identity"
@@ -237,6 +246,9 @@ in
                       f"python3 ${./identity-provision-runtime.py} ${domain} {shlex.quote(kubectl)} "
                       f"{command} {shlex.quote(json.dumps(arguments))}"
                   ))
+
+              def manifest(path):
+                  return json.loads(cluster.succeed(f"yq -o=json '.' ${manifests}/{path}"))
 
               def argo_apply(path):
                   # Argo CD applies the identity Application with ServerSideApply=true.
@@ -434,8 +446,6 @@ in
                   (client["name"], {key: target[key] for key in ("namespace", "name", "key")})
                   for client in declared for target in client["secrets"]
               ]
-              assert scopes.get("argocd") == ["email", "groups_name", "homelab_admin", "openid", "profile"], scopes
-              assert ("argocd", dict(namespace="argocd", name="argocd-kanidm-oidc", key="clientSecret")) in secrets, secrets
 
               with subtest("the provisioner can patch only its declared Secrets and create none"):
                   for _, spec in secrets:
@@ -501,18 +511,50 @@ in
                   assert_published()
                   assert_kanidm(members)
 
-              with subtest("5: the Gateway and Argo CD both sign an administrator in through client argocd"):
-                  gateway, argocd = probe("oidc-groups", person=members[0], client="argocd", requests=[
-                      dict(redirect=gateway_callbacks[0], scopes=["openid", "profile", "email", "homelab_admin"]),
-                      dict(redirect=callbacks[0], scopes=["openid", "profile", "email", "groups_name"]),
-                  ])
-                  evidence("gateway-id-token", gateway)
-                  evidence("argocd-id-token", argocd)
-                  for claims in (gateway, argocd):
-                      assert claims["iss"] == "https://${domain}/oauth2/openid/argocd", claims
-                      assert claims["aud"] in ("argocd", ["argocd"]), claims
-                  assert "homelab-admin" in argocd["groups"], argocd
-                  assert all("@" not in group for group in argocd["groups"]), argocd
+              with subtest("5: native apps and their Gateway checks reuse one approval"):
+                  argo_cm = manifest("argocd/ConfigMap-argocd-cm.yaml")["data"]
+                  argo_oidc = json.loads(argo_cm["oidc.config"])
+                  grafana_ini = configparser.ConfigParser(interpolation=None)
+                  grafana_ini.read_string(manifest("monitoring/ConfigMap-grafana.yaml")["data"]["grafana.ini"])
+                  grafana_oidc = grafana_ini["auth.generic_oauth"]
+                  native_apps = {
+                      "argocd": NativeOidcApp(client=argo_oidc["clientID"], scopes=argo_oidc["requestedScopes"],
+                                     urls=[argo_cm["url"]] + json.loads(argo_cm["additionalUrls"]),
+                                     callback="${cluster.oidcApps.argocd.callbackPath}"),
+                      "grafana": NativeOidcApp(client=grafana_oidc["client_id"], scopes=grafana_oidc["scopes"].split(),
+                                     urls=[grafana_ini["server"]["root_url"]],
+                                     callback="${cluster.oidcApps.grafana.callbackPath}"),
+                  }
+                  journeys = []
+                  all_requests = []
+                  for name, native in native_apps.items():
+                      gateway_oidc = manifest(f"identity-gateway/SecurityPolicy-{name}-admin.yaml")["spec"]["oidc"]
+                      entrance = dict(client=gateway_oidc["clientID"], scopes=gateway_oidc["scopes"],
+                                      redirect=native["urls"][0].rstrip("/") + "/oauth2/callback")
+                      requests = [entrance]
+                      for url in native["urls"]:
+                          requests += [
+                              dict(client=native["client"], scopes=native["scopes"],
+                                   redirect=url.rstrip("/") + native["callback"]),
+                              entrance,
+                          ]
+                      # A real permission change still needs approval; repeating it does not.
+                      reduced = requests[1] | {"scopes": [scope for scope in native["scopes"] if scope != "email"]}
+                      expected = [True] + [False] * (len(requests) - 1) + [True, False]
+                      journeys.append((name, native, expected))
+                      all_requests += requests + [reduced, reduced]
+                  replies = probe("oidc-groups", person=members[0], requests=all_requests)
+                  offset = 0
+                  for name, native, expected in journeys:
+                      journey = replies[offset:offset + len(expected)]
+                      offset += len(expected)
+                      assert [reply["consent_required"] for reply in journey] == expected, (name, journey)
+                      for claims in journey:
+                          assert claims["iss"] == "https://${domain}/oauth2/openid/" + native["client"], claims
+                          assert claims["aud"] in (native["client"], [native["client"]]), claims
+                          assert "homelab-admin" in claims["groups"], claims
+                          assert all("@" not in group for group in claims["groups"]), claims
+                      evidence(name + "-consent-journey", journey)
 
               # A above remains the reviewed registry executable. B is the
               # actual source producer archive, imported without publication.

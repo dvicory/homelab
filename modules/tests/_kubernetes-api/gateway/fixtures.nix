@@ -15,34 +15,45 @@ let
   identity =
     (import ../../../den/aspects/kubernetes/services/identity.nix { inherit config inputs lib; })
     .den.aspects.kubernetes.services.identity;
-  fixtureCluster = cluster // {
-    routes = lib.getAttrs [ "argocd" "grafana" "idm" ] cluster.routes // {
-      # Keep the synthetic browser origin out of the real Argo controller's
-      # Service/endpoints in the shared fixture.
-      argocd = cluster.routes.argocd // {
-        namespace = "gateway-admin-origin";
-      };
-      origin = {
-        namespace = "origin";
-        service = "origin";
-        port = 8080;
-        auth = "native";
-        exposure = "public";
-        backendPodSelector.app = "origin";
-        hostnames = [ "origin.test" ];
-        pathPrefix = "/";
-        backendTLS = false;
-        backendHostname = null;
-        timeouts = null;
-        sameNamespaceIngress = true;
-        manageBackendIngress = true;
+  withRoutes =
+    inventory: routes:
+    inventory
+    // {
+      inherit routes;
+      oidcApps = lib.filterAttrs (_: app: builtins.hasAttr app.routeKey routes) cluster.oidcApps;
+    };
+  fixtureCluster =
+    (withRoutes cluster (
+      lib.getAttrs [ "argocd" "grafana" "idm" ] cluster.routes
+      // {
+        # Keep the synthetic browser origin out of the real Argo controller's
+        # Service/endpoints in the shared fixture.
+        argocd = cluster.routes.argocd // {
+          namespace = "gateway-admin-origin";
+        };
+        origin = {
+          namespace = "origin";
+          service = "origin";
+          port = 8080;
+          auth = "native";
+          exposure = "public";
+          backendPodSelector.app = "origin";
+          hostnames = [ "origin.test" ];
+          pathPrefix = "/";
+          backendTLS = false;
+          backendHostname = null;
+          timeouts = null;
+          sameNamespaceIngress = true;
+          manageBackendIngress = true;
+        };
+      }
+    ))
+    // {
+      ingress = cluster.ingress // {
+        mode = "direct";
+        trustedProxyCIDRs = [ ];
       };
     };
-    ingress = cluster.ingress // {
-      mode = "direct";
-      trustedProxyCIDRs = [ ];
-    };
-  };
   trustedCluster = lib.recursiveUpdate fixtureCluster {
     ingress = {
       mode = "trustedEdges";
@@ -91,12 +102,13 @@ let
   renderIdentity =
     phase:
     identity.k8s-manifests {
-      cluster = lib.recursiveUpdate fixtureCluster {
+      cluster = lib.recursiveUpdate (withRoutes fixtureCluster (
         # Keep backend peer selectors without publishing more Gateway routes.
-        routes.jellyfin = cluster.routes.jellyfin;
-        routes.home = cluster.routes.home;
-        settings.kubernetes.services.identity.phase = phase;
-      };
+        fixtureCluster.routes
+        // {
+          inherit (cluster.routes) jellyfin home;
+        }
+      )) { settings.kubernetes.services.identity.phase = phase; };
       computeResources = config.flake.clusterResources.prod-home // {
         inherit instance;
       };

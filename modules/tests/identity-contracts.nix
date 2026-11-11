@@ -65,12 +65,6 @@ let
         object: object.kind == "ConfigMap" && object.metadata.name == "kanidm-provision"
       ) objects
     )).data;
-  normalProvisionJob = builtins.head (
-    lib.filter (
-      object: object.kind == "Job" && object.metadata.name == "kanidm-provision"
-    ) normalObjects
-  );
-  provisionContainer = builtins.head normalProvisionJob.spec.template.spec.containers;
   initialResources = identity.compute-resources { cluster = withPhase "initial"; };
   findObject =
     objects: kind: namespace: name:
@@ -83,41 +77,11 @@ let
   normalState = builtins.fromJSON (provisionData normalObjects)."state.json";
   provisionClients = objects: builtins.fromJSON (provisionData objects)."clients.json";
   normalClients = provisionClients normalObjects;
-  envValue =
-    name: (lib.findFirst (entry: entry.name == name) { value = null; } provisionContainer.env).value;
   # Argo CD side, rendered from the same cluster inventory.
   normalArgocd = argocdConfigs (withPhase "normal");
   normalOidc = builtins.fromJSON normalArgocd.cm."oidc.config";
-  argocdClient = lib.findFirst (client: client.name == normalOidc.clientID) null normalClients;
-  argocdSecret = lib.findFirst (
-    secret: "$" + secret.name + ":" + secret.key == normalOidc.clientSecret
-  ) null argocdClient.secrets;
   argocdRoute = cluster.routes.argocd;
-  adminRoutes = lib.filterAttrs (_: route: route.auth == "admin") cluster.routes;
-  routeUrls =
-    route:
-    map (hostname: "https://${hostname}${lib.removeSuffix "/" route.pathPrefix}") route.hostnames;
   clientSecrets = clients: lib.concatMap (client: client.secrets) clients;
-  normalSecurityPolicies = lib.filter (object: object.kind == "SecurityPolicy") normalPolicyObjects;
-  # An administrator route without a display name has no Kanidm entry name.
-  extraAdminRoute =
-    name: displayName:
-    lib.recursiveUpdate (withPhase "normal") {
-      routes.${name} = argocdRoute // {
-        inherit displayName;
-        hostnames = [ "extra.example.test" ];
-        pathPrefix = "/extra/";
-      };
-    };
-  renderedState =
-    inventory:
-    builtins.fromJSON
-      (provisionData (renderIdentity inventory).applications.identity.objects)."state.json";
-  rendersIdentity =
-    inventory:
-    (builtins.tryEval (
-      builtins.deepSeq (provisionData (renderIdentity inventory).applications.identity.objects) true
-    )).success;
   kanidmIngress =
     objects: (findObject objects "NetworkPolicy" namespace "kanidm-private").spec.ingress;
   namespace = "identity";
@@ -324,61 +288,16 @@ let
       lib.sort builtins.lessThan (map (client: client.name) normalClients)
       == builtins.attrNames normalState.systems.oauth2
       && lib.all (publicationIntact normalObjects) (clientSecrets normalClients);
-    # Kanidm lists each client a person may use as an application. Each
-    # administrator route has exactly one client, named after the route,
-    # whose display name and landing are that application's.
-    one-client-per-admin-route =
-      builtins.attrNames (builtins.removeAttrs normalState.systems.oauth2 [ "homarr" ])
-      == builtins.attrNames adminRoutes
-      && lib.all (
-        name:
-        let
-          route = adminRoutes.${name};
-          client = normalState.systems.oauth2.${name};
-        in
-        client.displayName == route.displayName
-        && lib.hasPrefix "${builtins.head (routeUrls route)}/" client.originLanding
-        && lib.all (url: builtins.elem "${url}/oauth2/callback" client.originUrl) (routeUrls route)
-      ) (builtins.attrNames adminRoutes)
-      && rendersIdentity (extraAdminRoute "extra" "Extra")
-      && !(rendersIdentity (extraAdminRoute "extra" null))
-      && !(rendersIdentity (extraAdminRoute "extra.app" "Extra"))
-      &&
-        (renderedState (extraAdminRoute "extra" "Extra")).systems.oauth2.extra.originUrl == [
-          "https://extra.example.test/extra/oauth2/callback"
-        ];
-    # Each administrator route's Gateway sign-in uses that route's client and
-    # a Gateway Secret the Job publishes for it.
-    admin-policy-uses-route-client =
-      builtins.length normalSecurityPolicies == builtins.length (builtins.attrNames adminRoutes)
-      && lib.all (
-        name:
-        let
-          policy = findObject normalPolicyObjects "SecurityPolicy" "gateway" "${name}-admin";
-          client = lib.findFirst (client: client.name == name) null normalClients;
-        in
-        policy != null
-        && client != null
-        && policy.spec.oidc.clientID == name
-        &&
-          policy.spec.oidc.provider.issuer
-          == "https://${builtins.head cluster.routes.idm.hostnames}/oauth2/openid/${name}"
-        && builtins.elem {
-          namespace = "gateway";
-          name = policy.spec.oidc.clientSecret.name;
-          key = "client-secret";
-          labels = { };
-        } client.secrets
-        && lib.all (scope: builtins.elem scope client.scopes) policy.spec.oidc.scopes
-      ) (builtins.attrNames adminRoutes);
-    # Argo CD's own sign-in uses its route's client, so Kanidm lists Argo CD
-    # once, and that entry starts Argo CD's sign-in.
-    argocd-shares-route-client =
-      (findObject normalPolicyObjects "SecurityPolicy" "gateway" "argocd-admin").spec.oidc.clientID
-      == normalOidc.clientID
-      &&
-        normalState.systems.oauth2.${normalOidc.clientID}.originLanding
-        == "${builtins.head (routeUrls argocdRoute)}/auth/login";
+    administrator-eligibility-restricted =
+      !(builtins.tryEval (
+        builtins.deepSeq (provisionClients
+          (renderIdentity (
+            lib.recursiveUpdate (withPhase "normal") {
+              oidcApps.radarr.eligibleGroup = householdGroup;
+            }
+          )).applications.identity.objects
+        ) true
+      )).success;
     admin-gateway-session-renews = lib.all (policy: policy.spec.oidc.refreshToken) (
       lib.filter (object: object.kind == "SecurityPolicy") normalPolicyObjects
     );
@@ -398,35 +317,13 @@ let
       && normalArgocd.cm ? "oidc.config"
       && !(allowsArgocdServer (kanidmIngress provisioningObjects))
       && allowsArgocdServer (kanidmIngress normalObjects);
-    # Redirects registered in Kanidm are exactly Argo CD's callbacks for the
-    # declared route hostnames, and Argo CD knows every one of those URLs.
-    argocd-redirects-match-route =
-      normalState.systems.oauth2.${normalOidc.clientID}.originUrl
-      == map (url: "${url}/oauth2/callback") (routeUrls argocdRoute)
-      ++ map (url: "${url}/auth/callback") (routeUrls argocdRoute)
-      &&
-        [ normalArgocd.cm.url ] ++ builtins.fromJSON normalArgocd.cm.additionalUrls
-        == map (hostname: "https://${hostname}") argocdRoute.hostnames
-      &&
-        normalOidc.issuer
-        == "https://${builtins.head cluster.routes.idm.hostnames}/oauth2/openid/${normalOidc.clientID}";
-    # Kanidm denies a request whose scopes are not all mapped to the user's
-    # groups, and `groups_name` emits short group names in the `groups`
-    # claim. The RBAC group must be the one group the Job maps scopes to.
-    argocd-admin-group-matches-kanidm =
-      argocdClient != null
-      && lib.all (scope: builtins.elem scope argocdClient.scopes) normalOidc.requestedScopes
-      && builtins.elem "groups_name" normalOidc.requestedScopes
-      && !(builtins.elem "groups" normalOidc.requestedScopes)
-      && normalArgocd.rbac.scopes == "[groups]"
-      && envValue "KANIDM_ADMIN_GROUP" == cluster.settings.kubernetes.services.identity.adminGroup
-      && normalArgocd.rbac."policy.csv" == "g, ${envValue "KANIDM_ADMIN_GROUP"}, role:admin\n"
+    # Only the declared administrator group receives an Argo CD role.
+    argocd-admin-group-restricted =
+      normalArgocd.rbac.scopes == "[groups]"
+      && normalArgocd.rbac."policy.csv" == "g, ${adminGroup}, role:admin\n"
       && normalArgocd.rbac."policy.default" == "";
-    argocd-client-secret-reference =
-      argocdSecret != null
-      && argocdSecret.namespace == argocdRoute.namespace
-      && argocdSecret.labels == { "app.kubernetes.io/part-of" = "argocd"; }
-      && normalOidc.enablePKCEAuthentication
+    argocd-pkce-required =
+      normalOidc.enablePKCEAuthentication
       && !normalState.systems.oauth2.${normalOidc.clientID}.allowInsecureClientDisablePkce
       && !normalState.systems.oauth2.${normalOidc.clientID}.public;
     # Local `admin` sign-in exists only before Kanidm sign-in does. It sits

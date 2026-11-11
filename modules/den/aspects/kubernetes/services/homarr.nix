@@ -15,6 +15,28 @@ in
     default = "initial";
     description = "Publish Home only after private onboarding, admin-group assignment and board permissions are complete.";
   };
+  den.schema.cluster.imports = [
+    ({ config, ... }: {
+      oidcApps = lib.optionalAttrs (config.routes ? home) {
+        homarr = {
+          routeKey = "home";
+          displayName = "Homarr";
+          eligibleGroup = "homarr-users";
+          callbackPath = "/api/auth/callback/oidc";
+          scopes = lib.mkDefault [
+            "openid"
+            "profile"
+            "email"
+            "groups_name"
+          ];
+          secret = {
+            name = lib.mkDefault "homarr-oidc";
+            key = lib.mkDefault "clientSecret";
+          };
+        };
+      };
+    })
+  ];
   den.aspects.kubernetes.services.homarr.compute-resources = _: {
     # Stock entrypoint starts as root, prepares writable paths, then su-exec
     # drops to this identity before nginx, Redis and Next.js start.
@@ -42,7 +64,8 @@ in
     }:
     let
       state = computeResources.retainedPaths.homarr;
-      route = cluster.routes.home;
+      oidc = cluster.oidcApps.homarr;
+      route = cluster.routes.${oidc.routeKey};
       ready = cluster.settings.kubernetes.services.homarr.phase == "ready";
       labels = {
         "app.kubernetes.io/controller" = "main";
@@ -155,14 +178,13 @@ in
                   PGID = toString state.gid;
                   AUTH_PROVIDERS = "oidc";
                   AUTH_SESSION_EXPIRY_TIME = "1h";
-                  AUTH_OIDC_ISSUER = "https://${builtins.head cluster.routes.idm.hostnames}/oauth2/openid/homarr";
-                  AUTH_OIDC_CLIENT_ID = "homarr";
+                  AUTH_OIDC_ISSUER = "https://${builtins.head cluster.routes.idm.hostnames}/oauth2/openid/${oidc.clientID}";
+                  AUTH_OIDC_CLIENT_ID = oidc.clientID;
                   AUTH_OIDC_CLIENT_NAME = "Homelab";
                   AUTH_OIDC_CLIENT_SECRET.valueFrom.secretKeyRef = {
-                    name = "homarr-oidc";
-                    key = "clientSecret";
+                    inherit (oidc.secret) name key;
                   };
-                  AUTH_OIDC_SCOPE_OVERWRITE = "openid profile email groups_name";
+                  AUTH_OIDC_SCOPE_OVERWRITE = lib.concatStringsSep " " oidc.scopes;
                   AUTH_OIDC_GROUPS_ATTRIBUTE = "groups";
                   AUTH_OIDC_GROUPS_LOCAL_MANAGEMENT = "false";
                   AUTH_OIDC_ENABLE_DANGEROUS_ACCOUNT_LINKING = "false";

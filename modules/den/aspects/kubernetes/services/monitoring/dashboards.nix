@@ -7,7 +7,6 @@
 # login form, basic authentication or anonymous access.
 { inputs, lib, ... }:
 let
-  inherit (lib) mkOption types;
   namespace = "monitoring";
   dashboardsDirectory = inputs.self + "/assets/monitoring/dashboards";
   # Each vendored dashboard records its upstream source, revision and
@@ -15,36 +14,26 @@ let
   dashboardSources = builtins.fromJSON (builtins.readFile (dashboardsDirectory + "/sources.json"));
 in
 {
-  den.aspects.kubernetes.services.monitoring.settings.grafana.oidc = mkOption {
-    type = types.submodule {
-      options = {
-        # Kanidm refuses a request whose scopes are not all mapped to the
-        # user's groups; `groups_name` emits short group names in `groups`.
-        scopes = mkOption {
-          type = types.listOf types.str;
-          default = [
+  den.schema.cluster.imports = [
+    ({ config, ... }: {
+      oidcApps = lib.optionalAttrs (config.routes ? grafana) {
+        grafana = {
+          callbackPath = "/login/generic_oauth";
+          landingPath = "/login/generic_oauth";
+          scopes = lib.mkDefault [
             "openid"
             "profile"
             "email"
             "groups_name"
           ];
-          description = "Scopes Grafana requests; identity provisioning maps each one to the administrator group.";
-        };
-        secretName = mkOption {
-          type = types.str;
-          default = "grafana-oidc";
-          description = "Secret in the monitoring namespace where identity provisioning publishes the client secret.";
-        };
-        secretKey = mkOption {
-          type = types.str;
-          default = "client-secret";
-          description = "Key of the client secret in that Secret.";
+          secret = {
+            name = lib.mkDefault "grafana-oidc";
+            key = lib.mkDefault "client-secret";
+          };
         };
       };
-    };
-    default = { };
-    description = "Grafana's sign-in through Kanidm. Identity provisioning adds these values to the Kanidm client of the `grafana` route, which the Gateway also uses.";
-  };
+    })
+  ];
 
   den.aspects.kubernetes.services.monitoring.dashboards = {
     # Both administrator credentials use agenix-rekey's generated runtime flow;
@@ -74,8 +63,8 @@ in
       let
         identity = cluster.settings.kubernetes.services.identity;
         identityHostname = builtins.head cluster.routes.idm.hostnames;
-        oidc = cluster.settings.kubernetes.services.monitoring.grafana.oidc;
-        route = cluster.routes.grafana;
+        oidc = cluster.oidcApps.grafana;
+        route = cluster.routes.${oidc.routeKey};
         hostname = builtins.head route.hostnames;
         url = "https://${hostname}";
         enabled = cluster.routes ? grafana && identity.phase == "normal";
@@ -174,7 +163,7 @@ in
                 }
                 {
                   name = "grafana-oidc";
-                  secretName = oidc.secretName;
+                  secretName = oidc.secret.name;
                   mountPath = "/etc/secrets/grafana-oidc";
                   readOnly = true;
                   defaultMode = 288;
@@ -206,14 +195,12 @@ in
                   enabled = true;
                   auto_login = true;
                   name = "Kanidm";
-                  # Identity names each administrator route's client after
-                  # the route, so Grafana and its entrance share one client.
-                  client_id = "grafana";
-                  client_secret = "$__file{/etc/secrets/grafana-oidc/${oidc.secretKey}}";
+                  client_id = oidc.clientID;
+                  client_secret = "$__file{/etc/secrets/grafana-oidc/${oidc.secret.key}}";
                   scopes = lib.concatStringsSep " " oidc.scopes;
                   auth_url = "https://${identityHostname}/ui/oauth2";
                   token_url = "https://${identityHostname}/oauth2/token";
-                  api_url = "https://${identityHostname}/oauth2/openid/grafana/userinfo";
+                  api_url = "https://${identityHostname}/oauth2/openid/${oidc.clientID}/userinfo";
                   use_pkce = true;
                   use_refresh_token = true;
                   allow_sign_up = true;
