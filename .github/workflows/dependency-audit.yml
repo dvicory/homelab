@@ -11,6 +11,7 @@ on:
       - "modules/den/aspects/virtualization/incus*"
       - "modules/den/aspects/core/network/tailscale*"
       - "modules/flake/stock-go-audit.nix"
+      - "modules/meta/go-security.nix"
       - ".github/workflows/dependency-audit.yml"
   push:
     branches:
@@ -21,6 +22,7 @@ on:
       - "modules/den/aspects/virtualization/incus*"
       - "modules/den/aspects/core/network/tailscale*"
       - "modules/flake/stock-go-audit.nix"
+      - "modules/meta/go-security.nix"
       - ".github/workflows/dependency-audit.yml"
 
 permissions:
