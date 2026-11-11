@@ -1,126 +1,50 @@
+<!-- provenance: generated from evaluated Den entities and Nixidy Gateway objects by modules/flake/docs/readme.nix; regenerate with nix run .#write-files. -->
 # homelab
 
-## Local verification
+NixOS homelab and nix-darwin workstation configuration, composed with
+[Den](https://github.com/denful/den) and flake-parts.
 
-Schema, rendered policy and executed Argo health are separate required gates:
+## Fleet
 
-```sh
-system=$(nix eval --impure --raw --expr builtins.currentSystem)
-nix build --no-link \
-  "path:.#checks.$system.prod-home-manifests-schema" \
-  "path:.#checks.$system.prod-home-manifests-policy" \
-  "path:.#checks.$system.argocd-application-health"
-```
+| Host | Environment | Platform | IPv4 | Managed guest of |
+| --- | --- | --- | --- | --- |
+| [`daniels-2021-mbp`](modules/den/hosts/daniels-2021-mbp/default.nix) | `home` | `aarch64-darwin` | — | — |
+| [`builder`](modules/den/hosts/builder/default.nix) | `dev` | `aarch64-linux` | `192.168.65.90` | — |
+| [`compute-1`](modules/den/hosts/compute-1/default.nix) | `prod` | `x86_64-linux` | `10.210.0.10` | [`hvn-hyp1`](modules/den/hosts/hvn-hyp1/default.nix) |
+| [`hvn-hyp1`](modules/den/hosts/hvn-hyp1/default.nix) | `prod` | `x86_64-linux` | `172.27.50.17` | — |
 
-The schema gate validates original canonical YAML against pinned local
-Kubernetes and exact tracked CRD schemas, rejects duplicate keys, and
-accounts for every effective document. Its negative cases reject missing
-schemas, collisions, empty input and skipped validation. Converted CRD
-schemas do not prove CEL admission, all ObjectMeta rules, controller
-behavior or traffic. Kyverno owns rendered repository confinement, ownership,
-retention, lifecycle, authority, identity, Gateway and workload/storage policy.
-The health gate executes Lua from the evaluated production Argo ConfigMap.
+## Services and topology
 
-On x86_64 Linux, run the bundled native Gateway admission, runtime-Secret
-ownership, Argo recovery and Gateway traffic/authorization scenarios with a
-local Docker Unix-socket context and a new result filename:
+### `prod-home`
 
-```sh
-nix run path:.#verify-kubernetes-api -- \
-  --docker-context default --report ./api-result.json
-```
+- **Kubernetes API:** `1.35.8`; ingress `direct` on NodePort `30443`.
+- **Persistent state:** `/var/lib/homelab/compute-1/state` on [`hvn-hyp1`](modules/den/hosts/hvn-hyp1/default.nix), mounted at `/srv/state` in the guest. [Paths and owners](docs/operations.md#retained-state).
+- **GitOps:** [generated manifests](generated/manifests/prod-home/), tracked from `main` by Argo CD. [Deployment runbook](docs/operations.md#deploy-configuration).
 
-Validate a persisted report through the same fail-closed entry point CI uses:
+| Backend | Canonical hostname | Exposure | Sign-in | In manifests |
+| --- | --- | --- | --- | --- |
+| `argocd/argocd-server` | [`argocd.plus2.danielvicory.dev`](https://argocd.plus2.danielvicory.dev/) | `public` | Gateway admin | yes |
+| `monitoring/grafana` | [`grafana.plus2.danielvicory.dev`](https://grafana.plus2.danielvicory.dev/) | `public` | Gateway admin | yes |
+| `portal/homarr` | `home.plus2.danielvicory.dev` | `public` | Application | no |
+| `identity/kanidm` | [`id.bzfx.net`](https://id.bzfx.net/) | `public` | Application | yes |
+| `jellyfin/jellyfin` | [`jellyfin.plus2.danielvicory.dev`](https://jellyfin.plus2.danielvicory.dev/) | `private` | Application | yes |
+| `media/prowlarr` | [`prowlarr.plus2.danielvicory.dev`](https://prowlarr.plus2.danielvicory.dev/) | `public` | Gateway admin | yes |
+| `media/radarr` | [`radarr.plus2.danielvicory.dev`](https://radarr.plus2.danielvicory.dev/) | `public` | Gateway admin | yes |
+| `media/seerr` | [`requests.plus2.danielvicory.dev`](https://requests.plus2.danielvicory.dev/) | `public` | Application | yes |
+| `media/sabnzbd` | [`sabnzbd.plus2.danielvicory.dev`](https://sabnzbd.plus2.danielvicory.dev/) | `public` | Gateway admin | yes |
+| `media/sonarr` | [`sonarr.plus2.danielvicory.dev`](https://sonarr.plus2.danielvicory.dev/) | `public` | Gateway admin | yes |
 
-```sh
-nix run path:.#verify-kubernetes-api -- --check-report ./api-result.json
-```
+Routes reflect generated manifests, not live health.
+[Route details and publication gates](docs/operations.md#declared-routes) explain aliases and onboarding.
 
-This creates a pinned disposable K3s fixture with explicit credentials and
-a loopback endpoint. It disables K3s's embedded network-policy controller,
-uses nftables kube-proxy and applies the canonical unprivileged
-`kube-network-policies` enforcer before the scenarios. It then removes its
-containers, volumes and credentials.
-Full acceptance requires the fixed safety-scenario inventory, actual passing
-operations, no skips or mutation/scoping, and successful owned cleanup. The
-`--remove-gateway-tls-cel` and `--argo-mutation` counterfactuals must fail;
-an empty `--test-dir`, `--exclude-test-regex '.*'`, an unmatched `--selector`,
-or a skipped scenario must also fail. Reports contain sanitized progress,
-outcomes and setup/image/scenario/cleanup timings, not kubeconfigs or raw
-assertion errors. A successful scoped experiment is not full acceptance.
-Other frontends require an explicit compatible `--fixture-settings` closure;
-amd64 emulation is not native ARM evidence.
+## Operate and recover
 
-Hosted CI joins successful native execution receipts with the required
-schema/policy and genuine host/recovery groups; an omitted group cannot make
-the aggregate pass. An evaluated inventory or built app alone is not execution
-evidence. Unsupported platform rows remain explicit rather than forcing their
-derivations or silently claiming native acceptance.
+- [Household operations](docs/operations.md): deployment, retained state and runtime secrets.
+- [Identity](docs/operations/identity.md) · [Homarr](docs/operations/homarr.md) · [Media](docs/operations/media.md) · [Jellyfin](docs/operations/jellyfin.md) · [Monitoring](docs/operations/monitoring.md).
+- [Storage layout](docs/storage.md) · [Disk migration](docs/operations/luks-storage-migration.md).
 
-The native fixture's `/var/run/netns` propagation setup is confined to its
-owned privileged Docker node. It does not change the host's mount propagation
-or establish a production node-startup NetworkPolicy barrier.
+## Sources and checks
 
-The rendered policy accepts identity's configured hostname independently of
-the application base domains and requires its cross-namespace certificate.
-Native Gateway cases verify that certificate in direct and trusted-edge modes.
-The application fixture certificate excludes the identity hostname, so fallback
-certificate selection fails.
-The backend CA negative changes only the owned Kanidm backend TLS volume,
-leaving the frontend identity certificate and its cross-namespace grant intact.
-The separate public-edge VM retains identity-host trust/name transitions,
-cross-edge SNI refusal, queryless logging, upstream TLS recovery and failover.
-
-## Retained host and recovery verification
-
-`runtime-secret-k3s` retains the real host/systemd staging and acknowledgment
-seam. `prod-home-replacement` and `compute-guest-upgrade` retain state-root
-markers, ZFS/FUSE/Incus ID maps, mapped read-only media, credential delivery,
-firewall/device behavior, source loss/return and application state through
-guest replacement. Detailed Argo retirement moved to required native
-scenarios; it no longer runs twice in the broad host scenario.
-
-The replacement fixture's registry uses an explicitly public test-only key
-and fixed certificate validity (2025–2125), with the declared bridge IP as its
-verified name. Deterministic identity keeps a cached guest's embedded CA valid
-when the registry TLS derivation is independently rebuilt. Never use this key
-or certificate outside disposable tests.
-
-The selected `prod-home-registry-failures` process check uses a three-second
-unit cleanup grace with real signals, pidfds and child processes. Bootstrap
-cleanup in the runtime scenarios retains its 30-second production grace.
-
-```sh
-nix build --no-link \
-  .#checks.x86_64-linux.runtime-secret-k3s \
-  .#checks.x86_64-linux.prod-home-replacement \
-  .#checks.x86_64-linux.compute-guest-upgrade \
-  .#checks.x86_64-linux.prepare-luks-storage-runtime
-```
-
-Use a disposable native Linux builder with KVM and the checks' declared
-resources. On a sandboxed builder, launch the upstream `.driver` directly for
-checks declaring `__noChroot`, rather than weakening the host's sandbox. Each
-driver owns its VM, final synchronization and shutdown. Do not run these
-fixtures against production Docker, Incus, mounts or credentials.
-
-Use `python3 modules/tests/compute-network-policy-runtime.py --self-test` for
-portable observer regression checks. The real VM check still exercises traffic,
-migration and recovery; API/exec errors fail rather than count as policy denial.
-On a crash-recovery assertion or enforcement-matrix failure, the disposable
-fixture records enforcer DaemonSet/Pod identities and statuses plus bounded current
-and previous container logs. Both failure paths also capture current Pod addresses,
-backend listeners/logs, nftables sets, NFQUEUE state and effective K3s/proxy state.
-Each query has a deadline and bounded recorded output; these read-only diagnostics
-do not replay tables, retry traffic, extend readiness or observation windows, or
-change acceptance. The original failure is re-raised even if capture fails.
-
-## Media verification
-
-On native x86_64 Linux with Docker Engine 26+, `nix run .#media-live-acceptance -- --docker-host unix:///var/run/docker.sock --platform linux/amd64` runs the full pinned media API suite using packaged manifests/policy inputs and owned disposable Docker volumes, without production mounts or credentials. Hosted CI requires its execution, not merely building the runner; Kubernetes/Incus/recovery evidence remains separate.
-
-Initial Docker fixture failures include bounded, escaped stderr. Successful
-setup and later application output stay quiet; infrastructure errors do not
-count as expected application refusals.
-
-Native service behavior is the category-integration proof. SABnzbd owns its default `*` category; the local initializer checks must not equate its complete category inventory with the configured Arr instances.
+- [Cluster and route declarations](modules/den/clusters/home.nix) · [Service implementations](modules/den/aspects/kubernetes/services/) · [Compute lifecycle](modules/den/aspects/virtualization/compute.nix).
+- [CI and local checks](CI.md) · [Regenerate this page](CI.md#regenerate-documentation).
+- [Current contracts](openspec/specs/) · [Architecture decisions](docs/architecture/decisions/).
