@@ -136,12 +136,19 @@ in
         override rejects newer upstream versions rather than downgrading them.
         The upgrade fixtures pin the former production package set separately;
         they must not follow the candidate root.
+
         `modules/meta/go-security.nix` supplies the released Go 1.26.11 and
-        1.27.4 compiler fixes pending Nixpkgs #586271/#586269, without a second
-        package snapshot or a Go source patch. It covers Den host and native
-        package sets and keeps any equal or newer ordinary-root compiler.
-        Remove it once both upstream recipes catch up. The helper audit uses
-        its selected package compiler; a shell's unrelated Go is not proof.
+        1.27.4 fixes pending Nixpkgs #586271/#586269, without a second package
+        snapshot or a Go source patch. It updates module builders and explicit
+        service compilers, not raw Go used by unrelated C-library build helpers.
+        K3s's compiler-version metadata and Docker's explicit compiler agree
+        with their builders. Independently evaluated Hoopsnake is rebound once
+        for both initrd and installed use; `hoopsnake-go-security` checks its
+        actual binary compiler and CGO-disabled mode.
+        Equal or newer upstream compilers take precedence. Remove the release
+        overrides once both ordinary-root recipes catch up, retaining the shared
+        Hoopsnake selection and binary guard. Audit actual package build information;
+        a shell's unrelated Go is not proof.
 
         K3s's bundled containerd overlay capability probe retains its real
         multi-lowerdir mount and selects `userxattr` with `NeedsUserXAttr`, as
